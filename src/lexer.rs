@@ -18,3 +18,14 @@ impl fmt::Display for Span {
         write!(f, "{}:{}", self.line, self.col)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn span_display() {
+        assert_eq!(Span::new(21, 37).to_string(), "21:37");
+    }
+}
+
