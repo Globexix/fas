@@ -19,6 +19,59 @@ impl fmt::Display for Span {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum Tok {
+    Ident(String),
+    Int(u128),
+    Str(String),
+
+    // Punctuation
+    LParen,
+    RParen,
+    LBrace,
+    RBrace,
+    LBracket,
+    RBracket,
+    Comma,
+    Dot,
+    Semi,
+    At,
+    Question,
+    Colon,
+
+    // Operators
+    Assign, // =
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    PlusEq,
+    MinusEq,
+    StarEq,
+    SlashEq,
+    PercentEq,
+    AmpEq,
+    PipeEq,
+    CaretEq,
+    Newline,
+    Amp,    // &
+    Pipe,   // |
+    Caret,  // ^
+    Tilde,  // ~
+    EqEq,   // ==
+    NotEq,  // !=
+    Lt,     // <
+    Le,     // <=
+    Gt,     // >
+    Ge,     // >=
+    AndAnd, // &&
+    OrOr,   // ||
+    Not,    // !
+
+    Eof,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
