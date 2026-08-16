@@ -103,6 +103,41 @@ impl Lexer {
     }
 
     fn skip_hspace_and_comments(&mut self) -> Result<(), String> {
+        loop {
+            match self.peek() {
+                Some(' ') | Some('\t') | Some('\r') => { self.bump(); }
+                Some('/') if self.peek2() == Some('/') => {
+                    while let Some(c) = self.peek() {
+                        if c == '\n' {
+                            break;
+                        }
+                        self.bump();
+                    }
+                }
+                Some('/') if self.peek2() == Some('*') => {
+                    self.bump();
+                    self.bump();
+                    let start = Span::new(self.line, self.col);
+
+                    loop {
+                        match self.peek() {
+                            None => {
+                                return Err(format!("unterminated block comment starting at {start}"))
+                            }
+                            Some('*') if self.peek2() == Some('/') => {
+                                self.bump();
+                                self.bump();
+                                break;
+                            }
+                            _ => {
+                                self.bump();
+                            }
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
         Ok(())
     }
 
@@ -189,6 +224,14 @@ mod tests {
         let error = lex("x").expect_err("stub should reject x");
         assert!(error.contains("x"));
         assert!(error.contains("1:1"));
+    }
+
+    #[test]
+    fn comments_are_skipped_but_line_breaks_remain() {
+        let tokens = lex("// line\n /* block\ncomment */").unwrap();
+        assert_eq!(tokens[0].0, Tok::Newline);
+        assert_eq!(tokens.last().unwrap().0, Tok::Eof);
+        assert_eq!(lex("/*").unwrap_err(), "unterminated block comment starting at 1:3");
     }
 }
 
