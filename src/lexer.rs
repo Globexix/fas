@@ -356,13 +356,61 @@ impl Lexer {
                 Ok(Tok::Str(s))
             }
             c if c.is_ascii_digit() => {
-                unreachable!()
+                self.lex_number(span)
             }
             c if is_ident_start(c) => {
                 unreachable!()
             }
             other => Err(format!("unexpected character `{other}` at {span}"))
         }
+    }
+
+    fn lex_number(&mut self, span: Span) -> Result<Tok, String> {
+        let mut s = String::new();
+
+        while let Some(c) = self.peek() {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                s.push(c);
+                self.bump();
+            } else {
+                break;
+            }
+        }
+
+        let cleaned: String = s.chars().filter(|&c| c != '_').collect();
+
+        let (radix, digits) = if let Some(rest) = cleaned.strip_prefix("0x") {
+            (16, rest)
+        } else if let Some(rest) = cleaned.strip_prefix("0X") {
+            (16, rest)
+        } else if let Some(rest) = cleaned.strip_prefix("0b") {
+            (2, rest)
+        } else if let Some(rest) = cleaned.strip_prefix("0B") {
+            (2, rest)
+        } else if let Some(rest) = cleaned.strip_prefix("0o") {
+            (8, rest)
+        } else if let Some(rest) = cleaned.strip_prefix("0O") {
+            (8, rest)
+        } else {
+            (10, cleaned.as_str())
+        };
+
+        if digits.is_empty() {
+            return Err(format!("invalid integer literal `{s}` at {span}"));
+        }
+
+        let mut val: u128 = 0;
+        for c in digits.chars() {
+            let d = c.to_digit(radix).ok_or_else(|| {
+                format!("invalid digit `{c}` in integer literal `{s}` at {span}")
+            })?;
+            val = val
+                .checked_mul(radix as u128)
+                .and_then(|v| v.checked_add(d as u128))
+                .ok_or_else(|| format!("integer literal `{s}` overflows 128 bits at {span}"))?;
+        }
+
+        Ok(Tok::Int(val))
     }
 }
 
@@ -460,12 +508,34 @@ mod tests {
 
     #[test]
     fn strings_decode() {
-        let token = lex("\"hello\"\"a\nb\"\"tab\there\"\"quote\\\"q\"\"nul\0x\"").unwrap();
-        assert_eq!(token[0].0, Tok::Str("hello".to_string()));
-        assert_eq!(token[1].0, Tok::Str("a\nb".to_string()));
-        assert_eq!(token[2].0, Tok::Str("tab\there".to_string()));
-        assert_eq!(token[3].0, Tok::Str("quote\"q".to_string()));
-        assert_eq!(token[4].0, Tok::Str("nul\0x".to_string()));
+        let tokens = lex("\"hello\"\"a\nb\"\"tab\there\"\"quote\\\"q\"\"nul\0x\"").unwrap();
+        assert_eq!(tokens[0].0, Tok::Str("hello".to_string()));
+        assert_eq!(tokens[1].0, Tok::Str("a\nb".to_string()));
+        assert_eq!(tokens[2].0, Tok::Str("tab\there".to_string()));
+        assert_eq!(tokens[3].0, Tok::Str("quote\"q".to_string()));
+        assert_eq!(tokens[4].0, Tok::Str("nul\0x".to_string()));
+    }
+
+    #[test]
+    fn numbers_pass() {
+        let tokens = lex("0 42 1_000_000 0xff 0xFF 0b1010 0o17").unwrap();
+        assert_eq!(tokens[0].0, Tok::Int(0));
+        assert_eq!(tokens[1].0, Tok::Int(42));
+        assert_eq!(tokens[2].0, Tok::Int(1000000));
+        assert_eq!(tokens[3].0, Tok::Int(255));
+        assert_eq!(tokens[4].0, Tok::Int(255));
+        assert_eq!(tokens[5].0, Tok::Int(10));
+        assert_eq!(tokens[6].0, Tok::Int(15));
+    }
+
+    #[test]
+    fn numbers_reject() {
+        let error = lex("0x").expect_err("lexer should reject");
+        let error2 = lex("0xG").expect_err("lexer should reject");
+        let error3 = lex("9999999999999999999999999999999999999999999999").expect_err("lexer should reject");
+        assert!(error.contains("invalid integer literal"));
+        assert!(error2.contains("invalid digit"));
+        assert!(error3.contains("overflows 128 bits"));
     }
 
 }
