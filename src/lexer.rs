@@ -317,7 +317,43 @@ impl Lexer {
                 }
             }
             '"' => {
-                unreachable!()
+                self.bump();
+                let mut s = String::new();
+                loop {
+                    match self.peek() {
+                        None => {
+                            return Err(format!("unterminated string literal at {span}"))
+                        }
+                        Some('"') => {
+                            self.bump();
+                            break;
+                        }
+                        Some('\\') => {
+                            self.bump();
+                            let esc = self.bump().ok_or_else(|| {
+                                format!("unterminated escape at {span}")
+                            })?;
+                            match esc {
+                                'n' => s.push('\n'),
+                                't' => s.push('\t'),
+                                'r' => s.push('\r'),
+                                '\\' => s.push('\\'),
+                                '"' => s.push('"'),
+                                '0' => s.push('\0'),
+                                other => {
+                                    return Err(format!(
+                                        "unknown escape `\\{other}` at {span}"
+                                    ))
+                                }
+                            }
+                        }
+                        Some(c) => {
+                            s.push(c);
+                            self.bump();
+                        }
+                    }
+                }
+                Ok(Tok::Str(s))
             }
             c if c.is_ascii_digit() => {
                 unreachable!()
@@ -421,5 +457,16 @@ mod tests {
         assert_eq!(tokens.last().unwrap().0, Tok::Eof);
         assert_eq!(lex("/*").unwrap_err(), "unterminated block comment starting at 1:3");
     }
+
+    #[test]
+    fn strings_decode() {
+        let token = lex("\"hello\"\"a\nb\"\"tab\there\"\"quote\\\"q\"\"nul\0x\"").unwrap();
+        assert_eq!(token[0].0, Tok::Str("hello".to_string()));
+        assert_eq!(token[1].0, Tok::Str("a\nb".to_string()));
+        assert_eq!(token[2].0, Tok::Str("tab\there".to_string()));
+        assert_eq!(token[3].0, Tok::Str("quote\"q".to_string()));
+        assert_eq!(token[4].0, Tok::Str("nul\0x".to_string()));
+    }
+
 }
 
