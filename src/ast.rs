@@ -48,6 +48,58 @@ impl IntKind {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum Expr {
+    Int(i128, Span),
+    Bool(bool, Span),
+    Null(Span),
+    Str(String, Span),
+    Ident(String, Span),
+    Unary {
+        op: UnOp,
+        e: Box<Expr>,
+        span: Span,
+    },
+    Binary {
+        op: BinOp,
+        l: Box<Expr>,
+        r: Box<Expr>,
+        span: Span,
+    },
+    Call {
+        f: Box<Expr>,
+        args: Vec<Expr>,
+        span: Span,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnOp {
+    Neg,
+    Not,
+    BitNot,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,6 +110,17 @@ mod tests {
         assert_eq!(IntKind::Usize.bits(), 64);
         assert!(!IntKind::U64.signed());
         assert!(IntKind::Isize.signed());
+    }
+
+    #[test]
+    fn builds_a_binary_expression_tree() {
+        let e = Expr::Binary {
+            op: BinOp::Add,
+            l: Box::new(Expr::Int(1, Span::new(1, 1))),
+            r: Box::new(Expr::Ident(String::from("x"), Span::new(1, 5))),
+            span: Span::new(1, 1),
+        };
+        assert!(matches!(e, Expr::Binary { op: BinOp::Add, .. }));
     }
 
 }
