@@ -84,7 +84,7 @@ impl Lexer {
         self.src.get(self.pos).copied()
     }
 
-    fn peek2 (&self) -> Option<char> {
+    fn peek2(&self) -> Option<char> {
         self.src.get(self.pos + 1).copied()
     }
 
@@ -101,6 +101,47 @@ impl Lexer {
         }
         c
     }
+
+    fn skip_hspace_and_comments(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn next_token(&mut self, c: char, span: Span) -> Result<Tok, String> {
+        Err(format!("token logic not implemented for `{c}` at {span}"))
+    }
+}
+
+pub fn lex(src: &str) -> Result<Vec<(Tok, Span)>, String> {
+    let mut lx = Lexer {
+        src: src.chars().collect(),
+        pos: 0,
+        line: 1,
+        col: 1,
+    };
+
+    let mut out = Vec::new();
+
+    loop {
+        lx.skip_hspace_and_comments()?;
+        let span = Span::new(lx.line, lx.col);
+        match lx.peek() {
+            None => {
+                out.push((Tok::Eof, span));
+                break;
+            },
+            Some('\n') => {
+                lx.bump();
+                out.push((Tok::Newline, span));
+                
+            }
+            Some(c) => {
+                let tok = lx.next_token(c, span)?;
+                out.push((tok, span));
+            }
+        }
+    }
+
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -126,6 +167,28 @@ mod tests {
         lx.bump();
         lx.bump();
         assert_eq!((lx.line, lx.col), (2, 1));
+    }
+
+    #[test]
+    fn emtpy_input_produces_eof() {
+        let tokens = lex("").expect("emtpy source should lex");
+        assert_eq!(tokens, vec![(Tok::Eof, Span::new(1, 1))]);
+    }
+
+    #[test]
+    fn newline_is_significant() {
+        let tokens = lex("\n").expect("newline should lex");
+        assert_eq!(tokens, vec![
+            (Tok::Newline, Span::new(1, 1)),
+            (Tok::Eof, Span::new(2, 1)),
+        ]);
+    }
+
+    #[test]
+    fn unfinished_token_logic_is_an_error() {
+        let error = lex("x").expect_err("stub should reject x");
+        assert!(error.contains("x"));
+        assert!(error.contains("1:1"));
     }
 }
 
