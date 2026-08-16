@@ -92,6 +92,75 @@ pub enum Tok {
     Eof,
 }
 
+impl fmt::Display for Tok {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Tok::Ident(s) => write!(f, "`{s}`"),
+            Tok::Int(n) => write!(f, "`{n}`"),
+            Tok::Str(s) => write!(f, "\"{s}\""),
+            Tok::KwFn => write!(f, "`fn`"),
+            Tok::KwReturn => write!(f, "`return`"),
+            Tok::KwIf => write!(f, "`if`"),
+            Tok::KwElse => write!(f, "`else`"),
+            Tok::KwWhile => write!(f, "`while`"),
+            Tok::KwBreak => write!(f, "`break`"),
+            Tok::KwContinue => write!(f, "`continue`"),
+            Tok::KwConst => write!(f, "`const`"),
+            Tok::KwStruct => write!(f, "`struct`"),
+            Tok::KwOpaque => write!(f, "`opaque`"),
+            Tok::KwExtern => write!(f, "`extern`"),
+            Tok::KwDefer => write!(f, "`defer`"),
+            Tok::KwAsm => write!(f, "`asm`"),
+            Tok::KwFor => write!(f, "`for`"),
+            Tok::KwSwitch => write!(f, "`switch`"),
+            Tok::KwCase => write!(f, "`case`"),
+            Tok::KwDefault => write!(f, "`default`"),
+            Tok::LParen => write!(f, "`(`"),
+            Tok::RParen => write!(f, "`)`"),
+            Tok::LBrace => write!(f, "`{{`"),
+            Tok::RBrace => write!(f, "`}}`"),
+            Tok::LBracket => write!(f, "`[`"),
+            Tok::RBracket => write!(f, "`]`"),
+            Tok::Comma => write!(f, "`,`"),
+            Tok::Dot => write!(f, "`.`"),
+            Tok::DotDotDot => write!(f, "`...`"),
+            Tok::Semi => write!(f, "`;`"),
+            Tok::At => write!(f, "`@`"),
+            Tok::Question => write!(f, "`?`"),
+            Tok::Colon => write!(f, "`:`"),
+            Tok::Assign => write!(f, "`=`"),
+            Tok::Plus => write!(f, "`+`"),
+            Tok::Minus => write!(f, "`-`"),
+            Tok::Star => write!(f, "`*`"),
+            Tok::Slash => write!(f, "`/`"),
+            Tok::Percent => write!(f, "`%`"),
+            Tok::PlusEq => write!(f, "`+=`"),
+            Tok::MinusEq => write!(f, "`-=`"),
+            Tok::StarEq => write!(f, "`*=`"),
+            Tok::SlashEq => write!(f, "`/=`"),
+            Tok::PercentEq => write!(f, "`%=`"),
+            Tok::AmpEq => write!(f, "`&=`"),
+            Tok::PipeEq => write!(f, "`|=`"),
+            Tok::CaretEq => write!(f, "`^=`"),
+            Tok::Newline => write!(f, "newline"),
+            Tok::Amp => write!(f, "`&`"),
+            Tok::Pipe => write!(f, "`|`"),
+            Tok::Caret => write!(f, "`^`"),
+            Tok::Tilde => write!(f, "`~`"),
+            Tok::EqEq => write!(f, "`==`"),
+            Tok::NotEq => write!(f, "`!=`"),
+            Tok::Lt => write!(f, "`<`"),
+            Tok::Le => write!(f, "`<=`"),
+            Tok::Gt => write!(f, "`>`"),
+            Tok::Ge => write!(f, "`>=`"),
+            Tok::AndAnd => write!(f, "`&&`"),
+            Tok::OrOr => write!(f, "`||`"),
+            Tok::Not => write!(f, "`!`"),
+            Tok::Eof => write!(f, "end of file"),
+        }
+    }
+}
+
 pub struct Lexer {
     src: Vec<char>,
     pos: usize,
@@ -520,6 +589,14 @@ mod tests {
     }
 
     #[test]
+    fn token_display() {
+        assert_eq!(Tok::KwFn.to_string(), "`fn`");
+        assert_eq!(Tok::PlusEq.to_string(), "`+=`");
+        assert_eq!(Tok::Newline.to_string(), "newline");
+        assert_eq!(Tok::LBrace.to_string(), "`{`");
+    }
+
+    #[test]
     fn cursor_peeks_and_tracks_newlines() {
         let mut lx = Lexer { 
             src: "ab\nc".chars().collect(), 
@@ -601,4 +678,3 @@ mod tests {
     }
 
 }
-
