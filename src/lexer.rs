@@ -25,6 +25,25 @@ pub enum Tok {
     Int(u128),
     Str(String),
 
+    // Keywords
+    KwFn,
+    KwReturn,
+    KwIf,
+    KwElse,
+    KwWhile,
+    KwBreak,
+    KwContinue,
+    KwConst,
+    KwStruct,
+    KwOpaque,
+    KwExtern,
+    KwDefer,
+    KwAsm,
+    KwFor,
+    KwSwitch,
+    KwCase,
+    KwDefault,
+
     // Punctuation
     LParen,
     RParen,
@@ -359,7 +378,20 @@ impl Lexer {
                 self.lex_number(span)
             }
             c if is_ident_start(c) => {
-                unreachable!()
+                self.bump();
+
+                let mut s = String::new();
+                s.push(c);
+
+                while let Some(c) = self.peek() {
+                    if is_ident_continue(c) {
+                        s.push(c);
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+                Ok(keyword_or_ident(&s))
             }
             other => Err(format!("unexpected character `{other}` at {span}"))
         }
@@ -414,8 +446,35 @@ impl Lexer {
     }
 }
 
-fn is_ident_start(_c: char) -> bool {
-    false
+fn is_ident_start(c: char) -> bool {
+    c.is_ascii_alphabetic() || c == '_'
+}
+
+fn is_ident_continue(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+fn keyword_or_ident(s: &str) -> Tok {
+    match s {
+        "fn" => Tok::KwFn,
+        "return" => Tok::KwReturn,
+        "if" => Tok::KwIf,
+        "else" => Tok::KwElse,
+        "while" => Tok::KwWhile,
+        "break" => Tok::KwBreak,
+        "continue" => Tok::KwContinue,
+        "const" => Tok::KwConst,
+        "struct" => Tok::KwStruct,
+        "opaque" => Tok::KwOpaque,
+        "extern" => Tok::KwExtern,
+        "defer" => Tok::KwDefer,
+        "asm" => Tok::KwAsm,
+        "for" => Tok::KwFor,
+        "switch" => Tok::KwSwitch,
+        "case" => Tok::KwCase,
+        "default" => Tok::KwDefault,
+        _ => Tok::Ident(s.to_string()),
+    }
 }
 
 pub fn lex(src: &str) -> Result<Vec<(Tok, Span)>, String> {
@@ -492,13 +551,6 @@ mod tests {
     }
 
     #[test]
-    fn unfinished_token_logic_is_an_error() {
-        let error = lex("x").expect_err("stub should reject x");
-        assert!(error.contains("x"));
-        assert!(error.contains("1:1"));
-    }
-
-    #[test]
     fn comments_are_skipped_but_line_breaks_remain() {
         let tokens = lex("// line\n /* block\ncomment */").unwrap();
         assert_eq!(tokens[0].0, Tok::Newline);
@@ -536,6 +588,16 @@ mod tests {
         assert!(error.contains("invalid integer literal"));
         assert!(error2.contains("invalid digit"));
         assert!(error3.contains("overflows 128 bits"));
+    }
+
+    #[test]
+    fn ident_and_keywords() {
+        let src = lex("fn main() { return if else while break continue const struct opaque extern defer asm
+                       for switch case default x2 _tmp foo123 ifx}").unwrap();
+
+        assert_eq!(src[0].0, Tok::KwFn);
+        assert_eq!(src[1].0, Tok::Ident("main".to_string()));
+        assert_eq!(src[2].0, Tok::LParen);
     }
 
 }
