@@ -34,6 +34,7 @@ pub enum Tok {
     RBracket,
     Comma,
     Dot,
+    DotDotDot,
     Semi,
     At,
     Question,
@@ -142,8 +143,195 @@ impl Lexer {
     }
 
     fn next_token(&mut self, c: char, span: Span) -> Result<Tok, String> {
-        Err(format!("token logic not implemented for `{c}` at {span}"))
+        match c {
+            '(' => {
+                self.bump();
+                Ok(Tok::LParen)
+            }
+            ')' => {
+            self.bump();
+            Ok(Tok::RParen)
+            }
+            '{' => {
+                self.bump();
+                Ok(Tok::LBrace)
+            }
+            '}' => {
+                self.bump();
+                Ok(Tok::RBrace)
+            }
+            '[' => {
+                self.bump();
+                Ok(Tok::LBracket)
+            }
+            ']' => {
+                self.bump();
+                Ok(Tok::RBracket)
+            }
+            ',' => {
+                self.bump();
+                Ok(Tok::Comma)
+            }
+            '.' => {
+                self.bump();
+                if self.peek() == Some('.') && self.peek2() == Some('.') {
+                    self.bump();
+                    self.bump();
+                    Ok(Tok::DotDotDot)
+                } else {
+                    Ok(Tok::Dot)
+                }
+            }
+            ';' => {
+                self.bump();
+                Ok(Tok::Semi)
+            }
+            '@' => {
+                self.bump();
+                Ok(Tok::At)
+            }
+            '?' => {
+                self.bump();
+                Ok(Tok::Question)
+            }
+            ':' => {
+                self.bump();
+                Ok(Tok::Colon)
+            }
+            '+' => {
+                self.bump();
+                if self.peek() == Some('=') {
+                    self.bump();
+                    Ok(Tok::PlusEq)
+                } else {
+                    Ok(Tok::Plus)
+                }
+            }
+            '-' => {
+                self.bump();
+                if self.peek() == Some('=') {
+                    self.bump();
+                    Ok(Tok::MinusEq)
+                } else {
+                    Ok(Tok::Minus)
+                }
+            }
+            '*' => {
+                self.bump();
+                if self.peek() == Some('=') {
+                    self.bump();
+                    Ok(Tok::StarEq)
+                } else {
+                    Ok(Tok::Star)
+                }
+            }
+            '%' => {
+                self.bump();
+                if self.peek() == Some('=') {
+                    self.bump();
+                    Ok(Tok::PercentEq)
+                } else {
+                    Ok(Tok::Percent)
+                }
+            }
+            '~' => {
+                self.bump();
+                Ok(Tok::Tilde)
+            }
+            '=' => {
+                self.bump();
+                if self.peek() == Some('=') {
+                    self.bump();
+                    Ok(Tok::EqEq)
+                } else {
+                    Ok(Tok::Assign)
+                }
+            }
+            '!' => {
+                self.bump();
+                if self.peek() == Some('=') {
+                    self.bump();
+                    Ok(Tok::NotEq)
+                } else {
+                    Ok(Tok::Not)
+                }
+            }
+            '<' => {
+                self.bump();
+                if self.peek() == Some('=') {
+                    self.bump();
+                    Ok(Tok::Le)
+                } else {
+                    Ok(Tok::Lt)
+                }
+            }
+            '>' => {
+                self.bump();
+                if self.peek() == Some('=') {
+                    self.bump();
+                    Ok(Tok::Ge)
+                } else {
+                    Ok(Tok::Gt)
+                }
+            }
+            '&' => {
+                self.bump();
+                if self.peek() == Some('&') {
+                    self.bump();
+                    Ok(Tok::AndAnd)
+                } else if self.peek() == Some('=') {
+                    self.bump();
+                    Ok(Tok::AmpEq)
+                } else {
+                    Ok(Tok::Amp)
+                }
+            }
+            '|' => {
+                self.bump();
+                if self.peek() == Some('|') {
+                    self.bump();
+                    Ok(Tok::OrOr)
+                } else if self.peek() == Some('=') {
+                    self.bump();
+                    Ok(Tok::PipeEq)
+                } else {
+                    Ok(Tok::Pipe)
+                }
+            }
+            '^' => {
+                self.bump();
+                if self.peek() == Some('=') {
+                    self.bump();
+                    Ok(Tok::CaretEq)
+                } else {
+                    Ok(Tok::Caret)
+                }
+            }
+            '/' => {
+                self.bump();
+                if self.peek() == Some('=') {
+                    self.bump();
+                    Ok(Tok::SlashEq)
+                } else {
+                    Ok(Tok::Slash)
+                }
+            }
+            '"' => {
+                unreachable!()
+            }
+            c if c.is_ascii_digit() => {
+                unreachable!()
+            }
+            c if is_ident_start(c) => {
+                unreachable!()
+            }
+            other => Err(format!("unexpected character `{other}` at {span}"))
+        }
     }
+}
+
+fn is_ident_start(_c: char) -> bool {
+    false
 }
 
 pub fn lex(src: &str) -> Result<Vec<(Tok, Span)>, String> {
