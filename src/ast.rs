@@ -71,6 +71,47 @@ pub enum Expr {
         args: Vec<Expr>,
         span: Span,
     },
+    Cast {
+        kind: CastKind,
+        ty: Ty,
+        e: Box<Expr>,
+        span: Span,
+    },
+    Index {
+        base: Box<Expr>,
+        idx: Box<Expr>,
+        span: Span,
+    },
+    Field {
+        base: Box<Expr>,
+        name: String,
+        span: Span,
+    },
+    Deref {
+        e: Box<Expr>,
+        span: Span,
+    },
+    AddrOf {
+        e: Box<Expr>,
+        span: Span,
+    },
+    PtrAdd {
+        bytes: bool,
+        ptr: Box<Expr>,
+        off: Box<Expr>,
+        span: Span,
+    },
+    SizeOf(Ty, Span),
+    AlignOf(Ty, Span),
+    OffsetOf {
+        ty: Ty,
+        field: String,
+        span: Span,
+    },
+    Splat {
+        e: Box<Expr>,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +139,14 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CastKind {
+    Zext,
+    Sext,
+    Trunc,
+    Bitcast,
 }
 
 #[cfg(test)]
