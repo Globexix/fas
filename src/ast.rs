@@ -169,6 +169,68 @@ pub enum CastKind {
     Bitcast,
 }
 
+#[derive(Clone, Debug)]
+pub enum Stmt {
+    Let {
+        name: String,
+        ty: Option<Ty>,
+        init: Option<Expr>,
+        span: Span,
+    },
+    Assign {
+        target: AssignTarget,
+        value: Expr,
+        span: Span,
+    },
+    Return(Option<Expr>, Span),
+    If {
+        cond: Expr,
+        then: Vec<Stmt>,
+        els: Option<Vec<Stmt>>,
+        span: Span,
+    },
+    While {
+        cond: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
+    Break(Span),
+    Continue(Span),
+
+    Defer(Vec<Stmt>, Span),
+    Expr(Expr, Span),
+
+    Block(Vec<Stmt>, Span),
+    For {
+        init: Option<Box<Stmt>>,
+        cond: Option<Expr>,
+        step: Option<Box<Stmt>>,
+        body: Vec<Stmt>,
+        span: Span,
+    },
+    /// switch no fallthrough
+    Switch {
+        scrutinee: Expr,
+        arms: Vec<(Expr, Vec<Stmt>)>,
+        default: Option<Vec<Stmt>>,
+        span: Span,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub enum AssignTarget {
+    Ident(String),
+    Deref(Box<Expr>),
+    Index {
+        base: Box<Expr>,
+        idx: Box<Expr>,
+    },
+    Field {
+        base: Box<Expr>,
+        name: String,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +274,52 @@ mod tests {
             }
             _ => panic!("expected a struct literal"),
         }
+    }
+
+    #[test]
+    fn constructs_and_matches_for_and_switch_statements() {
+        let span = Span::new(1, 1);
+        let for_statement = Stmt::For {
+            init: Some(Box::new(Stmt::Let {
+                name: String::from("i"),
+                ty: Some(Ty::Int(IntKind::I32)),
+                init: Some(Expr::Int(0, span)),
+                span,
+            })),
+            cond: Some(Expr::Bool(true, span)),
+            step: Some(Box::new(Stmt::Assign {
+                target: AssignTarget::Ident(String::from("i")),
+                value: Expr::Int(1, span),
+                span,
+            })),
+            body: vec![Stmt::Continue(span)],
+            span,
+        };
+        assert!(matches!(
+            for_statement,
+            Stmt::For {
+                init: Some(_),
+                cond: Some(_),
+                step: Some(_),
+                body,
+                ..
+            } if body.len() == 1
+        ));
+
+        let switch_statement = Stmt::Switch {
+            scrutinee: Expr::Ident(String::from("value"), span),
+            arms: vec![(Expr::Int(0, span), vec![Stmt::Break(span)])],
+            default: Some(vec![Stmt::Continue(span)]),
+            span,
+        };
+        assert!(matches!(
+            switch_statement,
+            Stmt::Switch {
+                arms,
+                default: Some(_),
+                ..
+            } if arms.len() == 1
+        ));
     }
 
 }
