@@ -4,6 +4,90 @@
 
 pub use crate::lexer::Span;
 
+#[derive(Clone, Debug)]
+pub struct Program {
+    pub items: Vec<Item>,
+}
+
+#[derive(Clone, Debug)]
+pub enum Item {
+    Const {
+        name: String,
+        ty: Ty,
+        value: Expr,
+        span: Span,
+    },
+    Struct {
+        name: String,
+        fields: Vec<Field>,
+        align: Option<u32>,
+        span: Span,
+    },
+    Opaque {
+        name: String,
+        span: Span,
+    },
+    Func {
+        name: String,
+        params: Vec<Param>,
+        ret: Ty,
+        body: FuncBody,
+        attrs: Vec<Attr>,
+        linkage: Linkage,
+        variadic: bool,
+        const_params: Vec<ConstParam>,
+        span: Span,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct Field {
+    pub name: String,
+    pub ty: Ty,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct Param {
+    pub name: String,
+    pub ty: Ty,
+    pub noalias: bool,
+    pub align: Option<u32>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConstParam {
+    pub name: String,
+    pub ty: Ty,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum FuncBody {
+    Statements(Vec<Stmt>),
+    Asm(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Linkage {
+    Internal,
+    ExternalC,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Attr {
+    Inline,
+    NoInline,
+    Kernel,
+    Optimize,
+    Target(String),
+    Align(u32),
+    ExpectAsm(String),
+    ExpectNoCall,
+    ExpectStackMax(u64),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Ty {
     Bool,
@@ -320,6 +404,22 @@ mod tests {
                 ..
             } if arms.len() == 1
         ));
+    }
+
+    #[test]
+    fn constructs_and_matches_a_one_item_program() {
+        let span = Span::new(1, 1);
+        let value = Expr::Int(7, span);
+        let item = Item::Const {
+            name: String::from("N"),
+            ty: Ty::Int(IntKind::U32),
+            value,
+            span,
+        };
+        let program = Program { items: vec![item] };
+
+        assert_eq!(program.items.len(), 1);
+        assert!(matches!(program.items[0], Item::Const { .. }));
     }
 
 }
