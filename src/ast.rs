@@ -112,6 +112,26 @@ pub enum Expr {
         e: Box<Expr>,
         span: Span,
     },
+    Ternary {
+        cond: Box<Expr>,
+        then: Box<Expr>,
+        els: Box<Expr>,
+        span: Span,
+    },
+    ArrayLit {
+        elemes: Vec<Expr>,
+        span: Span,
+    },
+    StructLit {
+        name: String,
+        elems: Vec<Expr>,
+        span: Span,
+    },
+    ConstArgs {
+        base: Box<Expr>,
+        args: Vec<Expr>,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -170,6 +190,28 @@ mod tests {
             span: Span::new(1, 1),
         };
         assert!(matches!(e, Expr::Binary { op: BinOp::Add, .. }));
+
+    }
+
+    #[test]
+    fn constructs_and_matches_a_struct_literal() {
+        let elems = vec![
+            Expr::Int(1, Span::new(1, 1)),
+            Expr::Int(2, Span::new(1, 1)),
+        ];
+        let expression = Expr::StructLit {
+            name: String::from("Pair"),
+            elems,
+            span: Span::new(1, 1),
+        };
+
+        match expression {
+            Expr::StructLit { name, elems, .. } => {
+                assert_eq!(name, "Pair");
+                assert_eq!(elems.len(), 2);
+            }
+            _ => panic!("expected a struct literal"),
+        }
     }
 
 }
