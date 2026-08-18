@@ -218,6 +218,35 @@ pub enum Expr {
     },
 }
 
+impl Expr {
+    pub fn span(&self) -> Span {
+        match self {
+            Expr::Int(_, s)
+            | Expr::Bool(_, s)
+            | Expr::Null(s)
+            | Expr::Str(_, s)
+            | Expr::Ident(_, s)
+            | Expr::Unary { span: s, .. }
+            | Expr::Binary { span: s, .. }
+            | Expr::Call { span: s, .. }
+            | Expr::ConstArgs { span: s, .. }
+            | Expr::Cast { span: s, .. }
+            | Expr::Index { span: s, .. }
+            | Expr::Field { span: s, .. }
+            | Expr::Deref { span: s, .. }
+            | Expr::AddrOf { span: s, .. }
+            | Expr::PtrAdd { span: s, .. }
+            | Expr::SizeOf(_, s)
+            | Expr::AlignOf(_, s)
+            | Expr::OffsetOf { span: s, .. }
+            | Expr::Splat { span: s, .. }
+            | Expr::Ternary { span: s, .. }
+            | Expr::ArrayLit { span: s, .. }
+            | Expr::StructLit { span: s, .. } => *s,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnOp {
     Neg,
@@ -420,6 +449,19 @@ mod tests {
 
         assert_eq!(program.items.len(), 1);
         assert!(matches!(program.items[0], Item::Const { .. }));
+    }
+
+    #[test]
+    fn returns_spans_for_expressions() {
+        let integer = Expr::Int(5, Span::new(4, 9));
+        let struct_literal = Expr::StructLit {
+            name: String::from("LM"),
+            elems: vec![],
+            span: Span::new(1, 3),
+        };
+
+        assert_eq!(integer.span(), Span::new(4, 9));
+        assert_eq!(struct_literal.span(), Span::new(1, 3));
     }
 
 }
