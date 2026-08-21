@@ -214,13 +214,58 @@ impl Parser {
         }
     }
     fn parse_const(&mut self) -> Result<Item, String> {
-        todo!("parse_const")
+        let sp = self.span();
+        self.expect(&Tok::KwConst)?;
+
+        let (name, _) = self.expect_ident()?;
+        let ty = self.parse_type()?;
+
+        self.expect(&Tok::Assign)?;
+
+        let value = if self.at(&Tok::LBrace) {
+            self.bump();
+            self.skip_newlines();
+            let mut elems = Vec::new();
+            while !self.at(&Tok::RBrace) {
+                elems.push(self.parse_expr()?);
+                self.skip_newlines();
+                if self.eat(&Tok::Comma) {
+                    self.skip_newlines();
+                    continue;
+                }
+                break;
+            }
+            self.expect(&Tok::RBrace)?;
+            Expr::ArrayLit { elems, span: sp }
+        } else {
+            self.parse_expr()?
+        };
+
+        self.end_stmt()?;
+        
+        Ok(Item::Const {
+            name,
+            ty,
+            value,
+            span: sp,
+        })
     }
     fn parse_struct(&mut self) -> Result<Item, String> {
         todo!("parse_struct")
     }
     fn parse_opaque(&mut self, _attrs: Vec<Attr>) -> Result<Item, String> {
-        todo!("parse_opaque")
+        let sp = self.span();
+
+        if !attrs.is_empty() {
+            return Err(format!("attributes are not valid on an opaque declaration at {sp}"));
+        }
+
+        self.expect(&Tok::KwOpaque)?;
+        let (name, _) = self.expect_ident()?;
+        self.end_stmt()?;
+        self.opaque_names.push(name.clone());
+
+        Ok(Item::Opaque { name, span: sp })
     }
     fn parse_fn(&mut self, _attrs: Vec<Attr>) -> Result<Item, String> {
         todo!("parse_fn")
