@@ -310,23 +310,160 @@ impl Parser {
 
         Ok(Item::Opaque { name, span: sp })
     }
-    fn parse_fn(&mut self, _attrs: Vec<Attr>) -> Result<Item, String> {
-        todo!("parse_fn")
+    fn parse_fn(&mut self, attrs: Vec<Attr>) -> Result<Item, String> {
+        let sp = self.span();
+        self.expect(&Tok::KwFn)?;
+        let (name, _) = self.expect_ident()?;
+        let const_params = self.parse_const_params()?;
+        let (params, ret, variadic) = self.parse_signature(false)?;
+        let body = self.parse_block()?;
+        Ok(Item::Func {
+            name,
+            params,
+            ret,
+            body: FuncBody::Statements(body),
+            attrs,
+            linkage: Linkage::Internal,
+            variadic,
+            const_params,
+            span: sp,
+        })
     }
     fn parse_const_params(&mut self) -> Result<Vec<ConstParam>, String> {
-        todo!("parse_const_params")
+        let mut cps = Vec::new();
+        if !self.at(&Tok::LBracket) {
+            return Ok(cps);
+        }
+        self.bump();
+        self.skip_newlines();
+        loop {
+            let (cname, csp) = self.expect_ident()?;
+            self.expect(&Tok::KwConst)?;
+            let cty = self.parse_type()?;
+            cps.push(ConstParam {
+                name: cname,
+                ty: cty,
+                span: csp,
+            });
+            if self.eat(&Tok::Comma) {
+                self.skip_newlines();
+                continue;
+            }
+            break;
+        }
+        self.expect(&Tok::RBracket)?;
+        Ok(cps)
     }
-    fn parse_extern_block(&mut self, _attrs: Vec<Attr>) -> Result<Vec<Item>, String> {
-        todo!("parse_extern_block")
+    fn parse_extern_block(&mut self, attrs: Vec<Attr>) -> Result<Vec<Item>, String> {
+        let sp = self.span();
+        if !attrs.is_empty() {
+            return Err(format!("attributes are not valid on an extern block at {sp}"));
+        }
+        self.expect(&Tok::KwExtern)?;
+        let abi = self.parse_string()?;
+        if abi != "C" {
+            return Err(format!("unsupported ABI `\"{abi}\"` at {sp} (only \"C\")"));
+        }
+        self.skip_newlines();
+        self.expect(&Tok::LBrace).map_err(|_| {
+            format!("expected `{{` after `extern \"C\"` at {sp}; per-function extern syntax is not supported")
+        })?;
+        self.skip_newlines();
+        let mut funcs = Vec::new();
+        while !self.at(&Tok::RBrace) {
+            if self.at(&Tok::Eof) {
+                return Err(format!("unterminated extern \"C\" block at {sp}"));
+            }
+            if !self.at(&Tok::KwFn) {
+                return self.err("extern \"C\" blocks may contain only function declarations");
+            }
+            funcs.push(self.parse_extern_decl()?);
+            self.skip_newlines();
+        }
+        self.expect(&Tok::RBrace)?;
+        self.end_stmt()?;
+        Ok(funcs)
     }
     fn parse_extern_decl(&mut self) -> Result<Item, String> {
-        todo!("parse_extern_decl")
+        let sp = self.span();
+        self.expect(&Tok::KwFn)?;
+        let (name, _) = self.expect_ident()?;
+        if self.at(&Tok::LBracket) {
+            return Err(format!("extern function `{name}` cannot be const-generic at {sp}"));
+        }
+        let (params, ret, variadic) = self.parse_signature(true)?;
+        if self.at(&Tok::LBrace) {
+            return Err(format!("extern function `{name}` cannot have a body at {sp}"));
+        }
+        self.end_stmt()?;
+        Ok(Item::Func {
+            name,
+            params,
+            ret,
+            body: FuncBody::Statements(Vec::new()),
+            attrs: Vec::new(),
+            linkage: Linkage::ExternalC,
+            variadic,
+            const_params: Vec::new(),
+            span: sp,
+        })
     }
     fn parse_asm_fn(&mut self, _attrs: Vec<Attr>) -> Result<Item, String> {
         todo!("parse_asm_fn")
     }
-    fn parse_signature(&mut self, _allow_variadic: bool) -> Result<(Vec<Param>, Ty, bool), String> {
-        todo!("parse_signature")
+    fn parse_signature(&mut self, allow_variadic: bool) -> Result<(Vec<Param>, Ty, bool), String> {
+        self.expect(&Tok::LParen)?;
+        self.skip_newlines();
+        let mut params = Vec::new();
+        let mut variadic = false;
+        while !self.at(&Tok::RParen) {
+            if self.eat(&Tok::DotDotDot) {
+                if !allow_variadic {
+                    return self.err("`...` is legal only in an `extern \"C\"` declaration");
+                }
+                if params.is_empty() {
+                    return self.err("a C variadic declaration needs at least one fixed parameter");
+                }
+                variadic = true;
+                if !self.at(&Tok::RParen) {
+                    return self.err("`...` must be the final item in a parameter list");
+                }
+                break;
+            }
+            let (name, psp) = self.expect_ident()?;
+            let mut noalias = false;
+            let mut align = None;
+            loop {
+                if self.at_ident("noalias") {
+                    self.bump();
+                    noalias = true;
+                } else if self.at_ident("aligned") {
+                    self.bump();
+                    self.expect(&Tok::LBracket)?;
+                    align = Some(self.parse_u32()?);
+                    self.expect(&Tok::RBracket)?;
+                } else {
+                    break;
+                }
+            }
+            let ty = self.parse_type()?;
+            params.push(Param {
+                name,
+                ty,
+                noalias,
+                align,
+                span: psp,
+            });
+            if self.eat(&Tok::Comma) {
+                self.skip_newlines();
+            } else {
+                self.skip_newlines();
+                break;
+            }
+        }
+        self.expect(&Tok::RParen)?;
+        let ret = self.parse_type()?;
+        Ok((params, ret, variadic))
     }
     fn parse_block(&mut self) -> Result<Vec<Stmt>, String> {
         todo!("parse_block")
