@@ -44,40 +44,73 @@ struct Parser {
 
 impl Parser {
     fn peek(&self) -> &Tok {
-        todo!("peek")
+        &self.toks[self.pos].0
     }
-    fn peek_n(&self, _n: usize) -> &Tok {
-        todo!("peek_n")
+    fn peek_n(&self, n: usize) -> &Tok {
+        let i = (self.pos + n).min(self.toks.len() - 1);
+        &self.toks[i].0
     }
     fn span(&self) -> Span {
-        todo!("span")
+        self.toks[self.pos].1
     }
     fn bump(&mut self) -> (Tok, Span) {
-        todo!("bump")
+        let t = self.toks[self.pos].clone();
+        if self.pos + 1 < self.toks.len() {
+            self.pos += 1;
+        }
+        t
     }
-    fn at(&self, _t: &Tok) -> bool {
-        todo!("at")
+    fn at(&self, t: &Tok) -> bool {
+        self.peek() == t
     }
-    fn at_ident(&self, _s: &str) -> bool {
-        todo!("at_ident")
+    fn at_ident(&self, s: &str) -> bool {
+        matches!(self.peek(), Tok::Ident(x) if x == s)
     }
-    fn expect(&mut self, _t: &Tok) -> Result<(Tok, Span), String> {
-        todo!("expect")
+    fn expect(&mut self, t: &Tok) -> Result<(Tok, Span), String> {
+        if self.at(t) {
+            Ok(self.bump())
+        } else {
+            Err(format!("expected {t}, found {}", self.peek()))
+        }
     }
     fn expect_ident(&mut self) -> Result<(String, Span), String> {
-        todo!("expect_ident")
+        match self.bump() {
+            (Tok::Ident(s), sp) => Ok((s, sp)),
+            (other, _) => Err(format!("expected identifier, found {other}")),
+        }
     }
-    fn eat(&mut self, _t: &Tok) -> bool {
-        todo!("eat")
+    fn eat(&mut self, t: &Tok) -> bool {
+        if self.at(t) {
+            self.bump();
+            true
+        } else {
+            false
+        }
     }
-    fn err<T>(&self, _msg: &str) -> Result<T, String> {
-        todo!("err")
+    fn err<T>(&self, msg: &str) -> Result<T, String> {
+        Err(format!("{msg} at {}", self.span()))
     }
     fn skip_newlines(&mut self) {
-        todo!("skip_newlines")
+        while self.at(&Tok::Newline) {
+            self.bump();
+        }
     }
     fn end_stmt(&mut self) -> Result<(), String> {
-        todo!("end_stmt")
+        if self.eat(&Tok::Semi) {
+            self.skip_newlines();
+            return Ok(());
+        }
+
+        if self.at(&Tok::Newline) {
+            self.skip_newlines();
+            return Ok(());
+        }
+
+        if self.at(&Tok::RBrace) || self.at(&Tok::Eof) {
+            return Ok(());
+        }
+
+        self.err("expected end of statement (newline or `;`)")
     }
 
     fn parse_program(&mut self) -> Result<Program, String> {
