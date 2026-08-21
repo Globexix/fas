@@ -5,8 +5,20 @@
 use crate::ast::*;
 use crate::lexer::{lex, Span, Tok};
 
-pub fn parse_file(_src: &str) -> Result<Program, String> {
-    todo!("parse_file")
+pub fn parse_file(src: &str) -> Result<Program, String> {
+    let (clean, asm_bodies) =  extract_asm_bodies(src)?;
+    let toks = lex(&clean)?;
+
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        struct_names: Vec::new(),
+        opaque_names: Vec::new(),
+        asm_bodies,
+        depth: 0,
+    };
+    
+    p.parse_program()
 }
 
 fn extract_asm_bodies(_src: &str) -> Result<(String, Vec<(String, String)>), String> {
