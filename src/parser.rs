@@ -848,10 +848,38 @@ impl Parser {
         Ok(Stmt::Expr(lhs, sp))
     }
     fn parse_if(&mut self) -> Result<Stmt, String> {
-        todo!("parse_if")
+        let sp = self.span();
+        self.expect(&Tok::KwIf)?;
+        let cond = self.parse_expr()?;
+        let then = self.parse_block()?;
+        self.skip_newlines();
+        let els = if self.eat(&Tok::KwElse) {
+            self.skip_newlines();
+            if self.at(&Tok::KwIf) {
+                Some(vec![self.parse_if()?])
+            } else {
+                Some(self.parse_block()?)
+            }
+        } else {
+            None
+        };
+        Ok(Stmt::If {
+            cond,
+            then,
+            els,
+            span: sp,
+        })
     }
     fn parse_while(&mut self) -> Result<Stmt, String> {
-        todo!("parse_while")
+        let sp = self.span();
+        self.expect(&Tok::KwWhile)?;
+        let cond = self.parse_expr()?;
+        let body = self.parse_block()?;
+        Ok(Stmt::While {
+            cond,
+            body,
+            span: sp,
+        })
     }
     fn parse_for(&mut self) -> Result<Stmt, String> {
         todo!("parse_for")
