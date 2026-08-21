@@ -26,7 +26,7 @@ fn extract_asm_bodies(src: &str) -> Result<(String, Vec<(String, String)>), Stri
     let mut out = String::new();
     let mut bodies: Vec<(String, String)> = Vec::new();
     let mut i = 0;
-    
+
     while i < chars.len() {
         if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
             while i < chars.len() && chars[i] != '\n' {
@@ -592,12 +592,94 @@ impl Parser {
     fn parse_block(&mut self) -> Result<Vec<Stmt>, String> {
         todo!("parse_block")
     }
-
-    fn starts_type(&self, _t: &Tok) -> bool {
-        todo!("starts_type")
+    fn starts_type(&self, t: &Tok) -> bool {
+        match t {
+            Tok::Ident(s) => {
+                matches!(
+                    s.as_str(),
+                    "bool" | "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64"
+                    | "usize" | "isize" | "ptr" | "arr" | "vec" | "void"
+                ) || self.struct_names.iter().any(|n| n == s) || self.opaque_names.iter().any(|n| n == s)
+            }
+            _ => false,
+        }
     }
     fn parse_type(&mut self) -> Result<Ty, String> {
-        todo!("parse_type")
+        match self.peek().clone() {
+            Tok::Ident(s) => match s.as_str() {
+                "bool" => {
+                    self.bump();
+                    Ok(Ty::Bool)
+                }
+                "void" => {
+                    self.bump();
+                    Ok(Ty::Void)
+                }
+                "ptr" => {
+                    self.bump();
+                    self.expect(&Tok::LBracket)?;
+                    let inner = self.parse_type()?;
+                    self.expect(&Tok::RBracket)?;
+                    Ok(Ty::Ptr(Box::new(inner)))
+                }
+                "arr" => {
+                    self.bump();
+                    self.expect(&Tok::LBracket)?;
+                    let n = self.parse_u64()?;
+                    self.expect(&Tok::Comma)?;
+                    let inner = self.parse_type()?;
+                    self.expect(&Tok::RBracket)?;
+                    Ok(Ty::Array(n, Box::new(inner)))
+                }
+                "vec" => {
+                    self.bump();
+                    self.expect(&Tok::LBracket)?;
+                    let n = self.parse_u64()?;
+                    self.expect(&Tok::Comma)?;
+                    let inner = self.parse_type()?;
+                    self.expect(&Tok::RBracket)?;
+                    if n == 0 {
+                        return Err("vector type must have at least one lane".into());
+                    }
+                    if !matches!(inner, Ty::Bool | Ty::Int(_) | Ty::Ptr(_)) {
+                        return Err(
+                            "vector lane must be a scalar (bool, integer, or pointer)".into(),
+                        );
+                    }
+                    if n > 16_777_216 {
+                        return Err("vector type has too many lanes".into());
+                    }
+                    Ok(Ty::Vec(n, Box::new(inner)))
+                }
+                "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" | "usize"
+                | "isize" => {
+                    self.bump();
+                    let kind = match s.as_str() {
+                        "u8" => IntKind::U8,
+                        "u16" => IntKind::U16,
+                        "u32" => IntKind::U32,
+                        "u64" => IntKind::U64,
+                        "i8" => IntKind::I8,
+                        "i16" => IntKind::I16,
+                        "i32" => IntKind::I32,
+                        "i64" => IntKind::I64,
+                        "usize" => IntKind::Usize,
+                        "isize" => IntKind::Isize,
+                        _ => unreachable!(),
+                    };
+                    Ok(Ty::Int(kind))
+                }
+                other => {
+                    self.bump();
+                    if self.opaque_names.iter().any(|n| n == other) {
+                        Ok(Ty::Opaque(other.to_string()))
+                    } else {
+                        Ok(Ty::Struct(other.to_string()))
+                    }
+                }
+            },
+            other => self.err(&format!("expected a type, found {other}")),
+        }
     }
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
         todo!("parse_stmt")
