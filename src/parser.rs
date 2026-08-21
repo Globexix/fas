@@ -146,16 +146,72 @@ impl Parser {
         }
     }
     fn parse_attr(&mut self) -> Result<Attr, String> {
-        todo!("parse_attr")
+        self.expect(&Tok::At)?;
+        let (name, sp) = self.expect_ident()?;
+        match name.as_str() {
+            "inline" => Ok(Attr::Inline),
+            "noinline" => Ok(Attr::NoInline),
+            "kernel" => Ok(Attr::Kernel),
+            "optimize" => Ok(Attr::Optimize),
+            "expect_no_call" => Ok(Attr::ExpectNoCall),
+            "target" => {
+                self.expect(&Tok::LParen)?;
+                let s = self.parse_string()?;
+                self.expect(&Tok::RParen)?;
+                if !matches!(
+                    s.as_str(),
+                    "x86_64"
+                        | "avx2"
+                        | "avx512"
+                        | "zen1"
+                        | "zen2"
+                        | "zen3"
+                        | "zen4"
+                        | "zen5"
+                        | "skylake"
+                ) {
+                    return Err(format!("unsupported target `{s}` at {sp}"));
+                }
+                Ok(Attr::Target(s))
+            }
+            "align" => {
+                self.expect(&Tok::LParen)?;
+                let n = self.parse_u32()?;
+                self.expect(&Tok::RParen)?;
+                Ok(Attr::Align(n))
+            }
+            "expect_asm" => {
+                self.expect(&Tok::LParen)?;
+                let s = self.parse_string()?;
+                self.expect(&Tok::RParen)?;
+                Ok(Attr::ExpectAsm(s))
+            }
+            "expect_stack_max" => {
+                self.expect(&Tok::LParen)?;
+                let n = self.parse_u64()?;
+                self.expect(&Tok::RParen)?;
+                Ok(Attr::ExpectStackMax(n))
+            }
+            other => Err(format!("unknown attribute `@{other}` at {sp}")),
+        }
     }
     fn parse_string(&mut self) -> Result<String, String> {
-        todo!("parse_string")
+        match self.bump() {
+            (Tok::Str(s), _) => Ok(s),
+            (other, _) => Err(format!("expected string literal, found {other}")),
+        }
     }
     fn parse_u32(&mut self) -> Result<u32, String> {
-        todo!("parse_u32")
+        match self.bump() {
+            (Tok::Int(n), sp) => u32::try_from(n).map_err(|_| format!("integer out of range for u32 at {sp}")),
+            (other, _) => Err(format!("expected integer, found {other}")),
+        }
     }
     fn parse_u64(&mut self) -> Result<u64, String> {
-        todo!("parse_u64")
+        match self.bump() {
+            (Tok::Int(n), sp) => u64::try_from(n).map_err(|_| format!("integer out of range for u64 at {sp}")),
+            (other, _) => Err(format!("expected integer, found {other}")),
+        }
     }
     fn parse_const(&mut self) -> Result<Item, String> {
         todo!("parse_const")
