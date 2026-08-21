@@ -21,16 +21,112 @@ pub fn parse_file(src: &str) -> Result<Program, String> {
     p.parse_program()
 }
 
-fn extract_asm_bodies(_src: &str) -> Result<(String, Vec<(String, String)>), String> {
-    todo!("extract_asm_bodies")
+fn extract_asm_bodies(src: &str) -> Result<(String, Vec<(String, String)>), String> {
+    let chars: Vec<char> = src.chars().collect();
+    let mut out = String::new();
+    let mut bodies: Vec<(String, String)> = Vec::new();
+    let mut i = 0;
+    
+    while i < chars.len() {
+        if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
+            while i < chars.len() && chars[i] != '\n' {
+                out.push(chars[i]);
+                i += 1;
+            }
+            continue;
+        }
+        if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+            let start = i;
+            i += 2;
+            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                i += 1;
+            }
+            i += 2;
+            for c in &chars[start..i] {
+                out.push(*c);
+            }
+            continue;
+        }
+
+        if chars[i] == 'a' && ident_at(&chars, i, "asm") {
+            let mut j = i + 3;
+            skip_ws_comments(&chars, &mut j);
+            if ident_at(&chars, j, "fn") {
+                let mut k = j + 2;
+                skip_ws_comments(&chars, &mut k);
+                let name_start = k;
+                while k < chars.len() && (chars[k].is_ascii_alphanumeric() || chars[k] == '_') {
+                    k += 1;
+                }
+                let name: String = chars[name_start..k].iter().collect();
+                let mut l = k;
+                while l < chars.len() && chars[l] != '{' {
+                    l += 1;
+                }
+                if l >= chars.len() {
+                    return Err(format!("asm fn `{name}` has no body"));
+                }
+                let body_start = l + 1;
+                let mut depth = 1;
+                let mut m = body_start;
+                while m < chars.len() && depth > 0 {
+                    match chars[m] {
+                        '{' => depth += 1,
+                        '}' => depth -= 1,
+                        _ => {}
+                    }
+                    m += 1;
+                }
+                if depth != 0 {
+                    return Err(format!("unterminated asm body for `{name}`"));
+                }
+                let body: String = chars[body_start..m - 1].iter().collect();
+                bodies.push((name.clone(), body));
+                for c in &chars[i..l] {
+                    out.push(*c);
+                }
+                out.push_str("{}");
+                i = m;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    Ok((out, bodies))
 }
 
-fn ident_at(_chars: &[char], _i: usize, _s: &str) -> bool {
-    todo!("ident_at")
+fn ident_at(chars: &[char], i: usize, s: &str) -> bool {
+    let sc: Vec<char> = s.chars().collect();
+    if i + sc.len() > chars.len() {
+        return false;
+    }
+    chars[i..i + sc.len()] == sc[..]
+        && (i + sc.len() == chars.len()
+            || !(chars[i + sc.len()].is_ascii_alphanumeric() || chars[i + sc.len()] == '_'))
 }
 
-fn skip_ws_comments(_chars: &[char], _i: &mut usize) {
-    todo!("skip_ws_comments")
+fn skip_ws_comments(chars: &[char], i: &mut usize) {
+    loop {
+        while *i < chars.len() && (chars[*i] == ' ' || chars[*i] == '\t' || chars[*i] == '\n' || chars[*i] == '\r') {
+            *i += 1;
+        }
+        if *i + 1 < chars.len() && chars[*i] == '/' && chars[*i + 1] == '/' {
+            while *i < chars.len() && chars[*i] != '\n' {
+                *i += 1;
+            }
+            continue;
+        }
+        if *i + 1 < chars.len() && chars[*i] == '/' && chars[*i + 1] == '*' {
+            *i += 2;
+            while *i + 1 < chars.len() && !(chars[*i] == '*' && chars[*i + 1] == '/') {
+                *i += 1;
+            }
+            *i += 2;
+            continue;
+        }
+        break;
+    }
 }
 
 struct Parser {
@@ -408,8 +504,36 @@ impl Parser {
             span: sp,
         })
     }
-    fn parse_asm_fn(&mut self, _attrs: Vec<Attr>) -> Result<Item, String> {
-        todo!("parse_asm_fn")
+    fn parse_asm_fn(&mut self, attrs: Vec<Attr>) -> Result<Item, String> {
+        let sp = self.span();
+        self.expect(&Tok::KwAsm)?;
+        self.expect(&Tok::KwFn)?;
+        let (name, _) = self.expect_ident()?;
+        if self.at(&Tok::LBracket) {
+            return Err(format!("asm function `{name}` cannot be const-generic at {sp}"));
+        }
+        let (params, ret, variadic) = self.parse_signature(false)?;
+        self.skip_newlines();
+        self.expect(&Tok::LBrace)?;
+        self.expect(&Tok::RBrace)?;
+        self.end_stmt()?;
+        let raw = self
+            .asm_bodies
+            .iter()
+            .find(|(n, _)| n == &name)
+            .map(|(_, b)| b.clone())
+            .unwrap_or_default();
+        Ok(Item::Func {
+            name,
+            params,
+            ret,
+            body: FuncBody::Asm(raw),
+            attrs,
+            linkage: Linkage::Internal,
+            variadic,
+            const_params: Vec::new(),
+            span: sp,
+        })
     }
     fn parse_signature(&mut self, allow_variadic: bool) -> Result<(Vec<Param>, Ty, bool), String> {
         self.expect(&Tok::LParen)?;
