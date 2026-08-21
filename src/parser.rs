@@ -773,7 +773,79 @@ impl Parser {
         })
     }
     fn parse_assign_or_expr_stmt(&mut self) -> Result<Stmt, String> {
-        todo!("parse_assign_or_expr_stmt")
+        let sp = self.span();
+        let lhs = self.parse_expr()?;
+
+        let compound = match self.peek() {
+            Tok::PlusEq => Some(BinOp::Add),
+            Tok::MinusEq => Some(BinOp::Sub),
+            Tok::StarEq => Some(BinOp::Mul),
+            Tok::SlashEq => Some(BinOp::Div),
+            Tok::PercentEq => Some(BinOp::Rem),
+            Tok::AmpEq => Some(BinOp::BitAnd),
+            Tok::PipeEq => Some(BinOp::BitOr),
+            Tok::CaretEq => Some(BinOp::BitXor),
+            _ => None,
+        };
+
+        if let Some(op) = compound {
+            self.bump();
+            let rhs = self.parse_expr()?;
+            self.end_stmt()?;
+            let lhs_for_value = lhs.clone();
+            let target = match lhs {
+                Expr::Ident(_, _) => AssignTarget::Ident(ident_of(&lhs)),
+                Expr::Deref { e, .. } => AssignTarget::Deref(e),
+                Expr::Index { base, idx, .. } => AssignTarget::Index { base, idx },
+                Expr::Field { base, name, .. } => AssignTarget::Field { base, name },
+                other => {
+                    return Err(format!(
+                        "invalid assignment target at {}",
+                        other.span()
+                    ))
+                }
+            };
+
+            let value = Expr::Binary {
+                op,
+                l: Box::new(lhs_for_value),
+                r: Box::new(rhs),
+                span: sp,
+            };
+
+            return Ok(Stmt::Assign {
+                target,
+                value,
+                span: sp,
+            });
+        }
+
+        if self.eat(&Tok::Assign) {
+            let value = self.parse_expr()?;
+            self.end_stmt()?;
+
+            let target = match lhs {
+                Expr::Ident(_, _) => AssignTarget::Ident(ident_of(&lhs)),
+                Expr::Deref { e, .. } => AssignTarget::Deref(e),
+                Expr::Index { base, idx, .. } => AssignTarget::Index { base, idx },
+                Expr::Field { base, name, .. } => AssignTarget::Field { base, name },
+                other => {
+                    return Err(format!(
+                        "invalid assignment target at {}",
+                        other.span()
+                    ))
+                }
+            };
+
+            return Ok(Stmt::Assign {
+                target,
+                value,
+                span: sp,
+            });
+        }
+
+        self.end_stmt()?;
+        Ok(Stmt::Expr(lhs, sp))
     }
     fn parse_if(&mut self) -> Result<Stmt, String> {
         todo!("parse_if")
@@ -842,8 +914,17 @@ impl Parser {
 }
 
 fn ident_of(_e: &Expr) -> String {
-    todo!("ident_of")
+    match e {
+        Expr::Ident(s, _) => s.clone(),
+        _ => unreachable!("not an identifier"),
+    }
 }
 fn assign_target_of(_e: Expr) -> Result<AssignTarget, String> {
-    todo!("assign_target_of")
+    match e {
+        Expr::Ident(_, _) => Ok(AssignTarget::Ident(ident_of(&e))),
+        Expr::Deref { e: inner, .. } => Ok(AssignTarget::Deref(inner)),
+        Expr::Index { base, idx, .. } => Ok(AssignTarget::Index { base, idx }),
+        Expr::Field { base, name, .. } => Ok(AssignTarget::Field { base, name }),
+        other => Err(format!("invalid assignment target at {}", other.span())),
+    }
 }
