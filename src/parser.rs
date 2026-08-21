@@ -751,10 +751,26 @@ impl Parser {
         }
     }
     fn looks_like_decl(&self) -> bool {
-        todo!("looks_like_decl")
+        self.starts_type(self.peek_n(1))
     }
     fn parse_decl(&mut self) -> Result<Stmt, String> {
-        todo!("parse_decl")
+        let sp = self.span();
+        let (name, _) = self.expect_ident()?;
+        let ty = self.parse_type()?;
+        
+        let init = if self.eat(&Tok::Assign) {
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
+        self.end_stmt()?;
+        Ok(Stmt::Let {
+            name,
+            ty: Some(ty),
+            init,
+            span: sp,
+        })
     }
     fn parse_assign_or_expr_stmt(&mut self) -> Result<Stmt, String> {
         todo!("parse_assign_or_expr_stmt")
