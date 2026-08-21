@@ -251,9 +251,52 @@ impl Parser {
         })
     }
     fn parse_struct(&mut self) -> Result<Item, String> {
-        todo!("parse_struct")
+        let sp = self.span();
+        self.expect(&Tok::KwStruct)?;
+        let (name, _) = self.expect_ident()?;
+        let mut align = None;
+        if self.at(&Tok::At) {
+            let a = self.parse_attr()?;
+            if let Attr::Align(n) = a {
+                align = Some(n);
+            } else {
+                return self.err("only @align is valid on a struct");
+            }
+        }
+        self.expect(&Tok::LBrace)?;
+        self.skip_newlines();
+        let mut fields = Vec::new();
+        while !self.at(&Tok::RBrace) {
+            let (fname, fsp) = self.expect_ident()?;
+            let fty = self.parse_type()?;
+            fields.push(Field {
+                name: fname,
+                ty: fty,
+                span: fsp,
+            });
+            if self.eat(&Tok::Comma) {
+                self.skip_newlines();
+            } else {
+                self.skip_newlines();
+                if self.at(&Tok::RBrace) {
+                    break;
+                }
+                if self.at(&Tok::Eof) {
+                    return self.err("unterminated struct body");
+                }
+            }
+        }
+        self.expect(&Tok::RBrace)?;
+        self.end_stmt()?;
+        self.struct_names.push(name.clone());
+        Ok(Item::Struct {
+            name,
+            fields,
+            align,
+            span: sp,
+        })
     }
-    fn parse_opaque(&mut self, _attrs: Vec<Attr>) -> Result<Item, String> {
+    fn parse_opaque(&mut self, attrs: Vec<Attr>) -> Result<Item, String> {
         let sp = self.span();
 
         if !attrs.is_empty() {
