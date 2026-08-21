@@ -882,10 +882,90 @@ impl Parser {
         })
     }
     fn parse_for(&mut self) -> Result<Stmt, String> {
-        todo!("parse_for")
+        let sp = self.span();
+        self.expect(&Tok::KwFor)?;
+        let init = if self.at(&Tok::Semi) {
+            self.bump();
+            None
+        } else {
+            let c = self.parse_for_clause()?;
+            self.expect(&Tok::Semi)?;
+            Some(Box::new(c))
+        };
+        let cond = if self.at(&Tok::Semi) {
+            None
+        } else {
+            Some(self.parse_expr()?)
+        };
+        self.expect(&Tok::Semi)?;
+        let step = if self.at(&Tok::LBrace) {
+            None
+        } else {
+            Some(Box::new(self.parse_for_clause()?))
+        };
+        let body = self.parse_block()?;
+        Ok(Stmt::For {
+            init,
+            cond,
+            step,
+            body,
+            span: sp,
+        })
     }
     fn parse_for_clause(&mut self) -> Result<Stmt, String> {
-        todo!("parse_for_clause")
+        let sp = self.span();
+        if matches!(self.peek(), Tok::Ident(_)) && self.looks_like_decl() {
+            let (name, _) = self.expect_ident()?;
+            let ty = self.parse_type()?;
+            let init = if self.eat(&Tok::Assign) {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            return Ok(Stmt::Let {
+                name,
+                ty: Some(ty),
+                init,
+                span: sp,
+            });
+        }
+        let lhs = self.parse_expr()?;
+        let compound = match self.peek() {
+            Tok::PlusEq => Some(BinOp::Add),
+            Tok::MinusEq => Some(BinOp::Sub),
+            Tok::StarEq => Some(BinOp::Mul),
+            Tok::SlashEq => Some(BinOp::Div),
+            Tok::PercentEq => Some(BinOp::Rem),
+            Tok::AmpEq => Some(BinOp::BitAnd),
+            Tok::PipeEq => Some(BinOp::BitOr),
+            Tok::CaretEq => Some(BinOp::BitXor),
+            _ => None,
+        };
+        if let Some(op) = compound {
+            self.bump();
+            let rhs = self.parse_expr()?;
+            let target = assign_target_of(lhs.clone())?;
+            return Ok(Stmt::Assign {
+                target,
+                value: Expr::Binary {
+                    op,
+                    l: Box::new(lhs),
+                    r: Box::new(rhs),
+                    span: sp,
+                },
+                span: sp,
+            });
+        }
+        if self.eat(&Tok::Assign) {
+            let value = self.parse_expr()?;
+            let target = assign_target_of(lhs)?;
+            return Ok(Stmt::Assign {
+                target,
+                value,
+                span: sp,
+            });
+        }
+        Ok(Stmt::Expr(lhs, sp))
     }
     fn parse_switch(&mut self) -> Result<Stmt, String> {
         todo!("parse_switch")
@@ -941,13 +1021,13 @@ impl Parser {
     }
 }
 
-fn ident_of(_e: &Expr) -> String {
+fn ident_of(e: &Expr) -> String {
     match e {
         Expr::Ident(s, _) => s.clone(),
         _ => unreachable!("not an identifier"),
     }
 }
-fn assign_target_of(_e: Expr) -> Result<AssignTarget, String> {
+fn assign_target_of(e: Expr) -> Result<AssignTarget, String> {
     match e {
         Expr::Ident(_, _) => Ok(AssignTarget::Ident(ident_of(&e))),
         Expr::Deref { e: inner, .. } => Ok(AssignTarget::Deref(inner)),
