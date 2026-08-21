@@ -590,7 +590,23 @@ impl Parser {
         Ok((params, ret, variadic))
     }
     fn parse_block(&mut self) -> Result<Vec<Stmt>, String> {
-        todo!("parse_block")
+        self.expect(&Tok::LBrace)?;
+        self.depth += 1;
+        if self.depth > 128 {
+            return Err(format!("block too deeply nested at {}", self.span()));
+        }
+        self.skip_newlines();
+        let mut stmts = Vec::new();
+        while !self.at(&Tok::RBrace) {
+            if self.at(&Tok::Eof) {
+                return self.err("unterminated block");
+            }
+            stmts.push(self.parse_stmt()?);
+            self.skip_newlines();
+        }
+        self.expect(&Tok::RBrace)?;
+        self.depth -= 1;
+        Ok(stmts)
     }
     fn starts_type(&self, t: &Tok) -> bool {
         match t {
@@ -682,7 +698,57 @@ impl Parser {
         }
     }
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
-        todo!("parse_stmt")
+        match self.peek().clone() {
+            Tok::KwReturn => {
+                let sp = self.span();
+                self.bump();
+                let expr = if self.at(&Tok::Newline)
+                    || self.at(&Tok::Semi)
+                    || self.at(&Tok::RBrace)
+                {
+                    None
+                } else {
+                    Some(self.parse_expr()?)
+                };
+                self.end_stmt()?;
+                Ok(Stmt::Return(expr, sp))
+            }
+            Tok::KwIf => self.parse_if(),
+            Tok::KwWhile => self.parse_while(),
+            Tok::KwFor => self.parse_for(),
+            Tok::KwSwitch => self.parse_switch(),
+            Tok::KwBreak => {
+                let sp = self.span();
+                self.bump();
+                self.end_stmt()?;
+                Ok(Stmt::Break(sp))
+            }
+            Tok::KwContinue => {
+                let sp = self.span();
+                self.bump();
+                self.end_stmt()?;
+                Ok(Stmt::Continue(sp))
+            }
+            Tok::KwDefer => {
+                let sp = self.span();
+                self.bump();
+                let body = self.parse_block()?;
+                Ok(Stmt::Defer(body, sp))
+            }
+            Tok::LBrace => {
+                let sp = self.span();
+                let body = self.parse_block()?;
+                Ok(Stmt::Block(body, sp))
+            }
+            Tok::Ident(_) => {
+                if self.looks_like_decl() {
+                    self.parse_decl()
+                } else {
+                    self.parse_assign_or_expr_stmt()
+                }
+            }
+            _ => self.parse_assign_or_expr_stmt(),
+        }
     }
     fn looks_like_decl(&self) -> bool {
         todo!("looks_like_decl")
