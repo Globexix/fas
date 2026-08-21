@@ -1019,10 +1019,30 @@ impl Parser {
         Ok(stmts)
     }
     fn parse_expr(&mut self) -> Result<Expr, String> {
-        todo!("parse_expr")
+        self.depth += 1;
+        if self.depth > 128 {
+            return Err(format!("expression too deeply nested at {}", self.span()));
+        }
+        let r = self.parse_ternary();
+        self.depth -= 1;
+        r
     }
     fn parse_ternary(&mut self) -> Result<Expr, String> {
-        todo!("parse_ternary")
+        let cond = self.parse_or()?;
+        if !self.at(&Tok::Question) {
+            return Ok(cond);
+        }
+        let sp = self.span();
+        self.bump();
+        let then = self.parse_expr()?;
+        self.expect(&Tok::Colon)?;
+        let els = self.parse_ternary()?;
+        Ok(Expr::Ternary {
+            cond: Box::new(cond),
+            then: Box::new(then),
+            els: Box::new(els),
+            span: sp,
+        })
     }
     fn parse_or(&mut self) -> Result<Expr, String> {
         todo!("parse_or")
