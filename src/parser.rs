@@ -114,10 +114,36 @@ impl Parser {
     }
 
     fn parse_program(&mut self) -> Result<Program, String> {
-        todo!("parse_program")
+        let mut items = Vec::new();
+        self.skip_newlines();
+
+        loop {
+            if self.at(&Tok::Eof) {
+                break;
+            }
+
+            items.extend(self.parse_item()?);
+            self.skip_newlines();
+        }
+
+        Ok(Program { items })
     }
     fn parse_item(&mut self) -> Result<Vec<Item>, String> {
-        todo!("parse_item")
+        let mut attrs = Vec::new();
+        while self.at(&Tok::At) {
+            attrs.push(self.parse_attr()?);
+            self.skip_newlines();
+        }
+        
+        match self.peek().clone() {
+            Tok::KwConst => Ok(vec![self.parse_const()?]),
+            Tok::KwStruct => Ok(vec![self.parse_struct()?]),
+            Tok::KwOpaque => Ok(vec![self.parse_opaque(attrs)?]),
+            Tok::KwExtern => self.parse_extern_block(attrs),
+            Tok::KwAsm => Ok(vec![self.parse_asm_fn(attrs)?]),
+            Tok::KwFn => Ok(vec![self.parse_fn(attrs)?]),
+            other => self.err(&format!("expected a top-level item, found {other}")),
+        }
     }
     fn parse_attr(&mut self) -> Result<Attr, String> {
         todo!("parse_attr")
