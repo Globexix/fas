@@ -203,7 +203,7 @@ pub enum Expr {
         span: Span,
     },
     ArrayLit {
-        elemes: Vec<Expr>,
+        elems: Vec<Expr>,
         span: Span,
     },
     StructLit {
