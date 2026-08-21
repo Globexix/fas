@@ -968,12 +968,56 @@ impl Parser {
         Ok(Stmt::Expr(lhs, sp))
     }
     fn parse_switch(&mut self) -> Result<Stmt, String> {
-        todo!("parse_switch")
+        let sp = self.span();
+        self.expect(&Tok::KwSwitch)?;
+        let scrutinee = self.parse_expr()?;
+        self.skip_newlines();
+        self.expect(&Tok::LBrace)?;
+        self.skip_newlines();
+        let mut arms: Vec<(Expr, Vec<Stmt>)> = Vec::new();
+        let mut default: Option<Vec<Stmt>> = None;
+        loop {
+            self.skip_newlines();
+            match self.peek().clone() {
+                Tok::KwCase => {
+                    self.bump();
+                    let val = self.parse_expr()?;
+                    self.expect(&Tok::Colon)?;
+                    let body = self.parse_case_body()?;
+                    arms.push((val, body));
+                }
+                Tok::KwDefault => {
+                    self.bump();
+                    self.expect(&Tok::Colon)?;
+                    default = Some(self.parse_case_body()?);
+                }
+                Tok::RBrace => break,
+                other => return self.err(&format!("expected `case`, `default`, or `}}`, found {other}")),
+            }
+        }
+        self.expect(&Tok::RBrace)?;
+        Ok(Stmt::Switch {
+            scrutinee,
+            arms,
+            default,
+            span: sp,
+        })
     }
     fn parse_case_body(&mut self) -> Result<Vec<Stmt>, String> {
-        todo!("parse_case_body")
+        self.skip_newlines();
+        let mut stmts = Vec::new();
+        while !self.at(&Tok::KwCase)
+            && !self.at(&Tok::KwDefault)
+            && !self.at(&Tok::RBrace)
+        {
+            if self.at(&Tok::Eof) {
+                return self.err("unterminated switch");
+            }
+            stmts.push(self.parse_stmt()?);
+            self.skip_newlines();
+        }
+        Ok(stmts)
     }
-
     fn parse_expr(&mut self) -> Result<Expr, String> {
         todo!("parse_expr")
     }
