@@ -1045,19 +1045,79 @@ impl Parser {
         })
     }
     fn parse_or(&mut self) -> Result<Expr, String> {
-        todo!("parse_or")
+        let mut lhs = self.parse_and()?;
+        while self.at(&Tok::OrOr) {
+            let sp = self.span();
+            self.bump();
+            let rhs = self.parse_and()?;
+            lhs = Expr::Binary {
+                op: BinOp::Or,
+                l: Box::new(lhs),
+                r: Box::new(rhs),
+                span: sp,
+            };
+        }
+        Ok(lhs)
     }
     fn parse_and(&mut self) -> Result<Expr, String> {
-        todo!("parse_and")
+        let mut lhs = self.parse_bitor()?;
+        while self.at(&Tok::AndAnd) {
+            let sp = self.span();
+            self.bump();
+            let rhs = self.parse_bitor()?;
+            lhs = Expr::Binary {
+                op: BinOp::And,
+                l: Box::new(lhs),
+                r: Box::new(rhs),
+                span: sp,
+            };
+        }
+        Ok(lhs)
     }
     fn parse_bitor(&mut self) -> Result<Expr, String> {
-        todo!("parse_bitor")
+        let mut lhs = self.parse_bitxor()?;
+        while self.at(&Tok::Pipe) {
+            let sp = self.span();
+            self.bump();
+            let rhs = self.parse_bitxor()?;
+            lhs = Expr::Binary {
+                op: BinOp::BitOr,
+                l: Box::new(lhs),
+                r: Box::new(rhs),
+                span: sp,
+            };
+        }
+        Ok(lhs)
     }
     fn parse_bitxor(&mut self) -> Result<Expr, String> {
-        todo!("parse_bitxor")
+        let mut lhs = self.parse_bitand()?;
+        while self.at(&Tok::Caret) {
+            let sp = self.span();
+            self.bump();
+            let rhs = self.parse_bitand()?;
+            lhs = Expr::Binary {
+                op: BinOp::BitXor,
+                l: Box::new(lhs),
+                r: Box::new(rhs),
+                span: sp,
+            };
+        }
+        Ok(lhs)
     }
     fn parse_bitand(&mut self) -> Result<Expr, String> {
-        todo!("parse_bitand")
+        let mut lhs = self.parse_equality()?;
+        while self.at(&Tok::Amp) {
+            let sp = self.span();
+            self.bump();
+            let rhs = self.parse_equality()?;
+            lhs = Expr::Binary {
+                op: BinOp::BitAnd,
+                l: Box::new(lhs),
+                r: Box::new(rhs),
+                span: sp,
+            };
+        }
+        Ok(lhs)
     }
     fn parse_equality(&mut self) -> Result<Expr, String> {
         todo!("parse_equality")
