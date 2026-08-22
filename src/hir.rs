@@ -148,3 +148,51 @@ pub enum Builtin {
     Ctz,
     Clz,
 }
+
+#[derive(Clone, Debug)]
+pub enum TStmt {
+    Let {
+        name: String,
+        ty: Ty,
+        init: Option<Box<TExpr>>,
+        span: Span,
+    },
+    Assign {
+        target: TAssignTarget,
+        value: Box<TExpr>,
+        span: Span,
+    },
+    Return(Option<Box<TExpr>>, Span),
+    If {
+        cond: Box<TExpr>,
+        then: Vec<TStmt>,
+        els: Option<Vec<TStmt>>,
+        span: Span,
+    },
+    While {
+        cond: Box<TExpr>,
+        body: Vec<TStmt>,
+        span: Span,
+    },
+    Break(Span),
+    Continue(Span),
+    Defer(Vec<TStmt>, Span),
+    Expr(Box<TExpr>, Span),
+    Block(Vec<TStmt>),
+    For {
+        init: Option<Box<TStmt>>,
+        cond: Option<Box<TExpr>>,
+        step: Option<Box<TStmt>>,
+        body: Vec<TStmt>,
+        span: Span,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub enum TAssignTarget {
+    Ident(String),
+    Deref(Box<TExpr>),
+    Index { base: Box<TExpr>, idx: Box<TExpr> },
+    Field { base: Box<TExpr>, name: String, offset: u64 },
+}
+
