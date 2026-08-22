@@ -1249,7 +1249,96 @@ impl Parser {
         }
     }
     fn parse_postfix(&mut self) -> Result<Expr, String> {
-        todo!("parse_postfix")
+        let mut e = self.parse_primary()?;
+        loop {
+            match self.peek().clone() {
+                Tok::LParen => {
+                    let sp = self.span();
+                    let args = self.parse_args()?;
+                    e = Expr::Call {
+                        f: Box::new(e),
+                        args,
+                        span: sp,
+                    };
+                }
+                Tok::LBracket => {
+                    let sp = self.span();
+                    self.bump();
+                    let first = self.parse_expr()?;
+                    if self.eat(&Tok::Comma) {
+                        let mut idxs = vec![first];
+                        loop {
+                            idxs.push(self.parse_expr()?);
+                            if !self.eat(&Tok::Comma) {
+                                break;
+                            }
+                        }
+                        self.expect(&Tok::RBracket)?;
+                        e = Expr::ConstArgs {
+                            base: Box::new(e),
+                            args: idxs,
+                            span: sp,
+                        };
+                    } else {
+                        self.expect(&Tok::RBracket)?;
+                        e = Expr::Index {
+                            base: Box::new(e),
+                            idx: Box::new(first),
+                            span: sp,
+                        };
+                    }
+                }
+                Tok::Dot => {
+                    if matches!(self.peek_n(1), Tok::Star) {
+                        let sp = self.span();
+                        self.bump();
+                        self.bump();
+                        e = Expr::Deref {
+                            e: Box::new(e),
+                            span: sp,
+                        };
+                    } else {
+                        let sp = self.span();
+                        self.bump();
+                        let (name, _) = self.expect_ident()?;
+                        e = Expr::Field {
+                            base: Box::new(e),
+                            name,
+                            span: sp,
+                        };
+                    }
+                }
+                Tok::LBrace => {
+                    if let Expr::Ident(name, _) = &e {
+                        if self.struct_names.iter().any(|n| n == name) {
+                            let sp = self.span();
+                            self.bump();
+                            self.skip_newlines();
+                            let mut elems = Vec::new();
+                            while !self.at(&Tok::RBrace) {
+                                elems.push(self.parse_expr()?);
+                                self.skip_newlines();
+                                if self.eat(&Tok::Comma) {
+                                    self.skip_newlines();
+                                    continue;
+                                }
+                                break;
+                            }
+                            self.expect(&Tok::RBrace)?;
+                            e = Expr::StructLit {
+                                name: name.clone(),
+                                elems,
+                                span: sp,
+                            };
+                            continue;
+                        }
+                    }
+                    break;
+                }
+                _ => break,
+            }
+        }
+        Ok(e)
     }
     fn parse_args(&mut self) -> Result<Vec<Expr>, String> {
         todo!("parse_args")
