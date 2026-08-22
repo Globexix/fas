@@ -1216,6 +1216,7 @@ impl Parser {
             Tok::Minus => {
                 let sp = self.span();
                 self.bump();
+                let e = self.parse_unary()?;
                 match e {
                     Expr::Int(v, _) => Ok(Expr::Int(-v, sp)),
                     other => Ok(Expr::Unary {
@@ -1341,10 +1342,128 @@ impl Parser {
         Ok(e)
     }
     fn parse_args(&mut self) -> Result<Vec<Expr>, String> {
-        todo!("parse_args")
+        self.expect(&Tok::LParen)?;
+        let mut args = Vec::new();
+        if self.at(&Tok::RParen) {
+            self.bump();
+            return Ok(args);
+        }
+        loop {
+            args.push(self.parse_expr()?);
+            if self.eat(&Tok::Comma) {
+                continue;
+            }
+            break;
+        }
+        self.expect(&Tok::RParen)?;
+        Ok(args)
     }
     fn parse_primary(&mut self) -> Result<Expr, String> {
-        todo!("parse_primary")
+        match self.peek().clone() {
+            Tok::Int(n) => {
+                let sp = self.span();
+                self.bump();
+                Ok(Expr::Int(n as i128, sp))
+            }
+            Tok::Str(s) => {
+                let sp = self.span();
+                self.bump();
+                Ok(Expr::Str(s, sp))
+            }
+            Tok::LParen => {
+                self.bump();
+                let e = self.parse_expr()?;
+                self.expect(&Tok::RParen)?;
+                Ok(e)
+            }
+            Tok::Ident(name) => {
+                let sp = self.span();
+                if name == "true" {
+                    self.bump();
+                    return Ok(Expr::Bool(true, sp));
+                }
+                if name == "false" {
+                    self.bump();
+                    return Ok(Expr::Bool(false, sp));
+                }
+                if name == "null" {
+                    self.bump();
+                    return Ok(Expr::Null(sp));
+                }
+                
+                if matches!(name.as_str(), "zext" | "sext" | "trunc" | "bitcast")
+                    && matches!(self.peek_n(1), Tok::LBracket)
+                {
+                    self.bump();
+                    self.bump();
+                    let ty = self.parse_type()?;
+                    self.expect(&Tok::RBracket)?;
+                    let kind = match name.as_str() {
+                        "zext" => CastKind::Zext,
+                        "sext" => CastKind::Sext,
+                        "trunc" => CastKind::Trunc,
+                        "bitcast" => CastKind::Bitcast,
+                        _ => unreachable!(),
+                    };
+                    self.expect(&Tok::LParen)?;
+                    let e = self.parse_expr()?;
+                    self.expect(&Tok::RParen)?;
+                    return Ok(Expr::Cast {
+                        kind,
+                        ty,
+                        e: Box::new(e),
+                        span: sp,
+                    });
+                }
+
+                if matches!(name.as_str(), "sizeof" | "alignof" | "offsetof")
+                    && matches!(self.peek_n(1), Tok::LBracket)
+                {
+                    self.bump();
+                    self.bump(); // [
+                    let ty = self.parse_type()?;
+                    if name == "offsetof" {
+                        self.expect(&Tok::Comma)?;
+                        let (field, _) = self.expect_ident()?;
+                        self.expect(&Tok::RBracket)?;
+                        return Ok(Expr::OffsetOf { ty, field, span: sp });
+                    }
+                    self.expect(&Tok::RBracket)?;
+                    return if name == "sizeof" { Ok(Expr::SizeOf(ty, sp)) } else { Ok(Expr::AlignOf(ty, sp)) };
+                }
+
+                if name == "splat" && matches!(self.peek_n(1), Tok::LParen) {
+                    self.bump();
+                    self.bump(); // (
+                    let e = self.parse_expr()?;
+                    self.expect(&Tok::RParen)?;
+                    return Ok(Expr::Splat {
+                        e: Box::new(e),
+                        span: sp,
+                    });
+                }
+                
+                if (name == "ptr_add" || name == "ptr_add_bytes")
+                    && matches!(self.peek_n(1), Tok::LParen)
+                {
+                    self.bump();
+                    self.bump(); // (
+                    let ptr = self.parse_expr()?;
+                    self.expect(&Tok::Comma)?;
+                    let off = self.parse_expr()?;
+                    self.expect(&Tok::RParen)?;
+                    return Ok(Expr::PtrAdd {
+                        bytes: name == "ptr_add_bytes",
+                        ptr: Box::new(ptr),
+                        off: Box::new(off),
+                        span: sp,
+                    });
+                }
+                self.bump();
+                Ok(Expr::Ident(name, sp))
+            }
+            other => self.err(&format!("expected an expression, found {other}")),
+        }
     }
 }
 
