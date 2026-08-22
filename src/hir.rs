@@ -196,3 +196,142 @@ pub enum TAssignTarget {
     Field { base: Box<TExpr>, name: String, offset: u64 },
 }
 
+pub type StructDecl = (String, Vec<(String, Ty)>, Option<u32>);
+
+pub fn layout(structs: &[StructDef], ty: &Ty) -> Result<(u64, u64), String> {
+    match ty {
+        Ty::Bool => Ok((1, 1)),
+        Ty::Int(IntKind::U8 | IntKind::I8) => Ok((1, 1)),
+        Ty::Int(IntKind::U16 | IntKind::I16) => Ok((2, 2)),
+        Ty::Int(IntKind::U32 | IntKind::I32) => Ok((4, 4)),
+        Ty::Int(
+            IntKind::U64 | IntKind::I64 | IntKind::Usize | IntKind::Isize,
+        ) => Ok((8, 8)),
+        Ty::Ptr(_) => Ok((8, 8)),
+        Ty::Array(n, elem) => {
+            let (es, ea) = layout(structs, elem)?;
+            let sz = n
+                .checked_mul(es)
+                .ok_or_else(|| format!("array size {n} x {es} overflows"))?;
+            Ok((sz, ea))
+        }
+        Ty::Vec(n, elem) => {
+            let (es, ea) = layout(structs, elem)?;
+            let sz = n
+                .checked_mul(es)
+                .ok_or_else(|| format!("vector size {n} x {es} overflows"))?;
+            Ok((sz, ea))
+        }
+        Ty::Struct(name) => {
+            let s = structs
+                .iter()
+                .find(|s| &s.name == name)
+                .ok_or_else(|| format!("unknown struct `{name}`"))?;
+            Ok((s.size, s.align))
+        }
+        Ty::Opaque(name) => Err(format!("opaque type `{name}` has no known layout")),
+        Ty::Void => Err("void has no object layout".into()),
+    }
+}
+
+pub fn compute_struct_layout(
+    name: &str,
+    all_structs: &[StructDecl],
+) -> Result<(Vec<FieldDef>, u64, u64), String> {
+    fn resolve(
+        name: &str,
+        all: &[StructDecl],
+        memo: &mut std::collections::HashMap<String, (u64, u64)>,
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> Result<(u64, u64), String> {
+        if let Some(v) = memo.get(name) {
+            return Ok(*v);
+        }
+        if !visiting.insert(name.to_string()) {
+            return Err(format!(
+                "recursive struct layout involving `{name}` (by-value self-reference)"
+            ));
+        }
+        let result = (|| {
+            let (_, fields, align) = all
+                .iter()
+                .find(|(n, _, _)| n == name)
+                .ok_or_else(|| format!("unknown struct `{name}`"))?;
+            let mut offset = 0u64;
+            let mut max_align = 1u64;
+            for (_, fty) in fields {
+                let (fsize, falign) = type_layout(fty, all, memo, visiting)?;
+                max_align = max_align.max(falign);
+                offset = round_up(offset, falign).checked_add(fsize)
+                    .ok_or_else(|| format!("struct `{name}` size overflows"))?;
+            }
+            let align = align.map(|a| a as u64).unwrap_or(max_align).max(max_align);
+            let size = round_up(offset, align);
+            Ok((size, align))
+        })();
+        visiting.remove(name);
+        if let Ok((size, align)) = result {
+            memo.insert(name.to_string(), (size, align));
+        }
+        result
+    }
+
+    fn type_layout(
+        ty: &Ty,
+        all: &[StructDecl],
+        memo: &mut std::collections::HashMap<String, (u64, u64)>,
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> Result<(u64, u64), String> {
+        match ty {
+            Ty::Bool => Ok((1, 1)),
+            Ty::Int(k) => Ok(match k {
+                IntKind::U8 | IntKind::I8 => (1, 1),
+                IntKind::U16 | IntKind::I16 => (2, 2),
+                IntKind::U32 | IntKind::I32 => (4, 4),
+                IntKind::U64 | IntKind::I64 | IntKind::Usize | IntKind::Isize => (8, 8),
+            }),
+            Ty::Ptr(_) => Ok((8, 8)),
+            Ty::Array(n, e) => {
+                let (es, ea) = type_layout(e, all, memo, visiting)?;
+                Ok((n.checked_mul(es).ok_or_else(|| format!("array size {n} x {es} overflows"))?, ea))
+            }
+            Ty::Vec(n, e) => {
+                let (es, ea) = type_layout(e, all, memo, visiting)?;
+                Ok((n.checked_mul(es).ok_or_else(|| format!("vector size {n} x {es} overflows"))?, ea))
+            }
+            Ty::Struct(s) => resolve(s, all, memo, visiting),
+            Ty::Opaque(name) => Err(format!("opaque type `{name}` cannot be used by value")),
+            Ty::Void => Err("void cannot be used as stored object type".into()),
+        }
+    }
+
+    let mut memo = std::collections::HashMap::new();
+    let mut visiting = std::collections::HashSet::new();
+    resolve(name, all_structs, &mut memo, &mut visiting)?;
+
+    let (_, fields, _) = all_structs
+        .iter()
+        .find(|(n, _, _)| n == name)
+        .expect("resolved");
+    let mut fields_out = Vec::new();
+    let mut offset = 0u64;
+    for (fname, fty) in fields {
+        let (fsize, falign) = type_layout(fty, all_structs, &mut memo, &mut visiting)?;
+        offset = round_up(offset, falign);
+        fields_out.push(FieldDef {
+            name: fname.clone(),
+            ty: fty.clone(),
+            offset,
+        });
+        offset = offset.checked_add(fsize).ok_or_else(|| format!("struct `{name}` size overflows"))?;
+    }
+    let (size, align) = *memo.get(name).expect("resolved");
+    Ok((fields_out, size, align))
+}
+
+fn round_up(x: u64, align: u64) -> u64 {
+    if align == 0 {
+        return x;
+    }
+    (x + align - 1) & !(align - 1)
+}
