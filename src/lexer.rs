@@ -194,7 +194,9 @@ impl Lexer {
     fn skip_hspace_and_comments(&mut self) -> Result<(), String> {
         loop {
             match self.peek() {
-                Some(' ') | Some('\t') | Some('\r') => { self.bump(); }
+                Some(' ') | Some('\t') | Some('\r') => {
+                    self.bump();
+                }
                 Some('/') if self.peek2() == Some('/') => {
                     while let Some(c) = self.peek() {
                         if c == '\n' {
@@ -211,7 +213,9 @@ impl Lexer {
                     loop {
                         match self.peek() {
                             None => {
-                                return Err(format!("unterminated block comment starting at {start}"))
+                                return Err(format!(
+                                    "unterminated block comment starting at {start}"
+                                ));
                             }
                             Some('*') if self.peek2() == Some('/') => {
                                 self.bump();
@@ -237,8 +241,8 @@ impl Lexer {
                 Ok(Tok::LParen)
             }
             ')' => {
-            self.bump();
-            Ok(Tok::RParen)
+                self.bump();
+                Ok(Tok::RParen)
             }
             '{' => {
                 self.bump();
@@ -409,18 +413,16 @@ impl Lexer {
                 let mut s = String::new();
                 loop {
                     match self.peek() {
-                        None => {
-                            return Err(format!("unterminated string literal at {span}"))
-                        }
+                        None => return Err(format!("unterminated string literal at {span}")),
                         Some('"') => {
                             self.bump();
                             break;
                         }
                         Some('\\') => {
                             self.bump();
-                            let esc = self.bump().ok_or_else(|| {
-                                format!("unterminated escape at {span}")
-                            })?;
+                            let esc = self
+                                .bump()
+                                .ok_or_else(|| format!("unterminated escape at {span}"))?;
                             match esc {
                                 'n' => s.push('\n'),
                                 't' => s.push('\t'),
@@ -429,9 +431,7 @@ impl Lexer {
                                 '"' => s.push('"'),
                                 '0' => s.push('\0'),
                                 other => {
-                                    return Err(format!(
-                                        "unknown escape `\\{other}` at {span}"
-                                    ))
+                                    return Err(format!("unknown escape `\\{other}` at {span}"));
                                 }
                             }
                         }
@@ -443,9 +443,7 @@ impl Lexer {
                 }
                 Ok(Tok::Str(s))
             }
-            c if c.is_ascii_digit() => {
-                self.lex_number(span)
-            }
+            c if c.is_ascii_digit() => self.lex_number(span),
             c if is_ident_start(c) => {
                 self.bump();
 
@@ -462,7 +460,7 @@ impl Lexer {
                 }
                 Ok(keyword_or_ident(&s))
             }
-            other => Err(format!("unexpected character `{other}` at {span}"))
+            other => Err(format!("unexpected character `{other}` at {span}")),
         }
     }
 
@@ -502,9 +500,9 @@ impl Lexer {
 
         let mut val: u128 = 0;
         for c in digits.chars() {
-            let d = c.to_digit(radix).ok_or_else(|| {
-                format!("invalid digit `{c}` in integer literal `{s}` at {span}")
-            })?;
+            let d = c
+                .to_digit(radix)
+                .ok_or_else(|| format!("invalid digit `{c}` in integer literal `{s}` at {span}"))?;
             val = val
                 .checked_mul(radix as u128)
                 .and_then(|v| v.checked_add(d as u128))
@@ -563,11 +561,10 @@ pub fn lex(src: &str) -> Result<Vec<(Tok, Span)>, String> {
             None => {
                 out.push((Tok::Eof, span));
                 break;
-            },
+            }
             Some('\n') => {
                 lx.bump();
                 out.push((Tok::Newline, span));
-                
             }
             Some(c) => {
                 let tok = lx.next_token(c, span)?;
@@ -598,11 +595,11 @@ mod tests {
 
     #[test]
     fn cursor_peeks_and_tracks_newlines() {
-        let mut lx = Lexer { 
-            src: "ab\nc".chars().collect(), 
-            pos: 0, 
-            line: 1, 
-            col: 1
+        let mut lx = Lexer {
+            src: "ab\nc".chars().collect(),
+            pos: 0,
+            line: 1,
+            col: 1,
         };
         assert_eq!(lx.peek(), Some('a'));
         assert_eq!(lx.peek2(), Some('b'));
@@ -621,10 +618,10 @@ mod tests {
     #[test]
     fn newline_is_significant() {
         let tokens = lex("\n").expect("newline should lex");
-        assert_eq!(tokens, vec![
-            (Tok::Newline, Span::new(1, 1)),
-            (Tok::Eof, Span::new(2, 1)),
-        ]);
+        assert_eq!(
+            tokens,
+            vec![(Tok::Newline, Span::new(1, 1)), (Tok::Eof, Span::new(2, 1)),]
+        );
     }
 
     #[test]
@@ -632,7 +629,10 @@ mod tests {
         let tokens = lex("// line\n /* block\ncomment */").unwrap();
         assert_eq!(tokens[0].0, Tok::Newline);
         assert_eq!(tokens.last().unwrap().0, Tok::Eof);
-        assert_eq!(lex("/*").unwrap_err(), "unterminated block comment starting at 1:3");
+        assert_eq!(
+            lex("/*").unwrap_err(),
+            "unterminated block comment starting at 1:3"
+        );
     }
 
     #[test]
@@ -661,7 +661,8 @@ mod tests {
     fn numbers_reject() {
         let error = lex("0x").expect_err("lexer should reject");
         let error2 = lex("0xG").expect_err("lexer should reject");
-        let error3 = lex("9999999999999999999999999999999999999999999999").expect_err("lexer should reject");
+        let error3 =
+            lex("9999999999999999999999999999999999999999999999").expect_err("lexer should reject");
         assert!(error.contains("invalid integer literal"));
         assert!(error2.contains("invalid digit"));
         assert!(error3.contains("overflows 128 bits"));
@@ -669,12 +670,14 @@ mod tests {
 
     #[test]
     fn ident_and_keywords() {
-        let src = lex("fn main() { return if else while break continue const struct opaque extern defer asm
-                       for switch case default x2 _tmp foo123 ifx}").unwrap();
+        let src = lex(
+            "fn main() { return if else while break continue const struct opaque extern defer asm
+                       for switch case default x2 _tmp foo123 ifx}",
+        )
+        .unwrap();
 
         assert_eq!(src[0].0, Tok::KwFn);
         assert_eq!(src[1].0, Tok::Ident("main".to_string()));
         assert_eq!(src[2].0, Tok::LParen);
     }
-
 }

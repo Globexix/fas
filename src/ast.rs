@@ -334,14 +334,8 @@ pub enum Stmt {
 pub enum AssignTarget {
     Ident(String),
     Deref(Box<Expr>),
-    Index {
-        base: Box<Expr>,
-        idx: Box<Expr>,
-    },
-    Field {
-        base: Box<Expr>,
-        name: String,
-    },
+    Index { base: Box<Expr>, idx: Box<Expr> },
+    Field { base: Box<Expr>, name: String },
 }
 
 #[cfg(test)]
@@ -365,15 +359,11 @@ mod tests {
             span: Span::new(1, 1),
         };
         assert!(matches!(e, Expr::Binary { op: BinOp::Add, .. }));
-
     }
 
     #[test]
     fn constructs_and_matches_a_struct_literal() {
-        let elems = vec![
-            Expr::Int(1, Span::new(1, 1)),
-            Expr::Int(2, Span::new(1, 1)),
-        ];
+        let elems = vec![Expr::Int(1, Span::new(1, 1)), Expr::Int(2, Span::new(1, 1))];
         let expression = Expr::StructLit {
             name: String::from("Pair"),
             elems,
@@ -463,5 +453,4 @@ mod tests {
         assert_eq!(integer.span(), Span::new(4, 9));
         assert_eq!(struct_literal.span(), Span::new(1, 3));
     }
-
 }
