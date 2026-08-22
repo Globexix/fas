@@ -1120,16 +1120,87 @@ impl Parser {
         Ok(lhs)
     }
     fn parse_equality(&mut self) -> Result<Expr, String> {
-        todo!("parse_equality")
+        let mut lhs = self.parse_relational()?;
+        loop {
+            let op = match self.peek() {
+                Tok::EqEq => BinOp::Eq,
+                Tok::NotEq => BinOp::Ne,
+                _ => break,
+            };
+            let sp = self.span();
+            self.bump();
+            let rhs = self.parse_relational()?;
+            lhs = Expr::Binary {
+                op,
+                l: Box::new(lhs),
+                r: Box::new(rhs),
+                span: sp,
+            };
+        }
+        Ok(lhs)
     }
     fn parse_relational(&mut self) -> Result<Expr, String> {
-        todo!("parse_relational")
+        let mut lhs = self.parse_additive()?;
+        loop {
+            let op = match self.peek() {
+                Tok::Lt => BinOp::Lt,
+                Tok::Le => BinOp::Le,
+                Tok::Gt => BinOp::Gt,
+                Tok::Ge => BinOp::Ge,
+                _ => break,
+            };
+            let sp = self.span();
+            self.bump();
+            let rhs = self.parse_additive()?;
+            lhs = Expr::Binary {
+                op,
+                l: Box::new(lhs),
+                r: Box::new(rhs),
+                span: sp,
+            };
+        }
+        Ok(lhs)
     }
     fn parse_additive(&mut self) -> Result<Expr, String> {
-        todo!("parse_additive")
+        let mut lhs = self.parse_multiplicative()?;
+        loop {
+            let op = match self.peek() {
+                Tok::Plus => BinOp::Add,
+                Tok::Minus => BinOp::Sub,
+                _ => break,
+            };
+            let sp = self.span();
+            self.bump();
+            let rhs = self.parse_multiplicative()?;
+            lhs = Expr::Binary {
+                op,
+                l: Box::new(lhs),
+                r: Box::new(rhs),
+                span: sp,
+            };
+        }
+        Ok(lhs)
     }
     fn parse_multiplicative(&mut self) -> Result<Expr, String> {
-        todo!("parse_multiplicative")
+        let mut lhs = self.parse_unary()?;
+        loop {
+            let op = match self.peek() {
+                Tok::Star => BinOp::Mul,
+                Tok::Slash => BinOp::Div,
+                Tok::Percent => BinOp::Rem,
+                _ => break,
+            };
+            let sp = self.span();
+            self.bump();
+            let rhs = self.parse_unary()?;
+            lhs = Expr::Binary {
+                op,
+                l: Box::new(lhs),
+                r: Box::new(rhs),
+                span: sp,
+            };
+        }
+        Ok(lhs)
     }
     fn parse_unary(&mut self) -> Result<Expr, String> {
         todo!("parse_unary")
