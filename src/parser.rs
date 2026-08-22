@@ -1203,7 +1203,50 @@ impl Parser {
         Ok(lhs)
     }
     fn parse_unary(&mut self) -> Result<Expr, String> {
-        todo!("parse_unary")
+        match self.peek().clone() {
+            Tok::Amp => {
+                let sp = self.span();
+                self.bump();
+                let e = self.parse_unary()?;
+                Ok(Expr::AddrOf {
+                    e: Box::new(e),
+                    span: sp,
+                })
+            }
+            Tok::Minus => {
+                let sp = self.span();
+                self.bump();
+                match e {
+                    Expr::Int(v, _) => Ok(Expr::Int(-v, sp)),
+                    other => Ok(Expr::Unary {
+                        op: UnOp::Neg,
+                        e: Box::new(other),
+                        span: sp,
+                    }),
+                }
+            }
+            Tok::Not => {
+                let sp = self.span();
+                self.bump();
+                let e = self.parse_unary()?;
+                Ok(Expr::Unary {
+                    op: UnOp::Not,
+                    e: Box::new(e),
+                    span: sp,
+                })
+            }
+            Tok::Tilde => {
+                let sp = self.span();
+                self.bump();
+                let e = self.parse_unary()?;
+                Ok(Expr::Unary {
+                    op: UnOp::BitNot,
+                    e: Box::new(e),
+                    span: sp,
+                })
+            }
+            _ => self.parse_postfix(),
+        }
     }
     fn parse_postfix(&mut self) -> Result<Expr, String> {
         todo!("parse_postfix")
