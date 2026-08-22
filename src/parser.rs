@@ -1,12 +1,10 @@
 //! Recursive-descent parser for fas.
 
-#![allow(dead_code, unused_imports)]
-
 use crate::ast::*;
-use crate::lexer::{lex, Span, Tok};
+use crate::lexer::{Span, Tok, lex};
 
 pub fn parse_file(src: &str) -> Result<Program, String> {
-    let (clean, asm_bodies) =  extract_asm_bodies(src)?;
+    let (clean, asm_bodies) = extract_asm_bodies(src)?;
     let toks = lex(&clean)?;
 
     let mut p = Parser {
@@ -17,7 +15,7 @@ pub fn parse_file(src: &str) -> Result<Program, String> {
         asm_bodies,
         depth: 0,
     };
-    
+
     p.parse_program()
 }
 
@@ -108,7 +106,9 @@ fn ident_at(chars: &[char], i: usize, s: &str) -> bool {
 
 fn skip_ws_comments(chars: &[char], i: &mut usize) {
     loop {
-        while *i < chars.len() && (chars[*i] == ' ' || chars[*i] == '\t' || chars[*i] == '\n' || chars[*i] == '\r') {
+        while *i < chars.len()
+            && (chars[*i] == ' ' || chars[*i] == '\t' || chars[*i] == '\n' || chars[*i] == '\r')
+        {
             *i += 1;
         }
         if *i + 1 < chars.len() && chars[*i] == '/' && chars[*i + 1] == '/' {
@@ -230,7 +230,7 @@ impl Parser {
             attrs.push(self.parse_attr()?);
             self.skip_newlines();
         }
-        
+
         match self.peek().clone() {
             Tok::KwConst => Ok(vec![self.parse_const()?]),
             Tok::KwStruct => Ok(vec![self.parse_struct()?]),
@@ -299,13 +299,17 @@ impl Parser {
     }
     fn parse_u32(&mut self) -> Result<u32, String> {
         match self.bump() {
-            (Tok::Int(n), sp) => u32::try_from(n).map_err(|_| format!("integer out of range for u32 at {sp}")),
+            (Tok::Int(n), sp) => {
+                u32::try_from(n).map_err(|_| format!("integer out of range for u32 at {sp}"))
+            }
             (other, _) => Err(format!("expected integer, found {other}")),
         }
     }
     fn parse_u64(&mut self) -> Result<u64, String> {
         match self.bump() {
-            (Tok::Int(n), sp) => u64::try_from(n).map_err(|_| format!("integer out of range for u64 at {sp}")),
+            (Tok::Int(n), sp) => {
+                u64::try_from(n).map_err(|_| format!("integer out of range for u64 at {sp}"))
+            }
             (other, _) => Err(format!("expected integer, found {other}")),
         }
     }
@@ -338,7 +342,7 @@ impl Parser {
         };
 
         self.end_stmt()?;
-        
+
         Ok(Item::Const {
             name,
             ty,
@@ -396,7 +400,9 @@ impl Parser {
         let sp = self.span();
 
         if !attrs.is_empty() {
-            return Err(format!("attributes are not valid on an opaque declaration at {sp}"));
+            return Err(format!(
+                "attributes are not valid on an opaque declaration at {sp}"
+            ));
         }
 
         self.expect(&Tok::KwOpaque)?;
@@ -453,7 +459,9 @@ impl Parser {
     fn parse_extern_block(&mut self, attrs: Vec<Attr>) -> Result<Vec<Item>, String> {
         let sp = self.span();
         if !attrs.is_empty() {
-            return Err(format!("attributes are not valid on an extern block at {sp}"));
+            return Err(format!(
+                "attributes are not valid on an extern block at {sp}"
+            ));
         }
         self.expect(&Tok::KwExtern)?;
         let abi = self.parse_string()?;
@@ -485,11 +493,15 @@ impl Parser {
         self.expect(&Tok::KwFn)?;
         let (name, _) = self.expect_ident()?;
         if self.at(&Tok::LBracket) {
-            return Err(format!("extern function `{name}` cannot be const-generic at {sp}"));
+            return Err(format!(
+                "extern function `{name}` cannot be const-generic at {sp}"
+            ));
         }
         let (params, ret, variadic) = self.parse_signature(true)?;
         if self.at(&Tok::LBrace) {
-            return Err(format!("extern function `{name}` cannot have a body at {sp}"));
+            return Err(format!(
+                "extern function `{name}` cannot have a body at {sp}"
+            ));
         }
         self.end_stmt()?;
         Ok(Item::Func {
@@ -510,7 +522,9 @@ impl Parser {
         self.expect(&Tok::KwFn)?;
         let (name, _) = self.expect_ident()?;
         if self.at(&Tok::LBracket) {
-            return Err(format!("asm function `{name}` cannot be const-generic at {sp}"));
+            return Err(format!(
+                "asm function `{name}` cannot be const-generic at {sp}"
+            ));
         }
         let (params, ret, variadic) = self.parse_signature(false)?;
         self.skip_newlines();
@@ -613,9 +627,23 @@ impl Parser {
             Tok::Ident(s) => {
                 matches!(
                     s.as_str(),
-                    "bool" | "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64"
-                    | "usize" | "isize" | "ptr" | "arr" | "vec" | "void"
-                ) || self.struct_names.iter().any(|n| n == s) || self.opaque_names.iter().any(|n| n == s)
+                    "bool"
+                        | "u8"
+                        | "u16"
+                        | "u32"
+                        | "u64"
+                        | "i8"
+                        | "i16"
+                        | "i32"
+                        | "i64"
+                        | "usize"
+                        | "isize"
+                        | "ptr"
+                        | "arr"
+                        | "vec"
+                        | "void"
+                ) || self.struct_names.iter().any(|n| n == s)
+                    || self.opaque_names.iter().any(|n| n == s)
             }
             _ => false,
         }
@@ -659,7 +687,7 @@ impl Parser {
                     }
                     if !matches!(inner, Ty::Bool | Ty::Int(_) | Ty::Ptr(_)) {
                         return Err(
-                            "vector lane must be a scalar (bool, integer, or pointer)".into(),
+                            "vector lane must be a scalar (bool, integer, or pointer)".into()
                         );
                     }
                     if n > 16_777_216 {
@@ -667,8 +695,7 @@ impl Parser {
                     }
                     Ok(Ty::Vec(n, Box::new(inner)))
                 }
-                "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" | "usize"
-                | "isize" => {
+                "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" | "usize" | "isize" => {
                     self.bump();
                     let kind = match s.as_str() {
                         "u8" => IntKind::U8,
@@ -702,9 +729,7 @@ impl Parser {
             Tok::KwReturn => {
                 let sp = self.span();
                 self.bump();
-                let expr = if self.at(&Tok::Newline)
-                    || self.at(&Tok::Semi)
-                    || self.at(&Tok::RBrace)
+                let expr = if self.at(&Tok::Newline) || self.at(&Tok::Semi) || self.at(&Tok::RBrace)
                 {
                     None
                 } else {
@@ -757,7 +782,7 @@ impl Parser {
         let sp = self.span();
         let (name, _) = self.expect_ident()?;
         let ty = self.parse_type()?;
-        
+
         let init = if self.eat(&Tok::Assign) {
             Some(self.parse_expr()?)
         } else {
@@ -798,12 +823,7 @@ impl Parser {
                 Expr::Deref { e, .. } => AssignTarget::Deref(e),
                 Expr::Index { base, idx, .. } => AssignTarget::Index { base, idx },
                 Expr::Field { base, name, .. } => AssignTarget::Field { base, name },
-                other => {
-                    return Err(format!(
-                        "invalid assignment target at {}",
-                        other.span()
-                    ))
-                }
+                other => return Err(format!("invalid assignment target at {}", other.span())),
             };
 
             let value = Expr::Binary {
@@ -829,12 +849,7 @@ impl Parser {
                 Expr::Deref { e, .. } => AssignTarget::Deref(e),
                 Expr::Index { base, idx, .. } => AssignTarget::Index { base, idx },
                 Expr::Field { base, name, .. } => AssignTarget::Field { base, name },
-                other => {
-                    return Err(format!(
-                        "invalid assignment target at {}",
-                        other.span()
-                    ))
-                }
+                other => return Err(format!("invalid assignment target at {}", other.span())),
             };
 
             return Ok(Stmt::Assign {
@@ -992,7 +1007,11 @@ impl Parser {
                     default = Some(self.parse_case_body()?);
                 }
                 Tok::RBrace => break,
-                other => return self.err(&format!("expected `case`, `default`, or `}}`, found {other}")),
+                other => {
+                    return self.err(&format!(
+                        "expected `case`, `default`, or `}}`, found {other}"
+                    ));
+                }
             }
         }
         self.expect(&Tok::RBrace)?;
@@ -1006,10 +1025,7 @@ impl Parser {
     fn parse_case_body(&mut self) -> Result<Vec<Stmt>, String> {
         self.skip_newlines();
         let mut stmts = Vec::new();
-        while !self.at(&Tok::KwCase)
-            && !self.at(&Tok::KwDefault)
-            && !self.at(&Tok::RBrace)
-        {
+        while !self.at(&Tok::KwCase) && !self.at(&Tok::KwDefault) && !self.at(&Tok::RBrace) {
             if self.at(&Tok::Eof) {
                 return self.err("unterminated switch");
             }
@@ -1390,7 +1406,7 @@ impl Parser {
                     self.bump();
                     return Ok(Expr::Null(sp));
                 }
-                
+
                 if matches!(name.as_str(), "zext" | "sext" | "trunc" | "bitcast")
                     && matches!(self.peek_n(1), Tok::LBracket)
                 {
@@ -1426,10 +1442,18 @@ impl Parser {
                         self.expect(&Tok::Comma)?;
                         let (field, _) = self.expect_ident()?;
                         self.expect(&Tok::RBracket)?;
-                        return Ok(Expr::OffsetOf { ty, field, span: sp });
+                        return Ok(Expr::OffsetOf {
+                            ty,
+                            field,
+                            span: sp,
+                        });
                     }
                     self.expect(&Tok::RBracket)?;
-                    return if name == "sizeof" { Ok(Expr::SizeOf(ty, sp)) } else { Ok(Expr::AlignOf(ty, sp)) };
+                    return if name == "sizeof" {
+                        Ok(Expr::SizeOf(ty, sp))
+                    } else {
+                        Ok(Expr::AlignOf(ty, sp))
+                    };
                 }
 
                 if name == "splat" && matches!(self.peek_n(1), Tok::LParen) {
@@ -1442,7 +1466,7 @@ impl Parser {
                         span: sp,
                     });
                 }
-                
+
                 if (name == "ptr_add" || name == "ptr_add_bytes")
                     && matches!(self.peek_n(1), Tok::LParen)
                 {
