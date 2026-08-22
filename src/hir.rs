@@ -335,3 +335,34 @@ fn round_up(x: u64, align: u64) -> u64 {
     }
     (x + align - 1) & !(align - 1)
 }
+
+pub fn is_addressable(&self) -> bool {
+    match self {
+        TExpr::Ident { .. } => true,
+        TExpr::ConstArr { .. } => true,
+        TExpr::Deref { .. } => true,
+        TExpr::Index { base, .. } => match base.ty() {
+            Ty::Ptr(..) => true,
+            Ty::Array(..) => base.is_addressable(),
+            Ty::Vec(..) => false,
+            _ => false,
+        },
+        TExpr::Field { base, .. } => base.is_addressable(),
+        _ => false,
+    }
+}
+
+pub fn is_assignable(&self) -> bool {
+    match self {
+        TExpr::Ident { .. } => true,
+        TExpr::ConstArr { .. } => true,
+        TExpr::Deref { .. } => true,
+        TExpr::Index { base, .. } => match base.ty() {
+            Ty::Ptr(..) => true,
+            Ty::Array(..) | Ty::Vec(..) => base.is_addressable(),
+            _ => false,
+        },
+        TExpr::Field { base, .. } => base.is_addressable(),
+        _ => false,
+    }
+}
