@@ -131,6 +131,71 @@ pub enum TExpr {
     },
 }
 
+impl TExpr {
+    pub fn ty(&self) -> &Ty {
+        match self {
+            TExpr::Int { ty, .. }
+            | TExpr::Ident { ty, .. }
+            | TExpr::Unary { ty, .. }
+            | TExpr::Binary { ty, .. }
+            | TExpr::Call { ret: ty, .. }
+            | TExpr::Cast { ty, .. }
+            | TExpr::Index { ty, .. }
+            | TExpr::Field { ty, .. }
+            | TExpr::Deref { ty, .. }
+            | TExpr::AddrOf { ty, .. }
+            | TExpr::Splat { ty, .. }
+            | TExpr::Ternary { ty, .. }
+            | TExpr::ConstArr { ty, .. }
+            | TExpr::StructLit { ty, .. }
+            | TExpr::PtrAdd { ty, .. } => ty,
+            TExpr::Bool { .. } => &crate::hir::BOOL_TY,
+            TExpr::NullPtr { ty, .. } => ty,
+            TExpr::IntLit { .. } | TExpr::NullLit { .. } => &crate::hir::I32_TY,
+            TExpr::StrLit { .. } => &crate::hir::PTR_U8_TY,
+            TExpr::SizeOf { .. } | TExpr::AlignOf { .. } | TExpr::OffsetOf { .. } => {
+                &crate::hir::U64_TY
+            }
+        }
+    }
+
+    pub fn span(&self) -> Span {
+        match self {
+            TExpr::Int { span, .. }
+            | TExpr::IntLit { span, .. }
+            | TExpr::Bool { span, .. }
+            | TExpr::NullPtr { span, .. }
+            | TExpr::NullLit { span, .. }
+            | TExpr::StrLit { span, .. }
+            | TExpr::Ident { span, .. }
+            | TExpr::Unary { span, .. }
+            | TExpr::Binary { span, .. }
+            | TExpr::Call { span, .. }
+            | TExpr::Cast { span, .. }
+            | TExpr::Index { span, .. }
+            | TExpr::Field { span, .. }
+            | TExpr::Deref { span, .. }
+            | TExpr::AddrOf { span, .. }
+            | TExpr::PtrAdd { span, .. }
+            | TExpr::SizeOf { span, .. }
+            | TExpr::AlignOf { span, .. }
+            | TExpr::OffsetOf { span, .. }
+            | TExpr::Splat { span, .. }
+            | TExpr::Ternary { span, .. }
+            | TExpr::ConstArr { span, .. }
+            | TExpr::StructLit { span, .. } => *span,
+        }
+    }
+}
+
+pub static BOOL_TY: Ty = Ty::Bool;
+pub static U64_TY: Ty = Ty::Int(IntKind::U64);
+pub static I32_TY: Ty = Ty::Int(IntKind::I32);
+pub static PTR_U8_TY: std::sync::LazyLock<Ty> =
+std::sync::LazyLock::new(|| Ty::Ptr(Box::new(Ty::Int(IntKind::U8))));
+
+pub type StructDecl = (String, Vec<(String, Ty)>, Option<u32>);
+
 #[derive(Clone, Debug)]
 pub enum CallTarget {
     User(String),
@@ -195,8 +260,6 @@ pub enum TAssignTarget {
     Index { base: Box<TExpr>, idx: Box<TExpr> },
     Field { base: Box<TExpr>, name: String, offset: u64 },
 }
-
-pub type StructDecl = (String, Vec<(String, Ty)>, Option<u32>);
 
 pub fn layout(structs: &[StructDef], ty: &Ty) -> Result<(u64, u64), String> {
     match ty {
