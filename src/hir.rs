@@ -366,3 +366,53 @@ pub fn is_assignable(&self) -> bool {
         _ => false,
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct Program {
+    pub structs: Vec<StructDef>,
+    pub consts: Vec<ConstDef>,
+    pub const_arrs: Vec<ConstArrDef>,
+    pub funcs: Vec<FuncDef>,
+    pub strings: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<FieldDef>,
+    pub size: u64,
+    pub align: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct FieldDef {
+    pub name: String,
+    pub ty: Ty,
+    pub offset: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConstDef {
+    pub name: String,
+    pub ty: Ty,
+    pub bits: u128,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConstArrDef {
+    pub name: String,
+    pub ty: Ty,
+    pub elems: Vec<u128>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FuncDef {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub ret: Ty,
+    pub body: Vec<TStmt>,
+    pub attrs: Vec<Attr>,
+    pub linkage: Linkage,
+    pub variadic: bool,
+    pub asm_body: Option<String>,
+}
