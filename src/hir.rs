@@ -186,13 +186,44 @@ impl TExpr {
             | TExpr::StructLit { span, .. } => *span,
         }
     }
+
+    pub fn is_addressable(&self) -> bool {
+        match self {
+            TExpr::Ident { .. } => true,
+            TExpr::ConstArr { .. } => true,
+            TExpr::Deref { .. } => true,
+            TExpr::Index { base, .. } => match base.ty() {
+                Ty::Ptr(..) => true,
+                Ty::Array(..) => base.is_addressable(),
+                Ty::Vec(..) => false,
+                _ => false,
+            },
+            TExpr::Field { base, .. } => base.is_addressable(),
+            _ => false,
+        }
+    }
+
+    pub fn is_assignable(&self) -> bool {
+        match self {
+            TExpr::Ident { .. } => true,
+            TExpr::ConstArr { .. } => true,
+            TExpr::Deref { .. } => true,
+            TExpr::Index { base, .. } => match base.ty() {
+                Ty::Ptr(..) => true,
+                Ty::Array(..) | Ty::Vec(..) => base.is_addressable(),
+                _ => false,
+            },
+            TExpr::Field { base, .. } => base.is_addressable(),
+            _ => false,
+        }
+    }
 }
 
 pub static BOOL_TY: Ty = Ty::Bool;
 pub static U64_TY: Ty = Ty::Int(IntKind::U64);
 pub static I32_TY: Ty = Ty::Int(IntKind::I32);
 pub static PTR_U8_TY: std::sync::LazyLock<Ty> =
-std::sync::LazyLock::new(|| Ty::Ptr(Box::new(Ty::Int(IntKind::U8))));
+    std::sync::LazyLock::new(|| Ty::Ptr(Box::new(Ty::Int(IntKind::U8))));
 
 pub type StructDecl = (String, Vec<(String, Ty)>, Option<u32>);
 
@@ -257,8 +288,15 @@ pub enum TStmt {
 pub enum TAssignTarget {
     Ident(String),
     Deref(Box<TExpr>),
-    Index { base: Box<TExpr>, idx: Box<TExpr> },
-    Field { base: Box<TExpr>, name: String, offset: u64 },
+    Index {
+        base: Box<TExpr>,
+        idx: Box<TExpr>,
+    },
+    Field {
+        base: Box<TExpr>,
+        name: String,
+        offset: u64,
+    },
 }
 
 pub fn layout(structs: &[StructDef], ty: &Ty) -> Result<(u64, u64), String> {
@@ -267,9 +305,7 @@ pub fn layout(structs: &[StructDef], ty: &Ty) -> Result<(u64, u64), String> {
         Ty::Int(IntKind::U8 | IntKind::I8) => Ok((1, 1)),
         Ty::Int(IntKind::U16 | IntKind::I16) => Ok((2, 2)),
         Ty::Int(IntKind::U32 | IntKind::I32) => Ok((4, 4)),
-        Ty::Int(
-            IntKind::U64 | IntKind::I64 | IntKind::Usize | IntKind::Isize,
-        ) => Ok((8, 8)),
+        Ty::Int(IntKind::U64 | IntKind::I64 | IntKind::Usize | IntKind::Isize) => Ok((8, 8)),
         Ty::Ptr(_) => Ok((8, 8)),
         Ty::Array(n, elem) => {
             let (es, ea) = layout(structs, elem)?;
@@ -325,7 +361,8 @@ pub fn compute_struct_layout(
             for (_, fty) in fields {
                 let (fsize, falign) = type_layout(fty, all, memo, visiting)?;
                 max_align = max_align.max(falign);
-                offset = round_up(offset, falign).checked_add(fsize)
+                offset = round_up(offset, falign)
+                    .checked_add(fsize)
                     .ok_or_else(|| format!("struct `{name}` size overflows"))?;
             }
             let align = align.map(|a| a as u64).unwrap_or(max_align).max(max_align);
@@ -356,11 +393,19 @@ pub fn compute_struct_layout(
             Ty::Ptr(_) => Ok((8, 8)),
             Ty::Array(n, e) => {
                 let (es, ea) = type_layout(e, all, memo, visiting)?;
-                Ok((n.checked_mul(es).ok_or_else(|| format!("array size {n} x {es} overflows"))?, ea))
+                Ok((
+                    n.checked_mul(es)
+                        .ok_or_else(|| format!("array size {n} x {es} overflows"))?,
+                    ea,
+                ))
             }
             Ty::Vec(n, e) => {
                 let (es, ea) = type_layout(e, all, memo, visiting)?;
-                Ok((n.checked_mul(es).ok_or_else(|| format!("vector size {n} x {es} overflows"))?, ea))
+                Ok((
+                    n.checked_mul(es)
+                        .ok_or_else(|| format!("vector size {n} x {es} overflows"))?,
+                    ea,
+                ))
             }
             Ty::Struct(s) => resolve(s, all, memo, visiting),
             Ty::Opaque(name) => Err(format!("opaque type `{name}` cannot be used by value")),
@@ -386,7 +431,9 @@ pub fn compute_struct_layout(
             ty: fty.clone(),
             offset,
         });
-        offset = offset.checked_add(fsize).ok_or_else(|| format!("struct `{name}` size overflows"))?;
+        offset = offset
+            .checked_add(fsize)
+            .ok_or_else(|| format!("struct `{name}` size overflows"))?;
     }
     let (size, align) = *memo.get(name).expect("resolved");
     Ok((fields_out, size, align))
@@ -397,37 +444,6 @@ fn round_up(x: u64, align: u64) -> u64 {
         return x;
     }
     (x + align - 1) & !(align - 1)
-}
-
-pub fn is_addressable(&self) -> bool {
-    match self {
-        TExpr::Ident { .. } => true,
-        TExpr::ConstArr { .. } => true,
-        TExpr::Deref { .. } => true,
-        TExpr::Index { base, .. } => match base.ty() {
-            Ty::Ptr(..) => true,
-            Ty::Array(..) => base.is_addressable(),
-            Ty::Vec(..) => false,
-            _ => false,
-        },
-        TExpr::Field { base, .. } => base.is_addressable(),
-        _ => false,
-    }
-}
-
-pub fn is_assignable(&self) -> bool {
-    match self {
-        TExpr::Ident { .. } => true,
-        TExpr::ConstArr { .. } => true,
-        TExpr::Deref { .. } => true,
-        TExpr::Index { base, .. } => match base.ty() {
-            Ty::Ptr(..) => true,
-            Ty::Array(..) | Ty::Vec(..) => base.is_addressable(),
-            _ => false,
-        },
-        TExpr::Field { base, .. } => base.is_addressable(),
-        _ => false,
-    }
 }
 
 #[derive(Clone, Debug)]
