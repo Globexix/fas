@@ -1324,6 +1324,147 @@ let check ?(limits = Limits.default) program =
     | _ -> Ok ()
   in
   let* () = Result_list.iter eval_const_item program.items in
+  let sigs = ref [] in
+  let* () =
+    List.fold_left
+      (fun r item ->
+        let* () = r in
+        match item with
+        | Ast.Func { name; params; ret; variadic; linkage; span; _ } ->
+            if List.exists (fun (n, _) -> n = name) !sigs then
+              error span (Printf.sprintf "duplicate function `%s`" name)
+            else
+              let rec dup seen = function
+                | [] -> None
+                | (p : Ast.param) :: xs ->
+                    if List.mem p.name seen then Some p
+                    else dup (p.name :: seen) xs
+              in
+              let* () =
+                match dup [] params with
+                | Some p ->
+                    error p.span
+                      (Printf.sprintf "duplicate parameter `%s`" p.name)
+                | None -> Ok ()
+              in
+              let* ps =
+                map_params
+                  (fun (param : Ast.param) -> source_obj param.ty)
+                  params
+              in
+              let* rt = source_ty_diag span ret in
+              if variadic && linkage <> Ast.External_c then
+                error span "variadic functions require extern \"C\""
+              else (
+                sigs := !sigs @ [ (name, { params = ps; ret = rt; variadic }) ];
+                Ok ())
+        | _ -> Ok ())
+      (Ok ()) program.items
+  in
+  let templates =
+    List.filter_map
+      (fun item ->
+        match item with
+        | Ast.Func { name; const_params = _ :: _; _ } -> Some (name, item)
+        | _ -> None)
+      program.items
+  in
+  let all_strings = ref [] and funcs = ref [] and all_specs = ref [] in
+  let hir_linkage = function
+    | Ast.External_c -> Hir.External_c
+    | Ast.Internal -> Hir.Internal
+  in
+  let make_context ~extra_consts ~spec_depth ~ret_ty =
+    {
+      structs;
+      consts = (if extra_consts = [] then !consts else !consts @ extra_consts);
+      arrays = !arrays;
+      signatures = !sigs;
+      templates;
+      specializations = all_specs;
+      spec_depth;
+      locals = ref [];
+      initialized = SS.empty;
+      strings = !all_strings;
+      string_ids = List.mapi (fun i value -> (value, i)) !all_strings;
+      ret_ty;
+      loop_depth = 0;
+      in_defer = false;
+      limits;
+    }
+  in
+  let check_function_body ~name ~description ~span ~params ~ret ~stmts ~attrs
+      ~linkage ~variadic ~extra_consts ~spec_depth ~require_return =
+    let context = make_context ~extra_consts ~spec_depth ~ret_ty:ret in
+    List.iter
+      (fun (param_name, param_ty, _, _) ->
+        ignore (add_local param_name param_ty context span);
+        mark_init param_name context)
+      params;
+    let* body = check_block context stmts in
+    let* () =
+      if require_return && ret <> Hir.Void && not (block_must_return body) then
+        error span
+          (description ^ " `" ^ name ^ "` may reach the end without returning")
+      else Ok ()
+    in
+    all_strings := context.strings;
+    Ok
+      ({
+         Hir.name;
+         params;
+         ret;
+         body;
+         attrs;
+         linkage;
+         variadic;
+         asm_body = None;
+       }
+        : Hir.func)
+  in
+  let add_func func = funcs := func :: !funcs in
+  let check_func = function
+    | Ast.Func
+        {
+          name;
+          params;
+          ret;
+          body;
+          attrs;
+          linkage;
+          variadic;
+          const_params = [];
+          span;
+        } ->
+        let* ret = source_ty_diag span ret in
+        let* params = source_params params in
+        let linkage = hir_linkage linkage in
+        let* func =
+          match body with
+          | Ast.Asm raw ->
+              Ok
+                ({
+                   Hir.name;
+                   params;
+                   ret;
+                   body = [];
+                   attrs;
+                   linkage;
+                   variadic;
+                   asm_body = Some raw;
+                 }
+                  : Hir.func)
+          | Ast.Statements stmts ->
+              check_function_body ~name ~description:"function" ~span ~params
+                ~ret ~stmts ~attrs ~linkage ~variadic ~extra_consts:[]
+                ~spec_depth:0
+                ~require_return:(linkage <> Hir.External_c)
+        in
+        add_func func;
+        Ok ()
+    | _ -> Ok ()
+  in
+  let* () = Result_list.iter check_func program.items in
 
   let hconsts =
     List.map
@@ -1341,7 +1482,7 @@ let check ?(limits = Limits.default) program =
        Hir.structs;
        consts = hconsts;
        const_arrays = harrays;
-       funcs = [];
-       strings = [];
+       funcs = List.rev !funcs;
+       strings = !all_strings;
      }
       : Hir.program)
