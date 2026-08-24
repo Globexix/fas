@@ -311,6 +311,172 @@ let leading64 x =
       else go (n + 1) (Int64.shift_right_logical bit 1)
     in
     go 0 Int64.min_int
+
+let rec const_expr ?(structs = []) consts expected = function
+  | Ast.Int_lit (raw, s) ->
+      let* v =
+        parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ])
+      in
+      let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
+      if not (fits_int ty v) then
+        error s ("integer literal is out of range for " ^ ty_name ty)
+      else Ok (ty, mask_value ty v)
+  | Ast.Bool_lit (v, _) -> Ok (Hir.Bool, if v then 1L else 0L)
+  | Ast.Ident (n, s) -> (
+      match lookup n consts with
+      | Some (_, t, v) -> Ok (t, v)
+      | None -> error s "constant expression requires a known constant")
+  | Ast.Unary (Ast.Neg, Ast.Int_lit (raw, is), s) ->
+      let* v =
+        parse_integer raw |> Result.map_error (fun m -> [ Diag.error is m ])
+      in
+      let t = Option.value ~default:(Hir.Int Hir.I32) expected in
+      let allowed =
+        match t with
+        | Hir.Int ((Hir.I8 | I16 | I32 | I64 | Isize) as k) ->
+            let b = int_bits k in
+            (b = 64 && v = Int64.min_int)
+            || (b < 64 && v = Int64.shift_left 1L (b - 1))
+        | _ -> false
+      in
+      if fits_int t v || allowed then Ok (t, mask_value t (Int64.neg v))
+      else error s ("integer literal is out of range for " ^ ty_name t)
+  | Ast.Unary (Ast.Neg, e, s) ->
+      let* t, v = const_expr ~structs consts expected e in
+      if not (is_int t) then error s "unary minus requires an integer"
+      else Ok (t, mask_value t (Int64.neg v))
+  | Ast.Unary (Ast.Bit_not, e, s) ->
+      let* t, v = const_expr ~structs consts expected e in
+      if not (is_int t) then error s "bitwise not requires an integer"
+      else Ok (t, mask_value t (Int64.lognot v))
+  | Ast.Unary (Ast.Not, e, _) ->
+      let* _, v = const_expr ~structs consts None e in
+      Ok (Hir.Bool, if v = 0L then 1L else 0L)
+  | Ast.Binary (op, l, r, s) ->
+      let* (lt, lv), (rt, rv) =
+        match (l, op) with
+        | Ast.Int_lit _, (Ast.Eq | Ne | Lt | Le | Gt | Ge) ->
+            let* rt, rv = const_expr ~structs consts None r in
+            let* lt, lv = const_expr ~structs consts (Some rt) l in
+            Ok ((lt, lv), (rt, rv))
+        | _ ->
+            let* lt, lv = const_expr ~structs consts expected l in
+            let* rt, rv = const_expr ~structs consts (Some lt) r in
+            Ok ((lt, lv), (rt, rv))
+      in
+      if not (equal lt rt) then error s "constant operands have different types"
+      else if (op = Ast.Div || op = Ast.Rem) && rv = 0L then
+        error s "division by zero in constant expression"
+      else
+        let cmp =
+          if is_unsigned lt then Int64.unsigned_compare lv rv
+          else Int64.compare lv rv
+        in
+        let result =
+          match op with
+          | Ast.Add -> Int64.add lv rv
+          | Sub -> Int64.sub lv rv
+          | Mul -> Int64.mul lv rv
+          | Bit_and -> Int64.logand lv rv
+          | Bit_or -> Int64.logor lv rv
+          | Bit_xor -> Int64.logxor lv rv
+          | Div ->
+              if is_unsigned lt then Int64.unsigned_div lv rv
+              else Int64.div lv rv
+          | Rem ->
+              if is_unsigned lt then Int64.unsigned_rem lv rv
+              else Int64.rem lv rv
+          | Eq -> if lv = rv then 1L else 0L
+          | Ne -> if lv <> rv then 1L else 0L
+          | Lt -> if cmp < 0 then 1L else 0L
+          | Le -> if cmp <= 0 then 1L else 0L
+          | Gt -> if cmp > 0 then 1L else 0L
+          | Ge -> if cmp >= 0 then 1L else 0L
+          | And -> if lv <> 0L && rv <> 0L then 1L else 0L
+          | Or -> if lv <> 0L || rv <> 0L then 1L else 0L
+        in
+        let rt =
+          match op with
+          | Ast.Eq | Ne | Lt | Le | Gt | Ge | And | Or -> Hir.Bool
+          | _ -> lt
+        in
+        Ok (rt, mask_value rt result)
+  | Ast.Ternary (c, a, b, _s) ->
+      let* _, cv = const_expr ~structs consts None c in
+      if cv <> 0L then const_expr ~structs consts expected a
+      else const_expr ~structs consts expected b
+  | Ast.Cast (k, dst, e, s) ->
+      let* dt = source_ty_diag s dst in
+      let* st, v =
+        const_expr ~structs consts
+          (if
+             k = Ast.Bitcast
+             &&
+             match e with
+             | Ast.Int_lit _ | Ast.Unary (Ast.Neg, Ast.Int_lit _, _) -> true
+             | _ -> false
+           then Some dt
+           else None)
+          e
+      in
+      let sb =
+        match st with
+        | Hir.Bool -> 1
+        | Hir.Int q -> int_bits q
+        | Hir.Ptr _ -> 64
+        | _ -> 0
+      in
+      let result =
+        match k with
+        | Ast.Sext when st <> Hir.Bool && sb < 64 ->
+            let shift = 64 - sb in
+            Int64.shift_right (Int64.shift_left v shift) shift
+        | _ -> v
+      in
+      Ok (dt, mask_value dt result)
+  | Ast.Call (Ast.Ident (name, _), args, s) -> (
+      let* vals = Result_list.map (const_expr ~structs consts expected) args in
+      match (name, vals) with
+      | ("shl" | "lshr" | "ashr" | "rotl" | "rotr"), [ (t, x); (_, n) ] ->
+          let bits = match t with Hir.Int q -> int_bits q | _ -> 64 in
+          let k = Int64.to_int (Int64.logand n (Int64.of_int (bits - 1))) in
+          let v =
+            match name with
+            | "shl" -> Int64.shift_left x k
+            | "lshr" -> Int64.shift_right_logical x k
+            | "ashr" -> Int64.shift_right x k
+            | "rotl" ->
+                Int64.logor (Int64.shift_left x k)
+                  (Int64.shift_right_logical x (bits - k))
+            | _ ->
+                Int64.logor
+                  (Int64.shift_right_logical x k)
+                  (Int64.shift_left x (bits - k))
+          in
+          Ok (t, mask_value t v)
+      | "popcount", [ (t, x) ] -> Ok (t, Int64.of_int (popcount64 x))
+      | "ctz", [ (t, x) ] -> Ok (t, Int64.of_int (trailing64 x))
+      | "clz", [ (t, x) ] ->
+          let b = match t with Hir.Int q -> int_bits q | _ -> 64 in
+          Ok (t, Int64.of_int (leading64 x - (64 - b)))
+      | _ -> error s "invalid constant builtin call")
+  | Ast.Sizeof (t, s) ->
+      let* t = source_ty_diag s t in
+      let* n, _ = layout_diag s structs t in
+      Ok (Hir.Int Hir.U64, Int64.of_int n)
+  | Ast.Alignof (t, s) ->
+      let* t = source_ty_diag s t in
+      let* _, n = layout_diag s structs t in
+      Ok (Hir.Int Hir.U64, Int64.of_int n)
+  | Ast.Offsetof (t, n, s) -> (
+      let* t = source_ty_diag s t in
+      match t with
+      | Hir.Struct sn -> (
+          match field_info structs sn n with
+          | Some f -> Ok (Hir.Int Hir.U64, Int64.of_int f.offset)
+          | None -> error s "unknown field in offsetof")
+      | _ -> error s "offsetof requires a struct")
+  | expr -> error (Ast.expr_span expr) "expression is not compile-time constant"
 let unfinished name = Error [ Diag.error Span.synthetic ("sema scaffold: implement " ^ name) ]
 
 let rec check_expr _context _expected _expression = unfinished "check_expr"
