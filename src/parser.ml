@@ -814,4 +814,79 @@ module P = struct
         go (x :: acc)
     in
     go []
+
+  and expr p =
+    p.depth <- p.depth + 1;
+    if p.depth > p.limits.Limits.max_nesting then
+      Error [ Diag.error (span p) "expression nesting exceeds the configured limit" ]
+    else
+      let r = ternary p in
+      p.depth <- p.depth - 1;
+      r
+
+  and ternary p =
+    let* c = or_ p in
+    if eat p Token.Question then
+      let s = span p in
+      let* a = expr p in
+      let* () = expected p Token.Colon in
+      let* b = ternary p in
+      Ok (Ast.Ternary (c, a, b, s))
+    else Ok c
+
+  and binary p next ops =
+    let* first = next p in
+    let rec go lhs =
+      match (peek p).kind with
+      | k when List.mem_assoc k ops ->
+          let op = List.assoc k ops in
+          let s = span p in
+          ignore (bump p);
+          let* rhs = next p in
+          go (Ast.Binary (op, lhs, rhs, s))
+      | _ -> Ok lhs
+    in
+    go first
+
+  and or_ p = binary p and_ [ (Token.Oror, Ast.Or) ]
+  and and_ p = binary p bitor [ (Token.Andand, Ast.And) ]
+  and bitor p = binary p bitxor [ (Token.Pipe, Ast.Bit_or) ]
+  and bitxor p = binary p bitand [ (Token.Caret, Ast.Bit_xor) ]
+  and bitand p = binary p equality [ (Token.Amp, Ast.Bit_and) ]
+  and equality p = binary p relational [ (Token.Eqeq, Ast.Eq); (Token.Neq, Ast.Ne) ]
+
+  and relational p =
+    binary p additive
+      [ (Token.Lt, Ast.Lt); (Token.Le, Ast.Le); (Token.Gt, Ast.Gt); (Token.Ge, Ast.Ge) ]
+
+  and additive p =
+    binary p multiplicative [ (Token.Plus, Ast.Add); (Token.Minus, Ast.Sub) ]
+
+  and multiplicative p =
+    binary p unary
+      [ (Token.Star, Ast.Mul); (Token.Slash, Ast.Div); (Token.Percent, Ast.Rem) ]
+
+  and unary p =
+    match (peek p).kind with
+    | Token.Amp ->
+        let s = span p in
+        ignore (bump p);
+        let* e = unary p in
+        Ok (Ast.Addr_of (e, s))
+    | Token.Minus ->
+        let s = span p in
+        ignore (bump p);
+        let* e = unary p in
+        Ok (Ast.Unary (Ast.Neg, e, s))
+    | Token.Not ->
+        let s = span p in
+        ignore (bump p);
+        let* e = unary p in
+        Ok (Ast.Unary (Ast.Not, e, s))
+    | Token.Tilde ->
+        let s = span p in
+        ignore (bump p);
+        let* e = unary p in
+        Ok (Ast.Unary (Ast.Bit_not, e, s))
+    | _ -> postfix p
 end
