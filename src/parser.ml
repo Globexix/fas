@@ -344,6 +344,142 @@ module P = struct
 
   let finish_statement p consume_end = if consume_end then end_stmt p else Ok ()
 
+  let rec items p =
+    skip_newlines p;
+    if at p Token.Eof then Ok []
+    else
+      let* xs = item p in
+      let* ys = items p in
+      Ok (xs @ ys)
+
+  and item p =
+    let rec attrs acc =
+      if at p Token.At then (
+        let* a = attr p in
+        skip_newlines p;
+        attrs (a :: acc))
+      else Ok (List.rev acc)
+    in
+    let* attrs = attrs [] in
+    match (peek p).kind with
+    | Token.Kw_const ->
+        let* x = const_item p in
+        Ok [ x ]
+    | Token.Kw_struct ->
+        let* x = struct_item p in
+        Ok [ x ]
+    | Token.Kw_opaque ->
+        let* x = opaque_item p attrs in
+        Ok [ x ]
+    | Token.Kw_extern -> extern_block p attrs
+    | Token.Kw_fn ->
+        let* x = fn_item p attrs false false in
+        Ok [ x ]
+    | Token.Kw_asm ->
+        let* x = fn_item p attrs true false in
+        Ok [ x ]
+    | t ->
+        Error
+          [ Diag.error (span p) ("expected a top-level item, found " ^ Token.show t) ]
+
+  and const_item p =
+    let s = span p in
+    let* () = expected p Token.Kw_const in
+    let* name = ident p in
+    let* ty = ty p in
+    let* () = expected p Token.Assign in
+    skip_newlines p;
+    let* value =
+      if at p Token.Lbrace then (
+        let* () = expected p Token.Lbrace in
+        skip_newlines p;
+        let rec es acc =
+          if at p Token.Rbrace then Ok (List.rev acc)
+          else
+            let* e = expr p in
+            let* () =
+              skip_newlines p;
+              if eat p Token.Comma then (
+                skip_newlines p;
+                Ok ())
+              else if at p Token.Rbrace then Ok ()
+              else
+                Error [ Diag.error (span p) "expected comma between literal elements" ]
+            in
+            es (e :: acc)
+        in
+        let* xs = es [] in
+        let* () = expected p Token.Rbrace in
+        Ok (Ast.Array_lit (xs, s)))
+      else expr p
+    in
+    let* () = end_stmt p in
+    Ok (Ast.Const { name; ty; value; span = s })
+
+  and struct_item p =
+    let s = span p in
+    let* () = expected p Token.Kw_struct in
+    let* name = ident p in
+    let* align =
+      if at p Token.At then
+        let* a = attr p in
+        match a with
+        | Ast.Align n -> Ok (Some n)
+        | _ -> Error [ Diag.error s "only @align is valid on a struct" ]
+      else Ok None
+    in
+    let* () = expected p Token.Lbrace in
+    skip_newlines p;
+    let rec fields acc =
+      if at p Token.Rbrace then Ok (List.rev acc)
+      else
+        let fs = span p in
+        let* n = ident p in
+        let* t = ty p in
+        let* () =
+          if eat p Token.Comma then (
+            skip_newlines p;
+            Ok ())
+          else (
+            skip_newlines p;
+            Ok ())
+        in
+        fields (({ Ast.name = n; ty = t; span = fs } : Ast.field) :: acc)
+    in
+    let* fs = fields [] in
+    let* () = expected p Token.Rbrace in
+    let* () = end_stmt p in
+    p.names := name :: !(p.names);
+    Ok (Ast.Struct { name; fields = fs; align; span = s })
+
+  and opaque_item p attrs =
+    let s = span p in
+    if attrs <> [] then
+      Error [ Diag.error s "attributes are not valid on an opaque declaration" ]
+    else
+      let* () = expected p Token.Kw_opaque in
+      let* name = ident p in
+      let* () = end_stmt p in
+      p.opaques := name :: !(p.opaques);
+      Ok (Ast.Opaque { name; span = s })
+
+  and const_params p =
+    if not (at p Token.Lbracket) then Ok []
+    else
+      let* () = expected p Token.Lbracket in
+      let rec go acc =
+        let s = span p in
+        let* n = ident p in
+        let* () = expected p Token.Kw_const in
+        let* t = ty p in
+        let next = { Ast.name = n; ty = t; span = s } in
+        if eat p Token.Comma then go (next :: acc)
+        else
+          let* () = expected p Token.Rbracket in
+          Ok (List.rev (next :: acc))
+      in
+      go []
+
   and signature p allow_variadic =
     let* () = expected p Token.Lparen in
     skip_newlines p;
