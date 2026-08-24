@@ -1,5 +1,7 @@
 [@@@warning "-8-26-32-34-37-39-60-69"]
 
+let unfinished name = Error [ Diag.error Span.synthetic ("sema scaffold: implement " ^ name) ]
+
 module SS = Set.Make (String)
 
 type binding = { ty : Hir.ty }
@@ -477,15 +479,129 @@ let rec const_expr ?(structs = []) consts expected = function
           | None -> error s "unknown field in offsetof")
       | _ -> error s "offsetof requires a struct")
   | expr -> error (Ast.expr_span expr) "expression is not compile-time constant"
-let unfinished name = Error [ Diag.error Span.synthetic ("sema scaffold: implement " ^ name) ]
 
-let rec check_expr _context _expected _expression = unfinished "check_expr"
+let rec check_expr (c : context) expected = function
+  | Ast.Int_lit (raw, s) ->
+      let* v =
+        parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ])
+      in
+      let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
+      if not (fits_int ty v) then
+        error s ("integer literal is out of range for " ^ ty_name ty)
+      else Ok (Hir.EInt (mask_value ty v, ty, s))
+  | Ast.Bool_lit (v, s) -> Ok (Hir.EBool (v, s))
+  | Ast.Null s -> (
+      match expected with
+      | Some (Hir.Ptr _) as t -> Ok (Hir.Null (Option.get t, s))
+      | _ -> error s "null requires a pointer context")
+  | Ast.String_lit (v, s) -> Ok (Hir.EString (intern_string c v, s))
+  | Ast.Ident (n, s) -> (
+      match lookup_local n c with
+      | Some b ->
+          let* () = require_init n c s in
+          Ok (Hir.Local (n, b.ty, s))
+      | None -> (
+          match lookup n c.consts with
+          | Some (_, t, v) ->
+              let rt = Option.value ~default:t expected in
+              if is_int rt && fits_int rt v then
+                Ok (Hir.EInt (mask_value rt v, rt, s))
+              else Ok (Hir.EInt (v, t, s))
+          | None -> (
+              match lookup n c.arrays with
+              | Some (_, t, _) -> Ok (Hir.Const_array (n, t, s))
+              | None -> error s (Printf.sprintf "unknown name `%s`" n))))
+  | Ast.Unary (Ast.Neg, Ast.Int_lit (raw, is), s) ->
+      let* v =
+        parse_integer raw |> Result.map_error (fun m -> [ Diag.error is m ])
+      in
+      let t = Option.value ~default:(Hir.Int Hir.I32) expected in
+      let allowed =
+        match t with
+        | Hir.Int ((Hir.I8 | I16 | I32 | I64 | Isize) as k) ->
+            let b = int_bits k in
+            (b = 64 && v = Int64.min_int)
+            || (b < 64 && v = Int64.shift_left 1L (b - 1))
+        | _ -> false
+      in
+      if fits_int t v || allowed then
+        Ok (Hir.EInt (mask_value t (Int64.neg v), t, s))
+      else error s ("integer literal is out of range for " ^ ty_name t)
+  | Ast.Unary (op, e, s) -> (
+      let* te =
+        check_expr c
+          (match op with Ast.Neg | Ast.Bit_not -> expected | Ast.Not -> None)
+          e
+      in
+      match op with
+      | Ast.Neg | Ast.Bit_not ->
+          if not (is_int (Hir.expr_ty te)) then
+            error s "integer unary operator requires an integer"
+          else Ok (Hir.Unary (op, te, Hir.expr_ty te, s))
+      | Ast.Not ->
+          if not (is_truthy (Hir.expr_ty te)) then
+            error s "logical not requires a scalar"
+          else Ok (Hir.Unary (op, te, Hir.Bool, s)))
+  | Ast.Binary (op, l, r, s) -> (
+      if op = Ast.And || op = Ast.Or then
+        let* a = check_expr c None l in
+        let* b = check_expr c None r in
+        if is_truthy (Hir.expr_ty a) && is_truthy (Hir.expr_ty b) then
+          Ok (Hir.Binary (op, a, b, Hir.Bool, s))
+        else error s "logical operands must be scalar"
+      else
+        let* a, b =
+          match l with
+          | Ast.Int_lit _ -> (
+              match expected with
+              | Some t when is_int t ->
+                  let* a = check_expr c (Some t) l in
+                  let* b = check_expr c (Some t) r in
+                  Ok (a, b)
+              | _ ->
+                  let* b = check_expr c None r in
+                  let* a = check_expr c (Some (Hir.expr_ty b)) l in
+                  Ok (a, b))
+          | Ast.Null _ ->
+              let* b = check_expr c None r in
+              let* a = check_expr c (Some (Hir.expr_ty b)) l in
+              Ok (a, b)
+          | _ ->
+              let* a = check_expr c expected l in
+              let* b = check_expr c (Some (Hir.expr_ty a)) r in
+              Ok (a, b)
+        in
+        let at = Hir.expr_ty a in
+        let bt = Hir.expr_ty b in
+        if
+          (op = Ast.Div || op = Ast.Rem)
+          && match b with Hir.EInt (v, _, _) -> v = 0L | _ -> false
+        then error s "division by zero is not a defined runtime operation"
+        else if
+          not
+            (equal at bt
+            || (op = Ast.Eq || op = Ast.Ne)
+               && (compatible at bt || compatible bt at))
+        then error s "binary operands must have the same type"
+        else
+          match op with
+          | Ast.Eq | Ast.Ne ->
+              if is_scalar at then Ok (Hir.Binary (op, a, b, Hir.Bool, s))
+              else error s "equality requires scalar operands"
+          | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge ->
+              if is_int at then Ok (Hir.Binary (op, a, b, Hir.Bool, s))
+              else error s "ordered comparison requires integer operands"
+          | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and
+          | Ast.Bit_or | Ast.Bit_xor ->
+              if is_numeric at then Ok (Hir.Binary (op, a, b, at, s))
+              else error s "arithmetic requires integer or vector operands"
+          | Ast.And | Ast.Or ->
+              error s "logical operators are handled separately")
 and const_key_value _ty _value = "<unfinished>"
 and mangle_specialization name _values = name
 and same_specialization _left _right = false
 and check_call _context _expected _fn _args _span = unfinished "check_call"
 and check_actuals _context _policy _span _formals _actuals = unfinished "check_actuals"
-
 let check_target _context _target = unfinished "check_target"
 let target_ty _context _target = unfinished "target_ty"
 
