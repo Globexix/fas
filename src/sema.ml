@@ -1205,6 +1205,143 @@ and check_stmt (c : context) = function
         c.initialized <- before;
         let* body = checked in
         Ok (Hir.Defer (body, s))
-let check ?(limits = Limits.default) (_program : Ast.program) =
+
+let check ?(limits = Limits.default) program =
   let _ = limits in
-  unfinished "check"
+  let rec collect_structs seen acc = function
+    | [] -> Ok (List.rev acc)
+    | Ast.Struct { name; fields; align; span } :: rest ->
+        if List.mem name seen then
+          error span (Printf.sprintf "duplicate type `%s`" name)
+        else
+          let* () =
+            match align with
+            | Some a when a <= 0 || a land (a - 1) <> 0 ->
+                error span "alignment must be a positive power of two"
+            | _ -> Ok ()
+          in
+          let rec collect_fields fseen out = function
+            | [] -> Ok (List.rev out)
+            | (f : Ast.field) :: fs ->
+                if List.mem f.name fseen then
+                  error f.span (Printf.sprintf "duplicate field `%s`" f.name)
+                else
+                  let* t =
+                    source_ty f.ty
+                    |> Result.map_error (fun m -> [ Diag.error f.span m ])
+                  in
+                  collect_fields (f.name :: fseen) ((f.name, t) :: out) fs
+          in
+          let* fs = collect_fields [] [] fields in
+          collect_structs (name :: seen) ((name, fs, align) :: acc) rest
+    | _ :: rest -> collect_structs seen acc rest
+  in
+  let* structs_src = collect_structs [] [] program.Ast.items in
+  let struct_names = List.map (fun (n, _, _) -> n) structs_src in
+  let* () =
+    List.fold_left
+      (fun r item ->
+        let* () = r in
+        match item with
+        | Ast.Opaque { name; span } when List.mem name struct_names ->
+            error span (Printf.sprintf "duplicate type `%s`" name)
+        | _ -> Ok ())
+      (Ok ()) program.items
+  in
+  let rec build acc = function
+    | [] -> Ok (List.rev acc)
+    | (name, _, _) :: xs ->
+        let* s =
+          Hir.compute_struct structs_src name
+          |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
+        in
+        build (s :: acc) xs
+  in
+  let* structs = build [] structs_src in
+  let rec within_limit = function
+    | Hir.Array (n, t) | Hir.Vec (n, t) ->
+        n <= limits.Limits.max_aggregate_elements && within_limit t
+    | _ -> true
+  in
+  let source_obj t =
+    let* t =
+      source_ty t |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
+    in
+    let* () =
+      object_type structs t
+      |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
+    in
+    if within_limit t then Ok t
+    else
+      error Span.synthetic
+        "aggregate element count exceeds the configured limit"
+  in
+  let map_params convert params =
+    Result_list.map
+      (fun (param : Ast.param) ->
+        let* ty = convert param in
+        Ok (param.name, ty, param.noalias, param.align))
+      params
+  in
+  let source_params =
+    map_params (fun (param : Ast.param) -> source_ty_diag param.span param.ty)
+  in
+  let consts = ref [] and arrays = ref [] in
+  let eval_const_item = function
+    | Ast.Const { name; ty; value; span } -> (
+        if
+          List.exists (fun (n, _, _) -> n = name) !consts
+          || List.exists (fun (n, _, _) -> n = name) !arrays
+        then error span (Printf.sprintf "duplicate const `%s`" name)
+        else
+          let* t = source_obj ty in
+          match (t, value) with
+          | Hir.Array (n, elem), Ast.Array_lit (xs, _) ->
+              if List.length xs <> n then
+                error span "const array length mismatch"
+              else
+                let rec values acc = function
+                  | [] -> Ok (List.rev acc)
+                  | x :: rest ->
+                      let* vt, v = const_expr ~structs !consts (Some elem) x in
+                      if equal vt elem then values (v :: acc) rest
+                      else
+                        error (Ast.expr_span x)
+                          "const array element type mismatch"
+                in
+                let* vs = values [] xs in
+                arrays := !arrays @ [ (name, t, vs) ];
+                Ok ()
+          | Hir.Array _, _ ->
+              error span "const array needs a brace-list initializer"
+          | _, Ast.Array_lit _ -> error span "brace-list requires an array type"
+          | _, _ ->
+              let* vt, v = const_expr ~structs !consts (Some t) value in
+              if equal vt t then (
+                consts := !consts @ [ (name, t, v) ];
+                Ok ())
+              else error span "constant initializer type mismatch")
+    | _ -> Ok ()
+  in
+  let* () = Result_list.iter eval_const_item program.items in
+
+  let hconsts =
+    List.map
+      (fun (n, t, v) -> ({ Hir.name = n; ty = t; bits = v } : Hir.const_def))
+      !consts
+  in
+  let harrays =
+    List.map
+      (fun (n, t, vs) ->
+        ({ Hir.name = n; ty = t; elems = vs } : Hir.const_arr_def))
+      !arrays
+  in
+  Ok
+    ({
+       Hir.structs;
+       consts = hconsts;
+       const_arrays = harrays;
+       funcs = [];
+       strings = [];
+     }
+      : Hir.program)
