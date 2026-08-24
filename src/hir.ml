@@ -164,3 +164,76 @@ let expr_span = function
 
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 let round_up x a = if a <= 1 then x else (x + a - 1) / a * a
+
+let int_layout = function
+  | U8 | I8 -> (1, 1)
+  | U16 | I16 -> (2, 2)
+  | U32 -> (4, 4)
+  | I32 -> (4, 4)
+  | U64 | I64 | Usize | Isize -> (8, 8)
+
+let layout structs ty =
+  let rec go visiting = function
+    | Bool -> Ok (1, 1)
+    | Int k -> Ok (int_layout k)
+    | Ptr _ -> Ok (8, 8)
+    | Array (n, t) | Vec (n, t) ->
+        if n < 0 then Error "negative aggregate length"
+        else
+          let* s, a = go visiting t in
+          if n > max_int / max 1 s then Error "aggregate size overflows"
+          else Ok (n * s, a)
+    | Void -> Error "void has no object layout"
+    | Opaque n -> Error ("opaque type `" ^ n ^ "` has no layout")
+    | Struct n -> (
+        if List.mem n visiting then
+          Error (Printf.sprintf "recursive by-value struct `%s`" n)
+        else
+          match List.find_opt (fun (s : struct_def) -> s.name = n) structs with
+          | None -> Error (Printf.sprintf "unknown struct `%s`" n)
+          | Some (s : struct_def) -> Ok (s.size, s.align))
+  in
+  go [] ty
+
+let compute_struct decls name =
+  let rec calc visiting n =
+    if List.mem n visiting then
+      Error (Printf.sprintf "recursive by-value struct `%s`" n)
+    else
+      match List.find_opt (fun (x, _, _) -> x = n) decls with
+      | None -> Error (Printf.sprintf "unknown struct `%s`" n)
+      | Some (_, fields, explicit) ->
+          let rec each off maxa out = function
+            | [] ->
+                let align = max maxa (Option.value ~default:1 explicit) in
+                Ok (List.rev out, round_up off align, align)
+            | (fname, fty) :: rest ->
+                let* size, align =
+                  match fty with
+                  | Struct sn ->
+                      let* _, sz, al = calc (n :: visiting) sn in
+                      Ok (sz, al)
+                  | _ -> field_layout (n :: visiting) fty
+                in
+                let next = round_up off align in
+                each (next + size) (max maxa align)
+                  ({ name = fname; ty = fty; offset = next } :: out)
+                  rest
+          in
+          each 0 1 [] fields
+  and field_layout visiting = function
+    | Bool -> Ok (1, 1)
+    | Int k -> Ok (int_layout k)
+    | Ptr _ -> Ok (8, 8)
+    | Void -> Error "void has no object layout"
+    | Opaque n -> Error (Printf.sprintf "opaque type `%s` has no layout" n)
+    | Struct n ->
+        let* _, s, a = calc visiting n in
+        Ok (s, a)
+    | Array (n, t) | Vec (n, t) ->
+        let* s, a = field_layout visiting t in
+        if n < 0 || (s > 0 && n > max_int / s) then Error "aggregate size overflows"
+        else Ok (n * s, a)
+  in
+  let* fields, size, align = calc [] name in
+  Ok { name; fields; size; align }
