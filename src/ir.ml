@@ -60,3 +60,33 @@ type terminator =
   | CondBr of value * int * int
   | Switch of ty * value * (int64 * int) list * int
   | Unreachable
+
+type param = { name : string; ty : ty; noalias : bool; align : int option }
+type linkage = Internal | External
+
+type func = {
+  name : string;
+  params : param list;
+  ret : ty;
+  blocks : block list;
+  linkage : linkage;
+  variadic : bool;
+  attrs : Ast.attr list;
+  asm_body : string option;
+}
+
+and block = { id : int; label : string; instrs : instr list; terminator : terminator }
+
+type struct_def = { name : string; fields : ty list; tail_padding : int }
+
+type global =
+  | String_global of { name : string; bytes : string }
+  | Array_global of { name : string; elem_ty : ty; elems : int64 list; align : int }
+
+type module_ = {
+  target_triple : string;
+  data_layout : string;
+  structs : struct_def list;
+  globals : global list;
+  funcs : func list;
+}
