@@ -597,6 +597,151 @@ let rec check_expr (c : context) expected = function
               else error s "arithmetic requires integer or vector operands"
           | Ast.And | Ast.Or ->
               error s "logical operators are handled separately")
+  | Ast.Call (fn, args, s) -> check_call c None fn args s
+  | Ast.Const_args (_fn, _, s) ->
+      error s "const-generic specialization is not available in this checkpoint"
+  | Ast.Cast (k, t, e, s) ->
+      let* t = source_ty_diag s t in
+      let* x =
+        check_expr c
+          (if
+             k = Ast.Bitcast
+             &&
+             match e with
+             | Ast.Int_lit _ | Ast.Unary (Ast.Neg, Ast.Int_lit _, _) -> true
+             | _ -> false
+           then Some t
+           else None)
+          e
+      in
+      let from = Hir.expr_ty x in
+      let bits = function
+        | Hir.Bool -> 1
+        | Hir.Int q -> int_bits q
+        | Hir.Ptr _ -> 64
+        | _ -> 0
+      in
+      let legal =
+        match k with
+        | Ast.Zext ->
+            (from = Hir.Bool || is_int from) && is_int t && bits t >= bits from
+        | Ast.Sext ->
+            (from = Hir.Bool || is_int from) && is_int t && bits t >= bits from
+        | Ast.Trunc ->
+            (from = Hir.Bool && is_int t)
+            || (is_int from && (is_int t || t = Hir.Bool) && bits t <= bits from)
+        | Ast.Bitcast -> (
+            match (from, t) with
+            | Hir.Ptr _, Hir.Ptr _ -> true
+            | Hir.Ptr _, Hir.Int k | Hir.Int k, Hir.Ptr _ -> int_bits k = 64
+            | _ when is_int from && is_int t -> bits from = bits t
+            | _ -> false)
+      in
+      if legal then Ok (Hir.Cast (k, x, t, s))
+      else error s "illegal cast for source and destination widths"
+  | Ast.Index (a, i, s) -> (
+      let* ta = check_expr c None a in
+      let* ti = check_expr c None i in
+      if not (is_int (Hir.expr_ty ti)) then
+        error s "array index must be an integer"
+      else
+        match Hir.expr_ty ta with
+        | Hir.Array (_, e) | Hir.Vec (_, e) | Hir.Ptr e ->
+            if match e with Hir.Opaque _ -> true | _ -> false then
+              error s "opaque pointers cannot be indexed"
+            else Ok (Hir.Index (ta, ti, e, s))
+        | _ -> error s "cannot index this type")
+  | Ast.Field (a, n, s) -> (
+      let* ta = check_expr c None a in
+      match Hir.expr_ty ta with
+      | Hir.Struct sn -> (
+          match field_info c.structs sn n with
+          | Some f -> Ok (Hir.Field (ta, n, f.ty, f.offset, s))
+          | None -> error s (Printf.sprintf "unknown field `%s`" n))
+      | _ -> error s "field access requires a struct")
+  | Ast.Deref (e, s) -> (
+      let* x = check_expr c None e in
+      match Hir.expr_ty x with
+      | Hir.Ptr (Hir.Opaque _) -> error s "cannot dereference an opaque pointer"
+      | Hir.Ptr t -> Ok (Hir.Deref (x, t, s))
+      | _ -> error s "cannot dereference a non-pointer")
+  | Ast.Addr_of (e, s) -> (
+      let* x = check_expr c None e in
+      match x with
+      | Hir.Local _ | Hir.Deref _ | Hir.Index _ | Hir.Field _
+      | Hir.Const_array _ ->
+          Ok (Hir.Address (x, Hir.Ptr (Hir.expr_ty x), s))
+      | _ -> error s "cannot take the address of this expression")
+  | Ast.Ptr_add (bytes, p, o, s) -> (
+      let* tp = check_expr c None p in
+      let* toff = check_expr c None o in
+      if not (is_int (Hir.expr_ty toff)) then
+        error s "pointer offset must be an integer"
+      else
+        match Hir.expr_ty tp with
+        | Hir.Ptr (Hir.Opaque _) ->
+            error s "pointer arithmetic on an opaque pointer is not allowed"
+        | Hir.Ptr t -> Ok (Hir.Ptr_add (bytes, tp, toff, Hir.Ptr t, s))
+        | _ -> error s "pointer addition requires a pointer")
+  | Ast.Sizeof (t, s) ->
+      let* t = source_ty_diag s t in
+      let* size, _ = layout_diag s c.structs t in
+      Ok (Hir.Sizeof (t, size, s))
+  | Ast.Alignof (t, s) ->
+      let* t = source_ty_diag s t in
+      let* _, a = layout_diag s c.structs t in
+      Ok (Hir.Alignof (t, a, s))
+  | Ast.Offsetof (t, n, s) -> (
+      let* t = source_ty_diag s t in
+      match t with
+      | Hir.Struct sn -> (
+          match field_info c.structs sn n with
+          | Some f -> Ok (Hir.Offsetof (t, n, f.offset, s))
+          | None -> error s (Printf.sprintf "unknown field `%s`" n))
+      | _ -> error s "offsetof requires a struct type")
+  | Ast.Splat (e, s) -> (
+      match expected with
+      | Some (Hir.Vec (n, elem)) ->
+          let* x = check_expr c (Some elem) e in
+          if equal (Hir.expr_ty x) elem then
+            Ok (Hir.Splat (x, Hir.Vec (n, elem), s))
+          else error s "splat element type mismatch"
+      | _ -> error s "splat requires a vector type context")
+  | Ast.Ternary (q, a, b, s) ->
+      let* tq = check_expr c None q in
+      if not (is_truthy (Hir.expr_ty tq)) then
+        error s "ternary condition must be scalar"
+      else
+        let* ta = check_expr c expected a in
+        let* tb = check_expr c (Some (Hir.expr_ty ta)) b in
+        if equal (Hir.expr_ty ta) (Hir.expr_ty tb) then
+          Ok (Hir.Ternary (tq, ta, tb, Hir.expr_ty ta, s))
+        else error s "ternary arms have different types"
+  | Ast.Array_lit (_, s) ->
+      error s "array literals are only valid in global const declarations"
+  | Ast.Struct_lit (n, xs, s) -> (
+      match
+        List.find_opt (fun (d : Hir.struct_def) -> d.name = n) c.structs
+      with
+      | None -> error s (Printf.sprintf "unknown struct `%s`" n)
+      | Some (d : Hir.struct_def) ->
+          if List.length xs <> List.length d.fields then
+            error s "wrong number of struct literal fields"
+          else
+            let rec go acc (fs : Hir.field list) es =
+              match (fs, es) with
+              | [], [] -> Ok (List.rev acc)
+              | f :: ft, e :: et ->
+                  let* x = check_expr c (Some f.ty) e in
+                  let* () =
+                    ensure_expected (Hir.expr_ty x) f.ty (Ast.expr_span e)
+                  in
+                  go (x :: acc) ft et
+              | _ -> error s "wrong struct literal arity"
+            in
+            let* xs = go [] d.fields xs in
+            Ok (Hir.Struct_lit (n, xs, Hir.Struct n, s)))
+
 and const_key_value _ty _value = "<unfinished>"
 and mangle_specialization name _values = name
 and same_specialization _left _right = false
