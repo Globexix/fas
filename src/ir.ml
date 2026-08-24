@@ -274,3 +274,59 @@ let param_string named p =
     ^ match p.align with None -> "" | Some n -> Printf.sprintf " noundef align %d" n
   in
   ty_name p.ty ^ a ^ if named then " %" ^ p.name else ""
+
+let render m =
+  let header =
+    [
+      "; ModuleID = 'fas'";
+      "source_filename = \"fas\"";
+      "target datalayout = \"" ^ m.data_layout ^ "\"";
+      "target triple = \"" ^ m.target_triple ^ "\"";
+      "";
+    ]
+  in
+  let structs =
+    List.map
+      (fun s ->
+        let fields = List.map ty_name s.fields in
+        let fields =
+          if s.tail_padding = 0 then fields
+          else fields @ [ Printf.sprintf "[%d x i8]" s.tail_padding ]
+        in
+        Printf.sprintf "%%struct.%s = type { %s }" s.name (String.concat ", " fields))
+      m.structs
+  in
+  let globals =
+    List.map
+      (function
+        | String_global { name; bytes } ->
+            Printf.sprintf "@%s = private unnamed_addr constant [%d x i8] c\"%s\"" name
+              (String.length bytes + 1)
+              (quote_bytes (bytes ^ "\000"))
+        | Array_global { name; elem_ty; elems; align } ->
+            let es =
+              String.concat ", "
+                (List.map (fun v -> ty_name elem_ty ^ " " ^ Int64.to_string v) elems)
+            in
+            Printf.sprintf
+              "@%s = private unnamed_addr constant [%d x %s] [%s], align %d" name
+              (List.length elems) (ty_name elem_ty) es align)
+      m.globals
+  in
+  let fn f =
+    let ps = String.concat ", " (List.map (param_string (f.blocks <> [])) f.params) in
+    let ps = if f.variadic then ps ^ if ps = "" then "..." else ", ..." else ps in
+    if f.blocks = [] || Option.is_some f.asm_body then
+      Printf.sprintf "declare %s %s(%s)" (ty_name f.ret) (symbol f.name) ps
+    else
+      let link = if f.linkage = Internal then "internal " else "" in
+      Printf.sprintf "define %s%s %s(%s)%s {\n%s\n}" link (ty_name f.ret)
+        (symbol f.name) ps (attrs_string f.attrs)
+        (String.concat "\n"
+           (List.concat_map
+              (fun b ->
+                (("b" ^ string_of_int b.id ^ ":") :: List.map instr_line b.instrs)
+                @ [ term_line b.terminator ])
+              f.blocks))
+  in
+  String.concat "\n" (header @ structs @ globals @ List.map fn m.funcs) ^ "\n"
