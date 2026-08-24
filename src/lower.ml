@@ -474,15 +474,102 @@ and lower_ternary s c a b t =
   emit s (Ir.Phi (id, ty t, [ (tv, tp); (ev, ep) ]));
   Ok (Ir.Local (id, ty t))
 
-and materialize _state _expression = unfinished "materialize"
-and address _state _expression = unfinished "address"
-and index_address _state _aggregate _index = unfinished "index_address"
-and field_address _state _aggregate _offset = unfinished "field_address"
+and materialize s e =
+  let* v = expr s e in
+  let ht = Hir.expr_ty e in
+  let id = fresh s in
+  emit s (Ir.Alloca (id, ty ht, align s ht));
+  let p = Ir.Local (id, Ir.Ptr (ty ht)) in
+  emit s (Ir.Store (ty ht, v, p, align s ht));
+  Ok p
 
-let rec emit_defer_body _state _body = unfinished "emit_defer_body"
-and emit_scope_defers _state _index = unfinished "emit_scope_defers"
-and unwind _state _keep = unfinished "unwind"
-and scoped _state _statements = unfinished "scoped"
+and address s e =
+  match e with
+  | Hir.Local (n, _, sp) -> (
+      match Hashtbl.find_opt s.env n with
+      | Some v -> Ok v
+      | None -> error sp ("unknown local `" ^ n ^ "`"))
+  | Hir.Const_array (n, t, _) ->
+      let id = fresh s in
+      emit s (Ir.Global_ptr (id, n, ty t));
+      Ok (Ir.Local (id, Ir.Ptr (ty t)))
+  | Hir.Deref (p, _, _) -> expr s p
+  | Hir.Index (a, i, _, _) -> index_address s a i
+  | Hir.Field (a, _, _, off, _) -> field_address s a off
+  | _ -> materialize s e
+
+and index_address s a i =
+  let* iv = expr s i in
+  match Hir.expr_ty a with
+  | Hir.Array _ ->
+      let* p = address s a in
+      let id = fresh s in
+      emit s (Ir.Gep (id, ty (Hir.expr_ty a), p, [ Ir.Zero; Ir.Index iv ]));
+      Ok (Ir.Local (id, Ir.Ptr Ir.I8))
+  | Hir.Ptr elem ->
+      let* p = expr s a in
+      let id = fresh s in
+      emit s (Ir.Gep (id, ty elem, p, [ Ir.Index iv ]));
+      Ok (Ir.Local (id, Ir.Ptr (ty elem)))
+  | _ -> error (Hir.expr_span a) "cannot take index address"
+
+and field_address s a off =
+  let* p =
+    if
+      match a with
+      | Hir.Local _ | Deref _ | Index _ | Field _ | Const_array _ -> true
+      | _ -> false
+    then address s a
+    else materialize s a
+  in
+  let id = fresh s in
+  emit s
+    (Ir.Gep (id, Ir.I8, p, [ Ir.Index (Ir.Const (Ir.I64, Int64.of_int off)) ]));
+  Ok (Ir.Local (id, Ir.Ptr Ir.I8))
+
+let rec emit_defer_body s body =
+  List.fold_left
+    (fun r st ->
+      let* () = r in
+      if open_block s then stmt s st else Ok ())
+    (Ok ()) body
+
+and emit_scope_defers s idx =
+  match List.nth_opt s.defer_scopes idx with
+  | None -> Ok ()
+  | Some ds ->
+      List.fold_left
+        (fun r body ->
+          let* () = r in
+          emit_defer_body s body)
+        (Ok ()) ds
+
+and unwind s keep =
+  let count = List.length s.defer_scopes - keep in
+  let scopes =
+    let rec take n xs =
+      if n <= 0 then []
+      else match xs with [] -> [] | x :: xt -> x :: take (n - 1) xt
+    in
+    take count s.defer_scopes
+  in
+  List.fold_left
+    (fun r ds ->
+      let* () = r in
+      List.fold_left
+        (fun rr body ->
+          let* () = rr in
+          emit_defer_body s body)
+        (Ok ()) ds)
+    (Ok ()) scopes
+
+and scoped s xs =
+  push_scope s;
+  let* () = stmt_list s xs in
+  let* () = if open_block s then emit_scope_defers s 0 else Ok () in
+  pop_scope s;
+  Ok ()
+
 and stmt _state _statement = unfinished "stmt"
 and stmt_list _state _statements = unfinished "stmt_list"
 and target_address _state _target = unfinished "target_address"
