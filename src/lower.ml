@@ -700,11 +700,107 @@ and vector_lane s aggregate index =
       Ir.Local (loaded_id, vector_ty),
       coerce s index Ir.I32 )
 
-and lower_if _state _condition _then_body _else_body = unfinished "lower_if"
-and lower_while _state _condition _body = unfinished "lower_while"
-and lower_for _state _init _condition _step _body = unfinished "lower_for"
-and lower_switch _state _expression _arms _default = unfinished "lower_switch"
+and lower_if s c a b =
+  let* cv = expr s c in
+  let cv = truth s cv in
+  let tb = fresh_block s and eb = fresh_block s and join = fresh_block s in
+  s.current.term := Some (Ir.CondBr (cv, tb.id, eb.id));
+  s.current <- tb;
+  let* () = scoped s a in
+  if open_block s then s.current.term := Some (Ir.Br join.id);
+  s.current <- eb;
+  let* () = match b with None -> Ok () | Some xs -> scoped s xs in
+  if open_block s then s.current.term := Some (Ir.Br join.id);
+  s.current <- join;
+  Ok ()
 
+and lower_while s c body =
+  let head = fresh_block s and bb = fresh_block s and exit = fresh_block s in
+  s.current.term := Some (Ir.Br head.id);
+  s.current <- head;
+  let* cv = expr s c in
+  let cv = truth s cv in
+  s.current.term := Some (Ir.CondBr (cv, bb.id, exit.id));
+  s.current <- bb;
+  s.loops <-
+    {
+      break_to = exit.id;
+      continue_to = head.id;
+      keep_scopes = List.length s.defer_scopes;
+    }
+    :: s.loops;
+  let* () = scoped s body in
+  s.loops <- List.tl s.loops;
+  if open_block s then s.current.term := Some (Ir.Br head.id);
+  s.current <- exit;
+  Ok ()
+
+and lower_for s init cond step body =
+  let* () = match init with None -> Ok () | Some x -> stmt s x in
+  let head = fresh_block s
+  and bb = fresh_block s
+  and sb = fresh_block s
+  and exit = fresh_block s in
+  s.current.term := Some (Ir.Br head.id);
+  s.current <- head;
+  let* () =
+    match cond with
+    | None ->
+        s.current.term := Some (Ir.Br bb.id);
+        Ok ()
+    | Some c ->
+        let* v = expr s c in
+        s.current.term := Some (Ir.CondBr (truth s v, bb.id, exit.id));
+        Ok ()
+  in
+  s.current <- bb;
+  s.loops <-
+    {
+      break_to = exit.id;
+      continue_to = sb.id;
+      keep_scopes = List.length s.defer_scopes;
+    }
+    :: s.loops;
+  let* () = scoped s body in
+  s.loops <- List.tl s.loops;
+  if open_block s then s.current.term := Some (Ir.Br sb.id);
+  s.current <- sb;
+  let* () = match step with None -> Ok () | Some x -> stmt s x in
+  if open_block s then s.current.term := Some (Ir.Br head.id);
+  s.current <- exit;
+  Ok ()
+
+and lower_switch s e arms default =
+  let* v = expr s e in
+  let join = fresh_block s in
+  let blocks = List.map (fun _ -> fresh_block s) arms in
+  let db = fresh_block s in
+  let cases =
+    List.map2
+      (fun (k, _) b ->
+        match k with
+        | Hir.EInt (n, _, _) -> (n, b.id)
+        | Hir.EBool (x, _) -> ((if x then 1L else 0L), b.id)
+        | _ -> (0L, b.id))
+      arms blocks
+  in
+  s.current.term := Some (Ir.Switch (value_ty v, v, cases, db.id));
+  let rec each as_ bs =
+    match (as_, bs) with
+    | [], [] -> Ok ()
+    | (_, body) :: at, b :: bt ->
+        s.current <- b;
+        let* () = scoped s body in
+        if open_block s then s.current.term := Some (Ir.Br join.id);
+        each at bt
+    | _ -> Ok ()
+  in
+  let* () = each arms blocks in
+  s.current <- db;
+  let* () = match default with None -> Ok () | Some xs -> scoped s xs in
+  if open_block s then s.current.term := Some (Ir.Br join.id);
+  s.current <- join;
+  Ok ()
 let lower_func _structs _strings _force_external _function_ = unfinished "lower_func"
 let intrinsic_decls _functions = []
 let lower (_program : Hir.program) = unfinished "lower"
