@@ -253,3 +253,24 @@ let instr_line = function
         index
   | Global_ptr (i, n, t) ->
       Printf.sprintf "  %%v%d = getelementptr %s, ptr @%s, i64 0" i (ty_name t) n
+
+let term_line = function
+  | Ret None -> "  ret void"
+  | Ret (Some (t, v)) -> Printf.sprintf "  ret %s %s" (ty_name t) (value_name v)
+  | Br b -> Printf.sprintf "  br label %%b%d" b
+  | CondBr (c, a, b) ->
+      Printf.sprintf "  br i1 %s, label %%b%d, label %%b%d" (value_name c) a b
+  | Switch (t, v, cases, d) ->
+      Printf.sprintf "  switch %s %s, label %%b%d [ %s ]" (ty_name t) (value_name v) d
+        (String.concat " "
+           (List.map
+              (fun (k, b) -> Printf.sprintf "%s %Ld, label %%b%d" (ty_name t) k b)
+              cases))
+  | Unreachable -> "  unreachable"
+
+let param_string named p =
+  let a =
+    (if p.noalias then " noalias" else "")
+    ^ match p.align with None -> "" | Some n -> Printf.sprintf " noundef align %d" n
+  in
+  ty_name p.ty ^ a ^ if named then " %" ^ p.name else ""
