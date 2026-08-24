@@ -775,4 +775,43 @@ module P = struct
     in
     let* body = block p in
     Ok (Ast.For (init, cond, step, body, s))
+
+  and switch_stmt p =
+    let s = span p in
+    ignore (bump p);
+    let* scr = expr p in
+    skip_newlines p;
+    let* () = expected p Token.Lbrace in
+    let rec cases arms default =
+      skip_newlines p;
+      match (peek p).kind with
+      | Token.Kw_case ->
+          ignore (bump p);
+          let* e = expr p in
+          let* () = expected p Token.Colon in
+          let* b = case_body p in
+          cases ((e, b) :: arms) default
+      | Token.Kw_default ->
+          ignore (bump p);
+          let* () = expected p Token.Colon in
+          let* b = case_body p in
+          cases arms (Some b)
+      | Token.Rbrace ->
+          let* () = expected p Token.Rbrace in
+          Ok (Ast.Switch (scr, List.rev arms, default, s))
+      | _ -> Error [ Diag.error (span p) "expected case, default, or `}`" ]
+    in
+    cases [] None
+
+  and case_body p =
+    skip_newlines p;
+    let rec go acc =
+      if at p Token.Kw_case || at p Token.Kw_default || at p Token.Rbrace then
+        Ok (List.rev acc)
+      else
+        let* x = stmt p in
+        skip_newlines p;
+        go (x :: acc)
+    in
+    go []
 end
