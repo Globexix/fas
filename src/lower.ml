@@ -209,9 +209,179 @@ let pop_scope s =
 
 let find_struct s n =
   List.find_opt (fun (d : Hir.struct_def) -> d.name = n) s.structs
-let unfinished name = Error [ Diag.error Span.synthetic ("lower scaffold: implement " ^ name) ]
 
-let rec expr _state _expression = unfinished "expr"
+let rec expr s = function
+  | Hir.EInt (v, t, _) -> Ok (Ir.Const (ty t, v))
+  | Hir.EBool (v, _) -> Ok (Ir.Const (Ir.I1, if v then 1L else 0L))
+  | Hir.Null (t, _) -> Ok (Ir.Null (ty t))
+  | Hir.EString (i, sp) ->
+      if i < 0 || i >= List.length s.strings then
+        error sp "missing interned string"
+      else
+        let id = fresh s in
+        emit s (Ir.String_ptr (id, i, String.length (List.nth s.strings i) + 1));
+        Ok (Ir.Local (id, Ir.Ptr Ir.I8))
+  | Hir.Local (n, t, sp) -> (
+      match Hashtbl.find_opt s.env n with
+      | None -> error sp ("unknown lowering local `" ^ n ^ "`")
+      | Some p ->
+          let id = fresh s in
+          emit s (Ir.Load (id, ty t, p, align s t));
+          Ok (Ir.Local (id, ty t)))
+  | Hir.Unary (op, e, t, _) -> (
+      let* v = expr s e in
+      let rt = ty t in
+      match op with
+      | Ast.Neg ->
+          let id = fresh s in
+          emit s (Ir.Bin (id, Sub, rt, zero rt, v));
+          Ok (Ir.Local (id, rt))
+      | Bit_not ->
+          let id = fresh s in
+          emit s (Ir.Bin (id, Xor, rt, v, Ir.Const (rt, ones rt)));
+          Ok (Ir.Local (id, rt))
+      | Not ->
+          let b = truth s v in
+          let id = fresh s in
+          emit s (Ir.Cmp (id, Ir.Eq, Ir.I1, b, Ir.Const (Ir.I1, 0L)));
+          Ok (Ir.Local (id, Ir.I1)))
+  | Hir.Binary (((Ast.And | Ast.Or) as op), a, b, _, _) -> lower_short s op a b
+  | Hir.Binary (op, a, b, t, _) ->
+      let* x = expr s a in
+      let* y = expr s b in
+      if List.mem op [ Ast.Eq; Ne; Lt; Le; Gt; Ge ] then (
+        let id = fresh s in
+        emit s (Ir.Cmp (id, cmp_for (Hir.expr_ty a) op, value_ty x, x, y));
+        Ok (Ir.Local (id, Ir.I1)))
+      else Ok (emit_binary s (Hir.expr_ty a) op (ty t) x y)
+  | Hir.Call (Hir.User n, args, t, _) ->
+      let* vs = exprs s args in
+      let av = List.map (fun v -> (value_ty v, v)) vs in
+      if t = Hir.Void then (
+        emit s (Ir.Call (None, Ir.Void, n, av));
+        Ok (Ir.Const (Ir.I1, 0L)))
+      else
+        let id = fresh s in
+        emit s (Ir.Call (Some id, ty t, n, av));
+        Ok (Ir.Local (id, ty t))
+  | Hir.Call (Hir.Builtin b, args, t, _) -> lower_builtin s b args t
+  | Hir.Cast (kind, e, t, _) ->
+      let* v = expr s e in
+      let st = value_ty v and dt = ty t in
+      if st = dt then Ok v
+      else
+        let k =
+          match (st, dt) with
+          | Ir.Ptr _, Ir.Ptr _ -> ""
+          | Ir.Ptr _, _ -> "ptrtoint"
+          | _, Ir.Ptr _ -> "inttoptr"
+          | _, Ir.I1 -> "bool"
+          | Ir.I1, _ -> "zext"
+          | _ -> (
+              match kind with
+              | Ast.Zext -> "zext"
+              | Sext -> "sext"
+              | Trunc -> if st = Ir.I1 then "zext" else "trunc"
+              | Bitcast -> "bitcast")
+        in
+        if k = "" then Ok v
+        else if k = "bool" then Ok (truth s v)
+        else
+          let id = fresh s in
+          emit s (Ir.Cast (id, k, st, v, dt));
+          Ok (Ir.Local (id, dt))
+  | Hir.Deref (e, t, _) -> (
+      let* p = expr s e in
+      match t with
+      | Hir.Array _ -> Ok p
+      | _ ->
+          let id = fresh s in
+          emit s (Ir.Load (id, ty t, p, align s t));
+          Ok (Ir.Local (id, ty t)))
+  | Hir.Address (e, _, _) -> address s e
+  | Hir.Ptr_add (bytes, p, o, _, _) ->
+      let* pv = expr s p in
+      let* ov = expr s o in
+      let base =
+        if bytes then Ir.I8
+        else match Hir.expr_ty p with Hir.Ptr t -> ty t | _ -> Ir.I8
+      in
+      let id = fresh s in
+      emit s (Ir.Gep (id, base, pv, [ Ir.Index ov ]));
+      Ok (Ir.Local (id, Ir.Ptr base))
+  | Hir.Index (a, i, t, _) -> (
+      match Hir.expr_ty a with
+      | Hir.Vec _ ->
+          let* av = expr s a in
+          let* iv = expr s i in
+          let iv = coerce s iv Ir.I32 in
+          let id = fresh s in
+          emit s (Ir.Extract (id, value_ty av, av, iv));
+          Ok (Ir.Local (id, ty t))
+      | _ -> (
+          let* p = index_address s a i in
+          match t with
+          | Hir.Array _ -> Ok p
+          | _ ->
+              let id = fresh s in
+              emit s (Ir.Load (id, ty t, p, align s t));
+              Ok (Ir.Local (id, ty t))))
+  | Hir.Field (a, _, t, off, _) -> (
+      let* p = field_address s a off in
+      match t with
+      | Hir.Array _ -> Ok p
+      | _ ->
+          let id = fresh s in
+          emit s (Ir.Load (id, ty t, p, align s t));
+          Ok (Ir.Local (id, ty t)))
+  | Hir.Sizeof (_, n, _) | Hir.Alignof (_, n, _) | Hir.Offsetof (_, _, n, _) ->
+      Ok (Ir.Const (Ir.I64, Int64.of_int n))
+  | Hir.Ternary (c, a, b, t, _) -> lower_ternary s c a b t
+  | Hir.Splat (e, t, _) ->
+      let* x = expr s e in
+      let vt = ty t in
+      let i1 = fresh s in
+      emit s (Ir.Insert (i1, vt, Ir.Undef vt, Ir.Const (Ir.I32, 0L), x));
+      let i2 = fresh s in
+      emit s (Ir.Shuffle_zero (i2, vt, Ir.Local (i1, vt)));
+      Ok (Ir.Local (i2, vt))
+  | Hir.Const_array (n, t, _) ->
+      let id = fresh s in
+      emit s (Ir.Global_ptr (id, n, ty t));
+      Ok (Ir.Local (id, Ir.Ptr (ty t)))
+  | Hir.Struct_lit (n, xs, t, sp) -> (
+      match find_struct s n with
+      | None -> error sp ("unknown struct `" ^ n ^ "`")
+      | Some d ->
+          let st = ty t in
+          let slot = fresh s in
+          emit s (Ir.Alloca (slot, st, d.align));
+          let p = Ir.Local (slot, Ir.Ptr st) in
+          let rec fields fs es =
+            match (fs, es) with
+            | [], [] -> Ok ()
+            | f :: ft, e :: et ->
+                let id = fresh s in
+                emit s
+                  (Ir.Gep
+                     ( id,
+                       Ir.I8,
+                       p,
+                       [
+                         Ir.Index (Ir.Const (Ir.I64, Int64.of_int f.Hir.offset));
+                       ] ));
+                let* v = expr s e in
+                emit s
+                  (Ir.Store
+                     (ty f.ty, v, Ir.Local (id, Ir.Ptr (ty f.ty)), align s f.ty));
+                fields ft et
+            | _ -> error sp "struct literal arity mismatch"
+          in
+          let* () = fields d.fields xs in
+          let id = fresh s in
+          emit s (Ir.Load (id, st, p, d.align));
+          Ok (Ir.Local (id, st)))
+
 and exprs _state _expressions = unfinished "exprs"
 and lower_builtin _state _builtin _arguments _ty = unfinished "lower_builtin"
 and lower_short _state _operator _left _right = unfinished "lower_short"
