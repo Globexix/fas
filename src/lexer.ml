@@ -1,10 +1,7 @@
 let is_space = function ' ' | '\t' | '\r' -> true | _ -> false
 let is_digit c = c >= '0' && c <= '9'
 let is_hex c = is_digit c || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
-
-let is_ident_start c =
-  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c = '_'
-
+let is_ident_start c = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c = '_'
 let is_ident_continue c = is_ident_start c || is_digit c
 
 let keyword = function
@@ -45,15 +42,11 @@ let lex ?(limits = Limits.default) source =
       let c = text.[offset] in
       if is_space c then loop (offset + 1) count tokens
       else if c = '\n' then
-        let sp =
-          Source.span source ~start_offset:offset ~end_offset:(offset + 1)
-        in
+        let sp = Source.span source ~start_offset:offset ~end_offset:(offset + 1) in
         loop (offset + 1) (count + 1)
           ({ Token.kind = Token.Newline; span = sp } :: tokens)
       else if c = '/' && offset + 1 < n && text.[offset + 1] = '/' then
-        let rec skip i =
-          if i < n && text.[i] <> '\n' then skip (i + 1) else i
-        in
+        let rec skip i = if i < n && text.[i] <> '\n' then skip (i + 1) else i in
         loop (skip (offset + 2)) count tokens
       else if c = '/' && offset + 1 < n && text.[offset + 1] = '*' then
         let rec close i =
@@ -71,8 +64,7 @@ let lex ?(limits = Limits.default) source =
         let stop = ident_end (offset + 1) in
         let value = String.sub text offset (stop - offset) in
         let sp = Source.span source ~start_offset:offset ~end_offset:stop in
-        loop stop (count + 1)
-          ({ Token.kind = keyword value; span = sp } :: tokens)
+        loop stop (count + 1) ({ Token.kind = keyword value; span = sp } :: tokens)
       else if is_digit c then
         let rec number_end i =
           if i < n && (is_ident_continue text.[i] || text.[i] = '_') then
@@ -105,8 +97,7 @@ let lex ?(limits = Limits.default) source =
           | 16 -> is_hex c
           | _ -> false
         in
-        if digits = "" then
-          Error [ diagnostic offset "integer literal has no digits" ]
+        if digits = "" then Error [ diagnostic offset "integer literal has no digits" ]
         else if not (String.for_all valid_digit digits) then
           Error
             [
@@ -115,12 +106,86 @@ let lex ?(limits = Limits.default) source =
             ]
         else
           let sp = Source.span source ~start_offset:offset ~end_offset:stop in
-          loop stop (count + 1)
-            ({ Token.kind = Token.Int clean; span = sp } :: tokens)
+          loop stop (count + 1) ({ Token.kind = Token.Int clean; span = sp } :: tokens)
       else if c = '"' then
         let rec string_end i buffer =
-          if i >= n then
-            Error [ diagnostic offset "unterminated string literal" ]
+          if i >= n then Error [ diagnostic offset "unterminated string literal" ]
           else
             match text.[i] with
             | '"' -> Ok (i + 1, Buffer.contents buffer)
+            | '\\' when i + 1 >= n -> Error [ diagnostic i "unterminated escape" ]
+            | '\\' -> (
+                let value =
+                  match text.[i + 1] with
+                  | 'n' -> Some '\n'
+                  | 't' -> Some '\t'
+                  | 'r' -> Some '\r'
+                  | '\\' -> Some '\\'
+                  | '"' -> Some '"'
+                  | '0' -> Some '\000'
+                  | _ -> None
+                in
+                match value with
+                | None -> Error [ diagnostic i "unknown string escape" ]
+                | Some v ->
+                    Buffer.add_char buffer v;
+                    string_end (i + 2) buffer)
+            | value ->
+                Buffer.add_char buffer value;
+                string_end (i + 1) buffer
+        in
+        match string_end (offset + 1) (Buffer.create 16) with
+        | Error e -> Error e
+        | Ok (stop, value) ->
+            let sp = Source.span source ~start_offset:offset ~end_offset:stop in
+            loop stop (count + 1)
+              ({ Token.kind = Token.String value; span = sp } :: tokens)
+      else
+        let one kind =
+          let sp = Source.span source ~start_offset:offset ~end_offset:(offset + 1) in
+          loop (offset + 1) (count + 1) ({ Token.kind; span = sp } :: tokens)
+        in
+        let two next kind1 kind2 =
+          if offset + 1 < n && text.[offset + 1] = next then
+            let sp = Source.span source ~start_offset:offset ~end_offset:(offset + 2) in
+            loop (offset + 2) (count + 1) ({ Token.kind = kind2; span = sp } :: tokens)
+          else one kind1
+        in
+        match c with
+        | '(' -> one Lparen
+        | ')' -> one Rparen
+        | '{' -> one Lbrace
+        | '}' -> one Rbrace
+        | '[' -> one Lbracket
+        | ']' -> one Rbracket
+        | ',' -> one Comma
+        | ';' -> one Semi
+        | '@' -> one At
+        | '?' -> one Question
+        | ':' -> one Colon
+        | '~' -> one Tilde
+        | '.' when offset + 2 < n && text.[offset + 1] = '.' && text.[offset + 2] = '.'
+          ->
+            let sp = Source.span source ~start_offset:offset ~end_offset:(offset + 3) in
+            loop (offset + 3) (count + 1)
+              ({ Token.kind = Ellipsis; span = sp } :: tokens)
+        | '.' -> one Dot
+        | '+' -> two '=' Plus Plus_eq
+        | '-' -> two '=' Minus Minus_eq
+        | '*' -> two '=' Star Star_eq
+        | '/' -> two '=' Slash Slash_eq
+        | '%' -> two '=' Percent Percent_eq
+        | '=' -> two '=' Assign Eqeq
+        | '!' -> two '=' Not Neq
+        | '<' -> two '=' Lt Le
+        | '>' -> two '=' Gt Ge
+        | '&' ->
+            if offset + 1 < n && text.[offset + 1] = '&' then two '&' Amp Andand
+            else two '=' Amp Amp_eq
+        | '|' ->
+            if offset + 1 < n && text.[offset + 1] = '|' then two '|' Pipe Oror
+            else two '=' Pipe Pipe_eq
+        | '^' -> two '=' Caret Caret_eq
+        | _ -> Error [ diagnostic offset (Printf.sprintf "unexpected character %C" c) ]
+  in
+  loop 0 0 []
