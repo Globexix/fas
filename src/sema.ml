@@ -1,7 +1,3 @@
-[@@@warning "-8-26-32-34-37-39-60-69"]
-
-let unfinished name = Error [ Diag.error Span.synthetic ("sema scaffold: implement " ^ name) ]
-
 module SS = Set.Make (String)
 
 type binding = { ty : Hir.ty }
@@ -1465,7 +1461,37 @@ let check ?(limits = Limits.default) program =
     | _ -> Ok ()
   in
   let* () = Result_list.iter check_func program.items in
-
+  let rec materialize index =
+    if index >= List.length !all_specs then Ok ()
+    else if index >= limits.Limits.max_specializations then
+      error Span.synthetic "const specialization count limit exceeded"
+    else
+      let sp = List.nth !all_specs index in
+      match sp.item with
+      | Ast.Func
+          {
+            params;
+            ret;
+            body = Ast.Statements stmts;
+            attrs;
+            linkage;
+            variadic;
+            _;
+          } ->
+          let* ret = source_ty_diag Span.synthetic ret in
+          let* params = source_params params in
+          let* func =
+            check_function_body ~name:sp.name
+              ~description:"specialized function" ~span:Span.synthetic ~params
+              ~ret ~stmts ~attrs ~linkage:(hir_linkage linkage) ~variadic
+              ~extra_consts:sp.values ~spec_depth:(sp.depth + 1)
+              ~require_return:true
+          in
+          add_func func;
+          materialize (index + 1)
+      | _ -> materialize (index + 1)
+  in
+  let* () = materialize 0 in
   let hconsts =
     List.map
       (fun (n, t, v) -> ({ Hir.name = n; ty = t; bits = v } : Hir.const_def))
