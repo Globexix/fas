@@ -570,10 +570,136 @@ and scoped s xs =
   pop_scope s;
   Ok ()
 
-and stmt _state _statement = unfinished "stmt"
-and stmt_list _state _statements = unfinished "stmt_list"
-and target_address _state _target = unfinished "target_address"
-and vector_lane _state _aggregate _index = unfinished "vector_lane"
+and stmt s = function
+  | Hir.Let (n, t, init, _) -> (
+      let id = fresh s in
+      emit_entry s (Ir.Alloca (id, ty t, align s t));
+      let p = Ir.Local (id, Ir.Ptr (ty t)) in
+      bind_local s n p;
+      match init with
+      | None -> (
+          match t with
+          | Hir.Array _ | Hir.Struct _ | Hir.Vec _ ->
+              emit s (Ir.Store (ty t, Ir.Zero (ty t), p, align s t));
+              Ok ()
+          | _ -> Ok ())
+      | Some e ->
+          let* v = expr s e in
+          emit s (Ir.Store (ty t, v, p, align s t));
+          Ok ())
+  | Hir.Assign (target, e, _) -> (
+      match target with
+      | Hir.AIndex (a, i)
+        when match Hir.expr_ty a with Hir.Vec _ -> true | _ -> false ->
+          let* p, source_ty, vt, loaded, iv = vector_lane s a i in
+          let* x = expr s e in
+          let ins = fresh s in
+          emit s (Ir.Insert (ins, vt, loaded, iv, x));
+          emit s (Ir.Store (vt, Ir.Local (ins, vt), p, align s source_ty));
+          Ok ()
+      | _ ->
+          let* p = target_address s target in
+          let* v = expr s e in
+          let t = Hir.expr_ty e in
+          emit s (Ir.Store (ty t, v, p, align s t));
+          Ok ())
+  | Hir.Compound_assign (target, op, e, t, _) -> (
+      match target with
+      | Hir.AIndex (a, i)
+        when match Hir.expr_ty a with Hir.Vec _ -> true | _ -> false ->
+          (* Vector-lane compound assignment is evaluated exactly once for the
+             base address and index. *)
+          let* p, source_ty, vt, loaded, iv = vector_lane s a i in
+          let eid = fresh s in
+          emit s (Ir.Extract (eid, vt, loaded, iv));
+          let it = ty t in
+          let old = Ir.Local (eid, it) in
+          let* rhs = expr s e in
+          let value = emit_binary s t op it old rhs in
+          let ins = fresh s in
+          emit s (Ir.Insert (ins, vt, loaded, iv, value));
+          emit s (Ir.Store (vt, Ir.Local (ins, vt), p, align s source_ty));
+          Ok ()
+      | _ ->
+          let* p = target_address s target in
+          let it = ty t in
+          let id = fresh s in
+          emit s (Ir.Load (id, it, p, align s t));
+          let old = Ir.Local (id, it) in
+          let* rhs = expr s e in
+          let value = emit_binary s t op it old rhs in
+          emit s (Ir.Store (it, value, p, align s t));
+          Ok ())
+  | Hir.Expr (e, _) ->
+      let* _ = expr s e in
+      Ok ()
+  | Hir.Return (e, _) ->
+      let* v =
+        match e with
+        | None -> Ok None
+        | Some x ->
+            let* y = expr s x in
+            Ok (Some (ty (Hir.expr_ty x), y))
+      in
+      let* () = unwind s 0 in
+      s.current.term := Some (Ir.Ret v);
+      Ok ()
+  | Hir.Block (xs, _) -> scoped s xs
+  | Hir.If (c, a, b, _) -> lower_if s c a b
+  | Hir.Defer (xs, _) -> (
+      match s.defer_scopes with
+      | ds :: rest ->
+          s.defer_scopes <- (xs :: ds) :: rest;
+          Ok ()
+      | [] -> error Span.synthetic "defer outside scope")
+  | Hir.While (c, b, _) -> lower_while s c b
+  | Hir.For (i, c, st, b, _) -> lower_for s i c st b
+  | Hir.Switch (e, arms, d, _) -> lower_switch s e arms d
+  | Hir.Break sp -> (
+      match s.loops with
+      | l :: _ ->
+          let* () = unwind s l.keep_scopes in
+          s.current.term := Some (Ir.Br l.break_to);
+          Ok ()
+      | [] -> error sp "break outside loop or switch")
+  | Hir.Continue sp -> (
+      match s.loops with
+      | l :: _ ->
+          let* () = unwind s l.keep_scopes in
+          s.current.term := Some (Ir.Br l.continue_to);
+          Ok ()
+      | [] -> error sp "continue outside loop")
+
+and stmt_list s xs =
+  List.fold_left
+    (fun r st ->
+      let* () = r in
+      if open_block s then stmt s st else Ok ())
+    (Ok ()) xs
+
+and target_address s = function
+  | Hir.ALocal n -> (
+      match Hashtbl.find_opt s.env n with
+      | Some p -> Ok p
+      | None -> error Span.synthetic ("unknown local `" ^ n ^ "`"))
+  | Hir.ADeref e -> expr s e
+  | Hir.AIndex (a, i) -> index_address s a i
+  | Hir.AField (a, _, off) -> field_address s a off
+
+and vector_lane s aggregate index =
+  let source_ty = Hir.expr_ty aggregate in
+  let* pointer = address s aggregate in
+  let vector_ty = ty source_ty in
+  let loaded_id = fresh s in
+  emit s (Ir.Load (loaded_id, vector_ty, pointer, align s source_ty));
+  let* index = expr s index in
+  Ok
+    ( pointer,
+      source_ty,
+      vector_ty,
+      Ir.Local (loaded_id, vector_ty),
+      coerce s index Ir.I32 )
+
 and lower_if _state _condition _then_body _else_body = unfinished "lower_if"
 and lower_while _state _condition _body = unfinished "lower_while"
 and lower_for _state _init _condition _step _body = unfinished "lower_for"
