@@ -990,8 +990,115 @@ let rec stmt_must_return = function
   | _ -> false
 
 and block_must_return body = List.exists stmt_must_return body
-let rec check_block _context _statements = unfinished "check_block"
-and check_stmt _context _statement = unfinished "check_stmt"
+
+let rec check_block (c : context) stmts =
+  push c;
+  let rec go acc = function
+    | [] ->
+        let out = List.rev acc in
+        pop c;
+        Ok out
+    | s :: rest ->
+        let* x = check_stmt c s in
+        go (x :: acc) rest
+  in
+  go [] stmts
+
+and check_stmt (c : context) = function
+  | Ast.Let { name; ty; init; span } ->
+      let* () =
+        if
+          Option.is_some (lookup name c.consts)
+          || Option.is_some (lookup name c.arrays)
+        then error span (Printf.sprintf "local `%s` shadows a const" name)
+        else Ok ()
+      in
+      let* t = source_ty_diag span ty in
+      let* () =
+        object_type c.structs t
+        |> Result.map_error (fun m -> [ Diag.error span m ])
+      in
+      let* () = add_local name t c span in
+      let* x =
+        match init with
+        | None -> Ok None
+        | Some e ->
+            let* v = check_expr c (Some t) e in
+            let* () = ensure_expected (Hir.expr_ty v) t (Ast.expr_span e) in
+            mark_init name c;
+            Ok (Some v)
+      in
+      Ok (Hir.Let (name, t, x, span))
+  | Ast.Assign (t, e, span) ->
+      let* target = check_target c t in
+      let* expected =
+        match target_ty c target with
+        | Some t -> Ok t
+        | None -> error span "invalid assignment target"
+      in
+      let* v = check_expr c (Some expected) e in
+      let* () = ensure_expected (Hir.expr_ty v) expected span in
+      (match target with Hir.ALocal n -> mark_init n c | _ -> ());
+      Ok (Hir.Assign (target, v, span))
+  | Ast.Compound_assign (t, op, e, span) ->
+      let* target = check_target c t in
+      let* et =
+        match target_ty c target with
+        | Some t -> Ok t
+        | None -> error span "invalid compound assignment target"
+      in
+      let* () =
+        match target with Hir.ALocal n -> require_init n c span | _ -> Ok ()
+      in
+      let* v = check_expr c (Some et) e in
+      let* () = ensure_expected (Hir.expr_ty v) et span in
+      if not (is_numeric et) then
+        error span "compound assignment requires an integer or vector"
+      else Ok (Hir.Compound_assign (target, op, v, et, span))
+  | Ast.Return (e, span) ->
+      let* () =
+        if c.in_defer then error span "return is not allowed inside defer"
+        else Ok ()
+      in
+      let* x =
+        match (e, c.ret_ty) with
+        | None, Hir.Void -> Ok None
+        | Some _, Hir.Void -> error span "void function cannot return a value"
+        | Some e, t ->
+            let* v = check_expr c (Some t) e in
+            let* () = ensure_expected (Hir.expr_ty v) t span in
+            Ok (Some v)
+        | None, _ ->
+            error span
+              ("return value required (expected " ^ ty_name c.ret_ty ^ ")")
+      in
+      Ok (Hir.Return (x, span))
+  | Ast.Expr_stmt (e, s) ->
+      let* x = check_expr c None e in
+      Ok (Hir.Expr (x, s))
+  | Ast.Block (xs, s) ->
+      let* x = check_block c xs in
+      Ok (Hir.Block (x, s))
+  | Ast.If (q, a, b, s) ->
+      let* tq = check_expr c None q in
+      if not (is_truthy (Hir.expr_ty tq)) then
+        error s "if condition must be scalar"
+      else
+        let before = c.initialized in
+        let* ta = check_block c a in
+        let ia = c.initialized in
+        c.initialized <- before;
+        let* tb =
+          match b with
+          | None -> Ok None
+          | Some xs ->
+              let* x = check_block c xs in
+              Ok (Some x)
+        in
+        let ib = c.initialized in
+        c.initialized <- SS.inter ia ib;
+        Ok (Hir.If (tq, ta, tb, s))
+  | _ -> unfinished "check_stmt"
 
 let check ?(limits = Limits.default) (_program : Ast.program) =
   let _ = limits in
