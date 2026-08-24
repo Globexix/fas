@@ -1,0 +1,30 @@
+struct Pair {
+  left i64
+  right i64
+}
+opaque Ctx
+const K u64 = 0x2a
+extern "C" {
+  fn printf(fmt ptr[u8], ...) i32
+}
+@inline
+fn add[N const usize](x i64, y i64) i64 {
+  z i64 = x + y
+  if z > 0 {
+    defer { z += 1 }
+  } else {
+    z = 0
+  }
+  for i u64 = 0; i < 2; i += 1 {
+    z += i
+  }
+  switch z {
+    case 0: return 0
+    default: return z ? z : 1
+  }
+}
+asm fn raw(x i64) i64 {
+  mov rax, rdi
+  # { this brace is in a comment }
+  .ascii "asm fn not a declaration { }"
+}
