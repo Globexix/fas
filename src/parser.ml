@@ -721,4 +721,58 @@ module P = struct
     | Ast.Index (a, i, _) -> Ok (Ast.Target_index (a, i))
     | Ast.Field (a, n, _) -> Ok (Ast.Target_field (a, n))
     | _ -> Error [ Diag.error (Ast.expr_span e) "invalid assignment target" ]
+
+  and assignment_or_expr_with_end p consume_end =
+    let s = span p in
+    let* lhs = expr p in
+    match compound_op (peek p).kind with
+    | Some op ->
+        ignore (bump p);
+        let* rhs = expr p in
+        let* t = target lhs in
+        let* () = finish_statement p consume_end in
+        Ok (Ast.Compound_assign (t, op, rhs, s))
+    | None ->
+        if eat p Token.Assign then
+          let* rhs = expr p in
+          let* t = target lhs in
+          let* () = finish_statement p consume_end in
+          Ok (Ast.Assign (t, rhs, s))
+        else
+          let* () = finish_statement p consume_end in
+          Ok (Ast.Expr_stmt (lhs, s))
+
+  and assignment_or_expr p = assignment_or_expr_with_end p true
+
+  and for_clause p =
+    if starts_type p then declaration_with_end p false
+    else assignment_or_expr_with_end p false
+
+  and for_stmt p =
+    let s = span p in
+    ignore (bump p);
+    let* init =
+      if at p Token.Semi then (
+        ignore (bump p);
+        Ok None)
+      else
+        let* x = for_clause p in
+        let* () = expected p Token.Semi in
+        Ok (Some x)
+    in
+    let* cond =
+      if at p Token.Semi then Ok None
+      else
+        let* e = expr p in
+        Ok (Some e)
+    in
+    let* () = expected p Token.Semi in
+    let* step =
+      if at p Token.Lbrace then Ok None
+      else
+        let* x = for_clause p in
+        Ok (Some x)
+    in
+    let* body = block p in
+    Ok (Ast.For (init, cond, step, body, s))
 end
