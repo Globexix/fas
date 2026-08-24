@@ -260,3 +260,102 @@ module P = struct
   let bind r f = match r with Error e -> Error e | Ok x -> f x
   let ( let* ) = bind
   let span p = (peek p).Token.span
+
+  let rec ty p =
+    match (peek p).kind with
+    | Token.Ident "bool" ->
+        ignore (bump p);
+        Ok Ast.Bool
+    | Token.Ident "void" ->
+        ignore (bump p);
+        Ok Ast.Void
+    | Token.Ident "ptr" ->
+        ignore (bump p);
+        let* () = expected p Token.Lbracket in
+        let* t = ty p in
+        let* () = expected p Token.Rbracket in
+        Ok (Ast.Ptr t)
+    | Token.Ident "arr" ->
+        ignore (bump p);
+        let* () = expected p Token.Lbracket in
+        let* n = integer p in
+        let* () = expected p Token.Comma in
+        let* t = ty p in
+        let* () = expected p Token.Rbracket in
+        Ok (Ast.Array (n, t))
+    | Token.Ident "vec" ->
+        ignore (bump p);
+        let* () = expected p Token.Lbracket in
+        let* n = integer p in
+        let* () = expected p Token.Comma in
+        let* t = ty p in
+        let* () = expected p Token.Rbracket in
+        Ok (Ast.Vec (n, t))
+    | Token.Ident s -> (
+        ignore (bump p);
+        match s with
+        | "u8" -> Ok (Ast.Int Ast.U8)
+        | "u16" -> Ok (Ast.Int Ast.U16)
+        | "u32" -> Ok (Ast.Int Ast.U32)
+        | "u64" -> Ok (Ast.Int Ast.U64)
+        | "i8" -> Ok (Ast.Int Ast.I8)
+        | "i16" -> Ok (Ast.Int Ast.I16)
+        | "i32" -> Ok (Ast.Int Ast.I32)
+        | "i64" -> Ok (Ast.Int Ast.I64)
+        | "usize" -> Ok (Ast.Int Ast.Usize)
+        | "isize" -> Ok (Ast.Int Ast.Isize)
+        | _ ->
+            Ok
+              (if List.mem s !(p.opaques) then Ast.Opaque_type s
+               else Ast.Struct_type s))
+    | t ->
+        Error [ Diag.error (span p) ("expected a type, found " ^ Token.show t) ]
+
+  let starts_type p =
+    match (peek_n p 1).kind with Token.Ident _ -> true | _ -> false
+
+  let attr p =
+    let at_span = span p in
+    let* () = expected p Token.At in
+    let* name = ident p in
+    match name with
+    | "inline" -> Ok Ast.Inline
+    | "noinline" -> Ok Ast.No_inline
+    | "kernel" -> Ok Ast.Kernel
+    | "optimize" -> Ok Ast.Optimize
+    | "expect_no_call" -> Ok Ast.Expect_no_call
+    | "target" ->
+        let* () = expected p Token.Lparen in
+        let* s = string p in
+        let* () = expected p Token.Rparen in
+        Ok (Ast.Target s)
+    | "align" ->
+        let* () = expected p Token.Lparen in
+        let* n = int_value p in
+        let* () = expected p Token.Rparen in
+        Ok (Ast.Align n)
+    | "expect_asm" ->
+        let* () = expected p Token.Lparen in
+        let* s = string p in
+        let* () = expected p Token.Rparen in
+        Ok (Ast.Expect_asm s)
+    | "expect_stack_max" ->
+        let* () = expected p Token.Lparen in
+        let* n = integer p in
+        let* () = expected p Token.Rparen in
+        Ok (Ast.Expect_stack_max n)
+    | _ -> Error [ Diag.error at_span ("unknown attribute `@" ^ name ^ "`") ]
+
+  let compound_op = function
+    | Token.Plus_eq -> Some Ast.Add
+    | Token.Minus_eq -> Some Ast.Sub
+    | Token.Star_eq -> Some Ast.Mul
+    | Token.Slash_eq -> Some Ast.Div
+    | Token.Percent_eq -> Some Ast.Rem
+    | Token.Amp_eq -> Some Ast.Bit_and
+    | Token.Pipe_eq -> Some Ast.Bit_or
+    | Token.Caret_eq -> Some Ast.Bit_xor
+    | _ -> None
+
+  let finish_statement p consume_end = if consume_end then end_stmt p else Ok ()
+
