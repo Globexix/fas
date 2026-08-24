@@ -159,7 +159,7 @@ let extract_asm source limits =
     else scan (i + 1)
   in
   scan 0
-  
+
 module P = struct
   type t = {
     tokens : Token.t array;
@@ -197,8 +197,7 @@ module P = struct
       Error
         [
           Diag.error (peek p).span
-            ("expected " ^ Token.show kind ^ ", found "
-           ^ Token.show (peek p).kind);
+            ("expected " ^ Token.show kind ^ ", found " ^ Token.show (peek p).kind);
         ]
 
   let ident p =
@@ -206,10 +205,7 @@ module P = struct
     | Token.Ident s -> Ok s
     | t ->
         Error
-          [
-            Diag.error (peek p).span
-              ("expected identifier, found " ^ Token.show t);
-          ]
+          [ Diag.error (peek p).span ("expected identifier, found " ^ Token.show t) ]
 
   let skip_newlines p =
     while at p Token.Newline do
@@ -224,11 +220,7 @@ module P = struct
       skip_newlines p;
       Ok ())
     else if at p Token.Rbrace || at p Token.Eof then Ok ()
-    else
-      Error
-        [
-          Diag.error (peek p).span "expected end of statement (newline or `;`)";
-        ]
+    else Error [ Diag.error (peek p).span "expected end of statement (newline or `;`)" ]
 
   let string p =
     match (bump p).kind with
@@ -236,26 +228,21 @@ module P = struct
     | t ->
         Error
           [
-            Diag.error (peek p).span
-              ("expected string literal, found " ^ Token.show t);
+            Diag.error (peek p).span ("expected string literal, found " ^ Token.show t);
           ]
 
   let integer p =
     match (bump p).kind with
     | Token.Int s -> Ok s
     | t ->
-        Error
-          [
-            Diag.error (peek p).span ("expected integer, found " ^ Token.show t);
-          ]
+        Error [ Diag.error (peek p).span ("expected integer, found " ^ Token.show t) ]
 
   let int_value p =
     match integer p with
     | Error e -> Error e
     | Ok s -> (
         try Ok (int_of_string s)
-        with Failure _ ->
-          Error [ Diag.error (peek p).span "integer is out of range" ])
+        with Failure _ -> Error [ Diag.error (peek p).span "integer is out of range" ])
 
   let bind r f = match r with Error e -> Error e | Ok x -> f x
   let ( let* ) = bind
@@ -306,13 +293,11 @@ module P = struct
         | "isize" -> Ok (Ast.Int Ast.Isize)
         | _ ->
             Ok
-              (if List.mem s !(p.opaques) then Ast.Opaque_type s
-               else Ast.Struct_type s))
-    | t ->
-        Error [ Diag.error (span p) ("expected a type, found " ^ Token.show t) ]
+              (if List.mem s !(p.opaques) then Ast.Opaque_type s else Ast.Struct_type s)
+        )
+    | t -> Error [ Diag.error (span p) ("expected a type, found " ^ Token.show t) ]
 
-  let starts_type p =
-    match (peek_n p 1).kind with Token.Ident _ -> true | _ -> false
+  let starts_type p = match (peek_n p 1).kind with Token.Ident _ -> true | _ -> false
 
   let attr p =
     let at_span = span p in
@@ -359,3 +344,140 @@ module P = struct
 
   let finish_statement p consume_end = if consume_end then end_stmt p else Ok ()
 
+  and signature p allow_variadic =
+    let* () = expected p Token.Lparen in
+    skip_newlines p;
+    let rec params acc variadic =
+      if at p Token.Rparen then
+        let* () = expected p Token.Rparen in
+        let* ret = ty p in
+        Ok (List.rev acc, ret, variadic)
+      else if at p Token.Ellipsis then
+        if not allow_variadic then
+          Error [ Diag.error (span p) "`...` is legal only in extern \"C\"" ]
+        else if acc = [] then
+          Error [ Diag.error (span p) "a variadic declaration needs a fixed parameter" ]
+        else
+          let* () = expected p Token.Ellipsis in
+          let* () = expected p Token.Rparen in
+          let* ret = ty p in
+          Ok (List.rev acc, ret, true)
+      else
+        let ps = span p in
+        let* name = ident p in
+        let rec quals noalias align =
+          if at_ident p "noalias" then (
+            ignore (bump p);
+            quals true align)
+          else if at_ident p "aligned" then (
+            ignore (bump p);
+            let* () = expected p Token.Lbracket in
+            let* n = int_value p in
+            let* () = expected p Token.Rbracket in
+            quals noalias (Some n))
+          else Ok (noalias, align)
+        in
+        let* noalias, align = quals false None in
+        let* t = ty p in
+        let param = { Ast.name; ty = t; noalias; align; span = ps } in
+        let* () =
+          if eat p Token.Comma then (
+            skip_newlines p;
+            Ok ())
+          else Ok ()
+        in
+        params (param :: acc) variadic
+    in
+    params [] false
+
+  and extern_block p attrs =
+    let s = span p in
+    if attrs <> [] then
+      Error [ Diag.error s "attributes are not valid on an extern block" ]
+    else
+      let* () = expected p Token.Kw_extern in
+      let* abi = string p in
+      if abi <> "C" then Error [ Diag.error s "only extern \"C\" is supported" ]
+      else
+        let* () = expected p Token.Lbrace in
+        skip_newlines p;
+        let rec ds acc =
+          if at p Token.Rbrace then
+            let* () = expected p Token.Rbrace in
+            let* () = end_stmt p in
+            Ok (List.rev acc)
+          else
+            let* x = fn_item p [] false true in
+            match x with
+            | Ast.Func f ->
+                ds
+                  (Ast.Func
+                     { f with body = Ast.Statements []; linkage = Ast.External_c }
+                  :: acc)
+            | _ -> Error [ Diag.error s "invalid extern declaration" ]
+        in
+        ds []
+
+  and fn_item p attrs asm allow_variadic =
+    let s = span p in
+    let* () = if asm then expected p Token.Kw_asm else Ok () in
+    let* () = expected p Token.Kw_fn in
+    let* name = ident p in
+    let* cps = if asm then Ok [] else const_params p in
+    if cps <> [] then p.generic_names := name :: !(p.generic_names);
+    let* ps, ret, var = signature p allow_variadic in
+    if asm then (
+      skip_newlines p;
+      let* () = expected p Token.Lbrace in
+      skip_newlines p;
+      let* () = expected p Token.Rbrace in
+      let* () = end_stmt p in
+      let raw =
+        match List.find_opt (fun b -> b.name = name) p.bodies with
+        | None -> ""
+        | Some b -> b.text
+      in
+      Ok
+        (Ast.Func
+           {
+             name;
+             params = ps;
+             ret;
+             body = Ast.Asm raw;
+             attrs;
+             linkage = Ast.Internal;
+             variadic = var;
+             const_params = cps;
+             span = s;
+           }))
+    else if allow_variadic then
+      let* () = end_stmt p in
+      Ok
+        (Ast.Func
+           {
+             name;
+             params = ps;
+             ret;
+             body = Ast.Statements [];
+             attrs;
+             linkage = Ast.External_c;
+             variadic = var;
+             const_params = cps;
+             span = s;
+           })
+    else
+      let* body = block p in
+      Ok
+        (Ast.Func
+           {
+             name;
+             params = ps;
+             ret;
+             body = Ast.Statements body;
+             attrs;
+             linkage = Ast.Internal;
+             variadic = var;
+             const_params = cps;
+             span = s;
+           })
+end
