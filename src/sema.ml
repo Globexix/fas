@@ -208,6 +208,109 @@ let fits_int ty value =
         else value >= 0L && value < Int64.shift_left 1L bits
   | Hir.Bool -> value = 0L || value = 1L
   | _ -> false
+
+let lookup name table = List.find_opt (fun (n, _, _) -> n = name) table
+let lookup_sig name c = List.assoc_opt name c.signatures
+
+let lookup_local name c =
+  let rec go = function
+    | [] -> None
+    | h :: t -> (
+        match Hashtbl.find_opt h name with Some x -> Some x | None -> go t)
+  in
+  go !(c.locals)
+
+let add_local name ty c span =
+  let duplicate = Option.is_some (lookup_local name c) in
+  if duplicate then error span (Printf.sprintf "duplicate local `%s`" name)
+  else
+    let h = match !(c.locals) with h :: _ -> h | [] -> Hashtbl.create 8 in
+    Hashtbl.replace h name { ty };
+    if !(c.locals) = [] then c.locals := [ h ];
+    ok ()
+
+let push c = c.locals := Hashtbl.create 8 :: !(c.locals)
+let pop c = match !(c.locals) with _ :: rest -> c.locals := rest | [] -> ()
+
+let require_init name c span =
+  match lookup_local name c with
+  | None -> Ok ()
+  | Some b ->
+      if SS.mem name c.initialized || not (is_scalar b.ty) then Ok ()
+      else error span (Printf.sprintf "use of uninitialized local `%s`" name)
+
+let mark_init name c =
+  match lookup_local name c with
+  | Some _b -> c.initialized <- SS.add name c.initialized
+  | None -> ()
+
+let field_info structs name field =
+  match List.find_opt (fun (s : Hir.struct_def) -> s.name = name) structs with
+  | None -> None
+  | Some (s : Hir.struct_def) ->
+      List.find_opt (fun (f : Hir.field) -> f.name = field) s.fields
+
+let intern_string c s =
+  match List.assoc_opt s c.string_ids with
+  | Some i -> i
+  | None ->
+      let i = List.length c.strings in
+      c.strings <- c.strings @ [ s ];
+      c.string_ids <- (s, i) :: c.string_ids;
+      i
+
+let ptr_compatible actual expected =
+  match (actual, expected) with
+  | Hir.Ptr a, Hir.Ptr b -> (
+      equal actual expected
+      ||
+      match b with
+      | Hir.Int Hir.U8 -> (
+          match a with Hir.Int Hir.U8 | Hir.Opaque _ -> false | _ -> true)
+      | _ -> false)
+  | _ -> false
+
+let compatible actual expected =
+  equal actual expected || ptr_compatible actual expected
+
+let ensure_expected actual expected span =
+  if compatible actual expected then Ok ()
+  else
+    error span
+      (Printf.sprintf "type mismatch: expected %s, got %s" (ty_name expected)
+         (ty_name actual))
+
+let variadic_promote e =
+  match Hir.expr_ty e with
+  | Hir.Bool | Hir.Int (Hir.U8 | Hir.U16) ->
+      Hir.Cast (Ast.Zext, e, Hir.Int Hir.I32, Hir.expr_span e)
+  | Hir.Int (Hir.I8 | Hir.I16) ->
+      Hir.Cast (Ast.Sext, e, Hir.Int Hir.I32, Hir.expr_span e)
+  | _ -> e
+
+let popcount64 x =
+  let rec go n v =
+    if v = 0L then n else go (n + 1) (Int64.logand v (Int64.sub v 1L))
+  in
+  go 0 x
+
+let trailing64 x =
+  if x = 0L then 64
+  else
+    let rec go n v =
+      if Int64.logand v 1L <> 0L then n
+      else go (n + 1) (Int64.shift_right_logical v 1)
+    in
+    go 0 x
+
+let leading64 x =
+  if x = 0L then 64
+  else
+    let rec go n bit =
+      if Int64.logand x bit <> 0L then n
+      else go (n + 1) (Int64.shift_right_logical bit 1)
+    in
+    go 0 Int64.min_int
 let unfinished name = Error [ Diag.error Span.synthetic ("sema scaffold: implement " ^ name) ]
 
 let rec check_expr _context _expected _expression = unfinished "check_expr"
