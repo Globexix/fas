@@ -927,12 +927,69 @@ and check_actuals c policy span formals actuals =
     | _ -> error span "wrong number of arguments"
   in
   loop [] formals actuals
-let check_target _context _target = unfinished "check_target"
-let target_ty _context _target = unfinished "target_ty"
 
-let rec stmt_must_return _statement = false
-and block_must_return _body = false
+let check_target (c : context) = function
+  | Ast.Target_ident (n, span) -> (
+      match lookup_local n c with
+      | Some _b -> Ok (Hir.ALocal n)
+      | None -> error span (Printf.sprintf "unknown assignment target `%s`" n))
+  | Ast.Target_deref e -> (
+      let* x = check_expr c None e in
+      match Hir.expr_ty x with
+      | Hir.Ptr (Hir.Opaque _) ->
+          error (Ast.expr_span e) "cannot dereference opaque pointer"
+      | Hir.Ptr _ -> Ok (Hir.ADeref x)
+      | _ -> error (Ast.expr_span e) "deref assignment requires pointer")
+  | Ast.Target_index (a, i) -> (
+      let* x = check_expr c None a in
+      let* y = check_expr c None i in
+      if not (is_int (Hir.expr_ty y)) then
+        error (Ast.expr_span i) "index must be integer"
+      else
+        match Hir.expr_ty x with
+        | Hir.Array (_, _) | Hir.Vec (_, _) | Hir.Ptr _ ->
+            Ok (Hir.AIndex (x, y))
+        | _ ->
+            error (Ast.expr_span a)
+              "index assignment requires aggregate or pointer")
+  | Ast.Target_field (a, n) -> (
+      let* x = check_expr c None a in
+      match Hir.expr_ty x with
+      | Hir.Struct sn -> (
+          match field_info c.structs sn n with
+          | Some f -> Ok (Hir.AField (x, n, f.offset))
+          | None ->
+              error (Ast.expr_span a) (Printf.sprintf "unknown field `%s`" n))
+      | _ -> error (Ast.expr_span a) "field assignment requires struct")
 
+let target_ty c = function
+  | Hir.ALocal name ->
+      Option.map (fun binding -> binding.ty) (lookup_local name c)
+  | Hir.ADeref expression -> (
+      match Hir.expr_ty expression with Hir.Ptr t -> Some t | _ -> None)
+  | Hir.AIndex (expression, _) -> (
+      match Hir.expr_ty expression with
+      | Hir.Array (_, t) | Hir.Vec (_, t) | Hir.Ptr t -> Some t
+      | _ -> None)
+  | Hir.AField (expression, name, _) -> (
+      match Hir.expr_ty expression with
+      | Hir.Struct struct_name ->
+          Option.map
+            (fun (field : Hir.field) -> field.ty)
+            (field_info c.structs struct_name name)
+      | _ -> None)
+
+let rec stmt_must_return = function
+  | Hir.Return _ -> true
+  | Hir.Block (body, _) -> block_must_return body
+  | Hir.If (_, then_body, Some else_body, _) ->
+      block_must_return then_body && block_must_return else_body
+  | Hir.Switch (_, arms, Some default, _) ->
+      block_must_return default
+      && List.for_all (fun (_, body) -> block_must_return body) arms
+  | _ -> false
+
+and block_must_return body = List.exists stmt_must_return body
 let rec check_block _context _statements = unfinished "check_block"
 and check_stmt _context _statement = unfinished "check_stmt"
 
