@@ -159,3 +159,104 @@ let extract_asm source limits =
     else scan (i + 1)
   in
   scan 0
+  
+module P = struct
+  type t = {
+    tokens : Token.t array;
+    mutable pos : int;
+    names : string list ref;
+    generic_names : string list ref;
+    opaques : string list ref;
+    bodies : raw_body list;
+    limits : Limits.t;
+    mutable depth : int;
+  }
+
+  let peek p = p.tokens.(min p.pos (Array.length p.tokens - 1))
+  let peek_n p n = p.tokens.(min (p.pos + n) (Array.length p.tokens - 1))
+
+  let bump p =
+    let t = peek p in
+    if p.pos < Array.length p.tokens - 1 then p.pos <- p.pos + 1;
+    t
+
+  let at p k = (peek p).Token.kind = k
+
+  let at_ident p name =
+    match (peek p).Token.kind with Token.Ident s -> s = name | _ -> false
+
+  let eat p k =
+    if at p k then (
+      ignore (bump p);
+      true)
+    else false
+
+  let expected p kind =
+    if eat p kind then Ok ()
+    else
+      Error
+        [
+          Diag.error (peek p).span
+            ("expected " ^ Token.show kind ^ ", found "
+           ^ Token.show (peek p).kind);
+        ]
+
+  let ident p =
+    match (bump p).kind with
+    | Token.Ident s -> Ok s
+    | t ->
+        Error
+          [
+            Diag.error (peek p).span
+              ("expected identifier, found " ^ Token.show t);
+          ]
+
+  let skip_newlines p =
+    while at p Token.Newline do
+      ignore (bump p)
+    done
+
+  let end_stmt p =
+    if eat p Token.Semi then (
+      skip_newlines p;
+      Ok ())
+    else if at p Token.Newline then (
+      skip_newlines p;
+      Ok ())
+    else if at p Token.Rbrace || at p Token.Eof then Ok ()
+    else
+      Error
+        [
+          Diag.error (peek p).span "expected end of statement (newline or `;`)";
+        ]
+
+  let string p =
+    match (bump p).kind with
+    | Token.String s -> Ok s
+    | t ->
+        Error
+          [
+            Diag.error (peek p).span
+              ("expected string literal, found " ^ Token.show t);
+          ]
+
+  let integer p =
+    match (bump p).kind with
+    | Token.Int s -> Ok s
+    | t ->
+        Error
+          [
+            Diag.error (peek p).span ("expected integer, found " ^ Token.show t);
+          ]
+
+  let int_value p =
+    match integer p with
+    | Error e -> Error e
+    | Ok s -> (
+        try Ok (int_of_string s)
+        with Failure _ ->
+          Error [ Diag.error (peek p).span "integer is out of range" ])
+
+  let bind r f = match r with Error e -> Error e | Ok x -> f x
+  let ( let* ) = bind
+  let span p = (peek p).Token.span
