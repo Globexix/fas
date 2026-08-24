@@ -231,3 +231,70 @@ let rec expr_name = function
   | Offsetof (t, f, _) -> "offsetof[" ^ type_name t ^ ", " ^ f ^ "]"
   | Splat (e, _) -> "splat(" ^ expr_name e ^ ")"
   | Ternary (c, a, b, _) -> expr_name c ^ " ? " ^ expr_name a ^ " : " ^ expr_name b
+  | Array_lit (xs, _) -> "{" ^ String.concat ", " (List.map expr_name xs) ^ "}"
+  | Struct_lit (n, xs, _) -> n ^ "{" ^ String.concat ", " (List.map expr_name xs) ^ "}"
+
+let rec stmt_lines indent = function
+  | Let { name; ty; init; _ } ->
+      [
+        (indent ^ name ^ " " ^ type_name ty
+        ^ match init with None -> "" | Some e -> " = " ^ expr_name e);
+      ]
+  | Assign (Target_ident (n, _), e, _) -> [ indent ^ n ^ " = " ^ expr_name e ]
+  | Assign (_, e, _) -> [ indent ^ "<target> = " ^ expr_name e ]
+  | Compound_assign (_, _, e, _) -> [ indent ^ "<target> compound= " ^ expr_name e ]
+  | Return (None, _) -> [ indent ^ "return" ]
+  | Return (Some e, _) -> [ indent ^ "return " ^ expr_name e ]
+  | Expr_stmt (e, _) -> [ indent ^ expr_name e ]
+  | Break _ -> [ indent ^ "break" ]
+  | Continue _ -> [ indent ^ "continue" ]
+  | Defer (xs, _) ->
+      ((indent ^ "defer {") :: List.concat_map (stmt_lines (indent ^ "  ")) xs)
+      @ [ indent ^ "}" ]
+  | Block (xs, _) ->
+      ((indent ^ "{") :: List.concat_map (stmt_lines (indent ^ "  ")) xs)
+      @ [ indent ^ "}" ]
+  | If (c, a, b, _) -> (
+      (indent ^ "if " ^ expr_name c ^ " {")
+      :: List.concat_map (stmt_lines (indent ^ "  ")) a
+      @ [ indent ^ "}" ]
+      @
+      match b with
+      | None -> []
+      | Some xs ->
+          ((indent ^ "else {") :: List.concat_map (stmt_lines (indent ^ "  ")) xs)
+          @ [ indent ^ "}" ])
+  | While (c, xs, _) ->
+      (indent ^ "while " ^ expr_name c ^ " {")
+      :: List.concat_map (stmt_lines (indent ^ "  ")) xs
+      @ [ indent ^ "}" ]
+  | For (_, _, _, xs, _) ->
+      ((indent ^ "for ... {") :: List.concat_map (stmt_lines (indent ^ "  ")) xs)
+      @ [ indent ^ "}" ]
+  | Switch (e, _, _, _) -> [ indent ^ "switch " ^ expr_name e ^ " { ... }" ]
+
+let render_item = function
+  | Const { name; ty; value; _ } ->
+      "const " ^ name ^ " " ^ type_name ty ^ " = " ^ expr_name value
+  | Struct { name; fields; align; _ } ->
+      "struct " ^ name
+      ^ (match align with None -> "" | Some n -> Printf.sprintf " @align(%d)" n)
+      ^ " {\n"
+      ^ String.concat "\n"
+          (List.map (fun f -> "  " ^ f.name ^ " " ^ type_name f.ty) fields)
+      ^ "\n}"
+  | Opaque { name; _ } -> "opaque " ^ name
+  | Func { name; params; ret; body; linkage; _ } -> (
+      (match linkage with Internal -> "fn " | External_c -> "extern fn ")
+      ^ name ^ "("
+      ^ String.concat ", "
+          (List.map (fun (p : param) -> p.name ^ " " ^ type_name p.ty) params)
+      ^ ") " ^ type_name ret
+      ^
+      match body with
+      | Asm raw -> " {" ^ raw ^ "}"
+      | Statements xs ->
+          " {\n" ^ String.concat "\n" (List.concat_map (stmt_lines "  ") xs) ^ "\n}")
+
+let render_program program =
+  String.concat "\n\n" (List.map render_item program.items) ^ "\n"
