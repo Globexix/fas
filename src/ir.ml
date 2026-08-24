@@ -330,3 +330,63 @@ let render m =
               f.blocks))
   in
   String.concat "\n" (header @ structs @ globals @ List.map fn m.funcs) ^ "\n"
+
+let render_debug m =
+  let global = function
+    | String_global { name; bytes } ->
+        Printf.sprintf "    String_global { name = %S; bytes = %S }" name bytes
+    | Array_global { name; elem_ty; elems; align } ->
+        Printf.sprintf
+          "    Array_global { name = %S; elem_ty = %s; elems = [%s]; align = %d }" name
+          (ty_name elem_ty)
+          (String.concat "; " (List.map Int64.to_string elems))
+          align
+  in
+  let block (b : block) =
+    String.concat "\n"
+      ([ Printf.sprintf "      Block { id = %d; label = %S; instrs = [" b.id b.label ]
+      @ List.map
+          (fun instruction -> "        " ^ String.trim (instr_line instruction))
+          b.instrs
+      @ [
+          "      ];";
+          "      terminator = " ^ String.trim (term_line b.terminator);
+          "      }";
+        ])
+  in
+  let func (f : func) =
+    let params =
+      f.params
+      |> List.map (fun (p : param) -> Printf.sprintf "%s:%s" p.name (ty_name p.ty))
+      |> String.concat ", "
+    in
+    String.concat "\n"
+      ([
+         Printf.sprintf
+           "    Function { name = %S; params = [%s]; ret = %s; variadic = %b; blocks = \
+            ["
+           f.name params (ty_name f.ret) f.variadic;
+       ]
+      @ List.map block f.blocks @ [ "    ] }" ])
+  in
+  String.concat "\n"
+    ([
+       "Module {";
+       Printf.sprintf "  target_triple = %S;" m.target_triple;
+       Printf.sprintf "  data_layout = %S;" m.data_layout;
+       "  globals = [";
+     ]
+    @ List.map global m.globals @ [ "  ];"; "  functions = [" ] @ List.map func m.funcs
+    @ [ "  ];"; "}" ])
+  ^ "\n"
+
+let raw_assembly m =
+  m.funcs
+  |> List.filter_map (fun (f : func) ->
+      Option.map
+        (fun raw ->
+          Printf.sprintf
+            "\n.text\n.globl %s\n.type %s,@function\n%s:\n%s\n.size %s, .-%s\n" f.name
+            f.name f.name raw f.name f.name)
+        f.asm_body)
+  |> String.concat "\n"
