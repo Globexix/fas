@@ -1034,3 +1034,25 @@ module P = struct
     | t ->
         Error [ Diag.error (span p) ("expected an expression, found " ^ Token.show t) ]
 end
+
+let parse ?(limits = Limits.default) source =
+  match extract_asm source limits with
+  | Error e -> Error e
+  | Ok (clean, bodies) -> (
+      let cleaned = Source.create ~file:(Source.file source) ~text:clean in
+      match Lexer.lex ~limits cleaned with
+      | Error e -> Error e
+      | Ok tokens -> (
+          let p =
+            {
+              P.tokens = Array.of_list tokens;
+              pos = 0;
+              names = ref [];
+              generic_names = ref [];
+              opaques = ref [];
+              bodies;
+              limits;
+              depth = 0;
+            }
+          in
+          match P.items p with Ok items -> Ok { Ast.items } | Error e -> Error e))
