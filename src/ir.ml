@@ -117,8 +117,7 @@ let symbol n =
   if
     String.for_all
       (function
-        | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '.' | '$' -> true
-        | _ -> false)
+        | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '.' | '$' -> true | _ -> false)
       n
   then "@" ^ n
   else "@\"" ^ String.escaped n ^ "\""
@@ -170,3 +169,87 @@ let cmp_name = function
   | Ule -> "ule"
   | Ugt -> "ugt"
   | Uge -> "uge"
+
+let attrs_string attrs =
+  let one = function
+    | Ast.Inline -> Some "inlinehint"
+    | No_inline -> Some "noinline"
+    | Kernel -> Some "optnone noinline"
+    | Target "avx2" -> Some "\"target-features\"=\"+avx2\""
+    | Target "avx512" ->
+        Some "\"target-features\"=\"+avx512f,+avx512dq,+avx512vl,+avx512bw\""
+    | Target t when t <> "x86_64" ->
+        Some
+          (Printf.sprintf "\"target-cpu\"=\"%s\""
+             (match t with
+             | "zen1" -> "znver1"
+             | "zen2" -> "znver2"
+             | "zen3" -> "znver3"
+             | "zen4" -> "znver4"
+             | "zen5" -> "znver5"
+             | x -> x))
+    | _ -> None
+  in
+  match List.filter_map one attrs with [] -> "" | xs -> " " ^ String.concat " " xs
+
+let instr_line = function
+  | Bin (i, op, t, a, b) ->
+      Printf.sprintf "  %%v%d = %s %s %s, %s" i (bin_name op) (ty_name t) (value_name a)
+        (value_name b)
+  | Cmp (i, c, t, a, b) ->
+      Printf.sprintf "  %%v%d = icmp %s %s %s, %s" i (cmp_name c) (ty_name t)
+        (value_name a) (value_name b)
+  | Alloca (i, t, a) -> Printf.sprintf "  %%v%d = alloca %s, align %d" i (ty_name t) a
+  | Load (i, t, p, a) ->
+      Printf.sprintf "  %%v%d = load %s, ptr %s, align %d" i (ty_name t) (value_name p)
+        a
+  | Store (t, v, p, a) ->
+      Printf.sprintf "  store %s %s, ptr %s, align %d" (ty_name t) (value_name v)
+        (value_name p) a
+  | Gep (i, t, p, idxs) ->
+      let one = function
+        | Zero -> "i64 0"
+        | Index v -> ty_name (value_ty v) ^ " " ^ value_name v
+      in
+      Printf.sprintf "  %%v%d = getelementptr %s, ptr %s, %s" i (ty_name t)
+        (value_name p)
+        (String.concat ", " (List.map one idxs))
+  | Cast (i, k, st, v, dt) ->
+      Printf.sprintf "  %%v%d = %s %s %s to %s" i k (ty_name st) (value_name v)
+        (ty_name dt)
+  | Call (Some i, t, n, args) ->
+      Printf.sprintf "  %%v%d = call %s %s(%s)" i (ty_name t) (symbol n)
+        (String.concat ", "
+           (List.map (fun (t, v) -> ty_name t ^ " " ^ value_name v) args))
+  | Call (None, t, n, args) ->
+      Printf.sprintf "  call %s %s(%s)" (ty_name t) (symbol n)
+        (String.concat ", "
+           (List.map (fun (t, v) -> ty_name t ^ " " ^ value_name v) args))
+  | Phi (i, t, xs) ->
+      Printf.sprintf "  %%v%d = phi %s %s" i (ty_name t)
+        (String.concat ", "
+           (List.map (fun (v, b) -> Printf.sprintf "[ %s, %%b%d ]" (value_name v) b) xs))
+  | Select (i, c, a, b) ->
+      Printf.sprintf "  %%v%d = select i1 %s, %s %s, %s %s" i (value_name c)
+        (ty_name (value_ty a))
+        (value_name a)
+        (ty_name (value_ty b))
+        (value_name b)
+  | Extract (i, vt, v, l) ->
+      Printf.sprintf "  %%v%d = extractelement %s %s, i32 %s" i (ty_name vt)
+        (value_name v) (value_name l)
+  | Insert (i, vt, v, l, x) ->
+      Printf.sprintf "  %%v%d = insertelement %s %s, %s %s, i32 %s" i (ty_name vt)
+        (value_name v)
+        (ty_name (value_ty x))
+        (value_name x) (value_name l)
+  | Shuffle_zero (i, vt, v) ->
+      let n = match vt with Vector (n, _) -> n | _ -> 0 in
+      Printf.sprintf
+        "  %%v%d = shufflevector %s %s, %s poison, <%d x i32> zeroinitializer" i
+        (ty_name vt) (value_name v) (ty_name vt) n
+  | String_ptr (i, index, n) ->
+      Printf.sprintf "  %%v%d = getelementptr [%d x i8], ptr @.str.%d, i64 0, i64 0" i n
+        index
+  | Global_ptr (i, n, t) ->
+      Printf.sprintf "  %%v%d = getelementptr %s, ptr @%s, i64 0" i (ty_name t) n
