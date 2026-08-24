@@ -237,3 +237,14 @@ let compute_struct decls name =
   in
   let* fields, size, align = calc [] name in
   Ok { name; fields; size; align }
+
+let render p =
+  let one_struct (s : struct_def) =
+    Printf.sprintf "struct %s size=%d align=%d" s.name s.size s.align
+  in
+  let one_fn f =
+    Printf.sprintf "fn %s(%s) %s" f.name
+      (String.concat ", " (List.map (fun (n, t, _, _) -> n ^ ":" ^ ty_name t) f.params))
+      (ty_name f.ret)
+  in
+  String.concat "\n" (List.map one_struct p.structs @ List.map one_fn p.funcs)
