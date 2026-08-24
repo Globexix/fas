@@ -1098,8 +1098,113 @@ and check_stmt (c : context) = function
         let ib = c.initialized in
         c.initialized <- SS.inter ia ib;
         Ok (Hir.If (tq, ta, tb, s))
-  | _ -> unfinished "check_stmt"
-
+  | Ast.While (q, b, s) ->
+      let* tq = check_expr c None q in
+      if not (is_truthy (Hir.expr_ty tq)) then
+        error s "while condition must be scalar"
+      else
+        let before = c.initialized in
+        c.loop_depth <- c.loop_depth + 1;
+        let checked = check_block c b in
+        c.loop_depth <- c.loop_depth - 1;
+        let* tb = checked in
+        c.initialized <- before;
+        Ok (Hir.While (tq, tb, s))
+  | Ast.For (i, q, step, b, s) ->
+      let* ti =
+        match i with
+        | None -> Ok None
+        | Some x ->
+            let* y = check_stmt c x in
+            Ok (Some y)
+      in
+      let* tq =
+        match q with
+        | None -> Ok None
+        | Some x ->
+            let* y = check_expr c None x in
+            if is_truthy (Hir.expr_ty y) then Ok (Some y)
+            else error (Ast.expr_span x) "for condition must be scalar"
+      in
+      let before = c.initialized in
+      c.loop_depth <- c.loop_depth + 1;
+      let body_result = check_block c b in
+      let* tb = body_result in
+      c.initialized <- before;
+      let* ts =
+        match step with
+        | None -> Ok None
+        | Some x ->
+            let* y = check_stmt c x in
+            Ok (Some y)
+      in
+      (* The loop body and step may never run (zero-iteration loop), so only
+         variables definitely initialized before the loop survive it. The step
+         clause must not leak its definite-assignment effects. *)
+      c.initialized <- before;
+      c.loop_depth <- c.loop_depth - 1;
+      Ok (Hir.For (ti, tq, ts, tb, s))
+  | Ast.Switch (e, arms, d, s) ->
+      let* te = check_expr c None e in
+      let et = Hir.expr_ty te in
+      if not (is_int et || et = Hir.Bool) then
+        error s "switch scrutinee must be an integer or bool"
+      else
+        let before = c.initialized and seen = ref [] in
+        let rec ar acc = function
+          | [] -> Ok (List.rev acc)
+          | (k, b) :: xs ->
+              let* kt, kv =
+                const_expr ~structs:c.structs c.consts (Some et) k
+                |> Result.map_error (fun _ ->
+                    [
+                      Diag.error (Ast.expr_span k)
+                        "case label must be a compile-time constant";
+                    ])
+              in
+              let* () = ensure_expected kt et (Ast.expr_span k) in
+              if List.mem kv !seen then
+                error (Ast.expr_span k)
+                  (Printf.sprintf "duplicate case label `%Ld`" kv)
+              else (
+                seen := kv :: !seen;
+                let tk =
+                  match et with
+                  | Hir.Bool -> Hir.EBool (kv <> 0L, Ast.expr_span k)
+                  | _ -> Hir.EInt (mask_value et kv, et, Ast.expr_span k)
+                in
+                let* tb = check_block c b in
+                ar ((tk, tb) :: acc) xs)
+        in
+        let result = ar [] arms in
+        let* ta = result in
+        c.initialized <- before;
+        let* td =
+          match d with
+          | None -> Ok None
+          | Some x ->
+              let* y = check_block c x in
+              Ok (Some y)
+        in
+        Ok (Hir.Switch (te, ta, td, s))
+  | Ast.Break s ->
+      if c.in_defer then error s "break is not allowed inside defer"
+      else if c.loop_depth = 0 then error s "break outside loop"
+      else Ok (Hir.Break s)
+  | Ast.Continue s ->
+      if c.in_defer then error s "continue is not allowed inside defer"
+      else if c.loop_depth = 0 then error s "continue outside loop"
+      else Ok (Hir.Continue s)
+  | Ast.Defer (xs, s) ->
+      if c.in_defer then error s "nested defer is not allowed"
+      else
+        let before = c.initialized in
+        c.in_defer <- true;
+        let checked = check_block c xs in
+        c.in_defer <- false;
+        c.initialized <- before;
+        let* body = checked in
+        Ok (Hir.Defer (body, s))
 let check ?(limits = Limits.default) (_program : Ast.program) =
   let _ = limits in
   unfinished "check"
