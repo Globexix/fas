@@ -1,2 +1,3 @@
 (test
- (name foundations))
+ (name foundations)
+ (libraries fas_compiler))
