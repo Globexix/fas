@@ -109,6 +109,106 @@ let bin_for t = function
   | Bit_xor -> Xor
   | _ -> Add
 
+let emit_binary s source_ty op ir_ty lhs rhs =
+  let binop = bin_for source_ty op in
+  let result = fresh s in
+  emit s (Ir.Bin (result, binop, ir_ty, lhs, rhs));
+  let value = Ir.Local (result, ir_ty) in
+  match (binop, ir_ty) with
+  | Ir.Srem, (Ir.I8 | Ir.I16 | Ir.I32 | Ir.I64) ->
+      (* LLVM srem is poison for INT_MIN % -1. Every x % -1 is zero, so
+         selecting zero for that divisor preserves language semantics. *)
+      let is_minus_one = fresh s in
+      emit s
+        (Ir.Cmp
+           (is_minus_one, Ir.Eq, ir_ty, rhs, Ir.Const (ir_ty, Int64.minus_one)));
+      let selected = fresh s in
+      emit s
+        (Ir.Select
+           ( selected,
+             Ir.Local (is_minus_one, Ir.I1),
+             Ir.Const (ir_ty, 0L),
+             value ));
+      Ir.Local (selected, ir_ty)
+  | _ -> value
+
+let width = function
+  | Ir.I1 -> 1
+  | I8 -> 8
+  | I16 -> 16
+  | I32 -> 32
+  | I64 -> 64
+  | _ -> 0
+
+let coerce s v target =
+  let from = value_ty v in
+  if from = target then v
+  else
+    let id = fresh s in
+    let k = if width from < width target then "zext" else "trunc" in
+    emit s (Ir.Cast (id, k, from, v, target));
+    Ir.Local (id, target)
+
+let splat_scalar s vector_ty elem_ty value =
+  let value = coerce s value elem_ty in
+  let inserted = fresh s in
+  emit s
+    (Ir.Insert
+       (inserted, vector_ty, Ir.Undef vector_ty, Ir.Const (Ir.I32, 0L), value));
+  let shuffled = fresh s in
+  emit s (Ir.Shuffle_zero (shuffled, vector_ty, Ir.Local (inserted, vector_ty)));
+  Ir.Local (shuffled, vector_ty)
+
+let shift_amount s target value =
+  match target with
+  | Ir.Vector (_, elem_ty) -> splat_scalar s target elem_ty value
+  | _ -> coerce s value target
+
+let rec intrinsic_suffix = function
+  | Ir.I8 -> "i8"
+  | Ir.I16 -> "i16"
+  | Ir.I32 -> "i32"
+  | Ir.I64 -> "i64"
+  | Ir.Vector (lanes, elem) ->
+      Printf.sprintf "v%d%s" lanes (intrinsic_suffix elem)
+  | _ -> invalid_arg "intrinsic_suffix: non-integer type"
+
+let truth s v =
+  match value_ty v with
+  | Ir.I1 -> v
+  | t ->
+      let id = fresh s in
+      emit s
+        (Ir.Cmp
+           (id, Ir.Ne, t, v, match t with Ir.Ptr _ -> Ir.Null t | _ -> zero t));
+      Ir.Local (id, Ir.I1)
+
+let bind_local s name value =
+  let old = Hashtbl.find_opt s.env name in
+  (match s.env_scopes with
+  | scope :: rest -> s.env_scopes <- ((name, old) :: scope) :: rest
+  | [] -> ());
+  Hashtbl.replace s.env name value
+
+let push_scope s =
+  s.env_scopes <- [] :: s.env_scopes;
+  s.defer_scopes <- [] :: s.defer_scopes
+
+let pop_scope s =
+  match (s.env_scopes, s.defer_scopes) with
+  | scope :: er, _ :: dr ->
+      List.iter
+        (fun (n, old) ->
+          match old with
+          | None -> Hashtbl.remove s.env n
+          | Some v -> Hashtbl.replace s.env n v)
+        scope;
+      s.env_scopes <- er;
+      s.defer_scopes <- dr
+  | _ -> ()
+
+let find_struct s n =
+  List.find_opt (fun (d : Hir.struct_def) -> d.name = n) s.structs
 let unfinished name = Error [ Diag.error Span.synthetic ("lower scaffold: implement " ^ name) ]
 
 let rec expr _state _expression = unfinished "expr"
