@@ -1,0 +1,7 @@
+(env
+ (dev
+  (flags
+   (:standard -w @A-4-29-30-40-41-42-44-45-48-70 -warn-error +8+74)))
+ (release
+  (flags
+   (:standard -w @A-4-29-30-40-41-42-44-45-48-70 -warn-error +8+74))))

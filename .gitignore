@@ -1,1 +1,14 @@
-/target
+_build/
+*.annot
+*.cmi
+*.cmo
+*.cmx
+*.cmxa
+*.cmxs
+*.exe
+*.o
+*.a
+*.ll
+*.s
+*.out
+.DS_Store
