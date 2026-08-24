@@ -159,3 +159,75 @@ let stmt_span = function
   | Block (_, span)
   | For (_, _, _, _, span)
   | Switch (_, _, _, span) ->
+      span
+
+let rec type_name = function
+  | Bool -> "bool"
+  | Int U8 -> "u8"
+  | Int U16 -> "u16"
+  | Int U32 -> "u32"
+  | Int U64 -> "u64"
+  | Int I8 -> "i8"
+  | Int I16 -> "i16"
+  | Int I32 -> "i32"
+  | Int I64 -> "i64"
+  | Int Usize -> "usize"
+  | Int Isize -> "isize"
+  | Ptr t -> "ptr[" ^ type_name t ^ "]"
+  | Array (n, t) -> "arr[" ^ n ^ ", " ^ type_name t ^ "]"
+  | Vec (n, t) -> "vec[" ^ n ^ ", " ^ type_name t ^ "]"
+  | Struct_type s | Opaque_type s -> s
+  | Void -> "void"
+
+let rec expr_name = function
+  | Int_lit (s, _) -> s
+  | Bool_lit (true, _) -> "true"
+  | Bool_lit (false, _) -> "false"
+  | Null _ -> "null"
+  | String_lit (s, _) -> Printf.sprintf "%S" s
+  | Ident (s, _) -> s
+  | Unary (op, e, _) ->
+      (match op with Neg -> "-" | Not -> "!" | Bit_not -> "~") ^ expr_name e
+  | Binary (op, l, r, _) ->
+      expr_name l ^ " "
+      ^ (match op with
+        | Add -> "+"
+        | Sub -> "-"
+        | Mul -> "*"
+        | Div -> "/"
+        | Rem -> "%"
+        | Bit_and -> "&"
+        | Bit_or -> "|"
+        | Bit_xor -> "^"
+        | Eq -> "=="
+        | Ne -> "!="
+        | Lt -> "<"
+        | Le -> "<="
+        | Gt -> ">"
+        | Ge -> ">="
+        | And -> "&&"
+        | Or -> "||")
+      ^ " " ^ expr_name r
+  | Call (f, xs, _) ->
+      expr_name f ^ "(" ^ String.concat ", " (List.map expr_name xs) ^ ")"
+  | Const_args (f, xs, _) ->
+      expr_name f ^ "[" ^ String.concat ", " (List.map expr_name xs) ^ "]"
+  | Cast (k, t, e, _) ->
+      (match k with
+        | Zext -> "zext"
+        | Sext -> "sext"
+        | Trunc -> "trunc"
+        | Bitcast -> "bitcast")
+      ^ "[" ^ type_name t ^ "](" ^ expr_name e ^ ")"
+  | Index (a, i, _) -> expr_name a ^ "[" ^ expr_name i ^ "]"
+  | Field (a, n, _) -> expr_name a ^ "." ^ n
+  | Deref (e, _) -> expr_name e ^ ".*"
+  | Addr_of (e, _) -> "&" ^ expr_name e
+  | Ptr_add (bytes, p, o, _) ->
+      (if bytes then "ptr_add_bytes" else "ptr_add")
+      ^ "(" ^ expr_name p ^ ", " ^ expr_name o ^ ")"
+  | Sizeof (t, _) -> "sizeof[" ^ type_name t ^ "]"
+  | Alignof (t, _) -> "alignof[" ^ type_name t ^ "]"
+  | Offsetof (t, f, _) -> "offsetof[" ^ type_name t ^ ", " ^ f ^ "]"
+  | Splat (e, _) -> "splat(" ^ expr_name e ^ ")"
+  | Ternary (c, a, b, _) -> expr_name c ^ " ? " ^ expr_name a ^ " : " ^ expr_name b
