@@ -31,15 +31,11 @@ let run argv =
     Fun.protect ~finally:cleanup (fun () ->
         try
           let out_fd =
-            Unix.openfile out_path
-              [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ]
-              0o600
+            Unix.openfile out_path [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ] 0o600
           in
           let err_fd =
             try
-              Unix.openfile err_path
-                [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ]
-                0o600
+              Unix.openfile err_path [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ] 0o600
             with exn ->
               Unix.close out_fd;
               raise exn
@@ -71,5 +67,4 @@ let run argv =
                     (Unix.error_message code);
               }
         | Sys_error message ->
-            Error
-              { argv; status = Unix.WEXITED 127; stdout = ""; stderr = message })
+            Error { argv; status = Unix.WEXITED 127; stdout = ""; stderr = message })

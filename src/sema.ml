@@ -1067,9 +1067,6 @@ and check_stmt (c : context) = function
             let* y = check_stmt c x in
             Ok (Some y)
       in
-      (* The loop body and step may never run (zero-iteration loop), so only
-         variables definitely initialized before the loop survive it. The step
-         clause must not leak its definite-assignment effects. *)
       c.initialized <- before;
       c.loop_depth <- c.loop_depth - 1;
       Ok (Hir.For (ti, tq, ts, tb, s))

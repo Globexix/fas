@@ -37,10 +37,6 @@ let fresh_block s =
   b
 
 let emit s i = Queue.add i s.current.instrs
-
-(* Static local storage must be in the entry block so LLVM's mem2reg/SROA
-   pipelines can promote it. Binding visibility and initializer effects remain
-   at the declaration site; only the fixed-size alloca is hoisted. *)
 let emit_entry s i = Queue.add i s.entry.instrs
 let open_block s = !(s.current.term) = None
 
@@ -59,8 +55,7 @@ let rec ty = function
   | Hir.Int Hir.U8 | Hir.Int Hir.I8 -> I8
   | Hir.Int Hir.U16 | Hir.Int Hir.I16 -> I16
   | Hir.Int Hir.U32 | Hir.Int Hir.I32 -> I32
-  | Hir.Int Hir.U64 | Hir.Int Hir.I64 | Hir.Int Hir.Usize | Hir.Int Hir.Isize ->
-      I64
+  | Hir.Int Hir.U64 | Hir.Int Hir.I64 | Hir.Int Hir.Usize | Hir.Int Hir.Isize -> I64
   | Hir.Ptr t -> Ir.Ptr (ty t)
   | Hir.Vec (n, t) -> Ir.Vector (n, ty t)
   | Hir.Array (n, t) -> Ir.Array (n, ty t)
@@ -68,9 +63,7 @@ let rec ty = function
   | Hir.Opaque n -> Ir.Struct n
   | Hir.Void -> Ir.Void
 
-let align s t =
-  match Hir.layout s.structs t with Ok (_, a) -> a | Error _ -> 1
-
+let align s t = match Hir.layout s.structs t with Ok (_, a) -> a | Error _ -> 1
 let zero t = Ir.Const (t, 0L)
 
 let ones = function
@@ -112,29 +105,17 @@ let emit_binary s source_ty op ir_ty lhs rhs =
   let value = Ir.Local (result, ir_ty) in
   match (binop, ir_ty) with
   | Ir.Srem, (Ir.I8 | Ir.I16 | Ir.I32 | Ir.I64) ->
-      (* LLVM srem is poison for INT_MIN % -1. Every x % -1 is zero, so
-         selecting zero for that divisor preserves language semantics. *)
       let is_minus_one = fresh s in
       emit s
-        (Ir.Cmp
-           (is_minus_one, Ir.Eq, ir_ty, rhs, Ir.Const (ir_ty, Int64.minus_one)));
+        (Ir.Cmp (is_minus_one, Ir.Eq, ir_ty, rhs, Ir.Const (ir_ty, Int64.minus_one)));
       let selected = fresh s in
       emit s
         (Ir.Select
-           ( selected,
-             Ir.Local (is_minus_one, Ir.I1),
-             Ir.Const (ir_ty, 0L),
-             value ));
+           (selected, Ir.Local (is_minus_one, Ir.I1), Ir.Const (ir_ty, 0L), value));
       Ir.Local (selected, ir_ty)
   | _ -> value
 
-let width = function
-  | Ir.I1 -> 1
-  | I8 -> 8
-  | I16 -> 16
-  | I32 -> 32
-  | I64 -> 64
-  | _ -> 0
+let width = function Ir.I1 -> 1 | I8 -> 8 | I16 -> 16 | I32 -> 32 | I64 -> 64 | _ -> 0
 
 let coerce s v target =
   let from = value_ty v in
@@ -149,8 +130,7 @@ let splat_scalar s vector_ty elem_ty value =
   let value = coerce s value elem_ty in
   let inserted = fresh s in
   emit s
-    (Ir.Insert
-       (inserted, vector_ty, Ir.Undef vector_ty, Ir.Const (Ir.I32, 0L), value));
+    (Ir.Insert (inserted, vector_ty, Ir.Undef vector_ty, Ir.Const (Ir.I32, 0L), value));
   let shuffled = fresh s in
   emit s (Ir.Shuffle_zero (shuffled, vector_ty, Ir.Local (inserted, vector_ty)));
   Ir.Local (shuffled, vector_ty)
@@ -165,8 +145,7 @@ let rec intrinsic_suffix = function
   | Ir.I16 -> "i16"
   | Ir.I32 -> "i32"
   | Ir.I64 -> "i64"
-  | Ir.Vector (lanes, elem) ->
-      Printf.sprintf "v%d%s" lanes (intrinsic_suffix elem)
+  | Ir.Vector (lanes, elem) -> Printf.sprintf "v%d%s" lanes (intrinsic_suffix elem)
   | _ -> invalid_arg "intrinsic_suffix: non-integer type"
 
 let truth s v =
@@ -175,8 +154,7 @@ let truth s v =
   | t ->
       let id = fresh s in
       emit s
-        (Ir.Cmp
-           (id, Ir.Ne, t, v, match t with Ir.Ptr _ -> Ir.Null t | _ -> zero t));
+        (Ir.Cmp (id, Ir.Ne, t, v, match t with Ir.Ptr _ -> Ir.Null t | _ -> zero t));
       Ir.Local (id, Ir.I1)
 
 let bind_local s name value =
@@ -203,16 +181,14 @@ let pop_scope s =
       s.defer_scopes <- dr
   | _ -> ()
 
-let find_struct s n =
-  List.find_opt (fun (d : Hir.struct_def) -> d.name = n) s.structs
+let find_struct s n = List.find_opt (fun (d : Hir.struct_def) -> d.name = n) s.structs
 
 let rec expr s = function
   | Hir.EInt (v, t, _) -> Ok (Ir.Const (ty t, v))
   | Hir.EBool (v, _) -> Ok (Ir.Const (Ir.I1, if v then 1L else 0L))
   | Hir.Null (t, _) -> Ok (Ir.Null (ty t))
   | Hir.EString (i, sp) ->
-      if i < 0 || i >= List.length s.strings then
-        error sp "missing interned string"
+      if i < 0 || i >= List.length s.strings then error sp "missing interned string"
       else
         let id = fresh s in
         emit s (Ir.String_ptr (id, i, String.length (List.nth s.strings i) + 1));
@@ -363,13 +339,10 @@ let rec expr s = function
                      ( id,
                        Ir.I8,
                        p,
-                       [
-                         Ir.Index (Ir.Const (Ir.I64, Int64.of_int f.Hir.offset));
-                       ] ));
+                       [ Ir.Index (Ir.Const (Ir.I64, Int64.of_int f.Hir.offset)) ] ));
                 let* v = expr s e in
                 emit s
-                  (Ir.Store
-                     (ty f.ty, v, Ir.Local (id, Ir.Ptr (ty f.ty)), align s f.ty));
+                  (Ir.Store (ty f.ty, v, Ir.Local (id, Ir.Ptr (ty f.ty)), align s f.ty));
                 fields ft et
             | _ -> error sp "struct literal arity mismatch"
           in
@@ -389,28 +362,18 @@ and lower_builtin s b args t =
       let n = shift_amount s xt n in
       let id = fresh s in
       emit s
-        (Ir.Bin
-           ( id,
-             (match b with Shl -> Ir.Shl | Lshr -> Lshr | _ -> Ashr),
-             xt,
-             x,
-             n ));
+        (Ir.Bin (id, (match b with Shl -> Ir.Shl | Lshr -> Lshr | _ -> Ashr), xt, x, n));
       Ok (Ir.Local (id, xt))
   | (Rotl | Rotr), [ x; n ] ->
       let n = shift_amount s rt n in
       let id = fresh s in
       let base = if b = Rotl then "llvm.fshl." else "llvm.fshr." in
       emit s
-        (Ir.Call
-           ( Some id,
-             rt,
-             base ^ intrinsic_suffix rt,
-             [ (rt, x); (rt, x); (rt, n) ] ));
+        (Ir.Call (Some id, rt, base ^ intrinsic_suffix rt, [ (rt, x); (rt, x); (rt, n) ]));
       Ok (Ir.Local (id, rt))
   | Popcount, [ x ] ->
       let id = fresh s in
-      emit s
-        (Ir.Call (Some id, rt, "llvm.ctpop." ^ intrinsic_suffix rt, [ (rt, x) ]));
+      emit s (Ir.Call (Some id, rt, "llvm.ctpop." ^ intrinsic_suffix rt, [ (rt, x) ]));
       Ok (Ir.Local (id, rt))
   | (Ctz | Clz), [ x ] ->
       let id = fresh s in
@@ -446,8 +409,7 @@ and lower_short s op a b =
        ( id,
          Ir.I1,
          [
-           ( (if op = Ast.And then Ir.Const (Ir.I1, 0L) else Ir.Const (Ir.I1, 1L)),
-             pred );
+           ((if op = Ast.And then Ir.Const (Ir.I1, 0L) else Ir.Const (Ir.I1, 1L)), pred);
            (rv, rp);
          ] ));
   Ok (Ir.Local (id, Ir.I1))
@@ -519,8 +481,7 @@ and field_address s a off =
     else materialize s a
   in
   let id = fresh s in
-  emit s
-    (Ir.Gep (id, Ir.I8, p, [ Ir.Index (Ir.Const (Ir.I64, Int64.of_int off)) ]));
+  emit s (Ir.Gep (id, Ir.I8, p, [ Ir.Index (Ir.Const (Ir.I64, Int64.of_int off)) ]));
   Ok (Ir.Local (id, Ir.Ptr Ir.I8))
 
 let rec emit_defer_body s body =
@@ -544,8 +505,7 @@ and unwind s keep =
   let count = List.length s.defer_scopes - keep in
   let scopes =
     let rec take n xs =
-      if n <= 0 then []
-      else match xs with [] -> [] | x :: xt -> x :: take (n - 1) xt
+      if n <= 0 then [] else match xs with [] -> [] | x :: xt -> x :: take (n - 1) xt
     in
     take count s.defer_scopes
   in
@@ -585,8 +545,8 @@ and stmt s = function
           Ok ())
   | Hir.Assign (target, e, _) -> (
       match target with
-      | Hir.AIndex (a, i)
-        when match Hir.expr_ty a with Hir.Vec _ -> true | _ -> false ->
+      | Hir.AIndex (a, i) when match Hir.expr_ty a with Hir.Vec _ -> true | _ -> false
+        ->
           let* p, source_ty, vt, loaded, iv = vector_lane s a i in
           let* x = expr s e in
           let ins = fresh s in
@@ -601,10 +561,8 @@ and stmt s = function
           Ok ())
   | Hir.Compound_assign (target, op, e, t, _) -> (
       match target with
-      | Hir.AIndex (a, i)
-        when match Hir.expr_ty a with Hir.Vec _ -> true | _ -> false ->
-          (* Vector-lane compound assignment is evaluated exactly once for the
-             base address and index. *)
+      | Hir.AIndex (a, i) when match Hir.expr_ty a with Hir.Vec _ -> true | _ -> false
+        ->
           let* p, source_ty, vt, loaded, iv = vector_lane s a i in
           let eid = fresh s in
           emit s (Ir.Extract (eid, vt, loaded, iv));
@@ -858,14 +816,12 @@ let lower_func structs strings force_external f =
           let p = Ir.Local (id, Ir.Ptr (ty t)) in
           bind_local s n p;
           emit s
-            (Ir.Store
-               (ty t, Ir.Param (n, ty t), p, Option.value ~default:(align s t) a)))
+            (Ir.Store (ty t, Ir.Param (n, ty t), p, Option.value ~default:(align s t) a)))
         f.params;
       let* () = stmt_list s f.body in
       let* () = if open_block s then emit_scope_defers s 0 else Ok () in
       if open_block s then
-        s.current.term :=
-          Some (if s.ret = Ir.Void then Ir.Ret None else Ir.Unreachable);
+        s.current.term := Some (if s.ret = Ir.Void then Ir.Ret None else Ir.Unreachable);
       pop_scope s;
       let blocks =
         List.map
@@ -911,9 +867,7 @@ let intrinsic_decls funcs =
       funcs
   in
   let unique = Hashtbl.create 16 in
-  List.iter
-    (fun (name, ret, args) -> Hashtbl.replace unique name (ret, args))
-    calls;
+  List.iter (fun (name, ret, args) -> Hashtbl.replace unique name (ret, args)) calls;
   Hashtbl.to_seq unique
   |> Seq.map (fun (name, (ret, args)) ->
       {
@@ -921,12 +875,7 @@ let intrinsic_decls funcs =
         params =
           List.mapi
             (fun i ty ->
-              {
-                Ir.name = "a" ^ string_of_int i;
-                ty;
-                noalias = false;
-                align = None;
-              })
+              { Ir.name = "a" ^ string_of_int i; ty; noalias = false; align = None })
             args;
         ret;
         blocks = [];
@@ -986,8 +935,7 @@ let lower (p : Hir.program) =
   in
   let strings =
     List.mapi
-      (fun i x ->
-        Ir.String_global { name = ".str." ^ string_of_int i; bytes = x })
+      (fun i x -> Ir.String_global { name = ".str." ^ string_of_int i; bytes = x })
       p.strings
   in
   let arrays =
@@ -1000,12 +948,9 @@ let lower (p : Hir.program) =
                 name = a.name;
                 elem_ty = ty e;
                 elems = a.elems;
-                align =
-                  (match Hir.layout p.structs e with Ok (_, a) -> a | _ -> 1);
+                align = (match Hir.layout p.structs e with Ok (_, a) -> a | _ -> 1);
               }
-        | _ ->
-            Ir.Array_global
-              { name = a.name; elem_ty = Ir.I8; elems = []; align = 1 })
+        | _ -> Ir.Array_global { name = a.name; elem_ty = Ir.I8; elems = []; align = 1 })
       p.const_arrays
   in
   Ok
