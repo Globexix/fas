@@ -1,3 +1,4 @@
 (library
  (name fas_compiler)
- (wrapped false))
+ (wrapped false)
+ (libraries unix))
