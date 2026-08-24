@@ -73,3 +73,89 @@ and stmt =
 
 and assign_target =
   | Target_ident of string * Span.t
+  | Target_deref of expr
+  | Target_index of expr * expr
+  | Target_field of expr * string
+
+and field = { name : string; ty : ty; span : Span.t }
+
+and param = {
+  name : string;
+  ty : ty;
+  noalias : bool;
+  align : int option;
+  span : Span.t;
+}
+
+and const_param = { name : string; ty : ty; span : Span.t }
+and body = Statements of stmt list | Asm of string
+and linkage = Internal | External_c
+
+and attr =
+  | Inline
+  | No_inline
+  | Kernel
+  | Optimize
+  | Target of string
+  | Align of int
+  | Expect_asm of string
+  | Expect_no_call
+  | Expect_stack_max of string
+
+and item =
+  | Const of { name : string; ty : ty; value : expr; span : Span.t }
+  | Struct of { name : string; fields : field list; align : int option; span : Span.t }
+  | Opaque of { name : string; span : Span.t }
+  | Func of {
+      name : string;
+      params : param list;
+      ret : ty;
+      body : body;
+      attrs : attr list;
+      linkage : linkage;
+      variadic : bool;
+      const_params : const_param list;
+      span : Span.t;
+    }
+
+type program = { items : item list }
+
+let expr_span = function
+  | Int_lit (_, s)
+  | Bool_lit (_, s)
+  | Null s
+  | String_lit (_, s)
+  | Ident (_, s)
+  | Unary (_, _, s)
+  | Binary (_, _, _, s)
+  | Call (_, _, s)
+  | Const_args (_, _, s)
+  | Cast (_, _, _, s)
+  | Index (_, _, s)
+  | Field (_, _, s)
+  | Deref (_, s)
+  | Addr_of (_, s)
+  | Ptr_add (_, _, _, s)
+  | Sizeof (_, s)
+  | Alignof (_, s)
+  | Offsetof (_, _, s)
+  | Splat (_, s)
+  | Ternary (_, _, _, s)
+  | Array_lit (_, s)
+  | Struct_lit (_, _, s) ->
+      s
+
+let stmt_span = function
+  | Let { span; _ }
+  | Assign (_, _, span)
+  | Compound_assign (_, _, _, span)
+  | Return (_, span)
+  | If (_, _, _, span)
+  | While (_, _, span)
+  | Break span
+  | Continue span
+  | Defer (_, span)
+  | Expr_stmt (_, span)
+  | Block (_, span)
+  | For (_, _, _, _, span)
+  | Switch (_, _, _, span) ->
