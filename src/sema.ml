@@ -91,28 +91,21 @@ let is_unsigned = function
   | _ -> false
 
 let is_scalar = function Hir.Bool | Hir.Int _ | Hir.Ptr _ -> true | _ -> false
-
-let is_numeric = function
-  | Hir.Int _ | Hir.Vec (_, Hir.Int _) -> true
-  | _ -> false
-
+let is_numeric = function Hir.Int _ | Hir.Vec (_, Hir.Int _) -> true | _ -> false
 let is_truthy = is_scalar
 let equal = Hir.ty_equal
 let ty_name = Hir.ty_name
 
 let rec object_type (structs : Hir.struct_def list) = function
   | Hir.Void -> Error "void is not an object type"
-  | Hir.Opaque n ->
-      Error ("opaque type `" ^ n ^ "` may only be used behind a pointer")
+  | Hir.Opaque n -> Error ("opaque type `" ^ n ^ "` may only be used behind a pointer")
   | Hir.Ptr _ | Hir.Bool | Hir.Int _ -> Ok ()
   | Hir.Array (n, t) ->
       if n < 0 then Error "negative array length" else object_type structs t
   | Hir.Vec (n, t) when n > 0 -> (
       match t with
       | Hir.Int _ | Hir.Bool | Hir.Ptr _ -> Ok ()
-      | _ ->
-          Error
-            "vector element type must be a scalar (bool, integer, or pointer)")
+      | _ -> Error "vector element type must be a scalar (bool, integer, or pointer)")
   | Hir.Vec _ -> Error "vector lane count must be positive"
   | Hir.Struct n ->
       if List.exists (fun (s : Hir.struct_def) -> s.name = n) structs then Ok ()
@@ -160,9 +153,7 @@ let parse_integer raw =
       | 2 -> String.make 64 '1'
       | _ -> ""
     in
-    let normalized =
-      if radix = 16 then String.uppercase_ascii digits else digits
-    in
+    let normalized = if radix = 16 then String.uppercase_ascii digits else digits in
     let overflow =
       String.length normalized > String.length limit
       || String.length normalized = String.length limit
@@ -174,9 +165,7 @@ let parse_integer raw =
       String.iter
         (fun c ->
           value :=
-            Int64.add
-              (Int64.mul !value (Int64.of_int radix))
-              (Int64.of_int (digit c)))
+            Int64.add (Int64.mul !value (Int64.of_int radix)) (Int64.of_int (digit c)))
         digits;
       Ok !value)
 
@@ -213,8 +202,7 @@ let lookup_sig name c = List.assoc_opt name c.signatures
 let lookup_local name c =
   let rec go = function
     | [] -> None
-    | h :: t -> (
-        match Hashtbl.find_opt h name with Some x -> Some x | None -> go t)
+    | h :: t -> ( match Hashtbl.find_opt h name with Some x -> Some x | None -> go t)
   in
   go !(c.locals)
 
@@ -268,8 +256,7 @@ let ptr_compatible actual expected =
       | _ -> false)
   | _ -> false
 
-let compatible actual expected =
-  equal actual expected || ptr_compatible actual expected
+let compatible actual expected = equal actual expected || ptr_compatible actual expected
 
 let ensure_expected actual expected span =
   if compatible actual expected then Ok ()
@@ -287,17 +274,14 @@ let variadic_promote e =
   | _ -> e
 
 let popcount64 x =
-  let rec go n v =
-    if v = 0L then n else go (n + 1) (Int64.logand v (Int64.sub v 1L))
-  in
+  let rec go n v = if v = 0L then n else go (n + 1) (Int64.logand v (Int64.sub v 1L)) in
   go 0 x
 
 let trailing64 x =
   if x = 0L then 64
   else
     let rec go n v =
-      if Int64.logand v 1L <> 0L then n
-      else go (n + 1) (Int64.shift_right_logical v 1)
+      if Int64.logand v 1L <> 0L then n else go (n + 1) (Int64.shift_right_logical v 1)
     in
     go 0 x
 
@@ -312,9 +296,7 @@ let leading64 x =
 
 let rec const_expr ?(structs = []) consts expected = function
   | Ast.Int_lit (raw, s) ->
-      let* v =
-        parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ])
-      in
+      let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
       if not (fits_int ty v) then
         error s ("integer literal is out of range for " ^ ty_name ty)
@@ -325,16 +307,13 @@ let rec const_expr ?(structs = []) consts expected = function
       | Some (_, t, v) -> Ok (t, v)
       | None -> error s "constant expression requires a known constant")
   | Ast.Unary (Ast.Neg, Ast.Int_lit (raw, is), s) ->
-      let* v =
-        parse_integer raw |> Result.map_error (fun m -> [ Diag.error is m ])
-      in
+      let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error is m ]) in
       let t = Option.value ~default:(Hir.Int Hir.I32) expected in
       let allowed =
         match t with
         | Hir.Int ((Hir.I8 | I16 | I32 | I64 | Isize) as k) ->
             let b = int_bits k in
-            (b = 64 && v = Int64.min_int)
-            || (b < 64 && v = Int64.shift_left 1L (b - 1))
+            (b = 64 && v = Int64.min_int) || (b < 64 && v = Int64.shift_left 1L (b - 1))
         | _ -> false
       in
       if fits_int t v || allowed then Ok (t, mask_value t (Int64.neg v))
@@ -367,8 +346,7 @@ let rec const_expr ?(structs = []) consts expected = function
         error s "division by zero in constant expression"
       else
         let cmp =
-          if is_unsigned lt then Int64.unsigned_compare lv rv
-          else Int64.compare lv rv
+          if is_unsigned lt then Int64.unsigned_compare lv rv else Int64.compare lv rv
         in
         let result =
           match op with
@@ -378,12 +356,8 @@ let rec const_expr ?(structs = []) consts expected = function
           | Bit_and -> Int64.logand lv rv
           | Bit_or -> Int64.logor lv rv
           | Bit_xor -> Int64.logxor lv rv
-          | Div ->
-              if is_unsigned lt then Int64.unsigned_div lv rv
-              else Int64.div lv rv
-          | Rem ->
-              if is_unsigned lt then Int64.unsigned_rem lv rv
-              else Int64.rem lv rv
+          | Div -> if is_unsigned lt then Int64.unsigned_div lv rv else Int64.div lv rv
+          | Rem -> if is_unsigned lt then Int64.unsigned_rem lv rv else Int64.rem lv rv
           | Eq -> if lv = rv then 1L else 0L
           | Ne -> if lv <> rv then 1L else 0L
           | Lt -> if cmp < 0 then 1L else 0L
@@ -478,9 +452,7 @@ let rec const_expr ?(structs = []) consts expected = function
 
 let rec check_expr (c : context) expected = function
   | Ast.Int_lit (raw, s) ->
-      let* v =
-        parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ])
-      in
+      let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
       if not (fits_int ty v) then
         error s ("integer literal is out of range for " ^ ty_name ty)
@@ -500,28 +472,23 @@ let rec check_expr (c : context) expected = function
           match lookup n c.consts with
           | Some (_, t, v) ->
               let rt = Option.value ~default:t expected in
-              if is_int rt && fits_int rt v then
-                Ok (Hir.EInt (mask_value rt v, rt, s))
+              if is_int rt && fits_int rt v then Ok (Hir.EInt (mask_value rt v, rt, s))
               else Ok (Hir.EInt (v, t, s))
           | None -> (
               match lookup n c.arrays with
               | Some (_, t, _) -> Ok (Hir.Const_array (n, t, s))
               | None -> error s (Printf.sprintf "unknown name `%s`" n))))
   | Ast.Unary (Ast.Neg, Ast.Int_lit (raw, is), s) ->
-      let* v =
-        parse_integer raw |> Result.map_error (fun m -> [ Diag.error is m ])
-      in
+      let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error is m ]) in
       let t = Option.value ~default:(Hir.Int Hir.I32) expected in
       let allowed =
         match t with
         | Hir.Int ((Hir.I8 | I16 | I32 | I64 | Isize) as k) ->
             let b = int_bits k in
-            (b = 64 && v = Int64.min_int)
-            || (b < 64 && v = Int64.shift_left 1L (b - 1))
+            (b = 64 && v = Int64.min_int) || (b < 64 && v = Int64.shift_left 1L (b - 1))
         | _ -> false
       in
-      if fits_int t v || allowed then
-        Ok (Hir.EInt (mask_value t (Int64.neg v), t, s))
+      if fits_int t v || allowed then Ok (Hir.EInt (mask_value t (Int64.neg v), t, s))
       else error s ("integer literal is out of range for " ^ ty_name t)
   | Ast.Unary (op, e, s) -> (
       let* te =
@@ -576,8 +543,8 @@ let rec check_expr (c : context) expected = function
         else if
           not
             (equal at bt
-            || (op = Ast.Eq || op = Ast.Ne)
-               && (compatible at bt || compatible bt at))
+            || ((op = Ast.Eq || op = Ast.Ne) && (compatible at bt || compatible bt at))
+            )
         then error s "binary operands must have the same type"
         else
           match op with
@@ -587,12 +554,11 @@ let rec check_expr (c : context) expected = function
           | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge ->
               if is_int at then Ok (Hir.Binary (op, a, b, Hir.Bool, s))
               else error s "ordered comparison requires integer operands"
-          | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and
-          | Ast.Bit_or | Ast.Bit_xor ->
+          | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
+          | Ast.Bit_xor ->
               if is_numeric at then Ok (Hir.Binary (op, a, b, at, s))
               else error s "arithmetic requires integer or vector operands"
-          | Ast.And | Ast.Or ->
-              error s "logical operators are handled separately")
+          | Ast.And | Ast.Or -> error s "logical operators are handled separately")
   | Ast.Call (fn, args, s) -> check_call c None fn args s
   | Ast.Const_args (_fn, _, s) ->
       error s "const-generic specialization is not available in this checkpoint"
@@ -638,8 +604,7 @@ let rec check_expr (c : context) expected = function
   | Ast.Index (a, i, s) -> (
       let* ta = check_expr c None a in
       let* ti = check_expr c None i in
-      if not (is_int (Hir.expr_ty ti)) then
-        error s "array index must be an integer"
+      if not (is_int (Hir.expr_ty ti)) then error s "array index must be an integer"
       else
         match Hir.expr_ty ta with
         | Hir.Array (_, e) | Hir.Vec (_, e) | Hir.Ptr e ->
@@ -664,8 +629,7 @@ let rec check_expr (c : context) expected = function
   | Ast.Addr_of (e, s) -> (
       let* x = check_expr c None e in
       match x with
-      | Hir.Local _ | Hir.Deref _ | Hir.Index _ | Hir.Field _
-      | Hir.Const_array _ ->
+      | Hir.Local _ | Hir.Deref _ | Hir.Index _ | Hir.Field _ | Hir.Const_array _ ->
           Ok (Hir.Address (x, Hir.Ptr (Hir.expr_ty x), s))
       | _ -> error s "cannot take the address of this expression")
   | Ast.Ptr_add (bytes, p, o, s) -> (
@@ -699,8 +663,7 @@ let rec check_expr (c : context) expected = function
       match expected with
       | Some (Hir.Vec (n, elem)) ->
           let* x = check_expr c (Some elem) e in
-          if equal (Hir.expr_ty x) elem then
-            Ok (Hir.Splat (x, Hir.Vec (n, elem), s))
+          if equal (Hir.expr_ty x) elem then Ok (Hir.Splat (x, Hir.Vec (n, elem), s))
           else error s "splat element type mismatch"
       | _ -> error s "splat requires a vector type context")
   | Ast.Ternary (q, a, b, s) ->
@@ -716,9 +679,7 @@ let rec check_expr (c : context) expected = function
   | Ast.Array_lit (_, s) ->
       error s "array literals are only valid in global const declarations"
   | Ast.Struct_lit (n, xs, s) -> (
-      match
-        List.find_opt (fun (d : Hir.struct_def) -> d.name = n) c.structs
-      with
+      match List.find_opt (fun (d : Hir.struct_def) -> d.name = n) c.structs with
       | None -> error s (Printf.sprintf "unknown struct `%s`" n)
       | Some (d : Hir.struct_def) ->
           if List.length xs <> List.length d.fields then
@@ -729,9 +690,7 @@ let rec check_expr (c : context) expected = function
               | [], [] -> Ok (List.rev acc)
               | f :: ft, e :: et ->
                   let* x = check_expr c (Some f.ty) e in
-                  let* () =
-                    ensure_expected (Hir.expr_ty x) f.ty (Ast.expr_span e)
-                  in
+                  let* () = ensure_expected (Hir.expr_ty x) f.ty (Ast.expr_span e) in
                   go (x :: acc) ft et
               | _ -> error s "wrong struct literal arity"
             in
@@ -763,21 +722,17 @@ and check_call c _expected fn args s =
   match fn with
   | Ast.Const_args (Ast.Ident (name, _), cargs, _) -> (
       match List.assoc_opt name c.templates with
-      | None ->
-          error s (Printf.sprintf "unknown const-generic function `%s`" name)
+      | None -> error s (Printf.sprintf "unknown const-generic function `%s`" name)
       | Some (Ast.Func { params; ret; const_params; _ }) ->
           if List.length cargs <> List.length const_params then
-            error s
-              (Printf.sprintf "wrong number of const arguments to `%s`" name)
+            error s (Printf.sprintf "wrong number of const arguments to `%s`" name)
           else
             let rec eval acc cps actual =
               match (cps, actual) with
               | [], [] -> Ok (List.rev acc)
               | cp :: cs, a :: rest ->
                   let* ct = source_ty_diag (Ast.expr_span a) cp.Ast.ty in
-                  let* vt, v =
-                    const_expr ~structs:c.structs c.consts (Some ct) a
-                  in
+                  let* vt, v = const_expr ~structs:c.structs c.consts (Some ct) a in
                   if equal vt ct then eval ((cp.name, ct, v) :: acc) cs rest
                   else error (Ast.expr_span a) "const argument type mismatch"
               | _ -> error s "const argument arity mismatch"
@@ -786,8 +741,7 @@ and check_call c _expected fn args s =
             if c.spec_depth >= c.limits.Limits.max_specialization_depth then
               error s "const specialization recursion depth limit exceeded"
             else if
-              List.length !(c.specializations)
-              >= c.limits.Limits.max_specializations
+              List.length !(c.specializations) >= c.limits.Limits.max_specializations
             then error s "const specialization count limit exceeded"
             else
               let mangled = mangle_specialization name values in
@@ -814,10 +768,8 @@ and check_call c _expected fn args s =
                   depth = c.spec_depth;
                 }
               in
-              if
-                not
-                  (List.exists (same_specialization spec) !(c.specializations))
-              then c.specializations := !(c.specializations) @ [ spec ];
+              if not (List.exists (same_specialization spec) !(c.specializations)) then
+                c.specializations := !(c.specializations) @ [ spec ];
               let* ps =
                 Result_list.map
                   (fun (p : Ast.param) ->
@@ -868,8 +820,8 @@ and check_call c _expected fn args s =
               then Ok (Hir.Call (Hir.Builtin b, [ a; b2 ], Hir.expr_ty a, s))
               else
                 error s
-                  "builtin arguments must be an integer or integer vector and \
-                   an integer shift"
+                  "builtin arguments must be an integer or integer vector and an \
+                   integer shift"
       in
       match builtin with
       | Some b -> check_builtin b
@@ -878,16 +830,11 @@ and check_call c _expected fn args s =
           | None -> error s (Printf.sprintf "unknown function `%s`" name)
           | Some sig_ ->
               if
-                (not sig_.variadic)
-                && List.length args <> List.length sig_.params
+                ((not sig_.variadic) && List.length args <> List.length sig_.params)
                 || (sig_.variadic && List.length args < List.length sig_.params)
-              then
-                error s
-                  (Printf.sprintf "wrong number of arguments to `%s`" name)
+              then error s (Printf.sprintf "wrong number of arguments to `%s`" name)
               else
-                let policy =
-                  if sig_.variadic then Promote_variadic else Reject
-                in
+                let policy = if sig_.variadic then Promote_variadic else Reject in
                 let* xs = check_actuals c policy s sig_.params args in
                 Ok (Hir.Call (Hir.User name, xs, sig_.ret, s))))
   | _ -> error s "call target must be a function name"
@@ -899,14 +846,12 @@ and check_actuals c policy span formals actuals =
         let* trailing =
           match policy with
           | Reject ->
-              if rest = [] then Ok []
-              else error span "wrong number of arguments"
+              if rest = [] then Ok [] else error span "wrong number of arguments"
           | Promote_variadic ->
               Result_list.map
                 (fun expression ->
                   let* value = check_expr c None expression in
-                  if is_scalar (Hir.expr_ty value) then
-                    Ok (variadic_promote value)
+                  if is_scalar (Hir.expr_ty value) then Ok (variadic_promote value)
                   else
                     error (Ast.expr_span expression)
                       "unsupported variadic aggregate argument")
@@ -916,8 +861,7 @@ and check_actuals c policy span formals actuals =
     | (_, expected, _, _) :: formal_rest, expression :: actual_rest ->
         let* value = check_expr c (Some expected) expression in
         let* () =
-          ensure_expected (Hir.expr_ty value) expected
-            (Ast.expr_span expression)
+          ensure_expected (Hir.expr_ty value) expected (Ast.expr_span expression)
         in
         loop (value :: checked) formal_rest actual_rest
     | _ -> error span "wrong number of arguments"
@@ -943,24 +887,19 @@ let check_target (c : context) = function
         error (Ast.expr_span i) "index must be integer"
       else
         match Hir.expr_ty x with
-        | Hir.Array (_, _) | Hir.Vec (_, _) | Hir.Ptr _ ->
-            Ok (Hir.AIndex (x, y))
-        | _ ->
-            error (Ast.expr_span a)
-              "index assignment requires aggregate or pointer")
+        | Hir.Array (_, _) | Hir.Vec (_, _) | Hir.Ptr _ -> Ok (Hir.AIndex (x, y))
+        | _ -> error (Ast.expr_span a) "index assignment requires aggregate or pointer")
   | Ast.Target_field (a, n) -> (
       let* x = check_expr c None a in
       match Hir.expr_ty x with
       | Hir.Struct sn -> (
           match field_info c.structs sn n with
           | Some f -> Ok (Hir.AField (x, n, f.offset))
-          | None ->
-              error (Ast.expr_span a) (Printf.sprintf "unknown field `%s`" n))
+          | None -> error (Ast.expr_span a) (Printf.sprintf "unknown field `%s`" n))
       | _ -> error (Ast.expr_span a) "field assignment requires struct")
 
 let target_ty c = function
-  | Hir.ALocal name ->
-      Option.map (fun binding -> binding.ty) (lookup_local name c)
+  | Hir.ALocal name -> Option.map (fun binding -> binding.ty) (lookup_local name c)
   | Hir.ADeref expression -> (
       match Hir.expr_ty expression with Hir.Ptr t -> Some t | _ -> None)
   | Hir.AIndex (expression, _) -> (
@@ -1004,15 +943,13 @@ and check_stmt (c : context) = function
   | Ast.Let { name; ty; init; span } ->
       let* () =
         if
-          Option.is_some (lookup name c.consts)
-          || Option.is_some (lookup name c.arrays)
+          Option.is_some (lookup name c.consts) || Option.is_some (lookup name c.arrays)
         then error span (Printf.sprintf "local `%s` shadows a const" name)
         else Ok ()
       in
       let* t = source_ty_diag span ty in
       let* () =
-        object_type c.structs t
-        |> Result.map_error (fun m -> [ Diag.error span m ])
+        object_type c.structs t |> Result.map_error (fun m -> [ Diag.error span m ])
       in
       let* () = add_local name t c span in
       let* x =
@@ -1053,8 +990,7 @@ and check_stmt (c : context) = function
       else Ok (Hir.Compound_assign (target, op, v, et, span))
   | Ast.Return (e, span) ->
       let* () =
-        if c.in_defer then error span "return is not allowed inside defer"
-        else Ok ()
+        if c.in_defer then error span "return is not allowed inside defer" else Ok ()
       in
       let* x =
         match (e, c.ret_ty) with
@@ -1065,8 +1001,7 @@ and check_stmt (c : context) = function
             let* () = ensure_expected (Hir.expr_ty v) t span in
             Ok (Some v)
         | None, _ ->
-            error span
-              ("return value required (expected " ^ ty_name c.ret_ty ^ ")")
+            error span ("return value required (expected " ^ ty_name c.ret_ty ^ ")")
       in
       Ok (Hir.Return (x, span))
   | Ast.Expr_stmt (e, s) ->
@@ -1077,8 +1012,7 @@ and check_stmt (c : context) = function
       Ok (Hir.Block (x, s))
   | Ast.If (q, a, b, s) ->
       let* tq = check_expr c None q in
-      if not (is_truthy (Hir.expr_ty tq)) then
-        error s "if condition must be scalar"
+      if not (is_truthy (Hir.expr_ty tq)) then error s "if condition must be scalar"
       else
         let before = c.initialized in
         let* ta = check_block c a in
@@ -1096,8 +1030,7 @@ and check_stmt (c : context) = function
         Ok (Hir.If (tq, ta, tb, s))
   | Ast.While (q, b, s) ->
       let* tq = check_expr c None q in
-      if not (is_truthy (Hir.expr_ty tq)) then
-        error s "while condition must be scalar"
+      if not (is_truthy (Hir.expr_ty tq)) then error s "while condition must be scalar"
       else
         let before = c.initialized in
         c.loop_depth <- c.loop_depth + 1;
@@ -1160,8 +1093,7 @@ and check_stmt (c : context) = function
               in
               let* () = ensure_expected kt et (Ast.expr_span k) in
               if List.mem kv !seen then
-                error (Ast.expr_span k)
-                  (Printf.sprintf "duplicate case label `%Ld`" kv)
+                error (Ast.expr_span k) (Printf.sprintf "duplicate case label `%Ld`" kv)
               else (
                 seen := kv :: !seen;
                 let tk =
@@ -1268,9 +1200,7 @@ let check ?(limits = Limits.default) program =
       |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
     in
     if within_limit t then Ok t
-    else
-      error Span.synthetic
-        "aggregate element count exceeds the configured limit"
+    else error Span.synthetic "aggregate element count exceeds the configured limit"
   in
   let map_params convert params =
     Result_list.map
@@ -1293,23 +1223,19 @@ let check ?(limits = Limits.default) program =
           let* t = source_obj ty in
           match (t, value) with
           | Hir.Array (n, elem), Ast.Array_lit (xs, _) ->
-              if List.length xs <> n then
-                error span "const array length mismatch"
+              if List.length xs <> n then error span "const array length mismatch"
               else
                 let rec values acc = function
                   | [] -> Ok (List.rev acc)
                   | x :: rest ->
                       let* vt, v = const_expr ~structs !consts (Some elem) x in
                       if equal vt elem then values (v :: acc) rest
-                      else
-                        error (Ast.expr_span x)
-                          "const array element type mismatch"
+                      else error (Ast.expr_span x) "const array element type mismatch"
                 in
                 let* vs = values [] xs in
                 arrays := !arrays @ [ (name, t, vs) ];
                 Ok ()
-          | Hir.Array _, _ ->
-              error span "const array needs a brace-list initializer"
+          | Hir.Array _, _ -> error span "const array needs a brace-list initializer"
           | _, Ast.Array_lit _ -> error span "brace-list requires an array type"
           | _, _ ->
               let* vt, v = const_expr ~structs !consts (Some t) value in
@@ -1333,20 +1259,16 @@ let check ?(limits = Limits.default) program =
               let rec dup seen = function
                 | [] -> None
                 | (p : Ast.param) :: xs ->
-                    if List.mem p.name seen then Some p
-                    else dup (p.name :: seen) xs
+                    if List.mem p.name seen then Some p else dup (p.name :: seen) xs
               in
               let* () =
                 match dup [] params with
                 | Some p ->
-                    error p.span
-                      (Printf.sprintf "duplicate parameter `%s`" p.name)
+                    error p.span (Printf.sprintf "duplicate parameter `%s`" p.name)
                 | None -> Ok ()
               in
               let* ps =
-                map_params
-                  (fun (param : Ast.param) -> source_obj param.ty)
-                  params
+                map_params (fun (param : Ast.param) -> source_obj param.ty) params
               in
               let* rt = source_ty_diag span ret in
               if variadic && linkage <> Ast.External_c then
@@ -1389,8 +1311,8 @@ let check ?(limits = Limits.default) program =
       limits;
     }
   in
-  let check_function_body ~name ~description ~span ~params ~ret ~stmts ~attrs
-      ~linkage ~variadic ~extra_consts ~spec_depth ~require_return =
+  let check_function_body ~name ~description ~span ~params ~ret ~stmts ~attrs ~linkage
+      ~variadic ~extra_consts ~spec_depth ~require_return =
     let context = make_context ~extra_consts ~spec_depth ~ret_ty:ret in
     List.iter
       (fun (param_name, param_ty, _, _) ->
@@ -1400,38 +1322,19 @@ let check ?(limits = Limits.default) program =
     let* body = check_block context stmts in
     let* () =
       if require_return && ret <> Hir.Void && not (block_must_return body) then
-        error span
-          (description ^ " `" ^ name ^ "` may reach the end without returning")
+        error span (description ^ " `" ^ name ^ "` may reach the end without returning")
       else Ok ()
     in
     all_strings := context.strings;
     Ok
-      ({
-         Hir.name;
-         params;
-         ret;
-         body;
-         attrs;
-         linkage;
-         variadic;
-         asm_body = None;
-       }
+      ({ Hir.name; params; ret; body; attrs; linkage; variadic; asm_body = None }
         : Hir.func)
   in
   let add_func func = funcs := func :: !funcs in
   let check_func = function
     | Ast.Func
-        {
-          name;
-          params;
-          ret;
-          body;
-          attrs;
-          linkage;
-          variadic;
-          const_params = [];
-          span;
-        } ->
+        { name; params; ret; body; attrs; linkage; variadic; const_params = []; span }
+      ->
         let* ret = source_ty_diag span ret in
         let* params = source_params params in
         let linkage = hir_linkage linkage in
@@ -1451,9 +1354,8 @@ let check ?(limits = Limits.default) program =
                  }
                   : Hir.func)
           | Ast.Statements stmts ->
-              check_function_body ~name ~description:"function" ~span ~params
-                ~ret ~stmts ~attrs ~linkage ~variadic ~extra_consts:[]
-                ~spec_depth:0
+              check_function_body ~name ~description:"function" ~span ~params ~ret
+                ~stmts ~attrs ~linkage ~variadic ~extra_consts:[] ~spec_depth:0
                 ~require_return:(linkage <> Hir.External_c)
         in
         add_func func;
@@ -1469,23 +1371,14 @@ let check ?(limits = Limits.default) program =
       let sp = List.nth !all_specs index in
       match sp.item with
       | Ast.Func
-          {
-            params;
-            ret;
-            body = Ast.Statements stmts;
-            attrs;
-            linkage;
-            variadic;
-            _;
-          } ->
+          { params; ret; body = Ast.Statements stmts; attrs; linkage; variadic; _ } ->
           let* ret = source_ty_diag Span.synthetic ret in
           let* params = source_params params in
           let* func =
-            check_function_body ~name:sp.name
-              ~description:"specialized function" ~span:Span.synthetic ~params
-              ~ret ~stmts ~attrs ~linkage:(hir_linkage linkage) ~variadic
-              ~extra_consts:sp.values ~spec_depth:(sp.depth + 1)
-              ~require_return:true
+            check_function_body ~name:sp.name ~description:"specialized function"
+              ~span:Span.synthetic ~params ~ret ~stmts ~attrs
+              ~linkage:(hir_linkage linkage) ~variadic ~extra_consts:sp.values
+              ~spec_depth:(sp.depth + 1) ~require_return:true
           in
           add_func func;
           materialize (index + 1)
@@ -1499,8 +1392,7 @@ let check ?(limits = Limits.default) program =
   in
   let harrays =
     List.map
-      (fun (n, t, vs) ->
-        ({ Hir.name = n; ty = t; elems = vs } : Hir.const_arr_def))
+      (fun (n, t, vs) -> ({ Hir.name = n; ty = t; elems = vs } : Hir.const_arr_def))
       !arrays
   in
   Ok
