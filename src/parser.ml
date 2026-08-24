@@ -889,4 +889,148 @@ module P = struct
         let* e = unary p in
         Ok (Ast.Unary (Ast.Bit_not, e, s))
     | _ -> postfix p
+
+  and postfix p =
+    let* first = primary p in
+    let rec go e =
+      match (peek p).kind with
+      | Token.Lparen ->
+          let s = span p in
+          let* xs = args p in
+          go (Ast.Call (e, xs, s))
+      | Token.Lbracket -> (
+          let s = span p in
+          ignore (bump p);
+          let* x = expr p in
+          if eat p Token.Comma then
+            let rec xs acc =
+              let* y = expr p in
+              if eat p Token.Comma then xs (y :: acc)
+              else
+                let* () = expected p Token.Rbracket in
+                Ok (List.rev (y :: acc))
+            in
+            let* ys = xs [ x ] in
+            go (Ast.Const_args (e, ys, s))
+          else
+            let* () = expected p Token.Rbracket in
+            match e with
+            | Ast.Ident (n, _) when List.mem n !(p.generic_names) || at p Token.Lparen
+              ->
+                go (Ast.Const_args (e, [ x ], s))
+            | _ -> go (Ast.Index (e, x, s)))
+      | Token.Dot ->
+          let s = span p in
+          ignore (bump p);
+          if eat p Token.Star then go (Ast.Deref (e, s))
+          else
+            let* n = ident p in
+            go (Ast.Field (e, n, s))
+      | Token.Lbrace -> (
+          match e with
+          | Ast.Ident (n, _) when List.mem n !(p.names) ->
+              let s = span p in
+              ignore (bump p);
+              let rec es acc =
+                if at p Token.Rbrace then
+                  let* () = expected p Token.Rbrace in
+                  Ok (List.rev acc)
+                else
+                  let* x = expr p in
+                  let* () =
+                    if eat p Token.Comma then Ok ()
+                    else if at p Token.Rbrace then Ok ()
+                    else
+                      Error
+                        [
+                          Diag.error (span p) "expected comma between literal elements";
+                        ]
+                  in
+                  es (x :: acc)
+              in
+              let* xs = es [] in
+              go (Ast.Struct_lit (n, xs, s))
+          | _ -> Ok e)
+      | _ -> Ok e
+    in
+    go first
+
+  and args p =
+    let* () = expected p Token.Lparen in
+    if eat p Token.Rparen then Ok []
+    else
+      let rec go acc =
+        let* x = expr p in
+        if eat p Token.Comma then go (x :: acc)
+        else
+          let* () = expected p Token.Rparen in
+          Ok (List.rev (x :: acc))
+      in
+      go []
+
+  and primary p =
+    match (peek p).kind with
+    | Token.Int s ->
+        let sp = span p in
+        ignore (bump p);
+        Ok (Ast.Int_lit (s, sp))
+    | Token.String s ->
+        let sp = span p in
+        ignore (bump p);
+        Ok (Ast.String_lit (s, sp))
+    | Token.Lparen ->
+        ignore (bump p);
+        let* e = expr p in
+        let* () = expected p Token.Rparen in
+        Ok e
+    | Token.Ident n ->
+        let sp = span p in
+        ignore (bump p);
+        if n = "true" then Ok (Ast.Bool_lit (true, sp))
+        else if n = "false" then Ok (Ast.Bool_lit (false, sp))
+        else if n = "null" then Ok (Ast.Null sp)
+        else if
+          (n = "zext" || n = "sext" || n = "trunc" || n = "bitcast")
+          && (peek_n p 0).kind = Token.Lbracket
+        then (
+          let kind =
+            match n with
+            | "zext" -> Ast.Zext
+            | "sext" -> Ast.Sext
+            | "trunc" -> Ast.Trunc
+            | _ -> Ast.Bitcast
+          in
+          ignore (bump p);
+          let* t = ty p in
+          let* () = expected p Token.Rbracket in
+          let* () = expected p Token.Lparen in
+          let* e = expr p in
+          let* () = expected p Token.Rparen in
+          Ok (Ast.Cast (kind, t, e, sp)))
+        else if n = "sizeof" || n = "alignof" || n = "offsetof" then
+          let* () = expected p Token.Lbracket in
+          let* t = ty p in
+          if n = "offsetof" then
+            let* () = expected p Token.Comma in
+            let* f = ident p in
+            let* () = expected p Token.Rbracket in
+            Ok (Ast.Offsetof (t, f, sp))
+          else
+            let* () = expected p Token.Rbracket in
+            Ok (if n = "sizeof" then Ast.Sizeof (t, sp) else Ast.Alignof (t, sp))
+        else if n = "splat" && at p Token.Lparen then (
+          ignore (bump p);
+          let* e = expr p in
+          let* () = expected p Token.Rparen in
+          Ok (Ast.Splat (e, sp)))
+        else if (n = "ptr_add" || n = "ptr_add_bytes") && at p Token.Lparen then (
+          ignore (bump p);
+          let* a = expr p in
+          let* () = expected p Token.Comma in
+          let* b = expr p in
+          let* () = expected p Token.Rparen in
+          Ok (Ast.Ptr_add (n = "ptr_add_bytes", a, b, sp)))
+        else Ok (Ast.Ident (n, sp))
+    | t ->
+        Error [ Diag.error (span p) ("expected an expression, found " ^ Token.show t) ]
 end
