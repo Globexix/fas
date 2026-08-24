@@ -119,6 +119,95 @@ let rec object_type (structs : Hir.struct_def list) = function
   | Hir.Struct n ->
       if List.exists (fun (s : Hir.struct_def) -> s.name = n) structs then Ok ()
       else Error ("unknown struct `" ^ n ^ "`")
+
+let parse_integer raw =
+  let clean = String.concat "" (String.split_on_char '_' raw) in
+  let radix, digits =
+    if
+      String.length clean > 2
+      && (String.sub clean 0 2 = "0x" || String.sub clean 0 2 = "0X")
+    then (16, String.sub clean 2 (String.length clean - 2))
+    else if
+      String.length clean > 2
+      && (String.sub clean 0 2 = "0b" || String.sub clean 0 2 = "0B")
+    then (2, String.sub clean 2 (String.length clean - 2))
+    else if
+      String.length clean > 2
+      && (String.sub clean 0 2 = "0o" || String.sub clean 0 2 = "0O")
+    then (8, String.sub clean 2 (String.length clean - 2))
+    else (10, clean)
+  in
+  let value = ref 0L in
+  let digit c =
+    match c with
+    | '0' .. '9' -> Char.code c - 48
+    | 'a' .. 'f' -> Char.code c - 87
+    | 'A' .. 'F' -> Char.code c - 55
+    | _ -> -1
+  in
+  if digits = "" then Error "integer literal has no digits"
+  else
+    let valid =
+      String.for_all
+        (fun c ->
+          let d = digit c in
+          d >= 0 && d < radix)
+        digits
+    in
+    let limit =
+      match radix with
+      | 10 -> "18446744073709551615"
+      | 16 -> "FFFFFFFFFFFFFFFF"
+      | 8 -> "1777777777777777777777"
+      | 2 -> String.make 64 '1'
+      | _ -> ""
+    in
+    let normalized =
+      if radix = 16 then String.uppercase_ascii digits else digits
+    in
+    let overflow =
+      String.length normalized > String.length limit
+      || String.length normalized = String.length limit
+         && String.compare normalized limit > 0
+    in
+    if not valid then Error "invalid integer literal"
+    else if overflow then Error "integer literal overflows 64 bits"
+    else (
+      String.iter
+        (fun c ->
+          value :=
+            Int64.add
+              (Int64.mul !value (Int64.of_int radix))
+              (Int64.of_int (digit c)))
+        digits;
+      Ok !value)
+
+let mask_value ty value =
+  match ty with
+  | Hir.Bool -> if value = 0L then 0L else 1L
+  | Hir.Int k ->
+      let bits = int_bits k in
+      if bits = 64 then value
+      else Int64.logand value (Int64.sub (Int64.shift_left 1L bits) 1L)
+  | Hir.Ptr _ -> value
+  | _ -> value
+
+let fits_int ty value =
+  match ty with
+  | Hir.Int k ->
+      let bits = int_bits k in
+      if bits = 64 then true
+      else
+        let signed =
+          match k with Hir.I8 | I16 | I32 | I64 | Isize -> true | _ -> false
+        in
+        if signed then
+          let range = Int64.shift_left 1L (bits - 1) in
+          let min = Int64.neg range and max = Int64.sub range 1L in
+          value >= min && value <= max
+        else value >= 0L && value < Int64.shift_left 1L bits
+  | Hir.Bool -> value = 0L || value = 1L
+  | _ -> false
 let unfinished name = Error [ Diag.error Span.synthetic ("sema scaffold: implement " ^ name) ]
 
 let rec check_expr _context _expected _expression = unfinished "check_expr"
