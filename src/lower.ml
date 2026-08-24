@@ -382,10 +382,98 @@ let rec expr s = function
           emit s (Ir.Load (id, st, p, d.align));
           Ok (Ir.Local (id, st)))
 
-and exprs _state _expressions = unfinished "exprs"
-and lower_builtin _state _builtin _arguments _ty = unfinished "lower_builtin"
-and lower_short _state _operator _left _right = unfinished "lower_short"
-and lower_ternary _state _condition _then_value _else_value _ty = unfinished "lower_ternary"
+and exprs s xs = Result_list.map (expr s) xs
+
+and lower_builtin s b args t =
+  let* vs = exprs s args in
+  let rt = ty t in
+  match (b, vs) with
+  | (Hir.Shl | Lshr | Ashr), [ x; n ] ->
+      let xt = value_ty x in
+      let n = shift_amount s xt n in
+      let id = fresh s in
+      emit s
+        (Ir.Bin
+           ( id,
+             (match b with Shl -> Ir.Shl | Lshr -> Lshr | _ -> Ashr),
+             xt,
+             x,
+             n ));
+      Ok (Ir.Local (id, xt))
+  | (Rotl | Rotr), [ x; n ] ->
+      let n = shift_amount s rt n in
+      let id = fresh s in
+      let base = if b = Rotl then "llvm.fshl." else "llvm.fshr." in
+      emit s
+        (Ir.Call
+           ( Some id,
+             rt,
+             base ^ intrinsic_suffix rt,
+             [ (rt, x); (rt, x); (rt, n) ] ));
+      Ok (Ir.Local (id, rt))
+  | Popcount, [ x ] ->
+      let id = fresh s in
+      emit s
+        (Ir.Call (Some id, rt, "llvm.ctpop." ^ intrinsic_suffix rt, [ (rt, x) ]));
+      Ok (Ir.Local (id, rt))
+  | (Ctz | Clz), [ x ] ->
+      let id = fresh s in
+      let base = if b = Ctz then "llvm.cttz." else "llvm.ctlz." in
+      emit s
+        (Ir.Call
+           ( Some id,
+             rt,
+             base ^ intrinsic_suffix rt,
+             [ (rt, x); (Ir.I1, Ir.Const (Ir.I1, 1L)) ] ));
+      Ok (Ir.Local (id, rt))
+  | _ -> error Span.synthetic "invalid builtin arity"
+
+and lower_short s op a b =
+  let* lv = expr s a in
+  let lv = truth s lv in
+  let pred = s.current.id and rhs = fresh_block s and join = fresh_block s in
+  s.current.term :=
+    Some
+      (Ir.CondBr
+         ( lv,
+           (if op = Ast.And then rhs.id else join.id),
+           if op = Ast.And then join.id else rhs.id ));
+  s.current <- rhs;
+  let* rv = expr s b in
+  let rv = truth s rv in
+  let rp = s.current.id in
+  if open_block s then s.current.term := Some (Ir.Br join.id);
+  s.current <- join;
+  let id = fresh s in
+  emit s
+    (Ir.Phi
+       ( id,
+         Ir.I1,
+         [
+           ( (if op = Ast.And then Ir.Const (Ir.I1, 0L) else Ir.Const (Ir.I1, 1L)),
+             pred );
+           (rv, rp);
+         ] ));
+  Ok (Ir.Local (id, Ir.I1))
+
+and lower_ternary s c a b t =
+  let* cv = expr s c in
+  let cv = truth s cv in
+  let tb = fresh_block s and eb = fresh_block s and join = fresh_block s in
+  s.current.term := Some (Ir.CondBr (cv, tb.id, eb.id));
+  s.current <- tb;
+  let* tv = expr s a in
+  let tp = s.current.id in
+  if open_block s then s.current.term := Some (Ir.Br join.id);
+  s.current <- eb;
+  let* ev = expr s b in
+  let ep = s.current.id in
+  if open_block s then s.current.term := Some (Ir.Br join.id);
+  s.current <- join;
+  let id = fresh s in
+  emit s (Ir.Phi (id, ty t, [ (tv, tp); (ev, ep) ]));
+  Ok (Ir.Local (id, ty t))
+
 and materialize _state _expression = unfinished "materialize"
 and address _state _expression = unfinished "address"
 and index_address _state _aggregate _index = unfinished "index_address"
