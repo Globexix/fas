@@ -1,7 +1,3 @@
-[@@@warning "-8-26-32-34-37-39-60-69"]
-
-let unfinished name = Error [ Diag.error Span.synthetic ("lower scaffold: implement " ^ name) ]
-
 type block_state = {
   id : int;
   instrs : Ir.instr Queue.t;
@@ -801,6 +797,223 @@ and lower_switch s e arms default =
   if open_block s then s.current.term := Some (Ir.Br join.id);
   s.current <- join;
   Ok ()
-let lower_func _structs _strings _force_external _function_ = unfinished "lower_func"
-let intrinsic_decls _functions = []
-let lower (_program : Hir.program) = unfinished "lower"
+
+let lower_func structs strings force_external f =
+  let params =
+    List.map
+      (fun (n, t, noalias, align) ->
+        ({ Ir.name = n; ty = ty t; noalias; align } : Ir.param))
+      f.Hir.params
+  in
+  match f.asm_body with
+  | Some raw ->
+      Ok
+        {
+          Ir.name = f.name;
+          params;
+          ret = ty f.ret;
+          blocks = [];
+          linkage = Ir.External;
+          variadic = f.variadic;
+          attrs = f.attrs;
+          asm_body = Some raw;
+        }
+  | None when f.linkage = Hir.External_c && f.body = [] ->
+      Ok
+        {
+          Ir.name = f.name;
+          params;
+          ret = ty f.ret;
+          blocks = [];
+          linkage = Ir.External;
+          variadic = f.variadic;
+          attrs = f.attrs;
+          asm_body = None;
+        }
+  | None ->
+      let entry = { id = 0; instrs = Queue.create (); term = ref None } in
+      let blocks = Queue.create () in
+      Queue.add entry blocks;
+      let s =
+        {
+          next_value = 0;
+          next_block = 1;
+          blocks;
+          entry;
+          current = entry;
+          env = Hashtbl.create 32;
+          env_scopes = [];
+          ret = ty f.ret;
+          structs;
+          strings;
+          defer_scopes = [];
+          loops = [];
+        }
+      in
+      push_scope s;
+      List.iter
+        (fun (n, t, _, a) ->
+          let id = fresh s in
+          emit s (Ir.Alloca (id, ty t, Option.value ~default:(align s t) a));
+          let p = Ir.Local (id, Ir.Ptr (ty t)) in
+          bind_local s n p;
+          emit s
+            (Ir.Store
+               (ty t, Ir.Param (n, ty t), p, Option.value ~default:(align s t) a)))
+        f.params;
+      let* () = stmt_list s f.body in
+      let* () = if open_block s then emit_scope_defers s 0 else Ok () in
+      if open_block s then
+        s.current.term :=
+          Some (if s.ret = Ir.Void then Ir.Ret None else Ir.Unreachable);
+      pop_scope s;
+      let blocks =
+        List.map
+          (fun b ->
+            ({
+               Ir.id = b.id;
+               label = "b" ^ string_of_int b.id;
+               instrs = List.of_seq (Queue.to_seq b.instrs);
+               terminator = Option.value ~default:Ir.Unreachable !(b.term);
+             }
+              : Ir.block))
+          (List.of_seq (Queue.to_seq s.blocks))
+      in
+      Ok
+        {
+          Ir.name = f.name;
+          params;
+          ret = ty f.ret;
+          blocks;
+          linkage =
+            (if f.name = "main" || force_external then Ir.External
+             else if f.linkage = Hir.Internal then Ir.Internal
+             else External);
+          variadic = f.variadic;
+          attrs = f.attrs;
+          asm_body = None;
+        }
+
+let intrinsic_decls funcs =
+  let calls =
+    List.concat_map
+      (fun (f : Ir.func) ->
+        List.concat_map
+          (fun (b : Ir.block) ->
+            List.filter_map
+              (function
+                | Ir.Call (_, ret, name, args)
+                  when String.starts_with ~prefix:"llvm." name ->
+                    Some (name, ret, List.map fst args)
+                | _ -> None)
+              b.instrs)
+          f.blocks)
+      funcs
+  in
+  let unique = Hashtbl.create 16 in
+  List.iter
+    (fun (name, ret, args) -> Hashtbl.replace unique name (ret, args))
+    calls;
+  Hashtbl.to_seq unique
+  |> Seq.map (fun (name, (ret, args)) ->
+      {
+        Ir.name;
+        params =
+          List.mapi
+            (fun i ty ->
+              {
+                Ir.name = "a" ^ string_of_int i;
+                ty;
+                noalias = false;
+                align = None;
+              })
+            args;
+        ret;
+        blocks = [];
+        linkage = Ir.External;
+        variadic = false;
+        attrs = [];
+        asm_body = None;
+      })
+  |> List.of_seq
+  |> List.sort (fun (a : Ir.func) b -> String.compare a.name b.name)
+
+let lower (p : Hir.program) =
+  let asm_words =
+    List.concat_map
+      (fun (f : Hir.func) ->
+        match f.asm_body with
+        | None -> []
+        | Some raw ->
+            String.split_on_char ' '
+              (String.map
+                 (fun c ->
+                   if
+                     (c >= 'a' && c <= 'z')
+                     || (c >= 'A' && c <= 'Z')
+                     || (c >= '0' && c <= '9')
+                     || c = '_'
+                   then c
+                   else ' ')
+                 raw))
+      p.funcs
+  in
+  let* funcs =
+    Result_list.map
+      (fun (f : Hir.func) ->
+        lower_func p.Hir.structs p.strings (List.mem f.name asm_words) f)
+      p.funcs
+  in
+  let structs =
+    List.map
+      (fun (d : Hir.struct_def) ->
+        (let used =
+           List.fold_left
+             (fun n (f : Hir.field) ->
+               let sz =
+                 match Hir.layout p.structs f.ty with Ok (s, _) -> s | _ -> 0
+               in
+               max n (f.offset + sz))
+             0 d.fields
+         in
+         {
+           Ir.name = d.name;
+           fields = List.map (fun (f : Hir.field) -> ty f.ty) d.fields;
+           tail_padding = max 0 (d.size - used);
+         }
+          : Ir.struct_def))
+      p.structs
+  in
+  let strings =
+    List.mapi
+      (fun i x ->
+        Ir.String_global { name = ".str." ^ string_of_int i; bytes = x })
+      p.strings
+  in
+  let arrays =
+    List.map
+      (fun (a : Hir.const_arr_def) ->
+        match a.ty with
+        | Hir.Array (_, e) ->
+            Ir.Array_global
+              {
+                name = a.name;
+                elem_ty = ty e;
+                elems = a.elems;
+                align =
+                  (match Hir.layout p.structs e with Ok (_, a) -> a | _ -> 1);
+              }
+        | _ ->
+            Ir.Array_global
+              { name = a.name; elem_ty = Ir.I8; elems = []; align = 1 })
+      p.const_arrays
+  in
+  Ok
+    {
+      Ir.target_triple = "x86_64-unknown-linux-gnu";
+      data_layout =
+        "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128";
+      structs;
+      globals = strings @ arrays;
+      funcs = funcs @ intrinsic_decls funcs;
+    }
