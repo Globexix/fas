@@ -15,18 +15,14 @@ let write_file path text =
     (fun () -> output_string channel text)
 
 let tool name default =
-  match Sys.getenv_opt name with
-  | Some value when value <> "" -> value
-  | _ -> default
+  match Sys.getenv_opt name with Some value when value <> "" -> value | _ -> default
 
 let tool_error label failure =
   Diag.error Span.synthetic
     (Printf.sprintf "%s failed: %s" label failure.Process.stderr)
 
 let ( let* ) result next =
-  match result with
-  | Ok value -> next value
-  | Error diagnostics -> Error diagnostics
+  match result with Ok value -> next value | Error diagnostics -> Error diagnostics
 
 let run_tool label argv =
   match Process.run argv with
@@ -46,18 +42,11 @@ let llc_opt level = Printf.sprintf "-O%d" (optimization_level level)
 let run_llc config llc ~filetype ~input ~output =
   run_tool llc
     [|
-      llc;
-      llc_opt config.Cli.optimization;
-      "-filetype=" ^ filetype;
-      input;
-      "-o";
-      output;
+      llc; llc_opt config.Cli.optimization; "-filetype=" ^ filetype; input; "-o"; output;
     |]
 
 let build_assembly config ir llc opt_path asm_path =
-  let* () =
-    run_llc config llc ~filetype:"asm" ~input:opt_path ~output:asm_path
-  in
+  let* () = run_llc config llc ~filetype:"asm" ~input:opt_path ~output:asm_path in
   let* generated =
     read_file asm_path
     |> Result.map_error (fun message ->
@@ -104,15 +93,11 @@ let emit_tools_unprotected config ir =
           Ok ""
       | Cli.Obj ->
           let* _ = build_assembly config ir llc opt_path asm_path in
-          let* () =
-            run_tool cc [| cc; "-c"; asm_path; "-o"; config.output ^ ".o" |]
-          in
+          let* () = run_tool cc [| cc; "-c"; asm_path; "-o"; config.output ^ ".o" |] in
           Ok ""
       | Cli.Executable ->
           let* _ = build_assembly config ir llc opt_path asm_path in
-          let* () =
-            run_tool cc [| cc; asm_path; "-o"; config.output; "-no-pie" |]
-          in
+          let* () = run_tool cc [| cc; asm_path; "-o"; config.output; "-no-pie" |] in
           Ok ""
       | Cli.Ast | Cli.Ir | Cli.Llvm ->
           invalid_arg "Driver.emit_tools: non-tool emission")
@@ -128,3 +113,38 @@ let emit_tools config ir =
             (Printf.sprintf "backend %s(%s) failed: %s" operation argument
                (Unix.error_message code));
         ]
+
+let run config =
+  let rec parse_files acc = function
+    | [] -> Ok (List.rev acc)
+    | path :: rest -> (
+        match read_file path with
+        | Error message ->
+            Error
+              [
+                Diag.error Span.synthetic
+                  (Printf.sprintf "cannot read %s: %s" path message);
+              ]
+        | Ok text -> (
+            let source = Source.create ~file:path ~text in
+            match Parser.parse source with
+            | Error diagnostics -> Error diagnostics
+            | Ok program -> parse_files (program :: acc) rest))
+  in
+  match parse_files [] config.Cli.inputs with
+  | Error diagnostics -> Error diagnostics
+  | Ok programs -> (
+      let program =
+        {
+          Ast.items = List.concat (List.map (fun program -> program.Ast.items) programs);
+        }
+      in
+      if config.emit = Cli.Ast then Ok (Ast.render_program program)
+      else
+        let* hir = Sema.check program in
+        let* ir = Lower.lower hir in
+        match config.emit with
+        | Cli.Ast -> assert false
+        | Cli.Ir -> Ok (Ir.render_debug ir)
+        | Cli.Llvm -> Ok (Ir.render ir)
+        | Cli.Asm | Cli.Obj | Cli.Executable -> emit_tools config ir)
