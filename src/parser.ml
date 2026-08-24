@@ -616,4 +616,109 @@ module P = struct
              const_params = cps;
              span = s;
            })
+
+  and block p =
+    let s = span p in
+    let* () = expected p Token.Lbrace in
+    p.depth <- p.depth + 1;
+    if p.depth > p.limits.Limits.max_nesting then
+      Error [ Diag.error s "block nesting exceeds the configured limit" ]
+    else (
+      skip_newlines p;
+      let rec go acc =
+        if at p Token.Rbrace then (
+          let* () = expected p Token.Rbrace in
+          p.depth <- p.depth - 1;
+          Ok (List.rev acc))
+        else if at p Token.Eof then Error [ Diag.error s "unterminated block" ]
+        else
+          let* x = stmt p in
+          skip_newlines p;
+          go (x :: acc)
+      in
+      go [])
+
+  and stmt p =
+    match (peek p).kind with
+    | Token.Kw_return ->
+        let s = span p in
+        ignore (bump p);
+        let* x =
+          if at p Token.Newline || at p Token.Semi || at p Token.Rbrace then Ok None
+          else
+            let* e = expr p in
+            Ok (Some e)
+        in
+        let* () = end_stmt p in
+        Ok (Ast.Return (x, s))
+    | Token.Kw_if ->
+        let s = span p in
+        ignore (bump p);
+        let* c = expr p in
+        let* a = block p in
+        skip_newlines p;
+        let* b =
+          if eat p Token.Kw_else then (
+            skip_newlines p;
+            if at p Token.Kw_if then
+              let* x = stmt p in
+              Ok (Some [ x ])
+            else
+              let* x = block p in
+              Ok (Some x))
+          else Ok None
+        in
+        Ok (Ast.If (c, a, b, s))
+    | Token.Kw_while ->
+        let s = span p in
+        ignore (bump p);
+        let* c = expr p in
+        let* b = block p in
+        Ok (Ast.While (c, b, s))
+    | Token.Kw_for -> for_stmt p
+    | Token.Kw_switch -> switch_stmt p
+    | Token.Kw_break ->
+        let s = span p in
+        ignore (bump p);
+        let* () = end_stmt p in
+        Ok (Ast.Break s)
+    | Token.Kw_continue ->
+        let s = span p in
+        ignore (bump p);
+        let* () = end_stmt p in
+        Ok (Ast.Continue s)
+    | Token.Kw_defer ->
+        let s = span p in
+        ignore (bump p);
+        let* b = block p in
+        Ok (Ast.Defer (b, s))
+    | Token.Lbrace ->
+        let s = span p in
+        let* b = block p in
+        Ok (Ast.Block (b, s))
+    | Token.Ident _ when starts_type p -> declaration p
+    | _ -> assignment_or_expr p
+
+  and declaration_with_end p consume_end =
+    let s = span p in
+    let* name = ident p in
+    let* ty = ty p in
+    let* init =
+      if eat p Token.Assign then
+        let* e = expr p in
+        Ok (Some e)
+      else Ok None
+    in
+    let* () = finish_statement p consume_end in
+    Ok (Ast.Let { name; ty; init; span = s })
+
+  and declaration p = declaration_with_end p true
+
+  and target e =
+    match e with
+    | Ast.Ident (n, span) -> Ok (Ast.Target_ident (n, span))
+    | Ast.Deref (x, _) -> Ok (Ast.Target_deref x)
+    | Ast.Index (a, i, _) -> Ok (Ast.Target_index (a, i))
+    | Ast.Field (a, n, _) -> Ok (Ast.Target_field (a, n))
+    | _ -> Error [ Diag.error (Ast.expr_span e) "invalid assignment target" ]
 end
