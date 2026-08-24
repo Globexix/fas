@@ -742,11 +742,191 @@ let rec check_expr (c : context) expected = function
             let* xs = go [] d.fields xs in
             Ok (Hir.Struct_lit (n, xs, Hir.Struct n, s)))
 
-and const_key_value _ty _value = "<unfinished>"
-and mangle_specialization name _values = name
-and same_specialization _left _right = false
-and check_call _context _expected _fn _args _span = unfinished "check_call"
-and check_actuals _context _policy _span _formals _actuals = unfinished "check_actuals"
+and const_key_value (t : Hir.ty) v = Hir.ty_name t ^ ":" ^ Int64.to_string v
+
+and mangle_specialization base values =
+  base ^ "$spec$"
+  ^ string_of_int (String.length base)
+  ^ ":"
+  ^ String.concat ";"
+      (List.map
+         (fun (n, t, v) ->
+           string_of_int (String.length n) ^ ":" ^ n ^ "=" ^ const_key_value t v)
+         values)
+
+and same_specialization a b =
+  let _ = a.item in
+  let _ = a.depth in
+  a.name = b.name
+  && List.length a.values = List.length b.values
+  && List.for_all2
+       (fun (n, t, v) (n2, t2, v2) -> n = n2 && equal t t2 && v = v2)
+       a.values b.values
+
+and check_call c _expected fn args s =
+  match fn with
+  | Ast.Const_args (Ast.Ident (name, _), cargs, _) -> (
+      match List.assoc_opt name c.templates with
+      | None ->
+          error s (Printf.sprintf "unknown const-generic function `%s`" name)
+      | Some (Ast.Func { params; ret; const_params; _ }) ->
+          if List.length cargs <> List.length const_params then
+            error s
+              (Printf.sprintf "wrong number of const arguments to `%s`" name)
+          else
+            let rec eval acc cps actual =
+              match (cps, actual) with
+              | [], [] -> Ok (List.rev acc)
+              | cp :: cs, a :: rest ->
+                  let* ct = source_ty_diag (Ast.expr_span a) cp.Ast.ty in
+                  let* vt, v =
+                    const_expr ~structs:c.structs c.consts (Some ct) a
+                  in
+                  if equal vt ct then eval ((cp.name, ct, v) :: acc) cs rest
+                  else error (Ast.expr_span a) "const argument type mismatch"
+              | _ -> error s "const argument arity mismatch"
+            in
+            let* values = eval [] const_params cargs in
+            if c.spec_depth >= c.limits.Limits.max_specialization_depth then
+              error s "const specialization recursion depth limit exceeded"
+            else if
+              List.length !(c.specializations)
+              >= c.limits.Limits.max_specializations
+            then error s "const specialization count limit exceeded"
+            else
+              let mangled = mangle_specialization name values in
+              let spec =
+                {
+                  item =
+                    Ast.Func
+                      {
+                        name;
+                        params;
+                        ret;
+                        body =
+                          (match List.assoc_opt name c.templates with
+                          | Some (Ast.Func x) -> x.body
+                          | _ -> Ast.Statements []);
+                        attrs = [];
+                        linkage = Ast.Internal;
+                        variadic = false;
+                        const_params;
+                        span = s;
+                      };
+                  name = mangled;
+                  values;
+                  depth = c.spec_depth;
+                }
+              in
+              if
+                not
+                  (List.exists (same_specialization spec) !(c.specializations))
+              then c.specializations := !(c.specializations) @ [ spec ];
+              let* ps =
+                Result_list.map
+                  (fun (p : Ast.param) ->
+                    let* t = source_ty_diag p.span p.ty in
+                    Ok (p.name, t, p.noalias, p.align))
+                  params
+              in
+              let* rt = source_ty_diag s ret in
+              let* checked = check_actuals c Reject s ps args in
+              Ok (Hir.Call (Hir.User mangled, checked, rt, s))
+      | Some _ -> error s "const-generic symbol is not a function")
+  | Ast.Ident (name, _) -> (
+      let builtin =
+        match name with
+        | "shl" -> Some Hir.Shl
+        | "lshr" -> Some Lshr
+        | "ashr" -> Some Ashr
+        | "rotl" -> Some Rotl
+        | "rotr" -> Some Rotr
+        | "popcount" -> Some Popcount
+        | "ctz" -> Some Ctz
+        | "clz" -> Some Clz
+        | _ -> None
+      in
+      let check_builtin b =
+        match b with
+        | Hir.Popcount | Hir.Ctz | Hir.Clz ->
+            if List.length args <> 1 then
+              error s (Printf.sprintf "builtin `%s` expects one argument" name)
+            else
+              let* a = check_expr c None (List.hd args) in
+              if is_int (Hir.expr_ty a) then
+                Ok (Hir.Call (Hir.Builtin b, [ a ], Hir.expr_ty a, s))
+              else error s "builtin argument must be an integer"
+        | _ ->
+            if List.length args <> 2 then
+              error s (Printf.sprintf "builtin `%s` expects two arguments" name)
+            else
+              let* a = check_expr c None (List.hd args) in
+              let* b2 = check_expr c None (List.hd (List.tl args)) in
+              if
+                (is_int (Hir.expr_ty a)
+                ||
+                match Hir.expr_ty a with
+                | Hir.Vec (_, Hir.Int _) -> true
+                | _ -> false)
+                && is_int (Hir.expr_ty b2)
+              then Ok (Hir.Call (Hir.Builtin b, [ a; b2 ], Hir.expr_ty a, s))
+              else
+                error s
+                  "builtin arguments must be an integer or integer vector and \
+                   an integer shift"
+      in
+      match builtin with
+      | Some b -> check_builtin b
+      | None -> (
+          match lookup_sig name c with
+          | None -> error s (Printf.sprintf "unknown function `%s`" name)
+          | Some sig_ ->
+              if
+                (not sig_.variadic)
+                && List.length args <> List.length sig_.params
+                || (sig_.variadic && List.length args < List.length sig_.params)
+              then
+                error s
+                  (Printf.sprintf "wrong number of arguments to `%s`" name)
+              else
+                let policy =
+                  if sig_.variadic then Promote_variadic else Reject
+                in
+                let* xs = check_actuals c policy s sig_.params args in
+                Ok (Hir.Call (Hir.User name, xs, sig_.ret, s))))
+  | _ -> error s "call target must be a function name"
+
+and check_actuals c policy span formals actuals =
+  let rec loop checked formals actuals =
+    match (formals, actuals) with
+    | [], rest ->
+        let* trailing =
+          match policy with
+          | Reject ->
+              if rest = [] then Ok []
+              else error span "wrong number of arguments"
+          | Promote_variadic ->
+              Result_list.map
+                (fun expression ->
+                  let* value = check_expr c None expression in
+                  if is_scalar (Hir.expr_ty value) then
+                    Ok (variadic_promote value)
+                  else
+                    error (Ast.expr_span expression)
+                      "unsupported variadic aggregate argument")
+                rest
+        in
+        Ok (List.rev_append checked trailing)
+    | (_, expected, _, _) :: formal_rest, expression :: actual_rest ->
+        let* value = check_expr c (Some expected) expression in
+        let* () =
+          ensure_expected (Hir.expr_ty value) expected
+            (Ast.expr_span expression)
+        in
+        loop (value :: checked) formal_rest actual_rest
+    | _ -> error span "wrong number of arguments"
+  in
+  loop [] formals actuals
 let check_target _context _target = unfinished "check_target"
 let target_ty _context _target = unfinished "target_ty"
 
