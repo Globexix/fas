@@ -37,6 +37,6 @@ for focused in bug07_const_sext_bool bug09_intmin_rem_minus1; do
 done
 
 FAS_ROOT="$ORACLE" OCAML_FAS="$OCAML_FAS" RUST_FAS="$RUST_FAS" \
-LLVM_OPT="$LLVM_OPT" LLVM_LLC="$LLVM_LLC" CC="$CC" \
+  LLVM_OPT="$LLVM_OPT" LLVM_LLC="$LLVM_LLC" CC="$CC" \
   "$ROOT/test/finder_gate.sh"
 echo "validation: all mandatory gates passed"
