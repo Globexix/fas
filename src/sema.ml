@@ -1208,6 +1208,12 @@ let check ?(limits = Limits.default) program =
     Result_list.map
       (fun (param : Ast.param) ->
         let* ty = convert param in
+        let* () =
+          match param.align with
+          | Some a when a <= 0 || a land (a - 1) <> 0 ->
+              error param.span "alignment must be a positive power of two"
+          | _ -> Ok ()
+        in
         match (param.noalias, ty) with
         | true, Hir.Ptr _ -> Ok (param.name, ty, param.noalias, param.align)
         | true, _ -> error param.span "noalias requires a pointer parameter"
