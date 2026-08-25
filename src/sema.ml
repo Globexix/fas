@@ -672,9 +672,11 @@ let rec check_expr (c : context) expected = function
       else
         let* ta = check_expr c expected a in
         let* tb = check_expr c (Some (Hir.expr_ty ta)) b in
-        if equal (Hir.expr_ty ta) (Hir.expr_ty tb) then
-          Ok (Hir.Ternary (tq, ta, tb, Hir.expr_ty ta, s))
-        else error s "ternary arms have different types"
+        if not (equal (Hir.expr_ty ta) (Hir.expr_ty tb)) then
+          error s "ternary arms have different types"
+        else if Hir.expr_ty ta = Hir.Void || Hir.expr_ty tb = Hir.Void then
+          error s "ternary arms cannot have void type"
+        else Ok (Hir.Ternary (tq, ta, tb, Hir.expr_ty ta, s))
   | Ast.Array_lit (_, s) ->
       error s "array literals are only valid in global const declarations"
   | Ast.Struct_lit (n, xs, s) -> (
