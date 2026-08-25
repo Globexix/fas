@@ -39,6 +39,12 @@ let () =
   semantic_error "const-specialization-arity" "wrong number of arguments"
     "fn id[N const usize](x u64) u64 { return x + N }\n\
      fn main() u64 { return id[3](2, 4) }\n";
+  semantic_error "fas-008-i64-positive-overflow"
+    "integer literal is out of range for i64"
+    "const X i64 = 9223372036854775808\nfn f() i64 { return X }\n";
+  semantic_error "fas-008-i64-negative-underflow"
+    "integer literal is out of range for i64"
+    "const X i64 = -9223372036854775809\nfn f() i64 { return X }\n";
 
   let rem = llvm_of "fn rem(x i8) i8 { return x % -1 }\n" in
   if (not (contains rem "srem i8")) || not (contains rem "select i1") then

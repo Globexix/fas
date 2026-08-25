@@ -183,16 +183,15 @@ let fits_int ty value =
   match ty with
   | Hir.Int k ->
       let bits = int_bits k in
-      if bits = 64 then true
-      else
-        let signed =
-          match k with Hir.I8 | I16 | I32 | I64 | Isize -> true | _ -> false
-        in
-        if signed then
-          let range = Int64.shift_left 1L (bits - 1) in
-          let min = Int64.neg range and max = Int64.sub range 1L in
-          value >= min && value <= max
-        else value >= 0L && value < Int64.shift_left 1L bits
+      let signed =
+        match k with Hir.I8 | I16 | I32 | I64 | Isize -> true | _ -> false
+      in
+      if bits = 64 then (not signed) || value >= 0L
+      else if signed then
+        let range = Int64.shift_left 1L (bits - 1) in
+        let min = Int64.neg range and max = Int64.sub range 1L in
+        value >= min && value <= max
+      else value >= 0L && value < Int64.shift_left 1L bits
   | Hir.Bool -> value = 0L || value = 1L
   | _ -> false
 
