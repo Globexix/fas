@@ -63,6 +63,25 @@ let () =
   semantic_error "fas-007-zero-parameter-alignment"
     "alignment must be a positive power of two"
     "fn f(x aligned[0] ptr[u8]) i32 { return 0 }\n";
+  semantic_error "fas-002-switch-default-init-leak" "use of uninitialized local `x`"
+    "fn main() i32 {\n\
+    \     x i32\n\
+    \     switch 0 {\n\
+    \       case 0: { }\n\
+    \       default: { x = 5 }\n\
+    \     }\n\
+    \     return x\n\
+    \   }\n";
+  semantic_error "fas-002-switch-cross-arm-init-leak" "use of uninitialized local `x`"
+    "fn main() i32 {\n\
+    \     x i32\n\
+    \     y i32 = 0\n\
+    \     switch 1 {\n\
+    \       case 0: { x = 7 }\n\
+    \       case 1: { y = x }\n\
+    \     }\n\
+    \     return y\n\
+    \   }\n";
 
   let rem = llvm_of "fn rem(x i8) i8 { return x % -1 }\n" in
   if (not (contains rem "srem i8")) || not (contains rem "select i1") then
@@ -143,6 +162,19 @@ let () =
     lower_of
       "fn f() i64 { v vec[2,ptr[u8]] = splat(null)\n                    return 0 }\n"
   in
+  let _ =
+    lower_of
+      "fn f(n i32) i32 {\n\
+      \  x i32\n\
+      \  switch n {\n\
+      \    case 0: { x = 1 }\n\
+      \    case 1: { x = 2 }\n\
+      \    default: { x = 3 }\n\
+      \  }\n\
+      \  return x\n\
+      \  }\n"
+  in
+
   semantic_error "bool-vec-arith-rejected"
     "arithmetic requires integer or vector operands"
     "fn f() i64 { b vec[4,bool] = splat(true)\n\

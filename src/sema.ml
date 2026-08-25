@@ -1077,7 +1077,7 @@ and check_stmt (c : context) = function
       if not (is_int et || et = Hir.Bool) then
         error s "switch scrutinee must be an integer or bool"
       else
-        let before = c.initialized and seen = ref [] in
+        let before = c.initialized and seen = ref [] and branch_states = ref [] in
         let rec ar acc = function
           | [] -> Ok (List.rev acc)
           | (k, b) :: xs ->
@@ -1099,7 +1099,9 @@ and check_stmt (c : context) = function
                   | Hir.Bool -> Hir.EBool (kv <> 0L, Ast.expr_span k)
                   | _ -> Hir.EInt (mask_value et kv, et, Ast.expr_span k)
                 in
+                c.initialized <- before;
                 let* tb = check_block c b in
+                branch_states := c.initialized :: !branch_states;
                 ar ((tk, tb) :: acc) xs)
         in
         let result = ar [] arms in
@@ -1110,8 +1112,16 @@ and check_stmt (c : context) = function
           | None -> Ok None
           | Some x ->
               let* y = check_block c x in
+              branch_states := c.initialized :: !branch_states;
               Ok (Some y)
         in
+        (match d with
+        | None -> branch_states := before :: !branch_states
+        | Some _ -> ());
+        c.initialized <-
+          (match !branch_states with
+          | [] -> before
+          | first :: rest -> List.fold_left SS.inter first rest);
         Ok (Hir.Switch (te, ta, td, s))
   | Ast.Break s ->
       if c.in_defer then error s "break is not allowed inside defer"
