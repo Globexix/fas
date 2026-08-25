@@ -71,6 +71,11 @@ let () =
   in
   if not (contains generic_attrs "inlinehint") then
     failwith "fas-019: specialization did not inherit template attributes";
+  semantic_error "fas-017-unsupported-target" "unsupported target `wasm32-junk`"
+    "@target(\"wasm32-junk\")\nfn f() i64 { return 7 }\nfn main() i64 { return f() }\n";
+  let target_attr = llvm_of "@target(\"zen3\")\nfn f() i64 { return 7 }\n" in
+  if not (contains target_attr "\"target-cpu\"=\"znver3\"") then
+    failwith "fas-017: supported target attribute was not preserved";
   semantic_error "fas-002-switch-default-init-leak" "use of uninitialized local `x`"
     "fn main() i32 {\n\
     \     x i32\n\

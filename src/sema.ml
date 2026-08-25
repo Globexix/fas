@@ -39,6 +39,18 @@ let error span message = Error [ Diag.error span message ]
 let ok x = Ok x
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 
+let supported_targets =
+  [ "x86_64"; "avx2"; "avx512"; "zen1"; "zen2"; "zen3"; "zen4"; "zen5" ]
+
+let validate_attrs span attrs =
+  Result_list.iter
+    (function
+      | Ast.Target target when List.mem target supported_targets -> Ok ()
+      | Ast.Target target ->
+          error span (Printf.sprintf "unsupported target `%s`" target)
+      | _ -> Ok ())
+    attrs
+
 let src_int = function
   | Ast.U8 -> Hir.U8
   | U16 -> U16
@@ -1270,7 +1282,8 @@ let check ?(limits = Limits.default) program =
       (fun r item ->
         let* () = r in
         match item with
-        | Ast.Func { name; params; ret; variadic; linkage; span; _ } ->
+        | Ast.Func { name; params; ret; attrs; variadic; linkage; span; _ } ->
+            let* () = validate_attrs span attrs in
             if List.exists (fun (n, _) -> n = name) !sigs then
               error span (Printf.sprintf "duplicate function `%s`" name)
             else
