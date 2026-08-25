@@ -63,6 +63,14 @@ let () =
   semantic_error "fas-007-zero-parameter-alignment"
     "alignment must be a positive power of two"
     "fn f(x aligned[0] ptr[u8]) i32 { return 0 }\n";
+  let generic_attrs =
+    llvm_of
+      "@inline\n\
+       fn id[N const i64](x i64) i64 { return x }\n\
+       fn main() i64 { return id[3](4) }\n"
+  in
+  if not (contains generic_attrs "inlinehint") then
+    failwith "fas-019: specialization did not inherit template attributes";
   semantic_error "fas-002-switch-default-init-leak" "use of uninitialized local `x`"
     "fn main() i32 {\n\
     \     x i32\n\
@@ -181,4 +189,4 @@ let () =
     \               d vec[4,bool] = b & b\n\
     \               return 0 }\n";
 
-  print_endline "regression tests: 15 passed"
+  print_endline "regression tests: 19 passed"

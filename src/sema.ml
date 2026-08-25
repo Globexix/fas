@@ -724,7 +724,7 @@ and check_call c _expected fn args s =
   | Ast.Const_args (Ast.Ident (name, _), cargs, _) -> (
       match List.assoc_opt name c.templates with
       | None -> error s (Printf.sprintf "unknown const-generic function `%s`" name)
-      | Some (Ast.Func { params; ret; const_params; _ }) ->
+      | Some (Ast.Func { params; ret; body; attrs; const_params; _ }) ->
           if List.length cargs <> List.length const_params then
             error s (Printf.sprintf "wrong number of const arguments to `%s`" name)
           else
@@ -754,11 +754,8 @@ and check_call c _expected fn args s =
                         name;
                         params;
                         ret;
-                        body =
-                          (match List.assoc_opt name c.templates with
-                          | Some (Ast.Func x) -> x.body
-                          | _ -> Ast.Statements []);
-                        attrs = [];
+                        body;
+                        attrs;
                         linkage = Ast.Internal;
                         variadic = false;
                         const_params;
