@@ -1134,6 +1134,10 @@ let check ?(limits = Limits.default) program =
   let _ = limits in
   let rec collect_structs seen acc = function
     | [] -> Ok (List.rev acc)
+    | Ast.Opaque { name; span } :: rest ->
+        if List.mem name seen then
+          error span (Printf.sprintf "duplicate type `%s`" name)
+        else collect_structs (name :: seen) acc rest
     | Ast.Struct { name; fields; align; span } :: rest ->
         if List.mem name seen then
           error span (Printf.sprintf "duplicate type `%s`" name)

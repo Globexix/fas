@@ -45,6 +45,8 @@ let () =
   semantic_error "fas-008-i64-negative-underflow"
     "integer literal is out of range for i64"
     "const X i64 = -9223372036854775809\nfn f() i64 { return X }\n";
+  semantic_error "fas-009-duplicate-opaque" "duplicate type `x`"
+    "opaque x\nopaque x\nfn main() i32 { return 0 }\n";
 
   let rem = llvm_of "fn rem(x i8) i8 { return x % -1 }\n" in
   if (not (contains rem "srem i8")) || not (contains rem "select i1") then
