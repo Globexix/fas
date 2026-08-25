@@ -13,7 +13,7 @@ type t = {
 
 let usage =
   "usage: fas [options] file.fas ...\n\
-  \  -o PATH       output path (default a.out)\n\
+  \  -o PATH       output path (default a.out, INPUT.o with -c, INPUT.s with -S)\n\
   \  --emit-ast    print parsed AST\n\
   \  --emit-ir     print custom IR\n\
   \  --emit-llvm   print LLVM IR\n\
@@ -26,30 +26,34 @@ let usage =
   \  -kernel       kernel mode\n\
   \  --help        show this help"
 
+let default_output emit inputs =
+  let source_output extension =
+    match inputs with
+    | input :: _ -> Filename.remove_extension (Filename.basename input) ^ extension
+    | [] -> "a.out" ^ extension
+  in
+  match emit with Asm -> source_output ".s" | Obj -> source_output ".o" | _ -> "a.out"
+
 let parse argv =
   let n = Array.length argv in
   let rec loop i inputs output emit keep optimization debug release kernel =
     if i >= n then
       if inputs = [] then Error "no input files"
       else
-        Ok
-          {
-            inputs = List.rev inputs;
-            output;
-            emit;
-            keep;
-            optimization;
-            debug;
-            release;
-            kernel;
-          }
+        let inputs = List.rev inputs in
+        let output =
+          match output with Some path -> path | None -> default_output emit inputs
+        in
+        Ok { inputs; output; emit; keep; optimization; debug; release; kernel }
     else
       match argv.(i) with
       | "--help" | "-h" -> Error usage
       | "-o" ->
           if i + 1 >= n then Error "-o requires an output path"
           else
-            loop (i + 2) inputs argv.(i + 1) emit keep optimization debug release kernel
+            loop (i + 2) inputs
+              (Some argv.(i + 1))
+              emit keep optimization debug release kernel
       | "--emit-ast" ->
           loop (i + 1) inputs output Ast keep optimization debug release kernel
       | "--emit-ir" ->
@@ -80,4 +84,4 @@ let parse argv =
           loop (i + 1) (file :: inputs) output emit keep optimization debug release
             kernel
   in
-  loop 1 [] "a.out" Executable false 2 false false false
+  loop 1 [] None Executable false 2 false false false

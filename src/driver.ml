@@ -83,17 +83,16 @@ let emit_tools_unprotected config ir =
       match config.emit with
       | Cli.Asm ->
           let* assembly = build_assembly config ir llc opt_path asm_path in
-          write_file (config.output ^ ".s") assembly;
-          Ok assembly
+          write_file config.output assembly;
+          Ok ""
       | Cli.Obj when Ir.raw_assembly ir = "" ->
           let* () =
-            run_llc config llc ~filetype:"obj" ~input:opt_path
-              ~output:(config.output ^ ".o")
+            run_llc config llc ~filetype:"obj" ~input:opt_path ~output:config.output
           in
           Ok ""
       | Cli.Obj ->
           let* _ = build_assembly config ir llc opt_path asm_path in
-          let* () = run_tool cc [| cc; "-c"; asm_path; "-o"; config.output ^ ".o" |] in
+          let* () = run_tool cc [| cc; "-c"; asm_path; "-o"; config.output |] in
           Ok ""
       | Cli.Executable ->
           let* _ = build_assembly config ir llc opt_path asm_path in

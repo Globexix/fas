@@ -20,6 +20,12 @@ let () =
   let tokens = expect_ok (Lexer.lex (source "fn main() i64 { return 0x2a + 1\n }\n")) in
   assert (List.exists (fun token -> token.Token.kind = Token.Kw_fn) tokens);
   assert (List.exists (fun token -> token.Token.kind = Token.Int "0x2a") tokens);
+  (match Lexer.lex (source "0x") with
+  | Ok _ -> assert false
+  | Error diagnostics ->
+      let rendered = Diag.render_all ~source:None diagnostics in
+      assert (contains rendered "invalid integer literal");
+      assert (not (contains rendered "invalid digit in integer literal")));
   let program =
     expect_ok
       (Parser.parse
@@ -109,16 +115,23 @@ let () =
   (match Sema.check bad_cmp with
   | Ok _ -> assert false
   | Error diagnostics -> assert (diagnostics <> []));
+  let expect_cli = function Ok value -> value | Error message -> failwith message in
   let cli =
-    match
-      Cli.parse [| "fas"; "-release"; "--emit-ast"; "-o"; "out"; "one.fas"; "two.fas" |]
-    with
-    | Ok value -> value
-    | Error message -> failwith message
+    expect_cli
+      (Cli.parse
+         [| "fas"; "-release"; "--emit-ast"; "-o"; "out"; "one.fas"; "two.fas" |])
   in
   assert (
     cli.Cli.emit = Cli.Ast && cli.output = "out"
     && cli.inputs = [ "one.fas"; "two.fas" ]);
+  let cli_obj = expect_cli (Cli.parse [| "fas"; "-c"; "path/prog.fas" |]) in
+  assert (cli_obj.Cli.emit = Cli.Obj && cli_obj.output = "prog.o");
+  let cli_asm = expect_cli (Cli.parse [| "fas"; "-S"; "path/prog.fas" |]) in
+  assert (cli_asm.Cli.emit = Cli.Asm && cli_asm.output = "prog.s");
+  let cli_named_obj =
+    expect_cli (Cli.parse [| "fas"; "-c"; "-o"; "artifact"; "prog.fas" |])
+  in
+  assert (cli_named_obj.Cli.emit = Cli.Obj && cli_named_obj.output = "artifact");
   (match Cli.parse [| "fas"; "--unknown" |] with Ok _ -> assert false | Error _ -> ());
   let sema_error ?message text =
     let program = expect_ok (Parser.parse (source text)) in

@@ -76,15 +76,15 @@ let lex ?(limits = Limits.default) source =
         let clean = String.concat "" (String.split_on_char '_' raw) in
         let radix, digits =
           if
-            String.length clean > 2
+            String.length clean >= 2
             && (String.sub clean 0 2 = "0x" || String.sub clean 0 2 = "0X")
           then (16, String.sub clean 2 (String.length clean - 2))
           else if
-            String.length clean > 2
+            String.length clean >= 2
             && (String.sub clean 0 2 = "0b" || String.sub clean 0 2 = "0B")
           then (2, String.sub clean 2 (String.length clean - 2))
           else if
-            String.length clean > 2
+            String.length clean >= 2
             && (String.sub clean 0 2 = "0o" || String.sub clean 0 2 = "0O")
           then (8, String.sub clean 2 (String.length clean - 2))
           else (10, clean)
@@ -97,7 +97,7 @@ let lex ?(limits = Limits.default) source =
           | 16 -> is_hex c
           | _ -> false
         in
-        if digits = "" then Error [ diagnostic offset "integer literal has no digits" ]
+        if digits = "" then Error [ diagnostic offset "invalid integer literal" ]
         else if not (String.for_all valid_digit digits) then
           Error
             [
