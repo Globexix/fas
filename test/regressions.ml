@@ -55,6 +55,8 @@ let () =
     \  c ? a() : b()\n\
     \  return 0\n\
      }\n";
+  semantic_error "fas-006-noalias-non-pointer" "noalias requires a pointer parameter"
+    "fn f(x noalias i32) i32 { return x }\nfn main() i32 { return f(0) }\n";
 
   let rem = llvm_of "fn rem(x i8) i8 { return x % -1 }\n" in
   if (not (contains rem "srem i8")) || not (contains rem "select i1") then

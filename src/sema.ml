@@ -1208,7 +1208,10 @@ let check ?(limits = Limits.default) program =
     Result_list.map
       (fun (param : Ast.param) ->
         let* ty = convert param in
-        Ok (param.name, ty, param.noalias, param.align))
+        match (param.noalias, ty) with
+        | true, Hir.Ptr _ -> Ok (param.name, ty, param.noalias, param.align)
+        | true, _ -> error param.span "noalias requires a pointer parameter"
+        | false, _ -> Ok (param.name, ty, param.noalias, param.align))
       params
   in
   let source_params =
