@@ -203,10 +203,29 @@ let () =
       \  }\n"
   in
 
+  let shadowed_template =
+    llvm_of
+      "const N i64 = 100\n\
+       fn f[N const i64]() i64 { return N }\n\
+       fn main() i64 { return f[5]() }\n"
+  in
+  if not (contains shadowed_template "ret i64 5") then
+    failwith "fas-015: global const shadowed template const parameter";
+
+  let nested_shadowed_template =
+    llvm_of
+      "const N i64 = 100\n\
+       fn inner[N const i64]() i64 { return N }\n\
+       fn outer[N const i64]() i64 { return inner[N]() }\n\
+       fn main() i64 { return outer[5]() }\n"
+  in
+  if not (contains nested_shadowed_template "ret i64 5") then
+    failwith "fas-015: nested specialization used global const over template parameter";
+
   semantic_error "bool-vec-arith-rejected"
     "arithmetic requires integer or vector operands"
     "fn f() i64 { b vec[4,bool] = splat(true)\n\
     \               d vec[4,bool] = b & b\n\
     \               return 0 }\n";
 
-  print_endline "regression tests: 24 passed"
+  print_endline "regression tests: 26 passed"

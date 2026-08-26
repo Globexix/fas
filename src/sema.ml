@@ -1331,7 +1331,7 @@ let check ?(limits = Limits.default) program =
   let make_context ~extra_consts ~spec_depth ~ret_ty =
     {
       structs;
-      consts = (if extra_consts = [] then !consts else !consts @ extra_consts);
+      consts = (if extra_consts = [] then !consts else extra_consts @ !consts);
       arrays = !arrays;
       signatures = !sigs;
       templates;
