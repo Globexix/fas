@@ -95,6 +95,14 @@ let () =
     \     }\n\
     \     return y\n\
     \   }\n";
+  semantic_error "fas-004-index-void-pointer" "void pointers cannot be indexed"
+    "fn f(p ptr[void]) i32 { p[0]\n return 0}";
+  semantic_error "fas-004-deref-void-pointer" "cannot dereference a void pointer"
+    "fn f(p ptr[void]) i32 { p.*\nreturn 0 }";
+  semantic_error "fas-004-assign-index-void-pointer" "void pointers cannot be indexed"
+    "fn sink() void { }\nfn f(p ptr[void]) i32 { p[0] = sink()\n return 0}";
+  semantic_error "fas-004-assign-deref-void-pointer" "cannot dereference a void pointer"
+    "fn sink() void { }\nfn f(p ptr[void]) i32 { p.* = sink()\nreturn 0 }";
 
   let rem = llvm_of "fn rem(x i8) i8 { return x % -1 }\n" in
   if (not (contains rem "srem i8")) || not (contains rem "select i1") then
@@ -201,4 +209,4 @@ let () =
     \               d vec[4,bool] = b & b\n\
     \               return 0 }\n";
 
-  print_endline "regression tests: 20 passed"
+  print_endline "regression tests: 24 passed"

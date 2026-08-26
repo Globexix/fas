@@ -621,6 +621,8 @@ let rec check_expr (c : context) expected = function
         | Hir.Array (_, e) | Hir.Vec (_, e) | Hir.Ptr e ->
             if match e with Hir.Opaque _ -> true | _ -> false then
               error s "opaque pointers cannot be indexed"
+            else if match e with Hir.Void -> true | _ -> false then
+              error s "void pointers cannot be indexed"
             else Ok (Hir.Index (ta, ti, e, s))
         | _ -> error s "cannot index this type")
   | Ast.Field (a, n, s) -> (
@@ -635,6 +637,7 @@ let rec check_expr (c : context) expected = function
       let* x = check_expr c None e in
       match Hir.expr_ty x with
       | Hir.Ptr (Hir.Opaque _) -> error s "cannot dereference an opaque pointer"
+      | Hir.Ptr Hir.Void -> error s "cannot dereference a void pointer"
       | Hir.Ptr t -> Ok (Hir.Deref (x, t, s))
       | _ -> error s "cannot dereference a non-pointer")
   | Ast.Addr_of (e, s) -> (
@@ -888,6 +891,7 @@ let check_target (c : context) = function
       match Hir.expr_ty x with
       | Hir.Ptr (Hir.Opaque _) ->
           error (Ast.expr_span e) "cannot dereference opaque pointer"
+      | Hir.Ptr Hir.Void -> error (Ast.expr_span e) "cannot dereference a void pointer"
       | Hir.Ptr _ -> Ok (Hir.ADeref x)
       | _ -> error (Ast.expr_span e) "deref assignment requires pointer")
   | Ast.Target_index (a, i) -> (
@@ -897,6 +901,7 @@ let check_target (c : context) = function
         error (Ast.expr_span i) "index must be integer"
       else
         match Hir.expr_ty x with
+        | Hir.Ptr Hir.Void -> error (Ast.expr_span a) "void pointers cannot be indexed"
         | Hir.Array (_, _) | Hir.Vec (_, _) | Hir.Ptr _ -> Ok (Hir.AIndex (x, y))
         | _ -> error (Ast.expr_span a) "index assignment requires aggregate or pointer")
   | Ast.Target_field (a, n) -> (
