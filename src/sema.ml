@@ -191,6 +191,19 @@ let mask_value ty value =
   | Hir.Ptr _ -> value
   | _ -> value
 
+let sign_extend_value ty value =
+  match ty with
+  | Hir.Int k when not (is_unsigned ty) ->
+      let bits = int_bits k in
+      if bits = 64 then value
+      else
+        let mask = Int64.sub (Int64.shift_left 1L bits) 1L in
+        let value = Int64.logand value mask in
+        let sign_bit = Int64.shift_left 1L (bits - 1) in
+        if Int64.logand value sign_bit <> 0L then Int64.logor value (Int64.lognot mask)
+        else value
+  | _ -> value
+
 let fits_int ty value =
   match ty with
   | Hir.Int k ->
@@ -483,7 +496,14 @@ let rec check_expr (c : context) expected = function
           match lookup n c.consts with
           | Some (_, t, v) ->
               let rt = Option.value ~default:t expected in
-              if is_int rt && fits_int rt v then Ok (Hir.EInt (mask_value rt v, rt, s))
+              if is_int rt && fits_int rt v then
+                let v =
+                  match (t, rt) with
+                  | Hir.Int tk, Hir.Int rk when int_bits tk < int_bits rk ->
+                      sign_extend_value t v
+                  | _ -> mask_value rt v
+                in
+                Ok (Hir.EInt (v, rt, s))
               else Ok (Hir.EInt (v, t, s))
           | None -> (
               match lookup n c.arrays with

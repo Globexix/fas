@@ -222,6 +222,17 @@ let () =
   if not (contains nested_shadowed_template "ret i64 5") then
     failwith "fas-015: nested specialization used global const over template parameter";
 
+  let signed_narrow_specialization =
+    llvm_of
+      "fn b8[N const i8](x i8) i32 { return sext[i32](x) + N }\n\
+       fn main() i32 { return b8[-5](2) }\n"
+  in
+  if
+    (not (contains signed_narrow_specialization "add i32"))
+    || not (contains signed_narrow_specialization ", -5")
+  then
+    failwith "signed-narrow-specialization: negative i8 constant was not sign-extended";
+
   semantic_error "bool-vec-arith-rejected"
     "arithmetic requires integer or vector operands"
     "fn f() i64 { b vec[4,bool] = splat(true)\n\
