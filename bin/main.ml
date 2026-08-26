@@ -16,7 +16,8 @@ let diagnostic_source config = function
 
 let () =
   match Cli.parse Sys.argv with
-  | Ok config -> (
+  | Ok Cli.Help -> print_endline Cli.usage
+  | Ok (Cli.Run config) -> (
       match Driver.run config with
       | Ok output -> print_string output
       | Error diagnostics ->

@@ -3,6 +3,7 @@ type emit = Ast | Ir | Llvm | Asm | Obj | Executable
 type t = {
   inputs : string list;
   output : string;
+  output_explicit : bool;
   emit : emit;
   keep : bool;
   optimization : int;
@@ -10,6 +11,8 @@ type t = {
   release : bool;
   kernel : bool;
 }
+
+type command = Run of t | Help
 
 let usage =
   "usage: fas [options] file.fas ...\n\
@@ -41,13 +44,26 @@ let parse argv =
       if inputs = [] then Error "no input files"
       else
         let inputs = List.rev inputs in
+        let output_explicit = Option.is_some output in
         let output =
           match output with Some path -> path | None -> default_output emit inputs
         in
-        Ok { inputs; output; emit; keep; optimization; debug; release; kernel }
+        Ok
+          (Run
+             {
+               inputs;
+               output;
+               output_explicit;
+               emit;
+               keep;
+               optimization;
+               debug;
+               release;
+               kernel;
+             })
     else
       match argv.(i) with
-      | "--help" | "-h" -> Error usage
+      | "--help" | "-h" -> Ok Help
       | "-o" ->
           if i + 1 >= n then Error "-o requires an output path"
           else

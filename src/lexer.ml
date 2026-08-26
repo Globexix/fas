@@ -33,18 +33,12 @@ let lex ?(limits = Limits.default) source =
       message
   in
   let rec loop offset count tokens =
-    if count >= limits.Limits.max_tokens then
-      Error [ diagnostic offset "token limit exceeded" ]
-    else if offset >= n then
+    if offset >= n then
       let sp = Source.span source ~start_offset:n ~end_offset:n in
       Ok (List.rev ({ Token.kind = Token.Eof; span = sp } :: tokens))
     else
       let c = text.[offset] in
       if is_space c then loop (offset + 1) count tokens
-      else if c = '\n' then
-        let sp = Source.span source ~start_offset:offset ~end_offset:(offset + 1) in
-        loop (offset + 1) (count + 1)
-          ({ Token.kind = Token.Newline; span = sp } :: tokens)
       else if c = '/' && offset + 1 < n && text.[offset + 1] = '/' then
         let rec skip i = if i < n && text.[i] <> '\n' then skip (i + 1) else i in
         loop (skip (offset + 2)) count tokens
@@ -57,6 +51,12 @@ let lex ?(limits = Limits.default) source =
         match close (offset + 2) with
         | None -> Error [ diagnostic offset "unterminated block comment" ]
         | Some next -> loop next count tokens
+      else if count >= limits.Limits.max_tokens then
+        Error [ diagnostic offset "token limit exceeded" ]
+      else if c = '\n' then
+        let sp = Source.span source ~start_offset:offset ~end_offset:(offset + 1) in
+        loop (offset + 1) (count + 1)
+          ({ Token.kind = Token.Newline; span = sp } :: tokens)
       else if is_ident_start c then
         let rec ident_end i =
           if i < n && is_ident_continue text.[i] then ident_end (i + 1) else i

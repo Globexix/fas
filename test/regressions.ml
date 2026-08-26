@@ -146,6 +146,13 @@ let () =
     failwith "entry-alloca: lexical local storage escaped the entry block";
 
   let token_limits = { Limits.default with max_tokens = 1 } in
+  (match Lexer.lex ~limits:token_limits (source "x /* trailing trivia */ ") with
+  | Ok [ { Token.kind = Token.Ident "x"; _ }; { kind = Token.Eof; _ } ] -> ()
+  | Ok _ -> failwith "token-limit: exact limit returned unexpected tokens"
+  | Error diagnostics ->
+      failwith
+        ("token-limit: exact limit was rejected: "
+        ^ Diag.render_all ~source:None diagnostics));
   (match Lexer.lex ~limits:token_limits (source "x y") with
   | Error diagnostics ->
       if
@@ -194,4 +201,4 @@ let () =
     \               d vec[4,bool] = b & b\n\
     \               return 0 }\n";
 
-  print_endline "regression tests: 19 passed"
+  print_endline "regression tests: 20 passed"

@@ -3,6 +3,7 @@ type emit = Ast | Ir | Llvm | Asm | Obj | Executable
 type t = {
   inputs : string list;
   output : string;
+  output_explicit : bool;
   emit : emit;
   keep : bool;
   optimization : int;
@@ -11,5 +12,7 @@ type t = {
   kernel : bool;
 }
 
-val parse : string array -> (t, string) result
+type command = Run of t | Help
+
+val parse : string array -> (command, string) result
 val usage : string

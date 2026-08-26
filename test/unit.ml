@@ -115,23 +115,67 @@ let () =
   (match Sema.check bad_cmp with
   | Ok _ -> assert false
   | Error diagnostics -> assert (diagnostics <> []));
-  let expect_cli = function Ok value -> value | Error message -> failwith message in
+  let expect_cli = function
+    | Ok (Cli.Run value) -> value
+    | Ok Cli.Help -> failwith "expected compiler invocation"
+    | Error message -> failwith message
+  in
   let cli =
     expect_cli
       (Cli.parse
          [| "fas"; "-release"; "--emit-ast"; "-o"; "out"; "one.fas"; "two.fas" |])
   in
   assert (
-    cli.Cli.emit = Cli.Ast && cli.output = "out"
+    cli.Cli.emit = Cli.Ast && cli.output = "out" && cli.output_explicit
     && cli.inputs = [ "one.fas"; "two.fas" ]);
   let cli_obj = expect_cli (Cli.parse [| "fas"; "-c"; "path/prog.fas" |]) in
-  assert (cli_obj.Cli.emit = Cli.Obj && cli_obj.output = "prog.o");
+  assert (
+    cli_obj.Cli.emit = Cli.Obj && cli_obj.output = "prog.o"
+    && not cli_obj.output_explicit);
   let cli_asm = expect_cli (Cli.parse [| "fas"; "-S"; "path/prog.fas" |]) in
   assert (cli_asm.Cli.emit = Cli.Asm && cli_asm.output = "prog.s");
   let cli_named_obj =
     expect_cli (Cli.parse [| "fas"; "-c"; "-o"; "artifact"; "prog.fas" |])
   in
-  assert (cli_named_obj.Cli.emit = Cli.Obj && cli_named_obj.output = "artifact");
+  assert (
+    cli_named_obj.Cli.emit = Cli.Obj
+    && cli_named_obj.output = "artifact"
+    && cli_named_obj.output_explicit);
+  (match Cli.parse [| "fas"; "--help" |] with
+  | Ok Cli.Help -> ()
+  | Ok (Cli.Run _) | Error _ -> assert false);
+  let input_path = Filename.temp_file "fas-driver-" ".fas" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove input_path)
+    (fun () ->
+      let channel = open_out_bin input_path in
+      output_string channel "fn main() i64 { return 3 }\n";
+      close_out channel;
+      let stdout_config =
+        expect_cli (Cli.parse [| "fas"; "--emit-llvm"; input_path |])
+      in
+      assert (not stdout_config.output_explicit);
+      (match Driver.run stdout_config with
+      | Ok output -> assert (output <> "")
+      | Error _ -> assert false);
+      List.iter
+        (fun flag ->
+          let output_path = Filename.temp_file "fas-driver-output-" ".txt" in
+          Fun.protect
+            ~finally:(fun () -> Sys.remove output_path)
+            (fun () ->
+              let config =
+                expect_cli (Cli.parse [| "fas"; flag; "-o"; output_path; input_path |])
+              in
+              assert config.output_explicit;
+              (match Driver.run config with
+              | Ok output -> assert (output = "")
+              | Error _ -> assert false);
+              let channel = open_in_bin output_path in
+              let contents = really_input_string channel (in_channel_length channel) in
+              close_in channel;
+              assert (contents <> "")))
+        [ "--emit-ast"; "--emit-ir"; "--emit-llvm" ]);
   (match Cli.parse [| "fas"; "--unknown" |] with Ok _ -> assert false | Error _ -> ());
   let sema_error ?message text =
     let program = expect_ok (Parser.parse (source text)) in
@@ -177,6 +221,9 @@ let () =
   assert (contains edge_debug "Module {");
   assert (edge_debug <> edge_llvm);
   let token_limits = { Limits.default with max_tokens = 1 } in
+  (match Lexer.lex ~limits:token_limits (source "x /* trailing trivia */ ") with
+  | Ok [ { Token.kind = Token.Ident "x"; _ }; { kind = Token.Eof; _ } ] -> ()
+  | Ok _ | Error _ -> assert false);
   (match Lexer.lex ~limits:token_limits (source "x y") with
   | Error diagnostics ->
       assert (contains (Diag.render_all ~source:None diagnostics) "token limit exceeded")

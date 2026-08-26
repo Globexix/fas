@@ -14,6 +14,15 @@ let write_file path text =
     ~finally:(fun () -> close_out_noerr channel)
     (fun () -> output_string channel text)
 
+let emit_text config text =
+  if config.Cli.output_explicit then
+    try
+      write_file config.output text;
+      Ok ""
+    with Sys_error message ->
+      Error [ Diag.error Span.synthetic ("output I/O failed: " ^ message) ]
+  else Ok text
+
 let tool name default =
   match Sys.getenv_opt name with Some value when value <> "" -> value | _ -> default
 
@@ -138,12 +147,12 @@ let run config =
           Ast.items = List.concat (List.map (fun program -> program.Ast.items) programs);
         }
       in
-      if config.emit = Cli.Ast then Ok (Ast.render_program program)
+      if config.emit = Cli.Ast then emit_text config (Ast.render_program program)
       else
         let* hir = Sema.check program in
         let* ir = Lower.lower hir in
         match config.emit with
         | Cli.Ast -> assert false
-        | Cli.Ir -> Ok (Ir.render_debug ir)
-        | Cli.Llvm -> Ok (Ir.render ir)
+        | Cli.Ir -> emit_text config (Ir.render_debug ir)
+        | Cli.Llvm -> emit_text config (Ir.render ir)
         | Cli.Asm | Cli.Obj | Cli.Executable -> emit_tools config ir)
