@@ -217,9 +217,9 @@ let fits_negative_literal ty value =
   | Hir.Bool -> value = 0L || value = 1L
   | _ -> false
 
-let sign_extend_value ty value =
+let sign_extend_bits ty value =
   match ty with
-  | Hir.Int k when not (is_unsigned ty) ->
+  | Hir.Int k ->
       let bits = int_bits k in
       if bits = 64 then value
       else
@@ -229,6 +229,9 @@ let sign_extend_value ty value =
         if Int64.logand value sign_bit <> 0L then Int64.logor value (Int64.lognot mask)
         else value
   | _ -> value
+
+let sign_extend_value ty value =
+  if is_int ty && not (is_unsigned ty) then sign_extend_bits ty value else value
 
 let fits_int ty value =
   match ty with
@@ -382,7 +385,8 @@ let rec const_expr ?(structs = []) consts expected = function
   | Ast.Binary (op, l, r, s) ->
       let* (lt, lv), (rt, rv) =
         match (l, op) with
-        | Ast.Int_lit _, (Ast.Eq | Ne | Lt | Le | Gt | Ge) ->
+        | ( (Ast.Int_lit _ | Ast.Unary (Ast.Neg, Ast.Int_lit _, _)),
+            (Ast.Eq | Ne | Lt | Le | Gt | Ge) ) ->
             let* rt, rv = const_expr ~structs consts None r in
             let* lt, lv = const_expr ~structs consts (Some rt) l in
             Ok ((lt, lv), (rt, rv))
@@ -395,8 +399,11 @@ let rec const_expr ?(structs = []) consts expected = function
       else if (op = Ast.Div || op = Ast.Rem) && rv = 0L then
         error s "division by zero in constant expression"
       else
+        let signed_lv = sign_extend_value lt lv in
+        let signed_rv = sign_extend_value rt rv in
         let cmp =
-          if is_unsigned lt then Int64.unsigned_compare lv rv else Int64.compare lv rv
+          if is_unsigned lt then Int64.unsigned_compare lv rv
+          else Int64.compare signed_lv signed_rv
         in
         let result =
           match op with
@@ -406,8 +413,12 @@ let rec const_expr ?(structs = []) consts expected = function
           | Bit_and -> Int64.logand lv rv
           | Bit_or -> Int64.logor lv rv
           | Bit_xor -> Int64.logxor lv rv
-          | Div -> if is_unsigned lt then Int64.unsigned_div lv rv else Int64.div lv rv
-          | Rem -> if is_unsigned lt then Int64.unsigned_rem lv rv else Int64.rem lv rv
+          | Div ->
+              if is_unsigned lt then Int64.unsigned_div lv rv
+              else Int64.div signed_lv signed_rv
+          | Rem ->
+              if is_unsigned lt then Int64.unsigned_rem lv rv
+              else Int64.rem signed_lv signed_rv
           | Eq -> if lv = rv then 1L else 0L
           | Ne -> if lv <> rv then 1L else 0L
           | Lt -> if cmp < 0 then 1L else 0L
@@ -466,7 +477,7 @@ let rec const_expr ?(structs = []) consts expected = function
             match name with
             | "shl" -> Int64.shift_left x k
             | "lshr" -> Int64.shift_right_logical x k
-            | "ashr" -> Int64.shift_right x k
+            | "ashr" -> Int64.shift_right (sign_extend_bits t x) k
             | "rotl" ->
                 Int64.logor (Int64.shift_left x k)
                   (Int64.shift_right_logical x (bits - k))
@@ -573,7 +584,7 @@ let rec check_expr (c : context) expected = function
       else
         let* a, b =
           match l with
-          | Ast.Int_lit _ -> (
+          | Ast.Int_lit _ | Ast.Unary (Ast.Neg, Ast.Int_lit _, _) -> (
               match expected with
               | Some t when is_int t ->
                   let* a = check_expr c (Some t) l in

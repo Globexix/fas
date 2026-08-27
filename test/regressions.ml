@@ -56,6 +56,20 @@ let () =
   let u64_max = llvm_of "fn f() u64 { return 18446744073709551615 }\n" in
   if not (contains u64_max "ret i64 -1") then
     failwith "fas-020: valid u64 maximum literal was rejected";
+  let signed_const_eval =
+    llvm_of
+      "const X i8 = -4 / 2\n\
+       const R i8 = -5 % 2\n\
+       const A i8 = ashr(-4, 1)\n\
+       const B bool = -1 < 0\n\
+       fn main() i32 { return sext[i32](X) + sext[i32](R) + sext[i32](A) + \
+       sext[i32](B) }\n"
+  in
+  if
+    (not (contains signed_const_eval "sext i8 254 to i32"))
+    || (not (contains signed_const_eval "sext i8 255 to i32"))
+    || not (contains signed_const_eval "zext i1 true to i32")
+  then failwith "fas-001: signed constant evaluation used masked bit patterns";
   semantic_error "fas-009-duplicate-opaque" "duplicate type `x`"
     "opaque x\nopaque x\nfn main() i32 { return 0 }\n";
   semantic_error "fas-005-void-ternary" "ternary arms cannot have void type"
@@ -250,4 +264,4 @@ let () =
     \               d vec[4,bool] = b & b\n\
     \               return 0 }\n";
 
-  print_endline "regression tests: 29 passed"
+  print_endline "regression tests: 30 passed"
