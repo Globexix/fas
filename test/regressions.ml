@@ -180,6 +180,13 @@ let () =
   if not (contains wide_shift "and i8") then
     failwith "fas-010: runtime shift count was not reduced modulo width";
 
+  semantic_error "fas-011-ctz-zero-const"
+    "ctz/clz of zero is undefined in constant expression"
+    "const C u8 = ctz(0)\nfn main() i32 { return 0 }\n";
+  semantic_error "fas-011-clz-zero-const"
+    "ctz/clz of zero is undefined in constant expression"
+    "const C u8 = clz(0)\nfn main() i32 { return 0 }\n";
+
   let bool_sext =
     llvm_of "const B i64 = sext[i64](true)\nfn f() i64 { return sext[i64](true) }\n"
   in
@@ -311,4 +318,4 @@ let () =
     \               d vec[4,bool] = b & b\n\
     \               return 0 }\n";
 
-  print_endline "regression tests: 36 passed"
+  print_endline "regression tests: 38 passed"
