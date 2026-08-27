@@ -406,39 +406,54 @@ let rec const_expr ?(structs = []) consts expected = function
       else
         let signed_lv = sign_extend_value lt lv in
         let signed_rv = sign_extend_value rt rv in
-        let cmp =
-          if is_unsigned lt then Int64.unsigned_compare lv rv
-          else Int64.compare signed_lv signed_rv
+        let signed_min =
+          match lt with
+          | Hir.Int k ->
+              let bits = int_bits k in
+              if bits = 64 then Int64.min_int
+              else Int64.neg (Int64.shift_left 1L (bits - 1))
+          | _ -> 0L
         in
-        let result =
-          match op with
-          | Ast.Add -> Int64.add lv rv
-          | Sub -> Int64.sub lv rv
-          | Mul -> Int64.mul lv rv
-          | Bit_and -> Int64.logand lv rv
-          | Bit_or -> Int64.logor lv rv
-          | Bit_xor -> Int64.logxor lv rv
-          | Div ->
-              if is_unsigned lt then Int64.unsigned_div lv rv
-              else Int64.div signed_lv signed_rv
-          | Rem ->
-              if is_unsigned lt then Int64.unsigned_rem lv rv
-              else Int64.rem signed_lv signed_rv
-          | Eq -> if lv = rv then 1L else 0L
-          | Ne -> if lv <> rv then 1L else 0L
-          | Lt -> if cmp < 0 then 1L else 0L
-          | Le -> if cmp <= 0 then 1L else 0L
-          | Gt -> if cmp > 0 then 1L else 0L
-          | Ge -> if cmp >= 0 then 1L else 0L
-          | And -> if lv <> 0L && rv <> 0L then 1L else 0L
-          | Or -> if lv <> 0L || rv <> 0L then 1L else 0L
-        in
-        let rt =
-          match op with
-          | Ast.Eq | Ne | Lt | Le | Gt | Ge | And | Or -> Hir.Bool
-          | _ -> lt
-        in
-        Ok (rt, mask_value rt result)
+        if
+          op = Ast.Div
+          && not (is_unsigned lt)
+          && signed_lv = signed_min
+          && signed_rv = Int64.minus_one
+        then error s "signed division overflow in constant expression"
+        else
+          let cmp =
+            if is_unsigned lt then Int64.unsigned_compare lv rv
+            else Int64.compare signed_lv signed_rv
+          in
+          let result =
+            match op with
+            | Ast.Add -> Int64.add lv rv
+            | Sub -> Int64.sub lv rv
+            | Mul -> Int64.mul lv rv
+            | Bit_and -> Int64.logand lv rv
+            | Bit_or -> Int64.logor lv rv
+            | Bit_xor -> Int64.logxor lv rv
+            | Div ->
+                if is_unsigned lt then Int64.unsigned_div lv rv
+                else Int64.div signed_lv signed_rv
+            | Rem ->
+                if is_unsigned lt then Int64.unsigned_rem lv rv
+                else Int64.rem signed_lv signed_rv
+            | Eq -> if lv = rv then 1L else 0L
+            | Ne -> if lv <> rv then 1L else 0L
+            | Lt -> if cmp < 0 then 1L else 0L
+            | Le -> if cmp <= 0 then 1L else 0L
+            | Gt -> if cmp > 0 then 1L else 0L
+            | Ge -> if cmp >= 0 then 1L else 0L
+            | And -> if lv <> 0L && rv <> 0L then 1L else 0L
+            | Or -> if lv <> 0L || rv <> 0L then 1L else 0L
+          in
+          let rt =
+            match op with
+            | Ast.Eq | Ne | Lt | Le | Gt | Ge | And | Or -> Hir.Bool
+            | _ -> lt
+          in
+          Ok (rt, mask_value rt result)
   | Ast.Ternary (c, a, b, _s) ->
       let* _, cv = const_expr ~structs consts None c in
       if cv <> 0L then const_expr ~structs consts expected a

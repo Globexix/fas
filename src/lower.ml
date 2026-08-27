@@ -76,6 +76,7 @@ let ones = function
 
 let unsigned = function
   | Hir.Int (Hir.U8 | U16 | U32 | U64 | Usize) -> true
+  | Hir.Vec (_, Hir.Int (Hir.U8 | U16 | U32 | U64 | Usize)) -> true
   | _ -> false
 
 let cmp_for t = function
@@ -97,37 +98,6 @@ let bin_for t = function
   | Bit_or -> Or
   | Bit_xor -> Xor
   | _ -> Add
-
-let emit_binary s source_ty op ir_ty lhs rhs =
-  let binop = bin_for source_ty op in
-  match (binop, ir_ty) with
-  | Ir.Srem, (Ir.I8 | Ir.I16 | Ir.I32 | Ir.I64) ->
-      let is_minus_one = fresh s in
-      emit s
-        (Ir.Cmp (is_minus_one, Ir.Eq, ir_ty, rhs, Ir.Const (ir_ty, Int64.minus_one)));
-      let special = fresh_block s and divide = fresh_block s and join = fresh_block s in
-      s.current.term :=
-        Some (Ir.CondBr (Ir.Local (is_minus_one, Ir.I1), special.id, divide.id));
-      s.current <- special;
-      if open_block s then s.current.term := Some (Ir.Br join.id);
-      s.current <- divide;
-      let result = fresh s in
-      emit s (Ir.Bin (result, binop, ir_ty, lhs, rhs));
-      let divide_value = Ir.Local (result, ir_ty) in
-      let divide_pred = s.current.id in
-      if open_block s then s.current.term := Some (Ir.Br join.id);
-      s.current <- join;
-      let selected = fresh s in
-      emit s
-        (Ir.Phi
-           ( selected,
-             ir_ty,
-             [ (Ir.Const (ir_ty, 0L), special.id); (divide_value, divide_pred) ] ));
-      Ir.Local (selected, ir_ty)
-  | _ ->
-      let result = fresh s in
-      emit s (Ir.Bin (result, binop, ir_ty, lhs, rhs));
-      Ir.Local (result, ir_ty)
 
 let width = function Ir.I1 -> 1 | I8 -> 8 | I16 -> 16 | I32 -> 32 | I64 -> 64 | _ -> 0
 
@@ -166,6 +136,108 @@ let rec intrinsic_suffix = function
   | Ir.I64 -> "i64"
   | Ir.Vector (lanes, elem) -> Printf.sprintf "v%d%s" lanes (intrinsic_suffix elem)
   | _ -> invalid_arg "intrinsic_suffix: non-integer type"
+
+let value_const s t value =
+  match t with
+  | Ir.Vector (_, elem) ->
+      let inserted = fresh s in
+      emit s
+        (Ir.Insert
+           (inserted, t, Ir.Undef t, Ir.Const (Ir.I32, 0L), Ir.Const (elem, value)));
+      let shuffled = fresh s in
+      emit s (Ir.Shuffle_zero (shuffled, t, Ir.Local (inserted, t)));
+      Ir.Local (shuffled, t)
+  | _ -> Ir.Const (t, value)
+
+let compare s cmp t lhs rhs =
+  let id = fresh s in
+  emit s (Ir.Cmp (id, cmp, t, lhs, rhs));
+  match t with
+  | Ir.Vector (lanes, _) -> Ir.Local (id, Ir.Vector (lanes, Ir.I1))
+  | _ -> Ir.Local (id, Ir.I1)
+
+let reduce_any s value =
+  match value_ty value with
+  | Ir.I1 -> value
+  | Ir.Vector (lanes, Ir.I1) as t ->
+      let id = fresh s in
+      emit s
+        (Ir.Call
+           ( Some id,
+             Ir.I1,
+             Printf.sprintf "llvm.vector.reduce.or.v%di1" lanes,
+             [ (t, value) ] ));
+      Ir.Local (id, Ir.I1)
+  | _ -> invalid_arg "reduce_any: non-boolean value"
+
+let combine_conditions s lhs rhs =
+  let id = fresh s in
+  emit s (Ir.Bin (id, Ir.And, Ir.I1, lhs, rhs));
+  Ir.Local (id, Ir.I1)
+
+let either_condition s lhs rhs =
+  let id = fresh s in
+  emit s (Ir.Bin (id, Ir.Or, Ir.I1, lhs, rhs));
+  Ir.Local (id, Ir.I1)
+
+let emit_trap s =
+  emit s Ir.Trap;
+  s.current.term := Some Ir.Unreachable
+
+let guard_condition s condition =
+  let trap = fresh_block s and valid = fresh_block s in
+  s.current.term := Some (Ir.CondBr (condition, trap.id, valid.id));
+  s.current <- trap;
+  emit_trap s;
+  s.current <- valid
+
+let signed_type = function
+  | Hir.Int (Hir.I8 | I16 | I32 | I64 | Isize)
+  | Hir.Vec (_, Hir.Int (Hir.I8 | I16 | I32 | I64 | Isize)) -> true
+  | _ -> false
+
+let division_guard s source_ty binop ir_ty lhs rhs =
+  let zero_condition =
+    reduce_any s (compare s Ir.Eq ir_ty rhs (value_const s ir_ty 0L))
+  in
+  let condition =
+    if binop = Ir.Sdiv && signed_type source_ty then
+      let bits = width (match ir_ty with Ir.Vector (_, t) -> t | t -> t) in
+      let minimum = Int64.shift_left 1L (bits - 1) in
+      let lhs_minimum =
+        reduce_any s (compare s Ir.Eq ir_ty lhs (value_const s ir_ty minimum))
+      in
+      let rhs_minus_one =
+        reduce_any s
+          (compare s Ir.Eq ir_ty rhs (value_const s ir_ty Int64.minus_one))
+      in
+      either_condition s zero_condition (combine_conditions s lhs_minimum rhs_minus_one)
+    else zero_condition
+  in
+  guard_condition s condition
+
+let emit_binary s source_ty op ir_ty lhs rhs =
+  let binop = bin_for source_ty op in
+  let division = match binop with Ir.Sdiv | Srem | Udiv | Urem -> true | _ -> false in
+  if division then division_guard s source_ty binop ir_ty lhs rhs;
+  if binop = Ir.Srem then
+    let is_minus_one =
+      compare s Ir.Eq ir_ty rhs (value_const s ir_ty Int64.minus_one)
+    in
+    let safe_rhs_id = fresh s in
+    let safe_rhs = value_const s ir_ty 1L in
+    emit s (Ir.Select (safe_rhs_id, is_minus_one, safe_rhs, rhs));
+    let raw_id = fresh s in
+    emit s (Ir.Bin (raw_id, binop, ir_ty, lhs, Ir.Local (safe_rhs_id, ir_ty)));
+    let result_id = fresh s in
+    emit s
+      (Ir.Select
+         (result_id, is_minus_one, value_const s ir_ty 0L, Ir.Local (raw_id, ir_ty)));
+    Ir.Local (result_id, ir_ty)
+  else
+    let result = fresh s in
+    emit s (Ir.Bin (result, binop, ir_ty, lhs, rhs));
+    Ir.Local (result, ir_ty)
 
 let truth s v =
   match value_ty v with
@@ -885,6 +957,7 @@ let intrinsic_decls funcs =
                 | Ir.Call (_, ret, name, args)
                   when String.starts_with ~prefix:"llvm." name ->
                     Some (name, ret, List.map fst args)
+                | Ir.Trap -> Some ("llvm.trap", Ir.Void, [])
                 | _ -> None)
               b.instrs)
           f.blocks)

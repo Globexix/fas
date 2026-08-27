@@ -53,6 +53,7 @@ type instr =
   | Shuffle_zero of int * ty * value
   | String_ptr of int * int * int
   | Global_ptr of int * string * ty
+  | Trap
 
 type terminator =
   | Ret of (ty * value) option
@@ -230,7 +231,8 @@ let instr_line = function
         (String.concat ", "
            (List.map (fun (v, b) -> Printf.sprintf "[ %s, %%b%d ]" (value_name v) b) xs))
   | Select (i, c, a, b) ->
-      Printf.sprintf "  %%v%d = select i1 %s, %s %s, %s %s" i (value_name c)
+      Printf.sprintf "  %%v%d = select %s %s, %s %s, %s %s" i
+        (ty_name (value_ty c)) (value_name c)
         (ty_name (value_ty a))
         (value_name a)
         (ty_name (value_ty b))
@@ -253,6 +255,7 @@ let instr_line = function
         index
   | Global_ptr (i, n, t) ->
       Printf.sprintf "  %%v%d = getelementptr %s, ptr @%s, i64 0" i (ty_name t) n
+  | Trap -> "  call void @llvm.trap()"
 
 let term_line = function
   | Ret None -> "  ret void"

@@ -158,12 +158,36 @@ let () =
   semantic_error "fas-004-assign-deref-void-pointer" "cannot dereference a void pointer"
     "fn sink() void { }\nfn f(p ptr[void]) i32 { p.* = sink()\nreturn 0 }";
 
-  let rem = llvm_of "fn rem(x i8) i8 { return x % -1 }\n" in
+  let guarded_div = llvm_of "fn div(x i64, y i64) i64 { return x / y }\n" in
   if
-    (not (contains rem "srem i8"))
-    || (not (contains rem "br i1"))
-    || not (contains rem "phi i8")
-  then failwith "signed-rem-poison-guard: missing branch/phi guard";
+    (not (contains guarded_div "icmp eq i64"))
+    || not (contains guarded_div "call void @llvm.trap()")
+    || not (contains guarded_div "-9223372036854775808")
+    || not (contains guarded_div "unreachable")
+  then failwith "integer-div-trap: missing runtime divisor guard";
+  let guarded_rem = llvm_of "fn rem(x i8, y i8) i8 { return x % y }\n" in
+  if
+    (not (contains guarded_rem "icmp eq i8"))
+    || (not (contains guarded_rem "srem i8"))
+    || not (contains guarded_rem "call void @llvm.trap()")
+  then failwith "integer-rem-trap: missing runtime divisor guard";
+  let vector_div =
+    llvm_of "fn div(x vec[4,u32], y vec[4,u32]) vec[4,u32] { return x / y }\n"
+  in
+  if
+    (not (contains vector_div "icmp eq <4 x i32>"))
+    || not (contains vector_div "@llvm.vector.reduce.or.v4i1")
+    || not (contains vector_div "udiv <4 x i32>")
+  then failwith "integer-vector-div-trap: missing vector divisor guard";
+  semantic_error "signed-div-constant-overflow"
+    "signed division overflow in constant expression"
+    "const X i64 = -9223372036854775808 / -1\nfn main() i64 { return X }\n";
+  let signed_rem_const =
+    llvm_of
+      "const X i64 = -9223372036854775808 % -1\nfn main() i64 { return X }\n"
+  in
+  if not (contains signed_rem_const "ret i64 0") then
+    failwith "signed-rem-constant-overflow: expected zero remainder";
 
   semantic_error "fas-026-const-array-write" "cannot modify const array"
     "const K arr[2, i64] = {1, 2}\nfn main() i32 { K[0] = 9\n return 0 }\n";

@@ -213,7 +213,7 @@ let () =
   let edge_hir = expect_ok (Sema.check edge_program) in
   let edge_ir = expect_ok (Lower.lower edge_hir) in
   let edge_llvm = Ir.render edge_ir in
-  assert (contains edge_llvm "phi i8");
+  assert (contains edge_llvm "call void @llvm.trap()");
   assert (contains edge_llvm "@llvm.fshl.v4i32");
   assert (contains edge_llvm "declare <4 x i32> @llvm.fshl.v4i32");
   assert (contains edge_llvm "zext i1 true to i64");
