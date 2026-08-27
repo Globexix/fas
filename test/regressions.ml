@@ -104,6 +104,19 @@ let () =
   semantic_error "fas-007-zero-parameter-alignment"
     "alignment must be a positive power of two"
     "fn f(x aligned[0] ptr[u8]) i32 { return 0 }\n";
+  semantic_error "fas-028-implicit-pointer-erasure"
+    "type mismatch: expected ptr[u8], got ptr[i64]"
+    "fn take(p ptr[u8]) i32 { return 0 }\n\
+     fn main() i32 { x i64 = 1\n\
+    \ return take(&x) }\n";
+  let explicit_pointer_cast =
+    llvm_of
+      "fn take(p ptr[u8]) i32 { return 0 }\n\
+       fn main() i32 { x i64 = 1\n\
+      \ return take(bitcast[ptr[u8]](&x)) }\n"
+  in
+  if not (contains explicit_pointer_cast "call i32 @take(ptr") then
+    failwith "fas-028: explicit pointer bitcast was rejected";
   let generic_attrs =
     llvm_of
       "@inline\n\

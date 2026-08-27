@@ -307,18 +307,7 @@ let intern_string c s =
       c.string_ids <- (s, i) :: c.string_ids;
       i
 
-let ptr_compatible actual expected =
-  match (actual, expected) with
-  | Hir.Ptr a, Hir.Ptr b -> (
-      equal actual expected
-      ||
-      match b with
-      | Hir.Int Hir.U8 -> (
-          match a with Hir.Int Hir.U8 | Hir.Opaque _ -> false | _ -> true)
-      | _ -> false)
-  | _ -> false
-
-let compatible actual expected = equal actual expected || ptr_compatible actual expected
+let compatible actual expected = equal actual expected
 
 let ensure_expected actual expected span =
   if compatible actual expected then Ok ()
