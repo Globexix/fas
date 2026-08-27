@@ -187,6 +187,13 @@ let () =
     "ctz/clz of zero is undefined in constant expression"
     "const C u8 = clz(0)\nfn main() i32 { return 0 }\n";
 
+  semantic_error "fas-021-local-aggregate-limit"
+    "aggregate element count exceeds the configured limit"
+    "fn main() i32 { v vec[1000001,u8]\n return 0 }\n";
+  semantic_error "fas-021-nested-aggregate-limit"
+    "aggregate element count exceeds the configured limit"
+    "fn main() i32 { a arr[100000,arr[20,u8]]\n return 0 }\n";
+
   let bool_sext =
     llvm_of "const B i64 = sext[i64](true)\nfn f() i64 { return sext[i64](true) }\n"
   in
@@ -318,4 +325,4 @@ let () =
     \               d vec[4,bool] = b & b\n\
     \               return 0 }\n";
 
-  print_endline "regression tests: 38 passed"
+  print_endline "regression tests: 40 passed"

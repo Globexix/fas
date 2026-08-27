@@ -123,6 +123,15 @@ let rec object_type (structs : Hir.struct_def list) = function
       if List.exists (fun (s : Hir.struct_def) -> s.name = n) structs then Ok ()
       else Error ("unknown struct `" ^ n ^ "`")
 
+let aggregate_within_limit limits ty =
+  let max_elements = limits.Limits.max_aggregate_elements in
+  let rec check count = function
+    | Hir.Array (n, t) | Hir.Vec (n, t) ->
+        if n = 0 then true else n <= max_elements / count && check (count * n) t
+    | _ -> count <= max_elements
+  in
+  check 1 ty
+
 let parse_integer raw =
   let clean = String.concat "" (String.split_on_char '_' raw) in
   let radix, digits =
@@ -1047,6 +1056,10 @@ and check_stmt (c : context) = function
       let* () =
         object_type c.structs t |> Result.map_error (fun m -> [ Diag.error span m ])
       in
+      let* () =
+        if aggregate_within_limit c.limits t then Ok ()
+        else error span "aggregate element count exceeds the configured limit"
+      in
       let* () = add_local name t c span in
       let* x =
         match init with
@@ -1293,11 +1306,6 @@ let check ?(limits = Limits.default) program =
         build (s :: acc) xs
   in
   let* structs = build [] structs_src in
-  let rec within_limit = function
-    | Hir.Array (n, t) | Hir.Vec (n, t) ->
-        n <= limits.Limits.max_aggregate_elements && within_limit t
-    | _ -> true
-  in
   let source_obj t =
     let* t =
       source_ty t |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
@@ -1306,7 +1314,7 @@ let check ?(limits = Limits.default) program =
       object_type structs t
       |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
     in
-    if within_limit t then Ok t
+    if aggregate_within_limit limits t then Ok t
     else error Span.synthetic "aggregate element count exceeds the configured limit"
   in
   let map_params convert params =
