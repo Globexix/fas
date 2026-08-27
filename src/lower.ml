@@ -100,20 +100,34 @@ let bin_for t = function
 
 let emit_binary s source_ty op ir_ty lhs rhs =
   let binop = bin_for source_ty op in
-  let result = fresh s in
-  emit s (Ir.Bin (result, binop, ir_ty, lhs, rhs));
-  let value = Ir.Local (result, ir_ty) in
   match (binop, ir_ty) with
   | Ir.Srem, (Ir.I8 | Ir.I16 | Ir.I32 | Ir.I64) ->
       let is_minus_one = fresh s in
       emit s
         (Ir.Cmp (is_minus_one, Ir.Eq, ir_ty, rhs, Ir.Const (ir_ty, Int64.minus_one)));
+      let special = fresh_block s and divide = fresh_block s and join = fresh_block s in
+      s.current.term :=
+        Some (Ir.CondBr (Ir.Local (is_minus_one, Ir.I1), special.id, divide.id));
+      s.current <- special;
+      if open_block s then s.current.term := Some (Ir.Br join.id);
+      s.current <- divide;
+      let result = fresh s in
+      emit s (Ir.Bin (result, binop, ir_ty, lhs, rhs));
+      let divide_value = Ir.Local (result, ir_ty) in
+      let divide_pred = s.current.id in
+      if open_block s then s.current.term := Some (Ir.Br join.id);
+      s.current <- join;
       let selected = fresh s in
       emit s
-        (Ir.Select
-           (selected, Ir.Local (is_minus_one, Ir.I1), Ir.Const (ir_ty, 0L), value));
+        (Ir.Phi
+           ( selected,
+             ir_ty,
+             [ (Ir.Const (ir_ty, 0L), special.id); (divide_value, divide_pred) ] ));
       Ir.Local (selected, ir_ty)
-  | _ -> value
+  | _ ->
+      let result = fresh s in
+      emit s (Ir.Bin (result, binop, ir_ty, lhs, rhs));
+      Ir.Local (result, ir_ty)
 
 let width = function Ir.I1 -> 1 | I8 -> 8 | I16 -> 16 | I32 -> 32 | I64 -> 64 | _ -> 0
 

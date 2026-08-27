@@ -146,8 +146,11 @@ let () =
     "fn sink() void { }\nfn f(p ptr[void]) i32 { p.* = sink()\nreturn 0 }";
 
   let rem = llvm_of "fn rem(x i8) i8 { return x % -1 }\n" in
-  if (not (contains rem "srem i8")) || not (contains rem "select i1") then
-    failwith "signed-rem-poison-guard: missing srem/select guard";
+  if
+    (not (contains rem "srem i8"))
+    || (not (contains rem "br i1"))
+    || not (contains rem "phi i8")
+  then failwith "signed-rem-poison-guard: missing branch/phi guard";
 
   let bool_sext =
     llvm_of "const B i64 = sext[i64](true)\nfn f() i64 { return sext[i64](true) }\n"
@@ -280,4 +283,4 @@ let () =
     \               d vec[4,bool] = b & b\n\
     \               return 0 }\n";
 
-  print_endline "regression tests: 31 passed"
+  print_endline "regression tests: 32 passed"
