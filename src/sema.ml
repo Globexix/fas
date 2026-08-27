@@ -511,8 +511,9 @@ let rec const_expr ?(structs = []) consts expected = function
           in
           Ok (t, mask_value t v)
       | "popcount", [ (t, x) ] -> Ok (t, Int64.of_int (popcount64 x))
-      | ("ctz" | "clz"), [ (_, 0L) ] ->
-          error s "ctz/clz of zero is undefined in constant expression"
+      | ("ctz" | "clz"), [ (t, 0L) ] ->
+          let bits = match t with Hir.Int q -> int_bits q | _ -> 64 in
+          Ok (t, Int64.of_int bits)
       | "ctz", [ (t, x) ] -> Ok (t, Int64.of_int (trailing64 x))
       | "clz", [ (t, x) ] ->
           let b = match t with Hir.Int q -> int_bits q | _ -> 64 in

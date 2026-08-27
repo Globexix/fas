@@ -479,7 +479,7 @@ and lower_builtin s b args t =
            ( Some id,
              rt,
              base ^ intrinsic_suffix rt,
-             [ (rt, x); (Ir.I1, Ir.Const (Ir.I1, 1L)) ] ));
+             [ (rt, x); (Ir.I1, Ir.Const (Ir.I1, 0L)) ] ));
       Ok (Ir.Local (id, rt))
   | _ -> error Span.synthetic "invalid builtin arity"
 

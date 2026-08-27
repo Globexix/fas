@@ -265,13 +265,37 @@ let () =
   if not (contains wide_shift "and i8") then
     failwith "fas-010: runtime shift count was not reduced modulo width";
 
-  semantic_error "fas-011-ctz-zero-const"
-    "ctz/clz of zero is undefined in constant expression"
-    "const C u8 = ctz(0)\nfn main() i32 { return 0 }\n";
-  semantic_error "fas-011-clz-zero-const"
-    "ctz/clz of zero is undefined in constant expression"
-    "const C u8 = clz(0)\nfn main() i32 { return 0 }\n";
-
+  let zero_bit_counts =
+    llvm_of
+      "const C8 u8 = ctz(0)\n\
+       const L8 u8 = clz(0)\n\
+       const C16 u16 = ctz(0)\n\
+       const L16 u16 = clz(0)\n\
+       const C32 u32 = ctz(0)\n\
+       const L32 u32 = clz(0)\n\
+       const C64 u64 = ctz(0)\n\
+       const L64 u64 = clz(0)\n\
+       fn main() i64 { return zext[i64](C8) + zext[i64](L8) +\
+       zext[i64](C16) + zext[i64](L16) + zext[i64](C32) +\
+       zext[i64](L32) + zext[i64](C64) + zext[i64](L64) }\n"
+  in
+  if
+    (not (contains zero_bit_counts "zext i8 8 to i64"))
+    || not (contains zero_bit_counts "zext i16 16 to i64")
+    || not (contains zero_bit_counts "zext i32 32 to i64")
+    || not (contains zero_bit_counts "add i64 %v11, 64")
+  then
+    failwith "fas-011: zero bit counts did not equal the integer width";
+  let runtime_bit_counts =
+    llvm_of
+      "fn ctz32(x u32) u32 { return ctz(x) }\n\
+       fn clz32(x u32) u32 { return clz(x) }\n"
+  in
+  if
+    (not (contains runtime_bit_counts "@llvm.cttz.i32"))
+    || not (contains runtime_bit_counts "@llvm.ctlz.i32")
+    || not (contains runtime_bit_counts "i1 false")
+  then failwith "fas-011: runtime zero bit counts were not defined";
   semantic_error "fas-027-const-array-function-collision" "duplicate declaration `F`"
     "const F arr[2, i64] = {1, 2}\n\
      fn F() i64 { return 3 }\n\
