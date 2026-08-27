@@ -6,6 +6,7 @@ type signature = {
   params : (string * Hir.ty * bool * int option) list;
   ret : Hir.ty;
   variadic : bool;
+  linkage : Ast.linkage;
 }
 
 type specialization = {
@@ -517,8 +518,23 @@ let rec rooted_in_const_array = function
   | Hir.Field (a, _, _, _, _)
   | Hir.Deref (a, _, _)
   | Hir.Address (a, _, _)
+  | Hir.Ptr_add (_, a, _, _, _)
   | Hir.Cast (_, a, _, _) ->
       rooted_in_const_array a
+  | Hir.Ternary (_, a, b, _, _) -> rooted_in_const_array a || rooted_in_const_array b
+  | _ -> false
+
+let rec rooted_in_string_literal = function
+  | Hir.EString _ -> true
+  | Hir.Index (a, _, _, _)
+  | Hir.Field (a, _, _, _, _)
+  | Hir.Deref (a, _, _)
+  | Hir.Address (a, _, _)
+  | Hir.Ptr_add (_, a, _, _, _)
+  | Hir.Cast (_, a, _, _) ->
+      rooted_in_string_literal a
+  | Hir.Ternary (_, a, b, _, _) ->
+      rooted_in_string_literal a || rooted_in_string_literal b
   | _ -> false
 
 let rec check_expr (c : context) expected = function
@@ -710,7 +726,8 @@ let rec check_expr (c : context) expected = function
       | _ -> error s "cannot dereference a non-pointer")
   | Ast.Addr_of (e, s) -> (
       let* x = check_expr c None e in
-      if rooted_in_const_array x then error s "cannot take address of const array"
+      if rooted_in_string_literal x then error s "cannot take address of string literal"
+      else if rooted_in_const_array x then error s "cannot take address of const array"
       else
         match x with
         | Hir.Local _ | Hir.Deref _ | Hir.Index _ | Hir.Field _ | Hir.Const_array _ ->
@@ -861,7 +878,7 @@ and check_call c _expected fn args s =
                   params
               in
               let* rt = source_ty_diag s ret in
-              let* checked = check_actuals c Reject s ps args in
+              let* checked = check_actuals c Reject s ps args ~allow_string:false in
               Ok (Hir.Call (Hir.User mangled, checked, rt, s))
       | Some _ -> error s "const-generic symbol is not a function")
   | Ast.Ident (name, _) -> (
@@ -918,11 +935,14 @@ and check_call c _expected fn args s =
               then error s (Printf.sprintf "wrong number of arguments to `%s`" name)
               else
                 let policy = if sig_.variadic then Promote_variadic else Reject in
-                let* xs = check_actuals c policy s sig_.params args in
+                let* xs =
+                  check_actuals c policy s sig_.params args
+                    ~allow_string:(sig_.linkage = Ast.External_c)
+                in
                 Ok (Hir.Call (Hir.User name, xs, sig_.ret, s))))
   | _ -> error s "call target must be a function name"
 
-and check_actuals c policy span formals actuals =
+and check_actuals c policy span formals actuals ~allow_string =
   let rec loop checked formals actuals =
     match (formals, actuals) with
     | [], rest ->
@@ -946,6 +966,12 @@ and check_actuals c policy span formals actuals =
         let* () =
           ensure_expected (Hir.expr_ty value) expected (Ast.expr_span expression)
         in
+        let* () =
+          if rooted_in_string_literal value && not allow_string then
+            error (Ast.expr_span expression)
+              "cannot pass string literal to native function"
+          else Ok ()
+        in
         loop (value :: checked) formal_rest actual_rest
     | _ -> error span "wrong number of arguments"
   in
@@ -958,7 +984,9 @@ let check_target (c : context) = function
       | None -> error span (Printf.sprintf "unknown assignment target `%s`" n))
   | Ast.Target_deref e -> (
       let* x = check_expr c None e in
-      if rooted_in_const_array x then
+      if rooted_in_string_literal x then
+        error (Ast.expr_span e) "cannot modify string literal"
+      else if rooted_in_const_array x then
         error (Ast.expr_span e) "cannot modify const array"
       else
         match Hir.expr_ty x with
@@ -971,7 +999,9 @@ let check_target (c : context) = function
   | Ast.Target_index (a, i) -> (
       let* x = check_expr c None a in
       let* y = check_expr c None i in
-      if rooted_in_const_array x then
+      if rooted_in_string_literal x then
+        error (Ast.expr_span a) "cannot modify string literal"
+      else if rooted_in_const_array x then
         error (Ast.expr_span a) "cannot modify const array"
       else if not (is_int (Hir.expr_ty y)) then
         error (Ast.expr_span i) "index must be integer"
@@ -982,7 +1012,9 @@ let check_target (c : context) = function
         | _ -> error (Ast.expr_span a) "index assignment requires aggregate or pointer")
   | Ast.Target_field (a, n) -> (
       let* x = check_expr c None a in
-      if rooted_in_const_array x then
+      if rooted_in_string_literal x then
+        error (Ast.expr_span a) "cannot modify string literal"
+      else if rooted_in_const_array x then
         error (Ast.expr_span a) "cannot modify const array"
       else
         match Hir.expr_ty x with
@@ -1056,8 +1088,11 @@ and check_stmt (c : context) = function
         | Some e ->
             let* v = check_expr c (Some t) e in
             let* () = ensure_expected (Hir.expr_ty v) t (Ast.expr_span e) in
-            mark_init name c;
-            Ok (Some v)
+            if rooted_in_string_literal v then
+              error (Ast.expr_span e) "cannot store string literal pointer"
+            else (
+              mark_init name c;
+              Ok (Some v))
       in
       Ok (Hir.Let (name, t, x, span))
   | Ast.Assign (t, e, span) ->
@@ -1069,8 +1104,11 @@ and check_stmt (c : context) = function
       in
       let* v = check_expr c (Some expected) e in
       let* () = ensure_expected (Hir.expr_ty v) expected span in
-      (match target with Hir.ALocal n -> mark_init n c | _ -> ());
-      Ok (Hir.Assign (target, v, span))
+      if rooted_in_string_literal v then
+        error (Ast.expr_span e) "cannot store string literal pointer"
+      else (
+        (match target with Hir.ALocal n -> mark_init n c | _ -> ());
+        Ok (Hir.Assign (target, v, span)))
   | Ast.Compound_assign (t, op, e, span) ->
       let* target = check_target c t in
       let* et =
@@ -1097,7 +1135,9 @@ and check_stmt (c : context) = function
         | Some e, t ->
             let* v = check_expr c (Some t) e in
             let* () = ensure_expected (Hir.expr_ty v) t span in
-            Ok (Some v)
+            if rooted_in_string_literal v then
+              error (Ast.expr_span e) "cannot return string literal pointer"
+            else Ok (Some v)
         | None, _ ->
             error span ("return value required (expected " ^ ty_name c.ret_ty ^ ")")
       in
@@ -1390,7 +1430,7 @@ let check ?(limits = Limits.default) program =
               if variadic && linkage <> Ast.External_c then
                 error span "variadic functions require extern \"C\""
               else (
-                sigs := !sigs @ [ (name, { params = ps; ret = rt; variadic }) ];
+                sigs := !sigs @ [ (name, { params = ps; ret = rt; variadic; linkage }) ];
                 Ok ())
         | _ -> Ok ())
       (Ok ()) program.items

@@ -172,6 +172,18 @@ let () =
      fn main() i32 { p ptr[i64] = &K[0]\n\
     \ p[0] = 9\n\
     \ return 0 }\n";
+  semantic_error "fas-029-string-literal-index" "cannot modify string literal"
+    "fn main() i32 { \"x\"[0] = 9\n return 0 }\n";
+  semantic_error "fas-029-string-literal-deref" "cannot modify string literal"
+    "fn main() i32 { \"x\".* = 9\n return 0 }\n";
+  semantic_error "fas-029-string-literal-address"
+    "cannot take address of string literal"
+    "fn main() i32 { p ptr[u8] = &\"x\"[0]\n return 0 }\n";
+  semantic_error "fas-029-string-literal-storage" "cannot store string literal pointer"
+    "fn main() i32 { p ptr[u8] = \"x\"\n p[0] = 9\n return 0 }\n";
+  semantic_error "fas-029-string-literal-native-call"
+    "cannot pass string literal to native function"
+    "fn write(p ptr[u8]) void { p[0] = 9 }\nfn main() i32 { write(\"x\")\n return 0 }\n";
   let const_array_value =
     llvm_of
       "const G arr[2, i64] = {7, 8}\n\
