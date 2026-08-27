@@ -45,6 +45,17 @@ let () =
   semantic_error "fas-008-i64-negative-underflow"
     "integer literal is out of range for i64"
     "const X i64 = -9223372036854775809\nfn f() i64 { return X }\n";
+  semantic_error "fas-020-positive-narrow-overflow"
+    "integer literal is out of range for i32"
+    "fn f() i32 { x i32 = 18446744073709551615\n return x }\n";
+  semantic_error "fas-020-negative-narrow-overflow"
+    "integer literal is out of range for i32"
+    "fn f() i32 { x i32 = -18446744073709551615\n return x }\n";
+  semantic_error "fas-020-hex-narrow-overflow" "integer literal is out of range for i32"
+    "fn f() i32 { x i32 = 0xffffffffffffffff\n return x }\n";
+  let u64_max = llvm_of "fn f() u64 { return 18446744073709551615 }\n" in
+  if not (contains u64_max "ret i64 -1") then
+    failwith "fas-020: valid u64 maximum literal was rejected";
   semantic_error "fas-009-duplicate-opaque" "duplicate type `x`"
     "opaque x\nopaque x\nfn main() i32 { return 0 }\n";
   semantic_error "fas-005-void-ternary" "ternary arms cannot have void type"
@@ -239,4 +250,4 @@ let () =
     \               d vec[4,bool] = b & b\n\
     \               return 0 }\n";
 
-  print_endline "regression tests: 26 passed"
+  print_endline "regression tests: 29 passed"

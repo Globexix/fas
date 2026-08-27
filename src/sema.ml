@@ -191,6 +191,32 @@ let mask_value ty value =
   | Hir.Ptr _ -> value
   | _ -> value
 
+let literal_limit ~negative = function
+  | Hir.Int k ->
+      let bits = int_bits k in
+      let signed =
+        match k with Hir.I8 | I16 | I32 | I64 | Isize -> true | _ -> false
+      in
+      if signed then
+        if negative then Int64.shift_left 1L (bits - 1)
+        else if bits = 64 then Int64.max_int
+        else Int64.sub (Int64.shift_left 1L (bits - 1)) 1L
+      else if bits = 64 then Int64.minus_one
+      else Int64.sub (Int64.shift_left 1L bits) 1L
+  | _ -> 0L
+
+let fits_literal ty value =
+  match ty with
+  | Hir.Int _ -> Int64.unsigned_compare value (literal_limit ~negative:false ty) <= 0
+  | Hir.Bool -> value = 0L || value = 1L
+  | _ -> false
+
+let fits_negative_literal ty value =
+  match ty with
+  | Hir.Int _ -> Int64.unsigned_compare value (literal_limit ~negative:true ty) <= 0
+  | Hir.Bool -> value = 0L || value = 1L
+  | _ -> false
+
 let sign_extend_value ty value =
   match ty with
   | Hir.Int k when not (is_unsigned ty) ->
@@ -322,7 +348,7 @@ let rec const_expr ?(structs = []) consts expected = function
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
-      if not (fits_int ty v) then
+      if not (fits_literal ty v) then
         error s ("integer literal is out of range for " ^ ty_name ty)
       else Ok (ty, mask_value ty v)
   | Ast.Bool_lit (v, _) -> Ok (Hir.Bool, if v then 1L else 0L)
@@ -340,7 +366,7 @@ let rec const_expr ?(structs = []) consts expected = function
             (b = 64 && v = Int64.min_int) || (b < 64 && v = Int64.shift_left 1L (b - 1))
         | _ -> false
       in
-      if fits_int t v || allowed then Ok (t, mask_value t (Int64.neg v))
+      if fits_negative_literal t v || allowed then Ok (t, mask_value t (Int64.neg v))
       else error s ("integer literal is out of range for " ^ ty_name t)
   | Ast.Unary (Ast.Neg, e, s) ->
       let* t, v = const_expr ~structs consts expected e in
@@ -478,7 +504,7 @@ let rec check_expr (c : context) expected = function
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
-      if not (fits_int ty v) then
+      if not (fits_literal ty v) then
         error s ("integer literal is out of range for " ^ ty_name ty)
       else Ok (Hir.EInt (mask_value ty v, ty, s))
   | Ast.Bool_lit (v, s) -> Ok (Hir.EBool (v, s))
@@ -519,7 +545,8 @@ let rec check_expr (c : context) expected = function
             (b = 64 && v = Int64.min_int) || (b < 64 && v = Int64.shift_left 1L (b - 1))
         | _ -> false
       in
-      if fits_int t v || allowed then Ok (Hir.EInt (mask_value t (Int64.neg v), t, s))
+      if fits_negative_literal t v || allowed then
+        Ok (Hir.EInt (mask_value t (Int64.neg v), t, s))
       else error s ("integer literal is out of range for " ^ ty_name t)
   | Ast.Unary (op, e, s) -> (
       let* te =
