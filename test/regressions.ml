@@ -152,6 +152,14 @@ let () =
     || not (contains rem "phi i8")
   then failwith "signed-rem-poison-guard: missing branch/phi guard";
 
+  semantic_error "fas-026-const-array-write" "cannot modify const array"
+    "const K arr[2, i64] = {1, 2}\nfn main() i32 { K[0] = 9\n return 0 }\n";
+  semantic_error "fas-026-const-array-address" "cannot take address of const array"
+    "const K arr[2, i64] = {1, 2}\n\
+     fn main() i32 { p ptr[i64] = &K[0]\n\
+    \ p[0] = 9\n\
+    \ return 0 }\n";
+
   let bool_sext =
     llvm_of "const B i64 = sext[i64](true)\nfn f() i64 { return sext[i64](true) }\n"
   in
@@ -283,4 +291,4 @@ let () =
     \               d vec[4,bool] = b & b\n\
     \               return 0 }\n";
 
-  print_endline "regression tests: 32 passed"
+  print_endline "regression tests: 34 passed"

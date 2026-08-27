@@ -511,6 +511,16 @@ let rec const_expr ?(structs = []) consts expected = function
       | _ -> error s "offsetof requires a struct")
   | expr -> error (Ast.expr_span expr) "expression is not compile-time constant"
 
+let rec rooted_in_const_array = function
+  | Hir.Const_array _ -> true
+  | Hir.Index (a, _, _, _)
+  | Hir.Field (a, _, _, _, _)
+  | Hir.Deref (a, _, _)
+  | Hir.Address (a, _, _)
+  | Hir.Cast (_, a, _, _) ->
+      rooted_in_const_array a
+  | _ -> false
+
 let rec check_expr (c : context) expected = function
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
@@ -700,10 +710,12 @@ let rec check_expr (c : context) expected = function
       | _ -> error s "cannot dereference a non-pointer")
   | Ast.Addr_of (e, s) -> (
       let* x = check_expr c None e in
-      match x with
-      | Hir.Local _ | Hir.Deref _ | Hir.Index _ | Hir.Field _ | Hir.Const_array _ ->
-          Ok (Hir.Address (x, Hir.Ptr (Hir.expr_ty x), s))
-      | _ -> error s "cannot take the address of this expression")
+      if rooted_in_const_array x then error s "cannot take address of const array"
+      else
+        match x with
+        | Hir.Local _ | Hir.Deref _ | Hir.Index _ | Hir.Field _ | Hir.Const_array _ ->
+            Ok (Hir.Address (x, Hir.Ptr (Hir.expr_ty x), s))
+        | _ -> error s "cannot take the address of this expression")
   | Ast.Ptr_add (bytes, p, o, s) -> (
       let* tp = check_expr c None p in
       let* toff = check_expr c None o in
@@ -946,16 +958,22 @@ let check_target (c : context) = function
       | None -> error span (Printf.sprintf "unknown assignment target `%s`" n))
   | Ast.Target_deref e -> (
       let* x = check_expr c None e in
-      match Hir.expr_ty x with
-      | Hir.Ptr (Hir.Opaque _) ->
-          error (Ast.expr_span e) "cannot dereference opaque pointer"
-      | Hir.Ptr Hir.Void -> error (Ast.expr_span e) "cannot dereference a void pointer"
-      | Hir.Ptr _ -> Ok (Hir.ADeref x)
-      | _ -> error (Ast.expr_span e) "deref assignment requires pointer")
+      if rooted_in_const_array x then
+        error (Ast.expr_span e) "cannot modify const array"
+      else
+        match Hir.expr_ty x with
+        | Hir.Ptr (Hir.Opaque _) ->
+            error (Ast.expr_span e) "cannot dereference opaque pointer"
+        | Hir.Ptr Hir.Void ->
+            error (Ast.expr_span e) "cannot dereference a void pointer"
+        | Hir.Ptr _ -> Ok (Hir.ADeref x)
+        | _ -> error (Ast.expr_span e) "deref assignment requires pointer")
   | Ast.Target_index (a, i) -> (
       let* x = check_expr c None a in
       let* y = check_expr c None i in
-      if not (is_int (Hir.expr_ty y)) then
+      if rooted_in_const_array x then
+        error (Ast.expr_span a) "cannot modify const array"
+      else if not (is_int (Hir.expr_ty y)) then
         error (Ast.expr_span i) "index must be integer"
       else
         match Hir.expr_ty x with
@@ -964,12 +982,15 @@ let check_target (c : context) = function
         | _ -> error (Ast.expr_span a) "index assignment requires aggregate or pointer")
   | Ast.Target_field (a, n) -> (
       let* x = check_expr c None a in
-      match Hir.expr_ty x with
-      | Hir.Struct sn -> (
-          match field_info c.structs sn n with
-          | Some f -> Ok (Hir.AField (x, n, f.offset))
-          | None -> error (Ast.expr_span a) (Printf.sprintf "unknown field `%s`" n))
-      | _ -> error (Ast.expr_span a) "field assignment requires struct")
+      if rooted_in_const_array x then
+        error (Ast.expr_span a) "cannot modify const array"
+      else
+        match Hir.expr_ty x with
+        | Hir.Struct sn -> (
+            match field_info c.structs sn n with
+            | Some f -> Ok (Hir.AField (x, n, f.offset))
+            | None -> error (Ast.expr_span a) (Printf.sprintf "unknown field `%s`" n))
+        | _ -> error (Ast.expr_span a) "field assignment requires struct")
 
 let target_ty c = function
   | Hir.ALocal name -> Option.map (fun binding -> binding.ty) (lookup_local name c)
