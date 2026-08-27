@@ -150,9 +150,14 @@ let splat_scalar s vector_ty elem_ty value =
   Ir.Local (shuffled, vector_ty)
 
 let shift_amount s target value =
-  match target with
-  | Ir.Vector (_, elem_ty) -> splat_scalar s target elem_ty value
-  | _ -> coerce s value target
+  let elem_ty = match target with Ir.Vector (_, t) -> t | t -> t in
+  let value = coerce s value elem_ty in
+  let bits = width elem_ty in
+  let mask = Int64.of_int (bits - 1) in
+  let id = fresh s in
+  emit s (Ir.Bin (id, Ir.And, elem_ty, value, Ir.Const (elem_ty, mask)));
+  let value = Ir.Local (id, elem_ty) in
+  match target with Ir.Vector _ -> splat_scalar s target elem_ty value | _ -> value
 
 let rec intrinsic_suffix = function
   | Ir.I8 -> "i8"

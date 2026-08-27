@@ -171,6 +171,15 @@ let () =
     || contains const_array_value "store [2 x i64] ptr"
   then failwith "fas-013: const array value was lowered as a pointer";
 
+  let wide_shift =
+    llvm_of
+      "const C u8 = shl(1, 8)\n\
+       fn run(x u8, n u8) u8 { return shl(x, n) }\n\
+       fn main() i32 { return zext[i32](C) - zext[i32](run(1, 8)) }\n"
+  in
+  if not (contains wide_shift "and i8") then
+    failwith "fas-010: runtime shift count was not reduced modulo width";
+
   let bool_sext =
     llvm_of "const B i64 = sext[i64](true)\nfn f() i64 { return sext[i64](true) }\n"
   in
@@ -302,4 +311,4 @@ let () =
     \               d vec[4,bool] = b & b\n\
     \               return 0 }\n";
 
-  print_endline "regression tests: 35 passed"
+  print_endline "regression tests: 36 passed"
