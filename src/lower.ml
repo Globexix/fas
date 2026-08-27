@@ -56,7 +56,7 @@ let rec ty = function
   | Hir.Int Hir.U16 | Hir.Int Hir.I16 -> I16
   | Hir.Int Hir.U32 | Hir.Int Hir.I32 -> I32
   | Hir.Int Hir.U64 | Hir.Int Hir.I64 | Hir.Int Hir.Usize | Hir.Int Hir.Isize -> I64
-  | Hir.Ptr t -> Ir.Ptr (ty t)
+  | Hir.Ptr t | Hir.ConstPtr t -> Ir.Ptr (ty t)
   | Hir.Vec (n, t) -> Ir.Vector (n, ty t)
   | Hir.Array (n, t) -> Ir.Array (n, ty t)
   | Hir.Struct n -> Ir.Struct n
@@ -210,7 +210,7 @@ let rec expr s = function
       if i < 0 || i >= List.length s.strings then error sp "missing interned string"
       else
         let id = fresh s in
-        emit s (Ir.String_ptr (id, i, String.length (List.nth s.strings i) + 1));
+        emit s (Ir.String_ptr (id, i, String.length (List.nth s.strings i)));
         Ok (Ir.Local (id, Ir.Ptr Ir.I8))
   | Hir.Local (n, t, sp) -> (
       match Hashtbl.find_opt s.env n with
@@ -295,7 +295,10 @@ let rec expr s = function
       let* ov = expr s o in
       let base =
         if bytes then Ir.I8
-        else match Hir.expr_ty p with Hir.Ptr t -> ty t | _ -> Ir.I8
+        else
+          match Hir.expr_ty p with
+          | Hir.Ptr t | Hir.ConstPtr t -> ty t
+          | _ -> Ir.I8
       in
       let id = fresh s in
       emit s (Ir.Gep (id, base, pv, [ Ir.Index ov ]));
@@ -485,7 +488,7 @@ and index_address s a i =
       let id = fresh s in
       emit s (Ir.Gep (id, ty (Hir.expr_ty a), p, [ Ir.Zero; Ir.Index iv ]));
       Ok (Ir.Local (id, Ir.Ptr Ir.I8))
-  | Hir.Ptr elem ->
+  | Hir.Ptr elem | Hir.ConstPtr elem ->
       let* p = expr s a in
       let id = fresh s in
       emit s (Ir.Gep (id, ty elem, p, [ Ir.Index iv ]));

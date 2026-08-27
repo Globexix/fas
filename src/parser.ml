@@ -259,9 +259,10 @@ module P = struct
     | Token.Ident "ptr" ->
         ignore (bump p);
         let* () = expected p Token.Lbracket in
+        let const = eat p Token.Kw_const in
         let* t = ty p in
         let* () = expected p Token.Rbracket in
-        Ok (Ast.Ptr t)
+        Ok (if const then Ast.Ptr_const t else Ast.Ptr t)
     | Token.Ident "arr" ->
         ignore (bump p);
         let* () = expected p Token.Lbracket in
@@ -977,7 +978,11 @@ module P = struct
     | Token.String s ->
         let sp = span p in
         ignore (bump p);
-        Ok (Ast.String_lit (s, sp))
+        Ok (Ast.String_lit (false, s, sp))
+    | Token.CString s ->
+        let sp = span p in
+        ignore (bump p);
+        Ok (Ast.String_lit (true, s, sp))
     | Token.Lparen ->
         ignore (bump p);
         let* e = expr p in

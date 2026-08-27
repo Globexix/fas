@@ -2,6 +2,7 @@ type kind =
   | Ident of string
   | Int of string
   | String of string
+  | CString of string
   | Kw_fn
   | Kw_return
   | Kw_if
@@ -68,6 +69,7 @@ let show = function
   | Ident s -> "`" ^ s ^ "`"
   | Int s -> "`" ^ s ^ "`"
   | String s -> "\"" ^ s ^ "\""
+  | CString s -> "c\"" ^ s ^ "\""
   | Kw_fn -> "`fn`"
   | Kw_return -> "`return`"
   | Kw_if -> "`if`"

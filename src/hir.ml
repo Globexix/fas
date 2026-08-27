@@ -4,6 +4,7 @@ type ty =
   | Bool
   | Int of int_kind
   | Ptr of ty
+  | ConstPtr of ty
   | Array of int * ty
   | Vec of int * ty
   | Struct of string
@@ -94,6 +95,7 @@ let rec ty_equal a b =
   | Bool, Bool | Void, Void -> true
   | Int a, Int b -> a = b
   | Ptr a, Ptr b -> ty_equal a b
+  | ConstPtr a, ConstPtr b -> ty_equal a b
   | Array (na, a), Array (nb, b) | Vec (na, a), Vec (nb, b) -> na = nb && ty_equal a b
   | Struct a, Struct b | Opaque a, Opaque b -> a = b
   | _ -> false
@@ -112,6 +114,7 @@ let rec ty_name = function
   | Int Usize -> "usize"
   | Int Isize -> "isize"
   | Ptr t -> "ptr[" ^ ty_name t ^ "]"
+  | ConstPtr t -> "ptr[const " ^ ty_name t ^ "]"
   | Array (n, t) -> Printf.sprintf "arr[%d, %s]" n (ty_name t)
   | Vec (n, t) -> Printf.sprintf "vec[%d, %s]" n (ty_name t)
   | Struct n | Opaque n -> n
@@ -135,7 +138,7 @@ let expr_ty = function
       t
   | EBool _ -> Bool
   | Null (t, _) -> t
-  | EString _ -> Ptr (Int U8)
+  | EString _ -> ConstPtr (Int U8)
   | Sizeof _ | Alignof _ | Offsetof _ -> Int U64
 
 let expr_span = function
@@ -176,7 +179,7 @@ let layout structs ty =
   let rec go visiting = function
     | Bool -> Ok (1, 1)
     | Int k -> Ok (int_layout k)
-    | Ptr _ -> Ok (8, 8)
+    | Ptr _ | ConstPtr _ -> Ok (8, 8)
     | Array (n, t) | Vec (n, t) ->
         if n < 0 then Error "negative aggregate length"
         else
@@ -224,7 +227,7 @@ let compute_struct decls name =
   and field_layout visiting = function
     | Bool -> Ok (1, 1)
     | Int k -> Ok (int_layout k)
-    | Ptr _ -> Ok (8, 8)
+    | Ptr _ | ConstPtr _ -> Ok (8, 8)
     | Void -> Error "void has no object layout"
     | Opaque n -> Error (Printf.sprintf "opaque type `%s` has no layout" n)
     | Struct n ->

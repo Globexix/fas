@@ -2,6 +2,7 @@ type ty =
   | Bool
   | Int of int_kind
   | Ptr of ty
+  | Ptr_const of ty
   | Array of string * ty
   | Vec of string * ty
   | Struct_type of string
@@ -14,7 +15,7 @@ and expr =
   | Int_lit of string * Span.t
   | Bool_lit of bool * Span.t
   | Null of Span.t
-  | String_lit of string * Span.t
+  | String_lit of bool * string * Span.t
   | Ident of string * Span.t
   | Unary of unop * expr * Span.t
   | Binary of binop * expr * expr * Span.t
@@ -124,7 +125,7 @@ let expr_span = function
   | Int_lit (_, s)
   | Bool_lit (_, s)
   | Null s
-  | String_lit (_, s)
+  | String_lit (_, _, s)
   | Ident (_, s)
   | Unary (_, _, s)
   | Binary (_, _, _, s)
@@ -174,6 +175,7 @@ let rec type_name = function
   | Int Usize -> "usize"
   | Int Isize -> "isize"
   | Ptr t -> "ptr[" ^ type_name t ^ "]"
+  | Ptr_const t -> "ptr[const " ^ type_name t ^ "]"
   | Array (n, t) -> "arr[" ^ n ^ ", " ^ type_name t ^ "]"
   | Vec (n, t) -> "vec[" ^ n ^ ", " ^ type_name t ^ "]"
   | Struct_type s | Opaque_type s -> s
@@ -184,7 +186,7 @@ let rec expr_name = function
   | Bool_lit (true, _) -> "true"
   | Bool_lit (false, _) -> "false"
   | Null _ -> "null"
-  | String_lit (s, _) -> Printf.sprintf "%S" s
+  | String_lit (c, s, _) -> Printf.sprintf "%s%S" (if c then "c" else "") s
   | Ident (s, _) -> s
   | Unary (op, e, _) ->
       (match op with Neg -> "-" | Not -> "!" | Bit_not -> "~") ^ expr_name e

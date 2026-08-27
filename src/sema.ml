@@ -6,7 +6,6 @@ type signature = {
   params : (string * Hir.ty * bool * int option) list;
   ret : Hir.ty;
   variadic : bool;
-  linkage : Ast.linkage;
 }
 
 type specialization = {
@@ -71,6 +70,9 @@ let rec source_ty = function
   | Ast.Ptr t ->
       let* t = source_ty t in
       Ok (Hir.Ptr t)
+  | Ast.Ptr_const t ->
+      let* t = source_ty t in
+      Ok (Hir.ConstPtr t)
   | Ast.Array (raw, t) -> source_aggregate (fun n t -> Hir.Array (n, t)) raw t
   | Ast.Vec (raw, t) -> source_aggregate (fun n t -> Hir.Vec (n, t)) raw t
   | Ast.Struct_type n -> Ok (Hir.Struct n)
@@ -103,7 +105,7 @@ let is_unsigned = function
   | Hir.Int (Hir.U8 | U16 | U32 | U64 | Usize) -> true
   | _ -> false
 
-let is_scalar = function Hir.Bool | Hir.Int _ | Hir.Ptr _ -> true | _ -> false
+let is_scalar = function Hir.Bool | Hir.Int _ | Hir.Ptr _ | Hir.ConstPtr _ -> true | _ -> false
 let is_numeric = function Hir.Int _ | Hir.Vec (_, Hir.Int _) -> true | _ -> false
 let is_truthy = is_scalar
 let equal = Hir.ty_equal
@@ -112,12 +114,12 @@ let ty_name = Hir.ty_name
 let rec object_type (structs : Hir.struct_def list) = function
   | Hir.Void -> Error "void is not an object type"
   | Hir.Opaque n -> Error ("opaque type `" ^ n ^ "` may only be used behind a pointer")
-  | Hir.Ptr _ | Hir.Bool | Hir.Int _ -> Ok ()
+  | Hir.Ptr _ | Hir.ConstPtr _ | Hir.Bool | Hir.Int _ -> Ok ()
   | Hir.Array (n, t) ->
       if n < 0 then Error "negative array length" else object_type structs t
   | Hir.Vec (n, t) when n > 0 -> (
       match t with
-      | Hir.Int _ | Hir.Bool | Hir.Ptr _ -> Ok ()
+      | Hir.Int _ | Hir.Bool | Hir.Ptr _ | Hir.ConstPtr _ -> Ok ()
       | _ -> Error "vector element type must be a scalar (bool, integer, or pointer)")
   | Hir.Vec _ -> Error "vector lane count must be positive"
   | Hir.Struct n ->
@@ -198,7 +200,7 @@ let mask_value ty value =
       let bits = int_bits k in
       if bits = 64 then value
       else Int64.logand value (Int64.sub (Int64.shift_left 1L bits) 1L)
-  | Hir.Ptr _ -> value
+  | Hir.Ptr _ | Hir.ConstPtr _ -> value
   | _ -> value
 
 let literal_limit ~negative = function
@@ -308,7 +310,11 @@ let intern_string c s =
       c.string_ids <- (s, i) :: c.string_ids;
       i
 
-let compatible actual expected = equal actual expected
+let compatible actual expected =
+  equal actual expected
+  || match (actual, expected) with
+     | Hir.Ptr a, Hir.ConstPtr b -> equal a b
+     | _ -> false
 
 let ensure_expected actual expected span =
   if compatible actual expected then Ok ()
@@ -455,7 +461,7 @@ let rec const_expr ?(structs = []) consts expected = function
         match st with
         | Hir.Bool -> 1
         | Hir.Int q -> int_bits q
-        | Hir.Ptr _ -> 64
+        | Hir.Ptr _ | Hir.ConstPtr _ -> 64
         | _ -> 0
       in
       let result =
@@ -537,6 +543,17 @@ let rec rooted_in_string_literal = function
       rooted_in_string_literal a || rooted_in_string_literal b
   | _ -> false
 
+let rec rooted_in_readonly_pointer = function
+  | Hir.Deref (a, _, _) | Hir.Index (a, _, _, _) | Hir.Field (a, _, _, _, _) ->
+      (match Hir.expr_ty a with
+      | Hir.ConstPtr _ -> true
+      | _ -> rooted_in_readonly_pointer a)
+  | Hir.Address (a, _, _) | Hir.Ptr_add (_, a, _, _, _) | Hir.Cast (_, a, _, _) ->
+      rooted_in_readonly_pointer a
+  | Hir.Ternary (_, a, b, _, _) ->
+      rooted_in_readonly_pointer a || rooted_in_readonly_pointer b
+  | _ -> false
+
 let rec check_expr (c : context) expected = function
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
@@ -547,9 +564,13 @@ let rec check_expr (c : context) expected = function
   | Ast.Bool_lit (v, s) -> Ok (Hir.EBool (v, s))
   | Ast.Null s -> (
       match expected with
-      | Some (Hir.Ptr _) as t -> Ok (Hir.Null (Option.get t, s))
+      | Some (Hir.Ptr _ | Hir.ConstPtr _) as t -> Ok (Hir.Null (Option.get t, s))
       | _ -> error s "null requires a pointer context")
-  | Ast.String_lit (v, s) -> Ok (Hir.EString (intern_string c v, s))
+  | Ast.String_lit (cstr, v, s) ->
+      if String.contains v '\000' then error s "string literal cannot contain NUL"
+      else
+        let value = if cstr then v ^ "\000" else v in
+        Ok (Hir.EString (intern_string c value, s))
   | Ast.Ident (n, s) -> (
       match lookup_local n c with
       | Some b ->
@@ -675,7 +696,7 @@ let rec check_expr (c : context) expected = function
       let bits = function
         | Hir.Bool -> 1
         | Hir.Int q -> int_bits q
-        | Hir.Ptr _ -> 64
+        | Hir.Ptr _ | Hir.ConstPtr _ -> 64
         | _ -> 0
       in
       let legal =
@@ -689,7 +710,8 @@ let rec check_expr (c : context) expected = function
             || (is_int from && (is_int t || t = Hir.Bool) && bits t <= bits from)
         | Ast.Bitcast -> (
             match (from, t) with
-            | Hir.Ptr _, Hir.Ptr _ -> true
+            | Hir.Ptr _, Hir.Ptr _ | Hir.Ptr _, Hir.ConstPtr _ -> true
+            | Hir.ConstPtr _, Hir.ConstPtr _ -> true
             | Hir.Ptr _, Hir.Int k | Hir.Int k, Hir.Ptr _ -> int_bits k = 64
             | _ when is_int from && is_int t -> bits from = bits t
             | _ -> false)
@@ -702,7 +724,7 @@ let rec check_expr (c : context) expected = function
       if not (is_int (Hir.expr_ty ti)) then error s "array index must be an integer"
       else
         match Hir.expr_ty ta with
-        | Hir.Array (_, e) | Hir.Vec (_, e) | Hir.Ptr e ->
+        | Hir.Array (_, e) | Hir.Vec (_, e) | Hir.Ptr e | Hir.ConstPtr e ->
             if match e with Hir.Opaque _ -> true | _ -> false then
               error s "opaque pointers cannot be indexed"
             else if match e with Hir.Void -> true | _ -> false then
@@ -720,19 +742,24 @@ let rec check_expr (c : context) expected = function
   | Ast.Deref (e, s) -> (
       let* x = check_expr c None e in
       match Hir.expr_ty x with
-      | Hir.Ptr (Hir.Opaque _) -> error s "cannot dereference an opaque pointer"
-      | Hir.Ptr Hir.Void -> error s "cannot dereference a void pointer"
-      | Hir.Ptr t -> Ok (Hir.Deref (x, t, s))
+      | Hir.Ptr (Hir.Opaque _) | Hir.ConstPtr (Hir.Opaque _) ->
+          error s "cannot dereference an opaque pointer"
+      | Hir.Ptr Hir.Void | Hir.ConstPtr Hir.Void -> error s "cannot dereference a void pointer"
+      | Hir.Ptr t | Hir.ConstPtr t -> Ok (Hir.Deref (x, t, s))
       | _ -> error s "cannot dereference a non-pointer")
   | Ast.Addr_of (e, s) -> (
       let* x = check_expr c None e in
-      if rooted_in_string_literal x then error s "cannot take address of string literal"
-      else if rooted_in_const_array x then error s "cannot take address of const array"
-      else
-        match x with
-        | Hir.Local _ | Hir.Deref _ | Hir.Index _ | Hir.Field _ | Hir.Const_array _ ->
-            Ok (Hir.Address (x, Hir.Ptr (Hir.expr_ty x), s))
-        | _ -> error s "cannot take the address of this expression")
+      match x with
+      | Hir.Local _ | Hir.Deref _ | Hir.Index _ | Hir.Field _ | Hir.Const_array _ ->
+          let ty =
+            if
+              rooted_in_const_array x || rooted_in_string_literal x
+              || rooted_in_readonly_pointer x
+            then Hir.ConstPtr (Hir.expr_ty x)
+            else Hir.Ptr (Hir.expr_ty x)
+          in
+          Ok (Hir.Address (x, ty, s))
+      | _ -> error s "cannot take the address of this expression")
   | Ast.Ptr_add (bytes, p, o, s) -> (
       let* tp = check_expr c None p in
       let* toff = check_expr c None o in
@@ -740,9 +767,10 @@ let rec check_expr (c : context) expected = function
         error s "pointer offset must be an integer"
       else
         match Hir.expr_ty tp with
-        | Hir.Ptr (Hir.Opaque _) ->
+        | Hir.Ptr (Hir.Opaque _) | Hir.ConstPtr (Hir.Opaque _) ->
             error s "pointer arithmetic on an opaque pointer is not allowed"
         | Hir.Ptr t -> Ok (Hir.Ptr_add (bytes, tp, toff, Hir.Ptr t, s))
+        | Hir.ConstPtr t -> Ok (Hir.Ptr_add (bytes, tp, toff, Hir.ConstPtr t, s))
         | _ -> error s "pointer addition requires a pointer")
   | Ast.Sizeof (t, s) ->
       let* t = source_ty_diag s t in
@@ -878,7 +906,7 @@ and check_call c _expected fn args s =
                   params
               in
               let* rt = source_ty_diag s ret in
-              let* checked = check_actuals c Reject s ps args ~allow_string:false in
+              let* checked = check_actuals c Reject s ps args in
               Ok (Hir.Call (Hir.User mangled, checked, rt, s))
       | Some _ -> error s "const-generic symbol is not a function")
   | Ast.Ident (name, _) -> (
@@ -935,14 +963,11 @@ and check_call c _expected fn args s =
               then error s (Printf.sprintf "wrong number of arguments to `%s`" name)
               else
                 let policy = if sig_.variadic then Promote_variadic else Reject in
-                let* xs =
-                  check_actuals c policy s sig_.params args
-                    ~allow_string:(sig_.linkage = Ast.External_c)
-                in
+                let* xs = check_actuals c policy s sig_.params args in
                 Ok (Hir.Call (Hir.User name, xs, sig_.ret, s))))
   | _ -> error s "call target must be a function name"
 
-and check_actuals c policy span formals actuals ~allow_string =
+and check_actuals c policy span formals actuals =
   let rec loop checked formals actuals =
     match (formals, actuals) with
     | [], rest ->
@@ -966,12 +991,6 @@ and check_actuals c policy span formals actuals ~allow_string =
         let* () =
           ensure_expected (Hir.expr_ty value) expected (Ast.expr_span expression)
         in
-        let* () =
-          if rooted_in_string_literal value && not allow_string then
-            error (Ast.expr_span expression)
-              "cannot pass string literal to native function"
-          else Ok ()
-        in
         loop (value :: checked) formal_rest actual_rest
     | _ -> error span "wrong number of arguments"
   in
@@ -984,38 +1003,37 @@ let check_target (c : context) = function
       | None -> error span (Printf.sprintf "unknown assignment target `%s`" n))
   | Ast.Target_deref e -> (
       let* x = check_expr c None e in
-      if rooted_in_string_literal x then
-        error (Ast.expr_span e) "cannot modify string literal"
-      else if rooted_in_const_array x then
+      if rooted_in_const_array x then
         error (Ast.expr_span e) "cannot modify const array"
       else
         match Hir.expr_ty x with
-        | Hir.Ptr (Hir.Opaque _) ->
+        | Hir.Ptr (Hir.Opaque _) | Hir.ConstPtr (Hir.Opaque _) ->
             error (Ast.expr_span e) "cannot dereference opaque pointer"
-        | Hir.Ptr Hir.Void ->
+        | Hir.Ptr Hir.Void | Hir.ConstPtr Hir.Void ->
             error (Ast.expr_span e) "cannot dereference a void pointer"
         | Hir.Ptr _ -> Ok (Hir.ADeref x)
+        | Hir.ConstPtr _ -> error (Ast.expr_span e) "cannot modify read-only pointer"
         | _ -> error (Ast.expr_span e) "deref assignment requires pointer")
   | Ast.Target_index (a, i) -> (
       let* x = check_expr c None a in
       let* y = check_expr c None i in
-      if rooted_in_string_literal x then
-        error (Ast.expr_span a) "cannot modify string literal"
-      else if rooted_in_const_array x then
+      if rooted_in_const_array x then
         error (Ast.expr_span a) "cannot modify const array"
       else if not (is_int (Hir.expr_ty y)) then
         error (Ast.expr_span i) "index must be integer"
       else
         match Hir.expr_ty x with
-        | Hir.Ptr Hir.Void -> error (Ast.expr_span a) "void pointers cannot be indexed"
+        | Hir.Ptr Hir.Void | Hir.ConstPtr Hir.Void ->
+            error (Ast.expr_span a) "void pointers cannot be indexed"
         | Hir.Array (_, _) | Hir.Vec (_, _) | Hir.Ptr _ -> Ok (Hir.AIndex (x, y))
+        | Hir.ConstPtr _ -> error (Ast.expr_span a) "cannot modify read-only pointer"
         | _ -> error (Ast.expr_span a) "index assignment requires aggregate or pointer")
   | Ast.Target_field (a, n) -> (
       let* x = check_expr c None a in
-      if rooted_in_string_literal x then
-        error (Ast.expr_span a) "cannot modify string literal"
-      else if rooted_in_const_array x then
+      if rooted_in_const_array x then
         error (Ast.expr_span a) "cannot modify const array"
+      else if rooted_in_readonly_pointer x then
+        error (Ast.expr_span a) "cannot modify read-only pointer"
       else
         match Hir.expr_ty x with
         | Hir.Struct sn -> (
@@ -1027,10 +1045,12 @@ let check_target (c : context) = function
 let target_ty c = function
   | Hir.ALocal name -> Option.map (fun binding -> binding.ty) (lookup_local name c)
   | Hir.ADeref expression -> (
-      match Hir.expr_ty expression with Hir.Ptr t -> Some t | _ -> None)
+      match Hir.expr_ty expression with
+      | Hir.Ptr t | Hir.ConstPtr t -> Some t
+      | _ -> None)
   | Hir.AIndex (expression, _) -> (
       match Hir.expr_ty expression with
-      | Hir.Array (_, t) | Hir.Vec (_, t) | Hir.Ptr t -> Some t
+      | Hir.Array (_, t) | Hir.Vec (_, t) | Hir.Ptr t | Hir.ConstPtr t -> Some t
       | _ -> None)
   | Hir.AField (expression, name, _) -> (
       match Hir.expr_ty expression with
@@ -1088,11 +1108,8 @@ and check_stmt (c : context) = function
         | Some e ->
             let* v = check_expr c (Some t) e in
             let* () = ensure_expected (Hir.expr_ty v) t (Ast.expr_span e) in
-            if rooted_in_string_literal v then
-              error (Ast.expr_span e) "cannot store string literal pointer"
-            else (
-              mark_init name c;
-              Ok (Some v))
+            mark_init name c;
+            Ok (Some v)
       in
       Ok (Hir.Let (name, t, x, span))
   | Ast.Assign (t, e, span) ->
@@ -1104,11 +1121,8 @@ and check_stmt (c : context) = function
       in
       let* v = check_expr c (Some expected) e in
       let* () = ensure_expected (Hir.expr_ty v) expected span in
-      if rooted_in_string_literal v then
-        error (Ast.expr_span e) "cannot store string literal pointer"
-      else (
-        (match target with Hir.ALocal n -> mark_init n c | _ -> ());
-        Ok (Hir.Assign (target, v, span)))
+      (match target with Hir.ALocal n -> mark_init n c | _ -> ());
+      Ok (Hir.Assign (target, v, span))
   | Ast.Compound_assign (t, op, e, span) ->
       let* target = check_target c t in
       let* et =
@@ -1135,9 +1149,7 @@ and check_stmt (c : context) = function
         | Some e, t ->
             let* v = check_expr c (Some t) e in
             let* () = ensure_expected (Hir.expr_ty v) t span in
-            if rooted_in_string_literal v then
-              error (Ast.expr_span e) "cannot return string literal pointer"
-            else Ok (Some v)
+            Ok (Some v)
         | None, _ ->
             error span ("return value required (expected " ^ ty_name c.ret_ty ^ ")")
       in
@@ -1357,7 +1369,8 @@ let check ?(limits = Limits.default) program =
           | _ -> Ok ()
         in
         match (param.noalias, ty) with
-        | true, Hir.Ptr _ -> Ok (param.name, ty, param.noalias, param.align)
+        | true, Hir.Ptr _ | true, Hir.ConstPtr _ ->
+            Ok (param.name, ty, param.noalias, param.align)
         | true, _ -> error param.span "noalias requires a pointer parameter"
         | false, _ -> Ok (param.name, ty, param.noalias, param.align))
       params
@@ -1430,7 +1443,7 @@ let check ?(limits = Limits.default) program =
               if variadic && linkage <> Ast.External_c then
                 error span "variadic functions require extern \"C\""
               else (
-                sigs := !sigs @ [ (name, { params = ps; ret = rt; variadic; linkage }) ];
+                sigs := !sigs @ [ (name, { params = ps; ret = rt; variadic }) ];
                 Ok ())
         | _ -> Ok ())
       (Ok ()) program.items

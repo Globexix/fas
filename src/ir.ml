@@ -301,8 +301,7 @@ let render m =
       (function
         | String_global { name; bytes } ->
             Printf.sprintf "@%s = private unnamed_addr constant [%d x i8] c\"%s\"" name
-              (String.length bytes + 1)
-              (quote_bytes (bytes ^ "\000"))
+              (String.length bytes) (quote_bytes bytes)
         | Array_global { name; elem_ty; elems; align } ->
             let es =
               String.concat ", "

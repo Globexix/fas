@@ -57,7 +57,7 @@ let lex ?(limits = Limits.default) source =
         let sp = Source.span source ~start_offset:offset ~end_offset:(offset + 1) in
         loop (offset + 1) (count + 1)
           ({ Token.kind = Token.Newline; span = sp } :: tokens)
-      else if is_ident_start c then
+      else if is_ident_start c && not (c = 'c' && offset + 1 < n && text.[offset + 1] = '"') then
         let rec ident_end i =
           if i < n && is_ident_continue text.[i] then ident_end (i + 1) else i
         in
@@ -107,7 +107,8 @@ let lex ?(limits = Limits.default) source =
         else
           let sp = Source.span source ~start_offset:offset ~end_offset:stop in
           loop stop (count + 1) ({ Token.kind = Token.Int clean; span = sp } :: tokens)
-      else if c = '"' then
+      else if c = '"' || (c = 'c' && offset + 1 < n && text.[offset + 1] = '"') then
+        let string_start = if c = 'c' then offset + 1 else offset in
         let rec string_end i buffer =
           if i >= n then Error [ diagnostic offset "unterminated string literal" ]
           else
@@ -134,12 +135,13 @@ let lex ?(limits = Limits.default) source =
                 Buffer.add_char buffer value;
                 string_end (i + 1) buffer
         in
-        match string_end (offset + 1) (Buffer.create 16) with
+        match string_end (string_start + 1) (Buffer.create 16) with
         | Error e -> Error e
         | Ok (stop, value) ->
             let sp = Source.span source ~start_offset:offset ~end_offset:stop in
             loop stop (count + 1)
-              ({ Token.kind = Token.String value; span = sp } :: tokens)
+              ({ Token.kind = (if c = 'c' then Token.CString value else Token.String value); span = sp }
+              :: tokens)
       else
         let one kind =
           let sp = Source.span source ~start_offset:offset ~end_offset:(offset + 1) in

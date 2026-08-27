@@ -167,23 +167,39 @@ let () =
 
   semantic_error "fas-026-const-array-write" "cannot modify const array"
     "const K arr[2, i64] = {1, 2}\nfn main() i32 { K[0] = 9\n return 0 }\n";
-  semantic_error "fas-026-const-array-address" "cannot take address of const array"
+  semantic_error "fas-026-const-array-address" "cannot modify read-only pointer"
     "const K arr[2, i64] = {1, 2}\n\
-     fn main() i32 { p ptr[i64] = &K[0]\n\
+     fn main() i32 { p ptr[const i64] = &K[0]\n\
     \ p[0] = 9\n\
     \ return 0 }\n";
-  semantic_error "fas-029-string-literal-index" "cannot modify string literal"
+  semantic_error "fas-029-string-literal-index" "cannot modify read-only pointer"
     "fn main() i32 { \"x\"[0] = 9\n return 0 }\n";
-  semantic_error "fas-029-string-literal-deref" "cannot modify string literal"
-    "fn main() i32 { \"x\".* = 9\n return 0 }\n";
-  semantic_error "fas-029-string-literal-address"
-    "cannot take address of string literal"
-    "fn main() i32 { p ptr[u8] = &\"x\"[0]\n return 0 }\n";
-  semantic_error "fas-029-string-literal-storage" "cannot store string literal pointer"
-    "fn main() i32 { p ptr[u8] = \"x\"\n p[0] = 9\n return 0 }\n";
-  semantic_error "fas-029-string-literal-native-call"
-    "cannot pass string literal to native function"
-    "fn write(p ptr[u8]) void { p[0] = 9 }\nfn main() i32 { write(\"x\")\n return 0 }\n";
+  semantic_error "fas-029-string-literal-deref" "cannot modify read-only pointer"
+    "fn main() i32 { p ptr[const u8] = \"x\"\n p.* = 9\n return 0 }\n";
+  semantic_error "fas-029-string-literal-mutable-storage"
+    "type mismatch: expected ptr[u8], got ptr[const u8]"
+    "fn main() i32 { p ptr[u8] = \"x\"\n return 0 }\n";
+  semantic_error "fas-029-read-only-address-propagation"
+    "type mismatch: expected ptr[i64], got ptr[const i64]"
+    "fn main() i32 { x i64 = 1\n p ptr[const i64] = &x\n q ptr[i64] = &p.*\n return 0 }\n";
+  let string_literals =
+    llvm_of
+      "extern \"C\" { fn take(p ptr[const u8]) void }\n\
+       fn main() i32 { take(\"x\")\n take(c\"x\")\n return 0 }\n"
+  in
+  if
+    not (contains string_literals "[1 x i8] c\"x\"")
+    || not (contains string_literals "[2 x i8] c\"x\\00\"")
+  then failwith "fas-030-string-literals: incorrect literal storage";
+  let string_pointer =
+    llvm_of
+      "fn read(p ptr[const u8]) i32 { return zext[i32](p[0]) }\n\
+       fn main() i32 { return read(\"x\") }\n"
+  in
+  if not (contains string_pointer "call i32 @read(ptr") then
+    failwith "fas-030-string-literals: read-only pointer call was rejected";
+  semantic_error "fas-030-string-literal-nul" "string literal cannot contain NUL"
+    "fn main() i32 { c\"a\\0b\"[0]\n return 0 }\n";
   let const_array_value =
     llvm_of
       "const G arr[2, i64] = {7, 8}\n\

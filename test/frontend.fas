@@ -5,7 +5,7 @@ struct Pair {
 opaque Ctx
 const K u64 = 0x2a
 extern "C" {
-  fn printf(fmt ptr[u8], ...) i32
+  fn printf(fmt ptr[const u8], ...) i32
 }
 @inline
 fn add[N const usize](x i64, y i64) i64 {
@@ -22,6 +22,11 @@ fn add[N const usize](x i64, y i64) i64 {
     case 0: return 0
     default: return z ? z : 1
   }
+}
+fn literals() i32 {
+  printf("x")
+  printf(c"x")
+  return 0
 }
 asm fn raw(x i64) i64 {
   mov rax, rdi

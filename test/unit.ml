@@ -233,7 +233,7 @@ let () =
   | Error _ -> ()
   | Ok _ -> assert false);
   let parity_text =
-    "extern \"C\" { fn printf(fmt ptr[u8], ...) i32 }\n\
+    "extern \"C\" { fn printf(fmt ptr[const u8], ...) i32 }\n\
      struct Pair { a i64 b i64 }\n\
      const K arr[2,u32] = { 1, 2 }\n\
      fn first(p noalias aligned[16] ptr[Pair], x i64) i64 { defer { printf(\"d\") } if \
