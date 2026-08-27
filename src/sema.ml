@@ -1380,6 +1380,8 @@ let check ?(limits = Limits.default) program =
             let* () = validate_attrs span attrs in
             if List.exists (fun (n, _) -> n = name) !sigs then
               error span (Printf.sprintf "duplicate function `%s`" name)
+            else if List.exists (fun (n, _, _) -> n = name) !arrays then
+              error span (Printf.sprintf "duplicate declaration `%s`" name)
             else
               let rec dup seen = function
                 | [] -> None

@@ -187,6 +187,11 @@ let () =
     "ctz/clz of zero is undefined in constant expression"
     "const C u8 = clz(0)\nfn main() i32 { return 0 }\n";
 
+  semantic_error "fas-027-const-array-function-collision" "duplicate declaration `F`"
+    "const F arr[2, i64] = {1, 2}\n\
+     fn F() i64 { return 3 }\n\
+     fn main() i64 { return F() }\n";
+
   semantic_error "fas-021-local-aggregate-limit"
     "aggregate element count exceeds the configured limit"
     "fn main() i32 { v vec[1000001,u8]\n return 0 }\n";
@@ -325,4 +330,4 @@ let () =
     \               d vec[4,bool] = b & b\n\
     \               return 0 }\n";
 
-  print_endline "regression tests: 40 passed"
+  print_endline "regression tests: 41 passed"
