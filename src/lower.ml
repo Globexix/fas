@@ -916,6 +916,21 @@ let lower (p : Hir.program) =
   let structs =
     List.map
       (fun (d : Hir.struct_def) ->
+        let fields =
+          let rec go offset out = function
+            | [] -> List.rev out
+            | (f : Hir.field) :: rest ->
+                let padding = f.offset - offset in
+                let out =
+                  if padding > 0 then Ir.Array (padding, Ir.I8) :: out else out
+                in
+                let size =
+                  match Hir.layout p.structs f.ty with Ok (s, _) -> s | Error _ -> 0
+                in
+                go (f.offset + size) (ty f.ty :: out) rest
+          in
+          go 0 [] d.fields
+        in
         (let used =
            List.fold_left
              (fun n (f : Hir.field) ->
@@ -925,11 +940,7 @@ let lower (p : Hir.program) =
                max n (f.offset + sz))
              0 d.fields
          in
-         {
-           Ir.name = d.name;
-           fields = List.map (fun (f : Hir.field) -> ty f.ty) d.fields;
-           tail_padding = max 0 (d.size - used);
-         }
+         { Ir.name = d.name; fields; tail_padding = max 0 (d.size - used) }
           : Ir.struct_def))
       p.structs
   in

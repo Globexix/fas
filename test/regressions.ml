@@ -70,6 +70,22 @@ let () =
     || (not (contains signed_const_eval "sext i8 255 to i32"))
     || not (contains signed_const_eval "zext i1 true to i32")
   then failwith "fas-001: signed constant evaluation used masked bit patterns";
+  let nested_align =
+    llvm_of
+      "struct Inner @align(16) { x u8 y u8 }\n\
+       struct Outer { p u8 i Inner }\n\
+       fn main() i32 {\n\
+       a arr[2,Outer]\n\
+       a[0].i.y = 7\n\
+       a[1].p = 9\n\
+       return zext[i32](a[0].i.y)\n\
+       }\n"
+  in
+  if
+    (not (contains nested_align "%struct.Inner = type { i8, i8, [14 x i8] }"))
+    || not
+         (contains nested_align "%struct.Outer = type { i8, [15 x i8], %struct.Inner }")
+  then failwith "fas-003: nested aligned struct layout lost internal padding";
   semantic_error "fas-009-duplicate-opaque" "duplicate type `x`"
     "opaque x\nopaque x\nfn main() i32 { return 0 }\n";
   semantic_error "fas-005-void-ternary" "ternary arms cannot have void type"
@@ -264,4 +280,4 @@ let () =
     \               d vec[4,bool] = b & b\n\
     \               return 0 }\n";
 
-  print_endline "regression tests: 30 passed"
+  print_endline "regression tests: 31 passed"
