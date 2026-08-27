@@ -200,6 +200,26 @@ let () =
     failwith "fas-030-string-literals: read-only pointer call was rejected";
   semantic_error "fas-030-string-literal-nul" "string literal cannot contain NUL"
     "fn main() i32 { c\"a\\0b\"[0]\n return 0 }\n";
+  let raw_literal_length =
+    llvm_of "fn main() i64 { return zext[i64](len(\"abc\")) }\n"
+  in
+  if not (contains raw_literal_length "ret i64 3") then
+    failwith "fas-031-len: raw literal length is incorrect";
+  let c_literal_length =
+    llvm_of "fn main() i64 { return zext[i64](len(c\"abc\")) }\n"
+  in
+  if not (contains c_literal_length "ret i64 3") then
+    failwith "fas-031-len: C literal payload length is incorrect";
+  let array_length =
+    llvm_of
+      "const K arr[3, u8] = {1, 2, 3}\n\
+       const N usize = len(\"abc\")\n\
+       fn main() i64 { return zext[i64](len(K)) + zext[i64](N) }\n"
+  in
+  if not (contains array_length "ret i64") || not (contains array_length "i64 3") then
+    failwith "fas-031-len: fixed array length is incorrect";
+  semantic_error "fas-031-len-pointer" "len requires a fixed array or string literal"
+    "fn main() i64 { p ptr[const u8] = \"abc\"\n return zext[i64](len(p)) }\n";
   let const_array_value =
     llvm_of
       "const G arr[2, i64] = {7, 8}\n\

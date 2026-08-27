@@ -472,6 +472,9 @@ let rec const_expr ?(structs = []) consts expected = function
         | _ -> v
       in
       Ok (dt, mask_value dt result)
+  | Ast.Call (Ast.Ident ("len", _), [ Ast.String_lit (_, v, _) ], s) ->
+      if String.contains v '\000' then error s "string literal cannot contain NUL"
+      else Ok (Hir.Int Hir.U64, Int64.of_int (String.length v))
   | Ast.Call (Ast.Ident (name, _), args, s) -> (
       let* vals = Result_list.map (const_expr ~structs consts expected) args in
       match (name, vals) with
@@ -909,6 +912,23 @@ and check_call c _expected fn args s =
               let* checked = check_actuals c Reject s ps args in
               Ok (Hir.Call (Hir.User mangled, checked, rt, s))
       | Some _ -> error s "const-generic symbol is not a function")
+  | Ast.Ident ("len", _) ->
+      if List.length args <> 1 then
+        error s "builtin `len` expects one argument"
+      else
+        let argument = List.hd args in
+        let* n =
+          match argument with
+          | Ast.String_lit (_, value, _) ->
+              if String.contains value '\000' then error s "string literal cannot contain NUL"
+              else Ok (String.length value)
+          | _ ->
+              let* value = check_expr c None argument in
+              match Hir.expr_ty value with
+              | Hir.Array (n, _) -> Ok n
+              | _ -> error s "len requires a fixed array or string literal"
+        in
+        Ok (Hir.EInt (Int64.of_int n, Hir.Int Hir.U64, s))
   | Ast.Ident (name, _) -> (
       let builtin =
         match name with
