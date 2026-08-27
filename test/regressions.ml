@@ -159,6 +159,17 @@ let () =
      fn main() i32 { p ptr[i64] = &K[0]\n\
     \ p[0] = 9\n\
     \ return 0 }\n";
+  let const_array_value =
+    llvm_of
+      "const G arr[2, i64] = {7, 8}\n\
+       fn take(p arr[2, i64]) i64 { return p[0] + p[1] }\n\
+       fn main() i64 { a arr[2, i64] = G\n\
+      \ return take(G) }\n"
+  in
+  if
+    (not (contains const_array_value "load [2 x i64], ptr"))
+    || contains const_array_value "store [2 x i64] ptr"
+  then failwith "fas-013: const array value was lowered as a pointer";
 
   let bool_sext =
     llvm_of "const B i64 = sext[i64](true)\nfn f() i64 { return sext[i64](true) }\n"
@@ -291,4 +302,4 @@ let () =
     \               d vec[4,bool] = b & b\n\
     \               return 0 }\n";
 
-  print_endline "regression tests: 34 passed"
+  print_endline "regression tests: 35 passed"

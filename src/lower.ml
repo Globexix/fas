@@ -332,9 +332,11 @@ let rec expr s = function
       emit s (Ir.Shuffle_zero (i2, vt, Ir.Local (i1, vt)));
       Ok (Ir.Local (i2, vt))
   | Hir.Const_array (n, t, _) ->
-      let id = fresh s in
-      emit s (Ir.Global_ptr (id, n, ty t));
-      Ok (Ir.Local (id, Ir.Ptr (ty t)))
+      let ptr_id = fresh s in
+      emit s (Ir.Global_ptr (ptr_id, n, ty t));
+      let value_id = fresh s in
+      emit s (Ir.Load (value_id, ty t, Ir.Local (ptr_id, Ir.Ptr (ty t)), align s t));
+      Ok (Ir.Local (value_id, ty t))
   | Hir.Struct_lit (n, xs, t, sp) -> (
       match find_struct s n with
       | None -> error sp ("unknown struct `" ^ n ^ "`")
