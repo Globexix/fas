@@ -236,8 +236,8 @@ let () =
     "extern \"C\" { fn printf(fmt ptr[const u8], ...) i32 }\n\
      struct Pair { a i64 b i64 }\n\
      const K arr[2,u32] = { 1, 2 }\n\
-     fn first(p ptr[Pair], x i64) i64 { defer { printf(\"d\") } if \
-     p != null { y Pair = (Pair){x, 2}\n\
+     fn first(p ptr[Pair], x i64) i64 { defer { printf(\"d\") } if p != null { y Pair \
+     = (Pair){x, 2}\n\
     \ return y.a } return x == 0 ? 3 : 4 }\n\
      fn second() i64 { printf(\"s\")\n\
     \ return zext[i64](K[1]) }\n"

@@ -105,7 +105,10 @@ let is_unsigned = function
   | Hir.Int (Hir.U8 | U16 | U32 | U64 | Usize) -> true
   | _ -> false
 
-let is_scalar = function Hir.Bool | Hir.Int _ | Hir.Ptr _ | Hir.ConstPtr _ -> true | _ -> false
+let is_scalar = function
+  | Hir.Bool | Hir.Int _ | Hir.Ptr _ | Hir.ConstPtr _ -> true
+  | _ -> false
+
 let is_numeric = function Hir.Int _ | Hir.Vec (_, Hir.Int _) -> true | _ -> false
 let is_truthy = is_scalar
 let equal = Hir.ty_equal
@@ -312,9 +315,7 @@ let intern_string c s =
 
 let compatible actual expected =
   equal actual expected
-  || match (actual, expected) with
-     | Hir.Ptr a, Hir.ConstPtr b -> equal a b
-     | _ -> false
+  || match (actual, expected) with Hir.Ptr a, Hir.ConstPtr b -> equal a b | _ -> false
 
 let ensure_expected actual expected span =
   if compatible actual expected then Ok ()
@@ -416,9 +417,8 @@ let rec const_expr ?(structs = []) consts expected = function
         in
         if
           op = Ast.Div
-          && not (is_unsigned lt)
-          && signed_lv = signed_min
-          && signed_rv = Int64.minus_one
+          && (not (is_unsigned lt))
+          && signed_lv = signed_min && signed_rv = Int64.minus_one
         then error s "signed division overflow in constant expression"
         else
           let cmp =
@@ -563,8 +563,8 @@ let rec rooted_in_string_literal = function
   | _ -> false
 
 let rec rooted_in_readonly_pointer = function
-  | Hir.Deref (a, _, _) | Hir.Index (a, _, _, _) | Hir.Field (a, _, _, _, _) ->
-      (match Hir.expr_ty a with
+  | Hir.Deref (a, _, _) | Hir.Index (a, _, _, _) | Hir.Field (a, _, _, _, _) -> (
+      match Hir.expr_ty a with
       | Hir.ConstPtr _ -> true
       | _ -> rooted_in_readonly_pointer a)
   | Hir.Address (a, _, _) | Hir.Ptr_add (_, a, _, _, _) | Hir.Cast (_, a, _, _) ->
@@ -763,7 +763,8 @@ let rec check_expr (c : context) expected = function
       match Hir.expr_ty x with
       | Hir.Ptr (Hir.Opaque _) | Hir.ConstPtr (Hir.Opaque _) ->
           error s "cannot dereference an opaque pointer"
-      | Hir.Ptr Hir.Void | Hir.ConstPtr Hir.Void -> error s "cannot dereference a void pointer"
+      | Hir.Ptr Hir.Void | Hir.ConstPtr Hir.Void ->
+          error s "cannot dereference a void pointer"
       | Hir.Ptr t | Hir.ConstPtr t -> Ok (Hir.Deref (x, t, s))
       | _ -> error s "cannot dereference a non-pointer")
   | Ast.Addr_of (e, s) -> (
@@ -929,20 +930,20 @@ and check_call c _expected fn args s =
               Ok (Hir.Call (Hir.User mangled, checked, rt, s))
       | Some _ -> error s "const-generic symbol is not a function")
   | Ast.Ident ("len", _) ->
-      if List.length args <> 1 then
-        error s "builtin `len` expects one argument"
+      if List.length args <> 1 then error s "builtin `len` expects one argument"
       else
         let argument = List.hd args in
         let* n =
           match argument with
           | Ast.String_lit (_, value, _) ->
-              if String.contains value '\000' then error s "string literal cannot contain NUL"
+              if String.contains value '\000' then
+                error s "string literal cannot contain NUL"
               else Ok (String.length value)
-          | _ ->
+          | _ -> (
               let* value = check_expr c None argument in
               match Hir.expr_ty value with
               | Hir.Array (n, _) -> Ok n
-              | _ -> error s "len requires a fixed array or string literal"
+              | _ -> error s "len requires a fixed array or string literal")
         in
         Ok (Hir.EInt (Int64.of_int n, Hir.Int Hir.U64, s))
   | Ast.Ident (name, _) -> (

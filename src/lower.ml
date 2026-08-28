@@ -193,7 +193,8 @@ let guard_condition s condition =
 
 let signed_type = function
   | Hir.Int (Hir.I8 | I16 | I32 | I64 | Isize)
-  | Hir.Vec (_, Hir.Int (Hir.I8 | I16 | I32 | I64 | Isize)) -> true
+  | Hir.Vec (_, Hir.Int (Hir.I8 | I16 | I32 | I64 | Isize)) ->
+      true
   | _ -> false
 
 let division_guard s source_ty binop ir_ty lhs rhs =
@@ -208,8 +209,7 @@ let division_guard s source_ty binop ir_ty lhs rhs =
         reduce_any s (compare s Ir.Eq ir_ty lhs (value_const s ir_ty minimum))
       in
       let rhs_minus_one =
-        reduce_any s
-          (compare s Ir.Eq ir_ty rhs (value_const s ir_ty Int64.minus_one))
+        reduce_any s (compare s Ir.Eq ir_ty rhs (value_const s ir_ty Int64.minus_one))
       in
       either_condition s zero_condition (combine_conditions s lhs_minimum rhs_minus_one)
     else zero_condition
@@ -220,7 +220,7 @@ let emit_binary s source_ty op ir_ty lhs rhs =
   let binop = bin_for source_ty op in
   let division = match binop with Ir.Sdiv | Srem | Udiv | Urem -> true | _ -> false in
   if division then division_guard s source_ty binop ir_ty lhs rhs;
-  if binop = Ir.Srem then
+  if binop = Ir.Srem then (
     let is_minus_one =
       compare s Ir.Eq ir_ty rhs (value_const s ir_ty Int64.minus_one)
     in
@@ -233,7 +233,7 @@ let emit_binary s source_ty op ir_ty lhs rhs =
     emit s
       (Ir.Select
          (result_id, is_minus_one, value_const s ir_ty 0L, Ir.Local (raw_id, ir_ty)));
-    Ir.Local (result_id, ir_ty)
+    Ir.Local (result_id, ir_ty))
   else
     let result = fresh s in
     emit s (Ir.Bin (result, binop, ir_ty, lhs, rhs));
@@ -367,10 +367,7 @@ let rec expr s = function
       let* ov = expr s o in
       let base =
         if bytes then Ir.I8
-        else
-          match Hir.expr_ty p with
-          | Hir.Ptr t | Hir.ConstPtr t -> ty t
-          | _ -> Ir.I8
+        else match Hir.expr_ty p with Hir.Ptr t | Hir.ConstPtr t -> ty t | _ -> Ir.I8
       in
       let id = fresh s in
       emit s (Ir.Gep (id, base, pv, [ Ir.Index ov ]));

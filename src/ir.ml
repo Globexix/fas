@@ -232,7 +232,8 @@ let instr_line = function
            (List.map (fun (v, b) -> Printf.sprintf "[ %s, %%b%d ]" (value_name v) b) xs))
   | Select (i, c, a, b) ->
       Printf.sprintf "  %%v%d = select %s %s, %s %s, %s %s" i
-        (ty_name (value_ty c)) (value_name c)
+        (ty_name (value_ty c))
+        (value_name c)
         (ty_name (value_ty a))
         (value_name a)
         (ty_name (value_ty b))

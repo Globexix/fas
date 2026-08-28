@@ -57,7 +57,9 @@ let lex ?(limits = Limits.default) source =
         let sp = Source.span source ~start_offset:offset ~end_offset:(offset + 1) in
         loop (offset + 1) (count + 1)
           ({ Token.kind = Token.Newline; span = sp } :: tokens)
-      else if is_ident_start c && not (c = 'c' && offset + 1 < n && text.[offset + 1] = '"') then
+      else if
+        is_ident_start c && not (c = 'c' && offset + 1 < n && text.[offset + 1] = '"')
+      then
         let rec ident_end i =
           if i < n && is_ident_continue text.[i] then ident_end (i + 1) else i
         in
@@ -140,7 +142,11 @@ let lex ?(limits = Limits.default) source =
         | Ok (stop, value) ->
             let sp = Source.span source ~start_offset:offset ~end_offset:stop in
             loop stop (count + 1)
-              ({ Token.kind = (if c = 'c' then Token.CString value else Token.String value); span = sp }
+              ({
+                 Token.kind =
+                   (if c = 'c' then Token.CString value else Token.String value);
+                 span = sp;
+               }
               :: tokens)
       else
         let one kind =

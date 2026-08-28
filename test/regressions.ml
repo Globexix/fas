@@ -101,8 +101,7 @@ let () =
     \  c ? a() : b()\n\
     \  return 0\n\
      }\n";
-  parse_error "fas-006-noalias-parameter"
-    "fn f(x noalias ptr[u8]) i32 { return 0 }\n";
+  parse_error "fas-006-noalias-parameter" "fn f(x noalias ptr[u8]) i32 { return 0 }\n";
   parse_error "fas-007-aligned-parameter"
     "fn f(x aligned[16] ptr[u8]) i32 { return 0 }\n";
   semantic_error "fas-028-implicit-pointer-erasure"
@@ -162,8 +161,8 @@ let () =
   let guarded_div = llvm_of "fn div(x i64, y i64) i64 { return x / y }\n" in
   if
     (not (contains guarded_div "icmp eq i64"))
-    || not (contains guarded_div "call void @llvm.trap()")
-    || not (contains guarded_div "-9223372036854775808")
+    || (not (contains guarded_div "call void @llvm.trap()"))
+    || (not (contains guarded_div "-9223372036854775808"))
     || not (contains guarded_div "unreachable")
   then failwith "integer-div-trap: missing runtime divisor guard";
   let guarded_rem = llvm_of "fn rem(x i8, y i8) i8 { return x % y }\n" in
@@ -177,15 +176,14 @@ let () =
   in
   if
     (not (contains vector_div "icmp eq <4 x i32>"))
-    || not (contains vector_div "@llvm.vector.reduce.or.v4i1")
+    || (not (contains vector_div "@llvm.vector.reduce.or.v4i1"))
     || not (contains vector_div "udiv <4 x i32>")
   then failwith "integer-vector-div-trap: missing vector divisor guard";
   semantic_error "signed-div-constant-overflow"
     "signed division overflow in constant expression"
     "const X i64 = -9223372036854775808 / -1\nfn main() i64 { return X }\n";
   let signed_rem_const =
-    llvm_of
-      "const X i64 = -9223372036854775808 % -1\nfn main() i64 { return X }\n"
+    llvm_of "const X i64 = -9223372036854775808 % -1\nfn main() i64 { return X }\n"
   in
   if not (contains signed_rem_const "ret i64 0") then
     failwith "signed-rem-constant-overflow: expected zero remainder";
@@ -206,14 +204,19 @@ let () =
     "fn main() i32 { p ptr[u8] = \"x\"\n return 0 }\n";
   semantic_error "fas-029-read-only-address-propagation"
     "type mismatch: expected ptr[i64], got ptr[const i64]"
-    "fn main() i32 { x i64 = 1\n p ptr[const i64] = &x\n q ptr[i64] = &p.*\n return 0 }\n";
+    "fn main() i32 { x i64 = 1\n\
+    \ p ptr[const i64] = &x\n\
+    \ q ptr[i64] = &p.*\n\
+    \ return 0 }\n";
   let string_literals =
     llvm_of
       "extern \"C\" { fn take(p ptr[const u8]) void }\n\
-       fn main() i32 { take(\"x\")\n take(c\"x\")\n return 0 }\n"
+       fn main() i32 { take(\"x\")\n\
+      \ take(c\"x\")\n\
+      \ return 0 }\n"
   in
   if
-    not (contains string_literals "[1 x i8] c\"x\"")
+    (not (contains string_literals "[1 x i8] c\"x\""))
     || not (contains string_literals "[2 x i8] c\"x\\00\"")
   then failwith "fas-030-string-literals: incorrect literal storage";
   let string_pointer =
@@ -241,7 +244,7 @@ let () =
        const N usize = len(\"abc\")\n\
        fn main() i64 { return zext[i64](len(K)) + zext[i64](N) }\n"
   in
-  if not (contains array_length "ret i64") || not (contains array_length "i64 3") then
+  if (not (contains array_length "ret i64")) || not (contains array_length "i64 3") then
     failwith "fas-031-len: fixed array length is incorrect";
   semantic_error "fas-031-len-pointer" "len requires a fixed array or string literal"
     "fn main() i64 { p ptr[const u8] = \"abc\"\n return zext[i64](len(p)) }\n";
@@ -276,25 +279,23 @@ let () =
        const L32 u32 = clz(0)\n\
        const C64 u64 = ctz(0)\n\
        const L64 u64 = clz(0)\n\
-       fn main() i64 { return zext[i64](C8) + zext[i64](L8) +\
-       zext[i64](C16) + zext[i64](L16) + zext[i64](C32) +\
-       zext[i64](L32) + zext[i64](C64) + zext[i64](L64) }\n"
+       fn main() i64 { return zext[i64](C8) + zext[i64](L8) +zext[i64](C16) + \
+       zext[i64](L16) + zext[i64](C32) +zext[i64](L32) + zext[i64](C64) + \
+       zext[i64](L64) }\n"
   in
   if
     (not (contains zero_bit_counts "zext i8 8 to i64"))
-    || not (contains zero_bit_counts "zext i16 16 to i64")
-    || not (contains zero_bit_counts "zext i32 32 to i64")
+    || (not (contains zero_bit_counts "zext i16 16 to i64"))
+    || (not (contains zero_bit_counts "zext i32 32 to i64"))
     || not (contains zero_bit_counts "add i64 %v11, 64")
-  then
-    failwith "fas-011: zero bit counts did not equal the integer width";
+  then failwith "fas-011: zero bit counts did not equal the integer width";
   let runtime_bit_counts =
     llvm_of
-      "fn ctz32(x u32) u32 { return ctz(x) }\n\
-       fn clz32(x u32) u32 { return clz(x) }\n"
+      "fn ctz32(x u32) u32 { return ctz(x) }\nfn clz32(x u32) u32 { return clz(x) }\n"
   in
   if
     (not (contains runtime_bit_counts "@llvm.cttz.i32"))
-    || not (contains runtime_bit_counts "@llvm.ctlz.i32")
+    || (not (contains runtime_bit_counts "@llvm.ctlz.i32"))
     || not (contains runtime_bit_counts "i1 false")
   then failwith "fas-011: runtime zero bit counts were not defined";
   semantic_error "fas-027-const-array-function-collision" "duplicate declaration `F`"

@@ -79,13 +79,7 @@ and assign_target =
   | Target_field of expr * string
 
 and field = { name : string; ty : ty; span : Span.t }
-
-and param = {
-  name : string;
-  ty : ty;
-  span : Span.t;
-}
-
+and param = { name : string; ty : ty; span : Span.t }
 and const_param = { name : string; ty : ty; span : Span.t }
 and body = Statements of stmt list | Asm of string
 and linkage = Internal | External_c
