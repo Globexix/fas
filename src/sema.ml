@@ -892,36 +892,39 @@ and check_call c _expected fn args s =
               | _ -> error s "const argument arity mismatch"
             in
             let* values = eval [] const_params cargs in
-            if c.spec_depth >= c.limits.Limits.max_specialization_depth then
-              error s "const specialization recursion depth limit exceeded"
-            else if
-              List.length !(c.specializations) >= c.limits.Limits.max_specializations
-            then error s "const specialization count limit exceeded"
-            else
-              let mangled = mangle_specialization name values in
-              let spec =
-                {
-                  item =
-                    Ast.Func
-                      {
-                        name;
-                        params;
-                        ret;
-                        body;
-                        attrs;
-                        linkage = Ast.Internal;
-                        variadic = false;
-                        const_params;
-                        span = s;
-                      };
-                  name = mangled;
-                  values;
-                  depth = c.spec_depth;
-                }
-              in
-              if not (List.exists (same_specialization spec) !(c.specializations)) then
+            let mangled = mangle_specialization name values in
+            let spec =
+              {
+                item =
+                  Ast.Func
+                    {
+                      name;
+                      params;
+                      ret;
+                      body;
+                      attrs;
+                      linkage = Ast.Internal;
+                      variadic = false;
+                      const_params;
+                      span = s;
+                    };
+                name = mangled;
+                values;
+                depth = c.spec_depth;
+              }
+            in
+            let* () =
+              if List.exists (same_specialization spec) !(c.specializations) then Ok ()
+              else if c.spec_depth >= c.limits.Limits.max_specialization_depth then
+                error s "const specialization recursion depth limit exceeded"
+              else if
+                List.length !(c.specializations) >= c.limits.Limits.max_specializations
+              then error s "const specialization count limit exceeded"
+              else (
                 c.specializations := !(c.specializations) @ [ spec ];
-              let* ps =
+                Ok ())
+            in
+            let* ps =
                 Result_list.map
                   (fun (p : Ast.param) ->
                     let* t = source_ty_diag p.span p.ty in

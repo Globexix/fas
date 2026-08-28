@@ -448,4 +448,62 @@ let () =
          (Printf.sprintf "fn %s(x i64) i64 { return x }\n" name))
     [ "len"; "shl"; "lshr"; "ashr"; "rotl"; "rotr"; "popcount"; "ctz"; "clz" ];
 
-  print_endline "regression tests: 50 passed"
+let spec_count_limits = { Limits.default with max_specializations = 1 } in
+  let repeated_spec_at_count_limit =
+    expect_ok
+      (Sema.check ~limits:spec_count_limits
+         (expect_ok
+            (Parser.parse
+               (source
+                  "fn id[N const usize](x u64) u64 { return x + N }\n\
+                   fn main() u64 { return id[3](2) + id[3](3) }\n"))))
+  in
+  if List.length repeated_spec_at_count_limit.Hir.funcs <> 2 then
+    failwith "spec-count-limit: repeated specialization was not deduplicated";
+  (match
+     Sema.check ~limits:spec_count_limits
+       (expect_ok
+          (Parser.parse
+             (source
+                "fn id[N const usize](x u64) u64 { return x + N }\n\
+                 fn main() u64 { return id[3](2) + id[4](3) }\n")))
+   with
+  | Ok _ -> failwith "spec-count-limit: expected rejection at the count limit"
+  | Error diagnostics ->
+      if
+        not
+          (contains (Diag.render_all ~source:None diagnostics)
+             "const specialization count limit exceeded")
+      then failwith "spec-count-limit: unexpected diagnostic");
+
+  let spec_depth_limits =
+    { Limits.default with max_specialization_depth = 1 }
+  in
+  let repeated_spec_at_depth_limit =
+    expect_ok
+      (Sema.check ~limits:spec_depth_limits
+         (expect_ok
+            (Parser.parse
+               (source
+                  "fn loop[N const i64]() i64 { return loop[N]() }\n\
+                   fn main() i64 { return loop[5]() }\n"))))
+  in
+  if List.length repeated_spec_at_depth_limit.Hir.funcs <> 2 then
+    failwith "spec-depth-limit: repeated specialization was not deduplicated";
+  (match
+     Sema.check ~limits:spec_depth_limits
+       (expect_ok
+          (Parser.parse
+             (source
+                "fn inner[N const i64]() i64 { return N }\n\
+                 fn outer[M const i64]() i64 { return inner[M]() }\n\
+                 fn main() i64 { return outer[5]() }\n")))
+   with
+  | Ok _ -> failwith "spec-depth-limit: expected rejection at the depth limit"
+  | Error diagnostics ->
+      if
+        not
+          (contains (Diag.render_all ~source:None diagnostics)
+             "const specialization recursion depth limit exceeded")
+      then failwith "spec-depth-limit: unexpected diagnostic");
+  print_endline "regression tests: 54 passed"
