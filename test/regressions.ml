@@ -20,6 +20,11 @@ let semantic_error name fragment text =
       if not (contains rendered fragment) then
         failwith (name ^ ": unexpected diagnostic: " ^ rendered)
 
+let parse_error name text =
+  match Parser.parse (source text) with
+  | Ok _ -> failwith (name ^ ": expected parse rejection")
+  | Error _ -> ()
+
 let lower_of text =
   let program = expect_ok (Parser.parse (source text)) in
   let hir = expect_ok (Sema.check program) in
@@ -96,14 +101,10 @@ let () =
     \  c ? a() : b()\n\
     \  return 0\n\
      }\n";
-  semantic_error "fas-006-noalias-non-pointer" "noalias requires a pointer parameter"
-    "fn f(x noalias i32) i32 { return x }\nfn main() i32 { return f(0) }\n";
-  semantic_error "fas-007-non-power-of-two-parameter-alignment"
-    "alignment must be a positive power of two"
-    "fn f(x aligned[3] ptr[u8]) i32 { return 0 }\nfn main() i32 { return f(null) }\n";
-  semantic_error "fas-007-zero-parameter-alignment"
-    "alignment must be a positive power of two"
-    "fn f(x aligned[0] ptr[u8]) i32 { return 0 }\n";
+  parse_error "fas-006-noalias-parameter"
+    "fn f(x noalias ptr[u8]) i32 { return 0 }\n";
+  parse_error "fas-007-aligned-parameter"
+    "fn f(x aligned[16] ptr[u8]) i32 { return 0 }\n";
   semantic_error "fas-028-implicit-pointer-erasure"
     "type mismatch: expected ptr[u8], got ptr[i64]"
     "fn take(p ptr[u8]) i32 { return 0 }\n\

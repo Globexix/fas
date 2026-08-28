@@ -182,9 +182,6 @@ module P = struct
 
   let at p k = (peek p).Token.kind = k
 
-  let at_ident p name =
-    match (peek p).Token.kind with Token.Ident s -> s = name | _ -> false
-
   let eat p k =
     if at p k then (
       ignore (bump p);
@@ -502,21 +499,8 @@ module P = struct
       else
         let ps = span p in
         let* name = ident p in
-        let rec quals noalias align =
-          if at_ident p "noalias" then (
-            ignore (bump p);
-            quals true align)
-          else if at_ident p "aligned" then (
-            ignore (bump p);
-            let* () = expected p Token.Lbracket in
-            let* n = int_value p in
-            let* () = expected p Token.Rbracket in
-            quals noalias (Some n))
-          else Ok (noalias, align)
-        in
-        let* noalias, align = quals false None in
         let* t = ty p in
-        let param = { Ast.name; ty = t; noalias; align; span = ps } in
+        let param : Ast.param = { Ast.name; ty = t; span = ps } in
         let* () =
           if eat p Token.Comma then (
             skip_newlines p;

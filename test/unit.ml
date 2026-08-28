@@ -236,7 +236,7 @@ let () =
     "extern \"C\" { fn printf(fmt ptr[const u8], ...) i32 }\n\
      struct Pair { a i64 b i64 }\n\
      const K arr[2,u32] = { 1, 2 }\n\
-     fn first(p noalias aligned[16] ptr[Pair], x i64) i64 { defer { printf(\"d\") } if \
+     fn first(p ptr[Pair], x i64) i64 { defer { printf(\"d\") } if \
      p != null { y Pair = (Pair){x, 2}\n\
     \ return y.a } return x == 0 ? 3 : 4 }\n\
      fn second() i64 { printf(\"s\")\n\
@@ -253,8 +253,9 @@ let () =
       "%struct.Pair = type";
       "[2 x i32]";
       "...";
-      "noalias noundef align 16";
       "phi i64";
       "alloca i64";
     ];
+  assert (not (contains pir "noalias"));
+  assert (not (contains pir "align 16"));
   print_endline "frontend unit tests: ok"

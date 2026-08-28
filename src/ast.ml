@@ -83,8 +83,6 @@ and field = { name : string; ty : ty; span : Span.t }
 and param = {
   name : string;
   ty : ty;
-  noalias : bool;
-  align : int option;
   span : Span.t;
 }
 
