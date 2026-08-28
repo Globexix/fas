@@ -1,6 +1,17 @@
-module IS = Set.Make (Int)
+module IM = Map.Make (Int)
 
-type binding = { ty : Hir.ty; id : int }
+type binding = { ty : Hir.ty; id : int; name : string }
+type selector = Field of string | Element of int
+type init_state = Uninit | Full | Raw | Partial of (selector * init_state) list
+type static_index = Dynamic | Known of Hir.ty * int64
+type place_path = Exact of selector list | Dynamic_prefix of selector list
+type place_info = { expr : Hir.expr; root : binding option; path : place_path option }
+
+type checked_target = {
+  target : Hir.assign_target;
+  root : binding option;
+  path : place_path option;
+}
 
 type signature = {
   params : (string * Hir.ty * bool * int option) list;
@@ -26,13 +37,14 @@ type context = {
   specializations : specialization list ref;
   spec_depth : int;
   locals : (string, binding) Hashtbl.t list ref;
-  mutable initialized : IS.t;
+  mutable initialized : init_state IM.t;
   mutable next_binding_id : int;
   mutable strings : string list;
   mutable string_ids : (string * int) list;
   ret_ty : Hir.ty;
   mutable loop_depth : int;
   mutable in_defer : bool;
+  mutable falls_through : bool;
   limits : Limits.t;
 }
 
@@ -304,30 +316,237 @@ let add_local name ty c span =
     let h = match !(c.locals) with h :: _ -> h | [] -> Hashtbl.create 8 in
     let id = c.next_binding_id in
     c.next_binding_id <- id + 1;
-    Hashtbl.replace h name { ty; id };
+    Hashtbl.replace h name { ty; id; name };
     if !(c.locals) = [] then c.locals := [ h ];
     ok ()
 
 let push c = c.locals := Hashtbl.create 8 :: !(c.locals)
 let pop c = match !(c.locals) with _ :: rest -> c.locals := rest | [] -> ()
 
-let require_init name c span =
-  match lookup_local name c with
-  | None -> Ok ()
-  | Some b ->
-      if IS.mem b.id c.initialized || not (is_scalar b.ty) then Ok ()
-      else error span (Printf.sprintf "use of uninitialized local `%s`" name)
-
-let mark_init name c =
-  match lookup_local name c with
-  | Some b -> c.initialized <- IS.add b.id c.initialized
-  | None -> ()
-
 let field_info structs name field =
   match List.find_opt (fun (s : Hir.struct_def) -> s.name = name) structs with
   | None -> None
   | Some (s : Hir.struct_def) ->
       List.find_opt (fun (f : Hir.field) -> f.name = field) s.fields
+
+let state_of c binding =
+  Option.value ~default:Uninit (IM.find_opt binding.id c.initialized)
+
+let state_usable = function Full | Raw -> true | Uninit | Partial _ -> false
+
+let child_type c ty selector =
+  match (ty, selector) with
+  | Hir.Struct n, Field name ->
+      Option.map (fun (f : Hir.field) -> f.ty) (field_info c.structs n name)
+  | (Hir.Array (_, t) | Hir.Vec (_, t)), Element _ -> Some t
+  | _ -> None
+
+let is_vacuous_type c ty =
+  let rec go seen = function
+    | Hir.Struct name ->
+        if List.mem name seen then false
+        else
+          Option.value ~default:false
+            (Option.map
+               (fun (s : Hir.struct_def) ->
+                 List.for_all (fun (f : Hir.field) -> go (name :: seen) f.ty) s.fields)
+               (List.find_opt (fun (s : Hir.struct_def) -> s.name = name) c.structs))
+    | Hir.Array (n, element) -> n = 0 || go seen element
+    | _ -> false
+  in
+  go [] ty
+
+let rec normalize_state c ty = function
+  | Uninit -> Uninit
+  | (Full | Raw) as state -> state
+  | Partial entries ->
+      let entries =
+        List.filter_map
+          (fun (selector, state) ->
+            match child_type c ty selector with
+            | None -> None
+            | Some child_ty ->
+                let state = normalize_state c child_ty state in
+                if state = Uninit then None else Some (selector, state))
+          entries
+      in
+      let complete, any_raw =
+        match ty with
+        | Hir.Struct n -> (
+            match List.find_opt (fun (s : Hir.struct_def) -> s.name = n) c.structs with
+            | None -> (false, false)
+            | Some s ->
+                let all =
+                  List.for_all
+                    (fun (f : Hir.field) ->
+                      match List.assoc_opt (Field f.name) entries with
+                      | Some state -> state_usable state || is_vacuous_type c f.ty
+                      | None -> is_vacuous_type c f.ty)
+                    s.fields
+                in
+                let raw =
+                  List.exists
+                    (fun (f : Hir.field) ->
+                      match List.assoc_opt (Field f.name) entries with
+                      | Some Raw -> true
+                      | _ -> false)
+                    s.fields
+                in
+                (all, raw))
+        | Hir.Array (n, element_ty) | Hir.Vec (n, element_ty) ->
+            let all =
+              n >= 0
+              &&
+              let rec each i =
+                if i = n then true
+                else
+                  match List.assoc_opt (Element i) entries with
+                  | Some state when state_usable state -> each (i + 1)
+                  | Some _ | None ->
+                      if is_vacuous_type c element_ty then each (i + 1) else false
+              in
+              each 0
+            in
+            let raw =
+              List.exists
+                (fun (_, state) -> match state with Raw -> true | _ -> false)
+                entries
+            in
+            (all, raw)
+        | _ -> (false, false)
+      in
+      if complete then if any_raw then Raw else Full
+      else if entries = [] then Uninit
+      else Partial entries
+
+let rec update_state c ty state path replacement =
+  match path with
+  | [] -> replacement
+  | selector :: rest -> (
+      if state_usable state then state
+      else
+        let entries = match state with Partial xs -> xs | Uninit -> [] | _ -> [] in
+        match child_type c ty selector with
+        | None -> state
+        | Some child_ty ->
+            let child =
+              Option.value ~default:Uninit (List.assoc_opt selector entries)
+            in
+            let child = update_state c child_ty child rest replacement in
+            let entries =
+              List.remove_assoc selector entries |> fun xs ->
+              if child = Uninit then xs else (selector, child) :: xs
+            in
+            normalize_state c ty (Partial entries))
+
+let set_state c binding path replacement =
+  let state = update_state c binding.ty (state_of c binding) path replacement in
+  if state = Uninit then c.initialized <- IM.remove binding.id c.initialized
+  else c.initialized <- IM.add binding.id state c.initialized
+
+let require_state binding path c span =
+  let rec walk ty state = function
+    | [] -> if state_usable state || is_vacuous_type c ty then Ok () else Error ()
+    | selector :: rest -> (
+        match state with
+        | Full | Raw -> Ok ()
+        | Partial entries -> (
+            match child_type c ty selector with
+            | Some child_ty ->
+                let child =
+                  Option.value ~default:Uninit (List.assoc_opt selector entries)
+                in
+                walk child_ty child rest
+            | _ -> Error ())
+        | Uninit -> (
+            match child_type c ty selector with
+            | Some child_ty -> walk child_ty Uninit rest
+            | None -> Error ()))
+  in
+  if walk binding.ty (state_of c binding) path = Ok () then Ok ()
+  else error span (Printf.sprintf "use of uninitialized local `%s`" binding.name)
+
+let require_place_state binding path c span =
+  match path with
+  | Exact path | Dynamic_prefix path -> require_state binding path c span
+
+let merge_state c ty left right =
+  let rec merge ty left right =
+    let merge_partial whole entries =
+      Partial
+        (List.filter_map
+           (fun (selector, state) ->
+             match child_type c ty selector with
+             | Some child_ty -> (
+                 match merge child_ty whole state with
+                 | Uninit -> None
+                 | state -> Some (selector, state))
+             | None -> None)
+           entries)
+    in
+    let result =
+      match (left, right) with
+      | Uninit, _ | _, Uninit -> Uninit
+      | Full, Full -> Full
+      | Raw, Raw -> Raw
+      | Full, Raw | Raw, Full -> Raw
+      | Full, Partial entries | Partial entries, Full -> merge_partial Full entries
+      | Raw, Partial entries | Partial entries, Raw -> merge_partial Raw entries
+      | Partial left, Partial right ->
+          let selectors = List.map fst left @ List.map fst right in
+          let selectors =
+            List.fold_left
+              (fun acc selector ->
+                if List.mem selector acc then acc else selector :: acc)
+              [] selectors
+          in
+          Partial
+            (List.filter_map
+               (fun selector ->
+                 let left =
+                   Option.value ~default:Uninit (List.assoc_opt selector left)
+                 in
+                 let right =
+                   Option.value ~default:Uninit (List.assoc_opt selector right)
+                 in
+                 match child_type c ty selector with
+                 | Some child_ty -> (
+                     match merge child_ty left right with
+                     | Uninit -> None
+                     | state -> Some (selector, state))
+                 | None -> None)
+               selectors)
+    in
+    normalize_state c ty result
+  in
+  merge ty left right
+
+let merge_maps c left right =
+  IM.merge
+    (fun id left right ->
+      match (left, right) with
+      | Some left, Some right ->
+          let rec find = function
+            | [] -> None
+            | scope :: rest -> (
+                match
+                  Hashtbl.fold
+                    (fun _ binding result ->
+                      match result with
+                      | Some _ -> result
+                      | None -> if binding.id = id then Some binding else None)
+                    scope None
+                with
+                | Some binding -> Some binding
+                | None -> find rest)
+          in
+          Option.map
+            (fun binding -> merge_state c binding.ty left right)
+            (find !(c.locals))
+      | _ -> None)
+    left right
+
+let mark_init binding c = set_state c binding [] Full
 
 let intern_string c s =
   match List.assoc_opt s c.string_ids with
@@ -614,46 +833,99 @@ let rec rooted_in_readonly_pointer = function
       rooted_in_readonly_pointer a || rooted_in_readonly_pointer b
   | _ -> false
 
-
-let require_place_value c span = function
-  | Hir.Local (name, (Hir.Ptr _ | Hir.ConstPtr _), _) -> require_init name c span
+let require_place_value c span place =
+  match Hir.expr_ty place.expr with
+  | Hir.Ptr _ | Hir.ConstPtr _ -> (
+      match (place.root, place.path) with
+      | Some binding, Some path -> require_place_state binding path c span
+      | _ -> Ok ())
   | _ -> Ok ()
 
-
-let rec check_place (c : context) = function
+let rec check_place (c : context) expr =
+  let static_index e =
+    match const_expr ~structs:c.structs c.consts None e with
+    | Ok (ty, value) -> Known (ty, value)
+    | Error _ -> Dynamic
+  in
+  match expr with
   | Ast.Ident (n, s) -> (
       match lookup_local n c with
-      | Some b -> Ok (Hir.Local (n, b.ty, s))
+      | Some b ->
+          Ok { expr = Hir.Local (n, b.ty, s); root = Some b; path = Some (Exact []) }
       | None -> (
           match lookup n c.arrays with
-          | Some (_, t, _) -> Ok (Hir.Const_array (n, t, s))
+          | Some (_, t, _) ->
+              Ok { expr = Hir.Const_array (n, t, s); root = None; path = None }
           | None -> error s (Printf.sprintf "unknown name `%s`" n)))
   | Ast.Index (a, i, s) -> (
       let* base = check_place c a in
-      let* index = check_expr c None i in
-      if not (is_int (Hir.expr_ty index)) then error s "array index must be an integer"
+      let* checked_index = check_expr c None i in
+      if not (is_int (Hir.expr_ty checked_index)) then
+        error s "array index must be an integer"
       else
-        match Hir.expr_ty base with
-        | Hir.Array (_, e) | Hir.Vec (_, e) | Hir.Ptr e | Hir.ConstPtr e ->
-            let* () =
-              match Hir.expr_ty base with
-              | Hir.Ptr _ | Hir.ConstPtr _ ->
-                  require_place_value c (Hir.expr_span base) base
-              | Hir.Array _ | Hir.Vec _ -> Ok ()
-              | _ -> assert false
-            in
+        match Hir.expr_ty base.expr with
+        | Hir.Array (length, e) | Hir.Vec (length, e) -> (
+            match static_index i with
+            | Known (ty, value)
+              when let value = sign_extend_value ty value in
+                   value < 0L || value >= Int64.of_int length ->
+                error s "array index is out of bounds"
+            | Known (ty, value) ->
+                let value = sign_extend_value ty value in
+                let index = Int64.to_int value in
+                let path =
+                  match (base.root, base.path) with
+                  | Some _, Some (Exact path) -> Some (Exact (path @ [ Element index ]))
+                  | Some _, Some (Dynamic_prefix path) -> Some (Dynamic_prefix path)
+                  | _ -> None
+                in
+                Ok
+                  {
+                    expr = Hir.Index (base.expr, checked_index, e, s);
+                    root = base.root;
+                    path;
+                  }
+            | Dynamic ->
+                Ok
+                  {
+                    expr = Hir.Index (base.expr, checked_index, e, s);
+                    root = base.root;
+                    path =
+                      (match base.path with
+                      | Some (Exact path) -> Some (Dynamic_prefix path)
+                      | Some (Dynamic_prefix path) -> Some (Dynamic_prefix path)
+                      | None -> None);
+                  })
+        | Hir.Ptr e | Hir.ConstPtr e ->
+            let* () = require_place_value c (Hir.expr_span base.expr) base in
             if match e with Hir.Opaque _ -> true | _ -> false then
               error s "opaque pointers cannot be indexed"
             else if match e with Hir.Void -> true | _ -> false then
               error s "void pointers cannot be indexed"
-            else Ok (Hir.Index (base, index, e, s))
+            else
+              Ok
+                {
+                  expr = Hir.Index (base.expr, checked_index, e, s);
+                  root = None;
+                  path = None;
+                }
         | _ -> error s "cannot index this type")
   | Ast.Field (a, n, s) -> (
       let* base = check_place c a in
-      match Hir.expr_ty base with
+      match Hir.expr_ty base.expr with
       | Hir.Struct sn -> (
           match field_info c.structs sn n with
-          | Some f -> Ok (Hir.Field (base, n, f.ty, f.offset, s))
+          | Some f ->
+              Ok
+                {
+                  expr = Hir.Field (base.expr, n, f.ty, f.offset, s);
+                  root = base.root;
+                  path =
+                    (match base.path with
+                    | Some (Exact path) -> Some (Exact (path @ [ Field n ]))
+                    | Some (Dynamic_prefix path) -> Some (Dynamic_prefix path)
+                    | None -> None);
+                }
           | None -> error s (Printf.sprintf "unknown field `%s`" n))
       | _ -> error s "field access requires a struct")
   | Ast.Deref (e, s) -> (
@@ -663,9 +935,12 @@ let rec check_place (c : context) = function
           error s "cannot dereference an opaque pointer"
       | Hir.Ptr Hir.Void | Hir.ConstPtr Hir.Void ->
           error s "cannot dereference a void pointer"
-      | Hir.Ptr t | Hir.ConstPtr t -> Ok (Hir.Deref (x, t, s))
+      | Hir.Ptr t | Hir.ConstPtr t ->
+          Ok { expr = Hir.Deref (x, t, s); root = None; path = None }
       | _ -> error s "cannot dereference a non-pointer")
-  | e -> check_expr c None e
+  | e ->
+      let* checked = check_expr c None e in
+      Ok { expr = checked; root = None; path = None }
 
 and check_expr (c : context) expected = function
   | Ast.Int_lit (raw, s) ->
@@ -687,7 +962,7 @@ and check_expr (c : context) expected = function
   | Ast.Ident (n, s) -> (
       match lookup_local n c with
       | Some b ->
-          let* () = require_init n c s in
+          let* () = require_state b [] c s in
           Ok (Hir.Local (n, b.ty, s))
       | None -> (
           match lookup n c.consts with
@@ -735,12 +1010,15 @@ and check_expr (c : context) expected = function
             error s "logical not requires a scalar"
           else Ok (Hir.Unary (op, te, Hir.Bool, s)))
   | Ast.Binary (op, l, r, s) -> (
-      if op = Ast.And || op = Ast.Or then
+      if op = Ast.And || op = Ast.Or then (
         let* a = check_expr c None l in
+        let after_left = c.initialized in
         let* b = check_expr c None r in
+        let after_right = c.initialized in
+        c.initialized <- merge_maps c after_left after_right;
         if is_truthy (Hir.expr_ty a) && is_truthy (Hir.expr_ty b) then
           Ok (Hir.Binary (op, a, b, Hir.Bool, s))
-        else error s "logical operands must be scalar"
+        else error s "logical operands must be scalar")
       else
         let* a, b =
           match l with
@@ -831,15 +1109,22 @@ and check_expr (c : context) expected = function
       in
       if legal then Ok (Hir.Cast (k, x, t, s))
       else error s "illegal cast for source and destination widths"
-  | Ast.Index (a, i, s) -> check_place c (Ast.Index (a, i, s))
-  | Ast.Field (a, n, s) -> (
-      let* ta = check_expr c None a in
-      match Hir.expr_ty ta with
-      | Hir.Struct sn -> (
-          match field_info c.structs sn n with
-          | Some f -> Ok (Hir.Field (ta, n, f.ty, f.offset, s))
-          | None -> error s (Printf.sprintf "unknown field `%s`" n))
-      | _ -> error s "field access requires a struct")
+  | Ast.Index (a, i, s) ->
+      let* place = check_place c (Ast.Index (a, i, s)) in
+      let* () =
+        match (place.root, place.path) with
+        | Some binding, Some path -> require_place_state binding path c s
+        | _ -> Ok ()
+      in
+      Ok place.expr
+  | Ast.Field (a, n, s) ->
+      let* place = check_place c (Ast.Field (a, n, s)) in
+      let* () =
+        match (place.root, place.path) with
+        | Some binding, Some path -> require_place_state binding path c s
+        | _ -> Ok ()
+      in
+      Ok place.expr
   | Ast.Deref (e, s) -> (
       let* x = check_expr c None e in
       match Hir.expr_ty x with
@@ -850,17 +1135,22 @@ and check_expr (c : context) expected = function
       | Hir.Ptr t | Hir.ConstPtr t -> Ok (Hir.Deref (x, t, s))
       | _ -> error s "cannot dereference a non-pointer")
   | Ast.Addr_of (e, s) -> (
-      let* x = check_place c e in
-      match x with
+      let* place = check_place c e in
+      (match place.root with Some binding -> set_state c binding [] Raw | None -> ());
+      match place.expr with
+      | Hir.Index (base, _, _, _)
+        when match Hir.expr_ty base with Hir.Vec _ -> true | _ -> false ->
+          error s "cannot take address of a vector lane"
       | Hir.Local _ | Hir.Deref _ | Hir.Index _ | Hir.Field _ | Hir.Const_array _ ->
           let ty =
             if
-              rooted_in_const_array x || rooted_in_string_literal x
-              || rooted_in_readonly_pointer x
-            then Hir.ConstPtr (Hir.expr_ty x)
-            else Hir.Ptr (Hir.expr_ty x)
+              rooted_in_const_array place.expr
+              || rooted_in_string_literal place.expr
+              || rooted_in_readonly_pointer place.expr
+            then Hir.ConstPtr (Hir.expr_ty place.expr)
+            else Hir.Ptr (Hir.expr_ty place.expr)
           in
-          Ok (Hir.Address (x, ty, s))
+          Ok (Hir.Address (place.expr, ty, s))
       | _ -> error s "cannot take the address of this expression")
   | Ast.Ptr_add (bytes, p, o, s) -> (
       let* tp = check_expr c None p in
@@ -902,8 +1192,13 @@ and check_expr (c : context) expected = function
       if not (is_truthy (Hir.expr_ty tq)) then
         error s "ternary condition must be scalar"
       else
+        let before_arms = c.initialized in
         let* ta = check_expr c expected a in
+        let after_a = c.initialized in
+        c.initialized <- before_arms;
         let* tb = check_expr c (Some (Hir.expr_ty ta)) b in
+        let after_b = c.initialized in
+        c.initialized <- merge_maps c after_a after_b;
         if not (equal (Hir.expr_ty ta) (Hir.expr_ty tb)) then
           error s "ternary arms have different types"
         else if Hir.expr_ty ta = Hir.Void || Hir.expr_ty tb = Hir.Void then
@@ -1121,7 +1416,7 @@ and check_actuals c policy span formals actuals =
 let check_target (c : context) = function
   | Ast.Target_ident (n, span) -> (
       match lookup_local n c with
-      | Some _b -> Ok (Hir.ALocal n)
+      | Some b -> Ok { target = Hir.ALocal n; root = Some b; path = Some (Exact []) }
       | None -> error span (Printf.sprintf "unknown assignment target `%s`" n))
   | Ast.Target_deref e -> (
       let* x = check_expr c None e in
@@ -1133,42 +1428,57 @@ let check_target (c : context) = function
             error (Ast.expr_span e) "cannot dereference opaque pointer"
         | Hir.Ptr Hir.Void | Hir.ConstPtr Hir.Void ->
             error (Ast.expr_span e) "cannot dereference a void pointer"
-        | Hir.Ptr _ -> Ok (Hir.ADeref x)
+        | Hir.Ptr _ -> Ok { target = Hir.ADeref x; root = None; path = None }
         | Hir.ConstPtr _ -> error (Ast.expr_span e) "cannot modify read-only pointer"
         | _ -> error (Ast.expr_span e) "deref assignment requires pointer")
   | Ast.Target_index (a, i) -> (
-      let* x = check_place c a in
-      let* y = check_expr c None i in
-      let* () =
-        match Hir.expr_ty x with
-        | Hir.Ptr _ | Hir.ConstPtr _ -> require_place_value c (Hir.expr_span x) x
-        | Hir.Array _ | Hir.Vec _ -> Ok ()
-        | _ -> Ok ()
-      in
-      if rooted_in_const_array x then
-        error (Ast.expr_span a) "cannot modify const array"
-      else if not (is_int (Hir.expr_ty y)) then
-        error (Ast.expr_span i) "index must be integer"
-      else
-        match Hir.expr_ty x with
-        | Hir.Ptr Hir.Void | Hir.ConstPtr Hir.Void ->
-            error (Ast.expr_span a) "void pointers cannot be indexed"
-        | Hir.Array (_, _) | Hir.Vec (_, _) | Hir.Ptr _ -> Ok (Hir.AIndex (x, y))
-        | Hir.ConstPtr _ -> error (Ast.expr_span a) "cannot modify read-only pointer"
-        | _ -> error (Ast.expr_span a) "index assignment requires aggregate or pointer")
+      let* place = check_place c (Ast.Index (a, i, Ast.expr_span a)) in
+      let x = place.expr in
+      match x with
+      | Hir.Index (base, index, _, _) -> (
+          if rooted_in_const_array x then
+            error (Ast.expr_span a) "cannot modify const array"
+          else
+            match Hir.expr_ty base with
+            | Hir.Ptr Hir.Void | Hir.ConstPtr Hir.Void ->
+                error (Ast.expr_span a) "void pointers cannot be indexed"
+            | Hir.Array (_, _) | Hir.Vec (_, _) | Hir.Ptr _ ->
+                Ok
+                  {
+                    target = Hir.AIndex (base, index);
+                    root = place.root;
+                    path = place.path;
+                  }
+            | Hir.ConstPtr _ ->
+                error (Ast.expr_span a) "cannot modify read-only pointer"
+            | _ ->
+                error (Ast.expr_span a) "index assignment requires aggregate or pointer"
+          )
+      | _ -> error (Ast.expr_span a) "index assignment requires aggregate or pointer")
   | Ast.Target_field (a, n) -> (
-      let* x = check_place c a in
-      if rooted_in_const_array x then
-        error (Ast.expr_span a) "cannot modify const array"
-      else if rooted_in_readonly_pointer x then
-        error (Ast.expr_span a) "cannot modify read-only pointer"
-      else
-        match Hir.expr_ty x with
-        | Hir.Struct sn -> (
-            match field_info c.structs sn n with
-            | Some f -> Ok (Hir.AField (x, n, f.offset))
-            | None -> error (Ast.expr_span a) (Printf.sprintf "unknown field `%s`" n))
-        | _ -> error (Ast.expr_span a) "field assignment requires struct")
+      let* place = check_place c (Ast.Field (a, n, Ast.expr_span a)) in
+      let x = place.expr in
+      match x with
+      | Hir.Field (base, _, _, _, _) -> (
+          if rooted_in_const_array x then
+            error (Ast.expr_span a) "cannot modify const array"
+          else if rooted_in_readonly_pointer x then
+            error (Ast.expr_span a) "cannot modify read-only pointer"
+          else
+            match Hir.expr_ty base with
+            | Hir.Struct sn -> (
+                match field_info c.structs sn n with
+                | Some f ->
+                    Ok
+                      {
+                        target = Hir.AField (base, n, f.offset);
+                        root = place.root;
+                        path = place.path;
+                      }
+                | None ->
+                    error (Ast.expr_span a) (Printf.sprintf "unknown field `%s`" n))
+            | _ -> error (Ast.expr_span a) "field assignment requires struct")
+      | _ -> error (Ast.expr_span a) "field assignment requires struct")
 
 let target_ty c = function
   | Hir.ALocal name -> Option.map (fun binding -> binding.ty) (lookup_local name c)
@@ -1200,6 +1510,22 @@ let rec stmt_must_return = function
 
 and block_must_return body = List.exists stmt_must_return body
 
+let rec stmt_terminates = function
+  | Ast.Return _ | Ast.Break _ | Ast.Continue _ -> true
+  | Ast.Block (body, _) -> block_terminates body
+  | Ast.If (_, then_body, Some else_body, _) ->
+      block_terminates then_body && block_terminates else_body
+  | Ast.Switch (_, arms, Some default, _) ->
+      block_terminates default
+      && List.for_all (fun (_, body) -> block_terminates body) arms
+  | _ -> false
+
+and block_terminates body =
+  match body with
+  | [] -> false
+  | statement :: rest ->
+      if stmt_terminates statement then true else block_terminates rest
+
 let rec check_block (c : context) stmts =
   push c;
   let rec go acc = function
@@ -1208,7 +1534,10 @@ let rec check_block (c : context) stmts =
         pop c;
         Ok out
     | s :: rest ->
+        let before = c.initialized in
         let* x = check_stmt c s in
+        if not c.falls_through then c.initialized <- before
+        else if stmt_terminates s then c.falls_through <- false;
         go (x :: acc) rest
   in
   go [] stmts
@@ -1236,12 +1565,15 @@ and check_stmt (c : context) = function
         | Some e ->
             let* v = check_expr c (Some t) e in
             let* () = ensure_expected (Hir.expr_ty v) t (Ast.expr_span e) in
-            mark_init name c;
+            (match lookup_local name c with
+            | Some binding -> mark_init binding c
+            | None -> ());
             Ok (Some v)
       in
       Ok (Hir.Let (name, t, x, span))
   | Ast.Assign (t, e, span) ->
-      let* target = check_target c t in
+      let* checked_target = check_target c t in
+      let target = checked_target.target in
       let* expected =
         match target_ty c target with
         | Some t -> Ok t
@@ -1249,23 +1581,32 @@ and check_stmt (c : context) = function
       in
       let* v = check_expr c (Some expected) e in
       let* () = ensure_expected (Hir.expr_ty v) expected span in
-      (match target with Hir.ALocal n -> mark_init n c | _ -> ());
+      (match (checked_target.root, checked_target.path) with
+      | Some binding, Some (Exact path) -> set_state c binding path Full
+      | _ -> ());
       Ok (Hir.Assign (target, v, span))
   | Ast.Compound_assign (t, op, e, span) ->
-      let* target = check_target c t in
+      let* checked_target = check_target c t in
+      let target = checked_target.target in
       let* et =
         match target_ty c target with
         | Some t -> Ok t
         | None -> error span "invalid compound assignment target"
       in
       let* () =
-        match target with Hir.ALocal n -> require_init n c span | _ -> Ok ()
+        match (checked_target.root, checked_target.path) with
+        | Some binding, Some path -> require_place_state binding path c span
+        | _ -> Ok ()
       in
       let* v = check_expr c (Some et) e in
       let* () = ensure_expected (Hir.expr_ty v) et span in
       if not (is_numeric et) then
         error span "compound assignment requires an integer or vector"
-      else Ok (Hir.Compound_assign (target, op, v, et, span))
+      else (
+        (match (checked_target.root, checked_target.path) with
+        | Some binding, Some (Exact path) -> set_state c binding path Full
+        | _ -> ());
+        Ok (Hir.Compound_assign (target, op, v, et, span)))
   | Ast.Return (e, span) ->
       let* () =
         if c.in_defer then error span "return is not allowed inside defer" else Ok ()
@@ -1293,9 +1634,13 @@ and check_stmt (c : context) = function
       if not (is_truthy (Hir.expr_ty tq)) then error s "if condition must be scalar"
       else
         let before = c.initialized in
+        let before_falls = c.falls_through in
+        c.falls_through <- true;
         let* ta = check_block c a in
         let ia = c.initialized in
+        let fa = c.falls_through in
         c.initialized <- before;
+        c.falls_through <- true;
         let* tb =
           match b with
           | None -> Ok None
@@ -1304,18 +1649,29 @@ and check_stmt (c : context) = function
               Ok (Some x)
         in
         let ib = c.initialized in
-        c.initialized <- IS.inter ia ib;
+        let fb = c.falls_through in
+        c.initialized <-
+          (match (fa, fb) with
+          | true, true -> merge_maps c ia ib
+          | true, false -> ia
+          | false, true -> ib
+          | false, false -> before);
+        c.falls_through <- fa || fb;
+        if not before_falls then c.falls_through <- false;
         Ok (Hir.If (tq, ta, tb, s))
   | Ast.While (q, b, s) ->
       let* tq = check_expr c None q in
       if not (is_truthy (Hir.expr_ty tq)) then error s "while condition must be scalar"
       else
         let before = c.initialized in
+        let before_falls = c.falls_through in
         c.loop_depth <- c.loop_depth + 1;
+        c.falls_through <- true;
         let checked = check_block c b in
         c.loop_depth <- c.loop_depth - 1;
         let* tb = checked in
         c.initialized <- before;
+        c.falls_through <- before_falls;
         Ok (Hir.While (tq, tb, s))
   | Ast.For (i, q, step, b, s) ->
       let* ti =
@@ -1334,10 +1690,13 @@ and check_stmt (c : context) = function
             else error (Ast.expr_span x) "for condition must be scalar"
       in
       let before = c.initialized in
+      let before_falls = c.falls_through in
       c.loop_depth <- c.loop_depth + 1;
+      c.falls_through <- true;
       let body_result = check_block c b in
       let* tb = body_result in
       c.initialized <- before;
+      c.falls_through <- true;
       let* ts =
         match step with
         | None -> Ok None
@@ -1346,6 +1705,7 @@ and check_stmt (c : context) = function
             Ok (Some y)
       in
       c.initialized <- before;
+      c.falls_through <- before_falls;
       c.loop_depth <- c.loop_depth - 1;
       Ok (Hir.For (ti, tq, ts, tb, s))
   | Ast.Switch (e, arms, d, s) ->
@@ -1355,6 +1715,8 @@ and check_stmt (c : context) = function
         error s "switch scrutinee must be an integer or bool"
       else
         let before = c.initialized and seen = ref [] and branch_states = ref [] in
+        let before_falls = c.falls_through in
+        let branch_falls = ref [] in
         let rec ar acc = function
           | [] -> Ok (List.rev acc)
           | (k, b) :: xs ->
@@ -1377,28 +1739,36 @@ and check_stmt (c : context) = function
                   | _ -> Hir.EInt (mask_value et kv, et, Ast.expr_span k)
                 in
                 c.initialized <- before;
+                c.falls_through <- true;
                 let* tb = check_block c b in
-                branch_states := c.initialized :: !branch_states;
+                if c.falls_through then branch_states := c.initialized :: !branch_states;
+                branch_falls := c.falls_through :: !branch_falls;
                 ar ((tk, tb) :: acc) xs)
         in
         let result = ar [] arms in
         let* ta = result in
         c.initialized <- before;
+        c.falls_through <- true;
         let* td =
           match d with
           | None -> Ok None
           | Some x ->
               let* y = check_block c x in
-              branch_states := c.initialized :: !branch_states;
+              if c.falls_through then branch_states := c.initialized :: !branch_states;
+              branch_falls := c.falls_through :: !branch_falls;
               Ok (Some y)
         in
         (match d with
-        | None -> branch_states := before :: !branch_states
+        | None ->
+            branch_states := before :: !branch_states;
+            branch_falls := true :: !branch_falls
         | Some _ -> ());
         c.initialized <-
           (match !branch_states with
           | [] -> before
-          | first :: rest -> List.fold_left IS.inter first rest);
+          | first :: rest -> List.fold_left (merge_maps c) first rest);
+        c.falls_through <- List.exists (fun value -> value) !branch_falls;
+        if not before_falls then c.falls_through <- false;
         Ok (Hir.Switch (te, ta, td, s))
   | Ast.Break s ->
       if c.in_defer then error s "break is not allowed inside defer"
@@ -1412,10 +1782,13 @@ and check_stmt (c : context) = function
       if c.in_defer then error s "nested defer is not allowed"
       else
         let before = c.initialized in
+        let before_falls = c.falls_through in
         c.in_defer <- true;
+        c.falls_through <- true;
         let checked = check_block c xs in
         c.in_defer <- false;
         c.initialized <- before;
+        c.falls_through <- before_falls;
         let* body = checked in
         Ok (Hir.Defer (body, s))
 
@@ -1600,13 +1973,14 @@ let check ?(limits = Limits.default) program =
       specializations = all_specs;
       spec_depth;
       locals = ref [];
-      initialized = IS.empty;
+      initialized = IM.empty;
       next_binding_id = 0;
       strings = !all_strings;
       string_ids = List.mapi (fun i value -> (value, i)) !all_strings;
       ret_ty;
       loop_depth = 0;
       in_defer = false;
+      falls_through = true;
       limits;
     }
   in
@@ -1616,7 +1990,9 @@ let check ?(limits = Limits.default) program =
     List.iter
       (fun (param_name, param_ty, _, _) ->
         ignore (add_local param_name param_ty context span);
-        mark_init param_name context)
+        match lookup_local param_name context with
+        | Some binding -> mark_init binding context
+        | None -> ())
       params;
     let* body = check_block context stmts in
     let* () =

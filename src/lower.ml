@@ -287,6 +287,22 @@ let pop_scope s =
 
 let find_struct s n = List.find_opt (fun (d : Hir.struct_def) -> d.name = n) s.structs
 
+let normalize_index s expression value =
+  let bits = function
+    | Hir.Int (Hir.U8 | Hir.I8) -> 8
+    | Hir.Int (Hir.U16 | Hir.I16) -> 16
+    | Hir.Int (Hir.U32 | Hir.I32) -> 32
+    | Hir.Int (Hir.U64 | Hir.I64 | Hir.Usize | Hir.Isize) -> 64
+    | _ -> 64
+  in
+  let t = Hir.expr_ty expression in
+  if bits t = 64 then value
+  else
+    let id = fresh s in
+    let kind = if unsigned t then "zext" else "sext" in
+    emit s (Ir.Cast (id, kind, value_ty value, value, Ir.I64));
+    Ir.Local (id, Ir.I64)
+
 let rec expr s = function
   | Hir.EInt (v, t, _) -> Ok (Ir.Const (ty t, v))
   | Hir.EBool (v, _) -> Ok (Ir.Const (Ir.I1, if v then 1L else 0L))
@@ -366,14 +382,11 @@ let rec expr s = function
           let id = fresh s in
           emit s (Ir.Cast (id, k, st, v, dt));
           Ok (Ir.Local (id, dt))
-  | Hir.Deref (e, t, _) -> (
+  | Hir.Deref (e, t, _) ->
       let* p = expr s e in
-      match t with
-      | Hir.Array _ -> Ok p
-      | _ ->
-          let id = fresh s in
-          emit s (Ir.Load (id, ty t, p, align s t));
-          Ok (Ir.Local (id, ty t)))
+      let id = fresh s in
+      emit s (Ir.Load (id, ty t, p, align s t));
+      Ok (Ir.Local (id, ty t))
   | Hir.Address (e, _, _) -> address s e
   | Hir.Ptr_add (bytes, p, o, _, _) ->
       let* pv = expr s p in
@@ -390,26 +403,20 @@ let rec expr s = function
       | Hir.Vec _ ->
           let* av = expr s a in
           let* iv = expr s i in
-          let iv = coerce s iv Ir.I32 in
+          let iv = normalize_index s i iv in
           let id = fresh s in
           emit s (Ir.Extract (id, value_ty av, av, iv));
           Ok (Ir.Local (id, ty t))
-      | _ -> (
-          let* p = index_address s a i in
-          match t with
-          | Hir.Array _ -> Ok p
-          | _ ->
-              let id = fresh s in
-              emit s (Ir.Load (id, ty t, p, align s t));
-              Ok (Ir.Local (id, ty t))))
-  | Hir.Field (a, _, t, off, _) -> (
-      let* p = field_address s a off in
-      match t with
-      | Hir.Array _ -> Ok p
       | _ ->
+          let* p = index_address s a i in
           let id = fresh s in
           emit s (Ir.Load (id, ty t, p, align s t));
           Ok (Ir.Local (id, ty t)))
+  | Hir.Field (a, _, t, off, _) ->
+      let* p = field_address s a off in
+      let id = fresh s in
+      emit s (Ir.Load (id, ty t, p, align s t));
+      Ok (Ir.Local (id, ty t))
   | Hir.Sizeof (_, n, _) | Hir.Alignof (_, n, _) | Hir.Offsetof (_, _, n, _) ->
       Ok (Ir.Const (Ir.I64, Int64.of_int n))
   | Hir.Ternary (c, a, b, t, _) -> lower_ternary s c a b t
@@ -563,15 +570,18 @@ and address s e =
   | _ -> materialize s e
 
 and index_address s a i =
-  let* iv = expr s i in
   match Hir.expr_ty a with
   | Hir.Array _ ->
       let* p = address s a in
+      let* iv = expr s i in
+      let iv = normalize_index s i iv in
       let id = fresh s in
       emit s (Ir.Gep (id, ty (Hir.expr_ty a), p, [ Ir.Zero; Ir.Index iv ]));
       Ok (Ir.Local (id, Ir.Ptr Ir.I8))
   | Hir.Ptr elem | Hir.ConstPtr elem ->
       let* p = expr s a in
+      let* iv = expr s i in
+      let iv = normalize_index s i iv in
       let id = fresh s in
       emit s (Ir.Gep (id, ty elem, p, [ Ir.Index iv ]));
       Ok (Ir.Local (id, Ir.Ptr (ty elem)))
@@ -639,12 +649,7 @@ and stmt s = function
       let p = Ir.Local (id, Ir.Ptr (ty t)) in
       bind_local s n p;
       match init with
-      | None -> (
-          match t with
-          | Hir.Array _ | Hir.Struct _ | Hir.Vec _ ->
-              emit s (Ir.Store (ty t, Ir.Zero (ty t), p, align s t));
-              Ok ()
-          | _ -> Ok ())
+      | None -> Ok ()
       | Some e ->
           let* v = expr s e in
           emit s (Ir.Store (ty t, v, p, align s t));
@@ -653,8 +658,11 @@ and stmt s = function
       match target with
       | Hir.AIndex (a, i) when match Hir.expr_ty a with Hir.Vec _ -> true | _ -> false
         ->
-          let* p, source_ty, vt, loaded, iv = vector_lane s a i in
+          let* p, source_ty, vt, iv = vector_lane s a i in
           let* x = expr s e in
+          let loaded_id = fresh s in
+          emit s (Ir.Load (loaded_id, vt, p, align s source_ty));
+          let loaded = Ir.Local (loaded_id, vt) in
           let ins = fresh s in
           emit s (Ir.Insert (ins, vt, loaded, iv, x));
           emit s (Ir.Store (vt, Ir.Local (ins, vt), p, align s source_ty));
@@ -669,15 +677,21 @@ and stmt s = function
       match target with
       | Hir.AIndex (a, i) when match Hir.expr_ty a with Hir.Vec _ -> true | _ -> false
         ->
-          let* p, source_ty, vt, loaded, iv = vector_lane s a i in
+          let* p, source_ty, vt, iv = vector_lane s a i in
+          let loaded_id = fresh s in
+          emit s (Ir.Load (loaded_id, vt, p, align s source_ty));
+          let loaded = Ir.Local (loaded_id, vt) in
           let eid = fresh s in
           emit s (Ir.Extract (eid, vt, loaded, iv));
           let it = ty t in
           let old = Ir.Local (eid, it) in
           let* rhs = expr s e in
           let value = emit_binary s t op it old rhs in
+          let latest_id = fresh s in
+          emit s (Ir.Load (latest_id, vt, p, align s source_ty));
+          let latest = Ir.Local (latest_id, vt) in
           let ins = fresh s in
-          emit s (Ir.Insert (ins, vt, loaded, iv, value));
+          emit s (Ir.Insert (ins, vt, latest, iv, value));
           emit s (Ir.Store (vt, Ir.Local (ins, vt), p, align s source_ty));
           Ok ()
       | _ ->
@@ -750,15 +764,8 @@ and vector_lane s aggregate index =
   let source_ty = Hir.expr_ty aggregate in
   let* pointer = address s aggregate in
   let vector_ty = ty source_ty in
-  let loaded_id = fresh s in
-  emit s (Ir.Load (loaded_id, vector_ty, pointer, align s source_ty));
-  let* index = expr s index in
-  Ok
-    ( pointer,
-      source_ty,
-      vector_ty,
-      Ir.Local (loaded_id, vector_ty),
-      coerce s index Ir.I32 )
+  let* iv = expr s index in
+  Ok (pointer, source_ty, vector_ty, normalize_index s index iv)
 
 and lower_if s c a b =
   let* cv = expr s c in

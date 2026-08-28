@@ -239,13 +239,17 @@ let instr_line = function
         (ty_name (value_ty b))
         (value_name b)
   | Extract (i, vt, v, l) ->
-      Printf.sprintf "  %%v%d = extractelement %s %s, i32 %s" i (ty_name vt)
-        (value_name v) (value_name l)
+      Printf.sprintf "  %%v%d = extractelement %s %s, %s %s" i (ty_name vt)
+        (value_name v)
+        (ty_name (value_ty l))
+        (value_name l)
   | Insert (i, vt, v, l, x) ->
-      Printf.sprintf "  %%v%d = insertelement %s %s, %s %s, i32 %s" i (ty_name vt)
+      Printf.sprintf "  %%v%d = insertelement %s %s, %s %s, %s %s" i (ty_name vt)
         (value_name v)
         (ty_name (value_ty x))
-        (value_name x) (value_name l)
+        (value_name x)
+        (ty_name (value_ty l))
+        (value_name l)
   | Shuffle_zero (i, vt, v) ->
       let n = match vt with Vector (n, _) -> n | _ -> 0 in
       Printf.sprintf

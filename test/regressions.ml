@@ -7,6 +7,15 @@ let contains text needle =
   in
   needle = "" || search 0
 
+let positions text needle =
+  let rec search offset acc =
+    if offset + String.length needle > String.length text then List.rev acc
+    else if String.sub text offset (String.length needle) = needle then
+      search (offset + 1) (offset :: acc)
+    else search (offset + 1) acc
+  in
+  if needle = "" then [] else search 0 []
+
 let expect_ok = function
   | Ok value -> value
   | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
@@ -81,8 +90,281 @@ let () =
      return 0 }\n";
   semantic_error "place-init-pointer-index-compound" "use of uninitialized local `p`"
     "fn main() i64 { p ptr[i64]\n p[0] += 1\n return 0 }\n";
+  semantic_error "place-init-pointer-field-write" "use of uninitialized local `s`"
+    "struct S { p ptr[i64] }\nfn main() i64 { s S\n s.p[0] = 1\n return 0 }\n";
+  semantic_error "place-init-pointer-field-read" "use of uninitialized local `s`"
+    "struct S { p ptr[i64] }\nfn main() i64 { s S\n x i64 = s.p[0]\n return x }\n";
+  semantic_error "place-init-pointer-field-address" "use of uninitialized local `s`"
+    "struct S { p ptr[i64] }\n\
+     fn take(p ptr[i64]) void { return }\n\
+     fn main() i64 { s S\n\
+    \ take(&s.p[0])\n\
+    \ return 0 }\n";
+  semantic_error "place-init-pointer-array-element" "use of uninitialized local `a`"
+    "fn main() i64 { a arr[2,ptr[i64]]\n a[0][0] = 1\n return 0 }\n";
+  ignore
+    (lower_of
+       "struct S { p ptr[i64] }\n\
+        fn main() i64 { x i64\n\
+       \ s S\n\
+       \ s.p = &x\n\
+       \ s.p[0] = 1\n\
+       \ return x }\n");
+  semantic_error "place-init-whole-vector" "use of uninitialized local `v`"
+    "fn f() i64 { v vec[2,i64]\n x vec[2,i64] = v\n return 0 }\n";
+  ignore (lower_of "fn f() i64 { v vec[2,i64]\n v[0] = 1\n return v[0] }\n");
+  semantic_error "place-init-vector-other-lane" "use of uninitialized local `v`"
+    "fn f() i64 { v vec[2,i64]\n v[0] = 1\n return v[1] }\n";
+  ignore
+    (lower_of
+       "fn f() i64 { v vec[2,i64]\n\
+       \ v[0] = 1\n\
+       \ v[1] = 2\n\
+       \ x vec[2,i64] = v\n\
+       \ return x[0] }\n");
+  semantic_error "place-init-static-large-index" "array index is out of bounds"
+    "const N u64 = 9223372036854775808\n\
+     fn f() i64 { a arr[2,i64]\n\
+    \ x i64 = a[N]\n\
+    \ return x }\n";
+  semantic_error "place-init-static-narrow-negative-index"
+    "array index is out of bounds"
+    "const N i8 = -1\nfn f() i64 { a arr[300,i64]\nreturn a[N] }\n";
+  semantic_error "vector-lane-address-rejected" "cannot take address of a vector lane"
+    "fn take(p ptr[i64]) void { return }\n\
+     fn f() i64 { v vec[2,i64] = splat(1)\n\
+     take(&v[0])\n\
+     return 0 }\n";
+  ignore
+    (lower_of
+       "fn take(p ptr[vec[2,i64]]) void { return }\n\
+        fn f() i64 { v vec[2,i64] = splat(1)\n\
+       \ take(&v)\n\
+       \ return 0 }\n");
+  let unsigned_narrow_index =
+    llvm_of
+      "const N u8 = 255\n\
+       fn f() i64 { a arr[256,i64]\n\
+      \ a[N] = 7\n\
+      \ v vec[256,i64] = splat(1)\n\
+      \ v[N] = 8\n\
+      \ return a[N] + v[N] }\n"
+  in
+  if not (contains unsigned_narrow_index "zext i8 255 to i64") then
+    failwith "aggregate-index-u8: narrow unsigned index was not zero-extended";
+  let index_evaluation_order =
+    llvm_of
+      "fn base() ptr[i64] { return null }\n\
+       fn index() i64 { return 0 }\n\
+       fn f() i64 { base()[index()] = 1\n\
+      \ return 0 }\n"
+  in
+  let base_calls = positions index_evaluation_order "call ptr @base" in
+  let index_calls = positions index_evaluation_order "call i64 @index" in
+  (match (base_calls, index_calls) with
+  | base :: _, index :: _ when base < index -> ()
+  | _ -> failwith "aggregate-index-order: index was evaluated before its base");
+  let vector_assign_alias =
+    llvm_of
+      "fn mutate(p ptr[vec[2,i64]]) i64 { p.* = splat(9)\n\
+      \ return 7 }\n\
+       fn f() i64 { v vec[2,i64] = splat(1)\n\
+      \ v[0] = mutate(&v)\n\
+      \ return v[1] }\n"
+  in
+  let assign_call = positions vector_assign_alias "call i64 @mutate" in
+  let assign_load = positions vector_assign_alias "load <2 x i64>" in
+  (match (assign_call, assign_load) with
+  | call :: _, load :: _ when call < load -> ()
+  | _ -> failwith "vector-lane-assignment: rhs was evaluated after stale vector load");
+  let vector_compound_alias =
+    llvm_of
+      "fn mutate(p ptr[vec[2,i64]]) i64 { p.* = splat(9)\n\
+      \ return 7 }\n\
+       fn f() i64 { v vec[2,i64] = splat(1)\n\
+      \ v[0] += mutate(&v)\n\
+      \ return v[1] }\n"
+  in
+  let compound_call = positions vector_compound_alias "call i64 @mutate" in
+  let compound_loads = positions vector_compound_alias "load <2 x i64>" in
+  (match (compound_call, compound_loads) with
+  | call :: _, first :: second :: _ when first < call && call < second -> ()
+  | _ -> failwith "vector-lane-compound: rhs was not between vector loads");
+  semantic_error "place-init-short-circuit-escape" "use of uninitialized local `s`"
+    "struct S { x i64 y i64 }\nfn f() i64 { s S\n true || &s\n t S = s\n return 0 }\n";
+  ignore
+    (lower_of
+       "struct S { x i64 y i64 }\n\
+        fn take(p ptr[S]) void { return }\n\
+        fn f() i64 { s S\n\
+       \ take(&s)\n\
+       \ true || false\n\
+       \ t S = s\n\
+       \ return 0 }\n");
+  semantic_error "place-init-ternary-escape" "use of uninitialized local `s`"
+    "struct S { x i64 y i64 }\n\
+     fn f(p i64) i64 { s S\n\
+    \ q ptr[S] = p ? &s : null\n\
+     t S = s\n\
+    \ return 0 }\n";
+  semantic_error "place-init-ternary-cross-arm" "use of uninitialized local `s`"
+    "struct S { x i64 y i64 }\n\
+     fn choose(p ptr[S], x S) S { return x }\n\
+     fn f(p i64) i64 { s S\n\
+    \ t S = p ? choose(&s, s) : s\n\
+    \ return 0 }\n";
   semantic_error "place-init-binding-identity" "use of uninitialized local `x`"
     "fn main() i64 { { x i64 = 1 }\n { x i64\n y i64 = x\n }\n return 0 }\n";
+  semantic_error "aggregate-whole-read" "use of uninitialized local `s`"
+    "struct S { x i64 y i64 }\nfn f() i64 { s S\n t S = s\n return 0 }\n";
+  semantic_error "aggregate-partial-field" "use of uninitialized local `s`"
+    "struct S { x i64 y i64 }\nfn f() i64 { s S\n s.x = 1\n return s.y }\n";
+  semantic_error "aggregate-partial-whole" "use of uninitialized local `s`"
+    "struct S { x i64 y i64 }\nfn f() i64 { s S\n s.x = 1\n t S = s\n return 0 }\n";
+  ignore
+    (lower_of
+       "struct S { x i64 y i64 }\n\
+        fn f() i64 { s S\n\
+       \ s.x = 1\n\
+       \ s.y = 2\n\
+       \ t S = s\n\
+       \ return s.x }\n");
+  semantic_error "aggregate-nested-field" "use of uninitialized local `o`"
+    "struct I { x i64 y i64 }\n\
+     struct O { i I z i64 }\n\
+     fn f() i64 { o O\n\
+    \ o.i.x = 1\n\
+    \ return o.i.y }\n";
+  semantic_error "aggregate-array-whole" "use of uninitialized local `a`"
+    "fn f() i64 { a arr[2,i64]\n a[0] = 1\n t arr[2,i64] = a\n return 0 }\n";
+  ignore
+    (lower_of
+       "fn f() i64 { a arr[2,i64]\n\
+       \ a[0] = 1\n\
+       \ x i64 = a[0]\n\
+       \ a[1] = 2\n\
+       \ t arr[2,i64] = a\n\
+       \ return x }\n");
+  let array_field_copy =
+    llvm_of
+      "struct S { a arr[2,i64] }\n\
+       fn f() i64 { s S\n\
+      \ s.a[0] = 1\n\
+      \ s.a[1] = 2\n\
+      \ t arr[2,i64] = s.a\n\
+      \ return t[0] }\n"
+  in
+  if not (contains array_field_copy "load [2 x i64], ptr") then
+    failwith "aggregate-array-field-copy: array field was not loaded as a value";
+  let nested_array_copy =
+    llvm_of
+      "fn f() i64 { a arr[2,arr[2,i64]]\n\
+      \ a[0][0] = 1\n\
+      \ a[0][1] = 2\n\
+      \ t arr[2,i64] = a[0]\n\
+      \ return t[0] }\n"
+  in
+  if not (contains nested_array_copy "load [2 x i64], ptr") then
+    failwith "aggregate-nested-array-copy: nested array was not loaded as a value";
+  semantic_error "aggregate-whole-array-uninitialized" "use of uninitialized local `a`"
+    "fn f() i64 { a arr[2,i64]\n return a[0] }\n";
+  ignore (lower_of "struct E { }\nfn f() i64 { e E\n t E = e\n return 0 }\n");
+  ignore (lower_of "fn f() i64 { a arr[0,i64]\n t arr[0,i64] = a\n return 0 }\n");
+  ignore
+    (lower_of
+       "struct E { }\n\
+        struct S { e E x i64 }\n\
+        fn f() i64 { s S\n\
+       \ s.x = 1\n\
+       \ t E = s.e\n\
+       \ return s.x }\n");
+  ignore
+    (lower_of
+       "struct E { }\nstruct S { e E }\nfn f() i64 { s S\n t S = s\n return 0 }\n");
+  ignore
+    (lower_of
+       "fn f() i64 { a arr[2,i64]\n\
+       \ a[0] = 1\n\
+       \ a[1] = 2\n\
+       \ t arr[2,i64] = a\n\
+       \ return t[0] }\n");
+  semantic_error "aggregate-dynamic-index" "use of uninitialized local `a`"
+    "fn f() i64 { a arr[2,i64]\n i i64 = 0\n return a[i] }\n";
+  semantic_error "aggregate-dynamic-write-read" "use of uninitialized local `a`"
+    "fn f(i i64) i64 { a arr[2,i64]\na[i] = 1\nreturn a[i] }\n";
+  ignore
+    (lower_of "fn f(i i64) i64 { a arr[2,i64]\n a[0] = 1\n a[1] = 2\n return a[i] }\n");
+  ignore
+    (lower_of
+       "struct S { a arr[2,i64] z i64 }\n\
+        fn f(i i64) i64 { s S\n\
+       \ s.a[0] = 1\n\
+       \ s.a[1] = 2\n\
+       \ return s.a[i] }\n");
+  semantic_error "aggregate-dynamic-pointer-element" "use of uninitialized local `a`"
+    "fn f(i i64) i64 { x i64\na arr[2,ptr[i64]]\na[0] = &x\na[i][0] = 1\nreturn x }\n";
+  ignore
+    (llvm_of
+       "fn take(p ptr[i64]) void { return }\n\
+        fn f() i64 { x i64\n\
+       \ take(&x)\n\
+       \ return x }\n");
+  ignore
+    (lower_of
+       "struct S { x i64 y i64 }\n\
+        fn take(p ptr[i64]) void { return }\n\
+        fn f() i64 { s S\n\
+       \ take(&s.x)\n\
+       \ t S = s\n\
+       \ return 0 }\n");
+  semantic_error "aggregate-branch-partial" "use of uninitialized local `s`"
+    "struct S { x i64 y i64 }\n\
+     fn f(p i64) i64 { s S\n\
+     if p { s.x = 1 } else { s.y = 2 }\n\
+    \ return s.x }\n";
+  ignore
+    (lower_of
+       "struct S { x i64 y i64 }\n\
+        fn f(p i64) i64 { s S\n\
+        if p { s.x = 1 } else { return 0 }\n\
+       \ return s.x }\n");
+  semantic_error "aggregate-loop-only" "use of uninitialized local `s`"
+    "struct S { x i64 }\nfn f(p i64) i64 { s S\n while p { s.x = 1 }\n return s.x }\n";
+  ignore
+    (lower_of
+       "struct S { x i64 y i64 }\n\
+        fn take(p ptr[S]) void { return }\n\
+        fn f(p i64) i64 { s S\n\
+       \ if p { take(&s) } else { s.x = 1 }\n\
+        return s.x }\n");
+  semantic_error "aggregate-branch-raw-missing-field" "use of uninitialized local `s`"
+    "struct S { x i64 y i64 }\n\
+     fn take(p ptr[S]) void { return }\n\
+     fn f(p i64) i64 { s S\n\
+    \ if p { take(&s) } else { s.x = 1 }\n\
+     return s.y }\n";
+  semantic_error "aggregate-branch-raw-whole" "use of uninitialized local `s`"
+    "struct S { x i64 y i64 }\n\
+     fn take(p ptr[S]) void { return }\n\
+     fn f(p i64) i64 { s S\n\
+    \ if p { take(&s) } else { s.x = 1 }\n\
+     t S = s\n\
+    \ return 0 }\n";
+  semantic_error "aggregate-compound-read" "use of uninitialized local `s`"
+    "struct S { x i64 y i64 }\nfn f() i64 { s S\n s.x += 1\n return 0 }\n";
+  semantic_error "place-init-after-return" "use of uninitialized local `x`"
+    "fn f(p i64) i64 { x i64\n if p { return 0\n x = 1 }\n return x }\n";
+  semantic_error "place-init-after-break" "use of uninitialized local `x`"
+    "fn f() i64 { x i64\n while true { break\n x = 1 }\n return x }\n";
+  semantic_error "place-init-after-continue" "use of uninitialized local `x`"
+    "fn f() i64 { x i64\n while true { continue\n x = 1 }\n return x }\n";
+  let uninitialized_aggregate_llvm =
+    llvm_of "struct S { x i64 y i64 }\nfn f() i64 { s S\n s.x = 1\n return s.x }\n"
+  in
+  if
+    contains uninitialized_aggregate_llvm "memset"
+    || contains uninitialized_aggregate_llvm "store %struct.S zeroinitializer"
+  then failwith "place-init: aggregate declaration emitted implicit initialization";
   semantic_error "defer-does-not-initialize" "use of uninitialized local `x`"
     "fn f() i64 { x i64\n defer { x = 1 }\n return x }\n";
   semantic_error "nested-defer" "nested defer is not allowed"
@@ -738,4 +1020,4 @@ let () =
   if not (contains mixed_runtime "phi") then
     failwith "runtime-logical-mixed: short-circuit lowering missing";
 
-  print_endline "regression tests: 85 passed"
+  print_endline "regression tests: 135 passed"
