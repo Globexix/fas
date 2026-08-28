@@ -24,6 +24,13 @@ type state = {
 let error span msg = Error [ Diag.error span msg ]
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 
+let layout_ok structs t =
+  match Hir.layout structs t with
+  | Ok _ -> Ok ()
+  | Error m ->
+      error Span.synthetic
+        (Printf.sprintf "internal error: type `%s` has no layout: %s" (Hir.ty_name t) m)
+
 let fresh s =
   let n = s.next_value in
   s.next_value <- n + 1;
@@ -63,7 +70,12 @@ let rec ty = function
   | Hir.Opaque n -> Ir.Struct n
   | Hir.Void -> Ir.Void
 
-let align s t = match Hir.layout s.structs t with Ok (_, a) -> a | Error _ -> 1
+let align s t =
+  match Hir.layout s.structs t with
+  | Ok (_, a) -> a
+  | Error m ->
+      failwith
+        (Printf.sprintf "internal error: type `%s` has no layout: %s" (Hir.ty_name t) m)
 let zero t = Ir.Const (t, 0L)
 
 let ones = function
@@ -850,6 +862,8 @@ and lower_switch s e arms default =
   Ok ()
 
 let lower_func structs strings force_external f =
+  let* () = Result_list.iter (fun (_, t, _, _) -> layout_ok structs t) f.Hir.params in
+  let* () = if f.Hir.ret = Hir.Void then Ok () else layout_ok structs f.Hir.ret in
   let params =
     List.map
       (fun (n, t, noalias, align) ->
@@ -982,6 +996,20 @@ let intrinsic_decls funcs =
   |> List.sort (fun (a : Ir.func) b -> String.compare a.name b.name)
 
 let lower (p : Hir.program) =
+  let no_layout t m =
+    error Span.synthetic
+      (Printf.sprintf "internal error: type `%s` has no layout: %s" (Hir.ty_name t) m)
+  in
+  let field_size t =
+    match Hir.layout p.structs t with
+    | Ok (s, _) -> Ok s
+    | Error m -> no_layout t m
+  in
+  let field_align t =
+    match Hir.layout p.structs t with
+    | Ok (_, a) -> Ok a
+    | Error m -> no_layout t m
+  in
   let asm_words =
     List.concat_map
       (fun (f : Hir.func) ->
@@ -1007,35 +1035,25 @@ let lower (p : Hir.program) =
         lower_func p.Hir.structs p.strings (List.mem f.name asm_words) f)
       p.funcs
   in
-  let structs =
-    List.map
+  let* structs =
+    Result_list.map
       (fun (d : Hir.struct_def) ->
-        let fields =
-          let rec go offset out = function
-            | [] -> List.rev out
+        let* fields, used =
+          let rec go offset out used = function
+            | [] -> Ok (List.rev out, used)
             | (f : Hir.field) :: rest ->
+                let* size = field_size f.ty in
                 let padding = f.offset - offset in
                 let out =
                   if padding > 0 then Ir.Array (padding, Ir.I8) :: out else out
                 in
-                let size =
-                  match Hir.layout p.structs f.ty with Ok (s, _) -> s | Error _ -> 0
-                in
-                go (f.offset + size) (ty f.ty :: out) rest
+                go (f.offset + size) (ty f.ty :: out)
+                  (max used (f.offset + size))
+                  rest
           in
-          go 0 [] d.fields
+          go 0 [] 0 d.fields
         in
-        (let used =
-           List.fold_left
-             (fun n (f : Hir.field) ->
-               let sz =
-                 match Hir.layout p.structs f.ty with Ok (s, _) -> s | _ -> 0
-               in
-               max n (f.offset + sz))
-             0 d.fields
-         in
-         { Ir.name = d.name; fields; tail_padding = max 0 (d.size - used) }
-          : Ir.struct_def))
+        Ok { Ir.name = d.name; fields; tail_padding = max 0 (d.size - used) })
       p.structs
   in
   let strings =
@@ -1043,19 +1061,19 @@ let lower (p : Hir.program) =
       (fun i x -> Ir.String_global { name = ".str." ^ string_of_int i; bytes = x })
       p.strings
   in
-  let arrays =
-    List.map
+  let* arrays =
+    Result_list.map
       (fun (a : Hir.const_arr_def) ->
         match a.ty with
         | Hir.Array (_, e) ->
-            Ir.Array_global
-              {
-                name = a.name;
-                elem_ty = ty e;
-                elems = a.elems;
-                align = (match Hir.layout p.structs e with Ok (_, a) -> a | _ -> 1);
-              }
-        | _ -> Ir.Array_global { name = a.name; elem_ty = Ir.I8; elems = []; align = 1 })
+            let* align = field_align e in
+            Ok
+              (Ir.Array_global
+                 { name = a.name; elem_ty = ty e; elems = a.elems; align })
+        | _ ->
+            Ok
+              (Ir.Array_global
+                 { name = a.name; elem_ty = Ir.I8; elems = []; align = 1 }))
       p.const_arrays
   in
   Ok

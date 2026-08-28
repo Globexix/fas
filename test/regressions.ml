@@ -506,4 +506,96 @@ let spec_count_limits = { Limits.default with max_specializations = 1 } in
           (contains (Diag.render_all ~source:None diagnostics)
              "const specialization recursion depth limit exceeded")
       then failwith "spec-depth-limit: unexpected diagnostic");
-  print_endline "regression tests: 54 passed"
+(match
+   Lower.lower
+     {
+       Hir.structs =
+         [ {
+             Hir.name = "S";
+             fields = [ { Hir.name = "x"; ty = Hir.Opaque "X"; offset = 0 } ];
+             size = 8;
+             align = 8;
+           } ];
+       consts = [];
+       const_arrays = [];
+       funcs = [];
+       strings = [];
+     }
+ with
+| Ok _ -> failwith "layout-invariant: malformed struct lowered without error"
+| Error diagnostics ->
+    if
+      not (contains (Diag.render_all ~source:None diagnostics) "internal error")
+    then failwith "layout-invariant: unexpected diagnostic");
+
+(match
+   Lower.lower
+     {
+       Hir.structs = [];
+       consts = [];
+       const_arrays = [];
+       strings = [];
+       funcs =
+         [ {
+             Hir.name = "f";
+             params = [ ("x", Hir.Opaque "X", false, None) ];
+             ret = Hir.Void;
+             body = [];
+             attrs = [];
+             linkage = Hir.Internal;
+             variadic = false;
+             asm_body = None;
+           } ];
+     }
+ with
+| Ok _ -> failwith "layout-invariant: opaque parameter lowered without error"
+| Error diagnostics ->
+    if
+      not (contains (Diag.render_all ~source:None diagnostics) "internal error")
+    then failwith "layout-invariant: unexpected diagnostic");
+
+(match
+   Lower.lower
+     {
+       Hir.structs = [];
+       consts = [];
+       const_arrays =
+         [ { Hir.name = "A"; ty = Hir.Array (2, Hir.Opaque "X"); elems = [ 0L; 0L ] } ];
+       strings = [];
+       funcs = [];
+     }
+ with
+| Ok _ -> failwith "layout-invariant: malformed const array lowered without error"
+| Error diagnostics ->
+    if
+      not (contains (Diag.render_all ~source:None diagnostics) "internal error")
+    then failwith "layout-invariant: unexpected diagnostic");
+
+if
+  not
+    (try
+       ignore
+         (Lower.lower
+            {
+              Hir.structs = [];
+              consts = [];
+              const_arrays = [];
+              strings = [];
+              funcs =
+                [ {
+                    Hir.name = "f";
+                    params = [];
+                    ret = Hir.Void;
+                    body = [ Hir.Let ("x", Hir.Opaque "X", None, Span.synthetic) ];
+                    attrs = [];
+                    linkage = Hir.Internal;
+                    variadic = false;
+                    asm_body = None;
+                  } ];
+            });
+       false
+     with Failure message -> contains message "internal error")
+then
+  failwith "layout-invariant: opaque local did not fail with an internal error";
+
+  print_endline "regression tests: 58 passed"
