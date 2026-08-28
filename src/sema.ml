@@ -375,7 +375,7 @@ let leading64 x =
     in
     go 0 Int64.min_int
 
-let rec const_expr ?(structs = []) consts expected = function
+let rec const_expr ?(structs = []) consts expected ?(check_only = false) = function
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
@@ -400,27 +400,39 @@ let rec const_expr ?(structs = []) consts expected = function
       if fits_negative_literal t v || allowed then Ok (t, mask_value t (Int64.neg v))
       else error s ("integer literal is out of range for " ^ ty_name t)
   | Ast.Unary (Ast.Neg, e, s) ->
-      let* t, v = const_expr ~structs consts expected e in
+      let* t, v = const_expr ~structs consts expected ~check_only e in
       if not (is_int t) then error s "unary minus requires an integer"
       else Ok (t, mask_value t (Int64.neg v))
   | Ast.Unary (Ast.Bit_not, e, s) ->
-      let* t, v = const_expr ~structs consts expected e in
+      let* t, v = const_expr ~structs consts expected ~check_only e in
       if not (is_int t) then error s "bitwise not requires an integer"
       else Ok (t, mask_value t (Int64.lognot v))
   | Ast.Unary (Ast.Not, e, _) ->
-      let* _, v = const_expr ~structs consts None e in
+      let* _, v = const_expr ~structs consts None ~check_only e in
       Ok (Hir.Bool, if v = 0L then 1L else 0L)
+  | Ast.Binary (((Ast.And | Ast.Or) as op), l, r, s) ->
+      let* lt, lv = const_expr ~structs consts None ~check_only l in
+      if not (is_truthy lt) then error s "logical operands must be scalar"
+      else if
+        (not check_only) && ((op = Ast.And && lv = 0L) || (op = Ast.Or && lv <> 0L))
+      then
+        let* _ = const_expr ~structs consts None ~check_only:true r in
+        Ok (Hir.Bool, if op = Ast.And then 0L else 1L)
+      else
+        let* rt, rv = const_expr ~structs consts None ~check_only r in
+        if not (is_truthy rt) then error s "logical operands must be scalar"
+        else Ok (Hir.Bool, if rv <> 0L then 1L else 0L)
   | Ast.Binary (op, l, r, s) ->
       let* (lt, lv), (rt, rv) =
         match (l, op) with
         | ( (Ast.Int_lit _ | Ast.Unary (Ast.Neg, Ast.Int_lit _, _)),
             (Ast.Eq | Ne | Lt | Le | Gt | Ge) ) ->
-            let* rt, rv = const_expr ~structs consts None r in
-            let* lt, lv = const_expr ~structs consts (Some rt) l in
+            let* rt, rv = const_expr ~structs consts None ~check_only r in
+            let* lt, lv = const_expr ~structs consts (Some rt) ~check_only l in
             Ok ((lt, lv), (rt, rv))
         | _ ->
-            let* lt, lv = const_expr ~structs consts expected l in
-            let* rt, rv = const_expr ~structs consts (Some lt) r in
+            let* lt, lv = const_expr ~structs consts expected ~check_only l in
+            let* rt, rv = const_expr ~structs consts (Some lt) ~check_only r in
             Ok ((lt, lv), (rt, rv))
       in
       if not (equal lt rt) then error s "constant operands have different types"
@@ -438,7 +450,7 @@ let rec const_expr ?(structs = []) consts expected = function
           | _ -> 0L
         in
         if
-          op = Ast.Div
+          (not check_only) && op = Ast.Div
           && (not (is_unsigned lt))
           && signed_lv = signed_min && signed_rv = Int64.minus_one
         then error s "signed division overflow in constant expression"
@@ -477,13 +489,13 @@ let rec const_expr ?(structs = []) consts expected = function
           in
           Ok (rt, mask_value rt result)
   | Ast.Ternary (c, a, b, _s) ->
-      let* _, cv = const_expr ~structs consts None c in
-      if cv <> 0L then const_expr ~structs consts expected a
-      else const_expr ~structs consts expected b
+      let* _, cv = const_expr ~structs consts None ~check_only c in
+      if cv <> 0L then const_expr ~structs consts expected ~check_only a
+      else const_expr ~structs consts expected ~check_only b
   | Ast.Cast (k, dst, e, s) ->
       let* dt = source_ty_diag s dst in
       let* st, v =
-        const_expr ~structs consts
+        const_expr ~structs consts ~check_only
           (if
              k = Ast.Bitcast
              &&
@@ -513,7 +525,11 @@ let rec const_expr ?(structs = []) consts expected = function
       if String.contains v '\000' then error s "string literal cannot contain NUL"
       else Ok (Hir.Int Hir.U64, Int64.of_int (String.length v))
   | Ast.Call (Ast.Ident (name, _), args, s) -> (
-      let* vals = Result_list.map (const_expr ~structs consts expected) args in
+      let* vals =
+        Result_list.map
+          (fun a -> const_expr ~structs consts expected ~check_only a)
+          args
+      in
       match (name, vals) with
       | ("shl" | "lshr" | "ashr" | "rotl" | "rotr"), [ (t, x); (_, n) ] ->
           let bits = match t with Hir.Int q -> int_bits q | _ -> 64 in

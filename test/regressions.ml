@@ -639,5 +639,53 @@ let () =
          false
        with Failure message -> contains message "internal error")
   then failwith "layout-invariant: opaque local did not fail with an internal error";
+  (match
+     Sema.check
+       (expect_ok
+          (Parser.parse
+             (source
+                "const MIN i64 = -9223372036854775808\n\
+                 const X bool = false && (MIN / -1 == 0)\n")))
+   with
+  | Ok _ -> ()
+  | Error diagnostics ->
+      failwith
+        ("const-logical-short-circuit: unexpected diagnostic: "
+        ^ Diag.render_all ~source:None diagnostics));
 
-  print_endline "regression tests: 65 passed"
+  let runtime_short_circuit =
+    llvm_of
+      "const MIN i64 = -9223372036854775808\n\
+       fn f() bool { return false && (MIN / -1 == 0) }\n"
+  in
+  if not (contains runtime_short_circuit "br") then
+    failwith "runtime-logical-short-circuit: branch lowering missing";
+
+  semantic_error "const-logical-static-right" "division by zero in constant expression"
+    "const Z bool = false && (1 / 0 == 0)\n";
+
+  semantic_error "runtime-logical-static-right"
+    "division by zero is not a defined runtime operation"
+    "fn f() bool { return false && (1 / 0 == 0) }\n";
+
+  semantic_error "const-logical-reaches-right" "division by zero in constant expression"
+    "const Z bool = true && (1 / 0 == 0)\n";
+
+  semantic_error "runtime-logical-reaches-right"
+    "division by zero is not a defined runtime operation"
+    "fn f() bool { return true && (1 / 0 == 0) }\n";
+
+  (match
+     Sema.check (expect_ok (Parser.parse (source "const B bool = 1 && true\n")))
+   with
+  | Ok _ -> ()
+  | Error diagnostics ->
+      failwith
+        ("const-logical-mixed: unexpected diagnostic: "
+        ^ Diag.render_all ~source:None diagnostics));
+
+  let mixed_runtime = llvm_of "fn f() bool { return 1 && true }\n" in
+  if not (contains mixed_runtime "phi") then
+    failwith "runtime-logical-mixed: short-circuit lowering missing";
+
+  print_endline "regression tests: 73 passed"
