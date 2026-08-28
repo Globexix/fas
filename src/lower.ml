@@ -76,6 +76,7 @@ let align s t =
   | Error m ->
       failwith
         (Printf.sprintf "internal error: type `%s` has no layout: %s" (Hir.ty_name t) m)
+
 let zero t = Ir.Const (t, 0L)
 
 let ones = function
@@ -1001,14 +1002,10 @@ let lower (p : Hir.program) =
       (Printf.sprintf "internal error: type `%s` has no layout: %s" (Hir.ty_name t) m)
   in
   let field_size t =
-    match Hir.layout p.structs t with
-    | Ok (s, _) -> Ok s
-    | Error m -> no_layout t m
+    match Hir.layout p.structs t with Ok (s, _) -> Ok s | Error m -> no_layout t m
   in
   let field_align t =
-    match Hir.layout p.structs t with
-    | Ok (_, a) -> Ok a
-    | Error m -> no_layout t m
+    match Hir.layout p.structs t with Ok (_, a) -> Ok a | Error m -> no_layout t m
   in
   let asm_words =
     List.concat_map
@@ -1047,9 +1044,7 @@ let lower (p : Hir.program) =
                 let out =
                   if padding > 0 then Ir.Array (padding, Ir.I8) :: out else out
                 in
-                go (f.offset + size) (ty f.ty :: out)
-                  (max used (f.offset + size))
-                  rest
+                go (f.offset + size) (ty f.ty :: out) (max used (f.offset + size)) rest
           in
           go 0 [] 0 d.fields
         in
@@ -1068,12 +1063,10 @@ let lower (p : Hir.program) =
         | Hir.Array (_, e) ->
             let* align = field_align e in
             Ok
-              (Ir.Array_global
-                 { name = a.name; elem_ty = ty e; elems = a.elems; align })
+              (Ir.Array_global { name = a.name; elem_ty = ty e; elems = a.elems; align })
         | _ ->
             Ok
-              (Ir.Array_global
-                 { name = a.name; elem_ty = Ir.I8; elems = []; align = 1 }))
+              (Ir.Array_global { name = a.name; elem_ty = Ir.I8; elems = []; align = 1 }))
       p.const_arrays
   in
   Ok
