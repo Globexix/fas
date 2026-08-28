@@ -114,6 +114,25 @@ let is_scalar = function
 
 let is_numeric = function Hir.Int _ | Hir.Vec (_, Hir.Int _) -> true | _ -> false
 let is_truthy = is_scalar
+
+let validate_const_params cps =
+  let* () =
+    Result_list.iter
+      (fun (cp : Ast.const_param) ->
+        let* t = source_ty_diag cp.span cp.ty in
+        if is_int t then Ok ()
+        else error cp.span "const parameter type must be an integer")
+      cps
+  in
+  let rec dup seen = function
+    | [] -> Ok ()
+    | (cp : Ast.const_param) :: rest ->
+        if List.mem cp.name seen then
+          error cp.span (Printf.sprintf "duplicate generic parameter `%s`" cp.name)
+        else dup (cp.name :: seen) rest
+  in
+  dup [] cps
+
 let equal = Hir.ty_equal
 let ty_name = Hir.ty_name
 
@@ -925,15 +944,15 @@ and check_call c _expected fn args s =
                 Ok ())
             in
             let* ps =
-                Result_list.map
-                  (fun (p : Ast.param) ->
-                    let* t = source_ty_diag p.span p.ty in
-                    Ok (p.name, t, false, None))
-                  params
-              in
-              let* rt = source_ty_diag s ret in
-              let* checked = check_actuals c Reject s ps args in
-              Ok (Hir.Call (Hir.User mangled, checked, rt, s))
+              Result_list.map
+                (fun (p : Ast.param) ->
+                  let* t = source_ty_diag p.span p.ty in
+                  Ok (p.name, t, false, None))
+                params
+            in
+            let* rt = source_ty_diag s ret in
+            let* checked = check_actuals c Reject s ps args in
+            Ok (Hir.Call (Hir.User mangled, checked, rt, s))
       | Some _ -> error s "const-generic symbol is not a function")
   | Ast.Ident ("len", _) ->
       if List.length args <> 1 then error s "builtin `len` expects one argument"
@@ -1451,12 +1470,14 @@ let check ?(limits = Limits.default) program =
       (fun r item ->
         let* () = r in
         match item with
-        | Ast.Func { name; params; ret; attrs; variadic; linkage; span; _ } ->
+        | Ast.Func
+            { name; params; ret; attrs; variadic; linkage; span; const_params; _ } ->
             let* () =
               if List.mem name reserved_builtin_names then
                 error span
                   (Printf.sprintf
-                     "`%s` is a reserved builtin name and cannot be used as a function name"
+                     "`%s` is a reserved builtin name and cannot be used as a function \
+                      name"
                      name)
               else Ok ()
             in
@@ -1477,6 +1498,7 @@ let check ?(limits = Limits.default) program =
                     error p.span (Printf.sprintf "duplicate parameter `%s`" p.name)
                 | None -> Ok ()
               in
+              let* () = validate_const_params const_params in
               let* ps =
                 map_params (fun (param : Ast.param) -> source_obj param.ty) params
               in

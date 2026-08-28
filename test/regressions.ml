@@ -443,12 +443,12 @@ let () =
 
   List.iter
     (fun name ->
-       semantic_error ("reserved-builtin-" ^ name)
-         (Printf.sprintf "`%s` is a reserved builtin name" name)
-         (Printf.sprintf "fn %s(x i64) i64 { return x }\n" name))
+      semantic_error ("reserved-builtin-" ^ name)
+        (Printf.sprintf "`%s` is a reserved builtin name" name)
+        (Printf.sprintf "fn %s(x i64) i64 { return x }\n" name))
     [ "len"; "shl"; "lshr"; "ashr"; "rotl"; "rotr"; "popcount"; "ctz"; "clz" ];
 
-let spec_count_limits = { Limits.default with max_specializations = 1 } in
+  let spec_count_limits = { Limits.default with max_specializations = 1 } in
   let repeated_spec_at_count_limit =
     expect_ok
       (Sema.check ~limits:spec_count_limits
@@ -472,13 +472,12 @@ let spec_count_limits = { Limits.default with max_specializations = 1 } in
   | Error diagnostics ->
       if
         not
-          (contains (Diag.render_all ~source:None diagnostics)
+          (contains
+             (Diag.render_all ~source:None diagnostics)
              "const specialization count limit exceeded")
       then failwith "spec-count-limit: unexpected diagnostic");
 
-  let spec_depth_limits =
-    { Limits.default with max_specialization_depth = 1 }
-  in
+  let spec_depth_limits = { Limits.default with max_specialization_depth = 1 } in
   let repeated_spec_at_depth_limit =
     expect_ok
       (Sema.check ~limits:spec_depth_limits
@@ -503,99 +502,142 @@ let spec_count_limits = { Limits.default with max_specializations = 1 } in
   | Error diagnostics ->
       if
         not
-          (contains (Diag.render_all ~source:None diagnostics)
+          (contains
+             (Diag.render_all ~source:None diagnostics)
              "const specialization recursion depth limit exceeded")
       then failwith "spec-depth-limit: unexpected diagnostic");
-(match
-   Lower.lower
-     {
-       Hir.structs =
-         [ {
-             Hir.name = "S";
-             fields = [ { Hir.name = "x"; ty = Hir.Opaque "X"; offset = 0 } ];
-             size = 8;
-             align = 8;
-           } ];
-       consts = [];
-       const_arrays = [];
-       funcs = [];
-       strings = [];
-     }
- with
-| Ok _ -> failwith "layout-invariant: malformed struct lowered without error"
-| Error diagnostics ->
-    if
-      not (contains (Diag.render_all ~source:None diagnostics) "internal error")
-    then failwith "layout-invariant: unexpected diagnostic");
+  semantic_error "const-param-bool-rejected" "const parameter type must be an integer"
+    "fn id[N const bool](x u64) u64 { return x }\n";
 
-(match
-   Lower.lower
-     {
-       Hir.structs = [];
-       consts = [];
-       const_arrays = [];
-       strings = [];
-       funcs =
-         [ {
-             Hir.name = "f";
-             params = [ ("x", Hir.Opaque "X", false, None) ];
-             ret = Hir.Void;
-             body = [];
-             attrs = [];
-             linkage = Hir.Internal;
-             variadic = false;
-             asm_body = None;
-           } ];
-     }
- with
-| Ok _ -> failwith "layout-invariant: opaque parameter lowered without error"
-| Error diagnostics ->
-    if
-      not (contains (Diag.render_all ~source:None diagnostics) "internal error")
-    then failwith "layout-invariant: unexpected diagnostic");
+  semantic_error "const-param-pointer-rejected"
+    "const parameter type must be an integer"
+    "fn id[N const ptr[u8]](x u64) u64 { return x }\n";
 
-(match
-   Lower.lower
-     {
-       Hir.structs = [];
-       consts = [];
-       const_arrays =
-         [ { Hir.name = "A"; ty = Hir.Array (2, Hir.Opaque "X"); elems = [ 0L; 0L ] } ];
-       strings = [];
-       funcs = [];
-     }
- with
-| Ok _ -> failwith "layout-invariant: malformed const array lowered without error"
-| Error diagnostics ->
-    if
-      not (contains (Diag.render_all ~source:None diagnostics) "internal error")
-    then failwith "layout-invariant: unexpected diagnostic");
+  semantic_error "const-param-duplicate" "duplicate generic parameter `N`"
+    "fn id[N const usize, N const usize](x u64) u64 { return x + N }\n";
 
-if
-  not
-    (try
-       ignore
-         (Lower.lower
-            {
-              Hir.structs = [];
-              consts = [];
-              const_arrays = [];
-              strings = [];
-              funcs =
-                [ {
-                    Hir.name = "f";
-                    params = [];
-                    ret = Hir.Void;
-                    body = [ Hir.Let ("x", Hir.Opaque "X", None, Span.synthetic) ];
-                    attrs = [];
-                    linkage = Hir.Internal;
-                    variadic = false;
-                    asm_body = None;
-                  } ];
-            });
-       false
-     with Failure message -> contains message "internal error")
-then
-  failwith "layout-invariant: opaque local did not fail with an internal error";
+  let i8_min_specialization =
+    llvm_of
+      "fn b[N const i8](x i8) i32 { return sext[i32](x) + N }\n\
+       fn main() i32 { return b[-128](1) }\n"
+  in
+  if
+    (not (contains i8_min_specialization "add i32"))
+    || not (contains i8_min_specialization ", -128")
+  then failwith "const-param-i8-min: i8 minimum constant was not sign-extended";
 
-  print_endline "regression tests: 58 passed"
+  let u8_max_specialization =
+    llvm_of
+      "fn w[N const u8](x u8) i32 { return zext[i32](x) + N }\n\
+       fn main() i32 { return w[255](1) }\n"
+  in
+  if
+    (not (contains u8_max_specialization "add i32"))
+    || not (contains u8_max_specialization ", 255")
+  then failwith "const-param-u8-max: u8 maximum constant was not zero-extended";
+
+  semantic_error "const-param-i8-overflow" "integer literal is out of range for i8"
+    "fn b[N const i8](x i8) i32 { return sext[i32](x) + N }\n\
+     fn main() i32 { return b[128](1) }\n";
+
+  semantic_error "const-param-u8-overflow" "integer literal is out of range for u8"
+    "fn w[N const u8](x u8) i32 { return zext[i32](x) + N }\n\
+     fn main() i32 { return w[256](1) }\n";
+
+  (match
+     Lower.lower
+       {
+         Hir.structs =
+           [
+             {
+               Hir.name = "S";
+               fields = [ { Hir.name = "x"; ty = Hir.Opaque "X"; offset = 0 } ];
+               size = 8;
+               align = 8;
+             };
+           ];
+         consts = [];
+         const_arrays = [];
+         funcs = [];
+         strings = [];
+       }
+   with
+  | Ok _ -> failwith "layout-invariant: malformed struct lowered without error"
+  | Error diagnostics ->
+      if not (contains (Diag.render_all ~source:None diagnostics) "internal error") then
+        failwith "layout-invariant: unexpected diagnostic");
+
+  (match
+     Lower.lower
+       {
+         Hir.structs = [];
+         consts = [];
+         const_arrays = [];
+         strings = [];
+         funcs =
+           [
+             {
+               Hir.name = "f";
+               params = [ ("x", Hir.Opaque "X", false, None) ];
+               ret = Hir.Void;
+               body = [];
+               attrs = [];
+               linkage = Hir.Internal;
+               variadic = false;
+               asm_body = None;
+             };
+           ];
+       }
+   with
+  | Ok _ -> failwith "layout-invariant: opaque parameter lowered without error"
+  | Error diagnostics ->
+      if not (contains (Diag.render_all ~source:None diagnostics) "internal error") then
+        failwith "layout-invariant: unexpected diagnostic");
+
+  (match
+     Lower.lower
+       {
+         Hir.structs = [];
+         consts = [];
+         const_arrays =
+           [
+             { Hir.name = "A"; ty = Hir.Array (2, Hir.Opaque "X"); elems = [ 0L; 0L ] };
+           ];
+         strings = [];
+         funcs = [];
+       }
+   with
+  | Ok _ -> failwith "layout-invariant: malformed const array lowered without error"
+  | Error diagnostics ->
+      if not (contains (Diag.render_all ~source:None diagnostics) "internal error") then
+        failwith "layout-invariant: unexpected diagnostic");
+
+  if
+    not
+      (try
+         ignore
+           (Lower.lower
+              {
+                Hir.structs = [];
+                consts = [];
+                const_arrays = [];
+                strings = [];
+                funcs =
+                  [
+                    {
+                      Hir.name = "f";
+                      params = [];
+                      ret = Hir.Void;
+                      body = [ Hir.Let ("x", Hir.Opaque "X", None, Span.synthetic) ];
+                      attrs = [];
+                      linkage = Hir.Internal;
+                      variadic = false;
+                      asm_body = None;
+                    };
+                  ];
+              });
+         false
+       with Failure message -> contains message "internal error")
+  then failwith "layout-invariant: opaque local did not fail with an internal error";
+
+  print_endline "regression tests: 65 passed"
