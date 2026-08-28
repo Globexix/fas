@@ -288,6 +288,45 @@ let () =
        \ a[1] = 2\n\
        \ t arr[2,i64] = a\n\
        \ return t[0] }\n");
+  semantic_error "aggregate-direct-return" "use of uninitialized local `s`"
+    "struct S { x i64 }\nfn f() S { s S\nreturn s }\n";
+  semantic_error "aggregate-branch-no-else" "use of uninitialized local `s`"
+    "struct S { x i64 }\nfn f(p i64) i64 { s S\nif p { s.x = 1 }\nreturn s.x }\n";
+  ignore
+    (lower_of
+       "struct S { x i64 y i64 }\n\
+        fn f(p i64) i64 { s S\n\
+       \ if p { s.x = 1\n\
+       \ s.y = 2 } else { s.x = 3\n\
+       \ s.y = 4 }\n\
+       \ return s.y }\n");
+  ignore
+    (lower_of
+       "struct S { x i64 }\n\
+        fn f(n i64) i64 { s S\n\
+       \ switch n {\n\
+       \ case 0: { s.x = 1 }\n\
+       \ default: { s.x = 2 }\n\
+       \ }\n\
+       \ return s.x }\n");
+  semantic_error "aggregate-switch-partial-merge" "use of uninitialized local `s`"
+    "struct S { x i64 y i64 }\n\
+     fn f(n i64) i64 { s S\n\
+    \ switch n {\n\
+    \ case 0: { s.x = 1 }\n\
+    \ default: { s.y = 2 }\n\
+    \ }\n\
+    \ return s.x }\n";
+  ignore
+    (lower_of
+       "fn f(i i64) i64 { a arr[2,arr[2,i64]]\n\
+       \ a[0][0] = 1\n\
+       \ a[0][1] = 2\n\
+       \ return a[0][i] }\n");
+  semantic_error "aggregate-nested-dynamic-prefix" "use of uninitialized local `a`"
+    "fn f(i i64) i64 { a arr[2,arr[2,i64]]\na[0][0] = 1\nreturn a[0][i] }\n";
+  ignore
+    (lower_of "fn f(i i64) i64 { v vec[2,i64]\n v[0] = 1\n v[1] = 2\n return v[i] }\n");
   semantic_error "aggregate-dynamic-index" "use of uninitialized local `a`"
     "fn f() i64 { a arr[2,i64]\n i i64 = 0\n return a[i] }\n";
   semantic_error "aggregate-dynamic-write-read" "use of uninitialized local `a`"
@@ -1020,4 +1059,4 @@ let () =
   if not (contains mixed_runtime "phi") then
     failwith "runtime-logical-mixed: short-circuit lowering missing";
 
-  print_endline "regression tests: 135 passed"
+  print_endline "regression tests: 143 passed"
