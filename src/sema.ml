@@ -1,6 +1,6 @@
-module SS = Set.Make (String)
+module IS = Set.Make (Int)
 
-type binding = { ty : Hir.ty }
+type binding = { ty : Hir.ty; id : int }
 
 type signature = {
   params : (string * Hir.ty * bool * int option) list;
@@ -26,7 +26,8 @@ type context = {
   specializations : specialization list ref;
   spec_depth : int;
   locals : (string, binding) Hashtbl.t list ref;
-  mutable initialized : SS.t;
+  mutable initialized : IS.t;
+  mutable next_binding_id : int;
   mutable strings : string list;
   mutable string_ids : (string * int) list;
   ret_ty : Hir.ty;
@@ -301,7 +302,9 @@ let add_local name ty c span =
   if duplicate then error span (Printf.sprintf "duplicate local `%s`" name)
   else
     let h = match !(c.locals) with h :: _ -> h | [] -> Hashtbl.create 8 in
-    Hashtbl.replace h name { ty };
+    let id = c.next_binding_id in
+    c.next_binding_id <- id + 1;
+    Hashtbl.replace h name { ty; id };
     if !(c.locals) = [] then c.locals := [ h ];
     ok ()
 
@@ -312,12 +315,12 @@ let require_init name c span =
   match lookup_local name c with
   | None -> Ok ()
   | Some b ->
-      if SS.mem name c.initialized || not (is_scalar b.ty) then Ok ()
+      if IS.mem b.id c.initialized || not (is_scalar b.ty) then Ok ()
       else error span (Printf.sprintf "use of uninitialized local `%s`" name)
 
 let mark_init name c =
   match lookup_local name c with
-  | Some _b -> c.initialized <- SS.add name c.initialized
+  | Some b -> c.initialized <- IS.add b.id c.initialized
   | None -> ()
 
 let field_info structs name field =
@@ -611,7 +614,60 @@ let rec rooted_in_readonly_pointer = function
       rooted_in_readonly_pointer a || rooted_in_readonly_pointer b
   | _ -> false
 
-let rec check_expr (c : context) expected = function
+
+let require_place_value c span = function
+  | Hir.Local (name, (Hir.Ptr _ | Hir.ConstPtr _), _) -> require_init name c span
+  | _ -> Ok ()
+
+
+let rec check_place (c : context) = function
+  | Ast.Ident (n, s) -> (
+      match lookup_local n c with
+      | Some b -> Ok (Hir.Local (n, b.ty, s))
+      | None -> (
+          match lookup n c.arrays with
+          | Some (_, t, _) -> Ok (Hir.Const_array (n, t, s))
+          | None -> error s (Printf.sprintf "unknown name `%s`" n)))
+  | Ast.Index (a, i, s) -> (
+      let* base = check_place c a in
+      let* index = check_expr c None i in
+      if not (is_int (Hir.expr_ty index)) then error s "array index must be an integer"
+      else
+        match Hir.expr_ty base with
+        | Hir.Array (_, e) | Hir.Vec (_, e) | Hir.Ptr e | Hir.ConstPtr e ->
+            let* () =
+              match Hir.expr_ty base with
+              | Hir.Ptr _ | Hir.ConstPtr _ ->
+                  require_place_value c (Hir.expr_span base) base
+              | Hir.Array _ | Hir.Vec _ -> Ok ()
+              | _ -> assert false
+            in
+            if match e with Hir.Opaque _ -> true | _ -> false then
+              error s "opaque pointers cannot be indexed"
+            else if match e with Hir.Void -> true | _ -> false then
+              error s "void pointers cannot be indexed"
+            else Ok (Hir.Index (base, index, e, s))
+        | _ -> error s "cannot index this type")
+  | Ast.Field (a, n, s) -> (
+      let* base = check_place c a in
+      match Hir.expr_ty base with
+      | Hir.Struct sn -> (
+          match field_info c.structs sn n with
+          | Some f -> Ok (Hir.Field (base, n, f.ty, f.offset, s))
+          | None -> error s (Printf.sprintf "unknown field `%s`" n))
+      | _ -> error s "field access requires a struct")
+  | Ast.Deref (e, s) -> (
+      let* x = check_expr c None e in
+      match Hir.expr_ty x with
+      | Hir.Ptr (Hir.Opaque _) | Hir.ConstPtr (Hir.Opaque _) ->
+          error s "cannot dereference an opaque pointer"
+      | Hir.Ptr Hir.Void | Hir.ConstPtr Hir.Void ->
+          error s "cannot dereference a void pointer"
+      | Hir.Ptr t | Hir.ConstPtr t -> Ok (Hir.Deref (x, t, s))
+      | _ -> error s "cannot dereference a non-pointer")
+  | e -> check_expr c None e
+
+and check_expr (c : context) expected = function
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
@@ -775,19 +831,7 @@ let rec check_expr (c : context) expected = function
       in
       if legal then Ok (Hir.Cast (k, x, t, s))
       else error s "illegal cast for source and destination widths"
-  | Ast.Index (a, i, s) -> (
-      let* ta = check_expr c None a in
-      let* ti = check_expr c None i in
-      if not (is_int (Hir.expr_ty ti)) then error s "array index must be an integer"
-      else
-        match Hir.expr_ty ta with
-        | Hir.Array (_, e) | Hir.Vec (_, e) | Hir.Ptr e | Hir.ConstPtr e ->
-            if match e with Hir.Opaque _ -> true | _ -> false then
-              error s "opaque pointers cannot be indexed"
-            else if match e with Hir.Void -> true | _ -> false then
-              error s "void pointers cannot be indexed"
-            else Ok (Hir.Index (ta, ti, e, s))
-        | _ -> error s "cannot index this type")
+  | Ast.Index (a, i, s) -> check_place c (Ast.Index (a, i, s))
   | Ast.Field (a, n, s) -> (
       let* ta = check_expr c None a in
       match Hir.expr_ty ta with
@@ -806,7 +850,7 @@ let rec check_expr (c : context) expected = function
       | Hir.Ptr t | Hir.ConstPtr t -> Ok (Hir.Deref (x, t, s))
       | _ -> error s "cannot dereference a non-pointer")
   | Ast.Addr_of (e, s) -> (
-      let* x = check_expr c None e in
+      let* x = check_place c e in
       match x with
       | Hir.Local _ | Hir.Deref _ | Hir.Index _ | Hir.Field _ | Hir.Const_array _ ->
           let ty =
@@ -1093,8 +1137,14 @@ let check_target (c : context) = function
         | Hir.ConstPtr _ -> error (Ast.expr_span e) "cannot modify read-only pointer"
         | _ -> error (Ast.expr_span e) "deref assignment requires pointer")
   | Ast.Target_index (a, i) -> (
-      let* x = check_expr c None a in
+      let* x = check_place c a in
       let* y = check_expr c None i in
+      let* () =
+        match Hir.expr_ty x with
+        | Hir.Ptr _ | Hir.ConstPtr _ -> require_place_value c (Hir.expr_span x) x
+        | Hir.Array _ | Hir.Vec _ -> Ok ()
+        | _ -> Ok ()
+      in
       if rooted_in_const_array x then
         error (Ast.expr_span a) "cannot modify const array"
       else if not (is_int (Hir.expr_ty y)) then
@@ -1107,7 +1157,7 @@ let check_target (c : context) = function
         | Hir.ConstPtr _ -> error (Ast.expr_span a) "cannot modify read-only pointer"
         | _ -> error (Ast.expr_span a) "index assignment requires aggregate or pointer")
   | Ast.Target_field (a, n) -> (
-      let* x = check_expr c None a in
+      let* x = check_place c a in
       if rooted_in_const_array x then
         error (Ast.expr_span a) "cannot modify const array"
       else if rooted_in_readonly_pointer x then
@@ -1254,7 +1304,7 @@ and check_stmt (c : context) = function
               Ok (Some x)
         in
         let ib = c.initialized in
-        c.initialized <- SS.inter ia ib;
+        c.initialized <- IS.inter ia ib;
         Ok (Hir.If (tq, ta, tb, s))
   | Ast.While (q, b, s) ->
       let* tq = check_expr c None q in
@@ -1348,7 +1398,7 @@ and check_stmt (c : context) = function
         c.initialized <-
           (match !branch_states with
           | [] -> before
-          | first :: rest -> List.fold_left SS.inter first rest);
+          | first :: rest -> List.fold_left IS.inter first rest);
         Ok (Hir.Switch (te, ta, td, s))
   | Ast.Break s ->
       if c.in_defer then error s "break is not allowed inside defer"
@@ -1550,7 +1600,8 @@ let check ?(limits = Limits.default) program =
       specializations = all_specs;
       spec_depth;
       locals = ref [];
-      initialized = SS.empty;
+      initialized = IS.empty;
+      next_binding_id = 0;
       strings = !all_strings;
       string_ids = List.mapi (fun i value -> (value, i)) !all_strings;
       ret_ty;

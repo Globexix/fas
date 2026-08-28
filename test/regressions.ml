@@ -33,6 +33,56 @@ let lower_of text =
 let llvm_of text = Ir.render (lower_of text)
 
 let () =
+  let uninitialized_field_write =
+    llvm_of "struct S { x i64 }\nfn main() i64 { p S\n p.x = 1\n return 0 }\n"
+  in
+  if not (contains uninitialized_field_write "store i64 1") then
+    failwith "place-init: field assignment on an uninitialized aggregate failed";
+  let uninitialized_element_write =
+    llvm_of "fn main() i64 { a arr[2, i64]\n a[0] = 1\n return 0 }\n"
+  in
+  if not (contains uninitialized_element_write "store i64 1") then
+    failwith "place-init: element assignment on an uninitialized aggregate failed";
+  ignore (llvm_of "fn main() i64 { v vec[2, i64]\n v[0] = 1\n return 0 }\n");
+  let uninitialized_array_field_write =
+    llvm_of
+      "struct S { a arr[2, i64] }\nfn main() i64 { s S\n s.a[0] = 1\n return 0 }\n"
+  in
+  if not (contains uninitialized_array_field_write "store i64 1") then
+    failwith "place-init: array field indexing read the whole aggregate";
+  let uninitialized_array_address =
+    llvm_of
+      "fn take(p ptr[i64]) void { return }\n\
+       fn main() i64 { a arr[2, i64]\n\
+       take(&a[0])\n\
+       return 0 }\n"
+  in
+  if not (contains uninitialized_array_address "call void @take(ptr") then
+    failwith "place-init: address of an uninitialized array element failed";
+  let uninitialized_address =
+    llvm_of
+      "fn take(p ptr[i64]) void { return }\n\
+       fn main() i64 { x i64\n\
+      \ take(&x)\n\
+      \ return 0 }\n"
+  in
+  if not (contains uninitialized_address "call void @take(ptr") then
+    failwith "place-init: taking the address of an uninitialized local failed";
+  semantic_error "place-init-pointer-intermediate" "use of uninitialized local `p`"
+    "fn main() i64 { p ptr[i64]\n p.* = 1\n return 0 }\n";
+  semantic_error "place-init-pointer-index-write" "use of uninitialized local `p`"
+    "fn main() i64 { p ptr[i64]\n p[0] = 1\n return 0 }\n";
+  semantic_error "place-init-pointer-index-read" "use of uninitialized local `p`"
+    "fn main() i64 { p ptr[i64]\n x i64 = p[0]\n return x }\n";
+  semantic_error "place-init-pointer-index-address" "use of uninitialized local `p`"
+    "fn take(p ptr[i64]) void { return }\n\
+     fn main() i64 { p ptr[i64]\n\
+     take(&p[0])\n\
+     return 0 }\n";
+  semantic_error "place-init-pointer-index-compound" "use of uninitialized local `p`"
+    "fn main() i64 { p ptr[i64]\n p[0] += 1\n return 0 }\n";
+  semantic_error "place-init-binding-identity" "use of uninitialized local `x`"
+    "fn main() i64 { { x i64 = 1 }\n { x i64\n y i64 = x\n }\n return 0 }\n";
   semantic_error "defer-does-not-initialize" "use of uninitialized local `x`"
     "fn f() i64 { x i64\n defer { x = 1 }\n return x }\n";
   semantic_error "nested-defer" "nested defer is not allowed"
@@ -688,4 +738,4 @@ let () =
   if not (contains mixed_runtime "phi") then
     failwith "runtime-logical-mixed: short-circuit lowering missing";
 
-  print_endline "regression tests: 73 passed"
+  print_endline "regression tests: 85 passed"
