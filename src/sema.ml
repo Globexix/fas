@@ -42,6 +42,9 @@ let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 let supported_targets =
   [ "x86_64"; "avx2"; "avx512"; "zen1"; "zen2"; "zen3"; "zen4"; "zen5" ]
 
+let reserved_builtin_names =
+  [ "len"; "shl"; "lshr"; "ashr"; "rotl"; "rotr"; "popcount"; "ctz"; "clz" ]
+
 let validate_attrs span attrs =
   Result_list.iter
     (function
@@ -1446,6 +1449,14 @@ let check ?(limits = Limits.default) program =
         let* () = r in
         match item with
         | Ast.Func { name; params; ret; attrs; variadic; linkage; span; _ } ->
+            let* () =
+              if List.mem name reserved_builtin_names then
+                error span
+                  (Printf.sprintf
+                     "`%s` is a reserved builtin name and cannot be used as a function name"
+                     name)
+              else Ok ()
+            in
             let* () = validate_attrs span attrs in
             if List.exists (fun (n, _) -> n = name) !sigs then
               error span (Printf.sprintf "duplicate function `%s`" name)

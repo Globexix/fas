@@ -441,4 +441,11 @@ let () =
     \               d vec[4,bool] = b & b\n\
     \               return 0 }\n";
 
-  print_endline "regression tests: 41 passed"
+  List.iter
+    (fun name ->
+       semantic_error ("reserved-builtin-" ^ name)
+         (Printf.sprintf "`%s` is a reserved builtin name" name)
+         (Printf.sprintf "fn %s(x i64) i64 { return x }\n" name))
+    [ "len"; "shl"; "lshr"; "ashr"; "rotl"; "rotr"; "popcount"; "ctz"; "clz" ];
+
+  print_endline "regression tests: 50 passed"
