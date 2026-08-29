@@ -81,7 +81,6 @@ type func = {
   blocks : block list;
   linkage : linkage;
   variadic : bool;
-  attrs : Ast.attr list;
   asm_body : string option;
 }
 
@@ -189,28 +188,6 @@ let cmp_name = function
   | Ule -> "ule"
   | Ugt -> "ugt"
   | Uge -> "uge"
-
-let attrs_string attrs =
-  let one = function
-    | Ast.Inline -> Some "inlinehint"
-    | No_inline -> Some "noinline"
-    | Kernel -> Some "optnone noinline"
-    | Target "avx2" -> Some "\"target-features\"=\"+avx2\""
-    | Target "avx512" ->
-        Some "\"target-features\"=\"+avx512f,+avx512dq,+avx512vl,+avx512bw\""
-    | Target t when t <> "x86_64" ->
-        Some
-          (Printf.sprintf "\"target-cpu\"=\"%s\""
-             (match t with
-             | "zen1" -> "znver1"
-             | "zen2" -> "znver2"
-             | "zen3" -> "znver3"
-             | "zen4" -> "znver4"
-             | "zen5" -> "znver5"
-             | x -> x))
-    | _ -> None
-  in
-  match List.filter_map one attrs with [] -> "" | xs -> " " ^ String.concat " " xs
 
 let instr_line = function
   | Bin (i, op, t, a, b) ->
@@ -356,9 +333,9 @@ let render m =
         (ty_name f.ret) (symbol f.name) ps
     else
       let link = if f.linkage = Internal then "internal " else "" in
-      Printf.sprintf "define %s%s%s %s(%s)%s {\n%s\n}" link
+      Printf.sprintf "define %s%s%s %s(%s) {\n%s\n}" link
         (extension_name f.ret_extension)
-        (ty_name f.ret) (symbol f.name) ps (attrs_string f.attrs)
+        (ty_name f.ret) (symbol f.name) ps
         (String.concat "\n"
            (List.concat_map
               (fun b ->

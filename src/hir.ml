@@ -23,7 +23,6 @@ type func_sig = {
 }
 
 type linkage = Internal | External_c
-type attr = Ast.attr
 type builtin = Shl | Lshr | Ashr | Rotl | Rotr | Popcount | Ctz | Clz
 type call_target = User of string | Builtin of builtin
 
@@ -76,7 +75,6 @@ type func = {
   params : (string * ty * bool * int option) list;
   ret : ty;
   body : stmt list;
-  attrs : Ast.attr list;
   linkage : linkage;
   variadic : bool;
   asm_body : string option;

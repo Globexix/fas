@@ -7,7 +7,6 @@ const K u64 = 0x2a
 extern "C" {
   fn printf(fmt ptr[const u8], ...) i32
 }
-@inline
 fn add[N const usize](x i64, y i64) i64 {
   z i64 = x + y
   if z > 0 {

@@ -52,20 +52,8 @@ let error span message = Error [ Diag.error span message ]
 let ok x = Ok x
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 
-let supported_targets =
-  [ "x86_64"; "avx2"; "avx512"; "zen1"; "zen2"; "zen3"; "zen4"; "zen5" ]
-
 let reserved_builtin_names =
   [ "len"; "shl"; "lshr"; "ashr"; "rotl"; "rotr"; "popcount"; "ctz"; "clz" ]
-
-let validate_attrs span attrs =
-  Result_list.iter
-    (function
-      | Ast.Target target when List.mem target supported_targets -> Ok ()
-      | Ast.Target target ->
-          error span (Printf.sprintf "unsupported target `%s`" target)
-      | _ -> Ok ())
-    attrs
 
 let src_int = function
   | Ast.U8 -> Hir.U8
@@ -1275,7 +1263,7 @@ and check_call c _expected fn args s =
   | Ast.Const_args (Ast.Ident (name, _), cargs, _) -> (
       match List.assoc_opt name c.templates with
       | None -> error s (Printf.sprintf "unknown const-generic function `%s`" name)
-      | Some (Ast.Func { params; ret; body; attrs; const_params; _ }) ->
+      | Some (Ast.Func { params; ret; body; const_params; _ }) ->
           if List.length cargs <> List.length const_params then
             error s (Printf.sprintf "wrong number of const arguments to `%s`" name)
           else
@@ -1300,7 +1288,6 @@ and check_call c _expected fn args s =
                       params;
                       ret;
                       body;
-                      attrs;
                       linkage = Ast.Internal;
                       variadic = false;
                       const_params;
@@ -1934,8 +1921,7 @@ let check ?(limits = Limits.default) program =
       (fun r item ->
         let* () = r in
         match item with
-        | Ast.Func
-            { name; params; ret; attrs; variadic; linkage; span; const_params; _ } ->
+        | Ast.Func { name; params; ret; variadic; linkage; span; const_params; _ } ->
             let* () =
               if List.mem name reserved_builtin_names then
                 error span
@@ -1945,7 +1931,6 @@ let check ?(limits = Limits.default) program =
                      name)
               else Ok ()
             in
-            let* () = validate_attrs span attrs in
             if List.exists (fun (n, _) -> n = name) !sigs then
               error span (Printf.sprintf "duplicate function `%s`" name)
             else if List.exists (fun (n, _, _) -> n = name) !arrays then
@@ -2014,7 +1999,7 @@ let check ?(limits = Limits.default) program =
       limits;
     }
   in
-  let check_function_body ~name ~description ~span ~params ~ret ~stmts ~attrs ~linkage
+  let check_function_body ~name ~description ~span ~params ~ret ~stmts ~linkage
       ~variadic ~extra_consts ~spec_depth ~require_return =
     let context = make_context ~extra_consts ~spec_depth ~ret_ty:ret in
     List.iter
@@ -2031,14 +2016,11 @@ let check ?(limits = Limits.default) program =
       else Ok ()
     in
     all_strings := context.strings;
-    Ok
-      ({ Hir.name; params; ret; body; attrs; linkage; variadic; asm_body = None }
-        : Hir.func)
+    Ok ({ Hir.name; params; ret; body; linkage; variadic; asm_body = None } : Hir.func)
   in
   let add_func func = funcs := func :: !funcs in
   let check_func = function
-    | Ast.Func
-        { name; params; ret; body; attrs; linkage; variadic; const_params = []; span }
+    | Ast.Func { name; params; ret; body; linkage; variadic; const_params = []; span }
       ->
         let* ret = source_ty_diag span ret in
         let* params = source_params params in
@@ -2052,7 +2034,6 @@ let check ?(limits = Limits.default) program =
                    params;
                    ret;
                    body = [];
-                   attrs;
                    linkage;
                    variadic;
                    asm_body = Some raw;
@@ -2060,7 +2041,7 @@ let check ?(limits = Limits.default) program =
                   : Hir.func)
           | Ast.Statements stmts ->
               check_function_body ~name ~description:"function" ~span ~params ~ret
-                ~stmts ~attrs ~linkage ~variadic ~extra_consts:[] ~spec_depth:0
+                ~stmts ~linkage ~variadic ~extra_consts:[] ~spec_depth:0
                 ~require_return:(linkage <> Hir.External_c)
         in
         add_func func;
@@ -2075,15 +2056,14 @@ let check ?(limits = Limits.default) program =
     else
       let sp = List.nth !all_specs index in
       match sp.item with
-      | Ast.Func
-          { params; ret; body = Ast.Statements stmts; attrs; linkage; variadic; _ } ->
+      | Ast.Func { params; ret; body = Ast.Statements stmts; linkage; variadic; _ } ->
           let* ret = source_ty_diag Span.synthetic ret in
           let* params = source_params params in
           let* func =
             check_function_body ~name:sp.name ~description:"specialized function"
-              ~span:Span.synthetic ~params ~ret ~stmts ~attrs
-              ~linkage:(hir_linkage linkage) ~variadic ~extra_consts:sp.values
-              ~spec_depth:(sp.depth + 1) ~require_return:true
+              ~span:Span.synthetic ~params ~ret ~stmts ~linkage:(hir_linkage linkage)
+              ~variadic ~extra_consts:sp.values ~spec_depth:(sp.depth + 1)
+              ~require_return:true
           in
           add_func func;
           materialize (index + 1)

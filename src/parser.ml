@@ -297,38 +297,6 @@ module P = struct
 
   let starts_type p = match (peek_n p 1).kind with Token.Ident _ -> true | _ -> false
 
-  let attr p =
-    let at_span = span p in
-    let* () = expected p Token.At in
-    let* name = ident p in
-    match name with
-    | "inline" -> Ok Ast.Inline
-    | "noinline" -> Ok Ast.No_inline
-    | "kernel" -> Ok Ast.Kernel
-    | "optimize" -> Ok Ast.Optimize
-    | "expect_no_call" -> Ok Ast.Expect_no_call
-    | "target" ->
-        let* () = expected p Token.Lparen in
-        let* s = string p in
-        let* () = expected p Token.Rparen in
-        Ok (Ast.Target s)
-    | "align" ->
-        let* () = expected p Token.Lparen in
-        let* n = int_value p in
-        let* () = expected p Token.Rparen in
-        Ok (Ast.Align n)
-    | "expect_asm" ->
-        let* () = expected p Token.Lparen in
-        let* s = string p in
-        let* () = expected p Token.Rparen in
-        Ok (Ast.Expect_asm s)
-    | "expect_stack_max" ->
-        let* () = expected p Token.Lparen in
-        let* n = integer p in
-        let* () = expected p Token.Rparen in
-        Ok (Ast.Expect_stack_max n)
-    | _ -> Error [ Diag.error at_span ("unknown attribute `@" ^ name ^ "`") ]
-
   let compound_op = function
     | Token.Plus_eq -> Some Ast.Add
     | Token.Minus_eq -> Some Ast.Sub
@@ -351,14 +319,6 @@ module P = struct
       Ok (xs @ ys)
 
   and item p =
-    let rec attrs acc =
-      if at p Token.At then (
-        let* a = attr p in
-        skip_newlines p;
-        attrs (a :: acc))
-      else Ok (List.rev acc)
-    in
-    let* attrs = attrs [] in
     match (peek p).kind with
     | Token.Kw_const ->
         let* x = const_item p in
@@ -367,15 +327,20 @@ module P = struct
         let* x = struct_item p in
         Ok [ x ]
     | Token.Kw_opaque ->
-        let* x = opaque_item p attrs in
+        let* x = opaque_item p in
         Ok [ x ]
-    | Token.Kw_extern -> extern_block p attrs
+    | Token.Kw_extern -> extern_block p
     | Token.Kw_fn ->
-        let* x = fn_item p attrs false false in
+        let* x = fn_item p false false in
         Ok [ x ]
     | Token.Kw_asm ->
-        let* x = fn_item p attrs true false in
+        let* x = fn_item p true false in
         Ok [ x ]
+    | Token.At ->
+        let s = span p in
+        let* () = expected p Token.At in
+        let* name = ident p in
+        Error [ Diag.error s ("unknown attribute `@" ^ name ^ "`") ]
     | t ->
         Error
           [ Diag.error (span p) ("expected a top-level item, found " ^ Token.show t) ]
@@ -420,10 +385,16 @@ module P = struct
     let* name = ident p in
     let* align =
       if at p Token.At then
-        let* a = attr p in
-        match a with
-        | Ast.Align n -> Ok (Some n)
-        | _ -> Error [ Diag.error s "only @align is valid on a struct" ]
+        let at_span = span p in
+        let* () = expected p Token.At in
+        let* attr_name = ident p in
+        if attr_name <> "align" then
+          Error [ Diag.error at_span ("unknown attribute `@" ^ attr_name ^ "`") ]
+        else
+          let* () = expected p Token.Lparen in
+          let* n = int_value p in
+          let* () = expected p Token.Rparen in
+          Ok (Some n)
       else Ok None
     in
     let* () = expected p Token.Lbrace in
@@ -450,16 +421,13 @@ module P = struct
     p.names := name :: !(p.names);
     Ok (Ast.Struct { name; fields = fs; align; span = s })
 
-  and opaque_item p attrs =
+  and opaque_item p =
     let s = span p in
-    if attrs <> [] then
-      Error [ Diag.error s "attributes are not valid on an opaque declaration" ]
-    else
-      let* () = expected p Token.Kw_opaque in
-      let* name = ident p in
-      let* () = end_stmt p in
-      p.opaques := name :: !(p.opaques);
-      Ok (Ast.Opaque { name; span = s })
+    let* () = expected p Token.Kw_opaque in
+    let* name = ident p in
+    let* () = end_stmt p in
+    p.opaques := name :: !(p.opaques);
+    Ok (Ast.Opaque { name; span = s })
 
   and const_params p =
     if not (at p Token.Lbracket) then Ok []
@@ -511,35 +479,31 @@ module P = struct
     in
     params [] false
 
-  and extern_block p attrs =
+  and extern_block p =
     let s = span p in
-    if attrs <> [] then
-      Error [ Diag.error s "attributes are not valid on an extern block" ]
+    let* () = expected p Token.Kw_extern in
+    let* abi = string p in
+    if abi <> "C" then Error [ Diag.error s "only extern \"C\" is supported" ]
     else
-      let* () = expected p Token.Kw_extern in
-      let* abi = string p in
-      if abi <> "C" then Error [ Diag.error s "only extern \"C\" is supported" ]
-      else
-        let* () = expected p Token.Lbrace in
-        skip_newlines p;
-        let rec ds acc =
-          if at p Token.Rbrace then
-            let* () = expected p Token.Rbrace in
-            let* () = end_stmt p in
-            Ok (List.rev acc)
-          else
-            let* x = fn_item p [] false true in
-            match x with
-            | Ast.Func f ->
-                ds
-                  (Ast.Func
-                     { f with body = Ast.Statements []; linkage = Ast.External_c }
-                  :: acc)
-            | _ -> Error [ Diag.error s "invalid extern declaration" ]
-        in
-        ds []
+      let* () = expected p Token.Lbrace in
+      skip_newlines p;
+      let rec ds acc =
+        if at p Token.Rbrace then
+          let* () = expected p Token.Rbrace in
+          let* () = end_stmt p in
+          Ok (List.rev acc)
+        else
+          let* x = fn_item p false true in
+          match x with
+          | Ast.Func f ->
+              ds
+                (Ast.Func { f with body = Ast.Statements []; linkage = Ast.External_c }
+                :: acc)
+          | _ -> Error [ Diag.error s "invalid extern declaration" ]
+      in
+      ds []
 
-  and fn_item p attrs asm allow_variadic =
+  and fn_item p asm allow_variadic =
     let s = span p in
     let* () = if asm then expected p Token.Kw_asm else Ok () in
     let* () = expected p Token.Kw_fn in
@@ -565,7 +529,6 @@ module P = struct
              params = ps;
              ret;
              body = Ast.Asm raw;
-             attrs;
              linkage = Ast.Internal;
              variadic = var;
              const_params = cps;
@@ -580,7 +543,6 @@ module P = struct
              params = ps;
              ret;
              body = Ast.Statements [];
-             attrs;
              linkage = Ast.External_c;
              variadic = var;
              const_params = cps;
@@ -595,7 +557,6 @@ module P = struct
              params = ps;
              ret;
              body = Ast.Statements body;
-             attrs;
              linkage = Ast.Internal;
              variadic = var;
              const_params = cps;

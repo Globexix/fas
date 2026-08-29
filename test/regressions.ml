@@ -34,6 +34,14 @@ let parse_error name text =
   | Ok _ -> failwith (name ^ ": expected parse rejection")
   | Error _ -> ()
 
+let parse_error_message name fragment text =
+  match Parser.parse (source text) with
+  | Ok _ -> failwith (name ^ ": expected parse rejection")
+  | Error diagnostics ->
+      let rendered = Diag.render_all ~source:None diagnostics in
+      if not (contains rendered fragment) then
+        failwith (name ^ ": unexpected diagnostic: " ^ rendered)
+
 let lower_of text =
   let program = expect_ok (Parser.parse (source text)) in
   let hir = expect_ok (Sema.check program) in
@@ -594,19 +602,39 @@ let () =
   in
   if not (contains explicit_pointer_cast "call i32 @take(ptr") then
     failwith "fas-028: explicit pointer bitcast was rejected";
-  let generic_attrs =
+  List.iter
+    (fun (name, source) ->
+      parse_error_message
+        ("forbidden-attribute-" ^ name)
+        ("unknown attribute `@" ^ name ^ "`")
+        source)
+    [
+      ("inline", "@inline\nfn f() i64 { return 7 }\n");
+      ("noinline", "@noinline\nfn f() i64 { return 7 }\n");
+      ("kernel", "@kernel\nfn f() i64 { return 7 }\n");
+      ("optimize", "@optimize\nfn f() i64 { return 7 }\n");
+      ("target", "@target(\"zen3\")\nfn f() i64 { return 7 }\n");
+      ("expect_asm", "@expect_asm(\"add\")\nfn f() i64 { return 7 }\n");
+      ("expect_no_call", "@expect_no_call\nfn f() i64 { return 7 }\n");
+      ("expect_stack_max", "@expect_stack_max(\"16\")\nfn f() i64 { return 7 }\n");
+      ("unroll", "@unroll(8)\nfn f() i64 { return 7 }\n");
+      ("vector_width", "@vector_width(4)\nfn f() i64 { return 7 }\n");
+      ("hot", "@hot\nfn f() i64 { return 7 }\n");
+      ("cold", "@cold\nfn f() i64 { return 7 }\n");
+    ];
+  parse_error_message "align-restricted-to-structs" "unknown attribute `@align`"
+    "@align(16)\nfn f() i64 { return 7 }\n";
+  parse_error_message "struct-rejects-function-attribute" "unknown attribute `@inline`"
+    "struct S @inline { x i64 }\n";
+  let attribute_free_ir =
     llvm_of
-      "@inline\n\
-       fn id[N const i64](x i64) i64 { return x }\n\
-       fn main() i64 { return id[3](4) }\n"
+      "fn id[N const i64](x i64) i64 { return x }\nfn main() i64 { return id[3](4) }\n"
   in
-  if not (contains generic_attrs "inlinehint") then
-    failwith "fas-019: specialization did not inherit template attributes";
-  semantic_error "fas-017-unsupported-target" "unsupported target `wasm32-junk`"
-    "@target(\"wasm32-junk\")\nfn f() i64 { return 7 }\nfn main() i64 { return f() }\n";
-  let target_attr = llvm_of "@target(\"zen3\")\nfn f() i64 { return 7 }\n" in
-  if not (contains target_attr "\"target-cpu\"=\"znver3\"") then
-    failwith "fas-017: supported target attribute was not preserved";
+  List.iter
+    (fun marker ->
+      if contains attribute_free_ir marker then
+        failwith ("optimizer attribute leaked into LLVM: " ^ marker))
+    [ "inlinehint"; "noinline"; "optnone"; "\"target-cpu\""; "\"target-features\"" ];
   semantic_error "fas-002-switch-default-init-leak" "use of uninitialized local `x`"
     "fn main() i32 {\n\
     \     x i32\n\
@@ -1085,7 +1113,6 @@ let () =
                params = [ ("x", Hir.Opaque "X", false, None) ];
                ret = Hir.Void;
                body = [];
-               attrs = [];
                linkage = Hir.Internal;
                variadic = false;
                asm_body = None;
@@ -1133,7 +1160,6 @@ let () =
                       params = [];
                       ret = Hir.Void;
                       body = [ Hir.Let ("x", Hir.Opaque "X", None, Span.synthetic) ];
-                      attrs = [];
                       linkage = Hir.Internal;
                       variadic = false;
                       asm_body = None;

@@ -84,17 +84,6 @@ and const_param = { name : string; ty : ty; span : Span.t }
 and body = Statements of stmt list | Asm of string
 and linkage = Internal | External_c
 
-and attr =
-  | Inline
-  | No_inline
-  | Kernel
-  | Optimize
-  | Target of string
-  | Align of int
-  | Expect_asm of string
-  | Expect_no_call
-  | Expect_stack_max of string
-
 and item =
   | Const of { name : string; ty : ty; value : expr; span : Span.t }
   | Struct of { name : string; fields : field list; align : int option; span : Span.t }
@@ -104,7 +93,6 @@ and item =
       params : param list;
       ret : ty;
       body : body;
-      attrs : attr list;
       linkage : linkage;
       variadic : bool;
       const_params : const_param list;

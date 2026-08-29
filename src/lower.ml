@@ -952,7 +952,6 @@ let lower_func structs strings c_functions force_external f =
           blocks = [];
           linkage = Ir.External;
           variadic = f.variadic;
-          attrs = f.attrs;
           asm_body = Some raw;
         }
   | None when f.linkage = Hir.External_c && f.body = [] ->
@@ -965,7 +964,6 @@ let lower_func structs strings c_functions force_external f =
           blocks = [];
           linkage = Ir.External;
           variadic = f.variadic;
-          attrs = f.attrs;
           asm_body = None;
         }
   | None ->
@@ -1028,7 +1026,6 @@ let lower_func structs strings c_functions force_external f =
              else if f.linkage = Hir.Internal then Ir.Internal
              else External);
           variadic = f.variadic;
-          attrs = f.attrs;
           asm_body = None;
         }
 
@@ -1071,7 +1068,6 @@ let intrinsic_decls funcs =
         blocks = [];
         linkage = Ir.External;
         variadic = false;
-        attrs = [];
         asm_body = None;
       })
   |> List.of_seq
