@@ -1806,9 +1806,10 @@ let check ?(limits = Limits.default) program =
         else
           let* () =
             match align with
-            | Some a when a <= 0 || a land (a - 1) <> 0 ->
-                error span "alignment must be a positive power of two"
-            | _ -> Ok ()
+            | Some a ->
+                Target_layout.validate_type_alignment Target_layout.current a
+                |> Result.map_error (fun message -> [ Diag.error span message ])
+            | None -> Ok ()
           in
           let rec collect_fields fseen out = function
             | [] -> Ok (List.rev out)

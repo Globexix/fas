@@ -15,6 +15,25 @@ struct Outer {
     tail u8
 }
 
+struct Aligned @align(16) {
+    x u8
+    y u8
+}
+
+struct AlignedOuter {
+    lead u8
+    value Aligned
+    tail u8
+}
+
+struct EmptyAligned @align(32) {}
+
+struct EmptyOuter {
+    lead u8
+    empty EmptyAligned
+    tail u8
+}
+
 fn bool_size() u64 { return sizeof[bool] }
 fn bool_align() u64 { return alignof[bool] }
 fn i8_size() u64 { return sizeof[i8] }
@@ -50,3 +69,18 @@ fn outer_size() u64 { return sizeof[Outer] }
 fn outer_align() u64 { return alignof[Outer] }
 fn outer_inner_offset() u64 { return offsetof[Outer,inner] }
 fn outer_tail_offset() u64 { return offsetof[Outer,tail] }
+fn aligned_size() u64 { return sizeof[Aligned] }
+fn aligned_align() u64 { return alignof[Aligned] }
+fn aligned_y_offset() u64 { return offsetof[Aligned,y] }
+fn aligned_array_size() u64 { return sizeof[arr[2,Aligned]] }
+fn aligned_array_align() u64 { return alignof[arr[2,Aligned]] }
+fn aligned_outer_size() u64 { return sizeof[AlignedOuter] }
+fn aligned_outer_align() u64 { return alignof[AlignedOuter] }
+fn aligned_outer_value_offset() u64 { return offsetof[AlignedOuter,value] }
+fn aligned_outer_tail_offset() u64 { return offsetof[AlignedOuter,tail] }
+fn empty_aligned_size() u64 { return sizeof[EmptyAligned] }
+fn empty_aligned_align() u64 { return alignof[EmptyAligned] }
+fn empty_outer_size() u64 { return sizeof[EmptyOuter] }
+fn empty_outer_align() u64 { return alignof[EmptyOuter] }
+fn empty_outer_empty_offset() u64 { return offsetof[EmptyOuter,empty] }
+fn empty_outer_tail_offset() u64 { return offsetof[EmptyOuter,tail] }

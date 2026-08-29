@@ -1009,10 +1009,23 @@ let lower (p : Hir.program) =
       (Printf.sprintf "internal error: type `%s` has no layout: %s" (Hir.ty_name t) m)
   in
   let field_size t =
-    match Hir.layout p.structs t with Ok (s, _) -> Ok s | Error m -> no_layout t m
+    match Hir.layout p.structs t with
+    | Ok (s, _) when s >= 0 -> Ok s
+    | Ok _ -> no_layout t "negative object size"
+    | Error m -> no_layout t m
   in
   let field_align t =
-    match Hir.layout p.structs t with Ok (_, a) -> Ok a | Error m -> no_layout t m
+    match Hir.layout p.structs t with
+    | Ok (_, a) -> (
+        match Target_layout.validate_type_alignment Target_layout.current a with
+        | Ok () -> Ok a
+        | Error m -> no_layout t m)
+    | Error m -> no_layout t m
+  in
+  let malformed_struct (d : Hir.struct_def) message =
+    error Span.synthetic
+      (Printf.sprintf "internal error: struct `%s` has malformed layout: %s" d.name
+         message)
   in
   let asm_words =
     List.concat_map
@@ -1042,20 +1055,52 @@ let lower (p : Hir.program) =
   let* structs =
     Result_list.map
       (fun (d : Hir.struct_def) ->
-        let* fields, used =
-          let rec go offset out used = function
-            | [] -> Ok (List.rev out, used)
+        let* () =
+          match Target_layout.validate_type_alignment Target_layout.current d.align with
+          | Ok () -> Ok ()
+          | Error message -> malformed_struct d message
+        in
+        let* fields, used, natural_align =
+          let rec go offset out used natural_align = function
+            | [] -> Ok (List.rev out, used, natural_align)
             | (f : Hir.field) :: rest ->
                 let* size = field_size f.ty in
-                let padding = f.offset - offset in
-                let out =
-                  if padding > 0 then Ir.Array (padding, Ir.I8) :: out else out
-                in
-                go (f.offset + size) (ty f.ty :: out) (max used (f.offset + size)) rest
+                let* align = field_align f.ty in
+                if f.offset < offset then
+                  malformed_struct d
+                    (Printf.sprintf "field `%s` overlaps a preceding field" f.name)
+                else if f.offset mod align <> 0 then
+                  malformed_struct d
+                    (Printf.sprintf "field `%s` is not aligned to %d" f.name align)
+                else if f.offset > max_int - size then
+                  malformed_struct d
+                    (Printf.sprintf "field `%s` end offset overflows" f.name)
+                else
+                  let field_end = f.offset + size in
+                  let padding = f.offset - offset in
+                  let out =
+                    if padding > 0 then Ir.Array (padding, Ir.I8) :: out else out
+                  in
+                  go field_end (ty f.ty :: out) (max used field_end)
+                    (max natural_align align) rest
           in
-          go 0 [] 0 d.fields
+          go 0 [] 0 1 d.fields
         in
-        Ok { Ir.name = d.name; fields; tail_padding = max 0 (d.size - used) })
+        if d.align < natural_align then
+          malformed_struct d
+            (Printf.sprintf "alignment %d is less than natural alignment %d" d.align
+               natural_align)
+        else if d.size < used then malformed_struct d "size is smaller than its fields"
+        else if d.size mod d.align <> 0 then
+          malformed_struct d
+            (Printf.sprintf "size %d is not a multiple of alignment %d" d.size d.align)
+        else
+          let fields =
+            if d.align > natural_align then
+              Ir.Array (0, Ir.Vector (d.align, Ir.I8)) :: fields
+            else fields
+          in
+          Ok { Ir.name = d.name; fields; tail_padding = d.size - used })
       p.structs
   in
   let strings =

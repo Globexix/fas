@@ -41,6 +41,23 @@ let lower_of text =
 
 let llvm_of text = Ir.render (lower_of text)
 
+let lower_struct_error name fragment (struct_def : Hir.struct_def) =
+  match
+    Lower.lower
+      {
+        Hir.structs = [ struct_def ];
+        consts = [];
+        const_arrays = [];
+        funcs = [];
+        strings = [];
+      }
+  with
+  | Ok _ -> failwith (name ^ ": malformed struct lowered without error")
+  | Error diagnostics ->
+      let rendered = Diag.render_all ~source:None diagnostics in
+      if not (contains rendered fragment) then
+        failwith (name ^ ": unexpected diagnostic: " ^ rendered)
+
 let () =
   let expect_layout name expected ty =
     match Hir.layout [] ty with
@@ -474,10 +491,15 @@ let () =
        }\n"
   in
   if
-    (not (contains nested_align "%struct.Inner = type { i8, i8, [14 x i8] }"))
+    (not
+       (contains nested_align
+          "%struct.Inner = type { [0 x <16 x i8>], i8, i8, [14 x i8] }"))
     || not
          (contains nested_align "%struct.Outer = type { i8, [15 x i8], %struct.Inner }")
   then failwith "fas-003: nested aligned struct layout lost internal padding";
+  semantic_error "fas-003-excessive-alignment"
+    "alignment exceeds target maximum of 2147483648"
+    "struct S @align(4294967296) { x u8 }\n";
   semantic_error "fas-009-duplicate-opaque" "duplicate type `x`"
     "opaque x\nopaque x\nfn main() i32 { return 0 }\n";
   semantic_error "fas-005-void-ternary" "ternary arms cannot have void type"
@@ -954,6 +976,33 @@ let () =
       if not (contains (Diag.render_all ~source:None diagnostics) "internal error") then
         failwith "layout-invariant: unexpected diagnostic");
 
+  lower_struct_error "layout-invariant-overlap" "overlaps a preceding field"
+    {
+      Hir.name = "Overlap";
+      fields =
+        [
+          { Hir.name = "a"; ty = Hir.Int Hir.U64; offset = 0 };
+          { Hir.name = "b"; ty = Hir.Int Hir.U8; offset = 4 };
+        ];
+      size = 8;
+      align = 8;
+    };
+  lower_struct_error "layout-invariant-size" "size is smaller than its fields"
+    {
+      Hir.name = "Short";
+      fields = [ { Hir.name = "x"; ty = Hir.Int Hir.U64; offset = 0 } ];
+      size = 4;
+      align = 8;
+    };
+  lower_struct_error "layout-invariant-alignment"
+    "alignment must be a positive power of two"
+    {
+      Hir.name = "BadAlign";
+      fields = [ { Hir.name = "x"; ty = Hir.Int Hir.U8; offset = 0 } ];
+      size = 3;
+      align = 3;
+    };
+
   (match
      Lower.lower
        {
@@ -1075,4 +1124,4 @@ let () =
   if not (contains mixed_runtime "phi") then
     failwith "runtime-logical-mixed: short-circuit lowering missing";
 
-  print_endline "regression tests: 149 passed"
+  print_endline "regression tests: 153 passed"

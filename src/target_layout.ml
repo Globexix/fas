@@ -5,6 +5,7 @@ type t = {
   pointer_align : int;
   integer_alignments : (int * int) list;
   vector_alignments : (int * int) list;
+  max_type_alignment : int;
 }
 
 let x86_64_linux =
@@ -16,6 +17,7 @@ let x86_64_linux =
     pointer_align = 8;
     integer_alignments = [ (1, 1); (8, 1); (16, 2); (32, 4); (64, 8) ];
     vector_alignments = [];
+    max_type_alignment = 1 lsl 31;
   }
 
 let current = x86_64_linux
@@ -45,6 +47,14 @@ let round_up_size size align =
       let padding = align - remainder in
       if size > max_int - padding then Error "aggregate size overflows"
       else Ok (size + padding)
+
+let validate_type_alignment target align =
+  if align <= 0 || align land (align - 1) <> 0 then
+    Error "alignment must be a positive power of two"
+  else if align > target.max_type_alignment then
+    Error
+      (Printf.sprintf "alignment exceeds target maximum of %d" target.max_type_alignment)
+  else Ok ()
 
 let pointer target =
   let* size = round_up_size target.pointer_size target.pointer_align in
