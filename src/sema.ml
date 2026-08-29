@@ -164,6 +164,30 @@ let rec object_type (structs : Hir.struct_def list) = function
       if List.exists (fun (s : Hir.struct_def) -> s.name = n) structs then Ok ()
       else Error ("unknown struct `" ^ n ^ "`")
 
+let extern_c_value_type = function
+  | Hir.Bool | Hir.Int _ | Hir.Ptr _ | Hir.ConstPtr _ -> true
+  | Hir.Void | Hir.Array _ | Hir.Vec _ | Hir.Struct _ | Hir.Opaque _ -> false
+
+let validate_extern_c_signature span params converted ret =
+  let rec validate_params params converted =
+    match (params, converted) with
+    | [], [] -> Ok ()
+    | (param : Ast.param) :: param_rest, (_, ty, _, _) :: converted_rest ->
+        if extern_c_value_type ty then validate_params param_rest converted_rest
+        else
+          error param.span
+            (Printf.sprintf
+               "extern \"C\" parameter `%s` cannot use `%s` by value; use a pointer"
+               param.name (Hir.ty_name ty))
+    | _ -> error span "internal error: extern parameter list mismatch"
+  in
+  let* () = validate_params params converted in
+  if ret = Hir.Void || extern_c_value_type ret then Ok ()
+  else
+    error span
+      (Printf.sprintf "extern \"C\" cannot return `%s` by value; use an output pointer"
+         (Hir.ty_name ret))
+
 let aggregate_within_limit limits ty =
   let max_elements = limits.Limits.max_aggregate_elements in
   let rec check count = function
@@ -1943,6 +1967,11 @@ let check ?(limits = Limits.default) program =
                 map_params (fun (param : Ast.param) -> source_obj param.ty) params
               in
               let* rt = source_ty_diag span ret in
+              let* () =
+                if linkage = Ast.External_c then
+                  validate_extern_c_signature span params ps rt
+                else Ok ()
+              in
               if variadic && linkage <> Ast.External_c then
                 error span "variadic functions require extern \"C\""
               else (

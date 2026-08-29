@@ -1,0 +1,56 @@
+struct Pair {
+    left i64
+    right i64
+}
+
+struct Big {
+    a i64
+    b i64
+    c i64
+}
+
+struct Aligned @align(16) {
+    tag u8
+    value u64
+}
+
+struct Nested {
+    lead u8
+    item Aligned
+    tail u8
+}
+
+struct Empty @align(32) {}
+
+const VALUES arr[3,i64] = {4, 5, 6}
+
+fn pass_pair(x Pair) Pair { return x }
+fn pass_big(x Big) Big { return x }
+fn pass_aligned(x Aligned) Aligned { return x }
+fn pass_nested(x Nested) Nested { return x }
+fn pass_empty(x Empty) Empty { return x }
+fn pass_array(x arr[3,i64]) arr[3,i64] { return x }
+fn pass_vector(x vec[3,i32]) vec[3,i32] { return x }
+
+fn main() i32 {
+    pair Pair = pass_pair((Pair){11, -7})
+    if pair.left != 11 || pair.right != -7 { return 1 }
+    big Big = pass_big((Big){1, 2, 3})
+    if big.a != 1 || big.b != 2 || big.c != 3 { return 2 }
+    aligned Aligned = pass_aligned((Aligned){9, 77})
+    if aligned.tag != 9 || aligned.value != 77 { return 3 }
+    nested Nested = pass_nested((Nested){5, aligned, 6})
+    if nested.lead != 5 || nested.item.value != 77 || nested.tail != 6 { return 4 }
+    empty Empty = pass_empty((Empty){})
+    again Empty = pass_empty(empty)
+    array arr[3,i64] = pass_array(VALUES)
+    if array[0] != 4 || array[1] != 5 || array[2] != 6 { return 5 }
+    vector vec[3,i32] = splat(0)
+    vector[0] = 8
+    vector[1] = 9
+    vector[2] = 10
+    vector = pass_vector(vector)
+    if vector[0] != 8 || vector[1] != 9 || vector[2] != 10 { return 6 }
+    pass_empty(again)
+    return 0
+}

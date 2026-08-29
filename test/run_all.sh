@@ -31,6 +31,7 @@ done
 rm -f test/.stage3.ll test/.stage3.s
 
 LLVM_OPT="$LLVM_OPT" OCAML_FAS="$OCAML_FAS" "$ROOT/test/layout_oracle.sh"
+CC="$CC" LLVM_OPT="$LLVM_OPT" OCAML_FAS="$OCAML_FAS" "$ROOT/test/abi_boundary.sh"
 
 CC="$CC" "$ORACLE/tests/run_tests.sh" "$OCAML_FAS"
 for focused in bug07_const_sext_bool bug09_intmin_rem_minus1; do

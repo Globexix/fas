@@ -36,6 +36,7 @@ type binop =
 
 type cmp = Eq | Ne | Slt | Sle | Sgt | Sge | Ult | Ule | Ugt | Uge
 type gep_index = Zero | Index of value
+type extension = No_extension | Sign_extension | Zero_extension
 
 type instr =
   | Bin of int * binop * ty * value * value
@@ -45,7 +46,7 @@ type instr =
   | Store of ty * value * value * int
   | Gep of int * ty * value * gep_index list
   | Cast of int * string * ty * value * ty
-  | Call of int option * ty * string * (ty * value) list
+  | Call of int option * extension * ty * string * (ty * extension * value) list
   | Phi of int * ty * (value * int) list
   | Select of int * value * value * value
   | Extract of int * ty * value * value
@@ -62,13 +63,21 @@ type terminator =
   | Switch of ty * value * (int64 * int) list * int
   | Unreachable
 
-type param = { name : string; ty : ty; noalias : bool; align : int option }
+type param = {
+  name : string;
+  ty : ty;
+  extension : extension;
+  noalias : bool;
+  align : int option;
+}
+
 type linkage = Internal | External
 
 type func = {
   name : string;
   params : param list;
   ret : ty;
+  ret_extension : extension;
   blocks : block list;
   linkage : linkage;
   variadic : bool;
@@ -122,6 +131,16 @@ let symbol n =
       n
   then "@" ^ n
   else "@\"" ^ String.escaped n ^ "\""
+
+let extension_name = function
+  | No_extension -> ""
+  | Sign_extension -> "signext "
+  | Zero_extension -> "zeroext "
+
+let extension_attr = function
+  | No_extension -> ""
+  | Sign_extension -> " signext"
+  | Zero_extension -> " zeroext"
 
 let value_name = function
   | Const (I1, 0L) -> "false"
@@ -218,14 +237,22 @@ let instr_line = function
   | Cast (i, k, st, v, dt) ->
       Printf.sprintf "  %%v%d = %s %s %s to %s" i k (ty_name st) (value_name v)
         (ty_name dt)
-  | Call (Some i, t, n, args) ->
-      Printf.sprintf "  %%v%d = call %s %s(%s)" i (ty_name t) (symbol n)
+  | Call (Some i, extension, t, n, args) ->
+      Printf.sprintf "  %%v%d = call %s%s %s(%s)" i (extension_name extension)
+        (ty_name t) (symbol n)
         (String.concat ", "
-           (List.map (fun (t, v) -> ty_name t ^ " " ^ value_name v) args))
-  | Call (None, t, n, args) ->
-      Printf.sprintf "  call %s %s(%s)" (ty_name t) (symbol n)
+           (List.map
+              (fun (t, extension, v) ->
+                ty_name t ^ " " ^ extension_name extension ^ value_name v)
+              args))
+  | Call (None, extension, t, n, args) ->
+      Printf.sprintf "  call %s%s %s(%s)" (extension_name extension) (ty_name t)
+        (symbol n)
         (String.concat ", "
-           (List.map (fun (t, v) -> ty_name t ^ " " ^ value_name v) args))
+           (List.map
+              (fun (t, extension, v) ->
+                ty_name t ^ " " ^ extension_name extension ^ value_name v)
+              args))
   | Phi (i, t, xs) ->
       Printf.sprintf "  %%v%d = phi %s %s" i (ty_name t)
         (String.concat ", "
@@ -281,7 +308,7 @@ let param_string named p =
     (if p.noalias then " noalias" else "")
     ^ match p.align with None -> "" | Some n -> Printf.sprintf " noundef align %d" n
   in
-  ty_name p.ty ^ a ^ if named then " %" ^ p.name else ""
+  ty_name p.ty ^ extension_attr p.extension ^ a ^ if named then " %" ^ p.name else ""
 
 let render m =
   let header =
@@ -324,11 +351,14 @@ let render m =
     let ps = String.concat ", " (List.map (param_string (f.blocks <> [])) f.params) in
     let ps = if f.variadic then ps ^ if ps = "" then "..." else ", ..." else ps in
     if f.blocks = [] || Option.is_some f.asm_body then
-      Printf.sprintf "declare %s %s(%s)" (ty_name f.ret) (symbol f.name) ps
+      Printf.sprintf "declare %s%s %s(%s)"
+        (extension_name f.ret_extension)
+        (ty_name f.ret) (symbol f.name) ps
     else
       let link = if f.linkage = Internal then "internal " else "" in
-      Printf.sprintf "define %s%s %s(%s)%s {\n%s\n}" link (ty_name f.ret)
-        (symbol f.name) ps (attrs_string f.attrs)
+      Printf.sprintf "define %s%s%s %s(%s)%s {\n%s\n}" link
+        (extension_name f.ret_extension)
+        (ty_name f.ret) (symbol f.name) ps (attrs_string f.attrs)
         (String.concat "\n"
            (List.concat_map
               (fun b ->

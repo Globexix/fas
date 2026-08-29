@@ -1,0 +1,52 @@
+struct Pair {
+    left u64
+    right i64
+}
+
+struct Aligned @align(16) {
+    tag u8
+    value u64
+}
+
+extern "C" {
+    fn c_bool(x bool) bool
+    fn c_u8(x u8) u8
+    fn c_i8(x i8) i8
+    fn c_u16(x u16) u16
+    fn c_i16(x i16) i16
+    fn c_u32(x u32) u32
+    fn c_i32(x i32) i32
+    fn c_u64(x u64) u64
+    fn c_i64(x i64) i64
+    fn c_check_pair(value ptr[const Pair]) u64
+    fn c_write_pair(value ptr[Pair]) void
+    fn c_check_aligned(value ptr[const Aligned]) u64
+    fn c_variadic(marker u64, ...) u64
+}
+
+fn main() i32 {
+    if c_bool(true) { return 1 }
+    if c_u8(250) != 251 { return 2 }
+    if c_i8(-7) != -8 { return 3 }
+    if c_u16(60000) != 60001 { return 4 }
+    if c_i16(-30000) != -30001 { return 5 }
+    if c_u32(4000000000) != 4000000001 { return 6 }
+    if c_i32(-2000000000) != -1999999999 { return 7 }
+    if c_u64(9000000000) != 9000000001 { return 8 }
+    if c_i64(-9000000000) != -8999999999 { return 9 }
+    pair Pair = (Pair){41, -12}
+    if c_check_pair(&pair) != 1 { return 10 }
+    c_write_pair(&pair)
+    if pair.left != 99 || pair.right != -44 { return 11 }
+    aligned Aligned = (Aligned){7, 1234}
+    if c_check_aligned(&aligned) != 1 { return 12 }
+    b bool = true
+    u8_value u8 = 200
+    i8_value i8 = -100
+    u16_value u16 = 50000
+    i16_value i16 = -20000
+    if c_variadic(77, b, u8_value, i8_value, u16_value, i16_value) != 1 {
+        return 13
+    }
+    return 0
+}

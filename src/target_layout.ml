@@ -1,3 +1,5 @@
+type c_abi_extension = C_no_extension | C_sign_extension | C_zero_extension
+
 type t = {
   triple : string;
   llvm_data_layout : string;
@@ -6,6 +8,8 @@ type t = {
   integer_alignments : (int * int) list;
   vector_alignments : (int * int) list;
   max_type_alignment : int;
+  c_abi_bool_extension : c_abi_extension;
+  c_abi_integer_extensions : (int * c_abi_extension * c_abi_extension) list;
 }
 
 let x86_64_linux =
@@ -18,6 +22,11 @@ let x86_64_linux =
     integer_alignments = [ (1, 1); (8, 1); (16, 2); (32, 4); (64, 8) ];
     vector_alignments = [];
     max_type_alignment = 1 lsl 31;
+    c_abi_bool_extension = C_zero_extension;
+    c_abi_integer_extensions =
+      [
+        (8, C_sign_extension, C_zero_extension); (16, C_sign_extension, C_zero_extension);
+      ];
   }
 
 let current = x86_64_linux
@@ -55,6 +64,16 @@ let validate_type_alignment target align =
     Error
       (Printf.sprintf "alignment exceeds target maximum of %d" target.max_type_alignment)
   else Ok ()
+
+let c_integer_extension target ~signed bits =
+  match
+    List.find_opt
+      (fun (candidate, _, _) -> candidate = bits)
+      target.c_abi_integer_extensions
+  with
+  | Some (_, signed_extension, unsigned_extension) ->
+      if signed then signed_extension else unsigned_extension
+  | None -> C_no_extension
 
 let pointer target =
   let* size = round_up_size target.pointer_size target.pointer_align in

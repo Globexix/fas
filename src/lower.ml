@@ -17,6 +17,7 @@ type state = {
   ret : Ir.ty;
   structs : Hir.struct_def list;
   strings : string list;
+  c_functions : Hir.func list;
   mutable defer_scopes : Hir.stmt list list list;
   mutable loops : loop list;
 }
@@ -69,6 +70,21 @@ let rec ty = function
   | Hir.Struct n -> Ir.Struct n
   | Hir.Opaque n -> Ir.Struct n
   | Hir.Void -> Ir.Void
+
+let ir_extension = function
+  | Target_layout.C_no_extension -> Ir.No_extension
+  | Target_layout.C_sign_extension -> Ir.Sign_extension
+  | Target_layout.C_zero_extension -> Ir.Zero_extension
+
+let c_extension = function
+  | Hir.Bool -> ir_extension Target_layout.current.c_abi_bool_extension
+  | Hir.Int kind ->
+      Target_layout.c_integer_extension Target_layout.current
+        ~signed:
+          (match kind with Hir.I8 | I16 | I32 | I64 | Isize -> true | _ -> false)
+        (Hir.int_bytes kind * 8)
+      |> ir_extension
+  | _ -> Ir.No_extension
 
 let align s t =
   match Hir.layout s.structs t with
@@ -177,9 +193,10 @@ let reduce_any s value =
       emit s
         (Ir.Call
            ( Some id,
+             Ir.No_extension,
              Ir.I1,
              Printf.sprintf "llvm.vector.reduce.or.v%di1" lanes,
-             [ (t, value) ] ));
+             [ (t, Ir.No_extension, value) ] ));
       Ir.Local (id, Ir.I1)
   | _ -> invalid_arg "reduce_any: non-boolean value"
 
@@ -348,13 +365,30 @@ let rec expr s = function
       else Ok (emit_binary s (Hir.expr_ty a) op (ty t) x y)
   | Hir.Call (Hir.User n, args, t, _) ->
       let* vs = exprs s args in
-      let av = List.map (fun v -> (value_ty v, v)) vs in
+      let c_function = List.find_opt (fun (f : Hir.func) -> f.name = n) s.c_functions in
+      let av =
+        List.mapi
+          (fun index v ->
+            let extension =
+              match c_function with
+              | Some f -> (
+                  match List.nth_opt f.params index with
+                  | Some (_, formal, _, _) -> c_extension formal
+                  | None -> Ir.No_extension)
+              | None -> Ir.No_extension
+            in
+            (value_ty v, extension, v))
+          vs
+      in
+      let ret_extension =
+        match c_function with Some _ -> c_extension t | None -> Ir.No_extension
+      in
       if t = Hir.Void then (
-        emit s (Ir.Call (None, Ir.Void, n, av));
+        emit s (Ir.Call (None, Ir.No_extension, Ir.Void, n, av));
         Ok (Ir.Const (Ir.I1, 0L)))
       else
         let id = fresh s in
-        emit s (Ir.Call (Some id, ty t, n, av));
+        emit s (Ir.Call (Some id, ret_extension, ty t, n, av));
         Ok (Ir.Local (id, ty t))
   | Hir.Call (Hir.Builtin b, args, t, _) -> lower_builtin s b args t
   | Hir.Cast (kind, e, t, _) ->
@@ -482,11 +516,26 @@ and lower_builtin s b args t =
       let id = fresh s in
       let base = if b = Rotl then "llvm.fshl." else "llvm.fshr." in
       emit s
-        (Ir.Call (Some id, rt, base ^ intrinsic_suffix rt, [ (rt, x); (rt, x); (rt, n) ]));
+        (Ir.Call
+           ( Some id,
+             Ir.No_extension,
+             rt,
+             base ^ intrinsic_suffix rt,
+             [
+               (rt, Ir.No_extension, x);
+               (rt, Ir.No_extension, x);
+               (rt, Ir.No_extension, n);
+             ] ));
       Ok (Ir.Local (id, rt))
   | Popcount, [ x ] ->
       let id = fresh s in
-      emit s (Ir.Call (Some id, rt, "llvm.ctpop." ^ intrinsic_suffix rt, [ (rt, x) ]));
+      emit s
+        (Ir.Call
+           ( Some id,
+             Ir.No_extension,
+             rt,
+             "llvm.ctpop." ^ intrinsic_suffix rt,
+             [ (rt, Ir.No_extension, x) ] ));
       Ok (Ir.Local (id, rt))
   | (Ctz | Clz), [ x ] ->
       let id = fresh s in
@@ -494,9 +543,12 @@ and lower_builtin s b args t =
       emit s
         (Ir.Call
            ( Some id,
+             Ir.No_extension,
              rt,
              base ^ intrinsic_suffix rt,
-             [ (rt, x); (Ir.I1, Ir.Const (Ir.I1, 0L)) ] ));
+             [
+               (rt, Ir.No_extension, x); (Ir.I1, Ir.No_extension, Ir.Const (Ir.I1, 0L));
+             ] ));
       Ok (Ir.Local (id, rt))
   | _ -> error Span.synthetic "invalid builtin arity"
 
@@ -869,14 +921,25 @@ and lower_switch s e arms default =
   s.current <- join;
   Ok ()
 
-let lower_func structs strings force_external f =
+let lower_func structs strings c_functions force_external f =
   let* () = Result_list.iter (fun (_, t, _, _) -> layout_ok structs t) f.Hir.params in
   let* () = if f.Hir.ret = Hir.Void then Ok () else layout_ok structs f.Hir.ret in
   let params =
     List.map
       (fun (n, t, noalias, align) ->
-        ({ Ir.name = n; ty = ty t; noalias; align } : Ir.param))
+        ({
+           Ir.name = n;
+           ty = ty t;
+           extension =
+             (if f.linkage = Hir.External_c then c_extension t else Ir.No_extension);
+           noalias;
+           align;
+         }
+          : Ir.param))
       f.Hir.params
+  in
+  let ret_extension =
+    if f.linkage = Hir.External_c then c_extension f.ret else Ir.No_extension
   in
   match f.asm_body with
   | Some raw ->
@@ -885,6 +948,7 @@ let lower_func structs strings force_external f =
           Ir.name = f.name;
           params;
           ret = ty f.ret;
+          ret_extension;
           blocks = [];
           linkage = Ir.External;
           variadic = f.variadic;
@@ -897,6 +961,7 @@ let lower_func structs strings force_external f =
           Ir.name = f.name;
           params;
           ret = ty f.ret;
+          ret_extension;
           blocks = [];
           linkage = Ir.External;
           variadic = f.variadic;
@@ -919,6 +984,7 @@ let lower_func structs strings force_external f =
           ret = ty f.ret;
           structs;
           strings;
+          c_functions;
           defer_scopes = [];
           loops = [];
         }
@@ -955,6 +1021,7 @@ let lower_func structs strings force_external f =
           Ir.name = f.name;
           params;
           ret = ty f.ret;
+          ret_extension;
           blocks;
           linkage =
             (if f.name = "main" || force_external then Ir.External
@@ -973,9 +1040,9 @@ let intrinsic_decls funcs =
           (fun (b : Ir.block) ->
             List.filter_map
               (function
-                | Ir.Call (_, ret, name, args)
+                | Ir.Call (_, _, ret, name, args)
                   when String.starts_with ~prefix:"llvm." name ->
-                    Some (name, ret, List.map fst args)
+                    Some (name, ret, List.map (fun (ty, _, _) -> ty) args)
                 | Ir.Trap -> Some ("llvm.trap", Ir.Void, [])
                 | _ -> None)
               b.instrs)
@@ -991,9 +1058,16 @@ let intrinsic_decls funcs =
         params =
           List.mapi
             (fun i ty ->
-              { Ir.name = "a" ^ string_of_int i; ty; noalias = false; align = None })
+              {
+                Ir.name = "a" ^ string_of_int i;
+                ty;
+                extension = Ir.No_extension;
+                noalias = false;
+                align = None;
+              })
             args;
         ret;
+        ret_extension = Ir.No_extension;
         blocks = [];
         linkage = Ir.External;
         variadic = false;
@@ -1047,9 +1121,12 @@ let lower (p : Hir.program) =
       p.funcs
   in
   let* funcs =
+    let c_functions =
+      List.filter (fun (f : Hir.func) -> f.linkage = Hir.External_c) p.funcs
+    in
     Result_list.map
       (fun (f : Hir.func) ->
-        lower_func p.Hir.structs p.strings (List.mem f.name asm_words) f)
+        lower_func p.Hir.structs p.strings c_functions (List.mem f.name asm_words) f)
       p.funcs
   in
   let* structs =

@@ -445,6 +445,74 @@ let () =
     "extern \"C\" { fn sink() void }\nfn f() void { return sink() }\n";
   semantic_error "nonvoid-fallthrough" "may reach the end without returning"
     "fn f() i64 { }\n";
+  semantic_error "extern-c-struct-parameter" "cannot use `S` by value; use a pointer"
+    "struct S { x i64 }\nextern \"C\" { fn take(value S) void }\n";
+  semantic_error "extern-c-struct-return"
+    "cannot return `S` by value; use an output pointer"
+    "struct S { x i64 }\nextern \"C\" { fn make() S }\n";
+  semantic_error "extern-c-vector-parameter"
+    "cannot use `vec[4, i32]` by value; use a pointer"
+    "extern \"C\" { fn take(value vec[4,i32]) void }\n";
+  semantic_error "extern-c-array-return"
+    "cannot return `arr[2, i64]` by value; use an output pointer"
+    "extern \"C\" { fn make() arr[2,i64] }\n";
+  semantic_error "extern-c-opaque-parameter"
+    "opaque type `Handle` may only be used behind a pointer"
+    "opaque Handle\nextern \"C\" { fn take(value Handle) void }\n";
+  let c_scalar_abi =
+    llvm_of
+      "extern \"C\" {\n\
+       fn b(x bool) bool\n\
+       fn u8_value(x u8) u8\n\
+       fn i8_value(x i8) i8\n\
+       fn u16_value(x u16) u16\n\
+       fn i16_value(x i16) i16\n\
+       }\n\
+       fn main() i32 {\n\
+       x bool = b(true)\n\
+       a u8 = u8_value(1)\n\
+       c i8 = i8_value(-1)\n\
+       d u16 = u16_value(2)\n\
+       e i16 = i16_value(-2)\n\
+       return zext[i32](x) + zext[i32](a) + sext[i32](c) + zext[i32](d) + sext[i32](e)\n\
+       }\n"
+  in
+  List.iter
+    (fun expected ->
+      if not (contains c_scalar_abi expected) then
+        failwith ("extern-c-scalar-extension: missing `" ^ expected ^ "`"))
+    [
+      "declare zeroext i1 @b(i1 zeroext)";
+      "declare zeroext i8 @u8_value(i8 zeroext)";
+      "declare signext i8 @i8_value(i8 signext)";
+      "declare zeroext i16 @u16_value(i16 zeroext)";
+      "declare signext i16 @i16_value(i16 signext)";
+      "call zeroext i1 @b(i1 zeroext true)";
+      "call signext i8 @i8_value(i8 signext 255)";
+    ];
+  let internal_aggregate_abi =
+    llvm_of
+      "struct S @align(16) { x i64 y i64 }\n\
+       const A arr[2,i64] = {1, 2}\n\
+       fn pass_struct(value S) S { return value }\n\
+       fn pass_array(value arr[2,i64]) arr[2,i64] { return value }\n\
+       fn pass_vector(value vec[3,i32]) vec[3,i32] { return value }\n\
+       fn main() i32 {\n\
+       s S = pass_struct((S){1, 2})\n\
+       a arr[2,i64] = pass_array(A)\n\
+       v vec[3,i32] = pass_vector(splat(3))\n\
+       return zext[i32](s.x == a[0] && v[0] == 3)\n\
+       }\n"
+  in
+  List.iter
+    (fun expected ->
+      if not (contains internal_aggregate_abi expected) then
+        failwith ("internal-aggregate-abi: missing `" ^ expected ^ "`"))
+    [
+      "call %struct.S @pass_struct(%struct.S";
+      "call [2 x i64] @pass_array([2 x i64]";
+      "call <3 x i32> @pass_vector(<3 x i32>";
+    ];
   semantic_error "const-specialization-arity" "wrong number of arguments"
     "fn id[N const usize](x u64) u64 { return x + N }\n\
      fn main() u64 { return id[3](2, 4) }\n";
@@ -1124,4 +1192,4 @@ let () =
   if not (contains mixed_runtime "phi") then
     failwith "runtime-logical-mixed: short-circuit lowering missing";
 
-  print_endline "regression tests: 153 passed"
+  print_endline "regression tests: 160 passed"
