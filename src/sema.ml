@@ -765,8 +765,9 @@ let rec const_expr ?(structs = []) ?(named_types = []) consts expected
         | _ -> v
       in
       Ok (dt, mask_value dt result)
-  | Ast.Call (Ast.Ident ("len", _), [ Ast.String_lit (_, v, _) ], s) ->
-      if String.contains v '\000' then error s "string literal cannot contain NUL"
+  | Ast.Call (Ast.Ident ("len", _), [ Ast.String_lit (cstr, v, _) ], s) ->
+      if cstr && String.contains v '\000' then
+        error s "C string literal cannot contain embedded NUL"
       else Ok (Hir.Int Hir.Usize, Int64.of_int (String.length v))
   | Ast.Call (Ast.Ident (name, _), args, s) -> (
       let* vals =
@@ -977,7 +978,8 @@ and check_expr (c : context) expected = function
       | Some (Hir.Ptr _ | Hir.ConstPtr _) as t -> Ok (Hir.Null (Option.get t, s))
       | _ -> error s "null requires a pointer context")
   | Ast.String_lit (cstr, v, s) ->
-      if String.contains v '\000' then error s "string literal cannot contain NUL"
+      if cstr && String.contains v '\000' then
+        error s "C string literal cannot contain embedded NUL"
       else
         let value = if cstr then v ^ "\000" else v in
         Ok (Hir.EString (intern_string c value, s))
@@ -1347,9 +1349,9 @@ and check_call c _expected fn args s =
         let argument = List.hd args in
         let* n =
           match argument with
-          | Ast.String_lit (_, value, _) ->
-              if String.contains value '\000' then
-                error s "string literal cannot contain NUL"
+          | Ast.String_lit (cstr, value, _) ->
+              if cstr && String.contains value '\000' then
+                error s "C string literal cannot contain embedded NUL"
               else Ok (String.length value)
           | _ -> (
               let* value = check_expr c None argument in

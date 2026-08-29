@@ -943,12 +943,18 @@ let () =
       "extern \"C\" { fn take(p ptr[const u8]) void }\n\
        fn main() i32 { take(\"x\")\n\
       \ take(c\"x\")\n\
+      \ take(\"\")\n\
+      \ take(c\"\")\n\
       \ return 0 }\n"
   in
   if
     (not (contains string_literals "[1 x i8] c\"x\""))
     || not (contains string_literals "[2 x i8] c\"x\\00\"")
   then failwith "fas-030-string-literals: incorrect literal storage";
+  if
+    (not (contains string_literals "[0 x i8] c\"\""))
+    || not (contains string_literals "[1 x i8] c\"\\00\"")
+  then failwith "fas-030-string-literals: incorrect empty literal storage";
   let string_pointer =
     llvm_of
       "fn read(p ptr[const u8]) i32 { return zext[i32](p[0]) }\n\
@@ -956,8 +962,25 @@ let () =
   in
   if not (contains string_pointer "call i32 @read(ptr") then
     failwith "fas-030-string-literals: read-only pointer call was rejected";
-  semantic_error "fas-030-string-literal-nul" "string literal cannot contain NUL"
+  let byte_literal_semantics =
+    llvm_of
+      "const ByteCount usize = len(\"a\\0b\") + len(\"\\n\") + len(\"é\")\n\
+       fn bytes() ptr[const u8] { return \"a\\0b\" }\n\
+       fn main() usize { return ByteCount }\n"
+  in
+  if not (contains byte_literal_semantics "[3 x i8] c\"a\\00b\"") then
+    failwith "fas-030-string-literals: ordinary embedded NUL was not preserved";
+  if not (contains byte_literal_semantics "ret i64 6") then
+    failwith "fas-030-string-literals: literal length did not count decoded bytes";
+  semantic_error "fas-030-string-literal-fixed-array"
+    "type mismatch: expected arr[3, u8], got ptr[const u8]"
+    "fn main() i32 { bytes arr[3,u8] = \"abc\"\n return 0 }\n";
+  semantic_error "fas-030-c-string-literal-nul"
+    "C string literal cannot contain embedded NUL"
     "fn main() i32 { c\"a\\0b\"[0]\n return 0 }\n";
+  semantic_error "fas-030-const-c-string-literal-nul"
+    "C string literal cannot contain embedded NUL"
+    "const N usize = len(c\"a\\0b\")\nfn main() usize { return N }\n";
   let raw_literal_length =
     llvm_of "fn main() i64 { return zext[i64](len(\"abc\")) }\n"
   in
@@ -968,6 +991,13 @@ let () =
   in
   if not (contains c_literal_length "ret i64 3") then
     failwith "fas-031-len: C literal payload length is incorrect";
+  let literal_const_specialization =
+    llvm_of
+      "fn literal_size[N const usize]() usize { return N }\n\
+       fn main() usize { return literal_size[len(\"abc\")]() }\n"
+  in
+  if not (contains literal_const_specialization "N=usize:3") then
+    failwith "fas-031-len: literal length was not accepted as a const argument";
   let array_length =
     llvm_of
       "const K arr[3, u8] = {1, 2, 3}\n\
@@ -1443,4 +1473,4 @@ let () =
   if not (contains mixed_runtime "phi") then
     failwith "runtime-logical-mixed: short-circuit lowering missing";
 
-  print_endline "regression tests: 167 passed"
+  print_endline "regression tests: 174 passed"
