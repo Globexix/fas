@@ -1303,6 +1303,51 @@ let () =
   semantic_error "const-param-duplicate" "duplicate generic parameter `N`"
     "fn id[N const usize, N const usize](x u64) u64 { return x + N }\n";
 
+  let generic_declarations =
+    expect_ok
+      (Parser.parse
+         (source
+            "struct Buffer[T, N const usize] { data ptr[T] }\n\
+             fn choose[T, N const usize, U](value T) U { return value }\n"))
+  in
+  (match generic_declarations.Ast.items with
+  | [
+   Ast.Struct
+     {
+       generic_params =
+         [
+           Ast.Type_param { name = "T"; _ };
+           Ast.Const_param { name = "N"; ty = Ast.Int Ast.Usize; _ };
+         ];
+       fields = [ { ty = Ast.Ptr (Ast.Named_type "T"); _ } ];
+       _;
+     };
+   Ast.Func
+     {
+       generic_params =
+         [
+           Ast.Type_param { name = "T"; _ };
+           Ast.Const_param { name = "N"; ty = Ast.Int Ast.Usize; _ };
+           Ast.Type_param { name = "U"; _ };
+         ];
+       params = [ { ty = Ast.Named_type "T"; _ } ];
+       ret = Ast.Named_type "U";
+       _;
+     };
+  ] ->
+      ()
+  | _ -> failwith "type-generic-declarations: parameter kinds or order were lost");
+  let rendered_generic_declarations = Ast.render_program generic_declarations in
+  if
+    (not (contains rendered_generic_declarations "struct Buffer[T, N const usize]"))
+    || not (contains rendered_generic_declarations "fn choose[T, N const usize, U]")
+  then failwith "type-generic-declarations: AST rendering lost generic parameters";
+  parse_error_message "type-generic-missing-const-type" "expected a type"
+    "fn bad[T const](value T) T { return value }\n";
+  semantic_error "type-generic-checkpoint"
+    "type-generic declarations are not available in this checkpoint"
+    "struct Box[T] { value T }\n";
+
   let i8_min_specialization =
     llvm_of
       "fn b[N const i8](x i8) i32 { return sext[i32](x) + N }\n\
@@ -1500,4 +1545,4 @@ let () =
   if not (contains mixed_runtime "phi") then
     failwith "runtime-logical-mixed: short-circuit lowering missing";
 
-  print_endline "regression tests: 176 passed"
+  print_endline "regression tests: 180 passed"

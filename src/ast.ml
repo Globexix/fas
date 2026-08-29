@@ -80,12 +80,23 @@ and assign_target =
 and field = { name : string; ty : ty; span : Span.t }
 and param = { name : string; ty : ty; span : Span.t }
 and const_param = { name : string; ty : ty; span : Span.t }
+
+and generic_param =
+  | Type_param of { name : string; span : Span.t }
+  | Const_param of const_param
+
 and body = Declaration | Statements of stmt list | Asm of string
 and linkage = Internal | External_c
 
 and item =
   | Const of { name : string; ty : ty; value : expr; span : Span.t }
-  | Struct of { name : string; fields : field list; align : int option; span : Span.t }
+  | Struct of {
+      name : string;
+      generic_params : generic_param list;
+      fields : field list;
+      align : int option;
+      span : Span.t;
+    }
   | Opaque of { name : string; span : Span.t }
   | Func of {
       name : string;
@@ -94,7 +105,7 @@ and item =
       body : body;
       linkage : linkage;
       variadic : bool;
-      const_params : const_param list;
+      generic_params : generic_param list;
       span : Span.t;
     }
 
@@ -159,6 +170,14 @@ let rec type_name = function
   | Vec (n, t) -> "vec[" ^ n ^ ", " ^ type_name t ^ "]"
   | Named_type s -> s
   | Void -> "void"
+
+let generic_param_name = function
+  | Type_param { name; _ } -> name
+  | Const_param { name; ty; _ } -> name ^ " const " ^ type_name ty
+
+let generic_params_name = function
+  | [] -> ""
+  | params -> "[" ^ String.concat ", " (List.map generic_param_name params) ^ "]"
 
 let rec expr_name = function
   | Int_lit (s, _) -> s
@@ -258,17 +277,20 @@ let rec stmt_lines indent = function
 let render_item = function
   | Const { name; ty; value; _ } ->
       "const " ^ name ^ " " ^ type_name ty ^ " = " ^ expr_name value
-  | Struct { name; fields; align; _ } ->
+  | Struct { name; generic_params; fields; align; _ } ->
       "struct " ^ name
+      ^ generic_params_name generic_params
       ^ (match align with None -> "" | Some n -> Printf.sprintf " @align(%d)" n)
       ^ " {\n"
       ^ String.concat "\n"
           (List.map (fun f -> "  " ^ f.name ^ " " ^ type_name f.ty) fields)
       ^ "\n}"
   | Opaque { name; _ } -> "opaque " ^ name
-  | Func { name; params; ret; body; linkage; _ } -> (
+  | Func { name; generic_params; params; ret; body; linkage; _ } -> (
       (match linkage with Internal -> "fn " | External_c -> "extern fn ")
-      ^ name ^ "("
+      ^ name
+      ^ generic_params_name generic_params
+      ^ "("
       ^ String.concat ", "
           (List.map (fun (p : param) -> p.name ^ " " ^ type_name p.ty) params)
       ^ ") " ^ type_name ret

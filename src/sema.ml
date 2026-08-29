@@ -148,23 +148,36 @@ let is_scalar = function
 let is_numeric = function Hir.Int _ | Hir.Vec (_, Hir.Int _) -> true | _ -> false
 let is_truthy = is_scalar
 
-let validate_const_params named_types cps =
+let const_params generic_params =
+  List.filter_map
+    (function Ast.Const_param cp -> Some cp | Ast.Type_param _ -> None)
+    generic_params
+
+let has_type_params generic_params =
+  List.exists
+    (function Ast.Type_param _ -> true | Ast.Const_param _ -> false)
+    generic_params
+
+let validate_generic_params named_types params =
   let* () =
     Result_list.iter
-      (fun (cp : Ast.const_param) ->
-        let* t = source_ty_diag named_types cp.span cp.ty in
-        if is_int t then Ok ()
-        else error cp.span "const parameter type must be an integer")
-      cps
+      (function
+        | Ast.Type_param _ -> Ok ()
+        | Ast.Const_param cp ->
+            let* t = source_ty_diag named_types cp.span cp.ty in
+            if is_int t then Ok ()
+            else error cp.span "const parameter type must be an integer")
+      params
   in
   let rec dup seen = function
     | [] -> Ok ()
-    | (cp : Ast.const_param) :: rest ->
-        if List.mem cp.name seen then
-          error cp.span (Printf.sprintf "duplicate generic parameter `%s`" cp.name)
-        else dup (cp.name :: seen) rest
+    | Ast.Type_param { name; span } :: rest | Ast.Const_param { name; span; _ } :: rest
+      ->
+        if List.mem name seen then
+          error span (Printf.sprintf "duplicate generic parameter `%s`" name)
+        else dup (name :: seen) rest
   in
-  dup [] cps
+  dup [] params
 
 let equal = Hir.ty_equal
 let ty_name = Hir.ty_name
@@ -1306,7 +1319,8 @@ and check_call c _expected fn args s =
   | Ast.Const_args (Ast.Ident (name, _), cargs, _) -> (
       match List.assoc_opt name c.templates with
       | None -> error s (Printf.sprintf "unknown const-generic function `%s`" name)
-      | Some (Ast.Func { params; ret; body; const_params; _ }) ->
+      | Some (Ast.Func { params; ret; body; generic_params; _ }) ->
+          let const_params = const_params generic_params in
           if List.length cargs <> List.length const_params then
             error s (Printf.sprintf "wrong number of const arguments to `%s`" name)
           else
@@ -1337,7 +1351,7 @@ and check_call c _expected fn args s =
                       body;
                       linkage = Ast.Internal;
                       variadic = false;
-                      const_params;
+                      generic_params;
                       span = s;
                     };
                 key;
@@ -1859,9 +1873,18 @@ let check ?(limits = Limits.default) program =
     | _ :: rest -> collect_named_types seen acc rest
   in
   let* named_types = collect_named_types [] [] program.Ast.items in
+  let* () =
+    Result_list.iter
+      (function
+        | (Ast.Struct { generic_params; span; _ } | Ast.Func { generic_params; span; _ })
+          when has_type_params generic_params ->
+            error span "type-generic declarations are not available in this checkpoint"
+        | _ -> Ok ())
+      program.Ast.items
+  in
   let rec collect_structs acc = function
     | [] -> Ok (List.rev acc)
-    | Ast.Struct { name; fields; align; span } :: rest ->
+    | Ast.Struct { name; fields; align; span; _ } :: rest ->
         let* () =
           match align with
           | Some a ->
@@ -1961,7 +1984,7 @@ let check ?(limits = Limits.default) program =
       (fun r item ->
         let* () = r in
         match item with
-        | Ast.Func { name; params; ret; variadic; linkage; span; const_params; _ } ->
+        | Ast.Func { name; params; ret; variadic; linkage; span; generic_params; _ } ->
             let* () =
               if List.mem name reserved_builtin_names then
                 error span
@@ -1988,11 +2011,11 @@ let check ?(limits = Limits.default) program =
                 | None -> Ok ()
               in
               let* () =
-                if linkage = Ast.External_c && const_params <> [] then
+                if linkage = Ast.External_c && generic_params <> [] then
                   error span "extern \"C\" functions cannot have const parameters"
                 else Ok ()
               in
-              let* () = validate_const_params named_types const_params in
+              let* () = validate_generic_params named_types generic_params in
               let* ps =
                 map_params (fun (param : Ast.param) -> source_obj param.ty) params
               in
@@ -2014,7 +2037,7 @@ let check ?(limits = Limits.default) program =
     List.filter_map
       (fun item ->
         match item with
-        | Ast.Func { name; const_params = _ :: _; _ } -> Some (name, item)
+        | Ast.Func { name; generic_params = _ :: _; _ } -> Some (name, item)
         | _ -> None)
       program.items
   in
@@ -2071,7 +2094,7 @@ let check ?(limits = Limits.default) program =
   in
   let add_func func = funcs := func :: !funcs in
   let check_func = function
-    | Ast.Func { name; params; ret; body; linkage; variadic; const_params = []; span }
+    | Ast.Func { name; params; ret; body; linkage; variadic; generic_params = []; span }
       ->
         let* ret = source_ty_diag named_types span ret in
         let* params = source_params params in

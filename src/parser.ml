@@ -381,6 +381,7 @@ module P = struct
     let s = span p in
     let* () = expected p Token.Kw_struct in
     let* name = ident p in
+    let* generic_params = generic_params p in
     let* align =
       if at p Token.At then
         let at_span = span p in
@@ -416,7 +417,7 @@ module P = struct
     let* fs = fields [] in
     let* () = expected p Token.Rbrace in
     let* () = end_stmt p in
-    Ok (Ast.Struct { name; fields = fs; align; span = s })
+    Ok (Ast.Struct { name; generic_params; fields = fs; align; span = s })
 
   and opaque_item p =
     let s = span p in
@@ -425,16 +426,19 @@ module P = struct
     let* () = end_stmt p in
     Ok (Ast.Opaque { name; span = s })
 
-  and const_params p =
+  and generic_params p =
     if not (at p Token.Lbracket) then Ok []
     else
       let* () = expected p Token.Lbracket in
       let rec go acc =
         let s = span p in
         let* n = ident p in
-        let* () = expected p Token.Kw_const in
-        let* t = ty p in
-        let next = { Ast.name = n; ty = t; span = s } in
+        let* next =
+          if eat p Token.Kw_const then
+            let* t = ty p in
+            Ok (Ast.Const_param { Ast.name = n; ty = t; span = s })
+          else Ok (Ast.Type_param { name = n; span = s })
+        in
         if eat p Token.Comma then go (next :: acc)
         else
           let* () = expected p Token.Rbracket in
@@ -501,7 +505,7 @@ module P = struct
     let* () = if asm then expected p Token.Kw_asm else Ok () in
     let* () = expected p Token.Kw_fn in
     let* name = ident p in
-    let* cps = if asm then Ok [] else const_params p in
+    let* generic_params = if asm then Ok [] else generic_params p in
     let* ps, ret, var = signature p allow_variadic in
     if asm then (
       skip_newlines p;
@@ -523,7 +527,7 @@ module P = struct
              body = Ast.Asm raw;
              linkage = Ast.Internal;
              variadic = var;
-             const_params = cps;
+             generic_params;
              span = s;
            }))
     else if allow_variadic then
@@ -545,7 +549,7 @@ module P = struct
                  body = Ast.Statements body;
                  linkage = Ast.External_c;
                  variadic = false;
-                 const_params = cps;
+                 generic_params;
                  span = s;
                })
       else
@@ -559,7 +563,7 @@ module P = struct
                body = Ast.Declaration;
                linkage = Ast.External_c;
                variadic = var;
-               const_params = cps;
+               generic_params;
                span = s;
              })
     else
@@ -573,7 +577,7 @@ module P = struct
              body = Ast.Statements body;
              linkage = Ast.Internal;
              variadic = var;
-             const_params = cps;
+             generic_params;
              span = s;
            })
 
