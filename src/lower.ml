@@ -927,7 +927,7 @@ and lower_switch s e arms default =
   s.current <- join;
   Ok ()
 
-let lower_func structs strings c_functions force_external f =
+let lower_func structs strings c_functions f =
   let* () = Result_list.iter (fun (_, t) -> layout_ok structs t) f.Hir.params in
   let* () = if f.Hir.ret = Hir.Void then Ok () else layout_ok structs f.Hir.ret in
   let params =
@@ -1025,7 +1025,7 @@ let lower_func structs strings c_functions force_external f =
           ret_extension;
           blocks;
           linkage =
-            (if f.name = "main" || force_external then Ir.External
+            (if f.name = "main" then Ir.External
              else if f.linkage = Hir.Internal then Ir.Internal
              else External);
           variadic = f.variadic;
@@ -1094,32 +1094,12 @@ let lower (p : Hir.program) =
       (Printf.sprintf "internal error: struct `%s` has malformed layout: %s" d.name
          message)
   in
-  let asm_words =
-    List.concat_map
-      (fun (f : Hir.func) ->
-        match f.body with
-        | Hir.Declaration | Hir.Statements _ -> []
-        | Hir.Asm raw ->
-            String.split_on_char ' '
-              (String.map
-                 (fun c ->
-                   if
-                     (c >= 'a' && c <= 'z')
-                     || (c >= 'A' && c <= 'Z')
-                     || (c >= '0' && c <= '9')
-                     || c = '_'
-                   then c
-                   else ' ')
-                 raw))
-      p.funcs
-  in
   let* funcs =
     let c_functions =
       List.filter (fun (f : Hir.func) -> f.linkage = Hir.External_c) p.funcs
     in
     Result_list.map
-      (fun (f : Hir.func) ->
-        lower_func p.Hir.structs p.strings c_functions (List.mem f.name asm_words) f)
+      (fun (f : Hir.func) -> lower_func p.Hir.structs p.strings c_functions f)
       p.funcs
   in
   let* structs =

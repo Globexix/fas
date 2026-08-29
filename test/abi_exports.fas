@@ -1,0 +1,18 @@
+extern "C" {
+    fn fas_bool(x bool) bool { return x }
+    fn fas_u8(x u8) u8 { return x }
+    fn fas_i8(x i8) i8 { return x }
+    fn fas_u16(x u16) u16 { return x }
+    fn fas_i16(x i16) i16 { return x }
+    fn fas_u32(x u32) u32 { return x }
+    fn fas_i32(x i32) i32 { return x }
+    fn fas_u64(x u64) u64 { return x }
+    fn fas_i64(x i64) i64 { return x }
+    fn fas_usize(x usize) usize { return x }
+    fn fas_isize(x isize) isize { return x }
+    fn fas_read(value ptr[const u8]) u8 { return value[0] }
+    fn fas_write(value ptr[u8], replacement u8) void { value[0] = replacement }
+    fn fas_const_ptr(value ptr[const u8]) ptr[const u8] { return value }
+    fn fas_mut_ptr(value ptr[u8]) ptr[u8] { return value }
+    fn fas_noop() void { }
+}

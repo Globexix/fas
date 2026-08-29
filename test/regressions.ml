@@ -615,6 +615,48 @@ let () =
       "define signext i16 @i16_value(i16 signext";
       "define void @empty()";
     ];
+  let opaque_assembly_linkage =
+    llvm_of
+      "fn comment_name() i64 { return 1 }\n\
+       fn Llocal() i64 { return 2 }\n\
+       fn directive_name() i64 { return 3 }\n\
+       asm fn raw() i64 {\n\
+       # comment_name\n\
+       .Llocal:\n\
+       .ascii \"directive_name\"\n\
+       ret\n\
+       }\n"
+  in
+  List.iter
+    (fun name ->
+      let expected = "define internal i64 @" ^ name ^ "()" in
+      if not (contains opaque_assembly_linkage expected) then
+        failwith ("assembly-linkage-opaque: missing `" ^ expected ^ "`"))
+    [ "comment_name"; "Llocal"; "directive_name" ];
+  let explicit_assembly_dependency =
+    "extern \"C\" { fn assembly_helper(x i64) i64 { return x + 1 } }\n\
+     asm fn assembly_call(x i64) i64 {\n\
+     call assembly_helper\n\
+     ret\n\
+     }\n"
+  in
+  let explicit_assembly_program = lower_of explicit_assembly_dependency in
+  let explicit_assembly_llvm = Ir.render explicit_assembly_program in
+  if
+    not
+      (contains explicit_assembly_llvm
+         "define i64 @assembly_helper(i64 %x)")
+  then failwith "assembly-linkage-explicit: C ABI helper is not externally visible";
+  if
+    not
+      (contains (Ir.raw_assembly explicit_assembly_program) "call assembly_helper")
+  then failwith "assembly-linkage-explicit: raw assembly dependency was not preserved";
+  let repeated_assembly_program = lower_of explicit_assembly_dependency in
+  if
+    explicit_assembly_llvm <> Ir.render repeated_assembly_program
+    || Ir.raw_assembly explicit_assembly_program
+       <> Ir.raw_assembly repeated_assembly_program
+  then failwith "assembly-linkage-determinism: output changed between compiler runs";
   let internal_aggregate_abi =
     llvm_of
       "struct S @align(16) { x i64 y i64 }\n\
@@ -1401,4 +1443,4 @@ let () =
   if not (contains mixed_runtime "phi") then
     failwith "runtime-logical-mixed: short-circuit lowering missing";
 
-  print_endline "regression tests: 160 passed"
+  print_endline "regression tests: 167 passed"

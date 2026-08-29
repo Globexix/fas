@@ -1,0 +1,14 @@
+extern "C" {
+  fn assembly_helper(x i64) i64 { return x + 1 }
+}
+
+asm fn assembly_call(x i64) i64 {
+  subq $8, %rsp
+  call assembly_helper
+  addq $8, %rsp
+  retq
+}
+
+fn main() i32 {
+  return assembly_call(40) == 41 ? 0 : 1
+}
