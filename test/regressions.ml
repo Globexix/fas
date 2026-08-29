@@ -1216,7 +1216,7 @@ let () =
             (Parser.parse
                (source
                   "fn id[N const usize](x u64) u64 { return x + N }\n\
-                   fn main() u64 { return id[3](2) + id[3](3) }\n"))))
+                   fn main() u64 { return id[3](2) + id[1 + 2](3) }\n"))))
   in
   if List.length repeated_spec_at_count_limit.Hir.funcs <> 2 then
     failwith "spec-count-limit: repeated specialization was not deduplicated";
@@ -1266,6 +1266,33 @@ let () =
              (Diag.render_all ~source:None diagnostics)
              "const specialization recursion depth limit exceeded")
       then failwith "spec-depth-limit: unexpected diagnostic");
+  let specialization_order_source =
+    "fn leaf[N const usize]() usize { return N }\n\
+     fn left[N const usize]() usize { return leaf[N + 10]() }\n\
+     fn right[N const usize]() usize { return leaf[N + 20]() }\n\
+     fn main() usize { return left[1]() + right[2]() }\n"
+  in
+  let specialization_order = llvm_of specialization_order_source in
+  if specialization_order <> llvm_of specialization_order_source then
+    failwith "specialization-order: generated output was not deterministic";
+  let markers =
+    [
+      "define internal i64 @\"left$spec$4:1:N=usize:1\"()";
+      "define internal i64 @\"right$spec$5:1:N=usize:2\"()";
+      "define internal i64 @\"leaf$spec$4:1:N=usize:11\"()";
+      "define internal i64 @\"leaf$spec$4:1:N=usize:22\"()";
+    ]
+  in
+  let marker_positions =
+    List.map
+      (fun marker ->
+        match positions specialization_order marker with
+        | position :: _ -> position
+        | [] -> failwith ("specialization-order: missing `" ^ marker ^ "`"))
+      markers
+  in
+  if marker_positions <> List.sort compare marker_positions then
+    failwith "specialization-order: work queue did not preserve discovery order";
   semantic_error "const-param-bool-rejected" "const parameter type must be an integer"
     "fn id[N const bool](x u64) u64 { return x }\n";
 
@@ -1473,4 +1500,4 @@ let () =
   if not (contains mixed_runtime "phi") then
     failwith "runtime-logical-mixed: short-circuit lowering missing";
 
-  print_endline "regression tests: 174 passed"
+  print_endline "regression tests: 176 passed"

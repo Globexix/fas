@@ -15,11 +15,26 @@ type checked_target = {
 
 type signature = { params : (string * Hir.ty) list; ret : Hir.ty; variadic : bool }
 
+type specialization_key = string * (Hir.ty * int64) list
+
 type specialization = {
   item : Ast.item;
+  key : specialization_key;
   name : string;
   values : (string * Hir.ty * int64) list;
   depth : int;
+}
+
+module Specialization_cache = Hashtbl.Make (struct
+  type t = specialization_key
+
+  let equal = ( = )
+  let hash = Hashtbl.hash
+end)
+
+type specialization_state = {
+  cache : specialization Specialization_cache.t;
+  queue : specialization Queue.t;
 }
 
 type trailing_args = Reject | Promote_variadic
@@ -32,7 +47,7 @@ type context = {
   arrays : (string * Hir.ty * int64 list) list;
   signatures : (string * signature) list;
   templates : (string * Ast.item) list;
-  specializations : specialization list ref;
+  specializations : specialization_state;
   spec_depth : int;
   locals : (string, binding) Hashtbl.t list ref;
   mutable initialized : init_state IM.t;
@@ -49,6 +64,20 @@ type context = {
 let error span message = Error [ Diag.error span message ]
 let ok x = Ok x
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
+
+let request_specialization state ~limits ~depth ~span ~description specialization =
+  match Specialization_cache.find_opt state.cache specialization.key with
+  | Some existing -> Ok existing
+  | None ->
+      if depth >= limits.Limits.max_specialization_depth then
+        error span (description ^ " recursion depth limit exceeded")
+      else if
+        Specialization_cache.length state.cache >= limits.Limits.max_specializations
+      then error span (description ^ " count limit exceeded")
+      else (
+        Specialization_cache.add state.cache specialization.key specialization;
+        Queue.add specialization state.queue;
+        Ok specialization)
 
 let reserved_builtin_names =
   [ "len"; "shl"; "lshr"; "ashr"; "rotl"; "rotr"; "popcount"; "ctz"; "clz" ]
@@ -1269,14 +1298,8 @@ and mangle_specialization base values =
            string_of_int (String.length n) ^ ":" ^ n ^ "=" ^ const_key_value t v)
          values)
 
-and same_specialization a b =
-  let _ = a.item in
-  let _ = a.depth in
-  a.name = b.name
-  && List.length a.values = List.length b.values
-  && List.for_all2
-       (fun (n, t, v) (n2, t2, v2) -> n = n2 && equal t t2 && v = v2)
-       a.values b.values
+and function_specialization_key name values =
+  (name, List.map (fun (_, t, v) -> (t, v)) values)
 
 and check_call c _expected fn args s =
   match fn with
@@ -1302,6 +1325,7 @@ and check_call c _expected fn args s =
             in
             let* values = eval [] const_params cargs in
             let mangled = mangle_specialization name values in
+            let key = function_specialization_key name values in
             let spec =
               {
                 item =
@@ -1316,21 +1340,15 @@ and check_call c _expected fn args s =
                       const_params;
                       span = s;
                     };
+                key;
                 name = mangled;
                 values;
                 depth = c.spec_depth;
               }
             in
-            let* () =
-              if List.exists (same_specialization spec) !(c.specializations) then Ok ()
-              else if c.spec_depth >= c.limits.Limits.max_specialization_depth then
-                error s "const specialization recursion depth limit exceeded"
-              else if
-                List.length !(c.specializations) >= c.limits.Limits.max_specializations
-              then error s "const specialization count limit exceeded"
-              else (
-                c.specializations := !(c.specializations) @ [ spec ];
-                Ok ())
+            let* specialization =
+              request_specialization c.specializations ~limits:c.limits
+                ~depth:c.spec_depth ~span:s ~description:"const specialization" spec
             in
             let* ps =
               Result_list.map
@@ -1341,7 +1359,7 @@ and check_call c _expected fn args s =
             in
             let* rt = source_ty_diag c.named_types s ret in
             let* checked = check_actuals c Reject s ps args in
-            Ok (Hir.Call (Hir.User mangled, checked, rt, s))
+            Ok (Hir.Call (Hir.User specialization.name, checked, rt, s))
       | Some _ -> error s "const-generic symbol is not a function")
   | Ast.Ident ("len", _) ->
       if List.length args <> 1 then error s "builtin `len` expects one argument"
@@ -2000,7 +2018,10 @@ let check ?(limits = Limits.default) program =
         | _ -> None)
       program.items
   in
-  let all_strings = ref [] and funcs = ref [] and all_specs = ref [] in
+  let all_strings = ref [] and funcs = ref [] in
+  let specializations =
+    { cache = Specialization_cache.create 32; queue = Queue.create () }
+  in
   let hir_linkage = function
     | Ast.External_c -> Hir.External_c
     | Ast.Internal -> Hir.Internal
@@ -2013,7 +2034,7 @@ let check ?(limits = Limits.default) program =
       arrays = !arrays;
       signatures = !sigs;
       templates;
-      specializations = all_specs;
+      specializations;
       spec_depth;
       locals = ref [];
       initialized = IM.empty;
@@ -2075,12 +2096,10 @@ let check ?(limits = Limits.default) program =
     | _ -> Ok ()
   in
   let* () = Result_list.iter check_func program.items in
-  let rec materialize index =
-    if index >= List.length !all_specs then Ok ()
-    else if index >= limits.Limits.max_specializations then
-      error Span.synthetic "const specialization count limit exceeded"
-    else
-      let sp = List.nth !all_specs index in
+  let rec materialize () =
+    match Queue.take_opt specializations.queue with
+    | None -> Ok ()
+    | Some sp ->
       match sp.item with
       | Ast.Func { params; ret; body = Ast.Statements stmts; linkage; variadic; _ } ->
           let* ret = source_ty_diag named_types Span.synthetic ret in
@@ -2092,10 +2111,10 @@ let check ?(limits = Limits.default) program =
               ~require_return:true
           in
           add_func func;
-          materialize (index + 1)
-      | _ -> materialize (index + 1)
+          materialize ()
+      | _ -> materialize ()
   in
-  let* () = materialize 0 in
+  let* () = materialize () in
   let hconsts =
     List.map
       (fun (n, t, v) -> ({ Hir.name = n; ty = t; bits = v } : Hir.const_def))
