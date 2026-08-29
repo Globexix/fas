@@ -1,0 +1,52 @@
+struct Probe {
+    lead u8
+    lanes vec[3,i32]
+    tail u8
+}
+
+struct Inner {
+    x u8
+    y i32
+}
+
+struct Outer {
+    lead u16
+    inner Inner
+    tail u8
+}
+
+fn bool_size() u64 { return sizeof[bool] }
+fn bool_align() u64 { return alignof[bool] }
+fn i8_size() u64 { return sizeof[i8] }
+fn i8_align() u64 { return alignof[i8] }
+fn i16_size() u64 { return sizeof[i16] }
+fn i16_align() u64 { return alignof[i16] }
+fn i32_size() u64 { return sizeof[i32] }
+fn i32_align() u64 { return alignof[i32] }
+fn i64_size() u64 { return sizeof[i64] }
+fn i64_align() u64 { return alignof[i64] }
+fn pointer_size() u64 { return sizeof[ptr[u8]] }
+fn pointer_align() u64 { return alignof[ptr[u8]] }
+fn v3i1_size() u64 { return sizeof[vec[3,bool]] }
+fn v3i1_align() u64 { return alignof[vec[3,bool]] }
+fn v9i1_size() u64 { return sizeof[vec[9,bool]] }
+fn v9i1_align() u64 { return alignof[vec[9,bool]] }
+fn v3i8_size() u64 { return sizeof[vec[3,u8]] }
+fn v3i8_align() u64 { return alignof[vec[3,u8]] }
+fn v3i32_size() u64 { return sizeof[vec[3,i32]] }
+fn v3i32_align() u64 { return alignof[vec[3,i32]] }
+fn v2i64_size() u64 { return sizeof[vec[2,i64]] }
+fn v2i64_align() u64 { return alignof[vec[2,i64]] }
+fn array_v3i32_size() u64 { return sizeof[arr[2,vec[3,i32]]] }
+fn array_v3i32_align() u64 { return alignof[arr[2,vec[3,i32]]] }
+fn probe_size() u64 { return sizeof[Probe] }
+fn probe_align() u64 { return alignof[Probe] }
+fn probe_lanes_offset() u64 { return offsetof[Probe,lanes] }
+fn probe_tail_offset() u64 { return offsetof[Probe,tail] }
+fn inner_size() u64 { return sizeof[Inner] }
+fn inner_align() u64 { return alignof[Inner] }
+fn inner_y_offset() u64 { return offsetof[Inner,y] }
+fn outer_size() u64 { return sizeof[Outer] }
+fn outer_align() u64 { return alignof[Outer] }
+fn outer_inner_offset() u64 { return offsetof[Outer,inner] }
+fn outer_tail_offset() u64 { return offsetof[Outer,tail] }

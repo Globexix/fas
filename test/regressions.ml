@@ -42,6 +42,22 @@ let lower_of text =
 let llvm_of text = Ir.render (lower_of text)
 
 let () =
+  let expect_layout name expected ty =
+    match Hir.layout [] ty with
+    | Ok actual when actual = expected -> ()
+    | Ok (size, align) ->
+        failwith
+          (Printf.sprintf "%s: expected layout (%d, %d), got (%d, %d)" name
+             (fst expected) (snd expected) size align)
+    | Error message -> failwith (name ^ ": " ^ message)
+  in
+  expect_layout "layout-v3i1" (1, 1) (Hir.Vec (3, Hir.Bool));
+  expect_layout "layout-v9i1" (2, 2) (Hir.Vec (9, Hir.Bool));
+  expect_layout "layout-v3i8" (4, 4) (Hir.Vec (3, Hir.Int Hir.U8));
+  expect_layout "layout-v3i32" (16, 16) (Hir.Vec (3, Hir.Int Hir.I32));
+  expect_layout "layout-v2i64" (16, 16) (Hir.Vec (2, Hir.Int Hir.I64));
+  expect_layout "layout-array-v3i32" (32, 16)
+    (Hir.Array (2, Hir.Vec (3, Hir.Int Hir.I32)));
   let uninitialized_field_write =
     llvm_of "struct S { x i64 }\nfn main() i64 { p S\n p.x = 1\n return 0 }\n"
   in
@@ -1059,4 +1075,4 @@ let () =
   if not (contains mixed_runtime "phi") then
     failwith "runtime-logical-mixed: short-circuit lowering missing";
 
-  print_endline "regression tests: 143 passed"
+  print_endline "regression tests: 149 passed"

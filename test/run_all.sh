@@ -30,6 +30,8 @@ done
 "$LLVM_LLC" test/.stage3.ll -o test/.stage3.s
 rm -f test/.stage3.ll test/.stage3.s
 
+LLVM_OPT="$LLVM_OPT" OCAML_FAS="$OCAML_FAS" "$ROOT/test/layout_oracle.sh"
+
 CC="$CC" "$ORACLE/tests/run_tests.sh" "$OCAML_FAS"
 for focused in bug07_const_sext_bool bug09_intmin_rem_minus1; do
   FAS_COMPILER="$OCAML_FAS" CC="$CC" timeout 90 \

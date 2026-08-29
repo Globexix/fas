@@ -168,24 +168,32 @@ let expr_span = function
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 let round_up x a = if a <= 1 then x else (x + a - 1) / a * a
 
-let int_layout = function
-  | U8 | I8 -> (1, 1)
-  | U16 | I16 -> (2, 2)
-  | U32 -> (4, 4)
-  | I32 -> (4, 4)
-  | U64 | I64 | Usize | Isize -> (8, 8)
+let int_bytes = function
+  | U8 | I8 -> 1
+  | U16 | I16 -> 2
+  | U32 | I32 -> 4
+  | U64 | I64 | Usize | Isize -> 8
 
-let layout structs ty =
+let int_layout target k = Target_layout.integer target (int_bytes k * 8)
+
+let scalar_bits target = function
+  | Bool -> Ok 1
+  | Int k -> Ok (int_bytes k * 8)
+  | Ptr _ | ConstPtr _ -> Ok (target.Target_layout.pointer_size * 8)
+  | _ -> Error "vector element type must be a scalar"
+
+let layout ?(target = Target_layout.current) structs ty =
   let rec go visiting = function
-    | Bool -> Ok (1, 1)
-    | Int k -> Ok (int_layout k)
-    | Ptr _ | ConstPtr _ -> Ok (8, 8)
-    | Array (n, t) | Vec (n, t) ->
-        if n < 0 then Error "negative aggregate length"
-        else
-          let* s, a = go visiting t in
-          if n > max_int / max 1 s then Error "aggregate size overflows"
-          else Ok (n * s, a)
+    | Bool -> Target_layout.integer target 1
+    | Int k -> int_layout target k
+    | Ptr _ | ConstPtr _ -> Target_layout.pointer target
+    | Array (n, t) ->
+        let* s, a = go visiting t in
+        let* size = Target_layout.multiply_size n s in
+        Ok (size, a)
+    | Vec (n, t) ->
+        let* bits = scalar_bits target t in
+        Target_layout.vector target n bits
     | Void -> Error "void has no object layout"
     | Opaque n -> Error ("opaque type `" ^ n ^ "` has no layout")
     | Struct n -> (
@@ -198,7 +206,7 @@ let layout structs ty =
   in
   go [] ty
 
-let compute_struct decls name =
+let compute_struct ?(target = Target_layout.current) decls name =
   let rec calc visiting n =
     if List.mem n visiting then
       Error (Printf.sprintf "recursive by-value struct `%s`" n)
@@ -225,18 +233,21 @@ let compute_struct decls name =
           in
           each 0 1 [] fields
   and field_layout visiting = function
-    | Bool -> Ok (1, 1)
-    | Int k -> Ok (int_layout k)
-    | Ptr _ | ConstPtr _ -> Ok (8, 8)
+    | Bool -> Target_layout.integer target 1
+    | Int k -> int_layout target k
+    | Ptr _ | ConstPtr _ -> Target_layout.pointer target
     | Void -> Error "void has no object layout"
     | Opaque n -> Error (Printf.sprintf "opaque type `%s` has no layout" n)
     | Struct n ->
         let* _, s, a = calc visiting n in
         Ok (s, a)
-    | Array (n, t) | Vec (n, t) ->
+    | Array (n, t) ->
         let* s, a = field_layout visiting t in
-        if n < 0 || (s > 0 && n > max_int / s) then Error "aggregate size overflows"
-        else Ok (n * s, a)
+        let* size = Target_layout.multiply_size n s in
+        Ok (size, a)
+    | Vec (n, t) ->
+        let* bits = scalar_bits target t in
+        Target_layout.vector target n bits
   in
   let* fields, size, align = calc [] name in
   Ok { name; fields; size; align }
