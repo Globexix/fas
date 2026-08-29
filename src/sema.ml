@@ -27,9 +27,11 @@ type specialization = {
 }
 
 type trailing_args = Reject | Promote_variadic
+type named_type_kind = Struct_name | Opaque_name
 
 type context = {
   structs : Hir.struct_def list;
+  named_types : (string * named_type_kind) list;
   consts : (string * Hir.ty * int64) list;
   arrays : (string * Hir.ty * int64 list) list;
   signatures : (string * signature) list;
@@ -67,32 +69,36 @@ let src_int = function
   | Usize -> U64
   | Isize -> I64
 
-let rec source_ty = function
+let rec source_ty named_types = function
   | Ast.Bool -> Ok Hir.Bool
   | Ast.Void -> Ok Hir.Void
   | Ast.Int k -> Ok (Hir.Int (src_int k))
   | Ast.Ptr t ->
-      let* t = source_ty t in
+      let* t = source_ty named_types t in
       Ok (Hir.Ptr t)
   | Ast.Ptr_const t ->
-      let* t = source_ty t in
+      let* t = source_ty named_types t in
       Ok (Hir.ConstPtr t)
-  | Ast.Array (raw, t) -> source_aggregate (fun n t -> Hir.Array (n, t)) raw t
-  | Ast.Vec (raw, t) -> source_aggregate (fun n t -> Hir.Vec (n, t)) raw t
-  | Ast.Struct_type n -> Ok (Hir.Struct n)
-  | Ast.Opaque_type n -> Ok (Hir.Opaque n)
+  | Ast.Array (raw, t) ->
+      source_aggregate named_types (fun n t -> Hir.Array (n, t)) raw t
+  | Ast.Vec (raw, t) -> source_aggregate named_types (fun n t -> Hir.Vec (n, t)) raw t
+  | Ast.Named_type n -> (
+      match List.assoc_opt n named_types with
+      | Some Struct_name -> Ok (Hir.Struct n)
+      | Some Opaque_name -> Ok (Hir.Opaque n)
+      | None -> Error (Printf.sprintf "unknown type `%s`" n))
 
-and source_aggregate make raw element =
+and source_aggregate named_types make raw element =
   try
     let length = int_of_string raw in
     if length < 0 then Error "negative aggregate length"
     else
-      let* element = source_ty element in
+      let* element = source_ty named_types element in
       Ok (make length element)
   with Failure _ -> Error "aggregate length is not a machine integer"
 
-let source_ty_diag span t =
-  source_ty t |> Result.map_error (fun m -> [ Diag.error span m ])
+let source_ty_diag named_types span t =
+  source_ty named_types t |> Result.map_error (fun m -> [ Diag.error span m ])
 
 let layout_diag span structs t =
   Hir.layout structs t |> Result.map_error (fun m -> [ Diag.error span m ])
@@ -116,11 +122,11 @@ let is_scalar = function
 let is_numeric = function Hir.Int _ | Hir.Vec (_, Hir.Int _) -> true | _ -> false
 let is_truthy = is_scalar
 
-let validate_const_params cps =
+let validate_const_params named_types cps =
   let* () =
     Result_list.iter
       (fun (cp : Ast.const_param) ->
-        let* t = source_ty_diag cp.span cp.ty in
+        let* t = source_ty_diag named_types cp.span cp.ty in
         if is_int t then Ok ()
         else error cp.span "const parameter type must be an integer")
       cps
@@ -609,7 +615,8 @@ let leading64 x =
     in
     go 0 Int64.min_int
 
-let rec const_expr ?(structs = []) consts expected ?(check_only = false) = function
+let rec const_expr ?(structs = []) ?(named_types = []) consts expected
+    ?(check_only = false) = function
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
@@ -634,26 +641,26 @@ let rec const_expr ?(structs = []) consts expected ?(check_only = false) = funct
       if fits_negative_literal t v || allowed then Ok (t, mask_value t (Int64.neg v))
       else error s ("integer literal is out of range for " ^ ty_name t)
   | Ast.Unary (Ast.Neg, e, s) ->
-      let* t, v = const_expr ~structs consts expected ~check_only e in
+      let* t, v = const_expr ~structs ~named_types consts expected ~check_only e in
       if not (is_int t) then error s "unary minus requires an integer"
       else Ok (t, mask_value t (Int64.neg v))
   | Ast.Unary (Ast.Bit_not, e, s) ->
-      let* t, v = const_expr ~structs consts expected ~check_only e in
+      let* t, v = const_expr ~structs ~named_types consts expected ~check_only e in
       if not (is_int t) then error s "bitwise not requires an integer"
       else Ok (t, mask_value t (Int64.lognot v))
   | Ast.Unary (Ast.Not, e, _) ->
-      let* _, v = const_expr ~structs consts None ~check_only e in
+      let* _, v = const_expr ~structs ~named_types consts None ~check_only e in
       Ok (Hir.Bool, if v = 0L then 1L else 0L)
   | Ast.Binary (((Ast.And | Ast.Or) as op), l, r, s) ->
-      let* lt, lv = const_expr ~structs consts None ~check_only l in
+      let* lt, lv = const_expr ~structs ~named_types consts None ~check_only l in
       if not (is_truthy lt) then error s "logical operands must be scalar"
       else if
         (not check_only) && ((op = Ast.And && lv = 0L) || (op = Ast.Or && lv <> 0L))
       then
-        let* _ = const_expr ~structs consts None ~check_only:true r in
+        let* _ = const_expr ~structs ~named_types consts None ~check_only:true r in
         Ok (Hir.Bool, if op = Ast.And then 0L else 1L)
       else
-        let* rt, rv = const_expr ~structs consts None ~check_only r in
+        let* rt, rv = const_expr ~structs ~named_types consts None ~check_only r in
         if not (is_truthy rt) then error s "logical operands must be scalar"
         else Ok (Hir.Bool, if rv <> 0L then 1L else 0L)
   | Ast.Binary (op, l, r, s) ->
@@ -661,12 +668,18 @@ let rec const_expr ?(structs = []) consts expected ?(check_only = false) = funct
         match (l, op) with
         | ( (Ast.Int_lit _ | Ast.Unary (Ast.Neg, Ast.Int_lit _, _)),
             (Ast.Eq | Ne | Lt | Le | Gt | Ge) ) ->
-            let* rt, rv = const_expr ~structs consts None ~check_only r in
-            let* lt, lv = const_expr ~structs consts (Some rt) ~check_only l in
+            let* rt, rv = const_expr ~structs ~named_types consts None ~check_only r in
+            let* lt, lv =
+              const_expr ~structs ~named_types consts (Some rt) ~check_only l
+            in
             Ok ((lt, lv), (rt, rv))
         | _ ->
-            let* lt, lv = const_expr ~structs consts expected ~check_only l in
-            let* rt, rv = const_expr ~structs consts (Some lt) ~check_only r in
+            let* lt, lv =
+              const_expr ~structs ~named_types consts expected ~check_only l
+            in
+            let* rt, rv =
+              const_expr ~structs ~named_types consts (Some lt) ~check_only r
+            in
             Ok ((lt, lv), (rt, rv))
       in
       if not (equal lt rt) then error s "constant operands have different types"
@@ -723,13 +736,13 @@ let rec const_expr ?(structs = []) consts expected ?(check_only = false) = funct
           in
           Ok (rt, mask_value rt result)
   | Ast.Ternary (c, a, b, _s) ->
-      let* _, cv = const_expr ~structs consts None ~check_only c in
-      if cv <> 0L then const_expr ~structs consts expected ~check_only a
-      else const_expr ~structs consts expected ~check_only b
+      let* _, cv = const_expr ~structs ~named_types consts None ~check_only c in
+      if cv <> 0L then const_expr ~structs ~named_types consts expected ~check_only a
+      else const_expr ~structs ~named_types consts expected ~check_only b
   | Ast.Cast (k, dst, e, s) ->
-      let* dt = source_ty_diag s dst in
+      let* dt = source_ty_diag named_types s dst in
       let* st, v =
-        const_expr ~structs consts ~check_only
+        const_expr ~structs ~named_types consts ~check_only
           (if
              k = Ast.Bitcast
              &&
@@ -761,7 +774,7 @@ let rec const_expr ?(structs = []) consts expected ?(check_only = false) = funct
   | Ast.Call (Ast.Ident (name, _), args, s) -> (
       let* vals =
         Result_list.map
-          (fun a -> const_expr ~structs consts expected ~check_only a)
+          (fun a -> const_expr ~structs ~named_types consts expected ~check_only a)
           args
       in
       match (name, vals) with
@@ -792,15 +805,15 @@ let rec const_expr ?(structs = []) consts expected ?(check_only = false) = funct
           Ok (t, Int64.of_int (leading64 x - (64 - b)))
       | _ -> error s "invalid constant builtin call")
   | Ast.Sizeof (t, s) ->
-      let* t = source_ty_diag s t in
+      let* t = source_ty_diag named_types s t in
       let* n, _ = layout_diag s structs t in
       Ok (Hir.Int Hir.U64, Int64.of_int n)
   | Ast.Alignof (t, s) ->
-      let* t = source_ty_diag s t in
+      let* t = source_ty_diag named_types s t in
       let* _, n = layout_diag s structs t in
       Ok (Hir.Int Hir.U64, Int64.of_int n)
   | Ast.Offsetof (t, n, s) -> (
-      let* t = source_ty_diag s t in
+      let* t = source_ty_diag named_types s t in
       match t with
       | Hir.Struct sn -> (
           match field_info structs sn n with
@@ -855,7 +868,7 @@ let require_place_value c span place =
 
 let rec check_place (c : context) expr =
   let static_index e =
-    match const_expr ~structs:c.structs c.consts None e with
+    match const_expr ~structs:c.structs ~named_types:c.named_types c.consts None e with
     | Ok (ty, value) -> Known (ty, value)
     | Error _ -> Dynamic
   in
@@ -1082,7 +1095,7 @@ and check_expr (c : context) expected = function
   | Ast.Const_args (_fn, _, s) ->
       error s "const-generic specialization is not available in this checkpoint"
   | Ast.Cast (k, t, e, s) ->
-      let* t = source_ty_diag s t in
+      let* t = source_ty_diag c.named_types s t in
       let* x =
         check_expr c
           (if
@@ -1177,15 +1190,15 @@ and check_expr (c : context) expected = function
         | Hir.ConstPtr t -> Ok (Hir.Ptr_add (bytes, tp, toff, Hir.ConstPtr t, s))
         | _ -> error s "pointer addition requires a pointer")
   | Ast.Sizeof (t, s) ->
-      let* t = source_ty_diag s t in
+      let* t = source_ty_diag c.named_types s t in
       let* size, _ = layout_diag s c.structs t in
       Ok (Hir.Sizeof (t, size, s))
   | Ast.Alignof (t, s) ->
-      let* t = source_ty_diag s t in
+      let* t = source_ty_diag c.named_types s t in
       let* _, a = layout_diag s c.structs t in
       Ok (Hir.Alignof (t, a, s))
   | Ast.Offsetof (t, n, s) -> (
-      let* t = source_ty_diag s t in
+      let* t = source_ty_diag c.named_types s t in
       match t with
       | Hir.Struct sn -> (
           match field_info c.structs sn n with
@@ -1218,24 +1231,31 @@ and check_expr (c : context) expected = function
         else Ok (Hir.Ternary (tq, ta, tb, Hir.expr_ty ta, s))
   | Ast.Array_lit (_, s) ->
       error s "array literals are only valid in global const declarations"
-  | Ast.Struct_lit (n, xs, s) -> (
-      match List.find_opt (fun (d : Hir.struct_def) -> d.name = n) c.structs with
-      | None -> error s (Printf.sprintf "unknown struct `%s`" n)
-      | Some (d : Hir.struct_def) ->
-          if List.length xs <> List.length d.fields then
-            error s "wrong number of struct literal fields"
-          else
-            let rec go acc (fs : Hir.field list) es =
-              match (fs, es) with
-              | [], [] -> Ok (List.rev acc)
-              | f :: ft, e :: et ->
-                  let* x = check_expr c (Some f.ty) e in
-                  let* () = ensure_expected (Hir.expr_ty x) f.ty (Ast.expr_span e) in
-                  go (x :: acc) ft et
-              | _ -> error s "wrong struct literal arity"
-            in
-            let* xs = go [] d.fields xs in
-            Ok (Hir.Struct_lit (n, xs, Hir.Struct n, s)))
+  | Ast.Struct_lit (source_type, xs, s) -> (
+      let* literal_type = source_ty_diag c.named_types s source_type in
+      match literal_type with
+      | Hir.Struct n -> (
+          match List.find_opt (fun (d : Hir.struct_def) -> d.name = n) c.structs with
+          | None -> error s (Printf.sprintf "unknown struct `%s`" n)
+          | Some (d : Hir.struct_def) ->
+              if List.length xs <> List.length d.fields then
+                error s "wrong number of struct literal fields"
+              else
+                let rec go acc (fs : Hir.field list) es =
+                  match (fs, es) with
+                  | [], [] -> Ok (List.rev acc)
+                  | f :: ft, e :: et ->
+                      let* x = check_expr c (Some f.ty) e in
+                      let* () =
+                        ensure_expected (Hir.expr_ty x) f.ty (Ast.expr_span e)
+                      in
+                      go (x :: acc) ft et
+                  | _ -> error s "wrong struct literal arity"
+                in
+                let* xs = go [] d.fields xs in
+                Ok (Hir.Struct_lit (n, xs, literal_type, s)))
+      | Hir.Opaque n -> error s (Printf.sprintf "opaque type `%s` is not a struct" n)
+      | _ -> error s "struct literal requires a struct type")
 
 and const_key_value (t : Hir.ty) v = Hir.ty_name t ^ ":" ^ Int64.to_string v
 
@@ -1271,8 +1291,11 @@ and check_call c _expected fn args s =
               match (cps, actual) with
               | [], [] -> Ok (List.rev acc)
               | cp :: cs, a :: rest ->
-                  let* ct = source_ty_diag (Ast.expr_span a) cp.Ast.ty in
-                  let* vt, v = const_expr ~structs:c.structs c.consts (Some ct) a in
+                  let* ct = source_ty_diag c.named_types (Ast.expr_span a) cp.Ast.ty in
+                  let* vt, v =
+                    const_expr ~structs:c.structs ~named_types:c.named_types c.consts
+                      (Some ct) a
+                  in
                   if equal vt ct then eval ((cp.name, ct, v) :: acc) cs rest
                   else error (Ast.expr_span a) "const argument type mismatch"
               | _ -> error s "const argument arity mismatch"
@@ -1312,11 +1335,11 @@ and check_call c _expected fn args s =
             let* ps =
               Result_list.map
                 (fun (p : Ast.param) ->
-                  let* t = source_ty_diag p.span p.ty in
+                  let* t = source_ty_diag c.named_types p.span p.ty in
                   Ok (p.name, t, false, None))
                 params
             in
-            let* rt = source_ty_diag s ret in
+            let* rt = source_ty_diag c.named_types s ret in
             let* checked = check_actuals c Reject s ps args in
             Ok (Hir.Call (Hir.User mangled, checked, rt, s))
       | Some _ -> error s "const-generic symbol is not a function")
@@ -1561,7 +1584,7 @@ and check_stmt (c : context) = function
         then error span (Printf.sprintf "local `%s` shadows a const" name)
         else Ok ()
       in
-      let* t = source_ty_diag span ty in
+      let* t = source_ty_diag c.named_types span ty in
       let* () =
         object_type c.structs t |> Result.map_error (fun m -> [ Diag.error span m ])
       in
@@ -1732,7 +1755,8 @@ and check_stmt (c : context) = function
           | [] -> Ok (List.rev acc)
           | (k, b) :: xs ->
               let* kt, kv =
-                const_expr ~structs:c.structs c.consts (Some et) k
+                const_expr ~structs:c.structs ~named_types:c.named_types c.consts
+                  (Some et) k
                 |> Result.map_error (fun _ ->
                     [
                       Diag.error (Ast.expr_span k)
@@ -1804,52 +1828,46 @@ and check_stmt (c : context) = function
         Ok (Hir.Defer (body, s))
 
 let check ?(limits = Limits.default) program =
-  let _ = limits in
-  let rec collect_structs seen acc = function
+  let rec collect_named_types seen acc = function
     | [] -> Ok (List.rev acc)
     | Ast.Opaque { name; span } :: rest ->
         if List.mem name seen then
           error span (Printf.sprintf "duplicate type `%s`" name)
-        else collect_structs (name :: seen) acc rest
-    | Ast.Struct { name; fields; align; span } :: rest ->
+        else collect_named_types (name :: seen) ((name, Opaque_name) :: acc) rest
+    | Ast.Struct { name; span; _ } :: rest ->
         if List.mem name seen then
           error span (Printf.sprintf "duplicate type `%s`" name)
-        else
-          let* () =
-            match align with
-            | Some a ->
-                Target_layout.validate_type_alignment Target_layout.current a
-                |> Result.map_error (fun message -> [ Diag.error span message ])
-            | None -> Ok ()
-          in
-          let rec collect_fields fseen out = function
-            | [] -> Ok (List.rev out)
-            | (f : Ast.field) :: fs ->
-                if List.mem f.name fseen then
-                  error f.span (Printf.sprintf "duplicate field `%s`" f.name)
-                else
-                  let* t =
-                    source_ty f.ty
-                    |> Result.map_error (fun m -> [ Diag.error f.span m ])
-                  in
-                  collect_fields (f.name :: fseen) ((f.name, t) :: out) fs
-          in
-          let* fs = collect_fields [] [] fields in
-          collect_structs (name :: seen) ((name, fs, align) :: acc) rest
-    | _ :: rest -> collect_structs seen acc rest
+        else collect_named_types (name :: seen) ((name, Struct_name) :: acc) rest
+    | _ :: rest -> collect_named_types seen acc rest
   in
-  let* structs_src = collect_structs [] [] program.Ast.items in
-  let struct_names = List.map (fun (n, _, _) -> n) structs_src in
-  let* () =
-    List.fold_left
-      (fun r item ->
-        let* () = r in
-        match item with
-        | Ast.Opaque { name; span } when List.mem name struct_names ->
-            error span (Printf.sprintf "duplicate type `%s`" name)
-        | _ -> Ok ())
-      (Ok ()) program.items
+  let* named_types = collect_named_types [] [] program.Ast.items in
+  let rec collect_structs acc = function
+    | [] -> Ok (List.rev acc)
+    | Ast.Struct { name; fields; align; span } :: rest ->
+        let* () =
+          match align with
+          | Some a ->
+              Target_layout.validate_type_alignment Target_layout.current a
+              |> Result.map_error (fun message -> [ Diag.error span message ])
+          | None -> Ok ()
+        in
+        let rec collect_fields seen out = function
+          | [] -> Ok (List.rev out)
+          | (f : Ast.field) :: fields ->
+              if List.mem f.name seen then
+                error f.span (Printf.sprintf "duplicate field `%s`" f.name)
+              else
+                let* ty =
+                  source_ty named_types f.ty
+                  |> Result.map_error (fun message -> [ Diag.error f.span message ])
+                in
+                collect_fields (f.name :: seen) ((f.name, ty) :: out) fields
+        in
+        let* fields = collect_fields [] [] fields in
+        collect_structs ((name, fields, align) :: acc) rest
+    | _ :: rest -> collect_structs acc rest
   in
+  let* structs_src = collect_structs [] program.Ast.items in
   let rec build acc = function
     | [] -> Ok (List.rev acc)
     | (name, _, _) :: xs ->
@@ -1862,7 +1880,8 @@ let check ?(limits = Limits.default) program =
   let* structs = build [] structs_src in
   let source_obj t =
     let* t =
-      source_ty t |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
+      source_ty named_types t
+      |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
     in
     let* () =
       object_type structs t
@@ -1879,7 +1898,8 @@ let check ?(limits = Limits.default) program =
       params
   in
   let source_params =
-    map_params (fun (param : Ast.param) -> source_ty_diag param.span param.ty)
+    map_params (fun (param : Ast.param) ->
+        source_ty_diag named_types param.span param.ty)
   in
   let consts = ref [] and arrays = ref [] in
   let eval_const_item = function
@@ -1897,7 +1917,9 @@ let check ?(limits = Limits.default) program =
                 let rec values acc = function
                   | [] -> Ok (List.rev acc)
                   | x :: rest ->
-                      let* vt, v = const_expr ~structs !consts (Some elem) x in
+                      let* vt, v =
+                        const_expr ~structs ~named_types !consts (Some elem) x
+                      in
                       if equal vt elem then values (v :: acc) rest
                       else error (Ast.expr_span x) "const array element type mismatch"
                 in
@@ -1907,7 +1929,7 @@ let check ?(limits = Limits.default) program =
           | Hir.Array _, _ -> error span "const array needs a brace-list initializer"
           | _, Ast.Array_lit _ -> error span "brace-list requires an array type"
           | _, _ ->
-              let* vt, v = const_expr ~structs !consts (Some t) value in
+              let* vt, v = const_expr ~structs ~named_types !consts (Some t) value in
               if equal vt t then (
                 consts := !consts @ [ (name, t, v) ];
                 Ok ())
@@ -1947,11 +1969,11 @@ let check ?(limits = Limits.default) program =
                     error p.span (Printf.sprintf "duplicate parameter `%s`" p.name)
                 | None -> Ok ()
               in
-              let* () = validate_const_params const_params in
+              let* () = validate_const_params named_types const_params in
               let* ps =
                 map_params (fun (param : Ast.param) -> source_obj param.ty) params
               in
-              let* rt = source_ty_diag span ret in
+              let* rt = source_ty_diag named_types span ret in
               let* () =
                 if linkage = Ast.External_c then
                   validate_extern_c_signature span params ps rt
@@ -1981,6 +2003,7 @@ let check ?(limits = Limits.default) program =
   let make_context ~extra_consts ~spec_depth ~ret_ty =
     {
       structs;
+      named_types;
       consts = (if extra_consts = [] then !consts else extra_consts @ !consts);
       arrays = !arrays;
       signatures = !sigs;
@@ -2022,7 +2045,7 @@ let check ?(limits = Limits.default) program =
   let check_func = function
     | Ast.Func { name; params; ret; body; linkage; variadic; const_params = []; span }
       ->
-        let* ret = source_ty_diag span ret in
+        let* ret = source_ty_diag named_types span ret in
         let* params = source_params params in
         let linkage = hir_linkage linkage in
         let* func =
@@ -2057,7 +2080,7 @@ let check ?(limits = Limits.default) program =
       let sp = List.nth !all_specs index in
       match sp.item with
       | Ast.Func { params; ret; body = Ast.Statements stmts; linkage; variadic; _ } ->
-          let* ret = source_ty_diag Span.synthetic ret in
+          let* ret = source_ty_diag named_types Span.synthetic ret in
           let* params = source_params params in
           let* func =
             check_function_body ~name:sp.name ~description:"specialized function"

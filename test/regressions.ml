@@ -20,6 +20,23 @@ let expect_ok = function
   | Ok value -> value
   | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
 
+let parse_file file text = expect_ok (Parser.parse (Source.create ~file ~text))
+
+let check_files files =
+  let items =
+    files
+    |> List.map (fun (file, text) -> (parse_file file text).Ast.items)
+    |> List.concat
+  in
+  Sema.check { Ast.items }
+
+let semantic_messages text =
+  let program = expect_ok (Parser.parse (source text)) in
+  match Sema.check program with
+  | Ok _ -> failwith "expected semantic rejection"
+  | Error diagnostics ->
+      List.map (fun (diagnostic : Diag.t) -> diagnostic.message) diagnostics
+
 let semantic_error name fragment text =
   let program = expect_ok (Parser.parse (source text)) in
   match Sema.check program with
@@ -578,6 +595,64 @@ let () =
     "struct S @align(4294967296) { x u8 }\n";
   semantic_error "fas-009-duplicate-opaque" "duplicate type `x`"
     "opaque x\nopaque x\nfn main() i32 { return 0 }\n";
+  let neutral_named_type =
+    expect_ok
+      (Parser.parse
+         (source "fn use(value ptr[Handle]) i64 { return 0 }\nopaque Handle\n"))
+  in
+  (match neutral_named_type.Ast.items with
+  | Ast.Func { params = [ { ty = Ast.Ptr (Ast.Named_type "Handle"); _ } ]; _ } :: _ ->
+      ()
+  | _ -> failwith "named-type-neutral-ast: parser classified a declaration name");
+  ignore (lower_of "fn use(value ptr[Handle]) i64 { return 0 }\nopaque Handle\n");
+  let forward_struct =
+    llvm_of
+      "fn make() i64 { value Pair = (Pair){7, 9}\n\
+      \ return value.right }\n\
+       struct Pair { left i64 right i64 }\n"
+  in
+  if not (contains forward_struct "%struct.Pair = type { i64, i64 }") then
+    failwith "forward-struct: declaration was not resolved before function checking";
+  let use_file =
+    ( "use.fas",
+      "fn read(handle ptr[Handle]) i64 { value Pair = (Pair){11}\n return value.x }\n"
+    )
+  in
+  let declarations_file = ("types.fas", "opaque Handle\nstruct Pair { x i64 }\n") in
+  List.iter
+    (fun files -> ignore (expect_ok (check_files files) |> Lower.lower |> expect_ok))
+    [ [ use_file; declarations_file ]; [ declarations_file; use_file ] ];
+  semantic_error "unknown-named-type" "unknown type `Missing`"
+    "fn use(value ptr[Missing]) i64 { return 0 }\n";
+  semantic_error "opaque-struct-literal" "opaque type `Handle` is not a struct"
+    "opaque Handle\nfn use() i64 { (Handle){}\n return 0 }\n";
+  let before_messages =
+    semantic_messages
+      "struct Stable { x i64 }\nfn use(value Missing) i64 { return 0 }\n"
+  in
+  let after_messages =
+    semantic_messages
+      "fn use(value Missing) i64 { return 0 }\nstruct Stable { x i64 }\n"
+  in
+  if before_messages <> after_messages then
+    failwith "named-type-order-diagnostic: declaration reordering changed diagnostics";
+  ignore
+    (lower_of
+       "fn main() u64 { values arr[2,u64]\n\
+       \ values[0] = id[3](4)\n\
+       \ values[1] = 5\n\
+       \ return values[0] }\n\
+        fn id[N const usize](value u64) u64 { return value + N }\n");
+  ignore
+    (lower_of "fn choose(value bool) i64 { if (value){ return 1 } else { return 0 } }\n");
+  ignore
+    (lower_of
+       "fn controls(value i64) i64 {\n\
+        while (value){ break }\n\
+        switch (value){ case 0: { return 0 } default: { } }\n\
+        for ; value; (value){ break }\n\
+        return value\n\
+        }\n");
   semantic_error "fas-005-void-ternary" "ternary arms cannot have void type"
     "fn a() void { }\n\
      fn b() void { }\n\

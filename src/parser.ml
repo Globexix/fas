@@ -164,12 +164,10 @@ module P = struct
   type t = {
     tokens : Token.t array;
     mutable pos : int;
-    names : string list ref;
-    generic_names : string list ref;
-    opaques : string list ref;
     bodies : raw_body list;
     limits : Limits.t;
     mutable depth : int;
+    mutable block_expression_depth : int option;
   }
 
   let peek p = p.tokens.(min p.pos (Array.length p.tokens - 1))
@@ -289,13 +287,13 @@ module P = struct
         | "i64" -> Ok (Ast.Int Ast.I64)
         | "usize" -> Ok (Ast.Int Ast.Usize)
         | "isize" -> Ok (Ast.Int Ast.Isize)
-        | _ ->
-            Ok
-              (if List.mem s !(p.opaques) then Ast.Opaque_type s else Ast.Struct_type s)
-        )
+        | _ -> Ok (Ast.Named_type s))
     | t -> Error [ Diag.error (span p) ("expected a type, found " ^ Token.show t) ]
 
-  let starts_type p = match (peek_n p 1).kind with Token.Ident _ -> true | _ -> false
+  let starts_type p =
+    match ((peek p).kind, (peek_n p 1).kind) with
+    | Token.Ident _, Token.Ident _ -> true
+    | _ -> false
 
   let compound_op = function
     | Token.Plus_eq -> Some Ast.Add
@@ -418,7 +416,6 @@ module P = struct
     let* fs = fields [] in
     let* () = expected p Token.Rbrace in
     let* () = end_stmt p in
-    p.names := name :: !(p.names);
     Ok (Ast.Struct { name; fields = fs; align; span = s })
 
   and opaque_item p =
@@ -426,7 +423,6 @@ module P = struct
     let* () = expected p Token.Kw_opaque in
     let* name = ident p in
     let* () = end_stmt p in
-    p.opaques := name :: !(p.opaques);
     Ok (Ast.Opaque { name; span = s })
 
   and const_params p =
@@ -509,7 +505,6 @@ module P = struct
     let* () = expected p Token.Kw_fn in
     let* name = ident p in
     let* cps = if asm then Ok [] else const_params p in
-    if cps <> [] then p.generic_names := name :: !(p.generic_names);
     let* ps, ret, var = signature p allow_variadic in
     if asm then (
       skip_newlines p;
@@ -600,7 +595,7 @@ module P = struct
     | Token.Kw_if ->
         let s = span p in
         ignore (bump p);
-        let* c = expr p in
+        let* c = expr_before_block p in
         let* a = block p in
         skip_newlines p;
         let* b =
@@ -618,7 +613,7 @@ module P = struct
     | Token.Kw_while ->
         let s = span p in
         ignore (bump p);
-        let* c = expr p in
+        let* c = expr_before_block p in
         let* b = block p in
         Ok (Ast.While (c, b, s))
     | Token.Kw_for -> for_stmt p
@@ -716,7 +711,7 @@ module P = struct
     let* step =
       if at p Token.Lbrace then Ok None
       else
-        let* x = for_clause p in
+        let* x = for_clause_before_block p in
         Ok (Some x)
     in
     let* body = block p in
@@ -725,7 +720,7 @@ module P = struct
   and switch_stmt p =
     let s = span p in
     ignore (bump p);
-    let* scr = expr p in
+    let* scr = expr_before_block p in
     skip_newlines p;
     let* () = expected p Token.Lbrace in
     let rec cases arms default =
@@ -760,6 +755,20 @@ module P = struct
         go (x :: acc)
     in
     go []
+
+  and expr_before_block p =
+    let previous = p.block_expression_depth in
+    p.block_expression_depth <- Some (p.depth + 1);
+    let result = expr p in
+    p.block_expression_depth <- previous;
+    result
+
+  and for_clause_before_block p =
+    let previous = p.block_expression_depth in
+    p.block_expression_depth <- Some (p.depth + 1);
+    let result = for_clause p in
+    p.block_expression_depth <- previous;
+    result
 
   and expr p =
     p.depth <- p.depth + 1;
@@ -861,9 +870,7 @@ module P = struct
           else
             let* () = expected p Token.Rbracket in
             match e with
-            | Ast.Ident (n, _) when List.mem n !(p.generic_names) || at p Token.Lparen
-              ->
-                go (Ast.Const_args (e, [ x ], s))
+            | Ast.Ident _ when at p Token.Lparen -> go (Ast.Const_args (e, [ x ], s))
             | _ -> go (Ast.Index (e, x, s)))
       | Token.Dot ->
           let s = span p in
@@ -872,34 +879,25 @@ module P = struct
           else
             let* n = ident p in
             go (Ast.Field (e, n, s))
-      | Token.Lbrace -> (
-          match e with
-          | Ast.Ident (n, _) when List.mem n !(p.names) ->
-              let s = span p in
-              ignore (bump p);
-              let rec es acc =
-                if at p Token.Rbrace then
-                  let* () = expected p Token.Rbrace in
-                  Ok (List.rev acc)
-                else
-                  let* x = expr p in
-                  let* () =
-                    if eat p Token.Comma then Ok ()
-                    else if at p Token.Rbrace then Ok ()
-                    else
-                      Error
-                        [
-                          Diag.error (span p) "expected comma between literal elements";
-                        ]
-                  in
-                  es (x :: acc)
-              in
-              let* xs = es [] in
-              go (Ast.Struct_lit (n, xs, s))
-          | _ -> Ok e)
       | _ -> Ok e
     in
     go first
+
+  and literal_elements p =
+    let rec elements acc =
+      if at p Token.Rbrace then
+        let* () = expected p Token.Rbrace in
+        Ok (List.rev acc)
+      else
+        let* expression = expr p in
+        let* () =
+          if eat p Token.Comma then Ok ()
+          else if at p Token.Rbrace then Ok ()
+          else Error [ Diag.error (span p) "expected comma between literal elements" ]
+        in
+        elements (expression :: acc)
+    in
+    elements []
 
   and args p =
     let* () = expected p Token.Lparen in
@@ -929,10 +927,24 @@ module P = struct
         ignore (bump p);
         Ok (Ast.String_lit (true, s, sp))
     | Token.Lparen ->
-        ignore (bump p);
-        let* e = expr p in
-        let* () = expected p Token.Rparen in
-        Ok e
+        let s = span p in
+        if
+          match ((peek_n p 1).kind, (peek_n p 2).kind, (peek_n p 3).kind) with
+          | Token.Ident _, Token.Rparen, Token.Lbrace ->
+              p.block_expression_depth <> Some p.depth
+          | _ -> false
+        then
+          let* () = expected p Token.Lparen in
+          let* t = ty p in
+          let* () = expected p Token.Rparen in
+          let* () = expected p Token.Lbrace in
+          let* elements = literal_elements p in
+          Ok (Ast.Struct_lit (t, elements, s))
+        else
+          let* () = expected p Token.Lparen in
+          let* e = expr p in
+          let* () = expected p Token.Rparen in
+          Ok e
     | Token.Ident n ->
         let sp = span p in
         ignore (bump p);
@@ -997,12 +1009,10 @@ let parse ?(limits = Limits.default) source =
             {
               P.tokens = Array.of_list tokens;
               pos = 0;
-              names = ref [];
-              generic_names = ref [];
-              opaques = ref [];
               bodies;
               limits;
               depth = 0;
+              block_expression_depth = None;
             }
           in
           match P.items p with Ok items -> Ok { Ast.items } | Error e -> Error e))

@@ -5,8 +5,7 @@ type ty =
   | Ptr_const of ty
   | Array of string * ty
   | Vec of string * ty
-  | Struct_type of string
-  | Opaque_type of string
+  | Named_type of string
   | Void
 
 and int_kind = U8 | U16 | U32 | U64 | I8 | I16 | I32 | I64 | Usize | Isize
@@ -33,7 +32,7 @@ and expr =
   | Splat of expr * Span.t
   | Ternary of expr * expr * expr * Span.t
   | Array_lit of expr list * Span.t
-  | Struct_lit of string * expr list * Span.t
+  | Struct_lit of ty * expr list * Span.t
 
 and unop = Neg | Not | Bit_not
 
@@ -158,7 +157,7 @@ let rec type_name = function
   | Ptr_const t -> "ptr[const " ^ type_name t ^ "]"
   | Array (n, t) -> "arr[" ^ n ^ ", " ^ type_name t ^ "]"
   | Vec (n, t) -> "vec[" ^ n ^ ", " ^ type_name t ^ "]"
-  | Struct_type s | Opaque_type s -> s
+  | Named_type s -> s
   | Void -> "void"
 
 let rec expr_name = function
@@ -214,7 +213,8 @@ let rec expr_name = function
   | Splat (e, _) -> "splat(" ^ expr_name e ^ ")"
   | Ternary (c, a, b, _) -> expr_name c ^ " ? " ^ expr_name a ^ " : " ^ expr_name b
   | Array_lit (xs, _) -> "{" ^ String.concat ", " (List.map expr_name xs) ^ "}"
-  | Struct_lit (n, xs, _) -> n ^ "{" ^ String.concat ", " (List.map expr_name xs) ^ "}"
+  | Struct_lit (t, xs, _) ->
+      "(" ^ type_name t ^ "){" ^ String.concat ", " (List.map expr_name xs) ^ "}"
 
 let rec stmt_lines indent = function
   | Let { name; ty; init; _ } ->
