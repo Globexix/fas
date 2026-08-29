@@ -63,7 +63,12 @@ let rec ty = function
   | Hir.Int Hir.U8 | Hir.Int Hir.I8 -> I8
   | Hir.Int Hir.U16 | Hir.Int Hir.I16 -> I16
   | Hir.Int Hir.U32 | Hir.Int Hir.I32 -> I32
-  | Hir.Int Hir.U64 | Hir.Int Hir.I64 | Hir.Int Hir.Usize | Hir.Int Hir.Isize -> I64
+  | Hir.Int Hir.U64 | Hir.Int Hir.I64 -> I64
+  | Hir.Int Hir.Usize | Hir.Int Hir.Isize -> (
+      match Target_layout.current.pointer_size with
+      | 4 -> I32
+      | 8 -> I64
+      | size -> invalid_arg (Printf.sprintf "unsupported pointer size: %d" size))
   | Hir.Ptr t | Hir.ConstPtr t -> Ir.Ptr (ty t)
   | Hir.Vec (n, t) -> Ir.Vector (n, ty t)
   | Hir.Array (n, t) -> Ir.Array (n, ty t)
@@ -309,7 +314,8 @@ let normalize_index s expression value =
     | Hir.Int (Hir.U8 | Hir.I8) -> 8
     | Hir.Int (Hir.U16 | Hir.I16) -> 16
     | Hir.Int (Hir.U32 | Hir.I32) -> 32
-    | Hir.Int (Hir.U64 | Hir.I64 | Hir.Usize | Hir.Isize) -> 64
+    | Hir.Int (Hir.U64 | Hir.I64) -> 64
+    | Hir.Int (Hir.Usize | Hir.Isize) -> Target_layout.current.pointer_size * 8
     | _ -> 64
   in
   let t = Hir.expr_ty expression in
@@ -452,7 +458,7 @@ let rec expr s = function
       emit s (Ir.Load (id, ty t, p, align s t));
       Ok (Ir.Local (id, ty t))
   | Hir.Sizeof (_, n, _) | Hir.Alignof (_, n, _) | Hir.Offsetof (_, _, n, _) ->
-      Ok (Ir.Const (Ir.I64, Int64.of_int n))
+      Ok (Ir.Const (ty (Hir.Int Hir.Usize), Int64.of_int n))
   | Hir.Ternary (c, a, b, t, _) -> lower_ternary s c a b t
   | Hir.Splat (e, t, _) ->
       let* x = expr s e in

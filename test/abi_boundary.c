@@ -29,6 +29,8 @@ uint32_t c_u32(uint32_t x) { return x + 1; }
 int32_t c_i32(int32_t x) { return x + 1; }
 uint64_t c_u64(uint64_t x) { return x + 1; }
 int64_t c_i64(int64_t x) { return x + 1; }
+size_t c_usize(size_t x) { return x + 1; }
+ptrdiff_t c_isize(ptrdiff_t x) { return x - 1; }
 
 uint64_t c_check_pair(const struct Pair *value) {
     return value->left == 41 && value->right == -12;

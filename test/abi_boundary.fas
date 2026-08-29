@@ -18,6 +18,8 @@ extern "C" {
     fn c_i32(x i32) i32
     fn c_u64(x u64) u64
     fn c_i64(x i64) i64
+    fn c_usize(x usize) usize
+    fn c_isize(x isize) isize
     fn c_check_pair(value ptr[const Pair]) u64
     fn c_write_pair(value ptr[Pair]) void
     fn c_check_aligned(value ptr[const Aligned]) u64
@@ -48,5 +50,7 @@ fn main() i32 {
     if c_variadic(77, b, u8_value, i8_value, u16_value, i16_value) != 1 {
         return 13
     }
+    if c_usize(9000000000) != 9000000001 { return 14 }
+    if c_isize(-9000000000) != -9000000001 { return 15 }
     return 0
 }

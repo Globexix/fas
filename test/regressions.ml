@@ -100,6 +100,72 @@ let () =
   expect_layout "layout-v2i64" (16, 16) (Hir.Vec (2, Hir.Int Hir.I64));
   expect_layout "layout-array-v3i32" (32, 16)
     (Hir.Array (2, Hir.Vec (3, Hir.Int Hir.I32)));
+  if Hir.ty_equal (Hir.Int Hir.Usize) (Hir.Int Hir.U64) then
+    failwith "usize-identity: usize collapsed into u64";
+  if Hir.ty_equal (Hir.Int Hir.Isize) (Hir.Int Hir.I64) then
+    failwith "isize-identity: isize collapsed into i64";
+  let target32 = { Target_layout.current with pointer_size = 4; pointer_align = 4 } in
+  (match Hir.layout ~target:target32 [] (Hir.Int Hir.Usize) with
+  | Ok (4, 4) -> ()
+  | Ok (size, align) ->
+      failwith (Printf.sprintf "usize-layout: expected (4, 4), got (%d, %d)" size align)
+  | Error message -> failwith ("usize-layout: " ^ message));
+  (match Hir.layout ~target:target32 [] (Hir.Int Hir.Isize) with
+  | Ok (4, 4) -> ()
+  | Ok (size, align) ->
+      failwith (Printf.sprintf "isize-layout: expected (4, 4), got (%d, %d)" size align)
+  | Error message -> failwith ("isize-layout: " ^ message));
+  semantic_error "usize-distinct-from-u64" "type mismatch: expected usize, got u64"
+    "fn convert(value u64) usize { return value }\n";
+  semantic_error "u64-distinct-from-usize" "type mismatch: expected u64, got usize"
+    "fn convert(value usize) u64 { return value }\n";
+  semantic_error "isize-distinct-from-i64" "type mismatch: expected isize, got i64"
+    "fn convert(value i64) isize { return value }\n";
+  semantic_error "i64-distinct-from-isize" "type mismatch: expected i64, got isize"
+    "fn convert(value isize) i64 { return value }\n";
+  semantic_error "usize-call-distinct-from-u64" "type mismatch: expected usize, got u64"
+    "fn take(value usize) void { return }\nfn use(value u64) void { take(value) }\n";
+  let target_width_integers =
+    llvm_of
+      "struct Pair { left u8 right u64 }\n\
+       fn to_u64(value usize) u64 { return bitcast[u64](value) }\n\
+       fn to_i64(value isize) i64 { return bitcast[i64](value) }\n\
+       fn unsigned_div(left usize, right usize) usize { return left / right }\n\
+       fn signed_div(left isize, right isize) isize { return left / right }\n\
+       fn sizes(values arr[3,u8]) usize {\n\
+      \ return sizeof[Pair] + alignof[Pair] + offsetof[Pair,right] + len(values)\n\
+       }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains target_width_integers marker) then
+        failwith ("target-width-integers: missing `" ^ marker ^ "`"))
+    [
+      "define internal i64 @to_u64(i64";
+      "define internal i64 @to_i64(i64";
+      "udiv i64";
+      "sdiv i64";
+    ];
+  semantic_error "len-returns-usize" "type mismatch: expected u64, got usize"
+    "fn size(values arr[3,u8]) u64 { return len(values) }\n";
+  semantic_error "sizeof-returns-usize" "type mismatch: expected u64, got usize"
+    "fn size() u64 { return sizeof[u8] }\n";
+  ignore
+    (lower_of
+       "struct Measure { left u8 right u64 }\n\
+        const Size usize = sizeof[Measure]\n\
+        const Alignment usize = alignof[Measure]\n\
+        const Offset usize = offsetof[Measure,right]\n\
+        fn size() usize { return Size + Alignment + Offset }\n");
+  semantic_error "const-sizeof-returns-usize" "constant initializer type mismatch"
+    "const Size u64 = sizeof[u8]\nfn size() u64 { return Size }\n";
+  let usize_specialization =
+    llvm_of
+      "fn id[N const usize](value usize) usize { return value + N }\n\
+       fn main() usize { return id[3](4) }\n"
+  in
+  if not (contains usize_specialization "N=usize:3") then
+    failwith "usize-specialization: specialization key lost usize identity";
   let uninitialized_field_write =
     llvm_of "struct S { x i64 }\nfn main() i64 { p S\n p.x = 1\n return 0 }\n"
   in

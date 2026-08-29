@@ -62,8 +62,8 @@ let src_int = function
   | I16 -> I16
   | I32 -> I32
   | I64 -> I64
-  | Usize -> U64
-  | Isize -> I64
+  | Usize -> Usize
+  | Isize -> Isize
 
 let rec source_ty named_types = function
   | Ast.Bool -> Ok Hir.Bool
@@ -103,7 +103,8 @@ let int_bits = function
   | Hir.U8 | I8 -> 8
   | U16 | I16 -> 16
   | U32 | I32 -> 32
-  | U64 | I64 | Usize | Isize -> 64
+  | U64 | I64 -> 64
+  | Usize | Isize -> Target_layout.current.pointer_size * 8
 
 let is_int = function Hir.Int _ -> true | _ -> false
 
@@ -753,7 +754,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) consts expected
         match st with
         | Hir.Bool -> 1
         | Hir.Int q -> int_bits q
-        | Hir.Ptr _ | Hir.ConstPtr _ -> 64
+        | Hir.Ptr _ | Hir.ConstPtr _ -> Target_layout.current.pointer_size * 8
         | _ -> 0
       in
       let result =
@@ -766,7 +767,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) consts expected
       Ok (dt, mask_value dt result)
   | Ast.Call (Ast.Ident ("len", _), [ Ast.String_lit (_, v, _) ], s) ->
       if String.contains v '\000' then error s "string literal cannot contain NUL"
-      else Ok (Hir.Int Hir.U64, Int64.of_int (String.length v))
+      else Ok (Hir.Int Hir.Usize, Int64.of_int (String.length v))
   | Ast.Call (Ast.Ident (name, _), args, s) -> (
       let* vals =
         Result_list.map
@@ -803,17 +804,17 @@ let rec const_expr ?(structs = []) ?(named_types = []) consts expected
   | Ast.Sizeof (t, s) ->
       let* t = source_ty_diag named_types s t in
       let* n, _ = layout_diag s structs t in
-      Ok (Hir.Int Hir.U64, Int64.of_int n)
+      Ok (Hir.Int Hir.Usize, Int64.of_int n)
   | Ast.Alignof (t, s) ->
       let* t = source_ty_diag named_types s t in
       let* _, n = layout_diag s structs t in
-      Ok (Hir.Int Hir.U64, Int64.of_int n)
+      Ok (Hir.Int Hir.Usize, Int64.of_int n)
   | Ast.Offsetof (t, n, s) -> (
       let* t = source_ty_diag named_types s t in
       match t with
       | Hir.Struct sn -> (
           match field_info structs sn n with
-          | Some f -> Ok (Hir.Int Hir.U64, Int64.of_int f.offset)
+          | Some f -> Ok (Hir.Int Hir.Usize, Int64.of_int f.offset)
           | None -> error s "unknown field in offsetof")
       | _ -> error s "offsetof requires a struct")
   | expr -> error (Ast.expr_span expr) "expression is not compile-time constant"
@@ -1108,7 +1109,7 @@ and check_expr (c : context) expected = function
       let bits = function
         | Hir.Bool -> 1
         | Hir.Int q -> int_bits q
-        | Hir.Ptr _ | Hir.ConstPtr _ -> 64
+        | Hir.Ptr _ | Hir.ConstPtr _ -> Target_layout.current.pointer_size * 8
         | _ -> 0
       in
       let legal =
@@ -1124,7 +1125,8 @@ and check_expr (c : context) expected = function
             match (from, t) with
             | Hir.Ptr _, Hir.Ptr _ | Hir.Ptr _, Hir.ConstPtr _ -> true
             | Hir.ConstPtr _, Hir.ConstPtr _ -> true
-            | Hir.Ptr _, Hir.Int k | Hir.Int k, Hir.Ptr _ -> int_bits k = 64
+            | Hir.Ptr _, Hir.Int k | Hir.Int k, Hir.Ptr _ ->
+                int_bits k = Target_layout.current.pointer_size * 8
             | _ when is_int from && is_int t -> bits from = bits t
             | _ -> false)
       in
@@ -1355,7 +1357,7 @@ and check_call c _expected fn args s =
               | Hir.Array (n, _) -> Ok n
               | _ -> error s "len requires a fixed array or string literal")
         in
-        Ok (Hir.EInt (Int64.of_int n, Hir.Int Hir.U64, s))
+        Ok (Hir.EInt (Int64.of_int n, Hir.Int Hir.Usize, s))
   | Ast.Ident (name, _) -> (
       let builtin =
         match name with

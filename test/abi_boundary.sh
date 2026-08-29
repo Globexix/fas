@@ -18,6 +18,8 @@ grep -F 'declare zeroext i8 @c_u8(i8 zeroext)' "$ABI_TMP/boundary.ll" >/dev/null
 grep -F 'declare signext i8 @c_i8(i8 signext)' "$ABI_TMP/boundary.ll" >/dev/null
 grep -F 'declare zeroext i16 @c_u16(i16 zeroext)' "$ABI_TMP/boundary.ll" >/dev/null
 grep -F 'declare signext i16 @c_i16(i16 signext)' "$ABI_TMP/boundary.ll" >/dev/null
+grep -F 'declare i64 @c_usize(i64)' "$ABI_TMP/boundary.ll" >/dev/null
+grep -F 'declare i64 @c_isize(i64)' "$ABI_TMP/boundary.ll" >/dev/null
 
 for level in 0 2; do
     "$CC" -Werror -Wno-override-module -O"$level" "$ABI_TMP/internal.ll" \

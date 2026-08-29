@@ -131,7 +131,7 @@ let expr_ty = function
   | EBool _ -> Bool
   | Null (t, _) -> t
   | EString _ -> ConstPtr (Int U8)
-  | Sizeof _ | Alignof _ | Offsetof _ -> Int U64
+  | Sizeof _ | Alignof _ | Offsetof _ -> Int Usize
 
 let expr_span = function
   | EInt (_, _, s)
@@ -160,17 +160,18 @@ let expr_span = function
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 let round_up x a = if a <= 1 then x else (x + a - 1) / a * a
 
-let int_bytes = function
+let int_bytes ?(target = Target_layout.current) = function
   | U8 | I8 -> 1
   | U16 | I16 -> 2
   | U32 | I32 -> 4
-  | U64 | I64 | Usize | Isize -> 8
+  | U64 | I64 -> 8
+  | Usize | Isize -> target.Target_layout.pointer_size
 
-let int_layout target k = Target_layout.integer target (int_bytes k * 8)
+let int_layout target k = Target_layout.integer target (int_bytes ~target k * 8)
 
 let scalar_bits target = function
   | Bool -> Ok 1
-  | Int k -> Ok (int_bytes k * 8)
+  | Int k -> Ok (int_bytes ~target k * 8)
   | Ptr _ | ConstPtr _ -> Ok (target.Target_layout.pointer_size * 8)
   | _ -> Error "vector element type must be a scalar"
 
