@@ -20,6 +20,8 @@ extern "C" {
     fn c_i64(x i64) i64
     fn c_usize(x usize) usize
     fn c_isize(x isize) isize
+    fn c_const_ptr(value ptr[const u8]) ptr[const u8]
+    fn c_mut_ptr(value ptr[u8]) ptr[u8]
     fn c_check_pair(value ptr[const Pair]) u64
     fn c_write_pair(value ptr[Pair]) void
     fn c_check_aligned(value ptr[const Aligned]) u64
@@ -27,15 +29,21 @@ extern "C" {
 }
 
 fn main() i32 {
-    if c_bool(true) { return 1 }
-    if c_u8(250) != 251 { return 2 }
-    if c_i8(-7) != -8 { return 3 }
-    if c_u16(60000) != 60001 { return 4 }
-    if c_i16(-30000) != -30001 { return 5 }
-    if c_u32(4000000000) != 4000000001 { return 6 }
-    if c_i32(-2000000000) != -1999999999 { return 7 }
-    if c_u64(9000000000) != 9000000001 { return 8 }
-    if c_i64(-9000000000) != -8999999999 { return 9 }
+    if !c_bool(true) || c_bool(false) { return 1 }
+    if c_u8(0) != 0 || c_u8(255) != 255 { return 2 }
+    if c_i8(-128) != -128 || c_i8(127) != 127 { return 3 }
+    if c_u16(0) != 0 || c_u16(65535) != 65535 { return 4 }
+    if c_i16(-32768) != -32768 || c_i16(32767) != 32767 { return 5 }
+    if c_u32(0) != 0 || c_u32(4294967295) != 4294967295 { return 6 }
+    if c_i32(-2147483648) != -2147483648 || c_i32(2147483647) != 2147483647 {
+        return 7
+    }
+    if c_u64(0) != 0 || c_u64(18446744073709551615) != 18446744073709551615 {
+        return 8
+    }
+    if c_i64(-9223372036854775808) != -9223372036854775808 || c_i64(9223372036854775807) != 9223372036854775807 {
+        return 9
+    }
     pair Pair = (Pair){41, -12}
     if c_check_pair(&pair) != 1 { return 10 }
     c_write_pair(&pair)
@@ -50,7 +58,15 @@ fn main() i32 {
     if c_variadic(77, b, u8_value, i8_value, u16_value, i16_value) != 1 {
         return 13
     }
-    if c_usize(9000000000) != 9000000001 { return 14 }
-    if c_isize(-9000000000) != -9000000001 { return 15 }
+    if c_usize(0) != 0 || c_usize(18446744073709551615) != 18446744073709551615 {
+        return 14
+    }
+    if c_isize(-9223372036854775808) != -9223372036854775808 || c_isize(9223372036854775807) != 9223372036854775807 {
+        return 15
+    }
+    byte u8 = 44
+    if c_const_ptr(&byte)[0] != 44 { return 16 }
+    c_mut_ptr(&byte)[0] = 45
+    if byte != 45 { return 17 }
     return 0
 }

@@ -20,17 +20,19 @@ _Static_assert(sizeof(struct Aligned) == 16, "Aligned size");
 _Static_assert(_Alignof(struct Aligned) == 16, "Aligned alignment");
 _Static_assert(offsetof(struct Aligned, value) == 8, "Aligned field offset");
 
-bool c_bool(bool x) { return !x; }
-uint8_t c_u8(uint8_t x) { return (uint8_t)(x + 1); }
-int8_t c_i8(int8_t x) { return (int8_t)(x - 1); }
-uint16_t c_u16(uint16_t x) { return (uint16_t)(x + 1); }
-int16_t c_i16(int16_t x) { return (int16_t)(x - 1); }
-uint32_t c_u32(uint32_t x) { return x + 1; }
-int32_t c_i32(int32_t x) { return x + 1; }
-uint64_t c_u64(uint64_t x) { return x + 1; }
-int64_t c_i64(int64_t x) { return x + 1; }
-size_t c_usize(size_t x) { return x + 1; }
-ptrdiff_t c_isize(ptrdiff_t x) { return x - 1; }
+bool c_bool(bool x) { return x; }
+uint8_t c_u8(uint8_t x) { return x; }
+int8_t c_i8(int8_t x) { return x; }
+uint16_t c_u16(uint16_t x) { return x; }
+int16_t c_i16(int16_t x) { return x; }
+uint32_t c_u32(uint32_t x) { return x; }
+int32_t c_i32(int32_t x) { return x; }
+uint64_t c_u64(uint64_t x) { return x; }
+int64_t c_i64(int64_t x) { return x; }
+size_t c_usize(size_t x) { return x; }
+ptrdiff_t c_isize(ptrdiff_t x) { return x; }
+const uint8_t *c_const_ptr(const uint8_t *value) { return value; }
+uint8_t *c_mut_ptr(uint8_t *value) { return value; }
 
 uint64_t c_check_pair(const struct Pair *value) {
     return value->left == 41 && value->right == -12;

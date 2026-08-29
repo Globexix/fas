@@ -80,7 +80,7 @@ and assign_target =
 and field = { name : string; ty : ty; span : Span.t }
 and param = { name : string; ty : ty; span : Span.t }
 and const_param = { name : string; ty : ty; span : Span.t }
-and body = Statements of stmt list | Asm of string
+and body = Declaration | Statements of stmt list | Asm of string
 and linkage = Internal | External_c
 
 and item =
@@ -274,6 +274,7 @@ let render_item = function
       ^ ") " ^ type_name ret
       ^
       match body with
+      | Declaration -> ""
       | Asm raw -> " {" ^ raw ^ "}"
       | Statements xs ->
           " {\n" ^ String.concat "\n" (List.concat_map (stmt_lines "  ") xs) ^ "\n}")

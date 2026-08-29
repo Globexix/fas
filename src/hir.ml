@@ -64,14 +64,15 @@ type stmt =
   | Expr of expr * Span.t
   | Block of stmt list * Span.t
 
+type func_body = Declaration | Statements of stmt list | Asm of string
+
 type func = {
   name : string;
   params : (string * ty) list;
   ret : ty;
-  body : stmt list;
+  body : func_body;
   linkage : linkage;
   variadic : bool;
-  asm_body : string option;
 }
 
 type program = {

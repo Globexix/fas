@@ -1967,6 +1967,11 @@ let check ?(limits = Limits.default) program =
                     error p.span (Printf.sprintf "duplicate parameter `%s`" p.name)
                 | None -> Ok ()
               in
+              let* () =
+                if linkage = Ast.External_c && const_params <> [] then
+                  error span "extern \"C\" functions cannot have const parameters"
+                else Ok ()
+              in
               let* () = validate_const_params named_types const_params in
               let* ps =
                 map_params (fun (param : Ast.param) -> source_obj param.ty) params
@@ -2037,7 +2042,9 @@ let check ?(limits = Limits.default) program =
       else Ok ()
     in
     all_strings := context.strings;
-    Ok ({ Hir.name; params; ret; body; linkage; variadic; asm_body = None } : Hir.func)
+    Ok
+      ({ Hir.name; params; ret; body = Hir.Statements body; linkage; variadic }
+        : Hir.func)
   in
   let add_func func = funcs := func :: !funcs in
   let check_func = function
@@ -2048,22 +2055,18 @@ let check ?(limits = Limits.default) program =
         let linkage = hir_linkage linkage in
         let* func =
           match body with
+          | Ast.Declaration ->
+              Ok
+                ({ Hir.name; params; ret; body = Hir.Declaration; linkage; variadic }
+                  : Hir.func)
           | Ast.Asm raw ->
               Ok
-                ({
-                   Hir.name;
-                   params;
-                   ret;
-                   body = [];
-                   linkage;
-                   variadic;
-                   asm_body = Some raw;
-                 }
+                ({ Hir.name; params; ret; body = Hir.Asm raw; linkage; variadic }
                   : Hir.func)
           | Ast.Statements stmts ->
               check_function_body ~name ~description:"function" ~span ~params ~ret
                 ~stmts ~linkage ~variadic ~extra_consts:[] ~spec_depth:0
-                ~require_return:(linkage <> Hir.External_c)
+                ~require_return:true
         in
         add_func func;
         Ok ()

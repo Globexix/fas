@@ -550,6 +550,17 @@ let () =
   semantic_error "extern-c-opaque-parameter"
     "opaque type `Handle` may only be used behind a pointer"
     "opaque Handle\nextern \"C\" { fn take(value Handle) void }\n";
+  semantic_error "extern-c-definition-fallthrough" "may reach the end without returning"
+    "extern \"C\" { fn value() i64 { } }\n";
+  semantic_error "extern-c-definition-struct-parameter"
+    "cannot use `S` by value; use a pointer"
+    "struct S { x i64 }\nextern \"C\" { fn take(value S) void { return } }\n";
+  parse_error_message "extern-c-variadic-definition"
+    "extern \"C\" function definitions cannot be variadic"
+    "extern \"C\" { fn take(marker u64, ...) void { return } }\n";
+  semantic_error "extern-c-const-parameter"
+    "extern \"C\" functions cannot have const parameters"
+    "extern \"C\" { fn value[N const usize]() usize }\n";
   let c_scalar_abi =
     llvm_of
       "extern \"C\" {\n\
@@ -580,6 +591,29 @@ let () =
       "declare signext i16 @i16_value(i16 signext)";
       "call zeroext i1 @b(i1 zeroext true)";
       "call signext i8 @i8_value(i8 signext 255)";
+    ];
+  let c_definition_abi =
+    llvm_of
+      "extern \"C\" {\n\
+       fn b_value(x bool) bool { return x }\n\
+       fn u8_value(x u8) u8 { return x }\n\
+       fn i8_value(x i8) i8 { return x }\n\
+       fn u16_value(x u16) u16 { return x }\n\
+       fn i16_value(x i16) i16 { return x }\n\
+       fn empty() void { }\n\
+       }\n"
+  in
+  List.iter
+    (fun expected ->
+      if not (contains c_definition_abi expected) then
+        failwith ("extern-c-definition: missing `" ^ expected ^ "`"))
+    [
+      "define zeroext i1 @b_value(i1 zeroext";
+      "define zeroext i8 @u8_value(i8 zeroext";
+      "define signext i8 @i8_value(i8 signext";
+      "define zeroext i16 @u16_value(i16 zeroext";
+      "define signext i16 @i16_value(i16 signext";
+      "define void @empty()";
     ];
   let internal_aggregate_abi =
     llvm_of
@@ -1261,10 +1295,9 @@ let () =
                Hir.name = "f";
                params = [ ("x", Hir.Opaque "X") ];
                ret = Hir.Void;
-               body = [];
+               body = Hir.Statements [];
                linkage = Hir.Internal;
                variadic = false;
-               asm_body = None;
              };
            ];
        }
@@ -1308,10 +1341,11 @@ let () =
                       Hir.name = "f";
                       params = [];
                       ret = Hir.Void;
-                      body = [ Hir.Let ("x", Hir.Opaque "X", None, Span.synthetic) ];
+                      body =
+                        Hir.Statements
+                          [ Hir.Let ("x", Hir.Opaque "X", None, Span.synthetic) ];
                       linkage = Hir.Internal;
                       variadic = false;
-                      asm_body = None;
                     };
                   ];
               });

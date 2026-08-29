@@ -945,8 +945,8 @@ let lower_func structs strings c_functions force_external f =
   let ret_extension =
     if f.linkage = Hir.External_c then c_extension f.ret else Ir.No_extension
   in
-  match f.asm_body with
-  | Some raw ->
+  match f.body with
+  | Hir.Asm raw ->
       Ok
         {
           Ir.name = f.name;
@@ -958,7 +958,7 @@ let lower_func structs strings c_functions force_external f =
           variadic = f.variadic;
           asm_body = Some raw;
         }
-  | None when f.linkage = Hir.External_c && f.body = [] ->
+  | Hir.Declaration ->
       Ok
         {
           Ir.name = f.name;
@@ -970,7 +970,7 @@ let lower_func structs strings c_functions force_external f =
           variadic = f.variadic;
           asm_body = None;
         }
-  | None ->
+  | Hir.Statements body ->
       let entry = { id = 0; instrs = Queue.create (); term = ref None } in
       let blocks = Queue.create () in
       Queue.add entry blocks;
@@ -1000,7 +1000,7 @@ let lower_func structs strings c_functions force_external f =
           bind_local s n p;
           emit s (Ir.Store (ty t, Ir.Param (n, ty t), p, align s t)))
         f.params;
-      let* () = stmt_list s f.body in
+      let* () = stmt_list s body in
       let* () = if open_block s then emit_scope_defers s 0 else Ok () in
       if open_block s then
         s.current.term := Some (if s.ret = Ir.Void then Ir.Ret None else Ir.Unreachable);
@@ -1097,9 +1097,9 @@ let lower (p : Hir.program) =
   let asm_words =
     List.concat_map
       (fun (f : Hir.func) ->
-        match f.asm_body with
-        | None -> []
-        | Some raw ->
+        match f.body with
+        | Hir.Declaration | Hir.Statements _ -> []
+        | Hir.Asm raw ->
             String.split_on_char ' '
               (String.map
                  (fun c ->

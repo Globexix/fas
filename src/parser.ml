@@ -491,10 +491,7 @@ module P = struct
         else
           let* x = fn_item p false true in
           match x with
-          | Ast.Func f ->
-              ds
-                (Ast.Func { f with body = Ast.Statements []; linkage = Ast.External_c }
-                :: acc)
+          | Ast.Func f -> ds (Ast.Func { f with linkage = Ast.External_c } :: acc)
           | _ -> Error [ Diag.error s "invalid extern declaration" ]
       in
       ds []
@@ -530,19 +527,41 @@ module P = struct
              span = s;
            }))
     else if allow_variadic then
-      let* () = end_stmt p in
-      Ok
-        (Ast.Func
-           {
-             name;
-             params = ps;
-             ret;
-             body = Ast.Statements [];
-             linkage = Ast.External_c;
-             variadic = var;
-             const_params = cps;
-             span = s;
-           })
+      if at p Token.Lbrace then
+        if var then
+          Error
+            [
+              Diag.error (span p) "extern \"C\" function definitions cannot be variadic";
+            ]
+        else
+          let* body = block p in
+          let* () = end_stmt p in
+          Ok
+            (Ast.Func
+               {
+                 name;
+                 params = ps;
+                 ret;
+                 body = Ast.Statements body;
+                 linkage = Ast.External_c;
+                 variadic = false;
+                 const_params = cps;
+                 span = s;
+               })
+      else
+        let* () = end_stmt p in
+        Ok
+          (Ast.Func
+             {
+               name;
+               params = ps;
+               ret;
+               body = Ast.Declaration;
+               linkage = Ast.External_c;
+               variadic = var;
+               const_params = cps;
+               span = s;
+             })
     else
       let* body = block p in
       Ok
