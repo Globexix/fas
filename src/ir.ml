@@ -63,14 +63,7 @@ type terminator =
   | Switch of ty * value * (int64 * int) list * int
   | Unreachable
 
-type param = {
-  name : string;
-  ty : ty;
-  extension : extension;
-  noalias : bool;
-  align : int option;
-}
-
+type param = { name : string; ty : ty; extension : extension }
 type linkage = Internal | External
 
 type func = {
@@ -281,11 +274,7 @@ let term_line = function
   | Unreachable -> "  unreachable"
 
 let param_string named p =
-  let a =
-    (if p.noalias then " noalias" else "")
-    ^ match p.align with None -> "" | Some n -> Printf.sprintf " noundef align %d" n
-  in
-  ty_name p.ty ^ extension_attr p.extension ^ a ^ if named then " %" ^ p.name else ""
+  ty_name p.ty ^ extension_attr p.extension ^ if named then " %" ^ p.name else ""
 
 let render m =
   let header =

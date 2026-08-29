@@ -15,13 +15,7 @@ type field = { name : string; ty : ty; offset : int }
 type struct_def = { name : string; fields : field list; size : int; align : int }
 type const_def = { name : string; ty : ty; bits : int64 }
 type const_arr_def = { name : string; ty : ty; elems : int64 list }
-
-type func_sig = {
-  params : (string * ty * bool * int option) list;
-  ret : ty;
-  variadic : bool;
-}
-
+type func_sig = { params : (string * ty) list; ret : ty; variadic : bool }
 type linkage = Internal | External_c
 type builtin = Shl | Lshr | Ashr | Rotl | Rotr | Popcount | Ctz | Clz
 type call_target = User of string | Builtin of builtin
@@ -72,7 +66,7 @@ type stmt =
 
 type func = {
   name : string;
-  params : (string * ty * bool * int option) list;
+  params : (string * ty) list;
   ret : ty;
   body : stmt list;
   linkage : linkage;
@@ -256,7 +250,7 @@ let render p =
   in
   let one_fn f =
     Printf.sprintf "fn %s(%s) %s" f.name
-      (String.concat ", " (List.map (fun (n, t, _, _) -> n ^ ":" ^ ty_name t) f.params))
+      (String.concat ", " (List.map (fun (n, t) -> n ^ ":" ^ ty_name t) f.params))
       (ty_name f.ret)
   in
   String.concat "\n" (List.map one_struct p.structs @ List.map one_fn p.funcs)

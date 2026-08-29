@@ -13,11 +13,7 @@ type checked_target = {
   path : place_path option;
 }
 
-type signature = {
-  params : (string * Hir.ty * bool * int option) list;
-  ret : Hir.ty;
-  variadic : bool;
-}
+type signature = { params : (string * Hir.ty) list; ret : Hir.ty; variadic : bool }
 
 type specialization = {
   item : Ast.item;
@@ -166,7 +162,7 @@ let validate_extern_c_signature span params converted ret =
   let rec validate_params params converted =
     match (params, converted) with
     | [], [] -> Ok ()
-    | (param : Ast.param) :: param_rest, (_, ty, _, _) :: converted_rest ->
+    | (param : Ast.param) :: param_rest, (_, ty) :: converted_rest ->
         if extern_c_value_type ty then validate_params param_rest converted_rest
         else
           error param.span
@@ -1336,7 +1332,7 @@ and check_call c _expected fn args s =
               Result_list.map
                 (fun (p : Ast.param) ->
                   let* t = source_ty_diag c.named_types p.span p.ty in
-                  Ok (p.name, t, false, None))
+                  Ok (p.name, t))
                 params
             in
             let* rt = source_ty_diag c.named_types s ret in
@@ -1437,7 +1433,7 @@ and check_actuals c policy span formals actuals =
                 rest
         in
         Ok (List.rev_append checked trailing)
-    | (_, expected, _, _) :: formal_rest, expression :: actual_rest ->
+    | (_, expected) :: formal_rest, expression :: actual_rest ->
         let* value = check_expr c (Some expected) expression in
         let* () =
           ensure_expected (Hir.expr_ty value) expected (Ast.expr_span expression)
@@ -1894,7 +1890,7 @@ let check ?(limits = Limits.default) program =
     Result_list.map
       (fun (param : Ast.param) ->
         let* ty = convert param in
-        Ok (param.name, ty, false, None))
+        Ok (param.name, ty))
       params
   in
   let source_params =
@@ -2026,7 +2022,7 @@ let check ?(limits = Limits.default) program =
       ~variadic ~extra_consts ~spec_depth ~require_return =
     let context = make_context ~extra_consts ~spec_depth ~ret_ty:ret in
     List.iter
-      (fun (param_name, param_ty, _, _) ->
+      (fun (param_name, param_ty) ->
         ignore (add_local param_name param_ty context span);
         match lookup_local param_name context with
         | Some binding -> mark_init binding context

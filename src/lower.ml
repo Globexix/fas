@@ -373,7 +373,7 @@ let rec expr s = function
               match c_function with
               | Some f -> (
                   match List.nth_opt f.params index with
-                  | Some (_, formal, _, _) -> c_extension formal
+                  | Some (_, formal) -> c_extension formal
                   | None -> Ir.No_extension)
               | None -> Ir.No_extension
             in
@@ -922,18 +922,16 @@ and lower_switch s e arms default =
   Ok ()
 
 let lower_func structs strings c_functions force_external f =
-  let* () = Result_list.iter (fun (_, t, _, _) -> layout_ok structs t) f.Hir.params in
+  let* () = Result_list.iter (fun (_, t) -> layout_ok structs t) f.Hir.params in
   let* () = if f.Hir.ret = Hir.Void then Ok () else layout_ok structs f.Hir.ret in
   let params =
     List.map
-      (fun (n, t, noalias, align) ->
+      (fun (n, t) ->
         ({
            Ir.name = n;
            ty = ty t;
            extension =
              (if f.linkage = Hir.External_c then c_extension t else Ir.No_extension);
-           noalias;
-           align;
          }
           : Ir.param))
       f.Hir.params
@@ -989,13 +987,12 @@ let lower_func structs strings c_functions force_external f =
       in
       push_scope s;
       List.iter
-        (fun (n, t, _, a) ->
+        (fun (n, t) ->
           let id = fresh s in
-          emit s (Ir.Alloca (id, ty t, Option.value ~default:(align s t) a));
+          emit s (Ir.Alloca (id, ty t, align s t));
           let p = Ir.Local (id, Ir.Ptr (ty t)) in
           bind_local s n p;
-          emit s
-            (Ir.Store (ty t, Ir.Param (n, ty t), p, Option.value ~default:(align s t) a)))
+          emit s (Ir.Store (ty t, Ir.Param (n, ty t), p, align s t)))
         f.params;
       let* () = stmt_list s f.body in
       let* () = if open_block s then emit_scope_defers s 0 else Ok () in
@@ -1055,13 +1052,7 @@ let intrinsic_decls funcs =
         params =
           List.mapi
             (fun i ty ->
-              {
-                Ir.name = "a" ^ string_of_int i;
-                ty;
-                extension = Ir.No_extension;
-                noalias = false;
-                align = None;
-              })
+              { Ir.name = "a" ^ string_of_int i; ty; extension = Ir.No_extension })
             args;
         ret;
         ret_extension = Ir.No_extension;

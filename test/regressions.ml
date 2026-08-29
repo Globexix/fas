@@ -709,7 +709,15 @@ let () =
     (fun marker ->
       if contains attribute_free_ir marker then
         failwith ("optimizer attribute leaked into LLVM: " ^ marker))
-    [ "inlinehint"; "noinline"; "optnone"; "\"target-cpu\""; "\"target-features\"" ];
+    [
+      "inlinehint";
+      "noinline";
+      "optnone";
+      "\"target-cpu\"";
+      "\"target-features\"";
+      "noalias";
+      "noundef align";
+    ];
   semantic_error "fas-002-switch-default-init-leak" "use of uninitialized local `x`"
     "fn main() i32 {\n\
     \     x i32\n\
@@ -1185,7 +1193,7 @@ let () =
            [
              {
                Hir.name = "f";
-               params = [ ("x", Hir.Opaque "X", false, None) ];
+               params = [ ("x", Hir.Opaque "X") ];
                ret = Hir.Void;
                body = [];
                linkage = Hir.Internal;
