@@ -929,31 +929,33 @@ module P = struct
 
   and postfix p =
     let* first = primary p in
+    let brackets_before_call () =
+      let rec scan offset depth =
+        match (peek_n p offset).kind with
+        | Token.Lbracket -> scan (offset + 1) (depth + 1)
+        | Token.Rbracket when depth = 1 -> (peek_n p (offset + 1)).kind = Token.Lparen
+        | Token.Rbracket when depth > 1 -> scan (offset + 1) (depth - 1)
+        | Token.Eof | Token.Newline -> false
+        | _ -> scan (offset + 1) depth
+      in
+      scan 0 0
+    in
     let rec go e =
       match (peek p).kind with
       | Token.Lparen ->
           let s = span p in
           let* xs = args p in
           go (Ast.Call (e, xs, s))
-      | Token.Lbracket -> (
+      | Token.Lbracket when brackets_before_call () ->
+          let s = span p in
+          let* arguments = generic_args p in
+          go (Ast.Generic_args (e, arguments, s))
+      | Token.Lbracket ->
           let s = span p in
           ignore (bump p);
           let* x = expr p in
-          if eat p Token.Comma then
-            let rec xs acc =
-              let* y = expr p in
-              if eat p Token.Comma then xs (y :: acc)
-              else
-                let* () = expected p Token.Rbracket in
-                Ok (List.rev (y :: acc))
-            in
-            let* ys = xs [ x ] in
-            go (Ast.Const_args (e, ys, s))
-          else
-            let* () = expected p Token.Rbracket in
-            match e with
-            | Ast.Ident _ when at p Token.Lparen -> go (Ast.Const_args (e, [ x ], s))
-            | _ -> go (Ast.Index (e, x, s)))
+          let* () = expected p Token.Rbracket in
+          go (Ast.Index (e, x, s))
       | Token.Dot ->
           let s = span p in
           ignore (bump p);

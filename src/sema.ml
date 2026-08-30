@@ -23,7 +23,11 @@ type specialization_arg =
 type specialization_key = specialization_kind * string * specialization_arg list
 
 type specialization_payload =
-  | Function_payload of { item : Ast.item; values : (string * Hir.ty * int64) list }
+  | Function_payload of {
+      item : Ast.item;
+      substitutions : (string * Ast.ty) list;
+      values : (string * Hir.ty * int64) list;
+    }
   | Struct_payload of { template : Ast.item; substitutions : (string * Ast.ty) list }
 
 type specialization = {
@@ -1150,8 +1154,8 @@ and check_expr (c : context) expected = function
               else error s "arithmetic requires integer or vector operands"
           | Ast.And | Ast.Or -> error s "logical operators are handled separately")
   | Ast.Call (fn, args, s) -> check_call c None fn args s
-  | Ast.Const_args (_fn, _, s) ->
-      error s "const-generic specialization is not available in this checkpoint"
+  | Ast.Generic_args (_fn, _, s) ->
+      error s "generic specialization is not available in this context"
   | Ast.Cast (k, t, e, s) ->
       let* t = source_ty_diag c.named_types s t in
       let* x =
@@ -1333,16 +1337,24 @@ and function_specialization_key name values =
     name,
     List.map (fun (_, t, v) -> Const_specialization_arg (t, v)) values )
 
+and generic_const_argument span = function
+  | Ast.Const_arg expression -> Ok expression
+  | Ast.Name_arg (name, span) -> Ok (Ast.Ident (name, span))
+  | Ast.Type_arg _ -> error span "expected a const argument"
+
 and check_call c _expected fn args s =
   match fn with
-  | Ast.Const_args (Ast.Ident (name, _), cargs, _) -> (
+  | Ast.Generic_args (Ast.Ident (name, _), generic_args, _) -> (
       match List.assoc_opt name c.templates with
-      | None -> error s (Printf.sprintf "unknown const-generic function `%s`" name)
+      | None -> error s (Printf.sprintf "unknown generic function `%s`" name)
       | Some (Ast.Func { params; ret; body; generic_params; _ }) ->
           let const_params = const_params generic_params in
-          if List.length cargs <> List.length const_params then
+          if has_type_params generic_params then
+            error s "type-generic call reached ordinary type checking"
+          else if List.length generic_args <> List.length const_params then
             error s (Printf.sprintf "wrong number of const arguments to `%s`" name)
           else
+            let* cargs = Result_list.map (generic_const_argument s) generic_args in
             let rec eval acc cps actual =
               match (cps, actual) with
               | [], [] -> Ok (List.rev acc)
@@ -1379,6 +1391,7 @@ and check_call c _expected fn args s =
                             generic_params;
                             span = s;
                           };
+                      substitutions = [];
                       values;
                     };
               }
@@ -1461,7 +1474,12 @@ and check_call c _expected fn args s =
       | Some b -> check_builtin b
       | None -> (
           match lookup_sig name c with
-          | None -> error s (Printf.sprintf "unknown function `%s`" name)
+          | None -> (
+              match List.assoc_opt name c.templates with
+              | Some _ ->
+                  error s
+                    (Printf.sprintf "generic function `%s` requires arguments" name)
+              | None -> error s (Printf.sprintf "unknown function `%s`" name))
           | Some sig_ ->
               if
                 ((not sig_.variadic) && List.length args <> List.length sig_.params)
@@ -1917,8 +1935,8 @@ let mangle_type_specialization base arguments =
            string_of_int (String.length key) ^ "_" ^ key)
          arguments)
 
-let monomorphize_structs ~limits specializations program =
-  let templates =
+let monomorphize_types ~limits specializations program =
+  let struct_templates =
     List.filter_map
       (function
         | Ast.Struct ({ name; generic_params = _ :: _; _ } as template) ->
@@ -1926,9 +1944,22 @@ let monomorphize_structs ~limits specializations program =
         | _ -> None)
       program.Ast.items
   in
+  let function_templates =
+    List.filter_map
+      (function
+        | Ast.Func ({ name; generic_params = _ :: _; _ } as template) ->
+            Some (name, Ast.Func template)
+        | _ -> None)
+      program.Ast.items
+  in
   let struct_names =
     List.filter_map
       (function Ast.Struct { name; _ } -> Some name | _ -> None)
+      program.Ast.items
+  in
+  let function_names =
+    List.filter_map
+      (function Ast.Func { name; _ } -> Some name | _ -> None)
       program.Ast.items
   in
   let generated = ref [] in
@@ -1952,12 +1983,12 @@ let monomorphize_structs ~limits specializations program =
         match List.assoc_opt name substitutions with
         | Some ty -> Ok ty
         | None ->
-            if List.mem_assoc name templates then
+            if List.mem_assoc name struct_templates then
               error span
                 (Printf.sprintf "generic struct `%s` requires type arguments" name)
             else Ok (Ast.Named_type name))
     | Ast.Applied_type (name, arguments) -> (
-        match List.assoc_opt name templates with
+        match List.assoc_opt name struct_templates with
         | None ->
             if List.mem name struct_names then
               error span (Printf.sprintf "struct `%s` is not generic" name)
@@ -2029,10 +2060,81 @@ let monomorphize_structs ~limits specializations program =
         let* callee = resolve_expr substitutions depth callee in
         let* arguments = Result_list.map (resolve_expr substitutions depth) arguments in
         Ok (Ast.Call (callee, arguments, span))
-    | Ast.Const_args (callee, arguments, span) ->
-        let* callee = resolve_expr substitutions depth callee in
-        let* arguments = Result_list.map (resolve_expr substitutions depth) arguments in
-        Ok (Ast.Const_args (callee, arguments, span))
+    | Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span) -> (
+        match List.assoc_opt name function_templates with
+        | None ->
+            if List.mem name function_names then
+              error span (Printf.sprintf "function `%s` is not generic" name)
+            else error span (Printf.sprintf "unknown generic function `%s`" name)
+        | Some (Ast.Func ({ generic_params; _ } as template)) ->
+            if has_type_params generic_params && has_const_params generic_params then
+              error span
+                "mixed type and const generic functions are not available in this \
+                 checkpoint"
+            else if has_const_params generic_params then
+              let resolve_argument = function
+                | Ast.Const_arg expression ->
+                    let* expression = resolve_expr substitutions depth expression in
+                    Ok (Ast.Const_arg expression)
+                | Ast.Name_arg _ as argument -> Ok argument
+                | Ast.Type_arg _ -> error span "expected a const argument"
+              in
+              let* arguments = Result_list.map resolve_argument arguments in
+              Ok (Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span))
+            else if List.length arguments <> List.length generic_params then
+              error span (Printf.sprintf "wrong number of type arguments to `%s`" name)
+            else
+              let rec resolve_arguments resolved bindings params arguments =
+                match (params, arguments) with
+                | [], [] -> Ok (List.rev resolved, List.rev bindings)
+                | ( Ast.Type_param { name = parameter; _ } :: params,
+                    argument :: arguments ) ->
+                    let* argument =
+                      match argument with
+                      | Ast.Type_arg ty -> resolve_ty substitutions depth span ty
+                      | Ast.Name_arg (name, _) ->
+                          resolve_ty substitutions depth span (Ast.Named_type name)
+                      | Ast.Const_arg expression ->
+                          error (Ast.expr_span expression) "expected a type argument"
+                    in
+                    resolve_arguments (argument :: resolved)
+                      ((parameter, argument) :: bindings)
+                      params arguments
+                | _ -> error span "generic argument arity mismatch"
+              in
+              let* arguments, type_substitutions =
+                resolve_arguments [] [] generic_params arguments
+              in
+              let specialization_name = mangle_type_specialization name arguments in
+              let key =
+                ( Function_specialization,
+                  name,
+                  List.map
+                    (fun ty -> Type_specialization_arg (specialization_type_key ty))
+                    arguments )
+              in
+              let specialization =
+                {
+                  key;
+                  name = specialization_name;
+                  depth;
+                  payload =
+                    Function_payload
+                      {
+                        item = Ast.Func template;
+                        substitutions = type_substitutions;
+                        values = [];
+                      };
+                }
+              in
+              let* specialization =
+                request_specialization specializations ~limits ~depth ~span
+                  ~description:"function specialization" specialization
+              in
+              Ok (Ast.Ident (specialization.name, ident_span))
+        | Some _ -> error span "internal error: generic function template is malformed")
+    | Ast.Generic_args (_, _, span) ->
+        error span "generic call target must be a function name"
     | Ast.Cast (kind, ty, expression, span) ->
         let* ty = resolve_ty substitutions depth span ty in
         let* expression = resolve_expr substitutions depth expression in
@@ -2177,6 +2279,39 @@ let monomorphize_structs ~limits specializations program =
               Ok (Some body)
         in
         Ok (Ast.Switch (expression, cases, default, span))
+  and resolve_function substitutions depth specialization_name = function
+    | Ast.Func ({ params; ret; body; span; _ } as item) ->
+        let* params =
+          Result_list.map
+            (fun (parameter : Ast.param) ->
+              let* ty = resolve_ty substitutions depth parameter.span parameter.ty in
+              Ok ({ parameter with ty } : Ast.param))
+            params
+        in
+        let* ret = resolve_ty substitutions depth span ret in
+        let* body =
+          match body with
+          | Ast.Declaration -> Ok Ast.Declaration
+          | Ast.Asm raw -> Ok (Ast.Asm raw)
+          | Ast.Statements statements ->
+              let* statements =
+                Result_list.map (resolve_stmt substitutions depth) statements
+              in
+              Ok (Ast.Statements statements)
+        in
+        Ok
+          (Ast.Func
+             {
+               item with
+               name = specialization_name;
+               params;
+               ret;
+               body;
+               linkage = Ast.Internal;
+               variadic = false;
+               generic_params = [];
+             })
+    | _ -> error Span.synthetic "internal error: function specialization is malformed"
   and resolve_item = function
     | Ast.Struct { generic_params = _ :: _; _ } as item -> Ok item
     | Ast.Struct ({ fields; _ } as item) ->
@@ -2243,9 +2378,19 @@ let monomorphize_structs ~limits specializations program =
             materialize ()
         | _ -> error Span.synthetic "internal error: struct specialization is malformed"
         )
+    | Some
+        {
+          payload = Function_payload { item; substitutions; values = [] };
+          name;
+          depth;
+          _;
+        }
+      when substitutions <> [] ->
+        let* item = resolve_function substitutions (depth + 1) name item in
+        generated := item :: !generated;
+        materialize ()
     | Some { payload = Function_payload _; _ } ->
-        error Span.synthetic
-          "internal error: function specialization was queued too early"
+        error Span.synthetic "internal error: const specialization was queued too early"
   in
   let* () = materialize () in
   Ok ({ Ast.items = items @ List.rev !generated } : Ast.program)
@@ -2277,12 +2422,17 @@ let check ?(limits = Limits.default) program =
             if has_const_params generic_params then
               error span "const-generic structs are not available in this checkpoint"
             else Ok ()
-        | Ast.Func { generic_params; span; _ } when has_type_params generic_params ->
-            error span "type-generic declarations are not available in this checkpoint"
+        | Ast.Func { generic_params; span; _ } ->
+            let* () = validate_generic_params named_types generic_params in
+            if has_type_params generic_params && has_const_params generic_params then
+              error span
+                "mixed type and const generic functions are not available in this \
+                 checkpoint"
+            else Ok ()
         | _ -> Ok ())
       program.Ast.items
   in
-  let* program = monomorphize_structs ~limits specializations program in
+  let* program = monomorphize_types ~limits specializations program in
   let* named_types = collect_named_types [] [] program.Ast.items in
   let rec collect_structs acc = function
     | [] -> Ok (List.rev acc)
@@ -2381,7 +2531,7 @@ let check ?(limits = Limits.default) program =
     | _ -> Ok ()
   in
   let* () = Result_list.iter eval_const_item program.items in
-  let sigs = ref [] in
+  let sigs = ref [] and declared_functions = ref [] in
   let* () =
     List.fold_left
       (fun r item ->
@@ -2397,11 +2547,12 @@ let check ?(limits = Limits.default) program =
                      name)
               else Ok ()
             in
-            if List.exists (fun (n, _) -> n = name) !sigs then
+            if List.mem name !declared_functions then
               error span (Printf.sprintf "duplicate function `%s`" name)
             else if List.exists (fun (n, _, _) -> n = name) !arrays then
               error span (Printf.sprintf "duplicate declaration `%s`" name)
             else
+              let () = declared_functions := name :: !declared_functions in
               let rec dup seen = function
                 | [] -> None
                 | (p : Ast.param) :: xs ->
@@ -2415,24 +2566,28 @@ let check ?(limits = Limits.default) program =
               in
               let* () =
                 if linkage = Ast.External_c && generic_params <> [] then
-                  error span "extern \"C\" functions cannot have const parameters"
+                  error span
+                    (if has_type_params generic_params then
+                       "extern \"C\" functions cannot have type parameters"
+                     else "extern \"C\" functions cannot have const parameters")
                 else Ok ()
               in
               let* () = validate_generic_params named_types generic_params in
-              let* ps =
-                map_params (fun (param : Ast.param) -> source_obj param.ty) params
-              in
-              let* rt = source_ty_diag named_types span ret in
-              let* () =
-                if linkage = Ast.External_c then
-                  validate_extern_c_signature span params ps rt
-                else Ok ()
-              in
               if variadic && linkage <> Ast.External_c then
                 error span "variadic functions require extern \"C\""
-              else (
+              else if generic_params <> [] then Ok ()
+              else
+                let* ps =
+                  map_params (fun (param : Ast.param) -> source_obj param.ty) params
+                in
+                let* rt = source_ty_diag named_types span ret in
+                let* () =
+                  if linkage = Ast.External_c then
+                    validate_extern_c_signature span params ps rt
+                  else Ok ()
+                in
                 sigs := !sigs @ [ (name, { params = ps; ret = rt; variadic }) ];
-                Ok ())
+                Ok ()
         | _ -> Ok ())
       (Ok ()) program.items
   in
@@ -2529,6 +2684,7 @@ let check ?(limits = Limits.default) program =
               item =
                 Ast.Func
                   { params; ret; body = Ast.Statements stmts; linkage; variadic; _ };
+              substitutions = [];
               values;
             } ->
             let* ret = source_ty_diag named_types Span.synthetic ret in

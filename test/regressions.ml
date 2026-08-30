@@ -1372,9 +1372,148 @@ let () =
   | _ -> failwith "generic-argument-syntax: argument forms were not preserved");
   parse_error_message "type-generic-missing-const-type" "expected a type"
     "fn bad[T const](value T) T { return value }\n";
-  semantic_error "type-generic-function-checkpoint"
-    "type-generic declarations are not available in this checkpoint"
-    "fn identity[T](value T) T { return value }\n";
+  let generic_function_source =
+    "fn use() i64 { return identity[i64](identity[i64](7)) }\n\
+     fn identity[T](value T) T { return value }\n"
+  in
+  let generic_function_hir =
+    expect_ok (Parser.parse (source generic_function_source)) |> Sema.check |> expect_ok
+  in
+  let identity_specializations =
+    List.filter
+      (fun (func : Hir.func) ->
+        contains func.name "identity$spec$" && func.name <> "identity")
+      generic_function_hir.Hir.funcs
+  in
+  if List.length identity_specializations <> 1 then
+    failwith "generic-function-deduplication: expected one concrete identity function";
+  (match identity_specializations with
+  | [ { params = [ (_, Hir.Int Hir.I64) ]; ret = Hir.Int Hir.I64; _ } ] -> ()
+  | _ -> failwith "generic-function-substitution: signature was not specialized");
+  let generic_function_llvm =
+    Ir.render (expect_ok (Lower.lower generic_function_hir))
+  in
+  if generic_function_llvm <> llvm_of generic_function_source then
+    failwith "generic-function-order: generated output was not deterministic";
+  if contains generic_function_llvm "define internal i64 @identity(" then
+    failwith "generic-function-template: template reached LLVM output";
+  if not (contains generic_function_llvm "identity$spec$") then
+    failwith "generic-function-lowering: concrete specialization did not reach LLVM";
+  ignore
+    (expect_ok
+       (Sema.check
+          (expect_ok
+             (Parser.parse
+                (source
+                   "fn first[A, B](left A, right B) A { return left }\n\
+                    fn main() i64 { return first[i64, u8](7, 1) }\n")))));
+  let nested_generic_function_source =
+    "struct Box[T] { value T }\n\
+     fn inner[T](value T) Box[T] { return (Box[T]){value} }\n\
+     fn outer[T](value T) Box[T] { return inner[T](value) }\n\
+     fn use() Box[u8] { return outer[u8](3) }\n"
+  in
+  let nested_generic_function_hir =
+    expect_ok (Parser.parse (source nested_generic_function_source))
+    |> Sema.check |> expect_ok
+  in
+  if
+    List.length
+      (List.filter
+         (fun (func : Hir.func) -> contains func.name "$spec$")
+         nested_generic_function_hir.Hir.funcs)
+    <> 2
+  then failwith "generic-function-nesting: nested specialization was not discovered";
+  if
+    List.length
+      (List.filter
+         (fun (definition : Hir.struct_def) -> contains definition.name "Box$spec$")
+         nested_generic_function_hir.Hir.structs)
+    <> 1
+  then
+    failwith
+      "generic-function-struct-use: specialized body did not materialize its struct";
+  let unused_generic_function =
+    expect_ok
+      (Sema.check
+         (expect_ok
+            (Parser.parse
+               (source
+                  "fn unused[T](value T) T { return value + value }\n\
+                   fn main() i64 { return 0 }\n"))))
+  in
+  if
+    List.exists
+      (fun (func : Hir.func) -> contains func.name "unused")
+      unused_generic_function.Hir.funcs
+  then failwith "generic-function-template: unused template was emitted";
+  semantic_error "generic-function-instantiated-body-error" "arithmetic requires"
+    "fn bad[T](value T) T { return value + value }\n\
+     fn main(value ptr[u8]) ptr[u8] { return bad[ptr[u8]](value) }\n";
+  semantic_error "generic-function-arity" "wrong number of type arguments to `pair`"
+    "fn pair[A, B](value A) A { return value }\nfn main() i64 { return pair[i64](1) }\n";
+  semantic_error "generic-function-argument-kind" "expected a type argument"
+    "fn identity[T](value T) T { return value }\n\
+     fn main() i64 { return identity[3](1) }\n";
+  semantic_error "generic-call-to-concrete" "function `identity` is not generic"
+    "fn identity(value i64) i64 { return value }\n\
+     fn main() i64 { return identity[i64](1) }\n";
+  semantic_error "unknown-generic-function" "unknown generic function `identity`"
+    "fn main() i64 { return identity[i64](1) }\n";
+  semantic_error "generic-function-missing-type-arguments"
+    "generic function `identity` requires arguments"
+    "fn identity[T](value T) T { return value }\nfn main() i64 { return identity(1) }\n";
+  semantic_error "extern-c-type-parameter"
+    "extern \"C\" functions cannot have type parameters"
+    "extern \"C\" { fn identity[T](value T) T }\n";
+  semantic_error "mixed-generic-function-checkpoint"
+    "mixed type and const generic functions are not available in this checkpoint"
+    "fn identity[T, N const usize](value T) T { return value }\n";
+  let recursive_function_limits =
+    { Limits.default with max_specialization_depth = 2 }
+  in
+  (match
+     Sema.check ~limits:recursive_function_limits
+       (expect_ok
+          (Parser.parse
+             (source
+                "fn grow[T]() i64 { return grow[ptr[T]]() }\n\
+                 fn main() i64 { return grow[u8]() }\n")))
+   with
+  | Ok _ -> failwith "generic-function-depth-limit: expected rejection"
+  | Error diagnostics ->
+      if
+        not
+          (contains
+             (Diag.render_all ~source:None diagnostics)
+             "function specialization recursion depth limit exceeded")
+      then failwith "generic-function-depth-limit: unexpected diagnostic");
+  let one_function_limit = { Limits.default with max_specializations = 1 } in
+  ignore
+    (expect_ok
+       (Sema.check ~limits:one_function_limit
+          (expect_ok
+             (Parser.parse
+                (source
+                   "fn identity[T](value T) T { return value }\n\
+                    fn main() i64 { return identity[i64](identity[i64](1)) }\n")))));
+  (match
+     Sema.check ~limits:one_function_limit
+       (expect_ok
+          (Parser.parse
+             (source
+                "fn identity[T](value T) T { return value }\n\
+                 fn main() i64 { a u8 = identity[u8](1)\n\
+                 return identity[i64](1) }\n")))
+   with
+  | Ok _ -> failwith "generic-function-count-limit: expected rejection"
+  | Error diagnostics ->
+      if
+        not
+          (contains
+             (Diag.render_all ~source:None diagnostics)
+             "function specialization count limit exceeded")
+      then failwith "generic-function-count-limit: unexpected diagnostic");
 
   let generic_struct_source =
     "struct Box[T] { value T pointer ptr[T] }\n\
@@ -1701,4 +1840,4 @@ let () =
   if not (contains mixed_runtime "phi") then
     failwith "runtime-logical-mixed: short-circuit lowering missing";
 
-  print_endline "regression tests: 197 passed"
+  print_endline "regression tests: 216 passed"

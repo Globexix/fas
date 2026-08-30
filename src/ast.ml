@@ -21,7 +21,7 @@ and expr =
   | Unary of unop * expr * Span.t
   | Binary of binop * expr * expr * Span.t
   | Call of expr * expr list * Span.t
-  | Const_args of expr * expr list * Span.t
+  | Generic_args of expr * generic_arg list * Span.t
   | Cast of cast_kind * ty * expr * Span.t
   | Index of expr * expr * Span.t
   | Field of expr * string * Span.t
@@ -122,7 +122,7 @@ let expr_span = function
   | Unary (_, _, s)
   | Binary (_, _, _, s)
   | Call (_, _, s)
-  | Const_args (_, _, s)
+  | Generic_args (_, _, s)
   | Cast (_, _, _, s)
   | Index (_, _, s)
   | Field (_, _, s)
@@ -211,8 +211,8 @@ and expr_name = function
       ^ " " ^ expr_name r
   | Call (f, xs, _) ->
       expr_name f ^ "(" ^ String.concat ", " (List.map expr_name xs) ^ ")"
-  | Const_args (f, xs, _) ->
-      expr_name f ^ "[" ^ String.concat ", " (List.map expr_name xs) ^ "]"
+  | Generic_args (f, xs, _) ->
+      expr_name f ^ "[" ^ String.concat ", " (List.map generic_arg_name xs) ^ "]"
   | Cast (k, t, e, _) ->
       (match k with
         | Zext -> "zext"
