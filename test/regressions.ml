@@ -1888,6 +1888,69 @@ let () =
     "fn identity[N const u64](value ptr[arr[N, u8]]) ptr[arr[N, u8]] { return value }\n\
      fn main(value ptr[arr[1, u8]]) ptr[arr[1, u8]] { return identity[18446744073709551615](value) }\n";
 
+  let const_generic_struct_function_source =
+    "const THREE usize = 3\n\
+     struct Unit { value u64 }\n\
+     struct Buffer[T, N const usize] { data arr[N, T] }\n\
+     struct Wrapped[T, N const usize] { value Buffer[T, N] }\n\
+     fn pass[T, N const usize](value Buffer[T, N]) Buffer[T, N] {\n\
+    \ copy Buffer[T, N] = value\n\
+    \ return copy\n\
+     }\n\
+     fn wrap[T, N const usize](value Buffer[T, N]) Wrapped[T, N] {\n\
+    \ return (Wrapped[T, N]){pass[T, N](value)}\n\
+     }\n\
+     fn sized(value Buffer[u8, 8]) Buffer[u8, 8] {\n\
+    \ return pass[u8, sizeof[Unit]](value)\n\
+     }\n\
+     fn main(value Buffer[u8, 3]) Wrapped[u8, 3] {\n\
+    \ return wrap[u8, THREE](value)\n\
+     }\n"
+  in
+  let const_generic_struct_function_hir =
+    expect_ok (Parser.parse (source const_generic_struct_function_source))
+    |> Sema.check |> expect_ok
+  in
+  if
+    List.length
+      (List.filter
+         (specialization_named "Buffer")
+         const_generic_struct_function_hir.Hir.structs)
+    <> 2
+  then
+    failwith "const-generic-struct-function-deduplication: expected two Buffer layouts";
+  if
+    List.length
+      (List.filter
+         (specialization_named "Wrapped")
+         const_generic_struct_function_hir.Hir.structs)
+    <> 1
+  then failwith "const-generic-struct-function-nesting: expected one Wrapped layout";
+  let struct_function_specializations =
+    List.filter
+      (fun (func : Hir.func) -> contains func.name "$spec$")
+      const_generic_struct_function_hir.Hir.funcs
+  in
+  if List.length struct_function_specializations <> 3 then
+    failwith
+      "const-generic-struct-function-discovery: expected three concrete functions";
+  if
+    not
+      (List.for_all
+         (fun (func : Hir.func) ->
+           match func.params with [ (_, Hir.Struct _) ] -> true | _ -> false)
+         struct_function_specializations)
+  then
+    failwith
+      "const-generic-struct-function-signature: applied type was not materialized";
+  let const_generic_struct_function_llvm =
+    Ir.render (expect_ok (Lower.lower const_generic_struct_function_hir))
+  in
+  if const_generic_struct_function_llvm <> llvm_of const_generic_struct_function_source
+  then
+    failwith
+      "const-generic-struct-function-order: generated output was not deterministic";
+
   let recursive_struct_limits = { Limits.default with max_specialization_depth = 1 } in
   ignore
     (expect_ok

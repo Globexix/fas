@@ -1460,11 +1460,6 @@ and check_call c _expected fn args s =
               | _ -> error s "const argument arity mismatch"
             in
             let* values = eval [] const_params cargs in
-            let params, ret =
-              match item with
-              | Ast.Func { params; ret; _ } -> (params, ret)
-              | _ -> assert false
-            in
             let* staged =
               staged_specialization_identity c.specializations name values
             in
@@ -1490,6 +1485,13 @@ and check_call c _expected fn args s =
             let* specialization =
               request_specialization c.specializations ~limits:c.limits
                 ~depth:c.spec_depth ~span:s ~description:"const specialization" spec
+            in
+            let params, ret =
+              match specialization.payload with
+              | Function_payload
+                  { item = Ast.Func { params; ret; _ }; substitutions = []; _ } ->
+                  (params, ret)
+              | _ -> assert false
             in
             let* ps =
               Result_list.map
@@ -2026,7 +2028,13 @@ let mangle_type_specialization base arguments =
            string_of_int (String.length key) ^ "_" ^ key)
          arguments)
 
-let monomorphize_types ~limits specializations program =
+let monomorphize_types ?eval_context ~limits specializations program =
+  let eval_structs, eval_named_types, eval_consts =
+    match eval_context with
+    | None -> ([], [], [])
+    | Some (structs, named_types, consts) -> (structs, named_types, consts)
+  in
+  let eager_consts = Option.is_some eval_context in
   let struct_templates =
     List.filter_map
       (function
@@ -2054,23 +2062,24 @@ let monomorphize_types ~limits specializations program =
       program.Ast.items
   in
   let generated = ref [] in
-  let rec resolve_ty ?(values = []) substitutions depth span = function
+  let rec resolve_ty ?(values = []) ?(defer_const_structs = false) substitutions depth
+      span = function
     | Ast.Bool -> Ok Ast.Bool
     | Ast.Void -> Ok Ast.Void
     | Ast.Int kind -> Ok (Ast.Int kind)
     | Ast.Ptr ty ->
-        let* ty = resolve_ty ~values substitutions depth span ty in
+        let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Ptr ty)
     | Ast.Ptr_const ty ->
-        let* ty = resolve_ty ~values substitutions depth span ty in
+        let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Ptr_const ty)
     | Ast.Array (length, ty) ->
         let* length = resolve_aggregate_length values span length in
-        let* ty = resolve_ty ~values substitutions depth span ty in
+        let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Array (length, ty))
     | Ast.Vec (length, ty) ->
         let* length = resolve_aggregate_length values span length in
-        let* ty = resolve_ty ~values substitutions depth span ty in
+        let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Vec (length, ty))
     | Ast.Named_type name -> (
         match List.assoc_opt name substitutions with
@@ -2090,6 +2099,36 @@ let monomorphize_types ~limits specializations program =
             if List.length arguments <> List.length generic_params then
               error span
                 (Printf.sprintf "wrong number of generic arguments to `%s`" name)
+            else if defer_const_structs && has_const_params generic_params then
+              let rec resolve_arguments resolved params arguments =
+                match (params, arguments) with
+                | [], [] -> Ok (List.rev resolved)
+                | Ast.Type_param _ :: params, argument :: arguments ->
+                    let* ty =
+                      match argument with
+                      | Ast.Type_arg ty ->
+                          resolve_ty ~values ~defer_const_structs substitutions depth
+                            span ty
+                      | Ast.Name_arg (name, _) ->
+                          resolve_ty ~values ~defer_const_structs substitutions depth
+                            span (Ast.Named_type name)
+                      | Ast.Const_arg expression ->
+                          error (Ast.expr_span expression) "expected a type argument"
+                    in
+                    resolve_arguments (Ast.Type_arg ty :: resolved) params arguments
+                | Ast.Const_param _ :: params, argument :: arguments ->
+                    let* expression = generic_const_argument span argument in
+                    let* expression =
+                      resolve_expr ~values ~defer_const_structs substitutions depth
+                        expression
+                    in
+                    resolve_arguments
+                      (Ast.Const_arg expression :: resolved)
+                      params arguments
+                | _ -> error span "generic argument arity mismatch"
+              in
+              let* arguments = resolve_arguments [] generic_params arguments in
+              Ok (Ast.Applied_type (name, arguments))
             else
               let rec resolve_arguments resolved types bindings values_out params
                   arguments =
@@ -2105,10 +2144,11 @@ let monomorphize_types ~limits specializations program =
                     let* argument =
                       match argument with
                       | Ast.Type_arg ty ->
-                          resolve_ty ~values substitutions depth span ty
+                          resolve_ty ~values ~defer_const_structs substitutions depth
+                            span ty
                       | Ast.Name_arg (name, _) ->
-                          resolve_ty ~values substitutions depth span
-                            (Ast.Named_type name)
+                          resolve_ty ~values ~defer_const_structs substitutions depth
+                            span (Ast.Named_type name)
                       | Ast.Const_arg expression ->
                           error (Ast.expr_span expression) "expected a type argument"
                     in
@@ -2122,7 +2162,8 @@ let monomorphize_types ~limits specializations program =
                     let* expression = generic_const_argument span argument in
                     let* const_ty = source_ty_diag [] parameter.span parameter.ty in
                     let* actual_ty, value =
-                      const_expr values (Some const_ty) expression
+                      const_expr ~structs:eval_structs ~named_types:eval_named_types
+                        (values @ eval_consts) (Some const_ty) expression
                     in
                     if not (equal actual_ty const_ty) then
                       error (Ast.expr_span expression) "const argument type mismatch"
@@ -2158,20 +2199,33 @@ let monomorphize_types ~limits specializations program =
               in
               Ok (Ast.Named_type specialization.name)
         | Some _ -> error span "internal error: generic struct template is malformed")
-  and resolve_expr substitutions depth = function
+  and resolve_expr ?(values = []) ?(defer_const_structs = false) substitutions depth =
+    function
     | (Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Ident _) as
       expression ->
         Ok expression
     | Ast.Unary (op, expression, span) ->
-        let* expression = resolve_expr substitutions depth expression in
+        let* expression =
+          resolve_expr ~values ~defer_const_structs substitutions depth expression
+        in
         Ok (Ast.Unary (op, expression, span))
     | Ast.Binary (op, left, right, span) ->
-        let* left = resolve_expr substitutions depth left in
-        let* right = resolve_expr substitutions depth right in
+        let* left =
+          resolve_expr ~values ~defer_const_structs substitutions depth left
+        in
+        let* right =
+          resolve_expr ~values ~defer_const_structs substitutions depth right
+        in
         Ok (Ast.Binary (op, left, right, span))
     | Ast.Call (callee, arguments, span) ->
-        let* callee = resolve_expr substitutions depth callee in
-        let* arguments = Result_list.map (resolve_expr substitutions depth) arguments in
+        let* callee =
+          resolve_expr ~values ~defer_const_structs substitutions depth callee
+        in
+        let* arguments =
+          Result_list.map
+            (resolve_expr ~values ~defer_const_structs substitutions depth)
+            arguments
+        in
         Ok (Ast.Call (callee, arguments, span))
     | Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span) -> (
         match List.assoc_opt name function_templates with
@@ -2201,21 +2255,26 @@ let monomorphize_types ~limits specializations program =
                     argument :: arguments ) ->
                     let* argument =
                       match argument with
-                      | Ast.Type_arg ty -> resolve_ty substitutions depth span ty
+                      | Ast.Type_arg ty ->
+                          resolve_ty ~values ~defer_const_structs substitutions depth
+                            span ty
                       | Ast.Name_arg (name, _) ->
-                          resolve_ty substitutions depth span (Ast.Named_type name)
+                          resolve_ty ~values ~defer_const_structs substitutions depth
+                            span (Ast.Named_type name)
                       | Ast.Const_arg expression ->
                           error (Ast.expr_span expression) "expected a type argument"
                     in
                     resolve_arguments (argument :: types)
-                      ((parameter, argument) :: bindings) consts
+                      ((parameter, argument) :: bindings)
+                      consts
                       (Staged_type_arg (specialization_type_key argument) :: staged)
                       params arguments
                 | ( Ast.Const_param { name = parameter; _ } :: params,
                     argument :: arguments ) ->
                     let* expression = generic_const_argument span argument in
                     let* expression =
-                      resolve_expr substitutions depth expression
+                      resolve_expr ~values ~defer_const_structs substitutions depth
+                        expression
                     in
                     let argument = Ast.Const_arg expression in
                     resolve_arguments types bindings (argument :: consts)
@@ -2227,9 +2286,70 @@ let monomorphize_types ~limits specializations program =
                 resolve_arguments [] [] [] [] generic_params arguments
               in
               if type_arguments = [] then
+                let* () =
+                  if not eager_consts then Ok ()
+                  else
+                    let const_params = const_params generic_params in
+                    let rec eval acc params arguments =
+                      match (params, arguments) with
+                      | [], [] -> Ok (List.rev acc)
+                      | parameter :: params, argument :: arguments ->
+                          let* expression = generic_const_argument span argument in
+                          let* const_ty =
+                            source_ty_diag eval_named_types parameter.Ast.span
+                              parameter.ty
+                          in
+                          let* actual_ty, value =
+                            const_expr ~structs:eval_structs
+                              ~named_types:eval_named_types (values @ eval_consts)
+                              (Some const_ty) expression
+                          in
+                          if not (equal actual_ty const_ty) then
+                            error (Ast.expr_span expression)
+                              "const argument type mismatch"
+                          else
+                            eval
+                              ((parameter.name, const_ty, value) :: acc)
+                              params arguments
+                      | _ -> error span "const argument arity mismatch"
+                    in
+                    let* concrete_values = eval [] const_params const_arguments in
+                    let* staged =
+                      staged_specialization_identity specializations name
+                        concrete_values
+                    in
+                    let specialization_name, key =
+                      match staged with
+                      | None ->
+                          ( mangle_specialization name concrete_values,
+                            function_specialization_key name concrete_values )
+                      | Some (origin, arguments) ->
+                          ( mangle_mixed_specialization origin arguments,
+                            (Function_specialization, origin, arguments) )
+                    in
+                    let specialization =
+                      {
+                        key;
+                        name = specialization_name;
+                        depth;
+                        payload =
+                          Function_payload
+                            {
+                              item = Ast.Func template;
+                              substitutions = [];
+                              values = concrete_values;
+                              staged_args = None;
+                            };
+                      }
+                    in
+                    let* _ =
+                      request_specialization specializations ~limits ~depth ~span
+                        ~description:"const specialization" specialization
+                    in
+                    Ok ()
+                in
                 Ok
-                  (Ast.Generic_args
-                     (Ast.Ident (name, ident_span), const_arguments, span))
+                  (Ast.Generic_args (Ast.Ident (name, ident_span), const_arguments, span))
               else
                 let specialization_name =
                   mangle_type_specialization name type_arguments
@@ -2253,8 +2373,7 @@ let monomorphize_types ~limits specializations program =
                           substitutions = type_substitutions;
                           values = [];
                           staged_args =
-                            (if const_arguments = [] then None
-                             else Some staged_args);
+                            (if const_arguments = [] then None else Some staged_args);
                         };
                   }
                 in
@@ -2265,125 +2384,193 @@ let monomorphize_types ~limits specializations program =
                 if const_arguments = [] then
                   Ok (Ast.Ident (specialization.name, ident_span))
                 else
-                  Ok
-                    (Ast.Generic_args
-                       ( Ast.Ident (specialization.name, ident_span),
-                         const_arguments,
-                         span ))
+                  let expression =
+                    Ast.Generic_args
+                      ( Ast.Ident (specialization.name, ident_span),
+                        const_arguments,
+                        span )
+                  in
+                  if eager_consts then
+                    resolve_expr ~values ~defer_const_structs substitutions depth
+                      expression
+                  else Ok expression
         | Some _ -> error span "internal error: generic function template is malformed")
     | Ast.Generic_args (_, _, span) ->
         error span "generic call target must be a function name"
     | Ast.Cast (kind, ty, expression, span) ->
-        let* ty = resolve_ty substitutions depth span ty in
-        let* expression = resolve_expr substitutions depth expression in
+        let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
+        let* expression =
+          resolve_expr ~values ~defer_const_structs substitutions depth expression
+        in
         Ok (Ast.Cast (kind, ty, expression, span))
     | Ast.Index (base, index, span) ->
-        let* base = resolve_expr substitutions depth base in
-        let* index = resolve_expr substitutions depth index in
+        let* base =
+          resolve_expr ~values ~defer_const_structs substitutions depth base
+        in
+        let* index =
+          resolve_expr ~values ~defer_const_structs substitutions depth index
+        in
         Ok (Ast.Index (base, index, span))
     | Ast.Field (base, name, span) ->
-        let* base = resolve_expr substitutions depth base in
+        let* base =
+          resolve_expr ~values ~defer_const_structs substitutions depth base
+        in
         Ok (Ast.Field (base, name, span))
     | Ast.Deref (expression, span) ->
-        let* expression = resolve_expr substitutions depth expression in
+        let* expression =
+          resolve_expr ~values ~defer_const_structs substitutions depth expression
+        in
         Ok (Ast.Deref (expression, span))
     | Ast.Addr_of (expression, span) ->
-        let* expression = resolve_expr substitutions depth expression in
+        let* expression =
+          resolve_expr ~values ~defer_const_structs substitutions depth expression
+        in
         Ok (Ast.Addr_of (expression, span))
     | Ast.Ptr_add (bytes, pointer, offset, span) ->
-        let* pointer = resolve_expr substitutions depth pointer in
-        let* offset = resolve_expr substitutions depth offset in
+        let* pointer =
+          resolve_expr ~values ~defer_const_structs substitutions depth pointer
+        in
+        let* offset =
+          resolve_expr ~values ~defer_const_structs substitutions depth offset
+        in
         Ok (Ast.Ptr_add (bytes, pointer, offset, span))
     | Ast.Sizeof (ty, span) ->
-        let* ty = resolve_ty substitutions depth span ty in
+        let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Sizeof (ty, span))
     | Ast.Alignof (ty, span) ->
-        let* ty = resolve_ty substitutions depth span ty in
+        let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Alignof (ty, span))
     | Ast.Offsetof (ty, field, span) ->
-        let* ty = resolve_ty substitutions depth span ty in
+        let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Offsetof (ty, field, span))
     | Ast.Splat (expression, span) ->
-        let* expression = resolve_expr substitutions depth expression in
+        let* expression =
+          resolve_expr ~values ~defer_const_structs substitutions depth expression
+        in
         Ok (Ast.Splat (expression, span))
     | Ast.Ternary (condition, yes, no, span) ->
-        let* condition = resolve_expr substitutions depth condition in
-        let* yes = resolve_expr substitutions depth yes in
-        let* no = resolve_expr substitutions depth no in
+        let resolve = resolve_expr ~values ~defer_const_structs substitutions depth in
+        let* condition = resolve condition in
+        let* yes = resolve yes in
+        let* no = resolve no in
         Ok (Ast.Ternary (condition, yes, no, span))
     | Ast.Array_lit (elements, span) ->
-        let* elements = Result_list.map (resolve_expr substitutions depth) elements in
+        let* elements =
+          Result_list.map
+            (resolve_expr ~values ~defer_const_structs substitutions depth)
+            elements
+        in
         Ok (Ast.Array_lit (elements, span))
     | Ast.Struct_lit (ty, elements, span) ->
-        let* ty = resolve_ty substitutions depth span ty in
-        let* elements = Result_list.map (resolve_expr substitutions depth) elements in
+        let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
+        let* elements =
+          Result_list.map
+            (resolve_expr ~values ~defer_const_structs substitutions depth)
+            elements
+        in
         Ok (Ast.Struct_lit (ty, elements, span))
-  and resolve_target substitutions depth = function
+  and resolve_target ?(values = []) ?(defer_const_structs = false) substitutions depth =
+    function
     | Ast.Target_ident _ as target -> Ok target
     | Ast.Target_deref expression ->
-        let* expression = resolve_expr substitutions depth expression in
+        let* expression =
+          resolve_expr ~values ~defer_const_structs substitutions depth expression
+        in
         Ok (Ast.Target_deref expression)
     | Ast.Target_index (base, index) ->
-        let* base = resolve_expr substitutions depth base in
-        let* index = resolve_expr substitutions depth index in
+        let resolve = resolve_expr ~values ~defer_const_structs substitutions depth in
+        let* base = resolve base in
+        let* index = resolve index in
         Ok (Ast.Target_index (base, index))
     | Ast.Target_field (base, name) ->
-        let* base = resolve_expr substitutions depth base in
+        let* base =
+          resolve_expr ~values ~defer_const_structs substitutions depth base
+        in
         Ok (Ast.Target_field (base, name))
-  and resolve_stmt substitutions depth = function
+  and resolve_stmt ?(values = []) ?(defer_const_structs = false) substitutions depth =
+    function
     | Ast.Let { name; ty; init; span } ->
-        let* ty = resolve_ty substitutions depth span ty in
+        let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         let* init =
           match init with
           | None -> Ok None
           | Some expression ->
-              let* expression = resolve_expr substitutions depth expression in
+              let* expression =
+                resolve_expr ~values ~defer_const_structs substitutions depth expression
+              in
               Ok (Some expression)
         in
         Ok (Ast.Let { name; ty; init; span })
     | Ast.Assign (target, expression, span) ->
-        let* target = resolve_target substitutions depth target in
-        let* expression = resolve_expr substitutions depth expression in
+        let* target =
+          resolve_target ~values ~defer_const_structs substitutions depth target
+        in
+        let* expression =
+          resolve_expr ~values ~defer_const_structs substitutions depth expression
+        in
         Ok (Ast.Assign (target, expression, span))
     | Ast.Compound_assign (target, op, expression, span) ->
-        let* target = resolve_target substitutions depth target in
-        let* expression = resolve_expr substitutions depth expression in
+        let* target =
+          resolve_target ~values ~defer_const_structs substitutions depth target
+        in
+        let* expression =
+          resolve_expr ~values ~defer_const_structs substitutions depth expression
+        in
         Ok (Ast.Compound_assign (target, op, expression, span))
     | Ast.Return (expression, span) ->
         let* expression =
           match expression with
           | None -> Ok None
           | Some expression ->
-              let* expression = resolve_expr substitutions depth expression in
+              let* expression =
+                resolve_expr ~values ~defer_const_structs substitutions depth expression
+              in
               Ok (Some expression)
         in
         Ok (Ast.Return (expression, span))
     | Ast.If (condition, yes, no, span) ->
-        let* condition = resolve_expr substitutions depth condition in
-        let* yes = Result_list.map (resolve_stmt substitutions depth) yes in
+        let* condition =
+          resolve_expr ~values ~defer_const_structs substitutions depth condition
+        in
+        let resolve = resolve_stmt ~values ~defer_const_structs substitutions depth in
+        let* yes = Result_list.map resolve yes in
         let* no =
           match no with
           | None -> Ok None
           | Some statements ->
-              let* statements =
-                Result_list.map (resolve_stmt substitutions depth) statements
-              in
+              let* statements = Result_list.map resolve statements in
               Ok (Some statements)
         in
         Ok (Ast.If (condition, yes, no, span))
     | Ast.While (condition, body, span) ->
-        let* condition = resolve_expr substitutions depth condition in
-        let* body = Result_list.map (resolve_stmt substitutions depth) body in
+        let* condition =
+          resolve_expr ~values ~defer_const_structs substitutions depth condition
+        in
+        let* body =
+          Result_list.map
+            (resolve_stmt ~values ~defer_const_structs substitutions depth)
+            body
+        in
         Ok (Ast.While (condition, body, span))
     | (Ast.Break _ | Ast.Continue _) as statement -> Ok statement
     | Ast.Defer (body, span) ->
-        let* body = Result_list.map (resolve_stmt substitutions depth) body in
+        let* body =
+          Result_list.map
+            (resolve_stmt ~values ~defer_const_structs substitutions depth)
+            body
+        in
         Ok (Ast.Defer (body, span))
     | Ast.Expr_stmt (expression, span) ->
-        let* expression = resolve_expr substitutions depth expression in
+        let* expression =
+          resolve_expr ~values ~defer_const_structs substitutions depth expression
+        in
         Ok (Ast.Expr_stmt (expression, span))
     | Ast.Block (body, span) ->
-        let* body = Result_list.map (resolve_stmt substitutions depth) body in
+        let* body =
+          Result_list.map
+            (resolve_stmt ~values ~defer_const_structs substitutions depth)
+            body
+        in
         Ok (Ast.Block (body, span))
     | Ast.For (init, condition, step, body, span) ->
         let resolve_optional resolve = function
@@ -2392,20 +2579,30 @@ let monomorphize_types ~limits specializations program =
               let* value = resolve value in
               Ok (Some value)
         in
-        let* init = resolve_optional (resolve_stmt substitutions depth) init in
-        let* condition =
-          resolve_optional (resolve_expr substitutions depth) condition
+        let resolve_stmt =
+          resolve_stmt ~values ~defer_const_structs substitutions depth
         in
-        let* step = resolve_optional (resolve_stmt substitutions depth) step in
-        let* body = Result_list.map (resolve_stmt substitutions depth) body in
+        let resolve_expr =
+          resolve_expr ~values ~defer_const_structs substitutions depth
+        in
+        let* init = resolve_optional resolve_stmt init in
+        let* condition = resolve_optional resolve_expr condition in
+        let* step = resolve_optional resolve_stmt step in
+        let* body = Result_list.map resolve_stmt body in
         Ok (Ast.For (init, condition, step, body, span))
     | Ast.Switch (expression, cases, default, span) ->
-        let* expression = resolve_expr substitutions depth expression in
+        let resolve_expr =
+          resolve_expr ~values ~defer_const_structs substitutions depth
+        in
+        let resolve_stmt =
+          resolve_stmt ~values ~defer_const_structs substitutions depth
+        in
+        let* expression = resolve_expr expression in
         let* cases =
           Result_list.map
             (fun (value, body) ->
-              let* value = resolve_expr substitutions depth value in
-              let* body = Result_list.map (resolve_stmt substitutions depth) body in
+              let* value = resolve_expr value in
+              let* body = Result_list.map resolve_stmt body in
               Ok (value, body))
             cases
         in
@@ -2413,27 +2610,34 @@ let monomorphize_types ~limits specializations program =
           match default with
           | None -> Ok None
           | Some body ->
-              let* body = Result_list.map (resolve_stmt substitutions depth) body in
+              let* body = Result_list.map resolve_stmt body in
               Ok (Some body)
         in
         Ok (Ast.Switch (expression, cases, default, span))
-  and resolve_function substitutions depth specialization_name = function
+  and resolve_function ?(values = []) substitutions depth specialization_name = function
     | Ast.Func ({ params; ret; body; generic_params; span; _ } as item) ->
+        let defer_const_structs = values = [] && has_const_params generic_params in
         let* params =
           Result_list.map
             (fun (parameter : Ast.param) ->
-              let* ty = resolve_ty substitutions depth parameter.span parameter.ty in
+              let* ty =
+                resolve_ty ~values ~defer_const_structs substitutions depth
+                  parameter.span parameter.ty
+              in
               Ok ({ parameter with ty } : Ast.param))
             params
         in
-        let* ret = resolve_ty substitutions depth span ret in
+        let* ret =
+          resolve_ty ~values ~defer_const_structs substitutions depth span ret
+        in
         let* generic_params =
           Result_list.map
             (function
               | Ast.Type_param _ -> Ok None
               | Ast.Const_param parameter ->
                   let* ty =
-                    resolve_ty substitutions depth parameter.span parameter.ty
+                    resolve_ty ~values ~defer_const_structs substitutions depth
+                      parameter.span parameter.ty
                   in
                   Ok (Some (Ast.Const_param { parameter with ty })))
             generic_params
@@ -2445,7 +2649,9 @@ let monomorphize_types ~limits specializations program =
           | Ast.Asm raw -> Ok (Ast.Asm raw)
           | Ast.Statements statements ->
               let* statements =
-                Result_list.map (resolve_stmt substitutions depth) statements
+                Result_list.map
+                  (resolve_stmt ~values ~defer_const_structs substitutions depth)
+                  statements
               in
               Ok (Ast.Statements statements)
         in
@@ -2478,8 +2684,7 @@ let monomorphize_types ~limits specializations program =
         let* ty = resolve_ty [] 0 span ty in
         let* value = resolve_expr [] 0 value in
         Ok (Ast.Const { item with ty; value })
-    | Ast.Func { generic_params; _ } as item when has_type_params generic_params ->
-        Ok item
+    | Ast.Func { generic_params = _ :: _; _ } as item -> Ok item
     | Ast.Func ({ params; ret; body; generic_params; span; _ } as item) ->
         let* params =
           Result_list.map
@@ -2509,6 +2714,7 @@ let monomorphize_types ~limits specializations program =
         Ok (Ast.Func { item with params; ret; body; generic_params })
   in
   let* items = Result_list.map resolve_item program.Ast.items in
+  let late_functions = ref [] in
   let rec materialize () =
     match Queue.take_opt specializations.queue with
     | None -> Ok ()
@@ -2544,10 +2750,34 @@ let monomorphize_types ~limits specializations program =
         let* item = resolve_function substitutions (depth + 1) name item in
         generated := item :: !generated;
         materialize ()
+    | Some
+        ({
+           payload =
+             Function_payload { item; substitutions = []; values; staged_args = _ };
+           name;
+           depth;
+           _;
+         } as specialization)
+      when eager_consts && values <> [] ->
+        let* item = resolve_function ~values [] (depth + 1) name item in
+        let specialization =
+          {
+            specialization with
+            payload =
+              Function_payload { item; substitutions = []; values; staged_args = None };
+          }
+        in
+        Specialization_cache.replace specializations.cache specialization.key
+          specialization;
+        late_functions := specialization :: !late_functions;
+        materialize ()
     | Some { payload = Function_payload _; _ } ->
         error Span.synthetic "internal error: const specialization was queued too early"
   in
   let* () = materialize () in
+  List.iter
+    (fun specialization -> Queue.add specialization specializations.queue)
+    (List.rev !late_functions);
   Ok ({ Ast.items = items @ List.rev !generated } : Ast.program)
 
 let check ?(limits = Limits.default) program =
@@ -2638,10 +2868,6 @@ let check ?(limits = Limits.default) program =
         Ok (param.name, ty))
       params
   in
-  let source_params =
-    map_params (fun (param : Ast.param) ->
-        source_ty_diag named_types param.span param.ty)
-  in
   let consts = ref [] and arrays = ref [] in
   let eval_const_item = function
     | Ast.Const { name; ty; value; span } -> (
@@ -2678,6 +2904,30 @@ let check ?(limits = Limits.default) program =
     | _ -> Ok ()
   in
   let* () = Result_list.iter eval_const_item program.items in
+  let* program =
+    monomorphize_types
+      ~eval_context:(structs, named_types, !consts)
+      ~limits specializations program
+  in
+  let* named_types = collect_named_types [] [] program.Ast.items in
+  let* structs_src = collect_structs [] program.Ast.items in
+  let* structs = build [] structs_src in
+  let source_obj t =
+    let* t =
+      source_ty named_types t
+      |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
+    in
+    let* () =
+      object_type structs t
+      |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
+    in
+    if aggregate_within_limit limits t then Ok t
+    else error Span.synthetic "aggregate element count exceeds the configured limit"
+  in
+  let source_params =
+    map_params (fun (param : Ast.param) ->
+        source_ty_diag named_types param.span param.ty)
+  in
   let sigs = ref [] and declared_functions = ref [] in
   let* () =
     List.fold_left
