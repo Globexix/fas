@@ -1851,6 +1851,48 @@ let () =
      struct Buffer[T, N const usize] { data arr[N, T] }\n\
      fn main(value Buffer[u8, COUNT]) usize { return 0 }\n";
 
+  let const_generic_struct_type_argument_source =
+    "const THREE usize = 3\n\
+     const FOUR usize = 4\n\
+     struct Buffer[T, N const usize] { data arr[N, T] }\n\
+     fn identity[T](value T) T { return value }\n\
+     fn forward[T](value T) T { return identity[T](value) }\n\
+     fn main(three Buffer[u8, THREE], four Buffer[u8, FOUR]) usize {\n\
+    \ a Buffer[u8, THREE] = identity[Buffer[u8, THREE]](three)\n\
+    \ b Buffer[u8, FOUR] = identity[Buffer[u8, FOUR]](four)\n\
+    \ forward[Buffer[u8, THREE]](a)\n\
+    \ forward[Buffer[u8, FOUR]](b)\n\
+    \ return sizeof[Buffer[u8, THREE]] + sizeof[Buffer[u8, FOUR]]\n\
+     }\n"
+  in
+  let const_generic_struct_type_argument_hir =
+    expect_ok (Parser.parse (source const_generic_struct_type_argument_source))
+    |> Sema.check |> expect_ok
+  in
+  let specialized_functions name =
+    List.filter
+      (fun (func : Hir.func) -> contains func.name (name ^ "$spec$"))
+      const_generic_struct_type_argument_hir.Hir.funcs
+  in
+  if List.length (specialized_functions "identity") <> 2 then
+    failwith "const-generic-struct-type-key: distinct identity types were merged";
+  if List.length (specialized_functions "forward") <> 2 then
+    failwith "const-generic-struct-type-key: nested specializations were merged";
+  if
+    List.length
+      (List.filter
+         (specialization_named "Buffer")
+         const_generic_struct_type_argument_hir.Hir.structs)
+    <> 2
+  then failwith "const-generic-struct-type-key: distinct layouts were merged";
+  let const_generic_struct_type_argument_llvm =
+    Ir.render (expect_ok (Lower.lower const_generic_struct_type_argument_hir))
+  in
+  if
+    const_generic_struct_type_argument_llvm
+    <> llvm_of const_generic_struct_type_argument_source
+  then failwith "const-generic-struct-type-key: generated output was not deterministic";
+
   let const_generic_function_type_source =
     "const THREE usize = 3\n\
      fn array_identity[T, N const usize](value arr[N, T]) arr[N, T] {\n\

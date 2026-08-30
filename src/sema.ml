@@ -2062,6 +2062,12 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
       program.Ast.items
   in
   let generated = ref [] in
+  let rec has_unresolved_application = function
+    | Ast.Applied_type _ -> true
+    | Ast.Ptr ty | Ast.Ptr_const ty | Ast.Array (_, ty) | Ast.Vec (_, ty) ->
+        has_unresolved_application ty
+    | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Named_type _ -> false
+  in
   let rec resolve_ty ?(values = []) ?(defer_const_structs = false) substitutions depth
       span = function
     | Ast.Bool -> Ok Ast.Bool
@@ -2243,14 +2249,16 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
               error span
                 (Printf.sprintf "wrong number of %s arguments to `%s`" kind name)
             else
-              let rec resolve_arguments types bindings consts staged params arguments =
+              let rec resolve_arguments types bindings consts staged resolved params
+                  arguments =
                 match (params, arguments) with
                 | [], [] ->
                     Ok
                       ( List.rev types,
                         List.rev bindings,
                         List.rev consts,
-                        List.rev staged )
+                        List.rev staged,
+                        List.rev resolved )
                 | ( Ast.Type_param { name = parameter; _ } :: params,
                     argument :: arguments ) ->
                     let* argument =
@@ -2268,6 +2276,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
                       ((parameter, argument) :: bindings)
                       consts
                       (Staged_type_arg (specialization_type_key argument) :: staged)
+                      (Ast.Type_arg argument :: resolved)
                       params arguments
                 | ( Ast.Const_param { name = parameter; _ } :: params,
                     argument :: arguments ) ->
@@ -2279,13 +2288,21 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
                     let argument = Ast.Const_arg expression in
                     resolve_arguments types bindings (argument :: consts)
                       (Staged_const_arg parameter :: staged)
-                      params arguments
+                      (argument :: resolved) params arguments
                 | _ -> error span "generic argument arity mismatch"
               in
-              let* type_arguments, type_substitutions, const_arguments, staged_args =
-                resolve_arguments [] [] [] [] generic_params arguments
+              let* ( type_arguments,
+                     type_substitutions,
+                     const_arguments,
+                     staged_args,
+                     resolved_arguments ) =
+                resolve_arguments [] [] [] [] [] generic_params arguments
               in
-              if type_arguments = [] then
+              if List.exists has_unresolved_application type_arguments then
+                Ok
+                  (Ast.Generic_args
+                     (Ast.Ident (name, ident_span), resolved_arguments, span))
+              else if type_arguments = [] then
                 let* () =
                   if not eager_functions then Ok ()
                   else
