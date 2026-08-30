@@ -358,8 +358,7 @@ module P = struct
     let rec scan offset depth =
       match (peek_n p offset).kind with
       | Token.Lbracket -> scan (offset + 1) (depth + 1)
-      | Token.Rbracket when depth = 1 ->
-          (peek_n p (offset + 1)).kind = Token.Lparen
+      | Token.Rbracket when depth = 1 -> (peek_n p (offset + 1)).kind = Token.Lparen
       | Token.Rbracket when depth > 1 -> scan (offset + 1) (depth - 1)
       | Token.Eof | Token.Newline -> false
       | _ -> scan (offset + 1) depth

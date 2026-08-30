@@ -642,14 +642,9 @@ let () =
   in
   let explicit_assembly_program = lower_of explicit_assembly_dependency in
   let explicit_assembly_llvm = Ir.render explicit_assembly_program in
-  if
-    not
-      (contains explicit_assembly_llvm
-         "define i64 @assembly_helper(i64 %x)")
-  then failwith "assembly-linkage-explicit: C ABI helper is not externally visible";
-  if
-    not
-      (contains (Ir.raw_assembly explicit_assembly_program) "call assembly_helper")
+  if not (contains explicit_assembly_llvm "define i64 @assembly_helper(i64 %x)") then
+    failwith "assembly-linkage-explicit: C ABI helper is not externally visible";
+  if not (contains (Ir.raw_assembly explicit_assembly_program) "call assembly_helper")
   then failwith "assembly-linkage-explicit: raw assembly dependency was not preserved";
   let repeated_assembly_program = lower_of explicit_assembly_dependency in
   if
@@ -1344,8 +1339,7 @@ let () =
   then failwith "type-generic-declarations: AST rendering lost generic parameters";
   let applied_type_syntax =
     expect_ok
-      (Parser.parse
-         (source "fn use(value Mixed[T, ptr[u8], 3]) i64 { return 0 }\n"))
+      (Parser.parse (source "fn use(value Mixed[T, ptr[u8], 3]) i64 { return 0 }\n"))
   in
   (match applied_type_syntax.Ast.items with
   | [
@@ -1520,7 +1514,8 @@ let () =
        fn main() usize { return size[Sized[i64], sizeof[Sized[i64]]]() }\n"
   in
   if not (contains mixed_layout_argument "ret i64 8") then
-    failwith "mixed-generic-layout-argument: layout was not available to const evaluation";
+    failwith
+      "mixed-generic-layout-argument: layout was not available to const evaluation";
   let interleaved_generic =
     expect_ok
       (Sema.check
@@ -1554,9 +1549,7 @@ let () =
          distinct_mixed_specializations.Hir.funcs)
     <> 2
   then failwith "mixed-generic-key: distinct const arguments shared a specialization";
-  let mixed_specialization_limits =
-    { Limits.default with max_specializations = 2 }
-  in
+  let mixed_specialization_limits = { Limits.default with max_specializations = 2 } in
   ignore
     (expect_ok
        (Sema.check ~limits:mixed_specialization_limits
@@ -1581,8 +1574,7 @@ let () =
              (Diag.render_all ~source:None diagnostics)
              "const specialization count limit exceeded")
       then failwith "mixed-generic-count-limit: unexpected diagnostic");
-  semantic_error "mixed-generic-arity"
-    "wrong number of generic arguments to `identity`"
+  semantic_error "mixed-generic-arity" "wrong number of generic arguments to `identity`"
     "fn identity[T, N const usize](value T) T { return value }\n\
      fn main() i64 { return identity[i64](1) }\n";
   semantic_error "mixed-generic-type-argument-kind" "expected a type argument"
@@ -1724,8 +1716,7 @@ let () =
      fn main() usize {\n\
     \ return sizeof[Buffer[u8, 3]] + sizeof[Buffer[u8, 1 + 2]] + "
     ^ "sizeof[Buffer[u16, 3]] + sizeof[Buffer[u8, 4]] + "
-    ^ "sizeof[Bytes[5]] + sizeof[Lanes[u32, 4]] + sizeof[Wrapped[u8, 3]]\n\
-     }\n"
+    ^ "sizeof[Bytes[5]] + sizeof[Lanes[u32, 4]] + sizeof[Wrapped[u8, 3]]\n}\n"
   in
   let const_generic_struct_hir =
     expect_ok (Parser.parse (source const_generic_struct_source))
@@ -1755,7 +1746,8 @@ let () =
            | [ { ty = Hir.Array (5, Hir.Int Hir.U8); _ } ] -> true
            | _ -> false)
          const_generic_struct_hir.Hir.structs)
-  then failwith "const-generic-struct-substitution: const-only layout was not materialized";
+  then
+    failwith "const-generic-struct-substitution: const-only layout was not materialized";
   if
     not
       (List.exists
@@ -1812,9 +1804,10 @@ let () =
      struct Holder { value Buffer[u8, THREE] }\n\
      fn fixed[T](value Buffer[T, THREE]) Buffer[T, THREE] { return value }\n\
      fn main(three Buffer[u8, THREE], boxed Buffer[u8, BOX_BYTES],\n\
-       unit Buffer[u8, sizeof[Unit]]) usize {\n\
+     unit Buffer[u8, sizeof[Unit]]) usize {\n\
     \ fixed[u8](three)\n\
-    \ return sizeof[Holder] + sizeof[Buffer[u8, BOX_BYTES]] + sizeof[Buffer[u8, sizeof[Unit]]]\n\
+    \ return sizeof[Holder] + sizeof[Buffer[u8, BOX_BYTES]] + sizeof[Buffer[u8, \
+     sizeof[Unit]]]\n\
      }\n"
   in
   let global_const_generic_struct_hir =
@@ -1976,7 +1969,8 @@ let () =
   semantic_error "const-generic-function-machine-length"
     "aggregate length is not a machine integer"
     "fn identity[N const u64](value ptr[arr[N, u8]]) ptr[arr[N, u8]] { return value }\n\
-     fn main(value ptr[arr[1, u8]]) ptr[arr[1, u8]] { return identity[18446744073709551615](value) }\n";
+     fn main(value ptr[arr[1, u8]]) ptr[arr[1, u8]] { return \
+     identity[18446744073709551615](value) }\n";
 
   let const_generic_struct_function_source =
     "const THREE usize = 3\n\

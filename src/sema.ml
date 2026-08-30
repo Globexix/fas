@@ -1417,8 +1417,7 @@ and staged_specialization_identity state name values =
 
 and mangle_mixed_specialization base arguments =
   let argument_name = function
-    | Type_specialization_arg key ->
-        "t" ^ string_of_int (String.length key) ^ ":" ^ key
+    | Type_specialization_arg key -> "t" ^ string_of_int (String.length key) ^ ":" ^ key
     | Const_specialization_arg (ty, value) ->
         let key = const_key_value ty value in
         "c" ^ string_of_int (String.length key) ^ ":" ^ key
