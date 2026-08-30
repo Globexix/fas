@@ -30,6 +30,8 @@ done
 "$LLVM_LLC" test/.stage3.ll -o test/.stage3.s
 rm -f test/.stage3.ll test/.stage3.s
 
+LLVM_OPT="$LLVM_OPT" OCAML_FAS="$OCAML_FAS" "$ROOT/test/issue33_const_generic_struct.sh"
+
 LLVM_OPT="$LLVM_OPT" OCAML_FAS="$OCAML_FAS" "$ROOT/test/layout_oracle.sh"
 CC="$CC" LLVM_OPT="$LLVM_OPT" OCAML_FAS="$OCAML_FAS" "$ROOT/test/abi_boundary.sh"
 CC="$CC" LLVM_OPT="$LLVM_OPT" LLVM_LLC="$LLVM_LLC" OCAML_FAS="$OCAML_FAS" \

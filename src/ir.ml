@@ -93,6 +93,17 @@ type module_ = {
   funcs : func list;
 }
 
+let quote_identifier n =
+  if
+    String.for_all
+      (function
+        | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '.' | '$' -> true | _ -> false)
+      n
+  then n
+  else "\"" ^ String.escaped n ^ "\""
+
+let struct_name n = "%" ^ quote_identifier ("struct." ^ n)
+
 let rec ty_name = function
   | I1 -> "i1"
   | I8 -> "i8"
@@ -101,7 +112,7 @@ let rec ty_name = function
   | I64 -> "i64"
   | Ptr _ -> "ptr"
   | Vector (n, t) -> Printf.sprintf "<%d x %s>" n (ty_name t)
-  | Struct n -> "%struct." ^ n
+  | Struct n -> struct_name n
   | Array (n, t) -> Printf.sprintf "[%d x %s]" n (ty_name t)
   | Void -> "void"
 
@@ -294,7 +305,8 @@ let render m =
           if s.tail_padding = 0 then fields
           else fields @ [ Printf.sprintf "[%d x i8]" s.tail_padding ]
         in
-        Printf.sprintf "%%struct.%s = type { %s }" s.name (String.concat ", " fields))
+        Printf.sprintf "%s = type { %s }" (struct_name s.name)
+          (String.concat ", " fields))
       m.structs
   in
   let globals =

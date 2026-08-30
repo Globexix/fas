@@ -1781,6 +1781,19 @@ let () =
     || contains const_generic_struct_llvm "%struct.Lanes = type"
     || contains const_generic_struct_llvm "%struct.Wrapped = type"
   then failwith "const-generic-struct-template: template reached LLVM output";
+  let issue33_llvm =
+    llvm_of
+      "struct Bytes[N const usize] { data arr[N, u8] }\n\
+       fn identity(value Bytes[3]) Bytes[3] { return value }\n\
+       fn main() usize { return sizeof[Bytes[3]] }\n"
+  in
+  if not (contains issue33_llvm "%\"struct.Bytes$spec$c7:usize:3\" = type { [3 x i8] }")
+  then failwith "const-generic-struct-llvm-name: specialization name was not quoted";
+  if
+    not
+      (contains issue33_llvm
+         "define internal %\"struct.Bytes$spec$c7:usize:3\" @identity")
+  then failwith "const-generic-struct-llvm-use: specialization type was not quoted";
   semantic_error "const-generic-struct-arity"
     "wrong number of generic arguments to `Buffer`"
     "struct Buffer[T, N const usize] { data arr[N, T] }\n\
@@ -2285,4 +2298,4 @@ let () =
   if not (contains mixed_runtime "phi") then
     failwith "runtime-logical-mixed: short-circuit lowering missing";
 
-  print_endline "regression tests: 231 passed"
+  print_endline "regression tests: 232 passed"

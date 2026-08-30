@@ -1,0 +1,7 @@
+struct Bytes[N const usize] {
+  data arr[N, u8]
+}
+
+fn main() usize {
+  return sizeof[Bytes[3]]
+}
