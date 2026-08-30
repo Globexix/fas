@@ -2028,13 +2028,13 @@ let mangle_type_specialization base arguments =
            string_of_int (String.length key) ^ "_" ^ key)
          arguments)
 
-let monomorphize_types ?eval_context ~limits specializations program =
+let monomorphize_types ?eval_context ?(eager_functions = false) ~limits specializations
+    program =
   let eval_structs, eval_named_types, eval_consts =
     match eval_context with
     | None -> ([], [], [])
     | Some (structs, named_types, consts) -> (structs, named_types, consts)
   in
-  let eager_consts = Option.is_some eval_context in
   let struct_templates =
     List.filter_map
       (function
@@ -2287,7 +2287,7 @@ let monomorphize_types ?eval_context ~limits specializations program =
               in
               if type_arguments = [] then
                 let* () =
-                  if not eager_consts then Ok ()
+                  if not eager_functions then Ok ()
                   else
                     let const_params = const_params generic_params in
                     let rec eval acc params arguments =
@@ -2390,7 +2390,7 @@ let monomorphize_types ?eval_context ~limits specializations program =
                         const_arguments,
                         span )
                   in
-                  if eager_consts then
+                  if eager_functions then
                     resolve_expr ~values ~defer_const_structs substitutions depth
                       expression
                   else Ok expression
@@ -2686,20 +2686,25 @@ let monomorphize_types ?eval_context ~limits specializations program =
         Ok (Ast.Const { item with ty; value })
     | Ast.Func { generic_params = _ :: _; _ } as item -> Ok item
     | Ast.Func ({ params; ret; body; generic_params; span; _ } as item) ->
+        let defer_const_structs = not eager_functions in
         let* params =
           Result_list.map
             (fun (parameter : Ast.param) ->
-              let* ty = resolve_ty [] 0 parameter.span parameter.ty in
+              let* ty =
+                resolve_ty ~defer_const_structs [] 0 parameter.span parameter.ty
+              in
               Ok ({ parameter with ty } : Ast.param))
             params
         in
-        let* ret = resolve_ty [] 0 span ret in
+        let* ret = resolve_ty ~defer_const_structs [] 0 span ret in
         let* generic_params =
           Result_list.map
             (function
               | Ast.Type_param _ as parameter -> Ok parameter
               | Ast.Const_param parameter ->
-                  let* ty = resolve_ty [] 0 parameter.span parameter.ty in
+                  let* ty =
+                    resolve_ty ~defer_const_structs [] 0 parameter.span parameter.ty
+                  in
                   Ok (Ast.Const_param { parameter with ty }))
             generic_params
         in
@@ -2708,7 +2713,9 @@ let monomorphize_types ?eval_context ~limits specializations program =
           | Ast.Declaration -> Ok Ast.Declaration
           | Ast.Asm raw -> Ok (Ast.Asm raw)
           | Ast.Statements statements ->
-              let* statements = Result_list.map (resolve_stmt [] 0) statements in
+              let* statements =
+                Result_list.map (resolve_stmt ~defer_const_structs [] 0) statements
+              in
               Ok (Ast.Statements statements)
         in
         Ok (Ast.Func { item with params; ret; body; generic_params })
@@ -2758,7 +2765,7 @@ let monomorphize_types ?eval_context ~limits specializations program =
            depth;
            _;
          } as specialization)
-      when eager_consts && values <> [] ->
+      when eager_functions && values <> [] ->
         let* item = resolve_function ~values [] (depth + 1) name item in
         let specialization =
           {
@@ -2809,11 +2816,57 @@ let check ?(limits = Limits.default) program =
         | _ -> Ok ())
       program.Ast.items
   in
-  let* program = monomorphize_types ~limits specializations program in
+  let base_structs_src =
+    List.filter_map
+      (function
+        | Ast.Struct { name; generic_params = []; fields; align; _ } -> (
+            let fields =
+              Result_list.map
+                (fun (field : Ast.field) ->
+                  let* ty = source_ty named_types field.ty in
+                  Ok (field.name, ty))
+                fields
+            in
+            match fields with
+            | Ok fields -> Some (name, fields, align)
+            | Error _ -> None)
+        | _ -> None)
+      program.Ast.items
+  in
+  let base_structs =
+    List.filter_map
+      (fun (name, _, _) ->
+        match Hir.compute_struct base_structs_src name with
+        | Ok definition -> Some definition
+        | Error _ -> None)
+      base_structs_src
+  in
+  let early_consts =
+    List.fold_left
+      (fun consts -> function
+        | Ast.Const { name; ty; value; _ } -> (
+            match source_ty named_types ty with
+            | Ok ty when is_int ty -> (
+                match
+                  const_expr ~structs:base_structs ~named_types consts (Some ty) value
+                with
+                | Ok (actual_ty, bits) when equal actual_ty ty ->
+                    consts @ [ (name, ty, bits) ]
+                | _ -> consts)
+            | _ -> consts)
+        | _ -> consts)
+      [] program.Ast.items
+  in
+  let* program =
+    monomorphize_types
+      ~eval_context:(base_structs, named_types, early_consts)
+      ~limits specializations program
+  in
   let* named_types = collect_named_types [] [] program.Ast.items in
-  let rec collect_structs acc = function
+  let rec collect_structs named_types acc = function
     | [] -> Ok (List.rev acc)
-    | Ast.Struct { generic_params = _ :: _; _ } :: rest -> collect_structs acc rest
+    | Ast.Struct { generic_params = _ :: _; _ } :: rest ->
+        collect_structs named_types acc rest
     | Ast.Struct { name; fields; align; span; _ } :: rest ->
         let* () =
           match align with
@@ -2835,20 +2888,20 @@ let check ?(limits = Limits.default) program =
                 collect_fields (f.name :: seen) ((f.name, ty) :: out) fields
         in
         let* fields = collect_fields [] [] fields in
-        collect_structs ((name, fields, align) :: acc) rest
-    | _ :: rest -> collect_structs acc rest
+        collect_structs named_types ((name, fields, align) :: acc) rest
+    | _ :: rest -> collect_structs named_types acc rest
   in
-  let* structs_src = collect_structs [] program.Ast.items in
-  let rec build acc = function
+  let* structs_src = collect_structs named_types [] program.Ast.items in
+  let rec build structs_src acc = function
     | [] -> Ok (List.rev acc)
     | (name, _, _) :: xs ->
         let* s =
           Hir.compute_struct structs_src name
           |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
         in
-        build (s :: acc) xs
+        build structs_src (s :: acc) xs
   in
-  let* structs = build [] structs_src in
+  let* structs = build structs_src [] structs_src in
   let source_obj t =
     let* t =
       source_ty named_types t
@@ -2907,11 +2960,11 @@ let check ?(limits = Limits.default) program =
   let* program =
     monomorphize_types
       ~eval_context:(structs, named_types, !consts)
-      ~limits specializations program
+      ~eager_functions:true ~limits specializations program
   in
   let* named_types = collect_named_types [] [] program.Ast.items in
-  let* structs_src = collect_structs [] program.Ast.items in
-  let* structs = build [] structs_src in
+  let* structs_src = collect_structs named_types [] program.Ast.items in
+  let* structs = build structs_src [] structs_src in
   let source_obj t =
     let* t =
       source_ty named_types t

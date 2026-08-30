@@ -1803,6 +1803,54 @@ let () =
     "struct Buffer[T, N const isize] { data arr[N, T] }\n\
      fn main(value Buffer[u8, -1]) i64 { return 0 }\n";
 
+  let global_const_generic_struct_source =
+    "struct Unit { value u64 }\n\
+     struct Box[T] { value T }\n\
+     const THREE usize = 3\n\
+     const BOX_BYTES usize = sizeof[Box[u16]]\n\
+     struct Buffer[T, N const usize] { data arr[N, T] }\n\
+     struct Holder { value Buffer[u8, THREE] }\n\
+     fn fixed[T](value Buffer[T, THREE]) Buffer[T, THREE] { return value }\n\
+     fn main(three Buffer[u8, THREE], boxed Buffer[u8, BOX_BYTES],\n\
+       unit Buffer[u8, sizeof[Unit]]) usize {\n\
+    \ fixed[u8](three)\n\
+    \ return sizeof[Holder] + sizeof[Buffer[u8, BOX_BYTES]] + sizeof[Buffer[u8, sizeof[Unit]]]\n\
+     }\n"
+  in
+  let global_const_generic_struct_hir =
+    expect_ok (Parser.parse (source global_const_generic_struct_source))
+    |> Sema.check |> expect_ok
+  in
+  if
+    List.length
+      (List.filter
+         (specialization_named "Buffer")
+         global_const_generic_struct_hir.Hir.structs)
+    <> 3
+  then
+    failwith "const-generic-struct-global-const: expected three concrete Buffer layouts";
+  if
+    not
+      (List.exists
+         (fun (definition : Hir.struct_def) ->
+           definition.name = "Holder"
+           &&
+           match definition.fields with
+           | [ { ty = Hir.Struct name; _ } ] -> contains name "Buffer$spec$"
+           | _ -> false)
+         global_const_generic_struct_hir.Hir.structs)
+  then
+    failwith "const-generic-struct-global-field: named const did not resolve in a field";
+  let global_const_generic_struct_llvm =
+    Ir.render (expect_ok (Lower.lower global_const_generic_struct_hir))
+  in
+  if global_const_generic_struct_llvm <> llvm_of global_const_generic_struct_source then
+    failwith "const-generic-struct-global-order: generated output was not deterministic";
+  semantic_error "const-generic-struct-global-type" "const argument type mismatch"
+    "const COUNT u8 = 3\n\
+     struct Buffer[T, N const usize] { data arr[N, T] }\n\
+     fn main(value Buffer[u8, COUNT]) usize { return 0 }\n";
+
   let const_generic_function_type_source =
     "const THREE usize = 3\n\
      fn array_identity[T, N const usize](value arr[N, T]) arr[N, T] {\n\
