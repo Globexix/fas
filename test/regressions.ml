@@ -1342,11 +1342,167 @@ let () =
     (not (contains rendered_generic_declarations "struct Buffer[T, N const usize]"))
     || not (contains rendered_generic_declarations "fn choose[T, N const usize, U]")
   then failwith "type-generic-declarations: AST rendering lost generic parameters";
+  let applied_type_syntax =
+    expect_ok
+      (Parser.parse
+         (source "fn use(value Mixed[T, ptr[u8], 3]) i64 { return 0 }\n"))
+  in
+  (match applied_type_syntax.Ast.items with
+  | [
+   Ast.Func
+     {
+       params =
+         [
+           {
+             ty =
+               Ast.Applied_type
+                 ( "Mixed",
+                   [
+                     Ast.Name_arg ("T", _);
+                     Ast.Type_arg (Ast.Ptr (Ast.Int Ast.U8));
+                     Ast.Const_arg (Ast.Int_lit ("3", _));
+                   ] );
+             _;
+           };
+         ];
+       _;
+     };
+  ] ->
+      ()
+  | _ -> failwith "generic-argument-syntax: argument forms were not preserved");
   parse_error_message "type-generic-missing-const-type" "expected a type"
     "fn bad[T const](value T) T { return value }\n";
-  semantic_error "type-generic-checkpoint"
+  semantic_error "type-generic-function-checkpoint"
     "type-generic declarations are not available in this checkpoint"
-    "struct Box[T] { value T }\n";
+    "fn identity[T](value T) T { return value }\n";
+
+  let generic_struct_source =
+    "struct Box[T] { value T pointer ptr[T] }\n\
+     struct Pair[A, B] { first A second B }\n\
+     struct Wrapper[T] { boxed Box[T] }\n\
+     fn main() usize {\n\
+    \ box Box[i64] = (Box[i64]){7, null}\n\
+    \ pair64 Pair[i64, u8] = (Pair[i64, u8]){9, 1}\n\
+    \ pair32 Pair[u32, u8] = (Pair[u32, u8]){9, 1}\n\
+    \ wrapped Wrapper[u8] = (Wrapper[u8]){(Box[u8]){1, null}}\n\
+    \ return sizeof[Box[i64]] + sizeof[Pair[i64, u8]]\n\
+     }\n"
+  in
+  let generic_struct_hir =
+    expect_ok (Parser.parse (source generic_struct_source)) |> Sema.check |> expect_ok
+  in
+  let specialization_named base (definition : Hir.struct_def) =
+    let prefix = base ^ "$spec$" in
+    String.length definition.name >= String.length prefix
+    && String.sub definition.name 0 (String.length prefix) = prefix
+  in
+  let box_specializations =
+    List.filter (specialization_named "Box") generic_struct_hir.Hir.structs
+  in
+  if List.length box_specializations <> 2 then
+    failwith "generic-struct-deduplication: expected two concrete Box layouts";
+  if
+    not
+      (List.exists
+         (fun (definition : Hir.struct_def) ->
+           match definition.fields with
+           | [ { ty = Hir.Int Hir.I64; _ }; { ty = Hir.Ptr (Hir.Int Hir.I64); _ } ] ->
+               true
+           | _ -> false)
+         box_specializations)
+  then failwith "generic-struct-substitution: nested pointer substitution failed";
+  let pair_sizes =
+    generic_struct_hir.Hir.structs
+    |> List.filter (specialization_named "Pair")
+    |> List.map (fun (definition : Hir.struct_def) -> definition.size)
+    |> List.sort compare
+  in
+  if pair_sizes <> [ 8; 16 ] then
+    failwith
+      "generic-struct-layouts: distinct arguments did not produce distinct layouts";
+  let generic_struct_llvm = Ir.render (expect_ok (Lower.lower generic_struct_hir)) in
+  if generic_struct_llvm <> llvm_of generic_struct_source then
+    failwith "generic-struct-order: generated output was not deterministic";
+  if contains generic_struct_llvm "%struct.Box = type" then
+    failwith "generic-struct-template: template reached LLVM output";
+  if not (contains generic_struct_llvm "%struct.Box$spec$") then
+    failwith "generic-struct-lowering: concrete specialization did not reach LLVM";
+  let unused_generic_struct =
+    expect_ok
+      (Sema.check
+         (expect_ok
+            (Parser.parse
+               (source "struct Unused[T] { value T }\nfn main() i64 { return 0 }\n"))))
+  in
+  if unused_generic_struct.Hir.structs <> [] then
+    failwith "generic-struct-template: unused template was emitted";
+  semantic_error "generic-struct-bare-use"
+    "generic struct `Box` requires type arguments"
+    "struct Box[T] { value T }\nfn main(value Box) i64 { return 0 }\n";
+  semantic_error "generic-struct-arity" "wrong number of generic arguments to `Pair`"
+    "struct Pair[A, B] { first A second B }\n\
+     fn main(value Pair[i64]) i64 { return 0 }\n";
+  semantic_error "generic-struct-argument-kind" "expected a type argument"
+    "struct Box[T] { value T }\nfn main(value Box[3]) i64 { return 0 }\n";
+  semantic_error "generic-application-to-concrete" "struct `Box` is not generic"
+    "struct Box { value i64 }\nfn main(value Box[i64]) i64 { return 0 }\n";
+  semantic_error "unknown-generic-struct" "unknown generic struct `Missing`"
+    "fn main(value Missing[i64]) i64 { return 0 }\n";
+  semantic_error "generic-struct-duplicate-param" "duplicate generic parameter `T`"
+    "struct Pair[T, T] { first T second T }\nfn main() i64 { return 0 }\n";
+
+  let recursive_struct_limits = { Limits.default with max_specialization_depth = 1 } in
+  ignore
+    (expect_ok
+       (Sema.check ~limits:recursive_struct_limits
+          (expect_ok
+             (Parser.parse
+                (source
+                   "struct Node[T] { next ptr[Node[T]] value T }\n\
+                    fn main(value Node[u8]) i64 { return 0 }\n")))));
+  (match
+     Sema.check ~limits:recursive_struct_limits
+       (expect_ok
+          (Parser.parse
+             (source
+                "struct Inner[T] { value T }\n\
+                 struct Outer[T] { inner Inner[T] }\n\
+                 fn main(value Outer[u8]) i64 { return 0 }\n")))
+   with
+  | Ok _ -> failwith "generic-struct-depth-limit: expected rejection"
+  | Error diagnostics ->
+      if
+        not
+          (contains
+             (Diag.render_all ~source:None diagnostics)
+             "struct specialization recursion depth limit exceeded")
+      then failwith "generic-struct-depth-limit: unexpected diagnostic");
+  let one_struct_limit = { Limits.default with max_specializations = 1 } in
+  ignore
+    (expect_ok
+       (Sema.check ~limits:one_struct_limit
+          (expect_ok
+             (Parser.parse
+                (source
+                   "struct Box[T] { value T }\n\
+                    fn main(left Box[u8], right Box[u8]) i64 { return 0 }\n")))));
+  (match
+     Sema.check ~limits:one_struct_limit
+       (expect_ok
+          (Parser.parse
+             (source
+                "struct Box[T] { value T }\n\
+                 fn id[N const usize]() usize { return N }\n\
+                 fn main(value Box[u8]) usize { return id[1]() }\n")))
+   with
+  | Ok _ -> failwith "shared-specialization-limit: expected rejection"
+  | Error diagnostics ->
+      if
+        not
+          (contains
+             (Diag.render_all ~source:None diagnostics)
+             "const specialization count limit exceeded")
+      then failwith "shared-specialization-limit: unexpected diagnostic");
 
   let i8_min_specialization =
     llvm_of
@@ -1545,4 +1701,4 @@ let () =
   if not (contains mixed_runtime "phi") then
     failwith "runtime-logical-mixed: short-circuit lowering missing";
 
-  print_endline "regression tests: 180 passed"
+  print_endline "regression tests: 197 passed"

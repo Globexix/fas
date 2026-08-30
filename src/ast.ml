@@ -6,9 +6,11 @@ type ty =
   | Array of string * ty
   | Vec of string * ty
   | Named_type of string
+  | Applied_type of string * generic_arg list
   | Void
 
 and int_kind = U8 | U16 | U32 | U64 | I8 | I16 | I32 | I64 | Usize | Isize
+and generic_arg = Type_arg of ty | Const_arg of expr | Name_arg of string * Span.t
 
 and expr =
   | Int_lit of string * Span.t
@@ -169,17 +171,16 @@ let rec type_name = function
   | Array (n, t) -> "arr[" ^ n ^ ", " ^ type_name t ^ "]"
   | Vec (n, t) -> "vec[" ^ n ^ ", " ^ type_name t ^ "]"
   | Named_type s -> s
+  | Applied_type (name, args) ->
+      name ^ "[" ^ String.concat ", " (List.map generic_arg_name args) ^ "]"
   | Void -> "void"
 
-let generic_param_name = function
-  | Type_param { name; _ } -> name
-  | Const_param { name; ty; _ } -> name ^ " const " ^ type_name ty
+and generic_arg_name = function
+  | Type_arg t -> type_name t
+  | Const_arg e -> expr_name e
+  | Name_arg (name, _) -> name
 
-let generic_params_name = function
-  | [] -> ""
-  | params -> "[" ^ String.concat ", " (List.map generic_param_name params) ^ "]"
-
-let rec expr_name = function
+and expr_name = function
   | Int_lit (s, _) -> s
   | Bool_lit (true, _) -> "true"
   | Bool_lit (false, _) -> "false"
@@ -234,6 +235,14 @@ let rec expr_name = function
   | Array_lit (xs, _) -> "{" ^ String.concat ", " (List.map expr_name xs) ^ "}"
   | Struct_lit (t, xs, _) ->
       "(" ^ type_name t ^ "){" ^ String.concat ", " (List.map expr_name xs) ^ "}"
+
+let generic_param_name = function
+  | Type_param { name; _ } -> name
+  | Const_param { name; ty; _ } -> name ^ " const " ^ type_name ty
+
+let generic_params_name = function
+  | [] -> ""
+  | params -> "[" ^ String.concat ", " (List.map generic_param_name params) ^ "]"
 
 let rec stmt_lines indent = function
   | Let { name; ty; init; _ } ->

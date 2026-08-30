@@ -287,15 +287,74 @@ module P = struct
         | "i64" -> Ok (Ast.Int Ast.I64)
         | "usize" -> Ok (Ast.Int Ast.Usize)
         | "isize" -> Ok (Ast.Int Ast.Isize)
-        | _ -> Ok (Ast.Named_type s))
+        | _ ->
+            if at p Token.Lbracket then
+              let* args = generic_args p in
+              Ok (Ast.Applied_type (s, args))
+            else Ok (Ast.Named_type s))
     | t -> Error [ Diag.error (span p) ("expected a type, found " ^ Token.show t) ]
 
-  let starts_type p =
+  and generic_args p =
+    let* () = expected p Token.Lbracket in
+    let rec go acc =
+      let* arg = generic_arg p in
+      if eat p Token.Comma then go (arg :: acc)
+      else
+        let* () = expected p Token.Rbracket in
+        Ok (List.rev (arg :: acc))
+    in
+    go []
+
+  and generic_arg p =
+    match ((peek p).kind, (peek_n p 1).kind) with
+    | Token.Ident name, (Token.Comma | Token.Rbracket)
+      when not
+             (List.mem name
+                [
+                  "bool";
+                  "void";
+                  "u8";
+                  "u16";
+                  "u32";
+                  "u64";
+                  "i8";
+                  "i16";
+                  "i32";
+                  "i64";
+                  "usize";
+                  "isize";
+                ]) ->
+        let s = span p in
+        ignore (bump p);
+        Ok (Ast.Name_arg (name, s))
+    | ( Token.Ident
+          ( "bool" | "void" | "ptr" | "arr" | "vec" | "u8" | "u16" | "u32" | "u64"
+          | "i8" | "i16" | "i32" | "i64" | "usize" | "isize" ),
+        _ )
+    | Token.Ident _, Token.Lbracket ->
+        let* t = ty p in
+        Ok (Ast.Type_arg t)
+    | _ ->
+        let* e = expr p in
+        Ok (Ast.Const_arg e)
+
+  and starts_type p =
     match ((peek p).kind, (peek_n p 1).kind) with
     | Token.Ident _, Token.Ident _ -> true
     | _ -> false
 
-  let compound_op = function
+  and starts_struct_literal p =
+    let rec scan offset brackets =
+      match (peek_n p offset).kind with
+      | Token.Lbracket -> scan (offset + 1) (brackets + 1)
+      | Token.Rbracket when brackets > 0 -> scan (offset + 1) (brackets - 1)
+      | Token.Rparen when brackets = 0 -> (peek_n p (offset + 1)).kind = Token.Lbrace
+      | Token.Newline | Token.Eof -> false
+      | _ -> scan (offset + 1) brackets
+    in
+    p.block_expression_depth <> Some p.depth && scan 1 0
+
+  and compound_op = function
     | Token.Plus_eq -> Some Ast.Add
     | Token.Minus_eq -> Some Ast.Sub
     | Token.Star_eq -> Some Ast.Mul
@@ -306,9 +365,9 @@ module P = struct
     | Token.Caret_eq -> Some Ast.Bit_xor
     | _ -> None
 
-  let finish_statement p consume_end = if consume_end then end_stmt p else Ok ()
+  and finish_statement p consume_end = if consume_end then end_stmt p else Ok ()
 
-  let rec items p =
+  and items p =
     skip_newlines p;
     if at p Token.Eof then Ok []
     else
@@ -951,12 +1010,7 @@ module P = struct
         Ok (Ast.String_lit (true, s, sp))
     | Token.Lparen ->
         let s = span p in
-        if
-          match ((peek_n p 1).kind, (peek_n p 2).kind, (peek_n p 3).kind) with
-          | Token.Ident _, Token.Rparen, Token.Lbrace ->
-              p.block_expression_depth <> Some p.depth
-          | _ -> false
-        then
+        if starts_struct_literal p then
           let* () = expected p Token.Lparen in
           let* t = ty p in
           let* () = expected p Token.Rparen in
