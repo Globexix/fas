@@ -232,6 +232,16 @@ module P = struct
     | t ->
         Error [ Diag.error (peek p).span ("expected integer, found " ^ Token.show t) ]
 
+  let aggregate_length p =
+    match (bump p).kind with
+    | Token.Int s | Token.Ident s -> Ok s
+    | t ->
+        Error
+          [
+            Diag.error (peek p).span
+              ("expected integer or const parameter, found " ^ Token.show t);
+          ]
+
   let int_value p =
     match integer p with
     | Error e -> Error e
@@ -261,7 +271,7 @@ module P = struct
     | Token.Ident "arr" ->
         ignore (bump p);
         let* () = expected p Token.Lbracket in
-        let* n = integer p in
+        let* n = aggregate_length p in
         let* () = expected p Token.Comma in
         let* t = ty p in
         let* () = expected p Token.Rbracket in
@@ -269,7 +279,7 @@ module P = struct
     | Token.Ident "vec" ->
         ignore (bump p);
         let* () = expected p Token.Lbracket in
-        let* n = integer p in
+        let* n = aggregate_length p in
         let* () = expected p Token.Comma in
         let* t = ty p in
         let* () = expected p Token.Rbracket in

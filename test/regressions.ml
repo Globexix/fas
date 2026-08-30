@@ -1307,7 +1307,7 @@ let () =
     expect_ok
       (Parser.parse
          (source
-            "struct Buffer[T, N const usize] { data ptr[T] }\n\
+            "struct Buffer[T, N const usize] { data arr[N, T] }\n\
              fn choose[T, N const usize, U](value T) U { return value }\n"))
   in
   (match generic_declarations.Ast.items with
@@ -1319,7 +1319,7 @@ let () =
            Ast.Type_param { name = "T"; _ };
            Ast.Const_param { name = "N"; ty = Ast.Int Ast.Usize; _ };
          ];
-       fields = [ { ty = Ast.Ptr (Ast.Named_type "T"); _ } ];
+       fields = [ { ty = Ast.Array ("N", Ast.Named_type "T"); _ } ];
        _;
      };
    Ast.Func
@@ -1715,6 +1715,93 @@ let () =
     "fn main(value Missing[i64]) i64 { return 0 }\n";
   semantic_error "generic-struct-duplicate-param" "duplicate generic parameter `T`"
     "struct Pair[T, T] { first T second T }\nfn main() i64 { return 0 }\n";
+
+  let const_generic_struct_source =
+    "struct Buffer[T, N const usize] { data arr[N, T] }\n\
+     struct Bytes[N const usize] { data arr[N, u8] }\n\
+     struct Lanes[T, N const usize] { data vec[N, T] }\n\
+     struct Wrapped[T, N const usize] { value Buffer[T, N] }\n\
+     fn main() usize {\n\
+    \ return sizeof[Buffer[u8, 3]] + sizeof[Buffer[u8, 1 + 2]] + "
+    ^ "sizeof[Buffer[u16, 3]] + sizeof[Buffer[u8, 4]] + "
+    ^ "sizeof[Bytes[5]] + sizeof[Lanes[u32, 4]] + sizeof[Wrapped[u8, 3]]\n\
+     }\n"
+  in
+  let const_generic_struct_hir =
+    expect_ok (Parser.parse (source const_generic_struct_source))
+    |> Sema.check |> expect_ok
+  in
+  let buffer_specializations =
+    List.filter (specialization_named "Buffer") const_generic_struct_hir.Hir.structs
+  in
+  if List.length buffer_specializations <> 3 then
+    failwith "const-generic-struct-deduplication: expected three concrete layouts";
+  if
+    not
+      (List.exists
+         (fun (definition : Hir.struct_def) ->
+           match definition.fields with
+           | [ { ty = Hir.Array (3, Hir.Int Hir.U8); _ } ] -> true
+           | _ -> false)
+         buffer_specializations)
+  then failwith "const-generic-struct-substitution: array length was not substituted";
+  if
+    not
+      (List.exists
+         (fun (definition : Hir.struct_def) ->
+           specialization_named "Bytes" definition
+           &&
+           match definition.fields with
+           | [ { ty = Hir.Array (5, Hir.Int Hir.U8); _ } ] -> true
+           | _ -> false)
+         const_generic_struct_hir.Hir.structs)
+  then failwith "const-generic-struct-substitution: const-only layout was not materialized";
+  if
+    not
+      (List.exists
+         (fun (definition : Hir.struct_def) ->
+           specialization_named "Lanes" definition
+           &&
+           match definition.fields with
+           | [ { ty = Hir.Vec (4, Hir.Int Hir.U32); _ } ] -> true
+           | _ -> false)
+         const_generic_struct_hir.Hir.structs)
+  then failwith "const-generic-struct-substitution: vector length was not substituted";
+  if
+    not
+      (List.exists
+         (fun (definition : Hir.struct_def) ->
+           specialization_named "Wrapped" definition
+           &&
+           match definition.fields with
+           | [ { ty = Hir.Struct name; _ } ] -> contains name "Buffer$spec$"
+           | _ -> false)
+         const_generic_struct_hir.Hir.structs)
+  then failwith "const-generic-struct-nesting: outer const value was not forwarded";
+  let const_generic_struct_llvm =
+    Ir.render (expect_ok (Lower.lower const_generic_struct_hir))
+  in
+  if const_generic_struct_llvm <> llvm_of const_generic_struct_source then
+    failwith "const-generic-struct-order: generated output was not deterministic";
+  if
+    contains const_generic_struct_llvm "%struct.Buffer = type"
+    || contains const_generic_struct_llvm "%struct.Bytes = type"
+    || contains const_generic_struct_llvm "%struct.Lanes = type"
+    || contains const_generic_struct_llvm "%struct.Wrapped = type"
+  then failwith "const-generic-struct-template: template reached LLVM output";
+  semantic_error "const-generic-struct-arity"
+    "wrong number of generic arguments to `Buffer`"
+    "struct Buffer[T, N const usize] { data arr[N, T] }\n\
+     fn main(value Buffer[u8]) i64 { return 0 }\n";
+  semantic_error "const-generic-struct-argument-kind" "expected a const argument"
+    "struct Buffer[T, N const usize] { data arr[N, T] }\n\
+     fn main(value Buffer[u8, u16]) i64 { return 0 }\n";
+  semantic_error "const-generic-struct-argument-type" "const argument type mismatch"
+    "struct Buffer[T, N const u8] { data arr[N, T] }\n\
+     fn main(value Buffer[u8, sizeof[u8]]) i64 { return 0 }\n";
+  semantic_error "const-generic-struct-negative-length" "negative aggregate length"
+    "struct Buffer[T, N const isize] { data arr[N, T] }\n\
+     fn main(value Buffer[u8, -1]) i64 { return 0 }\n";
 
   let recursive_struct_limits = { Limits.default with max_specialization_depth = 1 } in
   ignore

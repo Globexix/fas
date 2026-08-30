@@ -33,7 +33,11 @@ type specialization_payload =
       values : (string * Hir.ty * int64) list;
       staged_args : staged_specialization_arg list option;
     }
-  | Struct_payload of { template : Ast.item; substitutions : (string * Ast.ty) list }
+  | Struct_payload of {
+      template : Ast.item;
+      substitutions : (string * Ast.ty) list;
+      values : (string * Hir.ty * int64) list;
+    }
 
 type specialization = {
   key : specialization_key;
@@ -2021,21 +2025,38 @@ let monomorphize_types ~limits specializations program =
       program.Ast.items
   in
   let generated = ref [] in
-  let rec resolve_ty substitutions depth span = function
+  let resolve_aggregate_length values span length =
+    match lookup length values with
+    | None -> Ok length
+    | Some (_, ty, value) ->
+        if is_unsigned ty then
+          if Int64.unsigned_compare value (Int64.of_int max_int) > 0 then
+            error span "aggregate length is not a machine integer"
+          else Ok (Int64.to_string value)
+        else
+          let value = sign_extend_value ty value in
+          if value < 0L then error span "negative aggregate length"
+          else if value > Int64.of_int max_int then
+            error span "aggregate length is not a machine integer"
+          else Ok (Int64.to_string value)
+  in
+  let rec resolve_ty ?(values = []) substitutions depth span = function
     | Ast.Bool -> Ok Ast.Bool
     | Ast.Void -> Ok Ast.Void
     | Ast.Int kind -> Ok (Ast.Int kind)
     | Ast.Ptr ty ->
-        let* ty = resolve_ty substitutions depth span ty in
+        let* ty = resolve_ty ~values substitutions depth span ty in
         Ok (Ast.Ptr ty)
     | Ast.Ptr_const ty ->
-        let* ty = resolve_ty substitutions depth span ty in
+        let* ty = resolve_ty ~values substitutions depth span ty in
         Ok (Ast.Ptr_const ty)
     | Ast.Array (length, ty) ->
-        let* ty = resolve_ty substitutions depth span ty in
+        let* length = resolve_aggregate_length values span length in
+        let* ty = resolve_ty ~values substitutions depth span ty in
         Ok (Ast.Array (length, ty))
     | Ast.Vec (length, ty) ->
-        let* ty = resolve_ty substitutions depth span ty in
+        let* length = resolve_aggregate_length values span length in
+        let* ty = resolve_ty ~values substitutions depth span ty in
         Ok (Ast.Vec (length, ty))
     | Ast.Named_type name -> (
         match List.assoc_opt name substitutions with
@@ -2056,45 +2077,65 @@ let monomorphize_types ~limits specializations program =
               error span
                 (Printf.sprintf "wrong number of generic arguments to `%s`" name)
             else
-              let rec resolve_arguments resolved bindings params arguments =
+              let rec resolve_arguments resolved types bindings values_out params
+                  arguments =
                 match (params, arguments) with
-                | [], [] -> Ok (List.rev resolved, List.rev bindings)
+                | [], [] ->
+                    Ok
+                      ( List.rev resolved,
+                        List.rev types,
+                        List.rev bindings,
+                        List.rev values_out )
                 | ( Ast.Type_param { name = parameter; _ } :: params,
                     argument :: arguments ) ->
                     let* argument =
                       match argument with
-                      | Ast.Type_arg ty -> resolve_ty substitutions depth span ty
+                      | Ast.Type_arg ty ->
+                          resolve_ty ~values substitutions depth span ty
                       | Ast.Name_arg (name, _) ->
-                          resolve_ty substitutions depth span (Ast.Named_type name)
+                          resolve_ty ~values substitutions depth span
+                            (Ast.Named_type name)
                       | Ast.Const_arg expression ->
                           error (Ast.expr_span expression) "expected a type argument"
                     in
-                    resolve_arguments (argument :: resolved)
+                    resolve_arguments
+                      (Type_specialization_arg (specialization_type_key argument)
+                      :: resolved)
+                      (argument :: types)
                       ((parameter, argument) :: bindings)
-                      params arguments
-                | Ast.Const_param _ :: _, _ ->
-                    error span
-                      "const-generic structs are not available in this checkpoint"
+                      values_out params arguments
+                | Ast.Const_param parameter :: params, argument :: arguments ->
+                    let* expression = generic_const_argument span argument in
+                    let* const_ty = source_ty_diag [] parameter.span parameter.ty in
+                    let* actual_ty, value =
+                      const_expr values (Some const_ty) expression
+                    in
+                    if not (equal actual_ty const_ty) then
+                      error (Ast.expr_span expression) "const argument type mismatch"
+                    else
+                      resolve_arguments
+                        (Const_specialization_arg (const_ty, value) :: resolved)
+                        types bindings
+                        ((parameter.name, const_ty, value) :: values_out)
+                        params arguments
                 | _ -> error span "generic argument arity mismatch"
               in
-              let* arguments, substitutions =
-                resolve_arguments [] [] generic_params arguments
+              let* ordered_arguments, type_arguments, substitutions, values =
+                resolve_arguments [] [] [] [] generic_params arguments
               in
-              let specialization_name = mangle_type_specialization name arguments in
-              let key =
-                ( Struct_specialization,
-                  name,
-                  List.map
-                    (fun ty -> Type_specialization_arg (specialization_type_key ty))
-                    arguments )
+              let specialization_name =
+                if values = [] then mangle_type_specialization name type_arguments
+                else mangle_mixed_specialization name ordered_arguments
               in
+              let key = (Struct_specialization, name, ordered_arguments) in
               let specialization =
                 {
                   key;
                   name = specialization_name;
                   depth;
                   payload =
-                    Struct_payload { template = Ast.Struct template; substitutions };
+                    Struct_payload
+                      { template = Ast.Struct template; substitutions; values };
                 }
               in
               let* specialization =
@@ -2457,13 +2498,17 @@ let monomorphize_types ~limits specializations program =
   let rec materialize () =
     match Queue.take_opt specializations.queue with
     | None -> Ok ()
-    | Some { payload = Struct_payload { template; substitutions }; name; depth; _ } -> (
+    | Some
+        { payload = Struct_payload { template; substitutions; values }; name; depth; _ }
+      -> (
         match template with
         | Ast.Struct { fields; align; span; _ } ->
             let* fields =
               Result_list.map
                 (fun (field : Ast.field) ->
-                  let* ty = resolve_ty substitutions (depth + 1) field.span field.ty in
+                  let* ty =
+                    resolve_ty ~values substitutions (depth + 1) field.span field.ty
+                  in
                   Ok ({ field with ty } : Ast.field))
                 fields
             in
@@ -2513,11 +2558,8 @@ let check ?(limits = Limits.default) program =
   let* () =
     Result_list.iter
       (function
-        | Ast.Struct { generic_params; span; _ } ->
-            let* () = validate_generic_params named_types generic_params in
-            if has_const_params generic_params then
-              error span "const-generic structs are not available in this checkpoint"
-            else Ok ()
+        | Ast.Struct { generic_params; _ } ->
+            validate_generic_params named_types generic_params
         | Ast.Func { generic_params; _ } ->
             validate_generic_params named_types generic_params
         | _ -> Ok ())
