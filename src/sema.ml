@@ -22,11 +22,16 @@ type specialization_arg =
 
 type specialization_key = specialization_kind * string * specialization_arg list
 
+type staged_specialization_arg =
+  | Staged_type_arg of string
+  | Staged_const_arg of string
+
 type specialization_payload =
   | Function_payload of {
       item : Ast.item;
       substitutions : (string * Ast.ty) list;
       values : (string * Hir.ty * int64) list;
+      staged_args : staged_specialization_arg list option;
     }
   | Struct_payload of { template : Ast.item; substitutions : (string * Ast.ty) list }
 
@@ -1337,9 +1342,51 @@ and function_specialization_key name values =
     name,
     List.map (fun (_, t, v) -> Const_specialization_arg (t, v)) values )
 
+and staged_specialization_identity state name values =
+  let staged = ref None in
+  Specialization_cache.iter
+    (fun _ specialization ->
+      if specialization.name = name then
+        match (specialization.key, specialization.payload) with
+        | ( (Function_specialization, origin, _),
+            Function_payload { staged_args = Some arguments; _ } ) ->
+            staged := Some (origin, arguments)
+        | _ -> ())
+    state.cache;
+  match !staged with
+  | None -> Ok None
+  | Some (origin, arguments) ->
+      let rec resolve acc = function
+        | [] -> Ok (List.rev acc)
+        | Staged_type_arg key :: rest ->
+            resolve (Type_specialization_arg key :: acc) rest
+        | Staged_const_arg name :: rest -> (
+            match List.find_opt (fun (parameter, _, _) -> parameter = name) values with
+            | Some (_, ty, value) ->
+                resolve (Const_specialization_arg (ty, value) :: acc) rest
+            | None ->
+                error Span.synthetic
+                  "internal error: staged const specialization argument is missing")
+      in
+      let* arguments = resolve [] arguments in
+      Ok (Some (origin, arguments))
+
+and mangle_mixed_specialization base arguments =
+  let argument_name = function
+    | Type_specialization_arg key ->
+        "t" ^ string_of_int (String.length key) ^ ":" ^ key
+    | Const_specialization_arg (ty, value) ->
+        let key = const_key_value ty value in
+        "c" ^ string_of_int (String.length key) ^ ":" ^ key
+  in
+  base ^ "$spec$" ^ String.concat ";" (List.map argument_name arguments)
+
 and generic_const_argument span = function
   | Ast.Const_arg expression -> Ok expression
   | Ast.Name_arg (name, span) -> Ok (Ast.Ident (name, span))
+  | Ast.Type_arg (Ast.Applied_type (name, [ argument ])) ->
+      let* index = generic_const_argument span argument in
+      Ok (Ast.Index (Ast.Ident (name, span), index, span))
   | Ast.Type_arg _ -> error span "expected a const argument"
 
 and check_call c _expected fn args s =
@@ -1369,8 +1416,18 @@ and check_call c _expected fn args s =
               | _ -> error s "const argument arity mismatch"
             in
             let* values = eval [] const_params cargs in
-            let mangled = mangle_specialization name values in
-            let key = function_specialization_key name values in
+            let* staged =
+              staged_specialization_identity c.specializations name values
+            in
+            let mangled, key =
+              match staged with
+              | None ->
+                  ( mangle_specialization name values,
+                    function_specialization_key name values )
+              | Some (origin, arguments) ->
+                  ( mangle_mixed_specialization origin arguments,
+                    (Function_specialization, origin, arguments) )
+            in
             let spec =
               {
                 key;
@@ -1393,6 +1450,7 @@ and check_call c _expected fn args s =
                           };
                       substitutions = [];
                       values;
+                      staged_args = None;
                     };
               }
             in
@@ -2067,26 +2125,23 @@ let monomorphize_types ~limits specializations program =
               error span (Printf.sprintf "function `%s` is not generic" name)
             else error span (Printf.sprintf "unknown generic function `%s`" name)
         | Some (Ast.Func ({ generic_params; _ } as template)) ->
-            if has_type_params generic_params && has_const_params generic_params then
-              error span
-                "mixed type and const generic functions are not available in this \
-                 checkpoint"
-            else if has_const_params generic_params then
-              let resolve_argument = function
-                | Ast.Const_arg expression ->
-                    let* expression = resolve_expr substitutions depth expression in
-                    Ok (Ast.Const_arg expression)
-                | Ast.Name_arg _ as argument -> Ok argument
-                | Ast.Type_arg _ -> error span "expected a const argument"
+            if List.length arguments <> List.length generic_params then
+              let kind =
+                if has_const_params generic_params then
+                  if has_type_params generic_params then "generic" else "const"
+                else "type"
               in
-              let* arguments = Result_list.map resolve_argument arguments in
-              Ok (Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span))
-            else if List.length arguments <> List.length generic_params then
-              error span (Printf.sprintf "wrong number of type arguments to `%s`" name)
+              error span
+                (Printf.sprintf "wrong number of %s arguments to `%s`" kind name)
             else
-              let rec resolve_arguments resolved bindings params arguments =
+              let rec resolve_arguments types bindings consts staged params arguments =
                 match (params, arguments) with
-                | [], [] -> Ok (List.rev resolved, List.rev bindings)
+                | [], [] ->
+                    Ok
+                      ( List.rev types,
+                        List.rev bindings,
+                        List.rev consts,
+                        List.rev staged )
                 | ( Ast.Type_param { name = parameter; _ } :: params,
                     argument :: arguments ) ->
                     let* argument =
@@ -2097,41 +2152,69 @@ let monomorphize_types ~limits specializations program =
                       | Ast.Const_arg expression ->
                           error (Ast.expr_span expression) "expected a type argument"
                     in
-                    resolve_arguments (argument :: resolved)
-                      ((parameter, argument) :: bindings)
+                    resolve_arguments (argument :: types)
+                      ((parameter, argument) :: bindings) consts
+                      (Staged_type_arg (specialization_type_key argument) :: staged)
+                      params arguments
+                | ( Ast.Const_param { name = parameter; _ } :: params,
+                    argument :: arguments ) ->
+                    let* expression = generic_const_argument span argument in
+                    let* expression =
+                      resolve_expr substitutions depth expression
+                    in
+                    let argument = Ast.Const_arg expression in
+                    resolve_arguments types bindings (argument :: consts)
+                      (Staged_const_arg parameter :: staged)
                       params arguments
                 | _ -> error span "generic argument arity mismatch"
               in
-              let* arguments, type_substitutions =
-                resolve_arguments [] [] generic_params arguments
+              let* type_arguments, type_substitutions, const_arguments, staged_args =
+                resolve_arguments [] [] [] [] generic_params arguments
               in
-              let specialization_name = mangle_type_specialization name arguments in
-              let key =
-                ( Function_specialization,
-                  name,
-                  List.map
-                    (fun ty -> Type_specialization_arg (specialization_type_key ty))
-                    arguments )
-              in
-              let specialization =
-                {
-                  key;
-                  name = specialization_name;
-                  depth;
-                  payload =
-                    Function_payload
-                      {
-                        item = Ast.Func template;
-                        substitutions = type_substitutions;
-                        values = [];
-                      };
-                }
-              in
-              let* specialization =
-                request_specialization specializations ~limits ~depth ~span
-                  ~description:"function specialization" specialization
-              in
-              Ok (Ast.Ident (specialization.name, ident_span))
+              if type_arguments = [] then
+                Ok
+                  (Ast.Generic_args
+                     (Ast.Ident (name, ident_span), const_arguments, span))
+              else
+                let specialization_name =
+                  mangle_type_specialization name type_arguments
+                in
+                let key =
+                  ( Function_specialization,
+                    name,
+                    List.map
+                      (fun ty -> Type_specialization_arg (specialization_type_key ty))
+                      type_arguments )
+                in
+                let specialization =
+                  {
+                    key;
+                    name = specialization_name;
+                    depth;
+                    payload =
+                      Function_payload
+                        {
+                          item = Ast.Func template;
+                          substitutions = type_substitutions;
+                          values = [];
+                          staged_args =
+                            (if const_arguments = [] then None
+                             else Some staged_args);
+                        };
+                  }
+                in
+                let* specialization =
+                  request_specialization specializations ~limits ~depth ~span
+                    ~description:"function specialization" specialization
+                in
+                if const_arguments = [] then
+                  Ok (Ast.Ident (specialization.name, ident_span))
+                else
+                  Ok
+                    (Ast.Generic_args
+                       ( Ast.Ident (specialization.name, ident_span),
+                         const_arguments,
+                         span ))
         | Some _ -> error span "internal error: generic function template is malformed")
     | Ast.Generic_args (_, _, span) ->
         error span "generic call target must be a function name"
@@ -2280,7 +2363,7 @@ let monomorphize_types ~limits specializations program =
         in
         Ok (Ast.Switch (expression, cases, default, span))
   and resolve_function substitutions depth specialization_name = function
-    | Ast.Func ({ params; ret; body; span; _ } as item) ->
+    | Ast.Func ({ params; ret; body; generic_params; span; _ } as item) ->
         let* params =
           Result_list.map
             (fun (parameter : Ast.param) ->
@@ -2289,6 +2372,18 @@ let monomorphize_types ~limits specializations program =
             params
         in
         let* ret = resolve_ty substitutions depth span ret in
+        let* generic_params =
+          Result_list.map
+            (function
+              | Ast.Type_param _ -> Ok None
+              | Ast.Const_param parameter ->
+                  let* ty =
+                    resolve_ty substitutions depth parameter.span parameter.ty
+                  in
+                  Ok (Some (Ast.Const_param { parameter with ty })))
+            generic_params
+        in
+        let generic_params = List.filter_map Fun.id generic_params in
         let* body =
           match body with
           | Ast.Declaration -> Ok Ast.Declaration
@@ -2309,7 +2404,7 @@ let monomorphize_types ~limits specializations program =
                body;
                linkage = Ast.Internal;
                variadic = false;
-               generic_params = [];
+               generic_params;
              })
     | _ -> error Span.synthetic "internal error: function specialization is malformed"
   and resolve_item = function
@@ -2380,7 +2475,8 @@ let monomorphize_types ~limits specializations program =
         )
     | Some
         {
-          payload = Function_payload { item; substitutions; values = [] };
+          payload =
+            Function_payload { item; substitutions; values = []; staged_args = _ };
           name;
           depth;
           _;
@@ -2422,13 +2518,8 @@ let check ?(limits = Limits.default) program =
             if has_const_params generic_params then
               error span "const-generic structs are not available in this checkpoint"
             else Ok ()
-        | Ast.Func { generic_params; span; _ } ->
-            let* () = validate_generic_params named_types generic_params in
-            if has_type_params generic_params && has_const_params generic_params then
-              error span
-                "mixed type and const generic functions are not available in this \
-                 checkpoint"
-            else Ok ()
+        | Ast.Func { generic_params; _ } ->
+            validate_generic_params named_types generic_params
         | _ -> Ok ())
       program.Ast.items
   in
@@ -2686,6 +2777,7 @@ let check ?(limits = Limits.default) program =
                   { params; ret; body = Ast.Statements stmts; linkage; variadic; _ };
               substitutions = [];
               values;
+              staged_args = _;
             } ->
             let* ret = source_ty_diag named_types Span.synthetic ret in
             let* params = source_params params in

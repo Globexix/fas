@@ -1466,9 +1466,135 @@ let () =
   semantic_error "extern-c-type-parameter"
     "extern \"C\" functions cannot have type parameters"
     "extern \"C\" { fn identity[T](value T) T }\n";
-  semantic_error "mixed-generic-function-checkpoint"
-    "mixed type and const generic functions are not available in this checkpoint"
-    "fn identity[T, N const usize](value T) T { return value }\n";
+  let mixed_generic_source =
+    "const THREE usize = 3\n\
+     struct Box[T] { value T }\n\
+     fn stamp[T, N const usize](value T) T { seen usize = N\n\
+     return value }\n\
+     fn wrap[T, N const usize](value T) Box[T] { seen usize = N\n\
+     return (Box[T]){stamp[T, N](value)} }\n\
+     fn main() Box[i64] { first Box[i64] = wrap[i64, THREE](7)\n\
+     return wrap[i64, THREE](first.value) }\n"
+  in
+  let mixed_generic_hir =
+    expect_ok (Parser.parse (source mixed_generic_source)) |> Sema.check |> expect_ok
+  in
+  let mixed_specializations =
+    List.filter
+      (fun (func : Hir.func) -> contains func.name "$spec$")
+      mixed_generic_hir.Hir.funcs
+  in
+  if List.length mixed_specializations <> 2 then
+    failwith "mixed-generic-deduplication: expected two concrete functions";
+  if
+    not
+      (List.for_all
+         (fun (func : Hir.func) -> List.length (positions func.name "$spec$") = 1)
+         mixed_specializations)
+  then failwith "mixed-generic-key: final names did not use one canonical key";
+  if
+    not
+      (List.for_all
+         (fun (func : Hir.func) ->
+           match func.params with [ (_, Hir.Int Hir.I64) ] -> true | _ -> false)
+         mixed_specializations)
+  then failwith "mixed-generic-substitution: type argument was not substituted";
+  if
+    List.length
+      (List.filter
+         (fun (definition : Hir.struct_def) -> contains definition.name "Box$spec$")
+         mixed_generic_hir.Hir.structs)
+    <> 1
+  then failwith "mixed-generic-struct-use: concrete struct was not materialized";
+  let mixed_generic_llvm = Ir.render (expect_ok (Lower.lower mixed_generic_hir)) in
+  if mixed_generic_llvm <> llvm_of mixed_generic_source then
+    failwith "mixed-generic-order: generated output was not deterministic";
+  if contains mixed_generic_llvm "@stamp(" || contains mixed_generic_llvm "@wrap(" then
+    failwith "mixed-generic-template: template reached LLVM output";
+  if not (contains mixed_generic_llvm "store i64 3") then
+    failwith "mixed-generic-const-substitution: const value did not reach the body";
+  let mixed_layout_argument =
+    llvm_of
+      "struct Sized[T] { value T }\n\
+       fn size[T, N const usize]() usize { return N }\n\
+       fn main() usize { return size[Sized[i64], sizeof[Sized[i64]]]() }\n"
+  in
+  if not (contains mixed_layout_argument "ret i64 8") then
+    failwith "mixed-generic-layout-argument: layout was not available to const evaluation";
+  let interleaved_generic =
+    expect_ok
+      (Sema.check
+         (expect_ok
+            (Parser.parse
+               (source
+                  "fn sum[A, N const usize, B, M const usize](left A, right B) usize {\n\
+                   return N + M }\n\
+                   fn main() usize { return sum[i64, 2, u8, 3](7, 1) }\n"))))
+  in
+  if
+    List.length
+      (List.filter
+         (fun (func : Hir.func) -> contains func.name "sum$spec$")
+         interleaved_generic.Hir.funcs)
+    <> 1
+  then failwith "mixed-generic-ordering: interleaved parameters were not preserved";
+  let distinct_mixed_specializations =
+    expect_ok
+      (Sema.check
+         (expect_ok
+            (Parser.parse
+               (source
+                  "fn value[T, N const usize](input T) usize { return N }\n\
+                   fn main() usize { return value[i64, 1](7) + value[i64, 2](7) }\n"))))
+  in
+  if
+    List.length
+      (List.filter
+         (fun (func : Hir.func) -> contains func.name "value$spec$")
+         distinct_mixed_specializations.Hir.funcs)
+    <> 2
+  then failwith "mixed-generic-key: distinct const arguments shared a specialization";
+  let mixed_specialization_limits =
+    { Limits.default with max_specializations = 2 }
+  in
+  ignore
+    (expect_ok
+       (Sema.check ~limits:mixed_specialization_limits
+          (expect_ok
+             (Parser.parse
+                (source
+                   "fn value[T, N const usize](input T) usize { return N }\n\
+                    fn main() usize { return value[i64, 1](7) + value[i64, 1](7) }\n")))));
+  (match
+     Sema.check ~limits:mixed_specialization_limits
+       (expect_ok
+          (Parser.parse
+             (source
+                "fn value[T, N const usize](input T) usize { return N }\n\
+                 fn main() usize { return value[i64, 1](7) + value[i64, 2](7) }\n")))
+   with
+  | Ok _ -> failwith "mixed-generic-count-limit: expected rejection"
+  | Error diagnostics ->
+      if
+        not
+          (contains
+             (Diag.render_all ~source:None diagnostics)
+             "const specialization count limit exceeded")
+      then failwith "mixed-generic-count-limit: unexpected diagnostic");
+  semantic_error "mixed-generic-arity"
+    "wrong number of generic arguments to `identity`"
+    "fn identity[T, N const usize](value T) T { return value }\n\
+     fn main() i64 { return identity[i64](1) }\n";
+  semantic_error "mixed-generic-type-argument-kind" "expected a type argument"
+    "fn identity[T, N const usize](value T) T { return value }\n\
+     fn main() i64 { return identity[3, 1](1) }\n";
+  semantic_error "mixed-generic-const-argument-kind" "expected a const argument"
+    "fn identity[T, N const usize](value T) T { return value }\n\
+     fn main() i64 { return identity[i64, u8](1) }\n";
+  semantic_error "mixed-generic-instantiated-body-error" "arithmetic requires"
+    "fn bad[T, N const usize](value T) T { seen usize = N\n\
+     return value + value }\n\
+     fn main(value ptr[u8]) ptr[u8] { return bad[ptr[u8], 1](value) }\n";
   let recursive_function_limits =
     { Limits.default with max_specialization_depth = 2 }
   in
@@ -1840,4 +1966,4 @@ let () =
   if not (contains mixed_runtime "phi") then
     failwith "runtime-logical-mixed: short-circuit lowering missing";
 
-  print_endline "regression tests: 216 passed"
+  print_endline "regression tests: 231 passed"

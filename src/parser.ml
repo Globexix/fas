@@ -307,6 +307,12 @@ module P = struct
 
   and generic_arg p =
     match ((peek p).kind, (peek_n p 1).kind) with
+    | Token.Ident ("sizeof" | "alignof" | "offsetof"), Token.Lbracket ->
+        let* e = expr p in
+        Ok (Ast.Const_arg e)
+    | Token.Ident _, Token.Lbracket when generic_application_is_call p ->
+        let* e = expr p in
+        Ok (Ast.Const_arg e)
     | Token.Ident name, (Token.Comma | Token.Rbracket)
       when not
              (List.mem name
@@ -337,6 +343,18 @@ module P = struct
     | _ ->
         let* e = expr p in
         Ok (Ast.Const_arg e)
+
+  and generic_application_is_call p =
+    let rec scan offset depth =
+      match (peek_n p offset).kind with
+      | Token.Lbracket -> scan (offset + 1) (depth + 1)
+      | Token.Rbracket when depth = 1 ->
+          (peek_n p (offset + 1)).kind = Token.Lparen
+      | Token.Rbracket when depth > 1 -> scan (offset + 1) (depth - 1)
+      | Token.Eof | Token.Newline -> false
+      | _ -> scan (offset + 1) depth
+    in
+    scan 1 0
 
   and starts_type p =
     match ((peek p).kind, (peek_n p 1).kind) with
