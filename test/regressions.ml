@@ -1803,6 +1803,91 @@ let () =
     "struct Buffer[T, N const isize] { data arr[N, T] }\n\
      fn main(value Buffer[u8, -1]) i64 { return 0 }\n";
 
+  let const_generic_function_type_source =
+    "const THREE usize = 3\n\
+     fn array_identity[T, N const usize](value arr[N, T]) arr[N, T] {\n\
+    \ copy arr[N, T] = value\n\
+    \ return copy\n\
+     }\n\
+     fn array_outer[T, N const usize](value arr[N, T]) arr[N, T] {\n\
+    \ return array_identity[T, N](value)\n\
+     }\n\
+     fn byte_identity[N const usize](value arr[N, u8]) arr[N, u8] {\n\
+    \ return value\n\
+     }\n\
+     fn vector_identity[T, N const usize](value vec[N, T]) vec[N, T] {\n\
+    \ return value\n\
+     }\n\
+     fn aggregate_metrics[T, N const usize](value ptr[arr[N, T]]) usize {\n\
+    \ same ptr[arr[N, T]] = bitcast[ptr[arr[N, T]]](value)\n\
+    \ return sizeof[arr[N, T]] + alignof[arr[N, T]] + sizeof[vec[N, T]]\n\
+     }\n\
+     fn main(value arr[3, u8], pointer ptr[arr[4, u16]], lanes vec[4, u16]) usize {\n\
+    \ first arr[3, u8] = array_outer[u8, THREE](value)\n\
+    \ second arr[3, u8] = array_outer[u8, 3](first)\n\
+    \ third arr[3, u8] = byte_identity[THREE](second)\n\
+    \ same_lanes vec[4, u16] = vector_identity[u16, 4](lanes)\n\
+    \ return len(third) + sizeof[vec[4, u16]] + aggregate_metrics[u16, 4](pointer)\n\
+     }\n"
+  in
+  let const_generic_function_type_hir =
+    expect_ok (Parser.parse (source const_generic_function_type_source))
+    |> Sema.check |> expect_ok
+  in
+  let function_specializations =
+    List.filter
+      (fun (func : Hir.func) -> contains func.name "$spec$")
+      const_generic_function_type_hir.Hir.funcs
+  in
+  if List.length function_specializations <> 5 then
+    failwith "const-generic-function-type-deduplication: expected five functions";
+  if
+    not
+      (List.exists
+         (fun (func : Hir.func) ->
+           contains func.name "array_identity$spec$"
+           &&
+           match (func.params, func.ret) with
+           | [ (_, Hir.Array (3, Hir.Int Hir.U8)) ], Hir.Array (3, Hir.Int Hir.U8) ->
+               true
+           | _ -> false)
+         function_specializations)
+  then failwith "const-generic-function-type-signature: length was not substituted";
+  if
+    not
+      (List.exists
+         (fun (func : Hir.func) ->
+           contains func.name "aggregate_metrics$spec$"
+           &&
+           match func.params with
+           | [ (_, Hir.Ptr (Hir.Array (4, Hir.Int Hir.U16))) ] -> true
+           | _ -> false)
+         function_specializations)
+  then
+    failwith "const-generic-function-type-nesting: pointer length was not substituted";
+  let const_generic_function_type_llvm =
+    Ir.render (expect_ok (Lower.lower const_generic_function_type_hir))
+  in
+  if const_generic_function_type_llvm <> llvm_of const_generic_function_type_source then
+    failwith "const-generic-function-type-order: generated output was not deterministic";
+  if
+    contains const_generic_function_type_llvm "@array_identity("
+    || contains const_generic_function_type_llvm "@array_outer("
+    || contains const_generic_function_type_llvm "@byte_identity("
+    || contains const_generic_function_type_llvm "@vector_identity("
+    || contains const_generic_function_type_llvm "@aggregate_metrics("
+  then failwith "const-generic-function-type-template: template reached LLVM output";
+  semantic_error "const-generic-function-type-mismatch" "type mismatch"
+    "fn identity[N const usize](value arr[N, u8]) arr[N, u8] { return value }\n\
+     fn main(value arr[3, u8]) arr[4, u8] { return identity[4](value) }\n";
+  semantic_error "const-generic-function-negative-length" "negative aggregate length"
+    "fn identity[N const isize](value arr[N, u8]) arr[N, u8] { return value }\n\
+     fn main(value arr[1, u8]) arr[1, u8] { return identity[-1](value) }\n";
+  semantic_error "const-generic-function-machine-length"
+    "aggregate length is not a machine integer"
+    "fn identity[N const u64](value ptr[arr[N, u8]]) ptr[arr[N, u8]] { return value }\n\
+     fn main(value ptr[arr[1, u8]]) ptr[arr[1, u8]] { return identity[18446744073709551615](value) }\n";
+
   let recursive_struct_limits = { Limits.default with max_specialization_depth = 1 } in
   ignore
     (expect_ok

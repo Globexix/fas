@@ -389,6 +389,46 @@ let fits_int ty value =
 let lookup name table = List.find_opt (fun (n, _, _) -> n = name) table
 let lookup_sig name c = List.assoc_opt name c.signatures
 
+let resolve_aggregate_length values span length =
+  match lookup length values with
+  | None -> Ok length
+  | Some (_, ty, value) ->
+      if is_unsigned ty then
+        if Int64.unsigned_compare value (Int64.of_int max_int) > 0 then
+          error span "aggregate length is not a machine integer"
+        else Ok (Int64.to_string value)
+      else
+        let value = sign_extend_value ty value in
+        if value < 0L then error span "negative aggregate length"
+        else if value > Int64.of_int max_int then
+          error span "aggregate length is not a machine integer"
+        else Ok (Int64.to_string value)
+
+let rec source_ty_with_values named_types values span = function
+  | Ast.Ptr ty ->
+      let* ty = source_ty_with_values named_types values span ty in
+      Ok (Hir.Ptr ty)
+  | Ast.Ptr_const ty ->
+      let* ty = source_ty_with_values named_types values span ty in
+      Ok (Hir.ConstPtr ty)
+  | Ast.Array (length, ty) -> (
+      let* length = resolve_aggregate_length values span length in
+      let* ty = source_ty_with_values named_types values span ty in
+      try
+        let length = int_of_string length in
+        if length < 0 then error span "negative aggregate length"
+        else Ok (Hir.Array (length, ty))
+      with Failure _ -> error span "aggregate length is not a machine integer")
+  | Ast.Vec (length, ty) -> (
+      let* length = resolve_aggregate_length values span length in
+      let* ty = source_ty_with_values named_types values span ty in
+      try
+        let length = int_of_string length in
+        if length < 0 then error span "negative aggregate length"
+        else Ok (Hir.Vec (length, ty))
+      with Failure _ -> error span "aggregate length is not a machine integer")
+  | ty -> source_ty_diag named_types span ty
+
 let lookup_local name c =
   let rec go = function
     | [] -> None
@@ -809,7 +849,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) consts expected
       if cv <> 0L then const_expr ~structs ~named_types consts expected ~check_only a
       else const_expr ~structs ~named_types consts expected ~check_only b
   | Ast.Cast (k, dst, e, s) ->
-      let* dt = source_ty_diag named_types s dst in
+      let* dt = source_ty_with_values named_types consts s dst in
       let* st, v =
         const_expr ~structs ~named_types consts ~check_only
           (if
@@ -875,15 +915,15 @@ let rec const_expr ?(structs = []) ?(named_types = []) consts expected
           Ok (t, Int64.of_int (leading64 x - (64 - b)))
       | _ -> error s "invalid constant builtin call")
   | Ast.Sizeof (t, s) ->
-      let* t = source_ty_diag named_types s t in
+      let* t = source_ty_with_values named_types consts s t in
       let* n, _ = layout_diag s structs t in
       Ok (Hir.Int Hir.Usize, Int64.of_int n)
   | Ast.Alignof (t, s) ->
-      let* t = source_ty_diag named_types s t in
+      let* t = source_ty_with_values named_types consts s t in
       let* _, n = layout_diag s structs t in
       Ok (Hir.Int Hir.Usize, Int64.of_int n)
   | Ast.Offsetof (t, n, s) -> (
-      let* t = source_ty_diag named_types s t in
+      let* t = source_ty_with_values named_types consts s t in
       match t with
       | Hir.Struct sn -> (
           match field_info structs sn n with
@@ -1166,7 +1206,7 @@ and check_expr (c : context) expected = function
   | Ast.Generic_args (_fn, _, s) ->
       error s "generic specialization is not available in this context"
   | Ast.Cast (k, t, e, s) ->
-      let* t = source_ty_diag c.named_types s t in
+      let* t = source_ty_with_values c.named_types c.consts s t in
       let* x =
         check_expr c
           (if
@@ -1262,15 +1302,15 @@ and check_expr (c : context) expected = function
         | Hir.ConstPtr t -> Ok (Hir.Ptr_add (bytes, tp, toff, Hir.ConstPtr t, s))
         | _ -> error s "pointer addition requires a pointer")
   | Ast.Sizeof (t, s) ->
-      let* t = source_ty_diag c.named_types s t in
+      let* t = source_ty_with_values c.named_types c.consts s t in
       let* size, _ = layout_diag s c.structs t in
       Ok (Hir.Sizeof (t, size, s))
   | Ast.Alignof (t, s) ->
-      let* t = source_ty_diag c.named_types s t in
+      let* t = source_ty_with_values c.named_types c.consts s t in
       let* _, a = layout_diag s c.structs t in
       Ok (Hir.Alignof (t, a, s))
   | Ast.Offsetof (t, n, s) -> (
-      let* t = source_ty_diag c.named_types s t in
+      let* t = source_ty_with_values c.named_types c.consts s t in
       match t with
       | Hir.Struct sn -> (
           match field_info c.structs sn n with
@@ -1304,7 +1344,7 @@ and check_expr (c : context) expected = function
   | Ast.Array_lit (_, s) ->
       error s "array literals are only valid in global const declarations"
   | Ast.Struct_lit (source_type, xs, s) -> (
-      let* literal_type = source_ty_diag c.named_types s source_type in
+      let* literal_type = source_ty_with_values c.named_types c.consts s source_type in
       match literal_type with
       | Hir.Struct n -> (
           match List.find_opt (fun (d : Hir.struct_def) -> d.name = n) c.structs with
@@ -1398,7 +1438,7 @@ and check_call c _expected fn args s =
   | Ast.Generic_args (Ast.Ident (name, _), generic_args, _) -> (
       match List.assoc_opt name c.templates with
       | None -> error s (Printf.sprintf "unknown generic function `%s`" name)
-      | Some (Ast.Func { params; ret; body; generic_params; _ }) ->
+      | Some (Ast.Func { generic_params; _ } as item) ->
           let const_params = const_params generic_params in
           if has_type_params generic_params then
             error s "type-generic call reached ordinary type checking"
@@ -1420,6 +1460,11 @@ and check_call c _expected fn args s =
               | _ -> error s "const argument arity mismatch"
             in
             let* values = eval [] const_params cargs in
+            let params, ret =
+              match item with
+              | Ast.Func { params; ret; _ } -> (params, ret)
+              | _ -> assert false
+            in
             let* staged =
               staged_specialization_identity c.specializations name values
             in
@@ -1439,23 +1484,7 @@ and check_call c _expected fn args s =
                 depth = c.spec_depth;
                 payload =
                   Function_payload
-                    {
-                      item =
-                        Ast.Func
-                          {
-                            name;
-                            params;
-                            ret;
-                            body;
-                            linkage = Ast.Internal;
-                            variadic = false;
-                            generic_params;
-                            span = s;
-                          };
-                      substitutions = [];
-                      values;
-                      staged_args = None;
-                    };
+                    { item; substitutions = []; values; staged_args = None };
               }
             in
             let* specialization =
@@ -1465,11 +1494,11 @@ and check_call c _expected fn args s =
             let* ps =
               Result_list.map
                 (fun (p : Ast.param) ->
-                  let* t = source_ty_diag c.named_types p.span p.ty in
+                  let* t = source_ty_with_values c.named_types values p.span p.ty in
                   Ok (p.name, t))
                 params
             in
-            let* rt = source_ty_diag c.named_types s ret in
+            let* rt = source_ty_with_values c.named_types values s ret in
             let* checked = check_actuals c Reject s ps args in
             Ok (Hir.Call (Hir.User specialization.name, checked, rt, s))
       | Some _ -> error s "const-generic symbol is not a function")
@@ -1719,7 +1748,7 @@ and check_stmt (c : context) = function
         then error span (Printf.sprintf "local `%s` shadows a const" name)
         else Ok ()
       in
-      let* t = source_ty_diag c.named_types span ty in
+      let* t = source_ty_with_values c.named_types c.consts span ty in
       let* () =
         object_type c.structs t |> Result.map_error (fun m -> [ Diag.error span m ])
       in
@@ -2025,21 +2054,6 @@ let monomorphize_types ~limits specializations program =
       program.Ast.items
   in
   let generated = ref [] in
-  let resolve_aggregate_length values span length =
-    match lookup length values with
-    | None -> Ok length
-    | Some (_, ty, value) ->
-        if is_unsigned ty then
-          if Int64.unsigned_compare value (Int64.of_int max_int) > 0 then
-            error span "aggregate length is not a machine integer"
-          else Ok (Int64.to_string value)
-        else
-          let value = sign_extend_value ty value in
-          if value < 0L then error span "negative aggregate length"
-          else if value > Int64.of_int max_int then
-            error span "aggregate length is not a machine integer"
-          else Ok (Int64.to_string value)
-  in
   let rec resolve_ty ?(values = []) substitutions depth span = function
     | Ast.Bool -> Ok Ast.Bool
     | Ast.Void -> Ok Ast.Void
@@ -2821,8 +2835,16 @@ let check ?(limits = Limits.default) program =
               values;
               staged_args = _;
             } ->
-            let* ret = source_ty_diag named_types Span.synthetic ret in
-            let* params = source_params params in
+            let* ret = source_ty_with_values named_types values Span.synthetic ret in
+            let* params =
+              Result_list.map
+                (fun (parameter : Ast.param) ->
+                  let* ty =
+                    source_ty_with_values named_types values parameter.span parameter.ty
+                  in
+                  Ok (parameter.name, ty))
+                params
+            in
             let* func =
               check_function_body ~name:sp.name ~description:"specialized function"
                 ~span:Span.synthetic ~params ~ret ~stmts ~linkage:(hir_linkage linkage)
