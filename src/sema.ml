@@ -3149,12 +3149,20 @@ let check ?(limits = Limits.default) program =
             {
               item =
                 Ast.Func
-                  { params; ret; body = Ast.Statements stmts; linkage; variadic; _ };
+                  {
+                    params;
+                    ret;
+                    body = Ast.Statements stmts;
+                    linkage;
+                    variadic;
+                    span;
+                    _;
+                  };
               substitutions = [];
               values;
               staged_args = _;
             } ->
-            let* ret = source_ty_with_values named_types values Span.synthetic ret in
+            let* ret = source_ty_with_values named_types values span ret in
             let* params =
               Result_list.map
                 (fun (parameter : Ast.param) ->
@@ -3166,7 +3174,7 @@ let check ?(limits = Limits.default) program =
             in
             let* func =
               check_function_body ~name:sp.name ~description:"specialized function"
-                ~span:Span.synthetic ~params ~ret ~stmts ~linkage:(hir_linkage linkage)
+                ~span ~params ~ret ~stmts ~linkage:(hir_linkage linkage)
                 ~variadic ~extra_consts:values ~spec_depth:(sp.depth + 1)
                 ~require_return:true
             in

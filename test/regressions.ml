@@ -1444,6 +1444,34 @@ let () =
   semantic_error "generic-function-instantiated-body-error" "arithmetic requires"
     "fn bad[T](value T) T { return value + value }\n\
      fn main(value ptr[u8]) ptr[u8] { return bad[ptr[u8]](value) }\n";
+  let issue45_source =
+    "fn broken[N const usize](value i64) i64 {\n\
+     if true { return value + N }\n\
+     }\n\
+     fn main() i64 { return broken[1](0) }\n"
+  in
+  let issue45_program = expect_ok (Parser.parse (source issue45_source)) in
+  (match Sema.check issue45_program with
+  | Ok _ -> failwith "const-generic-specialization-span: expected missing-return error"
+  | Error diagnostics ->
+      let diagnostic = List.hd diagnostics in
+      let rendered =
+        Diag.render_all ~source:(Some (source issue45_source)) diagnostics
+      in
+      if
+        diagnostic.primary.Span.file <> "regression.fas"
+        || diagnostic.primary.Span.line <> 1
+        || diagnostic.primary.Span.column <> 1
+      then
+        failwith
+          ("const-generic-specialization-span: unexpected location: "
+          ^ Span.to_string diagnostic.primary);
+      if
+        not (contains rendered "specialized function `broken$spec$")
+        || not (contains rendered "fn broken[N const usize](value i64) i64 {")
+      then
+        failwith
+          ("const-generic-specialization-span: missing source excerpt: " ^ rendered));
   semantic_error "generic-function-arity" "wrong number of type arguments to `pair`"
     "fn pair[A, B](value A) A { return value }\nfn main() i64 { return pair[i64](1) }\n";
   semantic_error "generic-function-argument-kind" "expected a type argument"
@@ -2298,4 +2326,4 @@ let () =
   if not (contains mixed_runtime "phi") then
     failwith "runtime-logical-mixed: short-circuit lowering missing";
 
-  print_endline "regression tests: 232 passed"
+  print_endline "regression tests: 233 passed"
