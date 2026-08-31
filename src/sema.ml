@@ -2060,6 +2060,28 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
       (function Ast.Func { name; _ } -> Some name | _ -> None)
       program.Ast.items
   in
+  let named_type_names =
+    List.filter_map
+      (function
+        | Ast.Opaque { name; _ } | Ast.Struct { name; _ } -> Some name
+        | _ -> None)
+      program.Ast.items
+  in
+  let generic_type_names = ref [] in
+  let type_param_names generic_params =
+    List.filter_map
+      (function
+        | Ast.Type_param { name; _ } -> Some name
+        | Ast.Const_param _ -> None)
+      generic_params
+  in
+  let with_generic_type_names names f =
+    let previous = !generic_type_names in
+    generic_type_names := names;
+    let result = f () in
+    generic_type_names := previous;
+    result
+  in
   let generated = ref [] in
   let rec has_unresolved_application = function
     | Ast.Applied_type _ -> true
@@ -2093,7 +2115,9 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
             if List.mem_assoc name struct_templates then
               error span
                 (Printf.sprintf "generic struct `%s` requires type arguments" name)
-            else Ok (Ast.Named_type name))
+            else if List.mem name named_type_names || List.mem name !generic_type_names then
+              Ok (Ast.Named_type name)
+            else error span (Printf.sprintf "unknown type `%s`" name))
     | Ast.Applied_type (name, arguments) -> (
         match List.assoc_opt name struct_templates with
         | None ->
@@ -2632,57 +2656,58 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
         Ok (Ast.Switch (expression, cases, default, span))
   and resolve_function ?(values = []) substitutions depth specialization_name = function
     | Ast.Func ({ params; ret; body; generic_params; span; _ } as item) ->
-        let defer_const_structs = values = [] && has_const_params generic_params in
-        let* params =
-          Result_list.map
-            (fun (parameter : Ast.param) ->
-              let* ty =
-                resolve_ty ~values ~defer_const_structs substitutions depth
-                  parameter.span parameter.ty
-              in
-              Ok ({ parameter with ty } : Ast.param))
-            params
-        in
-        let* ret =
-          resolve_ty ~values ~defer_const_structs substitutions depth span ret
-        in
-        let* generic_params =
-          Result_list.map
-            (function
-              | Ast.Type_param _ -> Ok None
-              | Ast.Const_param parameter ->
+        with_generic_type_names (type_param_names generic_params) (fun () ->
+            let defer_const_structs = values = [] && has_const_params generic_params in
+            let* params =
+              Result_list.map
+                (fun (parameter : Ast.param) ->
                   let* ty =
                     resolve_ty ~values ~defer_const_structs substitutions depth
                       parameter.span parameter.ty
                   in
-                  Ok (Some (Ast.Const_param { parameter with ty })))
-            generic_params
-        in
-        let generic_params = List.filter_map Fun.id generic_params in
-        let* body =
-          match body with
-          | Ast.Declaration -> Ok Ast.Declaration
-          | Ast.Asm raw -> Ok (Ast.Asm raw)
-          | Ast.Statements statements ->
-              let* statements =
-                Result_list.map
-                  (resolve_stmt ~values ~defer_const_structs substitutions depth)
-                  statements
-              in
-              Ok (Ast.Statements statements)
-        in
-        Ok
-          (Ast.Func
-             {
-               item with
-               name = specialization_name;
-               params;
-               ret;
-               body;
-               linkage = Ast.Internal;
-               variadic = false;
-               generic_params;
-             })
+                  Ok ({ parameter with ty } : Ast.param))
+                params
+            in
+            let* ret =
+              resolve_ty ~values ~defer_const_structs substitutions depth span ret
+            in
+            let* generic_params =
+              Result_list.map
+                (function
+                  | Ast.Type_param _ -> Ok None
+                  | Ast.Const_param parameter ->
+                      let* ty =
+                        resolve_ty ~values ~defer_const_structs substitutions depth
+                          parameter.span parameter.ty
+                      in
+                      Ok (Some (Ast.Const_param { parameter with ty })))
+                generic_params
+            in
+            let generic_params = List.filter_map Fun.id generic_params in
+            let* body =
+              match body with
+              | Ast.Declaration -> Ok Ast.Declaration
+              | Ast.Asm raw -> Ok (Ast.Asm raw)
+              | Ast.Statements statements ->
+                  let* statements =
+                    Result_list.map
+                      (resolve_stmt ~values ~defer_const_structs substitutions depth)
+                      statements
+                  in
+                  Ok (Ast.Statements statements)
+            in
+            Ok
+              (Ast.Func
+                 {
+                   item with
+                   name = specialization_name;
+                   params;
+                   ret;
+                   body;
+                   linkage = Ast.Internal;
+                   variadic = false;
+                   generic_params;
+                 }))
     | _ -> error Span.synthetic "internal error: function specialization is malformed"
   and resolve_item = function
     | Ast.Struct { generic_params = _ :: _; _ } as item -> Ok item
@@ -2745,15 +2770,16 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
         { payload = Struct_payload { template; substitutions; values }; name; depth; _ }
       -> (
         match template with
-        | Ast.Struct { fields; align; span; _ } ->
+        | Ast.Struct { fields; align; span; generic_params; _ } ->
             let* fields =
-              Result_list.map
-                (fun (field : Ast.field) ->
-                  let* ty =
-                    resolve_ty ~values substitutions (depth + 1) field.span field.ty
-                  in
-                  Ok ({ field with ty } : Ast.field))
-                fields
+              with_generic_type_names (type_param_names generic_params) (fun () ->
+                  Result_list.map
+                    (fun (field : Ast.field) ->
+                      let* ty =
+                        resolve_ty ~values substitutions (depth + 1) field.span field.ty
+                      in
+                      Ok ({ field with ty } : Ast.field))
+                    fields)
             in
             generated :=
               Ast.Struct { name; generic_params = []; fields; align; span }
