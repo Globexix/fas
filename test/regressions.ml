@@ -2028,6 +2028,14 @@ let () =
     "fn identity[N const u64](value ptr[arr[N, u8]]) ptr[arr[N, u8]] { return value }\n\
      fn main(value ptr[arr[1, u8]]) ptr[arr[1, u8]] { return \
      identity[18446744073709551615](value) }\n";
+  let const_array_len_generic_llvm =
+    llvm_of
+      "const DATA arr[3, u8] = { 10, 20, 30 }\n\
+       fn width[N const usize]() usize { return N }\n\
+       fn main() usize { return width[len(DATA)]() }\n"
+  in
+  if not (contains const_array_len_generic_llvm "ret i64 3") then
+    failwith "const-generic-array-len: array length was not used as a const argument";
 
   let const_generic_struct_function_source =
     "const THREE usize = 3\n\

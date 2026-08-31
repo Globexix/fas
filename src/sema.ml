@@ -724,7 +724,7 @@ let leading64 x =
     in
     go 0 Int64.min_int
 
-let rec const_expr ?(structs = []) ?(named_types = []) consts expected
+let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts expected
     ?(check_only = false) = function
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
@@ -750,26 +750,36 @@ let rec const_expr ?(structs = []) ?(named_types = []) consts expected
       if fits_negative_literal t v || allowed then Ok (t, mask_value t (Int64.neg v))
       else error s ("integer literal is out of range for " ^ ty_name t)
   | Ast.Unary (Ast.Neg, e, s) ->
-      let* t, v = const_expr ~structs ~named_types consts expected ~check_only e in
+      let* t, v =
+        const_expr ~structs ~named_types ~arrays consts expected ~check_only e
+      in
       if not (is_int t) then error s "unary minus requires an integer"
       else Ok (t, mask_value t (Int64.neg v))
   | Ast.Unary (Ast.Bit_not, e, s) ->
-      let* t, v = const_expr ~structs ~named_types consts expected ~check_only e in
+      let* t, v =
+        const_expr ~structs ~named_types ~arrays consts expected ~check_only e
+      in
       if not (is_int t) then error s "bitwise not requires an integer"
       else Ok (t, mask_value t (Int64.lognot v))
   | Ast.Unary (Ast.Not, e, _) ->
-      let* _, v = const_expr ~structs ~named_types consts None ~check_only e in
+      let* _, v = const_expr ~structs ~named_types ~arrays consts None ~check_only e in
       Ok (Hir.Bool, if v = 0L then 1L else 0L)
   | Ast.Binary (((Ast.And | Ast.Or) as op), l, r, s) ->
-      let* lt, lv = const_expr ~structs ~named_types consts None ~check_only l in
+      let* lt, lv =
+        const_expr ~structs ~named_types ~arrays consts None ~check_only l
+      in
       if not (is_truthy lt) then error s "logical operands must be scalar"
       else if
         (not check_only) && ((op = Ast.And && lv = 0L) || (op = Ast.Or && lv <> 0L))
       then
-        let* _ = const_expr ~structs ~named_types consts None ~check_only:true r in
+        let* _ =
+          const_expr ~structs ~named_types ~arrays consts None ~check_only:true r
+        in
         Ok (Hir.Bool, if op = Ast.And then 0L else 1L)
       else
-        let* rt, rv = const_expr ~structs ~named_types consts None ~check_only r in
+        let* rt, rv =
+          const_expr ~structs ~named_types ~arrays consts None ~check_only r
+        in
         if not (is_truthy rt) then error s "logical operands must be scalar"
         else Ok (Hir.Bool, if rv <> 0L then 1L else 0L)
   | Ast.Binary (op, l, r, s) ->
@@ -777,17 +787,19 @@ let rec const_expr ?(structs = []) ?(named_types = []) consts expected
         match (l, op) with
         | ( (Ast.Int_lit _ | Ast.Unary (Ast.Neg, Ast.Int_lit _, _)),
             (Ast.Eq | Ne | Lt | Le | Gt | Ge) ) ->
-            let* rt, rv = const_expr ~structs ~named_types consts None ~check_only r in
+            let* rt, rv =
+              const_expr ~structs ~named_types ~arrays consts None ~check_only r
+            in
             let* lt, lv =
-              const_expr ~structs ~named_types consts (Some rt) ~check_only l
+              const_expr ~structs ~named_types ~arrays consts (Some rt) ~check_only l
             in
             Ok ((lt, lv), (rt, rv))
         | _ ->
             let* lt, lv =
-              const_expr ~structs ~named_types consts expected ~check_only l
+              const_expr ~structs ~named_types ~arrays consts expected ~check_only l
             in
             let* rt, rv =
-              const_expr ~structs ~named_types consts (Some lt) ~check_only r
+              const_expr ~structs ~named_types ~arrays consts (Some lt) ~check_only r
             in
             Ok ((lt, lv), (rt, rv))
       in
@@ -845,13 +857,14 @@ let rec const_expr ?(structs = []) ?(named_types = []) consts expected
           in
           Ok (rt, mask_value rt result)
   | Ast.Ternary (c, a, b, _s) ->
-      let* _, cv = const_expr ~structs ~named_types consts None ~check_only c in
-      if cv <> 0L then const_expr ~structs ~named_types consts expected ~check_only a
-      else const_expr ~structs ~named_types consts expected ~check_only b
+      let* _, cv = const_expr ~structs ~named_types ~arrays consts None ~check_only c in
+      if cv <> 0L then
+        const_expr ~structs ~named_types ~arrays consts expected ~check_only a
+      else const_expr ~structs ~named_types ~arrays consts expected ~check_only b
   | Ast.Cast (k, dst, e, s) ->
       let* dt = source_ty_with_values named_types consts s dst in
       let* st, v =
-        const_expr ~structs ~named_types consts ~check_only
+        const_expr ~structs ~named_types ~arrays consts ~check_only
           (if
              k = Ast.Bitcast
              &&
@@ -881,10 +894,16 @@ let rec const_expr ?(structs = []) ?(named_types = []) consts expected
       if cstr && String.contains v '\000' then
         error s "C string literal cannot contain embedded NUL"
       else Ok (Hir.Int Hir.Usize, Int64.of_int (String.length v))
+  | Ast.Call (Ast.Ident ("len", _), [ Ast.Ident (name, _) ], s) -> (
+      match lookup name arrays with
+      | Some (_, Hir.Array (n, _), _) ->
+          Ok (Hir.Int Hir.Usize, Int64.of_int n)
+      | _ -> error s "len requires a fixed array or string literal")
   | Ast.Call (Ast.Ident (name, _), args, s) -> (
       let* vals =
         Result_list.map
-          (fun a -> const_expr ~structs ~named_types consts expected ~check_only a)
+          (fun a ->
+            const_expr ~structs ~named_types ~arrays consts expected ~check_only a)
           args
       in
       match (name, vals) with
@@ -978,7 +997,10 @@ let require_place_value c span place =
 
 let rec check_place (c : context) expr =
   let static_index e =
-    match const_expr ~structs:c.structs ~named_types:c.named_types c.consts None e with
+    match
+      const_expr ~structs:c.structs ~named_types:c.named_types ~arrays:c.arrays c.consts
+        None e
+    with
     | Ok (ty, value) -> Known (ty, value)
     | Error _ -> Dynamic
   in
@@ -1451,8 +1473,8 @@ and check_call c _expected fn args s =
               | cp :: cs, a :: rest ->
                   let* ct = source_ty_diag c.named_types (Ast.expr_span a) cp.Ast.ty in
                   let* vt, v =
-                    const_expr ~structs:c.structs ~named_types:c.named_types c.consts
-                      (Some ct) a
+                    const_expr ~structs:c.structs ~named_types:c.named_types
+                      ~arrays:c.arrays c.consts (Some ct) a
                   in
                   if equal vt ct then eval ((cp.name, ct, v) :: acc) cs rest
                   else error (Ast.expr_span a) "const argument type mismatch"
@@ -1920,8 +1942,8 @@ and check_stmt (c : context) = function
           | [] -> Ok (List.rev acc)
           | (k, b) :: xs ->
               let* kt, kv =
-                const_expr ~structs:c.structs ~named_types:c.named_types c.consts
-                  (Some et) k
+                const_expr ~structs:c.structs ~named_types:c.named_types ~arrays:c.arrays
+                  c.consts (Some et) k
                 |> Result.map_error (fun _ ->
                     [
                       Diag.error (Ast.expr_span k)
@@ -2029,10 +2051,11 @@ let mangle_type_specialization base arguments =
 
 let monomorphize_types ?eval_context ?(eager_functions = false) ~limits specializations
     program =
-  let eval_structs, eval_named_types, eval_consts =
+  let eval_structs, eval_named_types, eval_consts, eval_arrays =
     match eval_context with
-    | None -> ([], [], [])
-    | Some (structs, named_types, consts) -> (structs, named_types, consts)
+    | None -> ([], [], [], [])
+    | Some (structs, named_types, consts, arrays) ->
+        (structs, named_types, consts, arrays)
   in
   let struct_templates =
     List.filter_map
@@ -2192,7 +2215,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
                     let* const_ty = source_ty_diag [] parameter.span parameter.ty in
                     let* actual_ty, value =
                       const_expr ~structs:eval_structs ~named_types:eval_named_types
-                        (values @ eval_consts) (Some const_ty) expression
+                        ~arrays:eval_arrays (values @ eval_consts) (Some const_ty)
+                        expression
                     in
                     if not (equal actual_ty const_ty) then
                       error (Ast.expr_span expression) "const argument type mismatch"
@@ -2341,8 +2365,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
                           in
                           let* actual_ty, value =
                             const_expr ~structs:eval_structs
-                              ~named_types:eval_named_types (values @ eval_consts)
-                              (Some const_ty) expression
+                              ~named_types:eval_named_types ~arrays:eval_arrays
+                              (values @ eval_consts) (Some const_ty) expression
                           in
                           if not (equal actual_ty const_ty) then
                             error (Ast.expr_span expression)
@@ -2902,7 +2926,7 @@ let check ?(limits = Limits.default) program =
   in
   let* program =
     monomorphize_types
-      ~eval_context:(base_structs, named_types, early_consts)
+      ~eval_context:(base_structs, named_types, early_consts, [])
       ~limits specializations program
   in
   let* named_types = collect_named_types [] [] program.Ast.items in
@@ -2976,7 +3000,8 @@ let check ?(limits = Limits.default) program =
                   | [] -> Ok (List.rev acc)
                   | x :: rest ->
                       let* vt, v =
-                        const_expr ~structs ~named_types !consts (Some elem) x
+                        const_expr ~structs ~named_types ~arrays:!arrays !consts
+                          (Some elem) x
                       in
                       if equal vt elem then values (v :: acc) rest
                       else error (Ast.expr_span x) "const array element type mismatch"
@@ -2987,7 +3012,9 @@ let check ?(limits = Limits.default) program =
           | Hir.Array _, _ -> error span "const array needs a brace-list initializer"
           | _, Ast.Array_lit _ -> error span "brace-list requires an array type"
           | _, _ ->
-              let* vt, v = const_expr ~structs ~named_types !consts (Some t) value in
+              let* vt, v =
+                const_expr ~structs ~named_types ~arrays:!arrays !consts (Some t) value
+              in
               if equal vt t then (
                 consts := !consts @ [ (name, t, v) ];
                 Ok ())
@@ -2997,7 +3024,7 @@ let check ?(limits = Limits.default) program =
   let* () = Result_list.iter eval_const_item program.items in
   let* program =
     monomorphize_types
-      ~eval_context:(structs, named_types, !consts)
+      ~eval_context:(structs, named_types, !consts, !arrays)
       ~eager_functions:true ~limits specializations program
   in
   let* named_types = collect_named_types [] [] program.Ast.items in
