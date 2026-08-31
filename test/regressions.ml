@@ -1488,6 +1488,8 @@ let () =
   semantic_error "extern-c-type-parameter"
     "extern \"C\" functions cannot have type parameters"
     "extern \"C\" { fn identity[T](value T) T }\n";
+  semantic_error "generic-main" "entry point `main` cannot have generic parameters"
+    "fn main[T]() i64 { return 42 }\n";
   let mixed_generic_source =
     "const THREE usize = 3\n\
      struct Box[T] { value T }\n\
@@ -2329,4 +2331,4 @@ let () =
   if not (contains mixed_runtime "phi") then
     failwith "runtime-logical-mixed: short-circuit lowering missing";
 
-  print_endline "regression tests: 234 passed"
+  print_endline "regression tests: 235 passed"

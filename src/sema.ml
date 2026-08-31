@@ -3018,6 +3018,8 @@ let check ?(limits = Limits.default) program =
               error span (Printf.sprintf "duplicate function `%s`" name)
             else if List.exists (fun (n, _, _) -> n = name) !arrays then
               error span (Printf.sprintf "duplicate declaration `%s`" name)
+            else if name = "main" && generic_params <> [] then
+              error span "entry point `main` cannot have generic parameters"
             else
               let () = declared_functions := name :: !declared_functions in
               let rec dup seen = function
