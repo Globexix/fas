@@ -2330,5 +2330,9 @@ let () =
   let mixed_runtime = llvm_of "fn f() bool { return 1 && true }\n" in
   if not (contains mixed_runtime "phi") then
     failwith "runtime-logical-mixed: short-circuit lowering missing";
+  ignore
+    (llvm_of
+       "struct Pair[T] { left T right T }\n\
+        fn main() i64 { return ((Pair[i64]){12, 4}).left }\n");
 
-  print_endline "regression tests: 235 passed"
+  print_endline "regression tests: 236 passed"

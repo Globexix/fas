@@ -379,7 +379,11 @@ module P = struct
       | Token.Newline | Token.Eof -> false
       | _ -> scan (offset + 1) brackets
     in
-    p.block_expression_depth <> Some p.depth && scan 1 0
+    p.block_expression_depth <> Some p.depth
+    &&
+    match (peek_n p 1).kind with
+    | Token.Ident _ -> scan 1 0
+    | _ -> false
 
   and compound_op = function
     | Token.Plus_eq -> Some Ast.Add
