@@ -2822,6 +2822,12 @@ let check ?(limits = Limits.default) program =
     | _ :: rest -> collect_named_types seen acc rest
   in
   let* named_types = collect_named_types [] [] program.Ast.items in
+  let validate_struct_alignment span = function
+    | Some a ->
+        Target_layout.validate_type_alignment Target_layout.current a
+        |> Result.map_error (fun message -> [ Diag.error span message ])
+    | None -> Ok ()
+  in
   let* () =
     Result_list.iter
       (function
@@ -2881,16 +2887,11 @@ let check ?(limits = Limits.default) program =
   let* named_types = collect_named_types [] [] program.Ast.items in
   let rec collect_structs named_types acc = function
     | [] -> Ok (List.rev acc)
-    | Ast.Struct { generic_params = _ :: _; _ } :: rest ->
+    | Ast.Struct { generic_params = _ :: _; align; span; _ } :: rest ->
+        let* () = validate_struct_alignment span align in
         collect_structs named_types acc rest
     | Ast.Struct { name; fields; align; span; _ } :: rest ->
-        let* () =
-          match align with
-          | Some a ->
-              Target_layout.validate_type_alignment Target_layout.current a
-              |> Result.map_error (fun message -> [ Diag.error span message ])
-          | None -> Ok ()
-        in
+        let* () = validate_struct_alignment span align in
         let rec collect_fields seen out = function
           | [] -> Ok (List.rev out)
           | (f : Ast.field) :: fields ->

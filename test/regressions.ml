@@ -1721,6 +1721,9 @@ let () =
   in
   if unused_generic_struct.Hir.structs <> [] then
     failwith "generic-struct-template: unused template was emitted";
+  semantic_error "generic-struct-invalid-alignment"
+    "alignment must be a positive power of two"
+    "struct Bad[T] @align(3) { value T }\nfn main() i64 { return 0 }\n";
   semantic_error "generic-struct-bare-use"
     "generic struct `Box` requires type arguments"
     "struct Box[T] { value T }\nfn main(value Box) i64 { return 0 }\n";
@@ -2326,4 +2329,4 @@ let () =
   if not (contains mixed_runtime "phi") then
     failwith "runtime-logical-mixed: short-circuit lowering missing";
 
-  print_endline "regression tests: 233 passed"
+  print_endline "regression tests: 234 passed"
