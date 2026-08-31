@@ -259,7 +259,9 @@ let aggregate_within_limit limits structs ty =
     | Hir.Struct name -> (
         match List.find_opt (fun (s : Hir.struct_def) -> s.name = name) structs with
         | Some definition ->
-            List.for_all (fun (field : Hir.field) -> check count field.ty) definition.fields
+            List.for_all
+              (fun (field : Hir.field) -> check count field.ty)
+              definition.fields
         | None -> count <= max_elements)
     | _ -> count <= max_elements
   in
@@ -901,8 +903,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts exp
       else Ok (Hir.Int Hir.Usize, Int64.of_int (String.length v))
   | Ast.Call (Ast.Ident ("len", _), [ Ast.Ident (name, _) ], s) -> (
       match lookup name arrays with
-      | Some (_, Hir.Array (n, _), _) ->
-          Ok (Hir.Int Hir.Usize, Int64.of_int n)
+      | Some (_, Hir.Array (n, _), _) -> Ok (Hir.Int Hir.Usize, Int64.of_int n)
       | _ -> error s "len requires a fixed array or string literal")
   | Ast.Call (Ast.Ident (name, _), args, s) -> (
       let* vals =
@@ -1947,8 +1948,8 @@ and check_stmt (c : context) = function
           | [] -> Ok (List.rev acc)
           | (k, b) :: xs ->
               let* kt, kv =
-                const_expr ~structs:c.structs ~named_types:c.named_types ~arrays:c.arrays
-                  c.consts (Some et) k
+                const_expr ~structs:c.structs ~named_types:c.named_types
+                  ~arrays:c.arrays c.consts (Some et) k
                 |> Result.map_error (fun _ ->
                     [
                       Diag.error (Ast.expr_span k)
@@ -2091,16 +2092,13 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
   let named_type_names =
     List.filter_map
       (function
-        | Ast.Opaque { name; _ } | Ast.Struct { name; _ } -> Some name
-        | _ -> None)
+        | Ast.Opaque { name; _ } | Ast.Struct { name; _ } -> Some name | _ -> None)
       program.Ast.items
   in
   let generic_type_names = ref [] in
   let type_param_names generic_params =
     List.filter_map
-      (function
-        | Ast.Type_param { name; _ } -> Some name
-        | Ast.Const_param _ -> None)
+      (function Ast.Type_param { name; _ } -> Some name | Ast.Const_param _ -> None)
       generic_params
   in
   let with_generic_type_names names f =
@@ -2143,8 +2141,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
             if List.mem_assoc name struct_templates then
               error span
                 (Printf.sprintf "generic struct `%s` requires type arguments" name)
-            else if List.mem name named_type_names || List.mem name !generic_type_names then
-              Ok (Ast.Named_type name)
+            else if List.mem name named_type_names || List.mem name !generic_type_names
+            then Ok (Ast.Named_type name)
             else error span (Printf.sprintf "unknown type `%s`" name))
     | Ast.Applied_type (name, arguments) -> (
         match List.assoc_opt name struct_templates with
@@ -2592,20 +2590,39 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
               Ok (Some expression)
         in
         Ok (Ast.Return (expression, span))
-    | Ast.If (condition, yes, no, span) ->
+    | Ast.If (condition, yes, no, span) -> (
         let* condition =
           resolve_expr ~values ~defer_const_structs substitutions depth condition
         in
         let resolve = resolve_stmt ~values ~defer_const_structs substitutions depth in
-        let* yes = Result_list.map resolve yes in
-        let* no =
-          match no with
-          | None -> Ok None
-          | Some statements ->
-              let* statements = Result_list.map resolve statements in
-              Ok (Some statements)
+        let known_condition =
+          if values = [] then None
+          else
+            match
+              const_expr ~structs:eval_structs ~named_types:eval_named_types
+                ~arrays:eval_arrays (values @ eval_consts) None condition
+            with
+            | Ok (_, value) -> Some (value <> 0L)
+            | Error _ -> None
         in
-        Ok (Ast.If (condition, yes, no, span))
+        match known_condition with
+        | Some false ->
+            let* no =
+              match no with
+              | None -> Ok []
+              | Some statements -> Result_list.map resolve statements
+            in
+            Ok (Ast.If (condition, [], Some no, span))
+        | Some true | None ->
+            let* yes = Result_list.map resolve yes in
+            let* no =
+              match no with
+              | None -> Ok None
+              | Some statements ->
+                  let* statements = Result_list.map resolve statements in
+                  Ok (Some statements)
+            in
+            Ok (Ast.If (condition, yes, no, span)))
     | Ast.While (condition, body, span) ->
         let* condition =
           resolve_expr ~values ~defer_const_structs substitutions depth condition
@@ -3230,9 +3247,8 @@ let check ?(limits = Limits.default) program =
             in
             let* func =
               check_function_body ~name:sp.name ~description:"specialized function"
-                ~span ~params ~ret ~stmts ~linkage:(hir_linkage linkage)
-                ~variadic ~extra_consts:values ~spec_depth:(sp.depth + 1)
-                ~require_return:true
+                ~span ~params ~ret ~stmts ~linkage:(hir_linkage linkage) ~variadic
+                ~extra_consts:values ~spec_depth:(sp.depth + 1) ~require_return:true
             in
             add_func func;
             materialize ()

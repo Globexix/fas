@@ -1467,7 +1467,7 @@ let () =
           ("const-generic-specialization-span: unexpected location: "
           ^ Span.to_string diagnostic.primary);
       if
-        not (contains rendered "specialized function `broken$spec$")
+        (not (contains rendered "specialized function `broken$spec$"))
         || not (contains rendered "fn broken[N const usize](value i64) i64 {")
       then
         failwith
@@ -2041,6 +2041,22 @@ let () =
   in
   if not (contains const_array_len_generic_llvm "ret i64 3") then
     failwith "const-generic-array-len: array length was not used as a const argument";
+  ignore
+    (llvm_of
+       "fn count[N const i64](value i64) i64 {\n\
+       \ if N > 0 { return count[N - 1](value + 1) }\n\
+       \ return value\n\
+        }\n\
+        fn main() i64 { return count[0](41) }\n");
+  let runtime_const_generic_if =
+    llvm_of
+      "fn choose[N const i64](value i64, condition i64) i64 {\n\
+      \ if condition > 0 { return value + N } else { return value - N }\n\
+       }\n\
+       fn main() i64 { return choose[2](40, 0) }\n"
+  in
+  if not (contains runtime_const_generic_if "br i1") then
+    failwith "const-generic-runtime-if: runtime condition was pruned";
 
   let const_generic_struct_function_source =
     "const THREE usize = 3\n\
