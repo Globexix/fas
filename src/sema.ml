@@ -2424,16 +2424,11 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
                 if const_arguments = [] then
                   Ok (Ast.Ident (specialization.name, ident_span))
                 else
-                  let expression =
-                    Ast.Generic_args
-                      ( Ast.Ident (specialization.name, ident_span),
-                        const_arguments,
-                        span )
-                  in
-                  if eager_functions then
-                    resolve_expr ~values ~defer_const_structs substitutions depth
-                      expression
-                  else Ok expression
+                  Ok
+                    (Ast.Generic_args
+                       ( Ast.Ident (specialization.name, ident_span),
+                         const_arguments,
+                         span ))
         | Some _ -> error span "internal error: generic function template is malformed")
     | Ast.Generic_args (_, _, span) ->
         error span "generic call target must be a function name"
