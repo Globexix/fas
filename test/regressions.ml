@@ -1745,6 +1745,11 @@ let () =
      fn main(value Pair[i64]) i64 { return 0 }\n";
   semantic_error "generic-struct-argument-kind" "expected a type argument"
     "struct Box[T] { value T }\nfn main(value Box[3]) i64 { return 0 }\n";
+  semantic_error "generic-struct-aggregate-limit"
+    "aggregate element count exceeds the configured limit"
+    "struct Box[T] { value T }\n\
+     fn consume(value Box[arr[1000001,u8]]) i32 { return 0 }\n\
+     fn main() i32 { return 0 }\n";
   semantic_error "generic-application-to-concrete" "struct `Box` is not generic"
     "struct Box { value i64 }\nfn main(value Box[i64]) i64 { return 0 }\n";
   semantic_error "unknown-generic-struct" "unknown generic struct `Missing`"

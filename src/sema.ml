@@ -251,11 +251,16 @@ let validate_extern_c_signature span params converted ret =
       (Printf.sprintf "extern \"C\" cannot return `%s` by value; use an output pointer"
          (Hir.ty_name ret))
 
-let aggregate_within_limit limits ty =
+let aggregate_within_limit limits structs ty =
   let max_elements = limits.Limits.max_aggregate_elements in
   let rec check count = function
     | Hir.Array (n, t) | Hir.Vec (n, t) ->
         if n = 0 then true else n <= max_elements / count && check (count * n) t
+    | Hir.Struct name -> (
+        match List.find_opt (fun (s : Hir.struct_def) -> s.name = name) structs with
+        | Some definition ->
+            List.for_all (fun (field : Hir.field) -> check count field.ty) definition.fields
+        | None -> count <= max_elements)
     | _ -> count <= max_elements
   in
   check 1 ty
@@ -1776,7 +1781,7 @@ and check_stmt (c : context) = function
         object_type c.structs t |> Result.map_error (fun m -> [ Diag.error span m ])
       in
       let* () =
-        if aggregate_within_limit c.limits t then Ok ()
+        if aggregate_within_limit c.limits c.structs t then Ok ()
         else error span "aggregate element count exceeds the configured limit"
       in
       let* () = add_local name t c span in
@@ -2973,7 +2978,7 @@ let check ?(limits = Limits.default) program =
       object_type structs t
       |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
     in
-    if aggregate_within_limit limits t then Ok t
+    if aggregate_within_limit limits structs t then Ok t
     else error Span.synthetic "aggregate element count exceeds the configured limit"
   in
   let map_params convert params =
@@ -3039,7 +3044,7 @@ let check ?(limits = Limits.default) program =
       object_type structs t
       |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
     in
-    if aggregate_within_limit limits t then Ok t
+    if aggregate_within_limit limits structs t then Ok t
     else error Span.synthetic "aggregate element count exceeds the configured limit"
   in
   let source_params =
