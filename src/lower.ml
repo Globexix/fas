@@ -1178,4 +1178,5 @@ let lower (p : Hir.program) =
       structs;
       globals = strings @ arrays;
       funcs = funcs @ intrinsic_decls funcs;
+      no_inline_function = None;
     }

@@ -122,6 +122,26 @@ let emit_tools config ir =
                (Unix.error_message code));
         ]
 
+let apply_no_inline config ir =
+  match config.Cli.no_inline_function with
+  | None -> Ok ir
+  | Some name -> (
+      match List.find_opt (fun (f : Ir.func) -> f.name = name) ir.Ir.funcs with
+      | None ->
+          Error
+            [
+              Diag.error Span.synthetic
+                (Printf.sprintf "-no-inline function `%s` was not emitted" name);
+            ]
+      | Some f when f.blocks = [] || Option.is_some f.asm_body ->
+          Error
+            [
+              Diag.error Span.synthetic
+                (Printf.sprintf "-no-inline function `%s` is not a normal definition"
+                   name);
+            ]
+      | Some _ -> Ok { ir with Ir.no_inline_function = Some name })
+
 let run config =
   let rec parse_files acc = function
     | [] -> Ok (List.rev acc)
@@ -147,10 +167,20 @@ let run config =
           Ast.items = List.concat (List.map (fun program -> program.Ast.items) programs);
         }
       in
-      if config.emit = Cli.Ast then emit_text config (Ast.render_program program)
+      if config.emit = Cli.Ast then
+        match config.no_inline_function with
+        | Some name ->
+            Error
+              [
+                Diag.error Span.synthetic
+                  (Printf.sprintf
+                     "-no-inline function `%s` requires an emitted function" name);
+              ]
+        | None -> emit_text config (Ast.render_program program)
       else
         let* hir = Sema.check program in
         let* ir = Lower.lower hir in
+        let* ir = apply_no_inline config ir in
         match config.emit with
         | Cli.Ast -> assert false
         | Cli.Ir -> emit_text config (Ir.render_debug ir)

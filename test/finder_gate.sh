@@ -27,13 +27,13 @@ compile_one() {
   compiler=$1
   tag=$2
   FAS_OPT="$LLVM_OPT" FAS_LLC="$LLVM_LLC" FAS_CC="$CC" \
-    "$compiler" -release "$ROOT/finder/finder.fas" -o "$WORK/$tag" \
+    "$compiler" "$ROOT/finder/finder.fas" -o "$WORK/$tag" \
     ${FAS_TARGET_FLAGS:-}
   FAS_OPT="$LLVM_OPT" FAS_LLC="$LLVM_LLC" FAS_CC="$CC" \
-    "$compiler" -release --emit-llvm "$ROOT/finder/finder.fas" \
+    "$compiler" --emit-llvm "$ROOT/finder/finder.fas" \
     ${FAS_TARGET_FLAGS:-} >"$WORK/$tag.ll"
   FAS_OPT="$LLVM_OPT" FAS_LLC="$LLVM_LLC" FAS_CC="$CC" \
-    "$compiler" -release --emit-asm "$ROOT/finder/finder.fas" -o "$WORK/$tag.emit" \
+    "$compiler" --emit-asm "$ROOT/finder/finder.fas" -o "$WORK/$tag.emit" \
     ${FAS_TARGET_FLAGS:-} >"$WORK/$tag.s"
   if [ ! -s "$WORK/$tag.s" ] && [ -s "$WORK/$tag.emit.s" ]; then
     cp "$WORK/$tag.emit.s" "$WORK/$tag.s"

@@ -59,6 +59,18 @@ let parse_error_message name fragment text =
       if not (contains rendered fragment) then
         failwith (name ^ ": unexpected diagnostic: " ^ rendered)
 
+let cli_error name fragment args =
+  match Cli.parse (Array.of_list ("fas" :: args)) with
+  | Error message when contains message fragment -> ()
+  | Error message -> failwith (name ^ ": unexpected diagnostic: " ^ message)
+  | Ok _ -> failwith (name ^ ": expected CLI rejection")
+
+let cli_run args =
+  match Cli.parse (Array.of_list ("fas" :: args)) with
+  | Ok (Cli.Run config) -> config
+  | Ok Cli.Help -> failwith "expected compiler invocation"
+  | Error message -> failwith message
+
 let lower_of text =
   let program = expect_ok (Parser.parse (source text)) in
   let hir = expect_ok (Sema.check program) in
@@ -855,6 +867,153 @@ let () =
       "noalias";
       "noundef align";
     ];
+  let cli_profile = cli_run [ "-debug"; "-no-inline"; "helper"; "profile.fas" ] in
+  assert (cli_profile.Cli.no_inline_function = Some "helper");
+  let cli_profile_ordered =
+    cli_run [ "-O3"; "-debug"; "-no-inline"; "helper"; "profile.fas" ]
+  in
+  assert (cli_profile_ordered.Cli.optimization = 3);
+  cli_error "no-inline-missing-name" "requires a function name"
+    [ "-debug"; "-no-inline" ];
+  cli_error "no-inline-flag-name" "requires a function name"
+    [ "-debug"; "-no-inline"; "-O3"; "profile.fas" ];
+  cli_error "no-inline-needs-debug" "requires -debug"
+    [ "-no-inline"; "helper"; "profile.fas" ];
+  cli_error "no-inline-duplicate" "duplicate -no-inline"
+    [ "-debug"; "-no-inline"; "helper"; "-no-inline"; "other"; "profile.fas" ];
+  let ast_profile_path = Filename.temp_file "fas-profile-ast-" ".fas" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove ast_profile_path)
+    (fun () ->
+      let channel = open_out_bin ast_profile_path in
+      output_string channel "fn helper() i64 { return 3 }\n";
+      close_out channel;
+      let config =
+        cli_run [ "-debug"; "--emit-ast"; "-no-inline"; "helper"; ast_profile_path ]
+      in
+      match Driver.run config with
+      | Error diagnostics ->
+          let rendered = Diag.render_all ~source:None diagnostics in
+          if
+            not
+              (contains rendered
+                 "-no-inline function `helper` requires an emitted function")
+          then failwith "no-inline: AST diagnostic changed"
+      | Ok _ -> failwith "no-inline: AST emission was accepted");
+  cli_error "removed-release-option" "unknown option: -release"
+    [ "-release"; "profile.fas" ];
+  cli_error "removed-kernel-option" "unknown option: -kernel"
+    [ "-kernel"; "profile.fas" ];
+  let profile_path = Filename.temp_file "fas-profile-" ".fas" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove profile_path)
+    (fun () ->
+      let channel = open_out_bin profile_path in
+      output_string channel
+        "fn helper() i64 { return 3 }\n\
+         fn other() i64 { return 4 }\n\
+         fn main() i64 { return helper() }\n";
+      close_out channel;
+      let config =
+        cli_run [ "-debug"; "-O3"; "--emit-llvm"; "-no-inline"; "helper"; profile_path ]
+      in
+      assert (config.Cli.optimization = 3);
+      let profile_ir =
+        match Driver.run config with
+        | Ok output -> output
+        | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+      in
+      if not (contains profile_ir "@helper() noinline {") then
+        failwith "no-inline: selected function missing LLVM attribute";
+      if contains profile_ir "@other() noinline {" then
+        failwith "no-inline: attribute leaked to another function";
+      let missing_config =
+        cli_run [ "-debug"; "--emit-llvm"; "-no-inline"; "missing"; profile_path ]
+      in
+      match Driver.run missing_config with
+      | Error diagnostics ->
+          let rendered = Diag.render_all ~source:None diagnostics in
+          if not (contains rendered "function `missing` was not emitted") then
+            failwith "no-inline: missing function diagnostic changed"
+      | Ok _ -> failwith "no-inline: missing function was accepted");
+  let generic_profile_source =
+    "fn use() i64 { return identity[i64](7) }\n\
+     fn identity[T](value T) T { return value }\n"
+  in
+  let generic_profile_hir =
+    expect_ok (Parser.parse (source generic_profile_source)) |> Sema.check |> expect_ok
+  in
+  let generic_profile_name =
+    match
+      List.find_opt
+        (fun (func : Hir.func) -> contains func.name "identity$spec$")
+        generic_profile_hir.Hir.funcs
+    with
+    | Some func -> func.name
+    | None -> failwith "no-inline: generic specialization was not emitted"
+  in
+  let generic_profile_path = Filename.temp_file "fas-profile-generic-" ".fas" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove generic_profile_path)
+    (fun () ->
+      let channel = open_out_bin generic_profile_path in
+      output_string channel generic_profile_source;
+      close_out channel;
+      let config =
+        cli_run
+          [
+            "-debug";
+            "-O3";
+            "--emit-llvm";
+            "-no-inline";
+            generic_profile_name;
+            generic_profile_path;
+          ]
+      in
+      let output =
+        match Driver.run config with
+        | Ok output -> output
+        | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+      in
+      if
+        not
+          (contains output (Ir.quote_identifier generic_profile_name)
+          && contains output "noinline {")
+      then failwith "no-inline: generic specialization was not selected");
+  let external_profile_path = Filename.temp_file "fas-profile-external-" ".fas" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove external_profile_path)
+    (fun () ->
+      let channel = open_out_bin external_profile_path in
+      output_string channel
+        "extern \"C\" { fn external() i64 }\nfn main() i64 { return 0 }\n";
+      close_out channel;
+      let config =
+        cli_run
+          [ "-debug"; "--emit-llvm"; "-no-inline"; "external"; external_profile_path ]
+      in
+      match Driver.run config with
+      | Error diagnostics ->
+          let rendered = Diag.render_all ~source:None diagnostics in
+          if not (contains rendered "not a normal definition") then
+            failwith "no-inline: external declaration diagnostic changed"
+      | Ok _ -> failwith "no-inline: external declaration was accepted");
+  let asm_profile_path = Filename.temp_file "fas-profile-asm-" ".fas" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove asm_profile_path)
+    (fun () ->
+      let channel = open_out_bin asm_profile_path in
+      output_string channel "asm fn raw() i64 {\n retq\n}\nfn main() i64 { return 0 }\n";
+      close_out channel;
+      let config =
+        cli_run [ "-debug"; "--emit-llvm"; "-no-inline"; "raw"; asm_profile_path ]
+      in
+      match Driver.run config with
+      | Error diagnostics ->
+          let rendered = Diag.render_all ~source:None diagnostics in
+          if not (contains rendered "not a normal definition") then
+            failwith "no-inline: raw assembly diagnostic changed"
+      | Ok _ -> failwith "no-inline: raw assembly was accepted");
   semantic_error "fas-002-switch-default-init-leak" "use of uninitialized local `x`"
     "fn main() i32 {\n\
     \     x i32\n\
@@ -2375,4 +2534,4 @@ let () =
        "struct Pair[T] { left T right T }\n\
         fn main() i64 { return ((Pair[i64]){12, 4}).left }\n");
 
-  print_endline "regression tests: 236 passed"
+  print_endline "regression tests: 237 passed"

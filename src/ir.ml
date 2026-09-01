@@ -91,6 +91,7 @@ type module_ = {
   structs : struct_def list;
   globals : global list;
   funcs : func list;
+  no_inline_function : string option;
 }
 
 let quote_identifier n =
@@ -334,9 +335,14 @@ let render m =
         (ty_name f.ret) (symbol f.name) ps
     else
       let link = if f.linkage = Internal then "internal " else "" in
-      Printf.sprintf "define %s%s%s %s(%s) {\n%s\n}" link
+      let no_inline =
+        match m.no_inline_function with
+        | Some name when name = f.name -> " noinline"
+        | _ -> ""
+      in
+      Printf.sprintf "define %s%s%s %s(%s)%s {\n%s\n}" link
         (extension_name f.ret_extension)
-        (ty_name f.ret) (symbol f.name) ps
+        (ty_name f.ret) (symbol f.name) ps no_inline
         (String.concat "\n"
            (List.concat_map
               (fun b ->
@@ -389,6 +395,10 @@ let render_debug m =
        "Module {";
        Printf.sprintf "  target_triple = %S;" m.target_triple;
        Printf.sprintf "  data_layout = %S;" m.data_layout;
+       Printf.sprintf "  no_inline_function = %s;"
+         (match m.no_inline_function with
+         | None -> "None"
+         | Some name -> Printf.sprintf "Some %S" name);
        "  globals = [";
      ]
     @ List.map global m.globals @ [ "  ];"; "  functions = [" ] @ List.map func m.funcs

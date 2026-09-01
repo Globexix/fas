@@ -121,9 +121,7 @@ let () =
     | Error message -> failwith message
   in
   let cli =
-    expect_cli
-      (Cli.parse
-         [| "fas"; "-release"; "--emit-ast"; "-o"; "out"; "one.fas"; "two.fas" |])
+    expect_cli (Cli.parse [| "fas"; "--emit-ast"; "-o"; "out"; "one.fas"; "two.fas" |])
   in
   assert (
     cli.Cli.emit = Cli.Ast && cli.output = "out" && cli.output_explicit

@@ -8,8 +8,7 @@ type t = {
   keep : bool;
   optimization : int;
   debug : bool;
-  release : bool;
-  kernel : bool;
+  no_inline_function : string option;
 }
 
 type command = Run of t | Help
