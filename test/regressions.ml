@@ -197,7 +197,7 @@ let () =
   semantic_error "integer-vector-bitcast-trunc" "illegal cast"
     "fn f(value vec[4,u16]) vec[4,u8] { return trunc[vec[4,u8]](value) }\n";
   semantic_error "integer-vector-bitcast-opaque" "illegal cast"
-    "opaque Handle\nfn f(value i64) Handle { return bitcast[Handle](value) }\n";
+    "opaque Handle\nfn f(value i64) void { bitcast[Handle](value)\n return }\n";
   semantic_error "integer-vector-bitcast-void" "illegal cast"
     "fn f(value i64) void { bitcast[void](value)\n return }\n";
   let integer_vector_comparisons =
@@ -1015,7 +1015,7 @@ let () =
   semantic_error "opaque-alignof" "opaque type `Handle` has no layout"
     "opaque Handle\nfn use() usize { return alignof[Handle] }\n";
   semantic_error "opaque-dereference" "cannot dereference an opaque pointer"
-    "opaque Handle\nfn use(value ptr[Handle]) Handle { return value.* }\n";
+    "opaque Handle\nfn use(value ptr[Handle]) void { value.* }\n";
   semantic_error "opaque-index" "opaque pointers cannot be indexed"
     "opaque Handle\nfn use(value ptr[Handle]) i32 { value[0]\n return 0 }\n";
   semantic_error "opaque-field-access" "cannot dereference an opaque pointer"
@@ -1025,9 +1025,82 @@ let () =
     "opaque Handle\nfn use(value ptr[Handle]) ptr[u8] { return value }\n";
   semantic_error "opaque-distinct-assignment"
     "type mismatch: expected ptr[Second], got ptr[First]"
-    "opaque First\nopaque Second\nfn use(value ptr[First]) void { other ptr[Second] = value }\n";
+    "opaque First\n\
+     opaque Second\n\
+     fn use(value ptr[First]) void { other ptr[Second] = value }\n";
   semantic_error "opaque-distinct-comparison" "binary operands must have the same type"
-    "opaque First\nopaque Second\nfn use(left ptr[First], right ptr[Second]) bool { return left == right }\n";
+    "opaque First\n\
+     opaque Second\n\
+     fn use(left ptr[First], right ptr[Second]) bool { return left == right }\n";
+  ignore
+    (lower_of
+       "fn accept(value ptr[const u64]) void { return }\n\
+        fn return_read_only(value ptr[u64]) ptr[const u64] { return value }\n\
+        fn choose(flag bool, mutable ptr[u64], read_only ptr[const u64]) ptr[const \
+        u64] {\n\
+       \ return flag ? mutable : read_only\n\
+        }\n\
+        fn use(value ptr[u64]) bool {\n\
+       \ read_only ptr[const u64] = value\n\
+       \ accept(value)\n\
+       \ read_only = value\n\
+       \ return value == read_only\n\
+        }\n");
+  semantic_error "pointer-const-to-mutable-assignment"
+    "type mismatch: expected ptr[u64], got ptr[const u64]"
+    "fn use(value ptr[const u64]) void { mutable ptr[u64] = value }\n";
+  semantic_error "pointer-const-to-mutable-argument"
+    "type mismatch: expected ptr[u64], got ptr[const u64]"
+    "fn take(value ptr[u64]) void { return }\n\
+     fn use(value ptr[const u64]) void { take(value) }\n";
+  semantic_error "pointer-const-to-mutable-return"
+    "type mismatch: expected ptr[u64], got ptr[const u64]"
+    "fn use(value ptr[const u64]) ptr[u64] { return value }\n";
+  semantic_error "pointer-const-to-mutable-ternary"
+    "type mismatch: expected ptr[u64], got ptr[const u64]"
+    "fn use(flag bool, mutable ptr[u64], read_only ptr[const u64]) ptr[u64] {\n\
+    \ return flag ? mutable : read_only\n\
+     }\n";
+  semantic_error "pointer-different-integer-element"
+    "type mismatch: expected ptr[u8], got ptr[u64]"
+    "fn use(value ptr[u64]) void { other ptr[u8] = value }\n";
+  semantic_error "pointer-different-struct-element"
+    "type mismatch: expected ptr[Second], got ptr[First]"
+    "struct First { value u64 }\n\
+     struct Second { value u64 }\n\
+     fn use(value ptr[First]) ptr[Second] { return value }\n";
+  semantic_error "pointer-different-opaque-element"
+    "type mismatch: expected ptr[Second], got ptr[First]"
+    "opaque First\n\
+     opaque Second\n\
+     fn take(value ptr[Second]) void { return }\n\
+     fn use(value ptr[First]) void { take(value) }\n";
+  semantic_error "pointer-different-element-comparison"
+    "binary operands must have the same type"
+    "fn use(left ptr[u8], right ptr[u64]) bool { return left == right }\n";
+  semantic_error "pointer-different-element-ternary" "ternary arms have different types"
+    "fn use(flag bool, left ptr[u8], right ptr[u64]) ptr[u8] {\n\
+    \ return flag ? left : right\n\
+     }\n";
+  semantic_error "pointer-nested-constness"
+    "type mismatch: expected ptr[ptr[const u8]], got ptr[ptr[u8]]"
+    "fn use(value ptr[ptr[u8]]) void { nested ptr[ptr[const u8]] = value }\n";
+  semantic_error "pointer-implicit-to-integer"
+    "type mismatch: expected usize, got ptr[u8]"
+    "fn use(value ptr[u8]) void { bits usize = value }\n";
+  semantic_error "integer-implicit-to-pointer"
+    "type mismatch: expected ptr[u8], got usize"
+    "fn use(value usize) void { pointer ptr[u8] = value }\n";
+  semantic_error "pointer-bitcast-discards-const" "illegal cast"
+    "fn use(value ptr[const u8]) ptr[u8] { return bitcast[ptr[u8]](value) }\n";
+  semantic_error "pointer-bitcast-u32-width" "illegal cast"
+    "fn use(value ptr[u8]) u32 { return bitcast[u32](value) }\n";
+  semantic_error "pointer-bitcast-i32-width" "illegal cast"
+    "fn use(value i32) ptr[u8] { return bitcast[ptr[u8]](value) }\n";
+  semantic_error "const-pointer-bitcast-u32-width" "illegal cast"
+    "fn use(value ptr[const u8]) u32 { return bitcast[u32](value) }\n";
+  semantic_error "integer-bitcast-const-pointer-u32-width" "illegal cast"
+    "fn use(value u32) ptr[const u8] { return bitcast[ptr[const u8]](value) }\n";
   let before_messages =
     semantic_messages
       "struct Stable { x i64 }\nfn use(value Missing) i64 { return 0 }\n"

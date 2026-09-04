@@ -1459,7 +1459,8 @@ and check_expr (c : context) expected = function
             match (from, t) with
             | Hir.Ptr _, Hir.Ptr _ | Hir.Ptr _, Hir.ConstPtr _ -> true
             | Hir.ConstPtr _, Hir.ConstPtr _ -> true
-            | Hir.Ptr _, Hir.Int k | Hir.Int k, Hir.Ptr _ ->
+            | (Hir.Ptr _ | Hir.ConstPtr _), Hir.Int k
+            | Hir.Int k, (Hir.Ptr _ | Hir.ConstPtr _) ->
                 int_bits k = Target_layout.current.pointer_size * 8
             | _ -> (
                 match (integer_value_bit_width from, integer_value_bit_width t) with
@@ -1547,7 +1548,7 @@ and check_expr (c : context) expected = function
           if equal (Hir.expr_ty x) elem then Ok (Hir.Splat (x, Hir.Vec (n, elem), s))
           else error s "splat element type mismatch"
       | _ -> error s "splat requires a vector type context")
-  | Ast.Ternary (q, a, b, s) ->
+  | Ast.Ternary (q, a, b, s) -> (
       let* tq = check_expr c None q in
       if not (is_truthy (Hir.expr_ty tq)) then
         error s "ternary condition must be scalar"
@@ -1559,11 +1560,18 @@ and check_expr (c : context) expected = function
         let* tb = check_expr c (Some (Hir.expr_ty ta)) b in
         let after_b = c.initialized in
         c.initialized <- merge_maps c after_a after_b;
-        if not (equal (Hir.expr_ty ta) (Hir.expr_ty tb)) then
-          error s "ternary arms have different types"
-        else if Hir.expr_ty ta = Hir.Void || Hir.expr_ty tb = Hir.Void then
-          error s "ternary arms cannot have void type"
-        else Ok (Hir.Ternary (tq, ta, tb, Hir.expr_ty ta, s))
+        let at = Hir.expr_ty ta and bt = Hir.expr_ty tb in
+        let result_ty =
+          if equal at bt then Some at
+          else if compatible at bt then Some bt
+          else if compatible bt at then Some at
+          else None
+        in
+        match result_ty with
+        | None -> error s "ternary arms have different types"
+        | Some _ when at = Hir.Void || bt = Hir.Void ->
+            error s "ternary arms cannot have void type"
+        | Some ty -> Ok (Hir.Ternary (tq, ta, tb, ty, s)))
   | Ast.Array_lit (_, s) ->
       error s "array literals are only valid in global const declarations"
   | Ast.Struct_lit (source_type, xs, s) -> (
@@ -3420,17 +3428,23 @@ let check ?(limits = Limits.default) program =
   let* named_types = collect_named_types [] [] program.Ast.items in
   let* structs_src = collect_structs named_types [] program.Ast.items in
   let* structs = build structs_src [] structs_src in
+  let validate_object span t =
+    let* () =
+      object_type structs t |> Result.map_error (fun m -> [ Diag.error span m ])
+    in
+    if aggregate_within_limit limits structs t then Ok t
+    else error span "aggregate element count exceeds the configured limit"
+  in
   let source_obj t =
     let* t =
       source_ty named_types t
       |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
     in
-    let* () =
-      object_type structs t
-      |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
-    in
-    if aggregate_within_limit limits structs t then Ok t
-    else error Span.synthetic "aggregate element count exceeds the configured limit"
+    validate_object Span.synthetic t
+  in
+  let source_return span t =
+    let* t = source_ty_diag named_types span t in
+    if t = Hir.Void then Ok t else validate_object span t
   in
   let source_params =
     map_params (fun (param : Ast.param) ->
@@ -3487,7 +3501,7 @@ let check ?(limits = Limits.default) program =
                 let* ps =
                   map_params (fun (param : Ast.param) -> source_obj param.ty) params
                 in
-                let* rt = source_ty_diag named_types span ret in
+                let* rt = source_return span ret in
                 let* () =
                   if linkage = Ast.External_c then
                     validate_extern_c_signature span params ps rt
@@ -3578,7 +3592,7 @@ let check ?(limits = Limits.default) program =
         in
         let description = if trace = [] then "function" else "specialized function" in
         let result =
-          let* ret = source_ty_diag named_types span ret in
+          let* ret = source_return span ret in
           let* params = source_params params in
           let linkage = hir_linkage linkage in
           match body with
@@ -3639,6 +3653,7 @@ let check ?(limits = Limits.default) program =
             } ->
             let result =
               let* ret = source_ty_with_values named_types values span ret in
+              let* ret = if ret = Hir.Void then Ok ret else validate_object span ret in
               let* params =
                 Result_list.map
                   (fun (parameter : Ast.param) ->
@@ -3646,6 +3661,7 @@ let check ?(limits = Limits.default) program =
                       source_ty_with_values named_types values parameter.span
                         parameter.ty
                     in
+                    let* ty = validate_object parameter.span ty in
                     Ok (parameter.name, ty))
                   params
               in

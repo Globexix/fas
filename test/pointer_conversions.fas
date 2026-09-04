@@ -1,0 +1,74 @@
+struct First {
+  value u64
+}
+
+struct Second {
+  value u64
+}
+
+opaque Handle
+
+fn accept_read_only(value ptr[const u64]) bool {
+  return value != null
+}
+
+fn return_read_only(value ptr[u64]) ptr[const u64] {
+  return value
+}
+
+fn choose_read_only(select bool, mutable ptr[u64], read_only ptr[const u64]) ptr[const u64] {
+  return select ? mutable : read_only
+}
+
+fn choose_read_only_reversed(select bool, mutable ptr[u64], read_only ptr[const u64]) ptr[const u64] {
+  return select ? read_only : mutable
+}
+
+fn main() i32 {
+  value u64 = 41
+  mutable ptr[u64] = &value
+  read_only ptr[const u64] = mutable
+  read_only = mutable
+
+  if !accept_read_only(mutable) { return 1 }
+  if return_read_only(mutable) != mutable { return 2 }
+  if read_only != mutable { return 3 }
+  if choose_read_only(true, mutable, read_only) != mutable { return 4 }
+  if choose_read_only(false, mutable, read_only) != read_only { return 5 }
+  if choose_read_only_reversed(true, mutable, read_only) != read_only { return 6 }
+  if choose_read_only_reversed(false, mutable, read_only) != mutable { return 7 }
+
+  pointer_bits usize = bitcast[usize](mutable)
+  if bitcast[ptr[u64]](pointer_bits) != mutable { return 8 }
+
+  signed_pointer_bits isize = bitcast[isize](mutable)
+  if bitcast[ptr[u64]](signed_pointer_bits) != mutable { return 9 }
+
+  fixed_pointer_bits u64 = bitcast[u64](mutable)
+  if bitcast[ptr[u64]](fixed_pointer_bits) != mutable { return 10 }
+
+  fixed_signed_pointer_bits i64 = bitcast[i64](mutable)
+  if bitcast[ptr[u64]](fixed_signed_pointer_bits) != mutable { return 11 }
+
+  read_only_bits usize = bitcast[usize](read_only)
+  restored_read_only ptr[const u64] = bitcast[ptr[const u64]](read_only_bits)
+  if restored_read_only != read_only { return 12 }
+
+  bytes ptr[u8] = bitcast[ptr[u8]](mutable)
+  if bitcast[ptr[u64]](bytes) != mutable { return 13 }
+
+  first_value First = (First){17}
+  first ptr[First] = &first_value
+  second ptr[Second] = bitcast[ptr[Second]](first)
+  if bitcast[ptr[First]](second) != first { return 14 }
+
+  handle ptr[Handle] = bitcast[ptr[Handle]](mutable)
+  if bitcast[ptr[u64]](handle) != mutable { return 15 }
+
+  holder ptr[u64] = mutable
+  nested ptr[ptr[u64]] = &holder
+  outer_read_only ptr[const ptr[u64]] = nested
+  if outer_read_only != nested { return 16 }
+
+  return 0
+}
