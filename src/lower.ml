@@ -367,7 +367,7 @@ let rec expr s = function
       if List.mem op [ Ast.Eq; Ne; Lt; Le; Gt; Ge ] then (
         let id = fresh s in
         emit s (Ir.Cmp (id, cmp_for (Hir.expr_ty a) op, value_ty x, x, y));
-        Ok (Ir.Local (id, Ir.I1)))
+        Ok (Ir.Local (id, ty t)))
       else Ok (emit_binary s (Hir.expr_ty a) op (ty t) x y)
   | Hir.Call (Hir.User n, args, t, _) ->
       let* vs = exprs s args in

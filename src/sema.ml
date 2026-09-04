@@ -1228,12 +1228,19 @@ and check_expr (c : context) expected = function
         then error s "binary operands must have the same type"
         else
           match op with
-          | Ast.Eq | Ast.Ne ->
-              if is_scalar at then Ok (Hir.Binary (op, a, b, Hir.Bool, s))
-              else error s "equality requires scalar operands"
-          | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge ->
+          | Ast.Eq | Ast.Ne -> (
+              match at with
+              | Hir.Vec (length, (Hir.Bool | Hir.Int _)) ->
+                  Ok (Hir.Binary (op, a, b, Hir.Vec (length, Hir.Bool), s))
+              | _ when is_scalar at -> Ok (Hir.Binary (op, a, b, Hir.Bool, s))
+              | _ -> error s "equality requires scalar or integer/bool-vector operands")
+          | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
               if is_int at then Ok (Hir.Binary (op, a, b, Hir.Bool, s))
-              else error s "ordered comparison requires integer operands"
+              else
+                match at with
+                | Hir.Vec (length, Hir.Int _) ->
+                    Ok (Hir.Binary (op, a, b, Hir.Vec (length, Hir.Bool), s))
+                | _ -> error s "ordered comparison requires integer operands")
           | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
           | Ast.Bit_xor ->
               if is_numeric at then Ok (Hir.Binary (op, a, b, at, s))

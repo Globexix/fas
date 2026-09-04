@@ -198,6 +198,58 @@ let () =
     "opaque Handle\nfn f(value i64) Handle { return bitcast[Handle](value) }\n";
   semantic_error "integer-vector-bitcast-void" "illegal cast"
     "fn f(value i64) void { bitcast[void](value)\n return }\n";
+  let integer_vector_comparisons =
+    llvm_of
+      "fn signed(left vec[4,i32], right vec[4,i32]) bool {\n\
+      \ eq vec[4,bool] = left == right\n\
+      \ ne vec[4,bool] = left != right\n\
+      \ lt vec[4,bool] = left < right\n\
+      \ le vec[4,bool] = left <= right\n\
+      \ gt vec[4,bool] = left > right\n\
+      \ ge vec[4,bool] = left >= right\n\
+      \ return eq[0] && ne[0] && lt[0] && le[0] && gt[0] && ge[0]\n\
+      \ }\n\
+      \ fn unsigned(left vec[4,u32], right vec[4,u32]) bool {\n\
+      \ lt vec[4,bool] = left < right\n\
+      \ le vec[4,bool] = left <= right\n\
+      \ gt vec[4,bool] = left > right\n\
+      \ ge vec[4,bool] = left >= right\n\
+      \ return lt[0] && le[0] && gt[0] && ge[0]\n\
+      \ }\n\
+      \ fn booleans(left vec[8,bool], right vec[8,bool]) bool {\n\
+      \ eq vec[8,bool] = left == right\n\
+      \ ne vec[8,bool] = left != right\n\
+      \ return eq[0] && ne[0]\n\
+      \ }\n"
+  in
+  List.iter
+    (fun predicate ->
+      if not (contains integer_vector_comparisons ("icmp " ^ predicate)) then
+        failwith ("integer-vector-comparison: missing `icmp " ^ predicate ^ "`"))
+    [ "eq"; "ne"; "slt"; "sle"; "sgt"; "sge"; "ult"; "ule"; "ugt"; "uge" ];
+  if
+    (not (contains integer_vector_comparisons "store <4 x i1>"))
+    || (not (contains integer_vector_comparisons "extractelement <4 x i1>"))
+    || not (contains integer_vector_comparisons "icmp eq <8 x i1>")
+  then failwith "integer-vector-comparison: result vector was not preserved";
+  semantic_error "integer-vector-comparison-lanes" "same type"
+    "fn f(left vec[4,i32], right vec[8,i32]) vec[4,bool] { return left == right }\n";
+  semantic_error "integer-vector-comparison-elements" "same type"
+    "fn f(left vec[4,i32], right vec[4,u32]) vec[4,bool] { return left == right }\n";
+  semantic_error "integer-vector-comparison-scalar" "same type"
+    "fn f(left vec[4,i32], right i32) vec[4,bool] { return left == right }\n";
+  semantic_error "integer-vector-comparison-bool-order" "requires integer operands"
+    "fn f(left vec[4,bool], right vec[4,bool]) vec[4,bool] { return left < right }\n";
+  semantic_error "integer-vector-comparison-condition" "if condition must be scalar"
+    "fn f(left vec[4,i32], right vec[4,i32]) i32 {\n\
+    \ if left == right { return 1 }\n\
+    \ return 0\n\
+     }\n";
+  semantic_error "integer-vector-comparison-no-reduction"
+    "logical operands must be scalar"
+    "fn f(left vec[4,i32], right vec[4,i32]) vec[4,bool] {\n\
+    \ return (left == right) && (left != right)\n\
+     }\n";
   semantic_error "len-returns-usize" "type mismatch: expected u64, got usize"
     "fn size(values arr[3,u8]) u64 { return len(values) }\n";
   semantic_error "sizeof-returns-usize" "type mismatch: expected u64, got usize"
@@ -2632,4 +2684,4 @@ let () =
        "struct Pair[T] { left T right T }\n\
         fn main() i64 { return ((Pair[i64]){12, 4}).left }\n");
 
-  print_endline "regression tests: 260 passed"
+  print_endline "regression tests: 267 passed"
