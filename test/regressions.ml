@@ -697,6 +697,12 @@ let () =
     "fn f() i64 { x i64\n defer { x = 1 }\n return x }\n";
   semantic_error "nested-defer" "nested defer is not allowed"
     "fn f() void { defer { defer { } } }\n";
+  semantic_error "defer-return" "return is not allowed inside defer"
+    "fn f() void { defer { return } }\n";
+  semantic_error "defer-break" "break is not allowed inside defer"
+    "fn f() void { while true { defer { break } break } }\n";
+  semantic_error "defer-continue" "continue is not allowed inside defer"
+    "fn f() void { while true { defer { continue } break } }\n";
   semantic_error "lexical-scope-same-block" "duplicate local `value`"
     "fn f() i64 { value i64 = 1\n value i64 = 2\n return value }\n";
   ignore
