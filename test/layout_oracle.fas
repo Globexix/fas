@@ -56,6 +56,10 @@ fn v3i32_size() usize { return sizeof[vec[3,i32]] }
 fn v3i32_align() usize { return alignof[vec[3,i32]] }
 fn v2i64_size() usize { return sizeof[vec[2,i64]] }
 fn v2i64_align() usize { return alignof[vec[2,i64]] }
+fn v4i64_size() usize { return sizeof[vec[4,i64]] }
+fn v4i64_align() usize { return alignof[vec[4,i64]] }
+fn v8i64_size() usize { return sizeof[vec[8,i64]] }
+fn v8i64_align() usize { return alignof[vec[8,i64]] }
 fn array_v3i32_size() usize { return sizeof[arr[2,vec[3,i32]]] }
 fn array_v3i32_align() usize { return alignof[arr[2,vec[3,i32]]] }
 fn probe_size() usize { return sizeof[Probe] }

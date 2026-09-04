@@ -1,0 +1,42 @@
+extern "C" {
+  fn c_allocate_aligned(alignment usize, size usize) ptr[u8]
+  fn c_release_aligned(storage ptr[u8]) void
+  fn c_is_aligned(storage ptr[const u8], alignment usize) bool
+  fn c_check_lanes(values ptr[const u64], count usize, expected u64) bool
+}
+
+fn write_lanes(destination ptr[vec[8,u64]], value vec[8,u64]) void {
+  destination.* = value
+}
+
+fn read_lanes(source ptr[const vec[8,u64]]) vec[8,u64] {
+  return source.*
+}
+
+fn main() i32 {
+  alignment usize = alignof[vec[8,u64]]
+  size usize = sizeof[vec[8,u64]]
+  if alignment != 64 || size != 64 { return 1 }
+
+  storage ptr[u8] = c_allocate_aligned(alignment, size)
+  if storage == null { return 2 }
+  if !c_is_aligned(storage, alignment) {
+    c_release_aligned(storage)
+    return 3
+  }
+
+  values ptr[vec[8,u64]] = bitcast[ptr[vec[8,u64]]](storage)
+  write_lanes(values, splat(41))
+  loaded vec[8,u64] = read_lanes(values)
+  if loaded[0] != 41 || loaded[7] != 41 {
+    c_release_aligned(storage)
+    return 4
+  }
+  if !c_check_lanes(bitcast[ptr[const u64]](values), 8, 41) {
+    c_release_aligned(storage)
+    return 5
+  }
+
+  c_release_aligned(storage)
+  return 0
+}
