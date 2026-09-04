@@ -158,6 +158,46 @@ let () =
       "udiv i64";
       "sdiv i64";
     ];
+  let integer_vector_bitcasts =
+    llvm_of
+      "fn same_shape(values vec[4,i32]) vec[4,u32] {\n\
+      \ return bitcast[vec[4,u32]](values)\n\
+      \ }\n\
+      \ fn reshape(value u64) u64 {\n\
+      \ words vec[2,u32] = bitcast[vec[2,u32]](value)\n\
+      \ bytes vec[8,u8] = bitcast[vec[8,u8]](words)\n\
+      \ return bitcast[u64](bytes)\n\
+      \ }\n\
+      \ fn flags(value vec[8,bool]) u8 { return bitcast[u8](value) }\n"
+  in
+  if List.length (positions integer_vector_bitcasts "bitcast ") <> 5 then
+    failwith "integer-vector-bitcast: expected five mechanical LLVM bitcasts";
+  List.iter
+    (fun forbidden ->
+      if contains integer_vector_bitcasts forbidden then
+        failwith ("integer-vector-bitcast: unexpected `" ^ forbidden ^ "` lowering"))
+    [ "extractelement"; "insertelement"; "shufflevector" ];
+  semantic_error "integer-vector-bitcast-width" "illegal cast"
+    "fn f(value u64) vec[4,u32] { return bitcast[vec[4,u32]](value) }\n";
+  semantic_error "integer-vector-bitcast-implicit" "type mismatch"
+    "fn f(value vec[4,i32]) vec[4,u32] { return value }\n";
+  semantic_error "integer-vector-bitcast-array" "illegal cast"
+    "fn f(value arr[2,u32]) vec[2,u32] { return bitcast[vec[2,u32]](value) }\n";
+  semantic_error "integer-vector-bitcast-struct" "illegal cast"
+    "struct Pair { left u32 right u32 }\n\
+    \ fn f(value Pair) vec[2,u32] { return bitcast[vec[2,u32]](value) }\n";
+  semantic_error "integer-vector-bitcast-pointer" "illegal cast"
+    "fn f(value ptr[u8]) vec[1,u64] { return bitcast[vec[1,u64]](value) }\n";
+  semantic_error "integer-vector-bitcast-zext" "illegal cast"
+    "fn f(value vec[4,u8]) vec[4,u16] { return zext[vec[4,u16]](value) }\n";
+  semantic_error "integer-vector-bitcast-sext" "illegal cast"
+    "fn f(value vec[4,i8]) vec[4,i16] { return sext[vec[4,i16]](value) }\n";
+  semantic_error "integer-vector-bitcast-trunc" "illegal cast"
+    "fn f(value vec[4,u16]) vec[4,u8] { return trunc[vec[4,u8]](value) }\n";
+  semantic_error "integer-vector-bitcast-opaque" "illegal cast"
+    "opaque Handle\nfn f(value i64) Handle { return bitcast[Handle](value) }\n";
+  semantic_error "integer-vector-bitcast-void" "illegal cast"
+    "fn f(value i64) void { bitcast[void](value)\n return }\n";
   semantic_error "len-returns-usize" "type mismatch: expected u64, got usize"
     "fn size(values arr[3,u8]) u64 { return len(values) }\n";
   semantic_error "sizeof-returns-usize" "type mismatch: expected u64, got usize"
@@ -2592,4 +2632,4 @@ let () =
        "struct Pair[T] { left T right T }\n\
         fn main() i64 { return ((Pair[i64]){12, 4}).left }\n");
 
-  print_endline "regression tests: 249 passed"
+  print_endline "regression tests: 260 passed"

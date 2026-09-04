@@ -400,7 +400,12 @@ let rec expr s = function
   | Hir.Cast (kind, e, t, _) ->
       let* v = expr s e in
       let st = value_ty v and dt = ty t in
-      if st = dt then Ok v
+      let vector_bitcast =
+        match (kind, Hir.expr_ty e, t) with
+        | Ast.Bitcast, Hir.Vec _, _ | Ast.Bitcast, _, Hir.Vec _ -> true
+        | _ -> false
+      in
+      if st = dt && not vector_bitcast then Ok v
       else
         let k =
           match (st, dt) with

@@ -160,6 +160,15 @@ let int_bits = function
   | U64 | I64 -> 64
   | Usize | Isize -> Target_layout.current.pointer_size * 8
 
+let integer_value_bit_width = function
+  | Hir.Bool -> Some 1
+  | Hir.Int kind -> Some (int_bits kind)
+  | Hir.Vec (length, Hir.Bool) -> Some length
+  | Hir.Vec (length, Hir.Int kind) ->
+      let element_width = int_bits kind in
+      if length > max_int / element_width then None else Some (length * element_width)
+  | _ -> None
+
 let is_int = function Hir.Int _ -> true | _ -> false
 
 let is_unsigned = function
@@ -1249,8 +1258,7 @@ and check_expr (c : context) expected = function
       in
       let from = Hir.expr_ty x in
       let bits = function
-        | Hir.Bool -> 1
-        | Hir.Int q -> int_bits q
+        | (Hir.Bool | Hir.Int _) as ty -> Option.get (integer_value_bit_width ty)
         | Hir.Ptr _ | Hir.ConstPtr _ -> Target_layout.current.pointer_size * 8
         | _ -> 0
       in
@@ -1269,8 +1277,11 @@ and check_expr (c : context) expected = function
             | Hir.ConstPtr _, Hir.ConstPtr _ -> true
             | Hir.Ptr _, Hir.Int k | Hir.Int k, Hir.Ptr _ ->
                 int_bits k = Target_layout.current.pointer_size * 8
-            | _ when is_int from && is_int t -> bits from = bits t
-            | _ -> false)
+            | _ -> (
+                match (integer_value_bit_width from, integer_value_bit_width t) with
+                | Some source_width, Some destination_width ->
+                    source_width = destination_width
+                | _ -> false))
       in
       if legal then Ok (Hir.Cast (k, x, t, s))
       else error s "illegal cast for source and destination widths"

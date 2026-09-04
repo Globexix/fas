@@ -33,6 +33,8 @@ rm -f test/.stage3.ll test/.stage3.s
 LLVM_OPT="$LLVM_OPT" OCAML_FAS="$OCAML_FAS" "$ROOT/test/issue33_const_generic_struct.sh"
 CC="$CC" LLVM_OPT="$LLVM_OPT" LLVM_LLC="$LLVM_LLC" OCAML_FAS="$OCAML_FAS" \
   "$ROOT/test/lexical_scopes.sh"
+CC="$CC" LLVM_OPT="$LLVM_OPT" LLVM_LLC="$LLVM_LLC" OCAML_FAS="$OCAML_FAS" \
+  "$ROOT/test/integer_vector_bitcasts.sh"
 
 LLVM_OPT="$LLVM_OPT" OCAML_FAS="$OCAML_FAS" "$ROOT/test/layout_oracle.sh"
 CC="$CC" LLVM_OPT="$LLVM_OPT" OCAML_FAS="$OCAML_FAS" "$ROOT/test/abi_boundary.sh"
