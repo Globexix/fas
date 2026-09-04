@@ -1,0 +1,49 @@
+fn preserve(value ptr[First]) ptr[First] {
+  local ptr[First] = value
+  return local
+}
+
+fn make_read_only(value ptr[First]) ptr[const First] {
+  local ptr[const First] = value
+  return local
+}
+
+fn erase(value ptr[First]) ptr[u8] {
+  return bitcast[ptr[u8]](value)
+}
+
+fn reinterpret(value ptr[First]) ptr[Second] {
+  return bitcast[ptr[Second]](value)
+}
+
+fn reinterpret_read_only(value ptr[const First]) ptr[const Second] {
+  return bitcast[ptr[const Second]](value)
+}
+
+fn pointer_layout() usize {
+  return sizeof[ptr[First]] + alignof[ptr[const Second]]
+}
+
+fn main() i32 {
+  first ptr[First] = null
+  same ptr[First] = preserve(first)
+  if same != first { return 1 }
+
+  read_only ptr[const First] = make_read_only(first)
+  if read_only != first { return 2 }
+
+  bytes ptr[u8] = erase(first)
+  if bytes != null { return 3 }
+
+  second ptr[Second] = reinterpret(first)
+  if second != null { return 4 }
+
+  read_only_second ptr[const Second] = reinterpret_read_only(read_only)
+  if read_only_second != null { return 5 }
+
+  if pointer_layout() != 16 { return 6 }
+  return 0
+}
+
+opaque Second
+opaque First

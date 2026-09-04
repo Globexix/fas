@@ -986,6 +986,48 @@ let () =
     "fn use(value ptr[Missing]) i64 { return 0 }\n";
   semantic_error "opaque-struct-literal" "opaque type `Handle` is not a struct"
     "opaque Handle\nfn use() i64 { (Handle){}\n return 0 }\n";
+  ignore
+    (lower_of
+       "fn preserve(value ptr[Handle]) ptr[Handle] { local ptr[Handle] = value\n\
+       \ return local }\n\
+        fn read_only(value ptr[Handle]) ptr[const Handle] { return value }\n\
+        fn pointer_size() usize { return sizeof[ptr[Handle]] }\n\
+        fn pointer_align() usize { return alignof[ptr[const Handle]] }\n\
+        opaque Handle\n");
+  semantic_error "opaque-local-by-value"
+    "opaque type `Handle` may only be used behind a pointer"
+    "opaque Handle\nfn use() void { value Handle }\n";
+  semantic_error "opaque-struct-field-by-value" "opaque type `Handle` has no layout"
+    "opaque Handle\nstruct Wrapper { value Handle }\n";
+  semantic_error "opaque-array-by-value"
+    "opaque type `Handle` may only be used behind a pointer"
+    "opaque Handle\nfn use() void { values arr[2,Handle] }\n";
+  semantic_error "opaque-vector-by-value" "vector element type must be a scalar"
+    "opaque Handle\nfn use() void { values vec[2,Handle] }\n";
+  semantic_error "opaque-parameter-by-value"
+    "opaque type `Handle` may only be used behind a pointer"
+    "opaque Handle\nfn use(value Handle) void { return }\n";
+  semantic_error "opaque-return-by-value"
+    "opaque type `Handle` may only be used behind a pointer"
+    "opaque Handle\nfn use() Handle { }\n";
+  semantic_error "opaque-sizeof" "opaque type `Handle` has no layout"
+    "opaque Handle\nfn use() usize { return sizeof[Handle] }\n";
+  semantic_error "opaque-alignof" "opaque type `Handle` has no layout"
+    "opaque Handle\nfn use() usize { return alignof[Handle] }\n";
+  semantic_error "opaque-dereference" "cannot dereference an opaque pointer"
+    "opaque Handle\nfn use(value ptr[Handle]) Handle { return value.* }\n";
+  semantic_error "opaque-index" "opaque pointers cannot be indexed"
+    "opaque Handle\nfn use(value ptr[Handle]) i32 { value[0]\n return 0 }\n";
+  semantic_error "opaque-field-access" "cannot dereference an opaque pointer"
+    "opaque Handle\nfn use(value ptr[Handle]) i32 { value.*.field\n return 0 }\n";
+  semantic_error "opaque-implicit-erasure"
+    "type mismatch: expected ptr[u8], got ptr[Handle]"
+    "opaque Handle\nfn use(value ptr[Handle]) ptr[u8] { return value }\n";
+  semantic_error "opaque-distinct-assignment"
+    "type mismatch: expected ptr[Second], got ptr[First]"
+    "opaque First\nopaque Second\nfn use(value ptr[First]) void { other ptr[Second] = value }\n";
+  semantic_error "opaque-distinct-comparison" "binary operands must have the same type"
+    "opaque First\nopaque Second\nfn use(left ptr[First], right ptr[Second]) bool { return left == right }\n";
   let before_messages =
     semantic_messages
       "struct Stable { x i64 }\nfn use(value Missing) i64 { return 0 }\n"
