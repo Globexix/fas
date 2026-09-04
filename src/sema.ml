@@ -22,6 +22,37 @@ type specialization_arg =
 
 type specialization_key = specialization_kind * string * specialization_arg list
 
+type diagnostic_type =
+  | Diagnostic_bool
+  | Diagnostic_void
+  | Diagnostic_int of Ast.int_kind
+  | Diagnostic_ptr of diagnostic_type
+  | Diagnostic_const_ptr of diagnostic_type
+  | Diagnostic_array of string * diagnostic_type
+  | Diagnostic_vec of string * diagnostic_type
+  | Diagnostic_named of string
+  | Diagnostic_applied of string * diagnostic_argument list
+
+and diagnostic_argument =
+  | Diagnostic_type_argument of diagnostic_type
+  | Diagnostic_const_argument of Hir.ty * int64
+  | Diagnostic_source_const_argument of string
+
+type instantiation_frame = {
+  template_name : string;
+  arguments : diagnostic_argument list;
+  application_span : Span.t;
+}
+
+type pending_diagnostic_argument =
+  | Pending_diagnostic_type of diagnostic_type
+  | Pending_diagnostic_const of string
+
+type pending_instantiation_frame = {
+  pending_arguments : pending_diagnostic_argument list;
+  pending_application_span : Span.t;
+}
+
 type staged_specialization_arg =
   | Staged_type_arg of string
   | Staged_const_arg of string
@@ -44,6 +75,8 @@ type specialization = {
   name : string;
   depth : int;
   payload : specialization_payload;
+  trace : instantiation_frame list;
+  pending_frame : pending_instantiation_frame option;
 }
 
 module Specialization_cache = Hashtbl.Make (struct
@@ -56,6 +89,7 @@ end)
 type specialization_state = {
   cache : specialization Specialization_cache.t;
   queue : specialization Queue.t;
+  by_name : (specialization_kind * string, specialization) Hashtbl.t;
 }
 
 type trailing_args = Reject | Promote_variadic
@@ -70,6 +104,7 @@ type context = {
   templates : (string * Ast.item) list;
   specializations : specialization_state;
   spec_depth : int;
+  spec_trace : instantiation_frame list;
   locals : (string, binding) Hashtbl.t list ref;
   mutable initialized : init_state IM.t;
   mutable next_binding_id : int;
@@ -97,6 +132,8 @@ let request_specialization state ~limits ~depth ~span ~description specializatio
       then error span (description ^ " count limit exceeded")
       else (
         Specialization_cache.add state.cache specialization.key specialization;
+        let kind, _, _ = specialization.key in
+        Hashtbl.replace state.by_name (kind, specialization.name) specialization;
         Queue.add specialization state.queue;
         Ok specialization)
 
@@ -385,6 +422,146 @@ let sign_extend_bits ty value =
 
 let sign_extend_value ty value =
   if is_int ty && not (is_unsigned ty) then sign_extend_bits ty value else value
+
+let current_instantiation_frame trace =
+  match List.rev trace with frame :: _ -> Some frame | [] -> None
+
+let rec diagnostic_type_of_ast specializations = function
+  | Ast.Bool -> Diagnostic_bool
+  | Ast.Void -> Diagnostic_void
+  | Ast.Int kind -> Diagnostic_int kind
+  | Ast.Ptr ty -> Diagnostic_ptr (diagnostic_type_of_ast specializations ty)
+  | Ast.Ptr_const ty -> Diagnostic_const_ptr (diagnostic_type_of_ast specializations ty)
+  | Ast.Array (length, ty) ->
+      Diagnostic_array (length, diagnostic_type_of_ast specializations ty)
+  | Ast.Vec (length, ty) ->
+      Diagnostic_vec (length, diagnostic_type_of_ast specializations ty)
+  | Ast.Named_type name -> (
+      match Hashtbl.find_opt specializations.by_name (Struct_specialization, name) with
+      | Some specialization -> (
+          match current_instantiation_frame specialization.trace with
+          | Some frame -> Diagnostic_applied (frame.template_name, frame.arguments)
+          | None -> Diagnostic_named name)
+      | None -> Diagnostic_named name)
+  | Ast.Applied_type (name, arguments, _) ->
+      let arguments =
+        List.map
+          (function
+            | Ast.Type_arg ty ->
+                Diagnostic_type_argument (diagnostic_type_of_ast specializations ty)
+            | Ast.Const_arg expression ->
+                Diagnostic_source_const_argument (Ast.expr_name expression)
+            | Ast.Name_arg (name, _) -> Diagnostic_type_argument (Diagnostic_named name))
+          arguments
+      in
+      Diagnostic_applied (name, arguments)
+
+let render_diagnostic_const ty value =
+  match ty with
+  | Hir.Bool -> if value = 0L then "false" else "true"
+  | Hir.Int kind ->
+      let bits = int_bits kind in
+      if is_unsigned ty then
+        let value = mask_value ty value in
+        if bits = 64 then Printf.sprintf "%Lu" value else Int64.to_string value
+      else Int64.to_string (sign_extend_value ty value)
+  | _ -> Int64.to_string value
+
+let rec render_diagnostic_type = function
+  | Diagnostic_bool -> "bool"
+  | Diagnostic_void -> "void"
+  | Diagnostic_int kind -> Ast.type_name (Ast.Int kind)
+  | Diagnostic_ptr ty -> "ptr[" ^ render_diagnostic_type ty ^ "]"
+  | Diagnostic_const_ptr ty -> "ptr[const " ^ render_diagnostic_type ty ^ "]"
+  | Diagnostic_array (length, ty) ->
+      "arr[" ^ length ^ ", " ^ render_diagnostic_type ty ^ "]"
+  | Diagnostic_vec (length, ty) ->
+      "vec[" ^ length ^ ", " ^ render_diagnostic_type ty ^ "]"
+  | Diagnostic_named name -> name
+  | Diagnostic_applied (name, arguments) ->
+      name ^ "["
+      ^ String.concat ", " (List.map render_diagnostic_argument arguments)
+      ^ "]"
+
+and render_diagnostic_argument = function
+  | Diagnostic_type_argument ty -> render_diagnostic_type ty
+  | Diagnostic_const_argument (ty, value) -> render_diagnostic_const ty value
+  | Diagnostic_source_const_argument value -> value
+
+let render_instantiation_application frame =
+  frame.template_name ^ "["
+  ^ String.concat ", " (List.map render_diagnostic_argument frame.arguments)
+  ^ "]"
+
+let instantiation_note frame =
+  let application = render_instantiation_application frame in
+  Printf.sprintf "while instantiating `%s` at %s" application
+    (Span.to_string frame.application_span)
+
+let replace_all text target replacement =
+  let target_length = String.length target in
+  if target_length = 0 then text
+  else
+    let buffer = Buffer.create (String.length text) in
+    let rec go offset =
+      if offset + target_length > String.length text then
+        Buffer.add_substring buffer text offset (String.length text - offset)
+      else if String.sub text offset target_length = target then (
+        Buffer.add_string buffer replacement;
+        go (offset + target_length))
+      else (
+        Buffer.add_char buffer text.[offset];
+        go (offset + 1))
+    in
+    go 0;
+    Buffer.contents buffer
+
+let source_name_replacements specializations =
+  Hashtbl.fold
+    (fun (_, name) specialization replacements ->
+      match
+        (specialization.pending_frame, current_instantiation_frame specialization.trace)
+      with
+      | None, Some frame ->
+          (name, render_instantiation_application frame) :: replacements
+      | _ -> replacements)
+    specializations.by_name []
+  |> List.sort (fun (left, _) (right, _) ->
+      let by_length = Int.compare (String.length right) (String.length left) in
+      if by_length <> 0 then by_length else String.compare left right)
+
+let source_facing_text specializations text =
+  List.fold_left
+    (fun text (generated, source) -> replace_all text generated source)
+    text
+    (source_name_replacements specializations)
+
+let append_instantiation_trace specializations trace diagnostics =
+  let notes = List.map instantiation_note trace in
+  List.map
+    (fun (diagnostic : Diag.t) ->
+      {
+        diagnostic with
+        message = source_facing_text specializations diagnostic.message;
+        notes = List.map (source_facing_text specializations) diagnostic.notes @ notes;
+        hints = List.map (source_facing_text specializations) diagnostic.hints;
+      })
+    diagnostics
+
+let trace_result specializations trace =
+  Result.map_error (append_instantiation_trace specializations trace)
+
+let specialization_trace specializations kind name =
+  match Hashtbl.find_opt specializations.by_name (kind, name) with
+  | Some specialization -> specialization.trace
+  | None -> []
+
+let specialization_source_name specializations kind name =
+  match
+    current_instantiation_frame (specialization_trace specializations kind name)
+  with
+  | Some frame -> frame.template_name
+  | None -> name
 
 let fits_int ty value =
   match ty with
@@ -1433,19 +1610,21 @@ and function_specialization_key name values =
     List.map (fun (_, t, v) -> Const_specialization_arg (t, v)) values )
 
 and staged_specialization_identity state name values =
-  let staged = ref None in
-  Specialization_cache.iter
-    (fun _ specialization ->
-      if specialization.name = name then
-        match (specialization.key, specialization.payload) with
-        | ( (Function_specialization, origin, _),
-            Function_payload { staged_args = Some arguments; _ } ) ->
-            staged := Some (origin, arguments)
-        | _ -> ())
-    state.cache;
-  match !staged with
+  let staged =
+    match Hashtbl.find_opt state.by_name (Function_specialization, name) with
+    | Some
+        {
+          key = Function_specialization, origin, _;
+          payload = Function_payload { staged_args = Some arguments; _ };
+          pending_frame = Some pending;
+          _;
+        } ->
+        Some (origin, arguments, pending)
+    | _ -> None
+  in
+  match staged with
   | None -> Ok None
-  | Some (origin, arguments) ->
+  | Some (origin, arguments, pending) ->
       let rec resolve acc = function
         | [] -> Ok (List.rev acc)
         | Staged_type_arg key :: rest ->
@@ -1459,7 +1638,21 @@ and staged_specialization_identity state name values =
                   "internal error: staged const specialization argument is missing")
       in
       let* arguments = resolve [] arguments in
-      Ok (Some (origin, arguments))
+      let rec resolve_diagnostic acc = function
+        | [] -> Ok (List.rev acc)
+        | Pending_diagnostic_type ty :: rest ->
+            resolve_diagnostic (Diagnostic_type_argument ty :: acc) rest
+        | Pending_diagnostic_const name :: rest -> (
+            match List.find_opt (fun (parameter, _, _) -> parameter = name) values with
+            | Some (_, ty, value) ->
+                resolve_diagnostic (Diagnostic_const_argument (ty, value) :: acc) rest
+            | None ->
+                error Span.synthetic
+                  "internal error: staged const diagnostic argument is missing")
+      in
+      let* diagnostic_arguments = resolve_diagnostic [] pending.pending_arguments in
+      Ok
+        (Some (origin, arguments, diagnostic_arguments, pending.pending_application_span))
 
 and mangle_mixed_specialization base arguments =
   let argument_name = function
@@ -1473,14 +1666,14 @@ and mangle_mixed_specialization base arguments =
 and generic_const_argument span = function
   | Ast.Const_arg expression -> Ok expression
   | Ast.Name_arg (name, span) -> Ok (Ast.Ident (name, span))
-  | Ast.Type_arg (Ast.Applied_type (name, [ argument ])) ->
+  | Ast.Type_arg (Ast.Applied_type (name, [ argument ], _)) ->
       let* index = generic_const_argument span argument in
       Ok (Ast.Index (Ast.Ident (name, span), index, span))
   | Ast.Type_arg _ -> error span "expected a const argument"
 
 and check_call c _expected fn args s =
   match fn with
-  | Ast.Generic_args (Ast.Ident (name, _), generic_args, _) -> (
+  | Ast.Generic_args (Ast.Ident (name, _), generic_args, application_span) -> (
       match List.assoc_opt name c.templates with
       | None -> error s (Printf.sprintf "unknown generic function `%s`" name)
       | Some (Ast.Func { generic_params; _ } as item) ->
@@ -1513,9 +1706,26 @@ and check_call c _expected fn args s =
               | None ->
                   ( mangle_specialization name values,
                     function_specialization_key name values )
-              | Some (origin, arguments) ->
+              | Some (origin, arguments, _, _) ->
                   ( mangle_mixed_specialization origin arguments,
                     (Function_specialization, origin, arguments) )
+            in
+            let frame_name, frame_arguments, frame_span =
+              match staged with
+              | None ->
+                  ( name,
+                    List.map
+                      (fun (_, ty, value) -> Diagnostic_const_argument (ty, value))
+                      values,
+                    application_span )
+              | Some (origin, _, arguments, span) -> (origin, arguments, span)
+            in
+            let frame =
+              {
+                template_name = frame_name;
+                arguments = frame_arguments;
+                application_span = frame_span;
+              }
             in
             let spec =
               {
@@ -1525,6 +1735,8 @@ and check_call c _expected fn args s =
                 payload =
                   Function_payload
                     { item; substitutions = []; values; staged_args = None };
+                trace = c.spec_trace @ [ frame ];
+                pending_frame = None;
               }
             in
             let* specialization =
@@ -2078,7 +2290,7 @@ let rec specialization_type_key = function
       let key = specialization_type_key ty in
       "vec" ^ length ^ "_" ^ string_of_int (String.length key) ^ "_" ^ key
   | Ast.Named_type name -> "named" ^ string_of_int (String.length name) ^ "_" ^ name
-  | Ast.Applied_type (name, _) ->
+  | Ast.Applied_type (name, _, _) ->
       "applied" ^ string_of_int (String.length name) ^ "_" ^ name
 
 let mangle_type_specialization base arguments =
@@ -2144,6 +2356,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
     result
   in
   let generated = ref [] in
+  let current_trace = ref [] in
   let rec has_unresolved_application = function
     | Ast.Applied_type _ -> true
     | Ast.Ptr ty | Ast.Ptr_const ty | Ast.Array (_, ty) | Ast.Vec (_, ty) ->
@@ -2179,7 +2392,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
             else if List.mem name named_type_names || List.mem name !generic_type_names
             then Ok (Ast.Named_type name)
             else error span (Printf.sprintf "unknown type `%s`" name))
-    | Ast.Applied_type (name, arguments) -> (
+    | Ast.Applied_type (name, arguments, application_span) -> (
         match List.assoc_opt name struct_templates with
         | None ->
             if List.mem name struct_names then
@@ -2218,14 +2431,15 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
                 | _ -> error span "generic argument arity mismatch"
               in
               let* arguments = resolve_arguments [] generic_params arguments in
-              Ok (Ast.Applied_type (name, arguments))
+              Ok (Ast.Applied_type (name, arguments, application_span))
             else
-              let rec resolve_arguments resolved types bindings values_out params
-                  arguments =
+              let rec resolve_arguments resolved diagnostic types bindings values_out
+                  params arguments =
                 match (params, arguments) with
                 | [], [] ->
                     Ok
                       ( List.rev resolved,
+                        List.rev diagnostic,
                         List.rev types,
                         List.rev bindings,
                         List.rev values_out )
@@ -2242,9 +2456,14 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
                       | Ast.Const_arg expression ->
                           error (Ast.expr_span expression) "expected a type argument"
                     in
+                    let diagnostic_argument =
+                      Diagnostic_type_argument
+                        (diagnostic_type_of_ast specializations argument)
+                    in
                     resolve_arguments
                       (Type_specialization_arg (specialization_type_key argument)
                       :: resolved)
+                      (diagnostic_argument :: diagnostic)
                       (argument :: types)
                       ((parameter, argument) :: bindings)
                       values_out params arguments
@@ -2261,19 +2480,31 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
                     else
                       resolve_arguments
                         (Const_specialization_arg (const_ty, value) :: resolved)
+                        (Diagnostic_const_argument (const_ty, value) :: diagnostic)
                         types bindings
                         ((parameter.name, const_ty, value) :: values_out)
                         params arguments
                 | _ -> error span "generic argument arity mismatch"
               in
-              let* ordered_arguments, type_arguments, substitutions, values =
-                resolve_arguments [] [] [] [] generic_params arguments
+              let* ( ordered_arguments,
+                     diagnostic_arguments,
+                     type_arguments,
+                     substitutions,
+                     values ) =
+                resolve_arguments [] [] [] [] [] generic_params arguments
               in
               let specialization_name =
                 if values = [] then mangle_type_specialization name type_arguments
                 else mangle_mixed_specialization name ordered_arguments
               in
               let key = (Struct_specialization, name, ordered_arguments) in
+              let frame =
+                {
+                  template_name = name;
+                  arguments = diagnostic_arguments;
+                  application_span;
+                }
+              in
               let specialization =
                 {
                   key;
@@ -2282,6 +2513,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
                   payload =
                     Struct_payload
                       { template = Ast.Struct template; substitutions; values };
+                  trace = !current_trace @ [ frame ];
+                  pending_frame = None;
                 }
               in
               let* specialization =
@@ -2334,8 +2567,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
               error span
                 (Printf.sprintf "wrong number of %s arguments to `%s`" kind name)
             else
-              let rec resolve_arguments types bindings consts staged resolved params
-                  arguments =
+              let rec resolve_arguments types bindings consts staged diagnostic resolved
+                  params arguments =
                 match (params, arguments) with
                 | [], [] ->
                     Ok
@@ -2343,6 +2576,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
                         List.rev bindings,
                         List.rev consts,
                         List.rev staged,
+                        List.rev diagnostic,
                         List.rev resolved )
                 | ( Ast.Type_param { name = parameter; _ } :: params,
                     argument :: arguments ) ->
@@ -2361,6 +2595,9 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
                       ((parameter, argument) :: bindings)
                       consts
                       (Staged_type_arg (specialization_type_key argument) :: staged)
+                      (Pending_diagnostic_type
+                         (diagnostic_type_of_ast specializations argument)
+                      :: diagnostic)
                       (Ast.Type_arg argument :: resolved)
                       params arguments
                 | ( Ast.Const_param { name = parameter; _ } :: params,
@@ -2373,6 +2610,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
                     let argument = Ast.Const_arg expression in
                     resolve_arguments types bindings (argument :: consts)
                       (Staged_const_arg parameter :: staged)
+                      (Pending_diagnostic_const parameter :: diagnostic)
                       (argument :: resolved) params arguments
                 | _ -> error span "generic argument arity mismatch"
               in
@@ -2380,8 +2618,9 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
                      type_substitutions,
                      const_arguments,
                      staged_args,
+                     diagnostic_args,
                      resolved_arguments ) =
-                resolve_arguments [] [] [] [] [] generic_params arguments
+                resolve_arguments [] [] [] [] [] [] generic_params arguments
               in
               if List.exists has_unresolved_application type_arguments then
                 Ok
@@ -2425,9 +2664,28 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
                       | None ->
                           ( mangle_specialization name concrete_values,
                             function_specialization_key name concrete_values )
-                      | Some (origin, arguments) ->
+                      | Some (origin, arguments, _, _) ->
                           ( mangle_mixed_specialization origin arguments,
                             (Function_specialization, origin, arguments) )
+                    in
+                    let frame_name, frame_arguments, frame_span =
+                      match staged with
+                      | None ->
+                          ( name,
+                            List.map
+                              (fun (_, ty, value) ->
+                                Diagnostic_const_argument (ty, value))
+                              concrete_values,
+                            span )
+                      | Some (origin, _, arguments, application_span) ->
+                          (origin, arguments, application_span)
+                    in
+                    let frame =
+                      {
+                        template_name = frame_name;
+                        arguments = frame_arguments;
+                        application_span = frame_span;
+                      }
                     in
                     let specialization =
                       {
@@ -2442,6 +2700,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
                               values = concrete_values;
                               staged_args = None;
                             };
+                        trace = !current_trace @ [ frame ];
+                        pending_frame = None;
                       }
                     in
                     let* _ =
@@ -2463,6 +2723,28 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
                       (fun ty -> Type_specialization_arg (specialization_type_key ty))
                       type_arguments )
                 in
+                let pending_frame =
+                  if const_arguments = [] then None
+                  else
+                    Some
+                      {
+                        pending_arguments = diagnostic_args;
+                        pending_application_span = span;
+                      }
+                in
+                let trace =
+                  if const_arguments <> [] then !current_trace
+                  else
+                    let arguments =
+                      List.map
+                        (function
+                          | Pending_diagnostic_type ty -> Diagnostic_type_argument ty
+                          | Pending_diagnostic_const _ -> assert false)
+                        diagnostic_args
+                    in
+                    !current_trace
+                    @ [ { template_name = name; arguments; application_span = span } ]
+                in
                 let specialization =
                   {
                     key;
@@ -2477,6 +2759,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
                           staged_args =
                             (if const_arguments = [] then None else Some staged_args);
                         };
+                    trace;
+                    pending_frame;
                   }
                 in
                 let* specialization =
@@ -2837,42 +3121,71 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
         in
         Ok (Ast.Func { item with params; ret; body; generic_params })
   in
-  let* items = Result_list.map resolve_item program.Ast.items in
+  let with_current_trace trace f =
+    let previous = !current_trace in
+    current_trace := trace;
+    let result = f () in
+    current_trace := previous;
+    result
+  in
+  let resolve_program_item = function
+    | Ast.Func { name; generic_params = []; _ } as item ->
+        let trace = specialization_trace specializations Function_specialization name in
+        with_current_trace trace (fun () -> resolve_item item)
+    | item -> resolve_item item
+  in
+  let* items = Result_list.map resolve_program_item program.Ast.items in
   let late_functions = ref [] in
   let rec materialize () =
     match Queue.take_opt specializations.queue with
     | None -> Ok ()
     | Some
-        { payload = Struct_payload { template; substitutions; values }; name; depth; _ }
-      -> (
-        match template with
-        | Ast.Struct { fields; align; span; generic_params; _ } ->
-            let* fields =
-              with_generic_type_names (type_param_names generic_params) (fun () ->
-                  Result_list.map
-                    (fun (field : Ast.field) ->
-                      let* ty =
-                        resolve_ty ~values substitutions (depth + 1) field.span field.ty
-                      in
-                      Ok ({ field with ty } : Ast.field))
-                    fields)
-            in
-            generated :=
-              Ast.Struct { name; generic_params = []; fields; align; span }
-              :: !generated;
-            materialize ()
-        | _ -> error Span.synthetic "internal error: struct specialization is malformed"
-        )
+        ({
+           payload = Struct_payload { template; substitutions; values };
+           name;
+           depth;
+           _;
+         } as specialization) ->
+        let result =
+          with_current_trace specialization.trace (fun () ->
+              match template with
+              | Ast.Struct { fields; align; span; generic_params; _ } ->
+                  let* fields =
+                    with_generic_type_names (type_param_names generic_params) (fun () ->
+                        Result_list.map
+                          (fun (field : Ast.field) ->
+                            let* ty =
+                              resolve_ty ~values substitutions (depth + 1) field.span
+                                field.ty
+                            in
+                            Ok ({ field with ty } : Ast.field))
+                          fields)
+                  in
+                  generated :=
+                    Ast.Struct { name; generic_params = []; fields; align; span }
+                    :: !generated;
+                  Ok ()
+              | _ ->
+                  error Span.synthetic
+                    "internal error: struct specialization is malformed")
+          |> trace_result specializations specialization.trace
+        in
+        let* () = result in
+        materialize ()
     | Some
-        {
-          payload =
-            Function_payload { item; substitutions; values = []; staged_args = _ };
-          name;
-          depth;
-          _;
-        }
+        ({
+           payload =
+             Function_payload { item; substitutions; values = []; staged_args = _ };
+           name;
+           depth;
+           _;
+         } as specialization)
       when substitutions <> [] ->
-        let* item = resolve_function substitutions (depth + 1) name item in
+        let* item =
+          with_current_trace specialization.trace (fun () ->
+              resolve_function substitutions (depth + 1) name item)
+          |> trace_result specializations specialization.trace
+        in
         generated := item :: !generated;
         materialize ()
     | Some
@@ -2884,7 +3197,11 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
            _;
          } as specialization)
       when eager_functions && values <> [] ->
-        let* item = resolve_function ~values [] (depth + 1) name item in
+        let* item =
+          with_current_trace specialization.trace (fun () ->
+              resolve_function ~values [] (depth + 1) name item)
+          |> trace_result specializations specialization.trace
+        in
         let specialization =
           {
             specialization with
@@ -2893,6 +3210,9 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
           }
         in
         Specialization_cache.replace specializations.cache specialization.key
+          specialization;
+        Hashtbl.replace specializations.by_name
+          (Function_specialization, specialization.name)
           specialization;
         late_functions := specialization :: !late_functions;
         materialize ()
@@ -2907,7 +3227,11 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
 
 let check ?(limits = Limits.default) program =
   let specializations =
-    { cache = Specialization_cache.create 32; queue = Queue.create () }
+    {
+      cache = Specialization_cache.create 32;
+      queue = Queue.create ();
+      by_name = Hashtbl.create 32;
+    }
   in
   let rec collect_named_types seen acc = function
     | [] -> Ok (List.rev acc)
@@ -2993,20 +3317,27 @@ let check ?(limits = Limits.default) program =
         let* () = validate_struct_alignment span align in
         collect_structs named_types acc rest
     | Ast.Struct { name; fields; align; span; _ } :: rest ->
-        let* () = validate_struct_alignment span align in
-        let rec collect_fields seen out = function
-          | [] -> Ok (List.rev out)
-          | (f : Ast.field) :: fields ->
-              if List.mem f.name seen then
-                error f.span (Printf.sprintf "duplicate field `%s`" f.name)
-              else
-                let* ty =
-                  source_ty named_types f.ty
-                  |> Result.map_error (fun message -> [ Diag.error f.span message ])
-                in
-                collect_fields (f.name :: seen) ((f.name, ty) :: out) fields
+        let result =
+          let* () = validate_struct_alignment span align in
+          let rec collect_fields seen out = function
+            | [] -> Ok (List.rev out)
+            | (f : Ast.field) :: fields ->
+                if List.mem f.name seen then
+                  error f.span (Printf.sprintf "duplicate field `%s`" f.name)
+                else
+                  let* ty =
+                    source_ty named_types f.ty
+                    |> Result.map_error (fun message -> [ Diag.error f.span message ])
+                  in
+                  collect_fields (f.name :: seen) ((f.name, ty) :: out) fields
+          in
+          collect_fields [] [] fields
         in
-        let* fields = collect_fields [] [] fields in
+        let* fields =
+          result
+          |> trace_result specializations
+               (specialization_trace specializations Struct_specialization name)
+        in
         collect_structs named_types ((name, fields, align) :: acc) rest
     | _ :: rest -> collect_structs named_types acc rest
   in
@@ -3017,6 +3348,8 @@ let check ?(limits = Limits.default) program =
         let* s =
           Hir.compute_struct structs_src name
           |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
+          |> trace_result specializations
+               (specialization_trace specializations Struct_specialization name)
         in
         build structs_src (s :: acc) xs
   in
@@ -3178,7 +3511,7 @@ let check ?(limits = Limits.default) program =
     | Ast.External_c -> Hir.External_c
     | Ast.Internal -> Hir.Internal
   in
-  let make_context ~extra_consts ~spec_depth ~ret_ty =
+  let make_context ~extra_consts ~spec_depth ~spec_trace ~ret_ty =
     {
       structs;
       named_types;
@@ -3188,6 +3521,7 @@ let check ?(limits = Limits.default) program =
       templates;
       specializations;
       spec_depth;
+      spec_trace;
       locals = ref [];
       initialized = IM.empty;
       next_binding_id = 0;
@@ -3203,9 +3537,9 @@ let check ?(limits = Limits.default) program =
   let hir_params params =
     List.mapi (fun id (name, ty) -> ({ Hir.name; ty; id } : Hir.local)) params
   in
-  let check_function_body ~name ~description ~span ~params ~ret ~stmts ~linkage
-      ~variadic ~extra_consts ~spec_depth ~require_return =
-    let context = make_context ~extra_consts ~spec_depth ~ret_ty:ret in
+  let check_function_body ~name ~diagnostic_name ~description ~span ~params ~ret ~stmts
+      ~linkage ~variadic ~extra_consts ~spec_depth ~spec_trace ~require_return =
+    let context = make_context ~extra_consts ~spec_depth ~spec_trace ~ret_ty:ret in
     let* params =
       Result_list.map
         (fun (param_name, param_ty) ->
@@ -3217,7 +3551,9 @@ let check ?(limits = Limits.default) program =
     let* body = check_block context stmts in
     let* () =
       if require_return && ret <> Hir.Void && not (block_must_return body) then
-        error span (description ^ " `" ^ name ^ "` may reach the end without returning")
+        error span
+          (description ^ " `" ^ diagnostic_name
+         ^ "` may reach the end without returning")
       else Ok ()
     in
     all_strings := context.strings;
@@ -3229,10 +3565,22 @@ let check ?(limits = Limits.default) program =
   let check_func = function
     | Ast.Func { name; params; ret; body; linkage; variadic; generic_params = []; span }
       ->
-        let* ret = source_ty_diag named_types span ret in
-        let* params = source_params params in
-        let linkage = hir_linkage linkage in
-        let* func =
+        let trace = specialization_trace specializations Function_specialization name in
+        let diagnostic_name =
+          specialization_source_name specializations Function_specialization name
+        in
+        let spec_depth =
+          match
+            Hashtbl.find_opt specializations.by_name (Function_specialization, name)
+          with
+          | Some specialization -> specialization.depth + 1
+          | None -> 0
+        in
+        let description = if trace = [] then "function" else "specialized function" in
+        let result =
+          let* ret = source_ty_diag named_types span ret in
+          let* params = source_params params in
+          let linkage = hir_linkage linkage in
           match body with
           | Ast.Declaration ->
               Ok
@@ -3257,10 +3605,11 @@ let check ?(limits = Limits.default) program =
                  }
                   : Hir.func)
           | Ast.Statements stmts ->
-              check_function_body ~name ~description:"function" ~span ~params ~ret
-                ~stmts ~linkage ~variadic ~extra_consts:[] ~spec_depth:0
+              check_function_body ~name ~diagnostic_name ~description ~span ~params ~ret
+                ~stmts ~linkage ~variadic ~extra_consts:[] ~spec_depth ~spec_trace:trace
                 ~require_return:true
         in
+        let* func = result |> trace_result specializations trace in
         add_func func;
         Ok ()
     | _ -> Ok ()
@@ -3288,21 +3637,27 @@ let check ?(limits = Limits.default) program =
               values;
               staged_args = _;
             } ->
-            let* ret = source_ty_with_values named_types values span ret in
-            let* params =
-              Result_list.map
-                (fun (parameter : Ast.param) ->
-                  let* ty =
-                    source_ty_with_values named_types values parameter.span parameter.ty
-                  in
-                  Ok (parameter.name, ty))
-                params
+            let result =
+              let* ret = source_ty_with_values named_types values span ret in
+              let* params =
+                Result_list.map
+                  (fun (parameter : Ast.param) ->
+                    let* ty =
+                      source_ty_with_values named_types values parameter.span
+                        parameter.ty
+                    in
+                    Ok (parameter.name, ty))
+                  params
+              in
+              check_function_body ~name:sp.name
+                ~diagnostic_name:
+                  (specialization_source_name specializations Function_specialization
+                     sp.name)
+                ~description:"specialized function" ~span ~params ~ret ~stmts
+                ~linkage:(hir_linkage linkage) ~variadic ~extra_consts:values
+                ~spec_depth:(sp.depth + 1) ~spec_trace:sp.trace ~require_return:true
             in
-            let* func =
-              check_function_body ~name:sp.name ~description:"specialized function"
-                ~span ~params ~ret ~stmts ~linkage:(hir_linkage linkage) ~variadic
-                ~extra_consts:values ~spec_depth:(sp.depth + 1) ~require_return:true
-            in
+            let* func = result |> trace_result specializations sp.trace in
             add_func func;
             materialize ()
         | Function_payload _ -> materialize ()

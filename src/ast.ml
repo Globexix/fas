@@ -6,7 +6,7 @@ type ty =
   | Array of string * ty
   | Vec of string * ty
   | Named_type of string
-  | Applied_type of string * generic_arg list
+  | Applied_type of string * generic_arg list * Span.t
   | Void
 
 and int_kind = U8 | U16 | U32 | U64 | I8 | I16 | I32 | I64 | Usize | Isize
@@ -171,7 +171,7 @@ let rec type_name = function
   | Array (n, t) -> "arr[" ^ n ^ ", " ^ type_name t ^ "]"
   | Vec (n, t) -> "vec[" ^ n ^ ", " ^ type_name t ^ "]"
   | Named_type s -> s
-  | Applied_type (name, args) ->
+  | Applied_type (name, args, _) ->
       name ^ "[" ^ String.concat ", " (List.map generic_arg_name args) ^ "]"
   | Void -> "void"
 

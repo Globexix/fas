@@ -30,12 +30,14 @@ let check_files files =
   in
   Sema.check { Ast.items }
 
-let semantic_messages text =
+let semantic_diagnostics text =
   let program = expect_ok (Parser.parse (source text)) in
   match Sema.check program with
   | Ok _ -> failwith "expected semantic rejection"
-  | Error diagnostics ->
-      List.map (fun (diagnostic : Diag.t) -> diagnostic.message) diagnostics
+  | Error diagnostics -> diagnostics
+
+let semantic_messages text =
+  List.map (fun (diagnostic : Diag.t) -> diagnostic.message) (semantic_diagnostics text)
 
 let semantic_error name fragment text =
   let program = expect_ok (Parser.parse (source text)) in
@@ -1717,7 +1719,8 @@ let () =
                      Ast.Name_arg ("T", _);
                      Ast.Type_arg (Ast.Ptr (Ast.Int Ast.U8));
                      Ast.Const_arg (Ast.Int_lit ("3", _));
-                   ] );
+                   ],
+                   _ );
              _;
            };
          ];
@@ -1803,9 +1806,231 @@ let () =
       (fun (func : Hir.func) -> contains func.name "unused")
       unused_generic_function.Hir.funcs
   then failwith "generic-function-template: unused template was emitted";
-  semantic_error "generic-function-instantiated-body-error" "arithmetic requires"
+  let type_generic_failure =
     "fn bad[T](value T) T { return value + value }\n\
-     fn main(value ptr[u8]) ptr[u8] { return bad[ptr[u8]](value) }\n";
+     fn main(value ptr[u8]) ptr[u8] { return bad[ptr[u8]](value) }\n"
+  in
+  (match semantic_diagnostics type_generic_failure with
+  | [ diagnostic ] ->
+      if diagnostic.message <> "arithmetic requires integer or vector operands" then
+        failwith "generic-instantiation-type: root message changed";
+      if
+        diagnostic.primary.Span.file <> "regression.fas"
+        || diagnostic.primary.Span.line <> 1
+        || diagnostic.primary.Span.column <> 37
+      then failwith "generic-instantiation-type: root span changed";
+      if
+        diagnostic.notes
+        <> [ "while instantiating `bad[ptr[u8]]` at regression.fas:2:44" ]
+      then
+        failwith
+          ("generic-instantiation-type: unexpected trace: "
+          ^ String.concat " | " diagnostic.notes)
+  | _ -> failwith "generic-instantiation-type: expected one diagnostic");
+  let const_generic_failure =
+    "fn bad[N const u64](value ptr[u8]) ptr[u8] { return value + value }\n\
+     fn main(value ptr[u8]) ptr[u8] {\n\
+     return bad[18446744073709551615](value)\n\
+     }\n"
+  in
+  (match semantic_diagnostics const_generic_failure with
+  | [ diagnostic ] ->
+      if
+        diagnostic.notes
+        <> [ "while instantiating `bad[18446744073709551615]` at regression.fas:3:11" ]
+      then
+        failwith
+          ("generic-instantiation-const: unexpected trace: "
+          ^ String.concat " | " diagnostic.notes)
+  | _ -> failwith "generic-instantiation-const: expected one diagnostic");
+  let mixed_generic_failure =
+    "fn bad[T, N const u64](value T) T { return value + value }\n\
+     fn main(value ptr[u8]) ptr[u8] {\n\
+     return bad[ptr[u8], 18446744073709551615](value)\n\
+     }\n"
+  in
+  (match semantic_diagnostics mixed_generic_failure with
+  | [ diagnostic ] ->
+      if
+        diagnostic.notes
+        <> [
+             "while instantiating `bad[ptr[u8], 18446744073709551615]` at \
+              regression.fas:3:11";
+           ]
+      then
+        failwith
+          ("generic-instantiation-mixed: unexpected trace: "
+          ^ String.concat " | " diagnostic.notes)
+  | _ -> failwith "generic-instantiation-mixed: expected one diagnostic");
+  let interleaved_generic_failure =
+    "fn bad[A, N const u8, B, M const i8](left A, right B) A {\n\
+     return left + left\n\
+     }\n\
+     fn main(value ptr[u8], other ptr[u16]) ptr[u8] {\n\
+     return bad[ptr[u8], 2, ptr[u16], -3](value, other)\n\
+     }\n"
+  in
+  (match semantic_diagnostics interleaved_generic_failure with
+  | [ diagnostic ] ->
+      if
+        diagnostic.notes
+        <> [
+             "while instantiating `bad[ptr[u8], 2, ptr[u16], -3]` at \
+              regression.fas:5:11";
+           ]
+      then
+        failwith
+          ("generic-instantiation-order: unexpected trace: "
+          ^ String.concat " | " diagnostic.notes)
+  | _ -> failwith "generic-instantiation-order: expected one diagnostic");
+  let nested_generic_failure =
+    "fn inner[T](value T) T { return value + value }\n\
+     fn outer[T](value T) T { return inner[T](value) }\n\
+     fn main(value ptr[u8]) ptr[u8] { return outer[ptr[u8]](value) }\n"
+  in
+  (match semantic_diagnostics nested_generic_failure with
+  | [ diagnostic ] ->
+      if
+        diagnostic.notes
+        <> [
+             "while instantiating `outer[ptr[u8]]` at regression.fas:3:46";
+             "while instantiating `inner[ptr[u8]]` at regression.fas:2:38";
+           ]
+      then
+        failwith
+          ("generic-instantiation-nested: unexpected trace: "
+          ^ String.concat " | " diagnostic.notes)
+  | _ -> failwith "generic-instantiation-nested: expected one diagnostic");
+  let nested_const_generic_failure =
+    "fn inner[N const usize](value ptr[u8]) ptr[u8] { return value + value }\n\
+     fn outer[T](value T) T { return inner[4](value) }\n\
+     fn main(value ptr[u8]) ptr[u8] { return outer[ptr[u8]](value) }\n"
+  in
+  (match semantic_diagnostics nested_const_generic_failure with
+  | [ diagnostic ] ->
+      if
+        diagnostic.notes
+        <> [
+             "while instantiating `outer[ptr[u8]]` at regression.fas:3:46";
+             "while instantiating `inner[4]` at regression.fas:2:38";
+           ]
+      then
+        failwith
+          ("generic-instantiation-nested-const: unexpected trace: "
+          ^ String.concat " | " diagnostic.notes)
+  | _ -> failwith "generic-instantiation-nested-const: expected one diagnostic");
+  let generic_struct_field_failure =
+    "struct Bad[T] { value Missing }\nfn main(value Bad[u8]) i64 { return 0 }\n"
+  in
+  (match semantic_diagnostics generic_struct_field_failure with
+  | [ diagnostic ] ->
+      if diagnostic.message <> "unknown type `Missing`" then
+        failwith "generic-instantiation-struct-field: root message changed";
+      if diagnostic.notes <> [ "while instantiating `Bad[u8]` at regression.fas:2:18" ]
+      then
+        failwith
+          ("generic-instantiation-struct-field: unexpected trace: "
+          ^ String.concat " | " diagnostic.notes)
+  | _ -> failwith "generic-instantiation-struct-field: expected one diagnostic");
+  let generic_struct_layout_failure =
+    "struct Bad[T] { value void }\nfn main(value Bad[u8]) i64 { return 0 }\n"
+  in
+  (match semantic_diagnostics generic_struct_layout_failure with
+  | [ diagnostic ] ->
+      if diagnostic.message <> "void has no object layout" then
+        failwith "generic-instantiation-struct-layout: root message changed";
+      if diagnostic.notes <> [ "while instantiating `Bad[u8]` at regression.fas:2:18" ]
+      then
+        failwith
+          ("generic-instantiation-struct-layout: unexpected trace: "
+          ^ String.concat " | " diagnostic.notes)
+  | _ -> failwith "generic-instantiation-struct-layout: expected one diagnostic");
+  let recursive_generic_struct_failure =
+    "struct Recursive[T] { value Recursive[T] }\n\
+     fn main(value Recursive[u8]) i64 { return 0 }\n"
+  in
+  (match semantic_diagnostics recursive_generic_struct_failure with
+  | [ diagnostic ] ->
+      if diagnostic.message <> "recursive by-value struct `Recursive[u8]`" then
+        failwith
+          ("generic-instantiation-recursive-struct: unexpected message: "
+         ^ diagnostic.message);
+      if
+        diagnostic.notes
+        <> [ "while instantiating `Recursive[u8]` at regression.fas:2:24" ]
+      then
+        failwith
+          ("generic-instantiation-recursive-struct: unexpected trace: "
+          ^ String.concat " | " diagnostic.notes)
+  | _ -> failwith "generic-instantiation-recursive-struct: expected one diagnostic");
+  let nested_struct_argument_failure =
+    "struct Box[T] { value T }\n\
+     fn bad[T](value T) T { return value + value }\n\
+     fn main(value Box[Box[u8]]) Box[Box[u8]] {\n\
+     return bad[Box[Box[u8]]](value)\n\
+     }\n"
+  in
+  (match semantic_diagnostics nested_struct_argument_failure with
+  | [ diagnostic ] ->
+      let rendered = Diag.render_all ~source:None [ diagnostic ] in
+      if
+        diagnostic.notes
+        <> [ "while instantiating `bad[Box[Box[u8]]]` at regression.fas:4:11" ]
+      then
+        failwith
+          ("generic-instantiation-nested-struct: unexpected trace: "
+          ^ String.concat " | " diagnostic.notes);
+      if contains rendered "$spec$" then
+        failwith "generic-instantiation-nested-struct: internal name leaked"
+  | _ -> failwith "generic-instantiation-nested-struct: expected one diagnostic");
+  let specialized_type_message_failure =
+    "struct Box[T] { value T }\n\
+     fn bad[T](value T) i64 {\n\
+     local Box[u8] = value\n\
+     return 0\n\
+     }\n\
+     fn main(value Box[Box[u8]]) i64 {\n\
+     return bad[Box[Box[u8]]](value)\n\
+     }\n"
+  in
+  (match semantic_diagnostics specialized_type_message_failure with
+  | [ diagnostic ] ->
+      let rendered = Diag.render_all ~source:None [ diagnostic ] in
+      if diagnostic.message <> "type mismatch: expected Box[u8], got Box[Box[u8]]" then
+        failwith
+          ("generic-instantiation-specialized-type-message: unexpected message: "
+         ^ diagnostic.message);
+      if contains rendered "$spec$" then
+        failwith "generic-instantiation-specialized-type-message: internal name leaked"
+  | _ ->
+      failwith "generic-instantiation-specialized-type-message: expected one diagnostic");
+  let repeated_generic_failure =
+    "fn bad[T](value T) T { return value + value }\n\
+     fn main(value ptr[u8]) ptr[u8] {\n\
+     first ptr[u8] = bad[ptr[u8]](value)\n\
+     return bad[ptr[u8]](first)\n\
+     }\n"
+  in
+  (match semantic_diagnostics repeated_generic_failure with
+  | [ diagnostic ] ->
+      if
+        diagnostic.notes
+        <> [ "while instantiating `bad[ptr[u8]]` at regression.fas:3:20" ]
+      then
+        failwith
+          ("generic-instantiation-cache: unexpected trace: "
+          ^ String.concat " | " diagnostic.notes)
+  | _ -> failwith "generic-instantiation-cache: expected one diagnostic");
+  let render_failure source_text =
+    Diag.render_all ~source:None (semantic_diagnostics source_text)
+  in
+  let deterministic_failure = render_failure nested_generic_failure in
+  for _ = 1 to 4 do
+    if render_failure nested_generic_failure <> deterministic_failure then
+      failwith "generic-instantiation-determinism: rendered output changed"
+  done;
+  if contains deterministic_failure "$spec$" then
+    failwith "generic-instantiation-determinism: internal name leaked";
   let issue45_source =
     "fn broken[N const usize](value i64) i64 {\n\
      if true { return value + N }\n\
@@ -1829,8 +2054,10 @@ let () =
           ("const-generic-specialization-span: unexpected location: "
           ^ Span.to_string diagnostic.primary);
       if
-        (not (contains rendered "specialized function `broken$spec$"))
-        || not (contains rendered "fn broken[N const usize](value i64) i64 {")
+        (not (contains rendered "specialized function `broken`"))
+        || (not (contains rendered "fn broken[N const usize](value i64) i64 {"))
+        || (not (contains rendered "while instantiating `broken[1]`"))
+        || contains rendered "$spec$"
       then
         failwith
           ("const-generic-specialization-span: missing source excerpt: " ^ rendered));
@@ -2743,4 +2970,4 @@ let () =
        "struct Pair[T] { left T right T }\n\
         fn main() i64 { return ((Pair[i64]){12, 4}).left }\n");
 
-  print_endline "regression tests: 279 passed"
+  print_endline "regression tests: 291 passed"

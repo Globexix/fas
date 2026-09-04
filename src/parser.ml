@@ -299,8 +299,9 @@ module P = struct
         | "isize" -> Ok (Ast.Int Ast.Isize)
         | _ ->
             if at p Token.Lbracket then
+              let span = span p in
               let* args = generic_args p in
-              Ok (Ast.Applied_type (s, args))
+              Ok (Ast.Applied_type (s, args, span))
             else Ok (Ast.Named_type s))
     | t -> Error [ Diag.error (span p) ("expected a type, found " ^ Token.show t) ]
 
