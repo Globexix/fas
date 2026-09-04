@@ -250,6 +250,65 @@ let () =
     "fn f(left vec[4,i32], right vec[4,i32]) vec[4,bool] {\n\
     \ return (left == right) && (left != right)\n\
      }\n";
+  let integer_vector_shift_counts =
+    llvm_of
+      "fn shifts(values vec[4,u32], signed_values vec[4,i32], narrow u8, equal u32, \
+       wide u64) vec[4,u32] {\n\
+      \ shl_narrow vec[4,u32] = shl(values, narrow)\n\
+      \ shl_equal vec[4,u32] = shl(values, equal)\n\
+      \ shl_wide vec[4,u32] = shl(values, wide)\n\
+      \ lshr_narrow vec[4,u32] = lshr(values, narrow)\n\
+      \ lshr_equal vec[4,u32] = lshr(values, equal)\n\
+      \ lshr_wide vec[4,u32] = lshr(values, wide)\n\
+      \ ashr_narrow vec[4,i32] = ashr(signed_values, narrow)\n\
+      \ ashr_equal vec[4,i32] = ashr(signed_values, equal)\n\
+      \ ashr_wide vec[4,i32] = ashr(signed_values, wide)\n\
+      \ rotl_narrow vec[4,u32] = rotl(values, narrow)\n\
+      \ rotl_equal vec[4,u32] = rotl(values, equal)\n\
+      \ rotl_wide vec[4,u32] = rotl(values, wide)\n\
+      \ rotr_narrow vec[4,u32] = rotr(values, narrow)\n\
+      \ rotr_equal vec[4,u32] = rotr(values, equal)\n\
+      \ rotr_wide vec[4,u32] = rotr(values, wide)\n\
+      \ return rotr_wide\n\
+      \ }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains integer_vector_shift_counts marker) then
+        failwith ("integer-vector-shift-count: missing `" ^ marker ^ "`"))
+    [
+      "shl <4 x i32>";
+      "lshr <4 x i32>";
+      "ashr <4 x i32>";
+      "@llvm.fshl.v4i32";
+      "@llvm.fshr.v4i32";
+    ];
+  List.iter
+    (fun (needle, expected) ->
+      let actual = List.length (positions integer_vector_shift_counts needle) in
+      if actual <> expected then
+        failwith
+          (Printf.sprintf "integer-vector-shift-count: expected %d `%s`, got %d"
+             expected needle actual))
+    [ ("zext i8", 5); ("trunc i64", 5); ("and i32", 15); ("shufflevector", 15) ];
+  List.iter
+    (fun operation ->
+      semantic_error
+        ("integer-vector-shift-count-splat-" ^ operation)
+        "vector shifts require a scalar integer count"
+        (Printf.sprintf
+           "fn f(values vec[4,u32]) vec[4,u32] { return %s(values, splat(1)) }\n"
+           operation);
+      semantic_error
+        ("integer-vector-shift-count-named-" ^ operation)
+        "vector shifts require a scalar integer count"
+        (Printf.sprintf
+           "fn f(values vec[4,u32], count vec[4,u32]) vec[4,u32] { return %s(values, \
+            count) }\n"
+           operation))
+    [ "shl"; "lshr"; "ashr"; "rotl"; "rotr" ];
+  semantic_error "integer-vector-shift-count-noninteger" "integer shift"
+    "fn f(values vec[4,u32], count bool) vec[4,u32] { return shl(values, count) }\n";
   semantic_error "len-returns-usize" "type mismatch: expected u64, got usize"
     "fn size(values arr[3,u8]) u64 { return len(values) }\n";
   semantic_error "sizeof-returns-usize" "type mismatch: expected u64, got usize"
@@ -2684,4 +2743,4 @@ let () =
        "struct Pair[T] { left T right T }\n\
         fn main() i64 { return ((Pair[i64]){12, 4}).left }\n");
 
-  print_endline "regression tests: 267 passed"
+  print_endline "regression tests: 279 passed"

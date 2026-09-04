@@ -1589,24 +1589,38 @@ and check_call c _expected fn args s =
               if is_int (Hir.expr_ty a) then
                 Ok (Hir.Call (Hir.Builtin b, [ a ], Hir.expr_ty a, s))
               else error s "builtin argument must be an integer"
-        | _ ->
+        | _ -> (
             if List.length args <> 2 then
               error s (Printf.sprintf "builtin `%s` expects two arguments" name)
             else
               let* a = check_expr c None (List.hd args) in
-              let* b2 = check_expr c None (List.hd (List.tl args)) in
-              if
-                (is_int (Hir.expr_ty a)
+              let valid_operand =
+                is_int (Hir.expr_ty a)
                 ||
                 match Hir.expr_ty a with
                 | Hir.Vec (_, Hir.Int _) -> true
-                | _ -> false)
-                && is_int (Hir.expr_ty b2)
-              then Ok (Hir.Call (Hir.Builtin b, [ a; b2 ], Hir.expr_ty a, s))
-              else
+                | _ -> false
+              in
+              if not valid_operand then
                 error s
                   "builtin arguments must be an integer or integer vector and an \
                    integer shift"
+              else
+                let count = List.hd (List.tl args) in
+                match count with
+                | Ast.Splat _ -> error s "vector shifts require a scalar integer count"
+                | _ -> (
+                    let* b2 = check_expr c None count in
+                    if is_int (Hir.expr_ty b2) then
+                      Ok (Hir.Call (Hir.Builtin b, [ a; b2 ], Hir.expr_ty a, s))
+                    else
+                      match Hir.expr_ty b2 with
+                      | Hir.Vec _ ->
+                          error s "vector shifts require a scalar integer count"
+                      | _ ->
+                          error s
+                            "builtin arguments must be an integer or integer vector \
+                             and an integer shift"))
       in
       match builtin with
       | Some b -> check_builtin b

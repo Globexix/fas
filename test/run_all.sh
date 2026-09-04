@@ -37,6 +37,8 @@ CC="$CC" LLVM_OPT="$LLVM_OPT" LLVM_LLC="$LLVM_LLC" OCAML_FAS="$OCAML_FAS" \
   "$ROOT/test/integer_vector_bitcasts.sh"
 CC="$CC" LLVM_OPT="$LLVM_OPT" LLVM_LLC="$LLVM_LLC" OCAML_FAS="$OCAML_FAS" \
   "$ROOT/test/integer_vector_comparisons.sh"
+CC="$CC" LLVM_OPT="$LLVM_OPT" LLVM_LLC="$LLVM_LLC" OCAML_FAS="$OCAML_FAS" \
+  "$ROOT/test/integer_vector_shift_counts.sh"
 
 LLVM_OPT="$LLVM_OPT" OCAML_FAS="$OCAML_FAS" "$ROOT/test/layout_oracle.sh"
 CC="$CC" LLVM_OPT="$LLVM_OPT" OCAML_FAS="$OCAML_FAS" "$ROOT/test/abi_boundary.sh"
