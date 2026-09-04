@@ -1,0 +1,53 @@
+fn delayed(out ptr[i32], value i32) void {
+  defer { out.* += value }
+  value i32 = 100
+  out.* += value - 100
+}
+
+fn scoped_defer(out ptr[i32]) void {
+  value i32 = 1
+  {
+    value i32 = 10
+    defer { out.* += value }
+  }
+  defer { out.* += value }
+}
+
+fn main() i32 {
+  outer i32 = 5
+  {
+    outer i32 = 9
+    outer += 2
+  }
+  if outer != 5 { return 1 }
+
+  {
+    sibling i32 = 2
+    outer += sibling
+  }
+  {
+    sibling i32 = 3
+    outer += sibling
+  }
+  if outer != 10 { return 2 }
+
+  total i32 = 0
+  for index i32 = 0; index < 3; index += 1 {
+    {
+      index i32 = 10
+      total += index
+    }
+    total += index
+  }
+  if total != 33 { return 3 }
+
+  delayed_value i32 = 0
+  delayed(&delayed_value, 7)
+  if delayed_value != 7 { return 4 }
+
+  deferred_value i32 = 0
+  scoped_defer(&deferred_value)
+  if deferred_value != 11 { return 5 }
+
+  return 0
+}

@@ -189,7 +189,14 @@ let () =
   sema_error "fn f() i64 { break\n return 0 }\n";
   sema_error "fn f() i64 { switch 1 { case 1: { } case 1: { } } return 0 }\n";
   sema_error "fn f(x i64) i64 { switch x { case x: { } } return 0 }\n";
-  sema_error "fn f() i64 { x i64 = 1\n { x i64 = 2 } return x }\n";
+  sema_error ~message:"duplicate local `x`"
+    "fn f() i64 { x i64 = 1\n x i64 = 2\n return x }\n";
+  ignore
+    (expect_ok
+       (Sema.check
+          (expect_ok
+             (Parser.parse
+                (source "fn f() i64 { x i64 = 1\n { x i64 = 2 } return x }\n")))));
   sema_error "fn f() i64 { x vec[0,u64]\n return 0 }\n";
   sema_error ~message:"use of uninitialized local `x`"
     "fn f() i64 { x i64\n defer { x = 1 }\n return x }\n";

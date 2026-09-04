@@ -12,8 +12,8 @@ type state = {
   blocks : block_state Queue.t;
   entry : block_state;
   mutable current : block_state;
-  env : (string, Ir.value) Hashtbl.t;
-  mutable env_scopes : (string * Ir.value option) list list;
+  env : (int, Ir.value) Hashtbl.t;
+  mutable env_scopes : (int * Ir.value option) list list;
   ret : Ir.ty;
   structs : Hir.struct_def list;
   strings : string list;
@@ -283,12 +283,12 @@ let truth s v =
         (Ir.Cmp (id, Ir.Ne, t, v, match t with Ir.Ptr _ -> Ir.Null t | _ -> zero t));
       Ir.Local (id, Ir.I1)
 
-let bind_local s name value =
-  let old = Hashtbl.find_opt s.env name in
+let bind_local s binding value =
+  let old = Hashtbl.find_opt s.env binding.Hir.id in
   (match s.env_scopes with
-  | scope :: rest -> s.env_scopes <- ((name, old) :: scope) :: rest
+  | scope :: rest -> s.env_scopes <- ((binding.id, old) :: scope) :: rest
   | [] -> ());
-  Hashtbl.replace s.env name value
+  Hashtbl.replace s.env binding.id value
 
 let push_scope s =
   s.env_scopes <- [] :: s.env_scopes;
@@ -336,13 +336,13 @@ let rec expr s = function
         let id = fresh s in
         emit s (Ir.String_ptr (id, i, String.length (List.nth s.strings i)));
         Ok (Ir.Local (id, Ir.Ptr Ir.I8))
-  | Hir.Local (n, t, sp) -> (
-      match Hashtbl.find_opt s.env n with
-      | None -> error sp ("unknown lowering local `" ^ n ^ "`")
+  | Hir.Local (local, sp) -> (
+      match Hashtbl.find_opt s.env local.id with
+      | None -> error sp ("unknown lowering local `" ^ local.name ^ "`")
       | Some p ->
           let id = fresh s in
-          emit s (Ir.Load (id, ty t, p, align s t));
-          Ok (Ir.Local (id, ty t)))
+          emit s (Ir.Load (id, ty local.ty, p, align s local.ty));
+          Ok (Ir.Local (id, ty local.ty)))
   | Hir.Unary (op, e, t, _) -> (
       let* v = expr s e in
       let rt = ty t in
@@ -379,7 +379,7 @@ let rec expr s = function
               match c_function with
               | Some f -> (
                   match List.nth_opt f.params index with
-                  | Some (_, formal) -> c_extension formal
+                  | Some formal -> c_extension formal.ty
                   | None -> Ir.No_extension)
               | None -> Ir.No_extension
             in
@@ -614,10 +614,10 @@ and materialize s e =
 
 and address s e =
   match e with
-  | Hir.Local (n, _, sp) -> (
-      match Hashtbl.find_opt s.env n with
+  | Hir.Local (local, sp) -> (
+      match Hashtbl.find_opt s.env local.id with
       | Some v -> Ok v
-      | None -> error sp ("unknown local `" ^ n ^ "`"))
+      | None -> error sp ("unknown local `" ^ local.name ^ "`"))
   | Hir.Const_array (n, t, _) ->
       let id = fresh s in
       emit s (Ir.Global_ptr (id, n, ty t));
@@ -701,16 +701,16 @@ and scoped s xs =
   Ok ()
 
 and stmt s = function
-  | Hir.Let (n, t, init, _) -> (
+  | Hir.Let (local, init, _) -> (
       let id = fresh s in
-      emit_entry s (Ir.Alloca (id, ty t, align s t));
-      let p = Ir.Local (id, Ir.Ptr (ty t)) in
-      bind_local s n p;
+      emit_entry s (Ir.Alloca (id, ty local.ty, align s local.ty));
+      let p = Ir.Local (id, Ir.Ptr (ty local.ty)) in
+      bind_local s local p;
       match init with
       | None -> Ok ()
       | Some e ->
           let* v = expr s e in
-          emit s (Ir.Store (ty t, v, p, align s t));
+          emit s (Ir.Store (ty local.ty, v, p, align s local.ty));
           Ok ())
   | Hir.Assign (target, e, _) -> (
       match target with
@@ -810,10 +810,10 @@ and stmt_list s xs =
     (Ok ()) xs
 
 and target_address s = function
-  | Hir.ALocal n -> (
-      match Hashtbl.find_opt s.env n with
+  | Hir.ALocal local -> (
+      match Hashtbl.find_opt s.env local.id with
       | Some p -> Ok p
-      | None -> error Span.synthetic ("unknown local `" ^ n ^ "`"))
+      | None -> error Span.synthetic ("unknown local `" ^ local.name ^ "`"))
   | Hir.ADeref e -> expr s e
   | Hir.AIndex (a, i) -> index_address s a i
   | Hir.AField (a, _, off) -> field_address s a off
@@ -861,39 +861,45 @@ and lower_while s c body =
   Ok ()
 
 and lower_for s init cond step body =
-  let* () = match init with None -> Ok () | Some x -> stmt s x in
-  let head = fresh_block s
-  and bb = fresh_block s
-  and sb = fresh_block s
-  and exit = fresh_block s in
-  s.current.term := Some (Ir.Br head.id);
-  s.current <- head;
-  let* () =
-    match cond with
-    | None ->
-        s.current.term := Some (Ir.Br bb.id);
-        Ok ()
-    | Some c ->
-        let* v = expr s c in
-        s.current.term := Some (Ir.CondBr (truth s v, bb.id, exit.id));
-        Ok ()
+  push_scope s;
+  let lowered =
+    let* () = match init with None -> Ok () | Some x -> stmt s x in
+    let head = fresh_block s
+    and bb = fresh_block s
+    and sb = fresh_block s
+    and exit = fresh_block s in
+    s.current.term := Some (Ir.Br head.id);
+    s.current <- head;
+    let* () =
+      match cond with
+      | None ->
+          s.current.term := Some (Ir.Br bb.id);
+          Ok ()
+      | Some c ->
+          let* v = expr s c in
+          s.current.term := Some (Ir.CondBr (truth s v, bb.id, exit.id));
+          Ok ()
+    in
+    s.current <- bb;
+    s.loops <-
+      {
+        break_to = exit.id;
+        continue_to = sb.id;
+        keep_scopes = List.length s.defer_scopes;
+      }
+      :: s.loops;
+    let* () = scoped s body in
+    s.loops <- List.tl s.loops;
+    if open_block s then s.current.term := Some (Ir.Br sb.id);
+    s.current <- sb;
+    let* () = match step with None -> Ok () | Some x -> stmt s x in
+    if open_block s then s.current.term := Some (Ir.Br head.id);
+    s.current <- exit;
+    let* () = if open_block s then emit_scope_defers s 0 else Ok () in
+    Ok ()
   in
-  s.current <- bb;
-  s.loops <-
-    {
-      break_to = exit.id;
-      continue_to = sb.id;
-      keep_scopes = List.length s.defer_scopes;
-    }
-    :: s.loops;
-  let* () = scoped s body in
-  s.loops <- List.tl s.loops;
-  if open_block s then s.current.term := Some (Ir.Br sb.id);
-  s.current <- sb;
-  let* () = match step with None -> Ok () | Some x -> stmt s x in
-  if open_block s then s.current.term := Some (Ir.Br head.id);
-  s.current <- exit;
-  Ok ()
+  pop_scope s;
+  lowered
 
 and lower_switch s e arms default =
   let* v = expr s e in
@@ -928,16 +934,21 @@ and lower_switch s e arms default =
   Ok ()
 
 let lower_func structs strings c_functions f =
-  let* () = Result_list.iter (fun (_, t) -> layout_ok structs t) f.Hir.params in
+  let* () =
+    Result_list.iter
+      (fun (local : Hir.local) -> layout_ok structs local.ty)
+      f.Hir.params
+  in
   let* () = if f.Hir.ret = Hir.Void then Ok () else layout_ok structs f.Hir.ret in
   let params =
     List.map
-      (fun (n, t) ->
+      (fun (local : Hir.local) ->
         ({
-           Ir.name = n;
-           ty = ty t;
+           Ir.name = local.name;
+           ty = ty local.ty;
            extension =
-             (if f.linkage = Hir.External_c then c_extension t else Ir.No_extension);
+             (if f.linkage = Hir.External_c then c_extension local.ty
+              else Ir.No_extension);
          }
           : Ir.param))
       f.Hir.params
@@ -993,14 +1004,16 @@ let lower_func structs strings c_functions f =
       in
       push_scope s;
       List.iter
-        (fun (n, t) ->
+        (fun (local : Hir.local) ->
           let id = fresh s in
-          emit s (Ir.Alloca (id, ty t, align s t));
-          let p = Ir.Local (id, Ir.Ptr (ty t)) in
-          bind_local s n p;
-          emit s (Ir.Store (ty t, Ir.Param (n, ty t), p, align s t)))
+          emit s (Ir.Alloca (id, ty local.ty, align s local.ty));
+          let p = Ir.Local (id, Ir.Ptr (ty local.ty)) in
+          bind_local s local p;
+          emit s
+            (Ir.Store
+               (ty local.ty, Ir.Param (local.name, ty local.ty), p, align s local.ty)))
         f.params;
-      let* () = stmt_list s body in
+      let* () = scoped s body in
       let* () = if open_block s then emit_scope_defers s 0 else Ok () in
       if open_block s then
         s.current.term := Some (if s.ret = Ir.Void then Ir.Ret None else Ir.Unreachable);

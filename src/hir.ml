@@ -16,6 +16,7 @@ type struct_def = { name : string; fields : field list; size : int; align : int 
 type const_def = { name : string; ty : ty; bits : int64 }
 type const_arr_def = { name : string; ty : ty; elems : int64 list }
 type func_sig = { params : (string * ty) list; ret : ty; variadic : bool }
+type local = { name : string; ty : ty; id : int }
 type linkage = Internal | External_c
 type builtin = Shl | Lshr | Ashr | Rotl | Rotr | Popcount | Ctz | Clz
 type call_target = User of string | Builtin of builtin
@@ -25,7 +26,7 @@ type expr =
   | EBool of bool * Span.t
   | Null of ty * Span.t
   | EString of int * Span.t
-  | Local of string * ty * Span.t
+  | Local of local * Span.t
   | Unary of Ast.unop * expr * ty * Span.t
   | Binary of Ast.binop * expr * expr * ty * Span.t
   | Call of call_target * expr list * ty * Span.t
@@ -44,13 +45,13 @@ type expr =
   | Struct_lit of string * expr list * ty * Span.t
 
 type assign_target =
-  | ALocal of string
+  | ALocal of local
   | ADeref of expr
   | AIndex of expr * expr
   | AField of expr * string * int
 
 type stmt =
-  | Let of string * ty * expr option * Span.t
+  | Let of local * expr option * Span.t
   | Assign of assign_target * expr * Span.t
   | Compound_assign of assign_target * Ast.binop * expr * ty * Span.t
   | Return of expr option * Span.t
@@ -68,7 +69,7 @@ type func_body = Declaration | Statements of stmt list | Asm of string
 
 type func = {
   name : string;
-  params : (string * ty) list;
+  params : local list;
   ret : ty;
   body : func_body;
   linkage : linkage;
@@ -114,7 +115,6 @@ let rec ty_name = function
 
 let expr_ty = function
   | EInt (_, t, _)
-  | Local (_, t, _)
   | Unary (_, _, t, _)
   | Binary (_, _, _, t, _)
   | Call (_, _, t, _)
@@ -129,6 +129,7 @@ let expr_ty = function
   | Const_array (_, t, _)
   | Struct_lit (_, _, t, _) ->
       t
+  | Local (local, _) -> local.ty
   | EBool _ -> Bool
   | Null (t, _) -> t
   | EString _ -> ConstPtr (Int U8)
@@ -139,7 +140,7 @@ let expr_span = function
   | EBool (_, s)
   | Null (_, s)
   | EString (_, s)
-  | Local (_, _, s)
+  | Local (_, s)
   | Unary (_, _, _, s)
   | Binary (_, _, _, _, s)
   | Call (_, _, _, s)
@@ -252,7 +253,10 @@ let render p =
   in
   let one_fn f =
     Printf.sprintf "fn %s(%s) %s" f.name
-      (String.concat ", " (List.map (fun (n, t) -> n ^ ":" ^ ty_name t) f.params))
+      (String.concat ", "
+         (List.map
+            (fun (local : local) -> local.name ^ ":" ^ ty_name local.ty)
+            f.params))
       (ty_name f.ret)
   in
   String.concat "\n" (List.map one_struct p.structs @ List.map one_fn p.funcs)

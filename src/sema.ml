@@ -1,6 +1,6 @@
 module IM = Map.Make (Int)
 
-type binding = { ty : Hir.ty; id : int; name : string }
+type binding = Hir.local = { name : string; ty : Hir.ty; id : int }
 type selector = Field of string | Element of int
 type init_state = Uninit | Full | Raw | Partial of (selector * init_state) list
 type static_index = Dynamic | Known of Hir.ty * int64
@@ -444,15 +444,16 @@ let lookup_local name c =
   go !(c.locals)
 
 let add_local name ty c span =
-  let duplicate = Option.is_some (lookup_local name c) in
+  let h = match !(c.locals) with h :: _ -> h | [] -> Hashtbl.create 8 in
+  let duplicate = Hashtbl.mem h name in
   if duplicate then error span (Printf.sprintf "duplicate local `%s`" name)
   else
-    let h = match !(c.locals) with h :: _ -> h | [] -> Hashtbl.create 8 in
     let id = c.next_binding_id in
     c.next_binding_id <- id + 1;
-    Hashtbl.replace h name { ty; id; name };
+    let binding : binding = { ty; id; name } in
+    Hashtbl.replace h name binding;
     if !(c.locals) = [] then c.locals := [ h ];
-    ok ()
+    ok binding
 
 let push c = c.locals := Hashtbl.create 8 :: !(c.locals)
 let pop c = match !(c.locals) with _ :: rest -> c.locals := rest | [] -> ()
@@ -1013,8 +1014,7 @@ let rec check_place (c : context) expr =
   match expr with
   | Ast.Ident (n, s) -> (
       match lookup_local n c with
-      | Some b ->
-          Ok { expr = Hir.Local (n, b.ty, s); root = Some b; path = Some (Exact []) }
+      | Some b -> Ok { expr = Hir.Local (b, s); root = Some b; path = Some (Exact []) }
       | None -> (
           match lookup n c.arrays with
           | Some (_, t, _) ->
@@ -1127,7 +1127,7 @@ and check_expr (c : context) expected = function
       match lookup_local n c with
       | Some b ->
           let* () = require_state b [] c s in
-          Ok (Hir.Local (n, b.ty, s))
+          Ok (Hir.Local (b, s))
       | None -> (
           match lookup n c.consts with
           | Some (_, t, v) ->
@@ -1643,7 +1643,7 @@ and check_actuals c policy span formals actuals =
 let check_target (c : context) = function
   | Ast.Target_ident (n, span) -> (
       match lookup_local n c with
-      | Some b -> Ok { target = Hir.ALocal n; root = Some b; path = Some (Exact []) }
+      | Some b -> Ok { target = Hir.ALocal b; root = Some b; path = Some (Exact []) }
       | None -> error span (Printf.sprintf "unknown assignment target `%s`" n))
   | Ast.Target_deref e -> (
       let* x = check_expr c None e in
@@ -1708,7 +1708,7 @@ let check_target (c : context) = function
       | _ -> error (Ast.expr_span a) "field assignment requires struct")
 
 let target_ty c = function
-  | Hir.ALocal name -> Option.map (fun binding -> binding.ty) (lookup_local name c)
+  | Hir.ALocal binding -> Some binding.ty
   | Hir.ADeref expression -> (
       match Hir.expr_ty expression with
       | Hir.Ptr t | Hir.ConstPtr t -> Some t
@@ -1785,19 +1785,17 @@ and check_stmt (c : context) = function
         if aggregate_within_limit c.limits c.structs t then Ok ()
         else error span "aggregate element count exceeds the configured limit"
       in
-      let* () = add_local name t c span in
+      let* binding = add_local name t c span in
       let* x =
         match init with
         | None -> Ok None
         | Some e ->
             let* v = check_expr c (Some t) e in
             let* () = ensure_expected (Hir.expr_ty v) t (Ast.expr_span e) in
-            (match lookup_local name c with
-            | Some binding -> mark_init binding c
-            | None -> ());
+            mark_init binding c;
             Ok (Some v)
       in
-      Ok (Hir.Let (name, t, x, span))
+      Ok (Hir.Let (binding, x, span))
   | Ast.Assign (t, e, span) ->
       let* checked_target = check_target c t in
       let target = checked_target.target in
@@ -1901,40 +1899,45 @@ and check_stmt (c : context) = function
         c.falls_through <- before_falls;
         Ok (Hir.While (tq, tb, s))
   | Ast.For (i, q, step, b, s) ->
-      let* ti =
-        match i with
-        | None -> Ok None
-        | Some x ->
-            let* y = check_stmt c x in
-            Ok (Some y)
+      push c;
+      let checked =
+        let* ti =
+          match i with
+          | None -> Ok None
+          | Some x ->
+              let* y = check_stmt c x in
+              Ok (Some y)
+        in
+        let* tq =
+          match q with
+          | None -> Ok None
+          | Some x ->
+              let* y = check_expr c None x in
+              if is_truthy (Hir.expr_ty y) then Ok (Some y)
+              else error (Ast.expr_span x) "for condition must be scalar"
+        in
+        let before = c.initialized in
+        let before_falls = c.falls_through in
+        c.loop_depth <- c.loop_depth + 1;
+        c.falls_through <- true;
+        let body_result = check_block c b in
+        let* tb = body_result in
+        c.initialized <- before;
+        c.falls_through <- true;
+        let* ts =
+          match step with
+          | None -> Ok None
+          | Some x ->
+              let* y = check_stmt c x in
+              Ok (Some y)
+        in
+        c.initialized <- before;
+        c.falls_through <- before_falls;
+        c.loop_depth <- c.loop_depth - 1;
+        Ok (Hir.For (ti, tq, ts, tb, s))
       in
-      let* tq =
-        match q with
-        | None -> Ok None
-        | Some x ->
-            let* y = check_expr c None x in
-            if is_truthy (Hir.expr_ty y) then Ok (Some y)
-            else error (Ast.expr_span x) "for condition must be scalar"
-      in
-      let before = c.initialized in
-      let before_falls = c.falls_through in
-      c.loop_depth <- c.loop_depth + 1;
-      c.falls_through <- true;
-      let body_result = check_block c b in
-      let* tb = body_result in
-      c.initialized <- before;
-      c.falls_through <- true;
-      let* ts =
-        match step with
-        | None -> Ok None
-        | Some x ->
-            let* y = check_stmt c x in
-            Ok (Some y)
-      in
-      c.initialized <- before;
-      c.falls_through <- before_falls;
-      c.loop_depth <- c.loop_depth - 1;
-      Ok (Hir.For (ti, tq, ts, tb, s))
+      pop c;
+      checked
   | Ast.Switch (e, arms, d, s) ->
       let* te = check_expr c None e in
       let et = Hir.expr_ty te in
@@ -3165,16 +3168,20 @@ let check ?(limits = Limits.default) program =
       limits;
     }
   in
+  let hir_params params =
+    List.mapi (fun id (name, ty) -> ({ Hir.name; ty; id } : Hir.local)) params
+  in
   let check_function_body ~name ~description ~span ~params ~ret ~stmts ~linkage
       ~variadic ~extra_consts ~spec_depth ~require_return =
     let context = make_context ~extra_consts ~spec_depth ~ret_ty:ret in
-    List.iter
-      (fun (param_name, param_ty) ->
-        ignore (add_local param_name param_ty context span);
-        match lookup_local param_name context with
-        | Some binding -> mark_init binding context
-        | None -> ())
-      params;
+    let* params =
+      Result_list.map
+        (fun (param_name, param_ty) ->
+          let* binding = add_local param_name param_ty context span in
+          mark_init binding context;
+          Ok binding)
+        params
+    in
     let* body = check_block context stmts in
     let* () =
       if require_return && ret <> Hir.Void && not (block_must_return body) then
@@ -3197,11 +3204,25 @@ let check ?(limits = Limits.default) program =
           match body with
           | Ast.Declaration ->
               Ok
-                ({ Hir.name; params; ret; body = Hir.Declaration; linkage; variadic }
+                ({
+                   Hir.name;
+                   params = hir_params params;
+                   ret;
+                   body = Hir.Declaration;
+                   linkage;
+                   variadic;
+                 }
                   : Hir.func)
           | Ast.Asm raw ->
               Ok
-                ({ Hir.name; params; ret; body = Hir.Asm raw; linkage; variadic }
+                ({
+                   Hir.name;
+                   params = hir_params params;
+                   ret;
+                   body = Hir.Asm raw;
+                   linkage;
+                   variadic;
+                 }
                   : Hir.func)
           | Ast.Statements stmts ->
               check_function_body ~name ~description:"function" ~span ~params ~ret

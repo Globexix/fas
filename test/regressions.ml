@@ -544,6 +544,58 @@ let () =
     "fn f() i64 { x i64\n defer { x = 1 }\n return x }\n";
   semantic_error "nested-defer" "nested defer is not allowed"
     "fn f() void { defer { defer { } } }\n";
+  semantic_error "lexical-scope-same-block" "duplicate local `value`"
+    "fn f() i64 { value i64 = 1\n value i64 = 2\n return value }\n";
+  ignore
+    (lower_of
+       "fn f() i64 { value i64 = 1\n { value i64 = 2\n value += 1 }\n return value }\n");
+  semantic_error "lexical-scope-independent-initialization"
+    "use of uninitialized local `value`"
+    "fn f() i64 { value i64\n { value i64 = 2 }\n return value }\n";
+  ignore
+    (lower_of
+       "fn f() i64 { total i64 = 0\n\
+       \ { value i64 = 2\n\
+       \ total += value }\n\
+       \ { value i64 = 3\n\
+       \ total += value }\n\
+       \ return total }\n");
+  ignore
+    (lower_of
+       "fn f(flag bool) i64 { total i64 = 0\n\
+       \ if flag { value i64 = 2\n\
+       \ total += value }\n\
+       \ else { value i64 = 3\n\
+       \ total += value }\n\
+       \ return total }\n");
+  ignore
+    (lower_of
+       "fn f(flag bool) i64 { value i64 = 1\n\
+       \ if flag { value i64 = 2\n\
+       \ value += 1 }\n\
+       \ return value }\n");
+  ignore
+    (lower_of
+       "fn f() i64 { total i64 = 0\n\
+       \ for index i64 = 0; index < 3; index += 1 {\n\
+       \   total += index\n\
+       \ }\n\
+       \ return total }\n");
+  semantic_error "lexical-scope-for-escape" "unknown name `index`"
+    "fn f() i64 { for index i64 = 0; index < 1; index += 1 { }\n return index }\n";
+  ignore
+    (lower_of
+       "fn delayed(out ptr[i64], value i64) void {\n\
+       \ defer { out.* += value }\n\
+       \ value i64 = 100\n\
+       \ out.* += value - 100\n\
+       \ }\n");
+  semantic_error "lexical-scope-const-shadow" "shadows a const"
+    "const value i64 = 1\nfn f() i64 { value i64 = 2\n return value }\n";
+  semantic_error "lexical-scope-const-array-shadow" "shadows a const"
+    "const values arr[1,i64] = {1}\n fn f() i64 { values i64 = 2\n return values }\n";
+  semantic_error "lexical-scope-declaration-before-use" "unknown assignment target"
+    "fn f() i64 { value = 1\n value i64 = 2\n return value }\n";
   semantic_error "void-value-return" "void function cannot return a value"
     "extern \"C\" { fn sink() void }\nfn f() void { return sink() }\n";
   semantic_error "nonvoid-fallthrough" "may reach the end without returning"
@@ -1541,7 +1593,7 @@ let () =
   if List.length identity_specializations <> 1 then
     failwith "generic-function-deduplication: expected one concrete identity function";
   (match identity_specializations with
-  | [ { params = [ (_, Hir.Int Hir.I64) ]; ret = Hir.Int Hir.I64; _ } ] -> ()
+  | [ { params = [ { ty = Hir.Int Hir.I64; _ } ]; ret = Hir.Int Hir.I64; _ } ] -> ()
   | _ -> failwith "generic-function-substitution: signature was not specialized");
   let generic_function_llvm =
     Ir.render (expect_ok (Lower.lower generic_function_hir))
@@ -1690,7 +1742,7 @@ let () =
     not
       (List.for_all
          (fun (func : Hir.func) ->
-           match func.params with [ (_, Hir.Int Hir.I64) ] -> true | _ -> false)
+           match func.params with [ { ty = Hir.Int Hir.I64; _ } ] -> true | _ -> false)
          mixed_specializations)
   then failwith "mixed-generic-substitution: type argument was not substituted";
   if
@@ -2152,7 +2204,8 @@ let () =
            contains func.name "array_identity$spec$"
            &&
            match (func.params, func.ret) with
-           | [ (_, Hir.Array (3, Hir.Int Hir.U8)) ], Hir.Array (3, Hir.Int Hir.U8) ->
+           | [ { ty = Hir.Array (3, Hir.Int Hir.U8); _ } ], Hir.Array (3, Hir.Int Hir.U8)
+             ->
                true
            | _ -> false)
          function_specializations)
@@ -2164,7 +2217,7 @@ let () =
            contains func.name "aggregate_metrics$spec$"
            &&
            match func.params with
-           | [ (_, Hir.Ptr (Hir.Array (4, Hir.Int Hir.U16))) ] -> true
+           | [ { ty = Hir.Ptr (Hir.Array (4, Hir.Int Hir.U16)); _ } ] -> true
            | _ -> false)
          function_specializations)
   then
@@ -2267,7 +2320,7 @@ let () =
     not
       (List.for_all
          (fun (func : Hir.func) ->
-           match func.params with [ (_, Hir.Struct _) ] -> true | _ -> false)
+           match func.params with [ { ty = Hir.Struct _; _ } ] -> true | _ -> false)
          struct_function_specializations)
   then
     failwith
@@ -2422,7 +2475,7 @@ let () =
            [
              {
                Hir.name = "f";
-               params = [ ("x", Hir.Opaque "X") ];
+               params = [ { Hir.name = "x"; ty = Hir.Opaque "X"; id = 0 } ];
                ret = Hir.Void;
                body = Hir.Statements [];
                linkage = Hir.Internal;
@@ -2472,7 +2525,12 @@ let () =
                       ret = Hir.Void;
                       body =
                         Hir.Statements
-                          [ Hir.Let ("x", Hir.Opaque "X", None, Span.synthetic) ];
+                          [
+                            Hir.Let
+                              ( { Hir.name = "x"; ty = Hir.Opaque "X"; id = 0 },
+                                None,
+                                Span.synthetic );
+                          ];
                       linkage = Hir.Internal;
                       variadic = false;
                     };
@@ -2534,4 +2592,4 @@ let () =
        "struct Pair[T] { left T right T }\n\
         fn main() i64 { return ((Pair[i64]){12, 4}).left }\n");
 
-  print_endline "regression tests: 237 passed"
+  print_endline "regression tests: 249 passed"
