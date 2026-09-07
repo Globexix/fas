@@ -79,7 +79,7 @@ let () =
   assert (List.length builtin.Ast.items = 1);
   let asm =
     "fn fake() i64 { return 1 }\n\
-     asm fn raw(x i64) i64 // comment containing {\n\
+     asm fn raw_move(x i64) i64 // comment containing {\n\
      {\n\
     \  # brace }\n\
     \  .ascii \"asm fn fake { }\"\n\

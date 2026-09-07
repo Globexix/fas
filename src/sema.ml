@@ -2022,7 +2022,7 @@ let rec check_block (c : context) stmts =
   go [] stmts
 
 and check_stmt (c : context) = function
-  | Ast.Let { name; ty; init; span } ->
+  | Ast.Let { name; ty; init; raw; span } ->
       let* () =
         if
           Option.is_some (lookup name c.consts) || Option.is_some (lookup name c.arrays)
@@ -2040,7 +2040,9 @@ and check_stmt (c : context) = function
       let* binding = add_local name t c span in
       let* x =
         match init with
-        | None -> Ok None
+        | None ->
+            if raw then set_state c binding [] Raw;
+            Ok None
         | Some e ->
             let* v = check_expr c (Some t) e in
             let* () = ensure_expected (Hir.expr_ty v) t (Ast.expr_span e) in
@@ -2878,7 +2880,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
         Ok (Ast.Target_field (base, name))
   and resolve_stmt ?(values = []) ?(defer_const_structs = false) substitutions depth =
     function
-    | Ast.Let { name; ty; init; span } ->
+    | Ast.Let { name; ty; init; raw; span } ->
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         let* init =
           match init with
@@ -2889,7 +2891,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
               in
               Ok (Some expression)
         in
-        Ok (Ast.Let { name; ty; init; span })
+        Ok (Ast.Let { name; ty; init; raw; span })
     | Ast.Assign (target, expression, span) ->
         let* target =
           resolve_target ~values ~defer_const_structs substitutions depth target

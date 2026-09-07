@@ -52,8 +52,8 @@ fn main() i32 {
     vector = pass_vector(vector)
     if vector[0] != 8 || vector[1] != 9 || vector[2] != 10 { return 6 }
     pass_empty(again)
-    raw ptr[const u8] = "a\0b"
-    if raw[0] != 97 || raw[1] != 0 || raw[2] != 98 { return 7 }
+    raw_string ptr[const u8] = "a\0b"
+    if raw_string[0] != 97 || raw_string[1] != 0 || raw_string[2] != 98 { return 7 }
     terminated ptr[const u8] = c"x"
     if terminated[0] != 120 || terminated[1] != 0 { return 8 }
     empty_literal ptr[const u8] = ""

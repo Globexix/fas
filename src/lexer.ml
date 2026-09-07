@@ -22,6 +22,7 @@ let keyword = function
   | "switch" -> Kw_switch
   | "case" -> Kw_case
   | "default" -> Kw_default
+  | "raw" -> Kw_raw
   | name -> Ident name
 
 let lex ?(limits = Limits.default) source =

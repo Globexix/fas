@@ -755,14 +755,19 @@ module P = struct
     let s = span p in
     let* name = ident p in
     let* ty = ty p in
-    let* init =
+    let* init_and_raw =
       if eat p Token.Assign then
-        let* e = expr p in
-        Ok (Some e)
-      else Ok None
+        if at p Token.Kw_raw then
+          let* () = expected p Token.Kw_raw in
+          Ok (None, true)
+        else
+          let* e = expr p in
+          Ok (Some e, false)
+      else Ok (None, false)
     in
+    let init, raw = init_and_raw in
     let* () = finish_statement p consume_end in
-    Ok (Ast.Let { name; ty; init; span = s })
+    Ok (Ast.Let { name; ty; init; raw; span = s })
 
   and declaration p = declaration_with_end p true
 
@@ -1101,6 +1106,8 @@ module P = struct
           let* () = expected p Token.Rparen in
           Ok (Ast.Ptr_add (n = "ptr_add_bytes", a, b, sp)))
         else Ok (Ast.Ident (n, sp))
+    | Token.Kw_raw ->
+        Error [ Diag.error (span p) "`raw` is a declaration marker, not a value" ]
     | t ->
         Error [ Diag.error (span p) ("expected an expression, found " ^ Token.show t) ]
 end

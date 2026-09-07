@@ -703,6 +703,37 @@ let () =
     "fn f() void { while true { defer { break } break } }\n";
   semantic_error "defer-continue" "continue is not allowed inside defer"
     "fn f() void { while true { defer { continue } break } }\n";
+  ignore (lower_of "fn f() u32 { x arr[4,u32] = raw\n x[0] = 1\n return x[3] }\n");
+  ignore (lower_of "fn f() i64 { p ptr[i64] = raw\n p[0] = 1\n return p[0] }\n");
+  ignore
+    (lower_of "fn f() u32 { x arr[4,u32] = raw\n t arr[4,u32] = x\n return t[0] }\n");
+  ignore
+    (lower_of
+       "fn f() u32 { x arr[4,u32] = raw\n\
+       \ for i u32 = 0; i < 4; i += 1 { x[i] = i }\n\
+       \ return x[0] }\n");
+  ignore
+    (lower_of
+       "fn f(p bool) u32 { x arr[4,u32] = raw\n if p { x[0] = 1 }\n return x[1] }\n");
+  ignore (lower_of "fn f() u64 { x u64 = raw\n defer { x = 1 }\n return x }\n");
+  ignore
+    (lower_of
+       "struct S { x i64 y i64 }\nfn f() i64 { s S = raw\n s.x = 1\n return s.y }\n");
+  ignore (lower_of "fn f() u32 { v vec[4,u32] = raw\n v[0] = 1\n return v[3] }\n");
+  ignore (lower_of "fn f() i64 { x i64 = raw\n return x }\n");
+  ignore (lower_of "fn f() i64 { x i64 = raw\n x = 5\n return x }\n");
+  let raw_no_zero =
+    llvm_of "fn f() u32 { x arr[4,u32] = raw\n x[0] = 1\n return x[3] }\n"
+  in
+  if contains raw_no_zero "memset" || contains raw_no_zero "zeroinitializer" then
+    failwith "raw declaration emitted implicit initialization";
+  parse_error_message "raw-not-a-value-return" "not a value"
+    "fn f() i64 { return raw }\n";
+  parse_error_message "raw-not-a-value-call" "not a value"
+    "fn g(x i64) i64 { return x }\nfn f() i64 { return g(raw) }\n";
+  parse_error_message "raw-not-a-value-assign" "not a value"
+    "fn f() i64 { x i64 = 1\n x = raw\n return x }\n";
+  parse_error "raw-init-trailing" "fn f() i64 { x i64 = raw + 1\n return x }\n";
   semantic_error "lexical-scope-same-block" "duplicate local `value`"
     "fn f() i64 { value i64 = 1\n value i64 = 2\n return value }\n";
   ignore
@@ -843,7 +874,7 @@ let () =
       "fn comment_name() i64 { return 1 }\n\
        fn Llocal() i64 { return 2 }\n\
        fn directive_name() i64 { return 3 }\n\
-       asm fn raw() i64 {\n\
+       asm fn raw_zero() i64 {\n\
        # comment_name\n\
        .Llocal:\n\
        .ascii \"directive_name\"\n\
@@ -1329,10 +1360,11 @@ let () =
     ~finally:(fun () -> Sys.remove asm_profile_path)
     (fun () ->
       let channel = open_out_bin asm_profile_path in
-      output_string channel "asm fn raw() i64 {\n retq\n}\nfn main() i64 { return 0 }\n";
+      output_string channel
+        "asm fn asm_zero() i64 {\n retq\n}\nfn main() i64 { return 0 }\n";
       close_out channel;
       let config =
-        cli_run [ "-debug"; "--emit-llvm"; "-no-inline"; "raw"; asm_profile_path ]
+        cli_run [ "-debug"; "--emit-llvm"; "-no-inline"; "asm_zero"; asm_profile_path ]
       in
       match Driver.run config with
       | Error diagnostics ->

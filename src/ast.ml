@@ -59,7 +59,7 @@ and binop =
 and cast_kind = Zext | Sext | Trunc | Bitcast
 
 and stmt =
-  | Let of { name : string; ty : ty; init : expr option; span : Span.t }
+  | Let of { name : string; ty : ty; init : expr option; raw : bool; span : Span.t }
   | Assign of assign_target * expr * Span.t
   | Compound_assign of assign_target * binop * expr * Span.t
   | Return of expr option * Span.t
@@ -245,10 +245,12 @@ let generic_params_name = function
   | params -> "[" ^ String.concat ", " (List.map generic_param_name params) ^ "]"
 
 let rec stmt_lines indent = function
-  | Let { name; ty; init; _ } ->
+  | Let { name; ty; init; raw; _ } ->
       [
         (indent ^ name ^ " " ^ type_name ty
-        ^ match init with None -> "" | Some e -> " = " ^ expr_name e);
+        ^
+        if raw then " = raw"
+        else match init with None -> "" | Some e -> " = " ^ expr_name e);
       ]
   | Assign (Target_ident (n, _), e, _) -> [ indent ^ n ^ " = " ^ expr_name e ]
   | Assign (_, e, _) -> [ indent ^ "<target> = " ^ expr_name e ]
