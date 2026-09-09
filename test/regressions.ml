@@ -139,6 +139,53 @@ let () =
     "fn convert(value isize) i64 { return value }\n";
   semantic_error "usize-call-distinct-from-u64" "type mismatch: expected usize, got u64"
     "fn take(value usize) void { return }\nfn use(value u64) void { take(value) }\n";
+  semantic_error "named-bool-constant-keeps-type"
+    "type mismatch: expected i32, got bool"
+    "const Flag bool = true\nfn main() i32 { value i32 = Flag\n return value }\n";
+  semantic_error "named-i8-constant-local-keeps-type"
+    "type mismatch: expected i32, got i8"
+    "const Small i8 = 7\nfn main() i32 { value i32 = Small\n return value }\n";
+  semantic_error "named-negative-i8-constant-keeps-type"
+    "type mismatch: expected u16, got i8"
+    "const Negative i8 = -1\nfn main() i32 { value u16 = Negative\n return 0 }\n";
+  semantic_error "named-i8-constant-return-keeps-type"
+    "type mismatch: expected i32, got i8"
+    "const Small i8 = 7\nfn value() i32 { return Small }\n";
+  semantic_error "named-i8-constant-argument-keeps-type"
+    "type mismatch: expected i32, got i8"
+    "const Small i8 = 7\n\
+     fn take(value i32) void { return }\n\
+     fn use() void { take(Small) }\n";
+  semantic_error "named-i8-constant-binary-keeps-type"
+    "binary operands must have the same type"
+    "const Small i8 = 7\nfn add(value i32) i32 { return Small + value }\n";
+  semantic_error "named-i8-constant-generic-argument-keeps-type"
+    "const argument type mismatch"
+    "const Small i8 = 7\n\
+     fn value[N const i32]() i32 { return N }\n\
+     fn use() i32 { return value[Small]() }\n";
+  let named_constant_explicit_conversions =
+    llvm_of
+      "const Negative i8 = -1\n\
+       const Byte u8 = 255\n\
+       fn signed_value() i32 { return sext[i32](Negative) }\n\
+       fn unsigned_value() i32 { return zext[i32](Byte) }\n\
+       fn byte_value() u8 { return Byte }\n\
+       fn contextual_literal() i32 { return 1 }\n"
+  in
+  List.iter
+    (fun expected ->
+      if not (contains named_constant_explicit_conversions expected) then
+        failwith ("named-constant-explicit-conversions: missing `" ^ expected ^ "`"))
+    [
+      "define internal i32 @signed_value";
+      "sext i8 255 to i32";
+      "define internal i32 @unsigned_value";
+      "zext i8 255 to i32";
+      "define internal i8 @byte_value";
+      "ret i8 255";
+      "ret i32 1";
+    ];
   let target_width_integers =
     llvm_of
       "struct Pair { left u8 right u64 }\n\
@@ -930,7 +977,7 @@ let () =
       "call <3 x i32> @pass_vector(<3 x i32>";
     ];
   semantic_error "const-specialization-arity" "wrong number of arguments"
-    "fn id[N const usize](x u64) u64 { return x + N }\n\
+    "fn id[N const usize](x u64) u64 { return x + bitcast[u64](N) }\n\
      fn main() u64 { return id[3](2, 4) }\n";
   semantic_error "fas-008-i64-positive-overflow"
     "integer literal is out of range for i64"
@@ -1148,7 +1195,7 @@ let () =
        \ values[0] = id[3](4)\n\
        \ values[1] = 5\n\
        \ return values[0] }\n\
-        fn id[N const usize](value u64) u64 { return value + N }\n");
+        fn id[N const usize](value u64) u64 { return value + bitcast[u64](N) }\n");
   ignore
     (lower_of "fn choose(value bool) i64 { if (value){ return 1 } else { return 0 } }\n");
   ignore
@@ -1698,12 +1745,12 @@ let () =
 
   let signed_narrow_specialization =
     llvm_of
-      "fn b8[N const i8](x i8) i32 { return sext[i32](x) + N }\n\
+      "fn b8[N const i8](x i8) i32 { return sext[i32](x) + sext[i32](N) }\n\
        fn main() i32 { return b8[-5](2) }\n"
   in
   if
     (not (contains signed_narrow_specialization "add i32"))
-    || not (contains signed_narrow_specialization ", -5")
+    || not (contains signed_narrow_specialization "sext i8 251 to i32")
   then
     failwith "signed-narrow-specialization: negative i8 constant was not sign-extended";
 
@@ -1727,7 +1774,7 @@ let () =
          (expect_ok
             (Parser.parse
                (source
-                  "fn id[N const usize](x u64) u64 { return x + N }\n\
+                  "fn id[N const usize](x u64) u64 { return x + bitcast[u64](N) }\n\
                    fn main() u64 { return id[3](2) + id[1 + 2](3) }\n"))))
   in
   if List.length repeated_spec_at_count_limit.Hir.funcs <> 2 then
@@ -1737,7 +1784,7 @@ let () =
        (expect_ok
           (Parser.parse
              (source
-                "fn id[N const usize](x u64) u64 { return x + N }\n\
+                "fn id[N const usize](x u64) u64 { return x + bitcast[u64](N) }\n\
                  fn main() u64 { return id[3](2) + id[4](3) }\n")))
    with
   | Ok _ -> failwith "spec-count-limit: expected rejection at the count limit"
@@ -2186,7 +2233,7 @@ let () =
     failwith "generic-instantiation-determinism: internal name leaked";
   let issue45_source =
     "fn broken[N const usize](value i64) i64 {\n\
-     if true { return value + N }\n\
+     if true { return value + bitcast[i64](N) }\n\
      }\n\
      fn main() i64 { return broken[1](0) }\n"
   in
@@ -2919,30 +2966,30 @@ let () =
 
   let i8_min_specialization =
     llvm_of
-      "fn b[N const i8](x i8) i32 { return sext[i32](x) + N }\n\
+      "fn b[N const i8](x i8) i32 { return sext[i32](x) + sext[i32](N) }\n\
        fn main() i32 { return b[-128](1) }\n"
   in
   if
     (not (contains i8_min_specialization "add i32"))
-    || not (contains i8_min_specialization ", -128")
+    || not (contains i8_min_specialization "sext i8 128 to i32")
   then failwith "const-param-i8-min: i8 minimum constant was not sign-extended";
 
   let u8_max_specialization =
     llvm_of
-      "fn w[N const u8](x u8) i32 { return zext[i32](x) + N }\n\
+      "fn w[N const u8](x u8) i32 { return zext[i32](x) + zext[i32](N) }\n\
        fn main() i32 { return w[255](1) }\n"
   in
   if
     (not (contains u8_max_specialization "add i32"))
-    || not (contains u8_max_specialization ", 255")
+    || not (contains u8_max_specialization "zext i8 255 to i32")
   then failwith "const-param-u8-max: u8 maximum constant was not zero-extended";
 
   semantic_error "const-param-i8-overflow" "integer literal is out of range for i8"
-    "fn b[N const i8](x i8) i32 { return sext[i32](x) + N }\n\
+    "fn b[N const i8](x i8) i32 { return sext[i32](x) + sext[i32](N) }\n\
      fn main() i32 { return b[128](1) }\n";
 
   semantic_error "const-param-u8-overflow" "integer literal is out of range for u8"
-    "fn w[N const u8](x u8) i32 { return zext[i32](x) + N }\n\
+    "fn w[N const u8](x u8) i32 { return zext[i32](x) + zext[i32](N) }\n\
      fn main() i32 { return w[256](1) }\n";
 
   (match

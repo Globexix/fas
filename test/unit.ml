@@ -53,7 +53,7 @@ let () =
     expect_ok
       (Parser.parse
          (source
-            "fn id[N const usize](x u64) u64 { return x + N }\n\
+            "fn id[N const usize](x u64) u64 { return x + bitcast[u64](N) }\n\
              fn main() u64 { return id[3](2) }\n"))
   in
   let specialized = expect_ok (Sema.check generic) in

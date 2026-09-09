@@ -563,22 +563,6 @@ let specialization_source_name specializations kind name =
   | Some frame -> frame.template_name
   | None -> name
 
-let fits_int ty value =
-  match ty with
-  | Hir.Int k ->
-      let bits = int_bits k in
-      let signed =
-        match k with Hir.I8 | I16 | I32 | I64 | Isize -> true | _ -> false
-      in
-      if bits = 64 then (not signed) || value >= 0L
-      else if signed then
-        let range = Int64.shift_left 1L (bits - 1) in
-        let min = Int64.neg range and max = Int64.sub range 1L in
-        value >= min && value <= max
-      else value >= 0L && value < Int64.shift_left 1L bits
-  | Hir.Bool -> value = 0L || value = 1L
-  | _ -> false
-
 let lookup name table = List.find_opt (fun (n, _, _) -> n = name) table
 let lookup_sig name c = List.assoc_opt name c.signatures
 
@@ -1316,17 +1300,7 @@ and check_expr (c : context) expected = function
           Ok (Hir.Local (b, s))
       | None -> (
           match lookup n c.consts with
-          | Some (_, t, v) ->
-              let rt = Option.value ~default:t expected in
-              if is_int rt && fits_int rt v then
-                let v =
-                  match (t, rt) with
-                  | Hir.Int tk, Hir.Int rk when int_bits tk < int_bits rk ->
-                      sign_extend_value t v
-                  | _ -> mask_value rt v
-                in
-                Ok (Hir.EInt (v, rt, s))
-              else Ok (Hir.EInt (v, t, s))
+          | Some (_, t, v) -> Ok (Hir.EInt (v, t, s))
           | None -> (
               match lookup n c.arrays with
               | Some (_, t, _) -> Ok (Hir.Const_array (n, t, s))

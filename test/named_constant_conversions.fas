@@ -1,0 +1,12 @@
+const Negative i8 = -1
+const Byte u8 = 255
+
+fn main() i32 {
+  signed i32 = sext[i32](Negative)
+  unsigned i32 = zext[i32](Byte)
+  if signed == -1 && unsigned == 255 {
+    return 0
+  } else {
+    return 1
+  }
+}
