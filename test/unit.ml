@@ -221,7 +221,7 @@ let () =
   assert (contains edge_llvm "call void @llvm.trap()");
   assert (contains edge_llvm "@llvm.fshl.v4i32");
   assert (contains edge_llvm "declare <4 x i32> @llvm.fshl.v4i32");
-  assert (contains edge_llvm "zext i1 true to i64");
+  assert (contains edge_llvm "sext i1 true to i64");
   let edge_debug = Ir.render_debug edge_ir in
   assert (contains edge_debug "Module {");
   assert (edge_debug <> edge_llvm);

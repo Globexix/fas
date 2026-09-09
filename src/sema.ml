@@ -219,6 +219,41 @@ let is_scalar = function
 let is_numeric = function Hir.Int _ | Hir.Vec (_, Hir.Int _) -> true | _ -> false
 let is_truthy = is_scalar
 
+let cast_legal kind from target =
+  let pointer_bits = Target_layout.current.pointer_size * 8 in
+  let value_bits = function
+    | (Hir.Bool | Hir.Int _) as ty -> integer_value_bit_width ty
+    | Hir.Ptr _ | Hir.ConstPtr _ -> Some pointer_bits
+    | _ -> None
+  in
+  let strictly_wider () =
+    match (value_bits from, value_bits target) with
+    | Some source_width, Some destination_width -> destination_width > source_width
+    | _ -> false
+  in
+  let strictly_narrower () =
+    match (value_bits from, value_bits target) with
+    | Some source_width, Some destination_width -> destination_width < source_width
+    | _ -> false
+  in
+  match kind with
+  | Ast.Zext | Ast.Sext ->
+      (from = Hir.Bool || is_int from) && is_int target && strictly_wider ()
+  | Ast.Trunc ->
+      is_int from && (is_int target || target = Hir.Bool) && strictly_narrower ()
+  | Ast.Bitcast -> (
+      match (from, target) with
+      | Hir.Ptr _, Hir.Ptr _ | Hir.Ptr _, Hir.ConstPtr _ -> true
+      | Hir.ConstPtr _, Hir.ConstPtr _ -> true
+      | (Hir.Ptr _ | Hir.ConstPtr _), Hir.Int k | Hir.Int k, (Hir.Ptr _ | Hir.ConstPtr _)
+        ->
+          int_bits k = pointer_bits
+      | _ -> (
+          match (integer_value_bit_width from, integer_value_bit_width target) with
+          | Some source_width, Some destination_width ->
+              source_width = destination_width
+          | _ -> false))
+
 let const_params generic_params =
   List.filter_map
     (function Ast.Const_param cp -> Some cp | Ast.Type_param _ -> None)
@@ -1053,6 +1088,14 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts exp
            else None)
           e
       in
+      let* () =
+        if cast_legal k st dt then Ok ()
+        else error s "illegal cast for source and destination widths"
+      in
+      let* () =
+        if (st = Hir.Bool || is_int st) && (dt = Hir.Bool || is_int dt) then Ok ()
+        else error s "constant cast requires scalar integer or bool types"
+      in
       let sb =
         match st with
         | Hir.Bool -> 1
@@ -1062,9 +1105,10 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts exp
       in
       let result =
         match k with
-        | Ast.Sext when st <> Hir.Bool && sb < 64 ->
+        | Ast.Sext when sb < 64 ->
             let shift = 64 - sb in
             Int64.shift_right (Int64.shift_left v shift) shift
+        | Ast.Trunc when dt = Hir.Bool -> Int64.logand v 1L
         | _ -> v
       in
       Ok (dt, mask_value dt result)
@@ -1415,34 +1459,7 @@ and check_expr (c : context) expected = function
           e
       in
       let from = Hir.expr_ty x in
-      let bits = function
-        | (Hir.Bool | Hir.Int _) as ty -> Option.get (integer_value_bit_width ty)
-        | Hir.Ptr _ | Hir.ConstPtr _ -> Target_layout.current.pointer_size * 8
-        | _ -> 0
-      in
-      let legal =
-        match k with
-        | Ast.Zext ->
-            (from = Hir.Bool || is_int from) && is_int t && bits t >= bits from
-        | Ast.Sext ->
-            (from = Hir.Bool || is_int from) && is_int t && bits t >= bits from
-        | Ast.Trunc ->
-            (from = Hir.Bool && is_int t)
-            || (is_int from && (is_int t || t = Hir.Bool) && bits t <= bits from)
-        | Ast.Bitcast -> (
-            match (from, t) with
-            | Hir.Ptr _, Hir.Ptr _ | Hir.Ptr _, Hir.ConstPtr _ -> true
-            | Hir.ConstPtr _, Hir.ConstPtr _ -> true
-            | (Hir.Ptr _ | Hir.ConstPtr _), Hir.Int k
-            | Hir.Int k, (Hir.Ptr _ | Hir.ConstPtr _) ->
-                int_bits k = Target_layout.current.pointer_size * 8
-            | _ -> (
-                match (integer_value_bit_width from, integer_value_bit_width t) with
-                | Some source_width, Some destination_width ->
-                    source_width = destination_width
-                | _ -> false))
-      in
-      if legal then Ok (Hir.Cast (k, x, t, s))
+      if cast_legal k from t then Ok (Hir.Cast (k, x, t, s))
       else error s "illegal cast for source and destination widths"
   | Ast.Index (a, i, s) ->
       let* place = check_place c (Ast.Index (a, i, s)) in

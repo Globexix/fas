@@ -412,8 +412,8 @@ let rec expr s = function
           | Ir.Ptr _, Ir.Ptr _ -> ""
           | Ir.Ptr _, _ -> "ptrtoint"
           | _, Ir.Ptr _ -> "inttoptr"
-          | _, Ir.I1 -> "bool"
-          | Ir.I1, _ -> "zext"
+          | _, Ir.I1 -> "trunc"
+          | Ir.I1, _ -> if kind = Ast.Sext then "sext" else "zext"
           | _ -> (
               match kind with
               | Ast.Zext -> "zext"
@@ -422,7 +422,6 @@ let rec expr s = function
               | Bitcast -> "bitcast")
         in
         if k = "" then Ok v
-        else if k = "bool" then Ok (truth s v)
         else
           let id = fresh s in
           emit s (Ir.Cast (id, k, st, v, dt));

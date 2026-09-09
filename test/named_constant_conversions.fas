@@ -1,10 +1,22 @@
 const Negative i8 = -1
 const Byte u8 = 255
+const Word u16 = 256
+const Truth bool = true
+const ConstantSigned i32 = sext[i32](Truth)
+const ConstantLow u8 = trunc[u8](Word)
+
+fn signed_truth(value bool) i32 {
+  return sext[i32](value)
+}
+
+fn low_bit(value u16) bool {
+  return trunc[bool](value)
+}
 
 fn main() i32 {
   signed i32 = sext[i32](Negative)
   unsigned i32 = zext[i32](Byte)
-  if signed == -1 && unsigned == 255 {
+  if signed == -1 && unsigned == 255 && ConstantSigned == -1 && ConstantLow == 0 && signed_truth(true) == -1 && !low_bit(256) && low_bit(257) {
     return 0
   } else {
     return 1

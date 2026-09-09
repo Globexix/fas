@@ -186,6 +186,67 @@ let () =
       "ret i8 255";
       "ret i32 1";
     ];
+  semantic_error "constant-zext-must-widen" "illegal cast"
+    "const X u8 = zext[u8](256)\nfn main() u8 { return X }\n";
+  semantic_error "constant-zext-equal-width" "illegal cast"
+    "const A u8 = 1\nconst X u8 = zext[u8](A)\nfn main() u8 { return X }\n";
+  semantic_error "constant-sext-equal-width" "illegal cast"
+    "const A i32 = 1\nconst X i32 = sext[i32](A)\nfn main() i32 { return X }\n";
+  semantic_error "constant-trunc-equal-width" "illegal cast"
+    "const A i32 = 1\nconst X i32 = trunc[i32](A)\nfn main() i32 { return X }\n";
+  semantic_error "runtime-zext-equal-width" "illegal cast"
+    "fn f(value u8) u8 { return zext[u8](value) }\n";
+  semantic_error "runtime-sext-equal-width" "illegal cast"
+    "fn f(value i32) i32 { return sext[i32](value) }\n";
+  semantic_error "runtime-trunc-equal-width" "illegal cast"
+    "fn f(value i32) i32 { return trunc[i32](value) }\n";
+  semantic_error "constant-trunc-bool-source" "illegal cast"
+    "const X u8 = trunc[u8](true)\nfn main() u8 { return X }\n";
+  semantic_error "runtime-trunc-bool-source" "illegal cast"
+    "fn f(value bool) u8 { return trunc[u8](value) }\n";
+  semantic_error "constant-vector-bitcast-width" "illegal cast"
+    "const A i32 = 1\n\
+     const X vec[2,i32] = bitcast[vec[2,i32]](A)\n\
+     fn main() i32 { return 0 }\n";
+  semantic_error "constant-vector-bitcast-representation"
+    "constant cast requires scalar integer or bool types"
+    "const A i64 = 1\n\
+     const X vec[2,i32] = bitcast[vec[2,i32]](A)\n\
+     fn main() i32 { return 0 }\n";
+  let constant_casts =
+    llvm_of
+      "const Byte u8 = 255\n\
+       const Negative i8 = -1\n\
+       const Word u16 = 258\n\
+       const OddWord u16 = 259\n\
+       const Zero bool = trunc[bool](Word)\n\
+       const One bool = trunc[bool](OddWord)\n\
+       const WideUnsigned u16 = zext[u16](Byte)\n\
+       const WideSigned i16 = sext[i16](Negative)\n\
+       const Narrow u8 = trunc[u8](Word)\n\
+       const Bits i8 = bitcast[i8](Byte)\n\
+       const SignedTruth i16 = sext[i16](true)\n\
+       fn constants() i32 {\n\
+      \ return zext[i32](WideUnsigned) + sext[i32](WideSigned) +zext[i32](Narrow) + \
+       sext[i32](Bits) + sext[i32](SignedTruth) +zext[i32](Zero) +zext[i32](One)\n\
+       }\n\
+       fn runtime_sext(value bool) i16 { return sext[i16](value) }\n\
+       fn runtime_low_bit(value u8) bool { return trunc[bool](value) }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains constant_casts marker) then
+        failwith ("constant-casts: missing `" ^ marker ^ "`"))
+    [
+      "zext i16 255 to i32";
+      "sext i16 65535 to i32";
+      "zext i8 2 to i32";
+      "sext i8 255 to i32";
+      "zext i1 false to i32";
+      "zext i1 true to i32";
+      "sext i1 ";
+      "trunc i8 ";
+    ];
   let target_width_integers =
     llvm_of
       "struct Pair { left u8 right u64 }\n\
@@ -1008,7 +1069,7 @@ let () =
   if
     (not (contains signed_const_eval "sext i8 254 to i32"))
     || (not (contains signed_const_eval "sext i8 255 to i32"))
-    || not (contains signed_const_eval "zext i1 true to i32")
+    || not (contains signed_const_eval "sext i1 true to i32")
   then failwith "fas-001: signed constant evaluation used masked bit patterns";
   let nested_align =
     llvm_of
@@ -1541,12 +1602,12 @@ let () =
     "C string literal cannot contain embedded NUL"
     "const N usize = len(c\"a\\0b\")\nfn main() usize { return N }\n";
   let raw_literal_length =
-    llvm_of "fn main() i64 { return zext[i64](len(\"abc\")) }\n"
+    llvm_of "fn main() i64 { return bitcast[i64](len(\"abc\")) }\n"
   in
   if not (contains raw_literal_length "ret i64 3") then
     failwith "fas-031-len: raw literal length is incorrect";
   let c_literal_length =
-    llvm_of "fn main() i64 { return zext[i64](len(c\"abc\")) }\n"
+    llvm_of "fn main() i64 { return bitcast[i64](len(c\"abc\")) }\n"
   in
   if not (contains c_literal_length "ret i64 3") then
     failwith "fas-031-len: C literal payload length is incorrect";
@@ -1561,7 +1622,7 @@ let () =
     llvm_of
       "const K arr[3, u8] = {1, 2, 3}\n\
        const N usize = len(\"abc\")\n\
-       fn main() i64 { return zext[i64](len(K)) + zext[i64](N) }\n"
+       fn main() i64 { return bitcast[i64](len(K)) + bitcast[i64](N) }\n"
   in
   if (not (contains array_length "ret i64")) || not (contains array_length "i64 3") then
     failwith "fas-031-len: fixed array length is incorrect";
@@ -1599,8 +1660,8 @@ let () =
        const C64 u64 = ctz(0)\n\
        const L64 u64 = clz(0)\n\
        fn main() i64 { return zext[i64](C8) + zext[i64](L8) +zext[i64](C16) + \
-       zext[i64](L16) + zext[i64](C32) +zext[i64](L32) + zext[i64](C64) + \
-       zext[i64](L64) }\n"
+       zext[i64](L16) + zext[i64](C32) +zext[i64](L32) + bitcast[i64](C64) + \
+       bitcast[i64](L64) }\n"
   in
   if
     (not (contains zero_bit_counts "zext i8 8 to i64"))
@@ -1632,8 +1693,8 @@ let () =
   let bool_sext =
     llvm_of "const B i64 = sext[i64](true)\nfn f() i64 { return sext[i64](true) }\n"
   in
-  if not (contains bool_sext "zext i1 true to i64") then
-    failwith "bool-sext: expected value-preserving zext lowering";
+  if not (contains bool_sext "sext i1 true to i64") then
+    failwith "bool-sext: expected sign-extending lowering";
 
   let vector_rotate =
     llvm_of
@@ -2282,7 +2343,7 @@ let () =
           (expect_ok
              (Parser.parse
                 (source
-                   "fn inner[T, M const usize](x T) u64 { return zext[u64](M) }\n\
+                   "fn inner[T, M const usize](x T) u64 { return bitcast[u64](M) }\n\
                     fn outer[N const usize](x i64) u64 { return inner[i64, 3](x) }\n\
                     fn main() u64 { return outer[5](40) }\n")))));
   semantic_error "extern-c-type-parameter"
