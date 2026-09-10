@@ -2437,6 +2437,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
     | Ast.Name_arg (name, span) ->
         if
           List.mem name value_names
+          || List.mem name global_value_names
           || List.mem name named_type_names
           || List.mem name type_names
         then Ok ()
@@ -2507,21 +2508,24 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
         validate_expression_names value_names type_names index
     | Ast.Target_field (base, _) ->
         validate_expression_names value_names type_names base
-  and validate_statement_names value_names type_names = function
+  and validate_statement_names value_names type_names scope_names = function
     | Ast.Let { name; ty; init; span; _ } ->
-        let* () = validate_type_names value_names type_names span ty in
-        let* () =
-          match init with
-          | None -> Ok ()
-          | Some expression ->
-              validate_expression_names value_names type_names expression
-        in
-        Ok (name :: value_names)
+        if List.mem name scope_names then
+          error span (Printf.sprintf "duplicate local `%s`" name)
+        else
+          let* () = validate_type_names value_names type_names span ty in
+          let* () =
+            match init with
+            | None -> Ok ()
+            | Some expression ->
+                validate_expression_names value_names type_names expression
+          in
+          Ok (name :: value_names, name :: scope_names)
     | Ast.Assign (target, expression, _) | Ast.Compound_assign (target, _, expression, _)
       ->
         let* () = validate_target_names value_names type_names target in
         let* () = validate_expression_names value_names type_names expression in
-        Ok value_names
+        Ok (value_names, scope_names)
     | Ast.Return (expression, _) ->
         let* () =
           match expression with
@@ -2529,7 +2533,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
           | Some expression ->
               validate_expression_names value_names type_names expression
         in
-        Ok value_names
+        Ok (value_names, scope_names)
     | Ast.If (condition, yes, no, _) ->
         let* () = validate_expression_names value_names type_names condition in
         let* () = validate_statement_block_names value_names type_names yes in
@@ -2539,22 +2543,23 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
           | Some statements ->
               validate_statement_block_names value_names type_names statements
         in
-        Ok value_names
+        Ok (value_names, scope_names)
     | Ast.While (condition, body, _) ->
         let* () = validate_expression_names value_names type_names condition in
         let* () = validate_statement_block_names value_names type_names body in
-        Ok value_names
+        Ok (value_names, scope_names)
     | Ast.Defer (body, _) | Ast.Block (body, _) ->
         let* () = validate_statement_block_names value_names type_names body in
-        Ok value_names
+        Ok (value_names, scope_names)
     | Ast.Expr_stmt (expression, _) ->
         let* () = validate_expression_names value_names type_names expression in
-        Ok value_names
+        Ok (value_names, scope_names)
     | Ast.For (init, condition, step, body, _) ->
-        let* loop_names =
+        let* loop_names, loop_scope_names =
           match init with
-          | None -> Ok value_names
-          | Some statement -> validate_statement_names value_names type_names statement
+          | None -> Ok (value_names, [])
+          | Some statement ->
+              validate_statement_names value_names type_names [] statement
         in
         let* () =
           match condition with
@@ -2565,10 +2570,11 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
         let* () = validate_statement_block_names loop_names type_names body in
         let* _ =
           match step with
-          | None -> Ok loop_names
-          | Some statement -> validate_statement_names loop_names type_names statement
+          | None -> Ok (loop_names, loop_scope_names)
+          | Some statement ->
+              validate_statement_names loop_names type_names loop_scope_names statement
         in
-        Ok value_names
+        Ok (value_names, scope_names)
     | Ast.Switch (expression, cases, default, _) ->
         let* () = validate_expression_names value_names type_names expression in
         let* () =
@@ -2583,13 +2589,66 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
           | None -> Ok ()
           | Some body -> validate_statement_block_names value_names type_names body
         in
-        Ok value_names
-    | Ast.Break _ | Ast.Continue _ -> Ok value_names
-  and validate_statement_block_names value_names type_names = function
+        Ok (value_names, scope_names)
+    | Ast.Break _ | Ast.Continue _ -> Ok (value_names, scope_names)
+  and validate_statement_block_names ?(scope_names = []) value_names type_names =
+    function
     | [] -> Ok ()
     | statement :: rest ->
-        let* value_names = validate_statement_names value_names type_names statement in
-        validate_statement_block_names value_names type_names rest
+        let* value_names, scope_names =
+          validate_statement_names value_names type_names scope_names statement
+        in
+        validate_statement_block_names ~scope_names value_names type_names rest
+  in
+  let rec validate_statement_duplicates scope_names = function
+    | Ast.Let { name; span; _ } ->
+        if List.mem name scope_names then
+          error span (Printf.sprintf "duplicate local `%s`" name)
+        else Ok (name :: scope_names)
+    | Ast.If (_, yes, no, _) ->
+        let* () = validate_statement_block_duplicates yes in
+        let* () =
+          match no with
+          | None -> Ok ()
+          | Some statements -> validate_statement_block_duplicates statements
+        in
+        Ok scope_names
+    | Ast.While (_, body, _) | Ast.Defer (body, _) | Ast.Block (body, _) ->
+        let* () = validate_statement_block_duplicates body in
+        Ok scope_names
+    | Ast.For (init, _, step, body, _) ->
+        let* loop_scope_names =
+          match init with
+          | None -> Ok []
+          | Some statement -> validate_statement_duplicates [] statement
+        in
+        let* () = validate_statement_block_duplicates body in
+        let* _ =
+          match step with
+          | None -> Ok loop_scope_names
+          | Some statement -> validate_statement_duplicates loop_scope_names statement
+        in
+        Ok scope_names
+    | Ast.Switch (_, cases, default, _) ->
+        let* () =
+          Result_list.iter
+            (fun (_, body) -> validate_statement_block_duplicates body)
+            cases
+        in
+        let* () =
+          match default with
+          | None -> Ok ()
+          | Some body -> validate_statement_block_duplicates body
+        in
+        Ok scope_names
+    | Ast.Assign _ | Ast.Compound_assign _ | Ast.Return _ | Ast.Expr_stmt _
+    | Ast.Break _ | Ast.Continue _ ->
+        Ok scope_names
+  and validate_statement_block_duplicates ?(scope_names = []) = function
+    | [] -> Ok ()
+    | statement :: rest ->
+        let* scope_names = validate_statement_duplicates scope_names statement in
+        validate_statement_block_duplicates ~scope_names rest
   in
   let rec has_unresolved_application = function
     | Ast.Applied_type _ -> true
@@ -3317,8 +3376,9 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
               | Ast.Asm raw -> Ok (Ast.Asm raw)
               | Ast.Statements statements ->
                   let* () =
-                    validate_statement_block_names body_value_names body_type_names
-                      statements
+                    validate_statement_block_names
+                      ~scope_names:(body_value_names @ body_type_names)
+                      body_value_names body_type_names statements
                   in
                   let shadowed_constants =
                     List.map (fun (parameter : Ast.param) -> parameter.name) params
@@ -3389,6 +3449,13 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
           | Ast.Declaration -> Ok Ast.Declaration
           | Ast.Asm raw -> Ok (Ast.Asm raw)
           | Ast.Statements statements ->
+              let body_value_names =
+                List.map (fun (parameter : Ast.param) -> parameter.name) params
+              in
+              let* () =
+                validate_statement_block_duplicates ~scope_names:body_value_names
+                  statements
+              in
               let* statements =
                 Result_list.map (resolve_stmt ~defer_const_structs [] 0) statements
               in

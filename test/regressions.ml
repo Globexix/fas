@@ -844,9 +844,21 @@ let () =
   parse_error "raw-init-trailing" "fn f() i64 { x i64 = raw + 1\n return x }\n";
   semantic_error "lexical-scope-same-block" "duplicate local `value`"
     "fn f() i64 { value i64 = 1\n value i64 = 2\n return value }\n";
+  semantic_error "lexical-scope-parameter-body" "duplicate local `value`"
+    "fn f(value i64) i64 { value i64 = 2\n return value }\n";
+  semantic_error "lexical-scope-type-parameter-body" "duplicate local `T`"
+    "fn f[T](value T) T { T i32 = 2\n\
+    \ return value }\n\
+     fn main(value i32) i32 { return f[i32](value) }\n";
+  semantic_error "lexical-scope-const-parameter-body" "duplicate local `N`"
+    "fn f[N const i32]() i32 { N i32 = 2\n\
+    \ return N }\n\
+     fn main() i32 { return f[1]() }\n";
   ignore
     (lower_of
        "fn f() i64 { value i64 = 1\n { value i64 = 2\n value += 1 }\n return value }\n");
+  ignore
+    (lower_of "fn f(value i64) i64 { { value i64 = 2\n value += 1 }\n return value }\n");
   semantic_error "lexical-scope-independent-initialization"
     "use of uninitialized local `value`"
     "fn f() i64 { value i64\n { value i64 = 2 }\n return value }\n";
@@ -885,8 +897,8 @@ let () =
     (lower_of
        "fn delayed(out ptr[i64], value i64) void {\n\
        \ defer { out.* += value }\n\
-       \ value i64 = 100\n\
-       \ out.* += value - 100\n\
+       \ { value i64 = 100\n\
+       \ out.* += value - 100 }\n\
        \ }\n");
   semantic_error "lexical-scope-const-shadow" "shadows a const"
     "const value i64 = 1\nfn f() i64 { value i64 = 2\n return value }\n";
@@ -3064,6 +3076,13 @@ let () =
     \ return 3 }\n\
      }\n\
      fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-duplicate-local" "duplicate local `value`"
+    "fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { value i32 = 1\n\
+    \ value i32 = 2\n\
+    \ return value }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
   ignore
     (llvm_of
        "fn choose[N const i32](value i32) i32 {\n\
@@ -3072,6 +3091,22 @@ let () =
        \ return copy }\n\
         }\n\
         fn main() i32 { return choose[1](7) }\n");
+  ignore
+    (llvm_of
+       "fn choose[N const i32]() i32 {\n\
+       \ if N == 1 { return 7 } else { value i32 = 1\n\
+       \ { value i32 = 2 }\n\
+       \ return value }\n\
+        }\n\
+        fn main() i32 { return choose[1]() }\n");
+  ignore
+    (llvm_of
+       "const One i32 = 1\n\
+        fn leaf[N const i32]() i32 { return N }\n\
+        fn choose[N const i32]() i32 {\n\
+       \ if N == 1 { return 7 } else { return leaf[One]() }\n\
+        }\n\
+        fn main() i32 { return choose[1]() }\n");
 
   let const_generic_struct_function_source =
     "const THREE usize = 3\n\
