@@ -24,6 +24,7 @@ type call_target = User of string | Builtin of builtin
 type expr =
   | EInt of int64 * ty * Span.t
   | EBool of bool * Span.t
+  | EVector of int64 list * ty * Span.t
   | Null of ty * Span.t
   | EString of int * Span.t
   | Local of local * Span.t
@@ -115,6 +116,7 @@ let rec ty_name = function
 
 let expr_ty = function
   | EInt (_, t, _)
+  | EVector (_, t, _)
   | Unary (_, _, t, _)
   | Binary (_, _, _, t, _)
   | Call (_, _, t, _)
@@ -137,6 +139,7 @@ let expr_ty = function
 
 let expr_span = function
   | EInt (_, _, s)
+  | EVector (_, _, s)
   | EBool (_, s)
   | Null (_, s)
   | EString (_, s)

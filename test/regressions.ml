@@ -208,11 +208,21 @@ let () =
     "const A i32 = 1\n\
      const X vec[2,i32] = bitcast[vec[2,i32]](A)\n\
      fn main() i32 { return 0 }\n";
-  semantic_error "constant-vector-bitcast-representation"
-    "constant cast requires scalar integer or bool types"
-    "const A i64 = 1\n\
-     const X vec[2,i32] = bitcast[vec[2,i32]](A)\n\
-     fn main() i32 { return 0 }\n";
+  let constant_vector_bitcasts =
+    llvm_of
+      "const A i64 = 1\n\
+       const X vec[2,i32] = bitcast[vec[2,i32]](A)\n\
+       const Y vec[4,u16] = bitcast[vec[4,u16]](X)\n\
+       const Z i64 = bitcast[i64](Y)\n\
+       fn x_lane() i32 { return X[1] }\n\
+       fn y_lane() u16 { return Y[2] }\n\
+       fn main() i32 { return trunc[i32](Z) }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains constant_vector_bitcasts marker) then
+        failwith ("constant-vector-bitcasts: missing `" ^ marker ^ "`"))
+    [ "<i32 1, i32 0>"; "<i16 1, i16 0, i16 0, i16 0>"; "trunc i64 1 to i32" ];
   let constant_casts =
     llvm_of
       "const Byte u8 = 255\n\
@@ -298,16 +308,111 @@ let () =
     \ fn f(value Pair) vec[2,u32] { return bitcast[vec[2,u32]](value) }\n";
   semantic_error "integer-vector-bitcast-pointer" "illegal cast"
     "fn f(value ptr[u8]) vec[1,u64] { return bitcast[vec[1,u64]](value) }\n";
-  semantic_error "integer-vector-bitcast-zext" "illegal cast"
-    "fn f(value vec[4,u8]) vec[4,u16] { return zext[vec[4,u16]](value) }\n";
-  semantic_error "integer-vector-bitcast-sext" "illegal cast"
-    "fn f(value vec[4,i8]) vec[4,i16] { return sext[vec[4,i16]](value) }\n";
-  semantic_error "integer-vector-bitcast-trunc" "illegal cast"
-    "fn f(value vec[4,u16]) vec[4,u8] { return trunc[vec[4,u8]](value) }\n";
+  let integer_vector_conversions =
+    llvm_of
+      "fn widen_unsigned(value vec[4,u8]) vec[4,u16] {\n\
+      \ return zext[vec[4,u16]](value)\n\
+       }\n\
+       fn widen_signed(value vec[4,i8]) vec[4,i16] {\n\
+      \ return sext[vec[4,i16]](value)\n\
+       }\n\
+       fn narrow(value vec[4,u16]) vec[4,u8] {\n\
+      \ return trunc[vec[4,u8]](value)\n\
+       }\n\
+       fn truth_bits(value vec[4,u8]) vec[4,bool] {\n\
+      \ return trunc[vec[4,bool]](value)\n\
+       }\n\
+       fn widen_bool_unsigned(value vec[4,bool]) vec[4,u8] {\n\
+      \ return zext[vec[4,u8]](value)\n\
+       }\n\
+       fn widen_bool_signed(value vec[4,bool]) vec[4,i8] {\n\
+      \ return sext[vec[4,i8]](value)\n\
+       }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains integer_vector_conversions marker) then
+        failwith ("integer-vector-conversions: missing `" ^ marker ^ "`"))
+    [ "zext <4 x i8>"; "sext <4 x i8>"; "trunc <4 x i16>"; "trunc <4 x i8>" ];
+  semantic_error "integer-vector-zext-lane-count" "illegal cast"
+    "fn f(value vec[4,u8]) vec[2,u16] { return zext[vec[2,u16]](value) }\n";
+  semantic_error "integer-vector-zext-must-widen" "illegal cast"
+    "fn f(value vec[4,u16]) vec[4,u8] { return zext[vec[4,u8]](value) }\n";
+  semantic_error "integer-vector-trunc-must-narrow" "illegal cast"
+    "fn f(value vec[4,u8]) vec[4,u16] { return trunc[vec[4,u16]](value) }\n";
   semantic_error "integer-vector-bitcast-opaque" "illegal cast"
     "opaque Handle\nfn f(value i64) void { bitcast[Handle](value)\n return }\n";
   semantic_error "integer-vector-bitcast-void" "illegal cast"
     "fn f(value i64) void { bitcast[void](value)\n return }\n";
+  semantic_error "constant-bool-arithmetic"
+    "arithmetic requires integer or vector operands"
+    "const Invalid bool = true + true\nfn main() i32 { return 0 }\n";
+  semantic_error "constant-bool-shift" "builtin shift arguments must be integers"
+    "const Invalid bool = shl(true, false)\nfn main() i32 { return 0 }\n";
+  semantic_error "constant-dead-ternary-type" "type mismatch"
+    "const Invalid i32 = true ? 1 : false\nfn main() i32 { return Invalid }\n";
+  ignore (llvm_of "const Safe i32 = true ? 7 : 1 / 0\nfn main() i32 { return Safe }\n");
+  let vector_constants =
+    llvm_of
+      "const Bytes vec[4,u8] = splat(255)\n\
+       const Signed vec[4,i8] = bitcast[vec[4,i8]](Bytes)\n\
+       const WideUnsigned vec[4,u16] = zext[vec[4,u16]](Bytes)\n\
+       const WideSigned vec[4,i16] = sext[vec[4,i16]](Signed)\n\
+       const Narrow vec[4,u8] = trunc[vec[4,u8]](WideUnsigned)\n\
+       const Flags vec[4,bool] = splat(true)\n\
+       const BoolUnsigned vec[4,u8] = zext[vec[4,u8]](Flags)\n\
+       const BoolSigned vec[4,i8] = sext[vec[4,i8]](Flags)\n\
+       const LowBits vec[4,bool] = trunc[vec[4,bool]](Narrow)\n\
+       const Added vec[4,u8] = Narrow + splat(1)\n\
+       const Shifted vec[4,u8] = shl(Added, 1)\n\
+       const Matches vec[4,bool] = Shifted == splat(0)\n\
+       fn unsigned_lane() u16 { return WideUnsigned[2] }\n\
+       fn signed_lane() i16 { return WideSigned[1] }\n\
+       fn narrow_lane() u8 { return Narrow[3] }\n\
+       fn bool_unsigned_lane() u8 { return BoolUnsigned[0] }\n\
+       fn bool_signed_lane() i8 { return BoolSigned[0] }\n\
+       fn low_bit_lane() bool { return LowBits[0] }\n\
+       fn match_lane() bool { return Matches[0] }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains vector_constants marker) then
+        failwith ("vector-constants: missing `" ^ marker ^ "`"))
+    [
+      "<i16 255, i16 255, i16 255, i16 255>";
+      "<i16 65535, i16 65535, i16 65535, i16 65535>";
+      "<i8 255, i8 255, i8 255, i8 255>";
+      "<i1 1, i1 1, i1 1, i1 1>";
+      "<i8 1, i8 1, i8 1, i8 1>";
+    ];
+  semantic_error "named-vector-constant-keeps-type" "type mismatch"
+    "const Bytes vec[4,u8] = splat(1)\n\
+     fn take(value vec[4,u16]) void { return }\n\
+     fn main() void { take(Bytes)\n\
+    \ return }\n";
+  semantic_error "constant-vector-conversion-lanes" "illegal cast"
+    "const Bytes vec[4,u8] = splat(1)\n\
+     const Wide vec[2,u16] = zext[vec[2,u16]](Bytes)\n\
+     fn main() i32 { return 0 }\n";
+  semantic_error "constant-vector-division-by-zero" "division by zero"
+    "const Values vec[4,u8] = splat(8)\n\
+     const Zero vec[4,u8] = splat(0)\n\
+     const Invalid vec[4,u8] = Values / Zero\n\
+     fn main() i32 { return 0 }\n";
+  semantic_error "constant-vector-index-assignment" "cannot modify constant"
+    "const Values vec[4,u8] = splat(1)\nfn main() i32 { Values[0] = 2\n return 0 }\n";
+  semantic_error "constant-vector-index-compound-assignment" "cannot modify constant"
+    "const Values vec[4,u8] = splat(1)\nfn main() i32 { Values[0] += 2\n return 0 }\n";
+  semantic_error "constant-vector-address" "cannot take the address"
+    "const Values vec[4,u8] = splat(1)\nfn main() i32 { &Values\n return 0 }\n";
+  ignore
+    (llvm_of
+       "const Safe vec[4,u8] = true ? splat(7) : splat(1) / splat(0)\n\
+        fn main() u8 { return Safe[0] }\n");
+  semantic_error "constant-vector-dead-ternary-type" "type mismatch"
+    "const Invalid vec[4,u8] = true ? splat(7) : splat(true)\n\
+     fn main() i32 { return 0 }\n";
+  ignore (llvm_of "fn f() bool { return 0 && (1 / 0 == 0) }\n");
   let integer_vector_comparisons =
     llvm_of
       "fn signed(left vec[4,i32], right vec[4,i32]) bool {\n\
@@ -1618,7 +1723,7 @@ let () =
   if not (contains signed_rem_const "ret i64 0") then
     failwith "signed-rem-constant-overflow: expected zero remainder";
 
-  semantic_error "fas-026-const-array-write" "cannot modify const array"
+  semantic_error "fas-026-const-array-write" "cannot modify constant"
     "const K arr[2, i64] = {1, 2}\nfn main() i32 { K[0] = 9\n return 0 }\n";
   semantic_error "fas-026-const-array-address" "cannot modify read-only pointer"
     "const K arr[2, i64] = {1, 2}\n\
@@ -3207,6 +3312,12 @@ let () =
     \ if N == 1 { return 7 } else { return zext[u8](256) }\n\
      }\n\
      fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-fixed-cast-target"
+    "illegal cast target type"
+    "fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { return zext[void](N) }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-nongeneric-application" "is not generic"
     "fn plain(value i32) i32 { return value }\n\
      fn choose[N const i32]() i32 {\n\
@@ -3584,12 +3695,9 @@ let () =
   if not (contains runtime_short_circuit "br") then
     failwith "runtime-logical-short-circuit: branch lowering missing";
 
-  semantic_error "const-logical-static-right" "division by zero in constant expression"
-    "const Z bool = false && (1 / 0 == 0)\n";
+  ignore (llvm_of "const Z bool = false && (1 / 0 == 0)\n");
 
-  semantic_error "runtime-logical-static-right"
-    "division by zero is not a defined runtime operation"
-    "fn f() bool { return false && (1 / 0 == 0) }\n";
+  ignore (llvm_of "fn f() bool { return false && (1 / 0 == 0) }\n");
 
   semantic_error "const-logical-reaches-right" "division by zero in constant expression"
     "const Z bool = true && (1 / 0 == 0)\n";

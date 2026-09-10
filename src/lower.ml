@@ -50,6 +50,7 @@ let open_block s = !(s.current.term) = None
 
 let value_ty = function
   | Ir.Const (t, _)
+  | Const_vector (t, _)
   | Null t
   | Undef t
   | Zero t
@@ -329,6 +330,10 @@ let normalize_index s expression value =
 let rec expr s = function
   | Hir.EInt (v, t, _) -> Ok (Ir.Const (ty t, v))
   | Hir.EBool (v, _) -> Ok (Ir.Const (Ir.I1, if v then 1L else 0L))
+  | Hir.EVector (values, (Hir.Vec (lanes, (Hir.Bool | Hir.Int _)) as t), span) ->
+      if List.length values = lanes then Ok (Ir.Const_vector (ty t, values))
+      else error span "malformed vector constant lane count"
+  | Hir.EVector (_, _, span) -> error span "malformed vector constant type"
   | Hir.Null (t, _) -> Ok (Ir.Null (ty t))
   | Hir.EString (i, sp) ->
       if i < 0 || i >= List.length s.strings then error sp "missing interned string"

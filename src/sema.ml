@@ -122,6 +122,7 @@ type context = {
   mutable loop_depth : int;
   mutable in_defer : bool;
   mutable falls_through : bool;
+  mutable checking_dead : bool;
   limits : Limits.t;
 }
 
@@ -247,11 +248,25 @@ let cast_legal kind from target =
     | Some source_width, Some destination_width -> destination_width < source_width
     | _ -> false
   in
+  let lane_conversion relation source target =
+    match (source, target) with
+    | Hir.Vec (source_lanes, source_element), Hir.Vec (target_lanes, target_element)
+      when source_lanes = target_lanes -> (
+        match
+          ( integer_value_bit_width source_element,
+            integer_value_bit_width target_element )
+        with
+        | Some source_width, Some target_width -> relation source_width target_width
+        | _ -> false)
+    | _ -> false
+  in
   match kind with
   | Ast.Zext | Ast.Sext ->
-      (from = Hir.Bool || is_int from) && is_int target && strictly_wider ()
+      ((from = Hir.Bool || is_int from) && is_int target && strictly_wider ())
+      || lane_conversion ( < ) from target
   | Ast.Trunc ->
-      is_int from && (is_int target || target = Hir.Bool) && strictly_narrower ()
+      (is_int from && (is_int target || target = Hir.Bool) && strictly_narrower ())
+      || lane_conversion ( > ) from target
   | Ast.Bitcast -> (
       match (from, target) with
       | Hir.Ptr _, Hir.Ptr _ | Hir.Ptr _, Hir.ConstPtr _ -> true
@@ -968,6 +983,13 @@ let intern_string c s =
       c.string_ids <- (s, i) :: c.string_ids;
       i
 
+let with_dead_check c dead check =
+  let previous = c.checking_dead in
+  c.checking_dead <- previous || dead;
+  let result = check () in
+  c.checking_dead <- previous;
+  result
+
 let compatible actual expected =
   equal actual expected
   || match (actual, expected) with Hir.Ptr a, Hir.ConstPtr b -> equal a b | _ -> false
@@ -978,6 +1000,34 @@ let ensure_expected actual expected span =
     error span
       (Printf.sprintf "type mismatch: expected %s, got %s" (ty_name expected)
          (ty_name actual))
+
+let binary_result_type ~mismatch span operation left right =
+  if
+    not
+      (equal left right
+      || (operation = Ast.Eq || operation = Ast.Ne)
+         && (compatible left right || compatible right left))
+  then error span mismatch
+  else
+    match operation with
+    | Ast.Eq | Ast.Ne -> (
+        match left with
+        | Hir.Vec (lanes, (Hir.Bool | Hir.Int _)) -> Ok (Hir.Vec (lanes, Hir.Bool))
+        | _ when is_scalar left -> Ok Hir.Bool
+        | _ -> error span "equality requires scalar or integer/bool-vector operands")
+    | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
+        if is_int left then Ok Hir.Bool
+        else
+          match left with
+          | Hir.Vec (lanes, Hir.Int _) -> Ok (Hir.Vec (lanes, Hir.Bool))
+          | _ -> error span "ordered comparison requires integer operands")
+    | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
+    | Ast.Bit_xor ->
+        if is_numeric left then Ok left
+        else error span "arithmetic requires integer or vector operands"
+    | Ast.And | Ast.Or ->
+        if is_truthy left && is_truthy right then Ok Hir.Bool
+        else error span "logical operands must be scalar"
 
 let variadic_promote e =
   match Hir.expr_ty e with
@@ -1008,8 +1058,40 @@ let leading64 x =
     in
     go 0 Int64.min_int
 
+let constant_bitcast source_ty source_values destination_ty =
+  let shape ty values =
+    match ty with
+    | Hir.Bool | Hir.Int _ ->
+        Option.map (fun width -> (width, 1, values)) (integer_value_bit_width ty)
+    | Hir.Vec (lanes, ((Hir.Bool | Hir.Int _) as element)) ->
+        Option.map
+          (fun width -> (width, lanes, values))
+          (integer_value_bit_width element)
+    | _ -> None
+  in
+  match (shape source_ty source_values, shape destination_ty []) with
+  | ( Some (source_width, source_lanes, source_values),
+      Some (destination_width, destination_lanes, _) )
+    when source_width * source_lanes = destination_width * destination_lanes
+         && List.length source_values = source_lanes ->
+      let source_values = Array.of_list source_values in
+      let bit position =
+        let lane = position / source_width in
+        let offset = position mod source_width in
+        Int64.logand (Int64.shift_right_logical source_values.(lane) offset) 1L
+      in
+      Ok
+        (List.init destination_lanes (fun lane ->
+             let value = ref 0L in
+             for offset = 0 to destination_width - 1 do
+               if bit ((lane * destination_width) + offset) <> 0L then
+                 value := Int64.logor !value (Int64.shift_left 1L offset)
+             done;
+             !value))
+  | _ -> Error ()
+
 let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts expected
-    ?(check_only = false) = function
+    ?(check_only = false) ?(validate_dead = true) = function
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
@@ -1035,34 +1117,42 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts exp
       else error s ("integer literal is out of range for " ^ ty_name t)
   | Ast.Unary (Ast.Neg, e, s) ->
       let* t, v =
-        const_expr ~structs ~named_types ~arrays consts expected ~check_only e
+        const_expr ~structs ~named_types ~arrays consts expected ~check_only
+          ~validate_dead e
       in
       if not (is_int t) then error s "unary minus requires an integer"
       else Ok (t, mask_value t (Int64.neg v))
   | Ast.Unary (Ast.Bit_not, e, s) ->
       let* t, v =
-        const_expr ~structs ~named_types ~arrays consts expected ~check_only e
+        const_expr ~structs ~named_types ~arrays consts expected ~check_only
+          ~validate_dead e
       in
       if not (is_int t) then error s "bitwise not requires an integer"
       else Ok (t, mask_value t (Int64.lognot v))
   | Ast.Unary (Ast.Not, e, _) ->
-      let* _, v = const_expr ~structs ~named_types ~arrays consts None ~check_only e in
+      let* _, v =
+        const_expr ~structs ~named_types ~arrays consts None ~check_only ~validate_dead
+          e
+      in
       Ok (Hir.Bool, if v = 0L then 1L else 0L)
   | Ast.Binary (((Ast.And | Ast.Or) as op), l, r, s) ->
       let* lt, lv =
-        const_expr ~structs ~named_types ~arrays consts None ~check_only l
+        const_expr ~structs ~named_types ~arrays consts None ~check_only ~validate_dead
+          l
       in
       if not (is_truthy lt) then error s "logical operands must be scalar"
       else if
         (not check_only) && ((op = Ast.And && lv = 0L) || (op = Ast.Or && lv <> 0L))
       then
         let* _ =
-          const_expr ~structs ~named_types ~arrays consts None ~check_only:true r
+          const_expr ~structs ~named_types ~arrays consts None ~check_only:true
+            ~validate_dead r
         in
         Ok (Hir.Bool, if op = Ast.And then 0L else 1L)
       else
         let* rt, rv =
-          const_expr ~structs ~named_types ~arrays consts None ~check_only r
+          const_expr ~structs ~named_types ~arrays consts None ~check_only
+            ~validate_dead r
         in
         if not (is_truthy rt) then error s "logical operands must be scalar"
         else Ok (Hir.Bool, if rv <> 0L then 1L else 0L)
@@ -1072,23 +1162,29 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts exp
         | ( (Ast.Int_lit _ | Ast.Unary (Ast.Neg, Ast.Int_lit _, _)),
             (Ast.Eq | Ne | Lt | Le | Gt | Ge) ) ->
             let* rt, rv =
-              const_expr ~structs ~named_types ~arrays consts None ~check_only r
+              const_expr ~structs ~named_types ~arrays consts None ~check_only
+                ~validate_dead r
             in
             let* lt, lv =
-              const_expr ~structs ~named_types ~arrays consts (Some rt) ~check_only l
+              const_expr ~structs ~named_types ~arrays consts (Some rt) ~check_only
+                ~validate_dead l
             in
             Ok ((lt, lv), (rt, rv))
         | _ ->
             let* lt, lv =
-              const_expr ~structs ~named_types ~arrays consts expected ~check_only l
+              const_expr ~structs ~named_types ~arrays consts expected ~check_only
+                ~validate_dead l
             in
             let* rt, rv =
-              const_expr ~structs ~named_types ~arrays consts (Some lt) ~check_only r
+              const_expr ~structs ~named_types ~arrays consts (Some lt) ~check_only
+                ~validate_dead r
             in
             Ok ((lt, lv), (rt, rv))
       in
-      if not (equal lt rt) then error s "constant operands have different types"
-      else if (op = Ast.Div || op = Ast.Rem) && rv = 0L then
+      let* result_ty =
+        binary_result_type ~mismatch:"constant operands have different types" s op lt rt
+      in
+      if (not check_only) && (op = Ast.Div || op = Ast.Rem) && rv = 0L then
         error s "division by zero in constant expression"
       else
         let signed_lv = sign_extend_value lt lv in
@@ -1120,10 +1216,17 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts exp
             | Bit_or -> Int64.logor lv rv
             | Bit_xor -> Int64.logxor lv rv
             | Div ->
-                if is_unsigned lt then Int64.unsigned_div lv rv
+                if check_only && rv = 0L then 0L
+                else if
+                  check_only
+                  && (not (is_unsigned lt))
+                  && signed_lv = signed_min && signed_rv = Int64.minus_one
+                then 0L
+                else if is_unsigned lt then Int64.unsigned_div lv rv
                 else Int64.div signed_lv signed_rv
             | Rem ->
-                if is_unsigned lt then Int64.unsigned_rem lv rv
+                if check_only && rv = 0L then 0L
+                else if is_unsigned lt then Int64.unsigned_rem lv rv
                 else Int64.rem signed_lv signed_rv
             | Eq -> if lv = rv then 1L else 0L
             | Ne -> if lv <> rv then 1L else 0L
@@ -1134,21 +1237,47 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts exp
             | And -> if lv <> 0L && rv <> 0L then 1L else 0L
             | Or -> if lv <> 0L || rv <> 0L then 1L else 0L
           in
-          let rt =
-            match op with
-            | Ast.Eq | Ne | Lt | Le | Gt | Ge | And | Or -> Hir.Bool
-            | _ -> lt
-          in
-          Ok (rt, mask_value rt result)
-  | Ast.Ternary (c, a, b, _s) ->
-      let* _, cv = const_expr ~structs ~named_types ~arrays consts None ~check_only c in
-      if cv <> 0L then
-        const_expr ~structs ~named_types ~arrays consts expected ~check_only a
-      else const_expr ~structs ~named_types ~arrays consts expected ~check_only b
+          Ok (result_ty, mask_value result_ty result)
+  | Ast.Ternary (c, a, b, s) ->
+      let* ct, cv =
+        const_expr ~structs ~named_types ~arrays consts None ~check_only ~validate_dead
+          c
+      in
+      if not (is_truthy ct) then error s "ternary condition must be scalar"
+      else if cv <> 0L then
+        let* at, av =
+          const_expr ~structs ~named_types ~arrays consts expected ~check_only
+            ~validate_dead a
+        in
+        let* () =
+          if not validate_dead then Ok ()
+          else
+            let* bt, _ =
+              const_expr ~structs ~named_types ~arrays consts (Some at) ~check_only:true
+                ~validate_dead b
+            in
+            ensure_expected bt at (Ast.expr_span b)
+        in
+        Ok (at, av)
+      else
+        let* bt, bv =
+          const_expr ~structs ~named_types ~arrays consts expected ~check_only
+            ~validate_dead b
+        in
+        let* () =
+          if not validate_dead then Ok ()
+          else
+            let* at, _ =
+              const_expr ~structs ~named_types ~arrays consts (Some bt) ~check_only:true
+                ~validate_dead a
+            in
+            ensure_expected at bt (Ast.expr_span a)
+        in
+        Ok (bt, bv)
   | Ast.Cast (k, dst, e, s) ->
       let* dt = source_ty_with_values named_types consts s dst in
-      let* st, v =
-        const_expr ~structs ~named_types ~arrays consts ~check_only
+      let scalar_source () =
+        const_expr ~structs ~named_types ~arrays consts ~check_only ~validate_dead
           (if
              k = Ast.Bitcast
              &&
@@ -1159,12 +1288,24 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts exp
            else None)
           e
       in
+      let* st, v, reshaped =
+        match scalar_source () with
+        | Ok (st, v) -> Ok (st, v, false)
+        | Error scalar_error -> (
+            match vector_const_expr ~structs ~named_types ~arrays consts None e with
+            | Ok (st, values) when k = Ast.Bitcast && cast_legal k st dt -> (
+                match constant_bitcast st values dt with
+                | Ok [ value ] -> Ok (st, value, true)
+                | _ -> Error scalar_error)
+            | _ -> Error scalar_error)
+      in
       let* () =
         if cast_legal k st dt then Ok ()
         else error s "illegal cast for source and destination widths"
       in
       let* () =
-        if (st = Hir.Bool || is_int st) && (dt = Hir.Bool || is_int dt) then Ok ()
+        if ((st = Hir.Bool || is_int st) && (dt = Hir.Bool || is_int dt)) || reshaped
+        then Ok ()
         else error s "constant cast requires scalar integer or bool types"
       in
       let sb =
@@ -1175,12 +1316,14 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts exp
         | _ -> 0
       in
       let result =
-        match k with
-        | Ast.Sext when sb < 64 ->
-            let shift = 64 - sb in
-            Int64.shift_right (Int64.shift_left v shift) shift
-        | Ast.Trunc when dt = Hir.Bool -> Int64.logand v 1L
-        | _ -> v
+        if reshaped then v
+        else
+          match k with
+          | Ast.Sext when sb < 64 ->
+              let shift = 64 - sb in
+              Int64.shift_right (Int64.shift_left v shift) shift
+          | Ast.Trunc when dt = Hir.Bool -> Int64.logand v 1L
+          | _ -> v
       in
       Ok (dt, mask_value dt result)
   | Ast.Call (Ast.Ident ("len", _), [ Ast.String_lit (cstr, v, _) ], s) ->
@@ -1195,35 +1338,50 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts exp
       let* vals =
         Result_list.map
           (fun a ->
-            const_expr ~structs ~named_types ~arrays consts expected ~check_only a)
+            const_expr ~structs ~named_types ~arrays consts expected ~check_only
+              ~validate_dead a)
           args
       in
       match (name, vals) with
-      | ("shl" | "lshr" | "ashr" | "rotl" | "rotr"), [ (t, x); (_, n) ] ->
+      | ("shl" | "lshr" | "ashr" | "rotl" | "rotr"), [ (t, x); (count_ty, n) ] ->
+          let* () =
+            if is_int t && is_int count_ty then Ok ()
+            else error s "builtin shift arguments must be integers"
+          in
           let bits = match t with Hir.Int q -> int_bits q | _ -> 64 in
           let k = Int64.to_int (Int64.logand n (Int64.of_int (bits - 1))) in
           let v =
-            match name with
-            | "shl" -> Int64.shift_left x k
-            | "lshr" -> Int64.shift_right_logical x k
-            | "ashr" -> Int64.shift_right (sign_extend_bits t x) k
-            | "rotl" ->
-                Int64.logor (Int64.shift_left x k)
-                  (Int64.shift_right_logical x (bits - k))
-            | _ ->
-                Int64.logor
-                  (Int64.shift_right_logical x k)
-                  (Int64.shift_left x (bits - k))
+            if k = 0 then x
+            else
+              match name with
+              | "shl" -> Int64.shift_left x k
+              | "lshr" -> Int64.shift_right_logical x k
+              | "ashr" -> Int64.shift_right (sign_extend_bits t x) k
+              | "rotl" ->
+                  Int64.logor (Int64.shift_left x k)
+                    (Int64.shift_right_logical x (bits - k))
+              | _ ->
+                  Int64.logor
+                    (Int64.shift_right_logical x k)
+                    (Int64.shift_left x (bits - k))
           in
           Ok (t, mask_value t v)
-      | "popcount", [ (t, x) ] -> Ok (t, Int64.of_int (popcount64 x))
+      | "popcount", [ (t, x) ] ->
+          if is_int t then Ok (t, Int64.of_int (popcount64 x))
+          else error s "builtin argument must be an integer"
       | ("ctz" | "clz"), [ (t, 0L) ] ->
-          let bits = match t with Hir.Int q -> int_bits q | _ -> 64 in
-          Ok (t, Int64.of_int bits)
-      | "ctz", [ (t, x) ] -> Ok (t, Int64.of_int (trailing64 x))
+          if is_int t then
+            let bits = match t with Hir.Int q -> int_bits q | _ -> 64 in
+            Ok (t, Int64.of_int bits)
+          else error s "builtin argument must be an integer"
+      | "ctz", [ (t, x) ] ->
+          if is_int t then Ok (t, Int64.of_int (trailing64 x))
+          else error s "builtin argument must be an integer"
       | "clz", [ (t, x) ] ->
-          let b = match t with Hir.Int q -> int_bits q | _ -> 64 in
-          Ok (t, Int64.of_int (leading64 x - (64 - b)))
+          if is_int t then
+            let b = match t with Hir.Int q -> int_bits q | _ -> 64 in
+            Ok (t, Int64.of_int (leading64 x - (64 - b)))
+          else error s "builtin argument must be an integer"
       | _ -> error s "invalid constant builtin call")
   | Ast.Sizeof (t, s) ->
       let* t = source_ty_with_values named_types consts s t in
@@ -1243,16 +1401,223 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts exp
       | _ -> error s "offsetof requires a struct")
   | expr -> error (Ast.expr_span expr) "expression is not compile-time constant"
 
-let rec rooted_in_const_array = function
-  | Hir.Const_array _ -> true
+and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts expected
+    ?(check_only = false) expression =
+  let lane_type = function Hir.Vec (_, element) -> Some element | _ -> None in
+  let lane_mask ty value = mask_value ty value in
+  let lane_signed ty value = sign_extend_value ty value in
+  let evaluate = vector_const_expr ~structs ~named_types ~arrays consts ~check_only in
+  match expression with
+  | Ast.Ident (name, span) -> (
+      match lookup name arrays with
+      | Some (_, (Hir.Vec _ as ty), values) -> Ok (ty, values)
+      | _ -> error span "constant expression requires a known vector constant")
+  | Ast.Splat (value, span) -> (
+      match expected with
+      | Some (Hir.Vec (lanes, element) as ty) ->
+          let* actual, value =
+            const_expr ~structs ~named_types ~arrays consts (Some element) ~check_only
+              value
+          in
+          let* () = ensure_expected actual element (Ast.expr_span expression) in
+          Ok (ty, List.init lanes (fun _ -> lane_mask element value))
+      | _ -> error span "splat requires a vector type context")
+  | Ast.Binary (operation, left, right, span) ->
+      let* left_ty, left_values = evaluate expected left in
+      let* right_ty, right_values = evaluate (Some left_ty) right in
+      let* result_ty =
+        binary_result_type ~mismatch:"constant operands have different types" span
+          operation left_ty right_ty
+      in
+      let* element =
+        match lane_type left_ty with
+        | Some element -> Ok element
+        | None -> error span "vector operation requires vector operands"
+      in
+      if
+        (not check_only)
+        && (operation = Ast.Div || operation = Ast.Rem)
+        && List.exists (( = ) 0L) right_values
+      then error span "division by zero in constant expression"
+      else
+        let signed_min =
+          match element with
+          | Hir.Int kind ->
+              let bits = int_bits kind in
+              if bits = 64 then Int64.min_int
+              else Int64.neg (Int64.shift_left 1L (bits - 1))
+          | _ -> 0L
+        in
+        let signed_overflow =
+          operation = Ast.Div
+          && (not (is_unsigned element))
+          && List.exists2
+               (fun left right ->
+                 lane_signed element left = signed_min
+                 && lane_signed element right = Int64.minus_one)
+               left_values right_values
+        in
+        if (not check_only) && signed_overflow then
+          error span "signed division overflow in constant expression"
+        else
+          let result_element =
+            match operation with
+            | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> Hir.Bool
+            | _ -> element
+          in
+          let apply left right =
+            let signed_left = lane_signed element left in
+            let signed_right = lane_signed element right in
+            let compare =
+              if is_unsigned element then Int64.unsigned_compare left right
+              else Int64.compare signed_left signed_right
+            in
+            match operation with
+            | Ast.Add -> Int64.add left right
+            | Ast.Sub -> Int64.sub left right
+            | Ast.Mul -> Int64.mul left right
+            | Ast.Bit_and -> Int64.logand left right
+            | Ast.Bit_or -> Int64.logor left right
+            | Ast.Bit_xor -> Int64.logxor left right
+            | Ast.Div ->
+                if check_only && right = 0L then 0L
+                else if
+                  check_only
+                  && (not (is_unsigned element))
+                  && signed_left = signed_min
+                  && signed_right = Int64.minus_one
+                then 0L
+                else if is_unsigned element then Int64.unsigned_div left right
+                else Int64.div signed_left signed_right
+            | Ast.Rem ->
+                if check_only && right = 0L then 0L
+                else if is_unsigned element then Int64.unsigned_rem left right
+                else Int64.rem signed_left signed_right
+            | Ast.Eq -> if left = right then 1L else 0L
+            | Ast.Ne -> if left <> right then 1L else 0L
+            | Ast.Lt -> if compare < 0 then 1L else 0L
+            | Ast.Le -> if compare <= 0 then 1L else 0L
+            | Ast.Gt -> if compare > 0 then 1L else 0L
+            | Ast.Ge -> if compare >= 0 then 1L else 0L
+            | Ast.And | Ast.Or -> 0L
+          in
+          Ok
+            ( result_ty,
+              List.map2
+                (fun left right -> lane_mask result_element (apply left right))
+                left_values right_values )
+  | Ast.Call (Ast.Ident (name, _), [ value; count ], span)
+    when List.mem name [ "shl"; "lshr"; "ashr"; "rotl"; "rotr" ] ->
+      let* ty, values = evaluate expected value in
+      let* element =
+        match lane_type ty with
+        | Some (Hir.Int _ as element) -> Ok element
+        | _ -> error span "builtin shift value must be an integer vector"
+      in
+      let* count_ty, count =
+        const_expr ~structs ~named_types ~arrays consts None ~check_only count
+      in
+      if not (is_int count_ty) then error span "builtin shift count must be an integer"
+      else
+        let bits = Option.get (integer_value_bit_width element) in
+        let amount = Int64.to_int (Int64.logand count (Int64.of_int (bits - 1))) in
+        let apply value =
+          if amount = 0 then value
+          else
+            match name with
+            | "shl" -> Int64.shift_left value amount
+            | "lshr" -> Int64.shift_right_logical value amount
+            | "ashr" -> Int64.shift_right (lane_signed element value) amount
+            | "rotl" ->
+                Int64.logor
+                  (Int64.shift_left value amount)
+                  (Int64.shift_right_logical value (bits - amount))
+            | "rotr" ->
+                Int64.logor
+                  (Int64.shift_right_logical value amount)
+                  (Int64.shift_left value (bits - amount))
+            | _ -> value
+        in
+        Ok (ty, List.map (fun value -> lane_mask element (apply value)) values)
+  | Ast.Ternary (condition, yes, no, span) ->
+      let* condition_ty, condition_value =
+        const_expr ~structs ~named_types ~arrays consts None ~check_only condition
+      in
+      if not (is_truthy condition_ty) then error span "ternary condition must be scalar"
+      else if condition_value <> 0L then
+        let* yes_ty, yes_values = evaluate expected yes in
+        let* no_ty, _ =
+          vector_const_expr ~structs ~named_types ~arrays consts (Some yes_ty)
+            ~check_only:true no
+        in
+        let* () = ensure_expected no_ty yes_ty (Ast.expr_span no) in
+        Ok (yes_ty, yes_values)
+      else
+        let* no_ty, no_values = evaluate expected no in
+        let* yes_ty, _ =
+          vector_const_expr ~structs ~named_types ~arrays consts (Some no_ty)
+            ~check_only:true yes
+        in
+        let* () = ensure_expected yes_ty no_ty (Ast.expr_span yes) in
+        Ok (no_ty, no_values)
+  | Ast.Cast (kind, destination, value, span) ->
+      let* destination = source_ty_with_values named_types consts span destination in
+      let* source, values =
+        match evaluate None value with
+        | Ok result -> Ok result
+        | Error _ ->
+            let* source, value =
+              const_expr ~structs ~named_types ~arrays consts None ~check_only value
+            in
+            Ok (source, [ value ])
+      in
+      let* () =
+        if cast_legal kind source destination then Ok ()
+        else error span "illegal cast for source and destination widths"
+      in
+      if kind = Ast.Bitcast then
+        let* values =
+          match constant_bitcast source values destination with
+          | Ok values -> Ok values
+          | Error () -> error span "illegal constant bitcast representation"
+        in
+        Ok (destination, values)
+      else
+        let* source_element, destination_element =
+          match (source, destination) with
+          | ( Hir.Vec (source_lanes, source_element),
+              Hir.Vec (destination_lanes, destination_element) )
+            when source_lanes = destination_lanes ->
+              Ok (source_element, destination_element)
+          | _ -> error span "constant vector cast requires matching lane counts"
+        in
+        let source_width = Option.get (integer_value_bit_width source_element) in
+        let convert value =
+          let value =
+            match kind with
+            | Ast.Sext when source_width < 64 ->
+                let shift = 64 - source_width in
+                Int64.shift_right (Int64.shift_left value shift) shift
+            | Ast.Trunc when destination_element = Hir.Bool -> Int64.logand value 1L
+            | Ast.Zext | Ast.Sext | Ast.Trunc | Ast.Bitcast -> value
+          in
+          lane_mask destination_element value
+        in
+        Ok (destination, List.map convert values)
+  | _ ->
+      error (Ast.expr_span expression)
+        "expression is not a compile-time vector constant"
+
+let rec rooted_in_constant = function
+  | Hir.Const_array _ | Hir.EVector _ -> true
   | Hir.Index (a, _, _, _)
   | Hir.Field (a, _, _, _, _)
   | Hir.Deref (a, _, _)
   | Hir.Address (a, _, _)
   | Hir.Ptr_add (_, a, _, _, _)
   | Hir.Cast (_, a, _, _) ->
-      rooted_in_const_array a
-  | Hir.Ternary (_, a, b, _, _) -> rooted_in_const_array a || rooted_in_const_array b
+      rooted_in_constant a
+  | Hir.Ternary (_, a, b, _, _) -> rooted_in_constant a || rooted_in_constant b
   | _ -> false
 
 let rec rooted_in_string_literal = function
@@ -1294,7 +1659,7 @@ let rec check_place (c : context) expr =
   let static_index source =
     match
       const_expr ~structs:c.structs ~named_types:c.named_types ~arrays:c.arrays
-        visible_consts None source
+        visible_consts None ~validate_dead:false source
     with
     | Ok (ty, value) -> Known (ty, value)
     | Error _ -> Dynamic
@@ -1305,8 +1670,11 @@ let rec check_place (c : context) expr =
       | Some b -> Ok { expr = Hir.Local (b, s); root = Some b; path = Some (Exact []) }
       | None -> (
           match lookup n c.arrays with
-          | Some (_, t, _) ->
+          | Some (_, (Hir.Array _ as t), _) ->
               Ok { expr = Hir.Const_array (n, t, s); root = None; path = None }
+          | Some (_, (Hir.Vec _ as t), values) ->
+              Ok { expr = Hir.EVector (values, t, s); root = None; path = None }
+          | Some _ -> error s (Printf.sprintf "constant `%s` is not a place" n)
           | None -> (
               match lookup_top_level n c.top_level_bindings with
               | Some { declaration_kind = Top_const; _ } ->
@@ -1435,7 +1803,10 @@ and check_expr (c : context) expected = function
               | Some (_, t, v) -> Ok (Hir.EInt (v, t, s))
               | None -> (
                   match lookup n c.arrays with
-                  | Some (_, t, _) -> Ok (Hir.Const_array (n, t, s))
+                  | Some (_, (Hir.Array _ as t), _) -> Ok (Hir.Const_array (n, t, s))
+                  | Some (_, (Hir.Vec _ as t), values) ->
+                      Ok (Hir.EVector (values, t, s))
+                  | Some _ -> error s (Printf.sprintf "unknown name `%s`" n)
                   | None -> error s (Printf.sprintf "unknown name `%s`" n)))))
   | Ast.Unary (Ast.Neg, Ast.Int_lit (raw, is), s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error is m ]) in
@@ -1465,11 +1836,18 @@ and check_expr (c : context) expected = function
           if not (is_truthy (Hir.expr_ty te)) then
             error s "logical not requires a scalar"
           else Ok (Hir.Unary (op, te, Hir.Bool, s)))
-  | Ast.Binary (op, l, r, s) -> (
+  | Ast.Binary (op, l, r, s) ->
       if op = Ast.And || op = Ast.Or then (
         let* a = check_expr c None l in
         let after_left = c.initialized in
-        let* b = check_expr c None r in
+        let dead =
+          match (op, a) with
+          | Ast.And, Hir.EBool (false, _) | Ast.Or, Hir.EBool (true, _) -> true
+          | Ast.And, Hir.EInt (0L, _, _) -> true
+          | Ast.Or, Hir.EInt (value, _, _) when value <> 0L -> true
+          | _ -> false
+        in
+        let* b = with_dead_check c dead (fun () -> check_expr c None r) in
         let after_right = c.initialized in
         c.initialized <- merge_maps c after_left after_right;
         if is_truthy (Hir.expr_ty a) && is_truthy (Hir.expr_ty b) then
@@ -1499,36 +1877,16 @@ and check_expr (c : context) expected = function
         in
         let at = Hir.expr_ty a in
         let bt = Hir.expr_ty b in
+        let* result_ty =
+          binary_result_type ~mismatch:"binary operands must have the same type" s op at
+            bt
+        in
         if
           (op = Ast.Div || op = Ast.Rem)
+          && (not c.checking_dead)
           && match b with Hir.EInt (v, _, _) -> v = 0L | _ -> false
         then error s "division by zero is not a defined runtime operation"
-        else if
-          not
-            (equal at bt
-            || ((op = Ast.Eq || op = Ast.Ne) && (compatible at bt || compatible bt at))
-            )
-        then error s "binary operands must have the same type"
-        else
-          match op with
-          | Ast.Eq | Ast.Ne -> (
-              match at with
-              | Hir.Vec (length, (Hir.Bool | Hir.Int _)) ->
-                  Ok (Hir.Binary (op, a, b, Hir.Vec (length, Hir.Bool), s))
-              | _ when is_scalar at -> Ok (Hir.Binary (op, a, b, Hir.Bool, s))
-              | _ -> error s "equality requires scalar or integer/bool-vector operands")
-          | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
-              if is_int at then Ok (Hir.Binary (op, a, b, Hir.Bool, s))
-              else
-                match at with
-                | Hir.Vec (length, Hir.Int _) ->
-                    Ok (Hir.Binary (op, a, b, Hir.Vec (length, Hir.Bool), s))
-                | _ -> error s "ordered comparison requires integer operands")
-          | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
-          | Ast.Bit_xor ->
-              if is_numeric at then Ok (Hir.Binary (op, a, b, at, s))
-              else error s "arithmetic requires integer or vector operands"
-          | Ast.And | Ast.Or -> error s "logical operators are handled separately")
+        else Ok (Hir.Binary (op, a, b, result_ty, s))
   | Ast.Call (fn, args, s) -> check_call c None fn args s
   | Ast.Generic_args (_fn, _, s) ->
       error s "generic specialization is not available in this context"
@@ -1584,7 +1942,7 @@ and check_expr (c : context) expected = function
       | Hir.Local _ | Hir.Deref _ | Hir.Index _ | Hir.Field _ | Hir.Const_array _ ->
           let ty =
             if
-              rooted_in_const_array place.expr
+              rooted_in_constant place.expr
               || rooted_in_string_literal place.expr
               || rooted_in_readonly_pointer place.expr
             then Hir.ConstPtr (Hir.expr_ty place.expr)
@@ -1633,10 +1991,21 @@ and check_expr (c : context) expected = function
         error s "ternary condition must be scalar"
       else
         let before_arms = c.initialized in
-        let* ta = check_expr c expected a in
+        let condition =
+          match tq with
+          | Hir.EBool (value, _) -> Some value
+          | Hir.EInt (value, _, _) -> Some (value <> 0L)
+          | _ -> None
+        in
+        let* ta =
+          with_dead_check c (condition = Some false) (fun () -> check_expr c expected a)
+        in
         let after_a = c.initialized in
         c.initialized <- before_arms;
-        let* tb = check_expr c (Some (Hir.expr_ty ta)) b in
+        let* tb =
+          with_dead_check c (condition = Some true) (fun () ->
+              check_expr c (Some (Hir.expr_ty ta)) b)
+        in
         let after_b = c.initialized in
         c.initialized <- merge_maps c after_a after_b;
         let at = Hir.expr_ty ta and bt = Hir.expr_ty tb in
@@ -2010,8 +2379,7 @@ let check_target (c : context) = function
           | None -> error span (Printf.sprintf "unknown assignment target `%s`" n)))
   | Ast.Target_deref e -> (
       let* x = check_expr c None e in
-      if rooted_in_const_array x then
-        error (Ast.expr_span e) "cannot modify const array"
+      if rooted_in_constant x then error (Ast.expr_span e) "cannot modify constant"
       else
         match Hir.expr_ty x with
         | Hir.Ptr (Hir.Opaque _) | Hir.ConstPtr (Hir.Opaque _) ->
@@ -2026,8 +2394,7 @@ let check_target (c : context) = function
       let x = place.expr in
       match x with
       | Hir.Index (base, index, _, _) -> (
-          if rooted_in_const_array x then
-            error (Ast.expr_span a) "cannot modify const array"
+          if rooted_in_constant x then error (Ast.expr_span a) "cannot modify constant"
           else
             match Hir.expr_ty base with
             | Hir.Ptr Hir.Void | Hir.ConstPtr Hir.Void ->
@@ -2050,8 +2417,7 @@ let check_target (c : context) = function
       let x = place.expr in
       match x with
       | Hir.Field (base, _, _, _, _) -> (
-          if rooted_in_const_array x then
-            error (Ast.expr_span a) "cannot modify const array"
+          if rooted_in_constant x then error (Ast.expr_span a) "cannot modify constant"
           else if rooted_in_readonly_pointer x then
             error (Ast.expr_span a) "cannot modify read-only pointer"
           else
@@ -2881,6 +3247,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
       loop_depth = 0;
       in_defer = false;
       falls_through = true;
+      checking_dead = false;
       limits;
     }
   in
@@ -3079,7 +3446,29 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
                   validate_non_dependent_expression c dependent None value
               | Ast.Type_arg _ | Ast.Name_arg _ -> Ok ())
             arguments
-      | Ast.Cast (_, _, value, _) | Ast.Field (value, _, _) ->
+      | Ast.Cast (kind, destination, value, span) ->
+          let* () =
+            if type_mentions dependent destination then Ok ()
+            else
+              let* destination =
+                source_ty_with_values eval_named_types eval_consts span destination
+              in
+              let valid =
+                match (kind, destination) with
+                | (Ast.Zext | Ast.Sext), (Hir.Int _ | Hir.Vec (_, Hir.Int _)) -> true
+                | Ast.Trunc, (Hir.Bool | Hir.Int _ | Hir.Vec (_, (Hir.Bool | Hir.Int _)))
+                  ->
+                    true
+                | ( Ast.Bitcast,
+                    ( Hir.Bool | Hir.Int _ | Hir.Ptr _ | Hir.ConstPtr _
+                    | Hir.Vec (_, (Hir.Bool | Hir.Int _)) ) ) ->
+                    true
+                | _ -> false
+              in
+              if valid then Ok () else error span "illegal cast target type"
+          in
+          validate_non_dependent_expression c dependent None value
+      | Ast.Field (value, _, _) ->
           validate_non_dependent_expression c dependent None value
       | Ast.Ternary (condition, yes, no, _) ->
           let* () = validate_non_dependent_expression c dependent None condition in
@@ -4405,6 +4794,15 @@ let check ?(limits = Limits.default) program =
                 arrays := !arrays @ [ (name, t, vs) ];
                 Ok ()
           | Hir.Array _, _ -> error span "const array needs a brace-list initializer"
+          | (Hir.Vec _ as vector_ty), _ ->
+              let* actual_ty, values =
+                vector_const_expr ~structs ~named_types ~arrays:!arrays !consts
+                  (Some vector_ty) value
+              in
+              if equal actual_ty vector_ty then (
+                arrays := !arrays @ [ (name, vector_ty, values) ];
+                Ok ())
+              else error span "constant initializer type mismatch"
           | _, Ast.Array_lit _ -> error span "brace-list requires an array type"
           | _, _ ->
               let* vt, v =
@@ -4533,6 +4931,7 @@ let check ?(limits = Limits.default) program =
       loop_depth = 0;
       in_defer = false;
       falls_through = true;
+      checking_dead = false;
       limits;
     }
   in
@@ -4676,8 +5075,11 @@ let check ?(limits = Limits.default) program =
       !consts
   in
   let harrays =
-    List.map
-      (fun (n, t, vs) -> ({ Hir.name = n; ty = t; elems = vs } : Hir.const_arr_def))
+    List.filter_map
+      (fun (n, t, vs) ->
+        match t with
+        | Hir.Array _ -> Some ({ Hir.name = n; ty = t; elems = vs } : Hir.const_arr_def)
+        | _ -> None)
       !arrays
   in
   Ok

@@ -12,6 +12,7 @@ type ty =
 
 type value =
   | Const of ty * int64
+  | Const_vector of ty * int64 list
   | Null of ty
   | Undef of ty
   | Zero of ty
@@ -119,6 +120,7 @@ let rec ty_name = function
 
 let value_ty = function
   | Const (t, _)
+  | Const_vector (t, _)
   | Null t
   | Undef t
   | Zero t
@@ -150,6 +152,14 @@ let value_name = function
   | Const (I1, 0L) -> "false"
   | Const (I1, _) -> "true"
   | Const (_, v) -> Int64.to_string v
+  | Const_vector (Vector (_, element_ty), values) ->
+      "<"
+      ^ String.concat ", "
+          (List.map
+             (fun value -> ty_name element_ty ^ " " ^ Int64.to_string value)
+             values)
+      ^ ">"
+  | Const_vector (_, _) -> invalid_arg "vector constant requires a vector type"
   | Null _ -> "null"
   | Undef _ -> "poison"
   | Zero _ -> "zeroinitializer"

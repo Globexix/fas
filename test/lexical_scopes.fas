@@ -1,7 +1,9 @@
 fn delayed(out ptr[i32], value i32) void {
   defer { out.* += value }
-  value i32 = 100
-  out.* += value - 100
+  {
+    value i32 = 100
+    out.* += value - 100
+  }
 }
 
 fn scoped_defer(out ptr[i32]) void {
