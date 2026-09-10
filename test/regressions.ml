@@ -3162,6 +3162,105 @@ let () =
     \ return Item }\n\
      }\n\
      fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-invalid-operation"
+    "arithmetic requires integer or vector operands"
+    "fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { return true + true }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-local-type-mismatch"
+    "type mismatch: expected i32, got bool"
+    "fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { value i32 = true\n\
+    \ return value }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-assignment-type-mismatch"
+    "type mismatch: expected i32, got bool"
+    "fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { value i32 = 0\n\
+    \ value = true\n\
+    \ return value }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-call-type-mismatch"
+    "type mismatch: expected i32, got bool"
+    "fn plain(value i32) i32 { return value }\n\
+     fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { return plain(true) }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-dependent-call-sibling"
+    "type mismatch: expected i32, got bool"
+    "fn plain(left i32, right i32) i32 { return left + right }\n\
+     fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { return plain(N, true) }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-builtin-type" "must be an integer"
+    "fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { return popcount(true) }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-illegal-cast" "illegal cast"
+    "fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { return zext[u8](256) }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-nongeneric-application" "is not generic"
+    "fn plain(value i32) i32 { return value }\n\
+     fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { return plain[N](1) }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-wrong-generic-arity"
+    "wrong number of generic arguments"
+    "fn plain[T](value T) T { return value }\n\
+     fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { return plain[i32, i32](1) }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-wrong-generic-kind"
+    "expected a type argument"
+    "fn plain[T](value T) T { return value }\n\
+     fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { return plain[1](1) }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-generic-call-type"
+    "type mismatch: expected i32, got bool"
+    "fn plain[T](value T) T { return value }\n\
+     fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { return plain[i32](true) }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-const-argument-range" "out of range"
+    "fn plain[N const u8]() i32 { return 1 }\n\
+     fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { return plain[256]() }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-named-const-argument-type" "type mismatch"
+    "const Wide i32 = 7\n\
+     fn plain[N const u8]() i32 { return 1 }\n\
+     fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { return plain[Wide]() }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  ignore
+    (llvm_of
+       "const Wide i32 = 7\n\
+        fn plain[N const u8]() i32 { return zext[i32](N) }\n\
+        fn choose[N const i32]() i32 {\n\
+       \ if N == 1 { return 7 } else { return plain[trunc[u8](Wide)]() }\n\
+        }\n\
+        fn main() i32 { return choose[1]() }\n");
+  ignore
+    (llvm_of
+       "fn choose[N const i32](value i32) i32 {\n\
+       \ if N == 1 { return value } else { return value + N }\n\
+        }\n\
+        fn main() i32 { return choose[1](7) }\n");
   semantic_error "unselected-specialization-duplicate-local" "duplicate local `value`"
     "fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { value i32 = 1\n\

@@ -2462,6 +2462,28 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
         | Ast.Opaque { name; _ } | Ast.Struct { name; _ } -> Some name | _ -> None)
       program.Ast.items
   in
+  let validation_signatures =
+    List.filter_map
+      (function
+        | Ast.Func { name; generic_params = []; params; ret; variadic; span; _ } -> (
+            let result =
+              let* params =
+                Result_list.map
+                  (fun (parameter : Ast.param) ->
+                    let* ty =
+                      source_ty_with_values eval_named_types eval_consts parameter.span
+                        parameter.ty
+                    in
+                    Ok (parameter.name, ty))
+                  params
+              in
+              let* ret = source_ty_with_values eval_named_types eval_consts span ret in
+              Ok (name, { params; ret; variadic })
+            in
+            match result with Ok signature -> Some signature | Error _ -> None)
+        | _ -> None)
+      program.Ast.items
+  in
   let generic_type_names = ref [] in
   let type_param_names generic_params =
     List.filter_map
@@ -2499,7 +2521,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
     | Ast.Ptr ty | Ast.Ptr_const ty -> type_mentions names ty
     | Ast.Applied_type (_, arguments, _) ->
         List.exists (generic_argument_mentions names) arguments
-    | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Named_type _ -> false
+    | Ast.Named_type name -> List.mem name names
+    | Ast.Bool | Ast.Void | Ast.Int _ -> false
   and generic_argument_mentions names = function
     | Ast.Type_arg ty -> type_mentions names ty
     | Ast.Const_arg expression -> expression_mentions names expression
@@ -2618,6 +2641,38 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
           | Some (`Type _) ->
               error span (Printf.sprintf "`%s` is a type, not a function" name)
           | None -> error span (Printf.sprintf "unknown generic function `%s`" name)
+        in
+        let* () =
+          match List.assoc_opt name function_templates with
+          | None -> error span (Printf.sprintf "function `%s` is not generic" name)
+          | Some (Ast.Func { generic_params; _ }) ->
+              if List.length arguments <> List.length generic_params then
+                error application_span
+                  (Printf.sprintf "wrong number of generic arguments to `%s`" name)
+              else
+                Result_list.iter
+                  (fun (parameter, argument) ->
+                    match (parameter, argument) with
+                    | Ast.Type_param _, Ast.Type_arg _ -> Ok ()
+                    | Ast.Type_param _, Ast.Name_arg (argument_name, argument_span) -> (
+                        match nearest_kind value_names type_names argument_name with
+                        | Some (`Type _) -> Ok ()
+                        | Some _ -> error argument_span "expected a type argument"
+                        | None -> Ok ())
+                    | Ast.Const_param _, Ast.Const_arg _ -> Ok ()
+                    | Ast.Const_param _, Ast.Name_arg (argument_name, argument_span)
+                      -> (
+                        match nearest_kind value_names type_names argument_name with
+                        | Some (`Value _) -> Ok ()
+                        | Some _ -> error argument_span "expected a const argument"
+                        | None -> Ok ())
+                    | Ast.Const_param _, Ast.Type_arg (Ast.Applied_type _) -> Ok ()
+                    | Ast.Type_param _, _ ->
+                        error application_span "expected a type argument"
+                    | Ast.Const_param _, _ ->
+                        error application_span "expected a const argument")
+                  (List.combine generic_params arguments)
+          | Some _ -> error span (Printf.sprintf "`%s` is not a function" name)
         in
         Result_list.iter
           (validate_generic_argument_names value_names type_names application_span)
@@ -2804,6 +2859,374 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
     | statement :: rest ->
         let* scope_names = validate_statement_duplicates scope_names statement in
         validate_statement_block_duplicates ~scope_names rest
+  in
+  let make_legality_context ret_ty =
+    {
+      structs = eval_structs;
+      named_types = eval_named_types;
+      consts = eval_consts;
+      arrays = eval_arrays;
+      signatures = validation_signatures;
+      templates = function_templates;
+      top_level_bindings;
+      specializations;
+      spec_depth = 0;
+      spec_trace = [];
+      locals = ref [ Hashtbl.create 8 ];
+      initialized = IM.empty;
+      next_binding_id = 0;
+      strings = [];
+      string_ids = [];
+      ret_ty;
+      loop_depth = 0;
+      in_defer = false;
+      falls_through = true;
+      limits;
+    }
+  in
+  let rec has_generic_arguments = function
+    | Ast.Generic_args _ -> true
+    | Ast.Unary (_, expression, _)
+    | Ast.Deref (expression, _)
+    | Ast.Addr_of (expression, _)
+    | Ast.Splat (expression, _)
+    | Ast.Field (expression, _, _) ->
+        has_generic_arguments expression
+    | Ast.Binary (_, left, right, _)
+    | Ast.Index (left, right, _)
+    | Ast.Ptr_add (_, left, right, _) ->
+        has_generic_arguments left || has_generic_arguments right
+    | Ast.Call (callee, arguments, _) ->
+        has_generic_arguments callee || List.exists has_generic_arguments arguments
+    | Ast.Cast (_, _, expression, _) -> has_generic_arguments expression
+    | Ast.Ternary (condition, yes, no, _) ->
+        has_generic_arguments condition
+        || has_generic_arguments yes || has_generic_arguments no
+    | Ast.Array_lit (values, _) | Ast.Struct_lit (_, values, _) ->
+        List.exists has_generic_arguments values
+    | Ast.Sizeof _ | Ast.Alignof _ | Ast.Offsetof _ | Ast.Ident _ | Ast.Int_lit _
+    | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ ->
+        false
+  in
+  let rec substitute_validation_type substitutions = function
+    | Ast.Named_type name as ty ->
+        Option.value ~default:ty (List.assoc_opt name substitutions)
+    | Ast.Ptr ty -> Ast.Ptr (substitute_validation_type substitutions ty)
+    | Ast.Ptr_const ty -> Ast.Ptr_const (substitute_validation_type substitutions ty)
+    | Ast.Array (length, ty) ->
+        Ast.Array (length, substitute_validation_type substitutions ty)
+    | Ast.Vec (length, ty) ->
+        Ast.Vec (length, substitute_validation_type substitutions ty)
+    | Ast.Applied_type (name, arguments, span) ->
+        Ast.Applied_type
+          ( name,
+            List.map
+              (function
+                | Ast.Type_arg ty ->
+                    Ast.Type_arg (substitute_validation_type substitutions ty)
+                | argument -> argument)
+              arguments,
+            span )
+    | (Ast.Bool | Ast.Void | Ast.Int _) as ty -> ty
+  in
+  let rec validate_non_dependent_expression c dependent expected expression =
+    if
+      (not (expression_mentions dependent expression))
+      && not (has_generic_arguments expression)
+    then
+      let* checked = check_expr c expected expression in
+      match expected with
+      | None -> Ok ()
+      | Some expected ->
+          ensure_expected (Hir.expr_ty checked) expected (Ast.expr_span expression)
+    else
+      match expression with
+      | Ast.Unary (_, value, _)
+      | Ast.Deref (value, _)
+      | Ast.Addr_of (value, _)
+      | Ast.Splat (value, _) ->
+          validate_non_dependent_expression c dependent None value
+      | Ast.Binary (_, left, right, _)
+      | Ast.Index (left, right, _)
+      | Ast.Ptr_add (_, left, right, _) ->
+          let* () = validate_non_dependent_expression c dependent None left in
+          validate_non_dependent_expression c dependent None right
+      | Ast.Call (Ast.Ident (name, _), arguments, span) -> (
+          match List.assoc_opt name validation_signatures with
+          | Some signature -> (
+              if
+                (not signature.variadic)
+                && List.length arguments <> List.length signature.params
+                || signature.variadic
+                   && List.length arguments < List.length signature.params
+              then error span (Printf.sprintf "wrong number of arguments to `%s`" name)
+              else
+                let rec validate_arguments formals arguments =
+                  match (formals, arguments) with
+                  | [], trailing ->
+                      Result_list.iter
+                        (validate_non_dependent_expression c dependent None)
+                        trailing
+                  | (_, formal) :: formals, argument :: arguments ->
+                      let* () =
+                        validate_non_dependent_expression c dependent (Some formal)
+                          argument
+                      in
+                      validate_arguments formals arguments
+                  | _ -> error span "wrong number of arguments"
+                in
+                let* () = validate_arguments signature.params arguments in
+                match expected with
+                | None -> Ok ()
+                | Some expected -> ensure_expected signature.ret expected span)
+          | None ->
+              Result_list.iter
+                (validate_non_dependent_expression c dependent None)
+                arguments)
+      | Ast.Call
+          (Ast.Generic_args (Ast.Ident (name, _), generic_arguments, _), arguments, span)
+        -> (
+          match List.assoc_opt name function_templates with
+          | Some (Ast.Func { generic_params; params; ret; _ }) -> (
+              let rec resolve_arguments substitutions values parameters arguments =
+                match (parameters, arguments) with
+                | [], [] -> Ok (Some (substitutions, values))
+                | Ast.Type_param { name; _ } :: parameters, argument :: arguments -> (
+                    match argument with
+                    | Ast.Type_arg ty when not (type_mentions dependent ty) ->
+                        resolve_arguments ((name, ty) :: substitutions) values
+                          parameters arguments
+                    | Ast.Name_arg (argument_name, _)
+                      when not (List.mem argument_name dependent) ->
+                        resolve_arguments
+                          ((name, Ast.Named_type argument_name) :: substitutions)
+                          values parameters arguments
+                    | _ -> Ok None)
+                | Ast.Const_param parameter :: parameters, argument :: arguments ->
+                    let* expression = generic_const_argument span argument in
+                    if expression_mentions dependent expression then Ok None
+                    else
+                      let* ty =
+                        source_ty_with_values eval_named_types eval_consts
+                          parameter.span
+                          (substitute_validation_type substitutions parameter.ty)
+                      in
+                      let* actual_ty, value =
+                        const_expr ~structs:eval_structs ~named_types:eval_named_types
+                          ~arrays:eval_arrays eval_consts (Some ty) expression
+                      in
+                      let* () =
+                        ensure_expected actual_ty ty (Ast.expr_span expression)
+                      in
+                      resolve_arguments substitutions
+                        ((parameter.name, ty, value) :: values)
+                        parameters arguments
+                | _ -> Ok None
+              in
+              let* resolved =
+                resolve_arguments [] [] generic_params generic_arguments
+              in
+              match resolved with
+              | None ->
+                  Result_list.iter
+                    (validate_non_dependent_expression c dependent None)
+                    arguments
+              | Some (substitutions, values) -> (
+                  let* formals =
+                    Result_list.map
+                      (fun (parameter : Ast.param) ->
+                        source_ty_with_values eval_named_types values parameter.span
+                          (substitute_validation_type substitutions parameter.ty))
+                      params
+                  in
+                  if List.length formals <> List.length arguments then
+                    error span (Printf.sprintf "wrong number of arguments to `%s`" name)
+                  else
+                    let* () =
+                      Result_list.iter
+                        (fun (formal, argument) ->
+                          validate_non_dependent_expression c dependent (Some formal)
+                            argument)
+                        (List.combine formals arguments)
+                    in
+                    let* return_ty =
+                      source_ty_with_values eval_named_types values span
+                        (substitute_validation_type substitutions ret)
+                    in
+                    match expected with
+                    | None -> Ok ()
+                    | Some expected -> ensure_expected return_ty expected span))
+          | _ ->
+              Result_list.iter
+                (validate_non_dependent_expression c dependent None)
+                arguments)
+      | Ast.Call (callee, arguments, _) ->
+          let* () = validate_non_dependent_expression c dependent None callee in
+          Result_list.iter
+            (validate_non_dependent_expression c dependent None)
+            arguments
+      | Ast.Generic_args (Ast.Ident _, arguments, _) ->
+          Result_list.iter
+            (function
+              | Ast.Const_arg value ->
+                  validate_non_dependent_expression c dependent None value
+              | Ast.Type_arg _ | Ast.Name_arg _ -> Ok ())
+            arguments
+      | Ast.Generic_args (_, arguments, _) ->
+          Result_list.iter
+            (function
+              | Ast.Const_arg value ->
+                  validate_non_dependent_expression c dependent None value
+              | Ast.Type_arg _ | Ast.Name_arg _ -> Ok ())
+            arguments
+      | Ast.Cast (_, _, value, _) | Ast.Field (value, _, _) ->
+          validate_non_dependent_expression c dependent None value
+      | Ast.Ternary (condition, yes, no, _) ->
+          let* () = validate_non_dependent_expression c dependent None condition in
+          let* () = validate_non_dependent_expression c dependent expected yes in
+          validate_non_dependent_expression c dependent expected no
+      | Ast.Array_lit (values, _) | Ast.Struct_lit (_, values, _) ->
+          Result_list.iter (validate_non_dependent_expression c dependent None) values
+      | Ast.Sizeof _ | Ast.Alignof _ | Ast.Offsetof _ | Ast.Ident _ | Ast.Int_lit _
+      | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ ->
+          Ok ()
+  in
+  let validate_non_dependent_condition c dependent label expression =
+    if expression_mentions dependent expression then
+      validate_non_dependent_expression c dependent None expression
+    else
+      let* checked = check_expr c None expression in
+      if is_truthy (Hir.expr_ty checked) then Ok ()
+      else error (Ast.expr_span expression) (label ^ " condition must be scalar")
+  in
+  let target_mentions names = function
+    | Ast.Target_ident (name, _) -> List.mem name names
+    | Ast.Target_deref expression | Ast.Target_field (expression, _) ->
+        expression_mentions names expression
+    | Ast.Target_index (base, index) ->
+        expression_mentions names base || expression_mentions names index
+  in
+  let rec validate_non_dependent_statements c dependent expected_return statements =
+    match statements with
+    | [] -> Ok dependent
+    | statement :: rest ->
+        let* dependent =
+          validate_non_dependent_statement c dependent expected_return statement
+        in
+        validate_non_dependent_statements c dependent expected_return rest
+  and validate_non_dependent_block c dependent expected_return statements =
+    push c;
+    let result =
+      validate_non_dependent_statements c dependent expected_return statements
+    in
+    pop c;
+    let* _ = result in
+    Ok ()
+  and validate_non_dependent_statement c dependent expected_return = function
+    | Ast.Let { name; ty; init; span; raw; _ } ->
+        if type_mentions dependent ty then Ok (name :: dependent)
+        else
+          let* ty = source_ty_with_values eval_named_types eval_consts span ty in
+          let* () =
+            match init with
+            | None -> Ok ()
+            | Some value ->
+                validate_non_dependent_expression c dependent (Some ty) value
+          in
+          let* binding = add_local name ty c span in
+          if raw || Option.is_some init then mark_init binding c;
+          Ok (List.filter (fun dependent_name -> dependent_name <> name) dependent)
+    | (Ast.Assign (target, value, _) | Ast.Compound_assign (target, _, value, _)) as
+      statement ->
+        if target_mentions dependent target then
+          let* () = validate_non_dependent_expression c dependent None value in
+          Ok dependent
+        else if expression_mentions dependent value || has_generic_arguments value then
+          let* checked_target = check_target c target in
+          let* expected =
+            match target_ty c checked_target.target with
+            | Some ty -> Ok ty
+            | None -> error (Ast.expr_span value) "assignment target has no type"
+          in
+          let* () =
+            validate_non_dependent_expression c dependent (Some expected) value
+          in
+          Ok dependent
+        else
+          let* () =
+            let* _ = check_stmt c statement in
+            Ok ()
+          in
+          Ok dependent
+    | Ast.Return (value, _) ->
+        let* () =
+          match value with
+          | None -> Ok ()
+          | Some value ->
+              validate_non_dependent_expression c dependent expected_return value
+        in
+        Ok dependent
+    | Ast.If (condition, yes, no, _) ->
+        let* () = validate_non_dependent_condition c dependent "if" condition in
+        let* () = validate_non_dependent_block c dependent expected_return yes in
+        let* () =
+          match no with
+          | None -> Ok ()
+          | Some no -> validate_non_dependent_block c dependent expected_return no
+        in
+        Ok dependent
+    | Ast.While (condition, body, _) ->
+        let* () = validate_non_dependent_condition c dependent "while" condition in
+        let* () = validate_non_dependent_block c dependent expected_return body in
+        Ok dependent
+    | Ast.Defer (body, _) | Ast.Block (body, _) ->
+        let* () = validate_non_dependent_block c dependent expected_return body in
+        Ok dependent
+    | Ast.Expr_stmt (expression, _) ->
+        let* () = validate_non_dependent_expression c dependent None expression in
+        Ok dependent
+    | Ast.For (init, condition, step, body, _) ->
+        push c;
+        let result =
+          let* loop_dependent =
+            match init with
+            | None -> Ok dependent
+            | Some init ->
+                validate_non_dependent_statement c dependent expected_return init
+          in
+          let* () =
+            match condition with
+            | None -> Ok ()
+            | Some condition ->
+                validate_non_dependent_condition c loop_dependent "for" condition
+          in
+          let* () =
+            validate_non_dependent_block c loop_dependent expected_return body
+          in
+          match step with
+          | None -> Ok loop_dependent
+          | Some step ->
+              validate_non_dependent_statement c loop_dependent expected_return step
+        in
+        pop c;
+        let* _ = result in
+        Ok dependent
+    | Ast.Switch (expression, cases, default, _) ->
+        let* () = validate_non_dependent_expression c dependent None expression in
+        let* () =
+          Result_list.iter
+            (fun (value, body) ->
+              let* () = validate_non_dependent_expression c dependent None value in
+              validate_non_dependent_block c dependent expected_return body)
+            cases
+        in
+        let* () =
+          match default with
+          | None -> Ok ()
+          | Some body -> validate_non_dependent_block c dependent expected_return body
+        in
+        Ok dependent
+    | Ast.Break _ | Ast.Continue _ -> Ok dependent
   in
   let rec has_unresolved_application = function
     | Ast.Applied_type _ -> true
@@ -3534,6 +3957,56 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
                     validate_statement_block_names
                       ~scope_names:(body_value_names @ body_type_names)
                       body_value_names body_type_names statements
+                  in
+                  let* () =
+                    if (not eager_functions) || item.generic_params = [] then Ok ()
+                    else
+                      let generic_value_names =
+                        List.map
+                          (fun (parameter : Ast.const_param) -> parameter.name)
+                          (const_params item.generic_params)
+                      in
+                      let dependent = body_type_names @ generic_value_names in
+                      let expected_return =
+                        if type_mentions dependent item.ret then None
+                        else
+                          match
+                            source_ty_with_values eval_named_types eval_consts item.span
+                              item.ret
+                          with
+                          | Ok ty -> Some ty
+                          | Error _ -> None
+                      in
+                      let context =
+                        make_legality_context
+                          (Option.value ~default:Hir.Void expected_return)
+                      in
+                      let rec add_parameters dependent = function
+                        | [] -> Ok dependent
+                        | (parameter : Ast.param) :: rest ->
+                            if type_mentions dependent parameter.ty then
+                              add_parameters (parameter.name :: dependent) rest
+                            else
+                              let* ty =
+                                source_ty_with_values eval_named_types eval_consts
+                                  parameter.span parameter.ty
+                              in
+                              let* binding =
+                                add_local parameter.name ty context parameter.span
+                              in
+                              mark_init binding context;
+                              add_parameters
+                                (List.filter
+                                   (fun name -> name <> parameter.name)
+                                   dependent)
+                                rest
+                      in
+                      let* dependent = add_parameters dependent item.params in
+                      let* _ =
+                        validate_non_dependent_statements context dependent
+                          expected_return statements
+                      in
+                      Ok ()
                   in
                   let shadowed_constants =
                     List.map (fun (parameter : Ast.param) -> parameter.name) params
