@@ -2725,6 +2725,48 @@ let () =
     "fn bad[T, N const usize](value T) T { seen usize = N\n\
      return value + value }\n\
      fn main(value ptr[u8]) ptr[u8] { return bad[ptr[u8], 1](value) }\n";
+  let direct_recursive_limits = { Limits.default with max_specialization_depth = 1 } in
+  let direct_recursive_specialization =
+    expect_ok
+      (Sema.check ~limits:direct_recursive_limits
+         (expect_ok
+            (Parser.parse
+               (source
+                  "fn recurse[T](value T, count u8) T {\n\
+                   if count == 0 { return value }\n\
+                   return recurse[T](value, count - 1) }\n\
+                   fn main() u8 { return recurse[u8](7, 2) }\n"))))
+  in
+  if
+    List.length
+      (List.filter
+         (fun (func : Hir.func) -> contains func.name "recurse$spec$")
+         direct_recursive_specialization.Hir.funcs)
+    <> 1
+  then failwith "generic-function-recursion: expected one concrete function";
+  let mutual_recursive_limits = { Limits.default with max_specialization_depth = 2 } in
+  let mutual_recursive_specializations =
+    expect_ok
+      (Sema.check ~limits:mutual_recursive_limits
+         (expect_ok
+            (Parser.parse
+               (source
+                  "fn left[T](value T, count u8) T {\n\
+                   if count == 0 { return value }\n\
+                   return right[T](value, count - 1) }\n\
+                   fn right[T](value T, count u8) T {\n\
+                   if count == 0 { return value }\n\
+                   return left[T](value, count - 1) }\n\
+                   fn main() u8 { return left[u8](7, 2) }\n"))))
+  in
+  if
+    List.length
+      (List.filter
+         (fun (func : Hir.func) ->
+           contains func.name "left$spec$" || contains func.name "right$spec$")
+         mutual_recursive_specializations.Hir.funcs)
+    <> 2
+  then failwith "generic-function-mutual-recursion: expected two concrete functions";
   let recursive_function_limits =
     { Limits.default with max_specialization_depth = 2 }
   in
