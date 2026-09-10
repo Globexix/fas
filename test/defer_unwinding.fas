@@ -37,16 +37,16 @@ fn continue_unwind(out ptr[u64]) void {
   }
 }
 
-fn conditional_unwind(out ptr[u64], select bool) void {
-  if select {
+fn conditional_unwind(out ptr[u64], choice bool) void {
+  if choice {
     defer { append(out, 9) }
   } else {
     defer { append(out, 1) }
   }
 }
 
-fn switch_unwind(out ptr[u64], select u64) void {
-  switch select {
+fn switch_unwind(out ptr[u64], choice u64) void {
+  switch choice {
     case 1: { defer { append(out, 2) } }
     default: { defer { append(out, 3) } }
   }

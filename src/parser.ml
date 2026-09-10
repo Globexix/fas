@@ -261,14 +261,14 @@ module P = struct
     | Token.Ident "void" ->
         ignore (bump p);
         Ok Ast.Void
-    | Token.Ident "ptr" ->
+    | Token.Ident name when Names.type_constructor name = Some Names.Legacy_ptr ->
         ignore (bump p);
         let* () = expected p Token.Lbracket in
         let const = eat p Token.Kw_const in
         let* t = ty p in
         let* () = expected p Token.Rbracket in
         Ok (if const then Ast.Ptr_const t else Ast.Ptr t)
-    | Token.Ident "arr" ->
+    | Token.Ident name when Names.type_constructor name = Some Names.Array ->
         ignore (bump p);
         let* () = expected p Token.Lbracket in
         let* n = aggregate_length p in
@@ -276,7 +276,7 @@ module P = struct
         let* t = ty p in
         let* () = expected p Token.Rbracket in
         Ok (Ast.Array (n, t))
-    | Token.Ident "vec" ->
+    | Token.Ident name when Names.type_constructor name = Some Names.Vector ->
         ignore (bump p);
         let* () = expected p Token.Lbracket in
         let* n = aggregate_length p in
@@ -284,7 +284,7 @@ module P = struct
         let* t = ty p in
         let* () = expected p Token.Rbracket in
         Ok (Ast.Vec (n, t))
-    | Token.Ident s -> (
+    | Token.Ident s when List.mem s Names.scalar_type_names -> (
         ignore (bump p);
         match s with
         | "u8" -> Ok (Ast.Int Ast.U8)
@@ -297,12 +297,14 @@ module P = struct
         | "i64" -> Ok (Ast.Int Ast.I64)
         | "usize" -> Ok (Ast.Int Ast.Usize)
         | "isize" -> Ok (Ast.Int Ast.Isize)
-        | _ ->
-            if at p Token.Lbracket then
-              let span = span p in
-              let* args = generic_args p in
-              Ok (Ast.Applied_type (s, args, span))
-            else Ok (Ast.Named_type s))
+        | _ -> assert false)
+    | Token.Ident s ->
+        ignore (bump p);
+        if at p Token.Lbracket then
+          let span = span p in
+          let* args = generic_args p in
+          Ok (Ast.Applied_type (s, args, span))
+        else Ok (Ast.Named_type s)
     | t -> Error [ Diag.error (span p) ("expected a type, found " ^ Token.show t) ]
 
   and generic_args p =
@@ -328,29 +330,13 @@ module P = struct
         let* e = expr p in
         Ok (Ast.Const_arg e)
     | Token.Ident name, (Token.Comma | Token.Rbracket)
-      when not
-             (List.mem name
-                [
-                  "bool";
-                  "void";
-                  "u8";
-                  "u16";
-                  "u32";
-                  "u64";
-                  "i8";
-                  "i16";
-                  "i32";
-                  "i64";
-                  "usize";
-                  "isize";
-                ]) ->
+      when not (Names.parser_type_name name) ->
         let s = span p in
         ignore (bump p);
         Ok (Ast.Name_arg (name, s))
-    | ( Token.Ident
-          ( "bool" | "void" | "ptr" | "arr" | "vec" | "u8" | "u16" | "u32" | "u64"
-          | "i8" | "i16" | "i32" | "i64" | "usize" | "isize" ),
-        _ )
+    | Token.Ident name, _ when Names.parser_type_name name ->
+        let* t = ty p in
+        Ok (Ast.Type_arg t)
     | Token.Ident _, Token.Lbracket ->
         let* t = ty p in
         Ok (Ast.Type_arg t)
@@ -851,14 +837,24 @@ module P = struct
           let* () = expected p Token.Colon in
           let* b = case_body p in
           cases ((e, b) :: arms) default
-      | Token.Kw_default ->
+      | Token.Kw_default -> (
+          let default_span = span p in
           ignore (bump p);
-          let* () = expected p Token.Colon in
-          let* b = case_body p in
-          cases arms (Some b)
+          match default with
+          | Some (first_span, _) ->
+              Error
+                [
+                  Diag.error
+                    ~notes:[ "first default is at " ^ Span.to_string first_span ]
+                    default_span "duplicate default arm";
+                ]
+          | None ->
+              let* () = expected p Token.Colon in
+              let* b = case_body p in
+              cases arms (Some (default_span, b)))
       | Token.Rbrace ->
           let* () = expected p Token.Rbrace in
-          Ok (Ast.Switch (scr, List.rev arms, default, s))
+          Ok (Ast.Switch (scr, List.rev arms, Option.map snd default, s))
       | _ -> Error [ Diag.error (span p) "expected case, default, or `}`" ]
     in
     cases [] None
@@ -1061,54 +1057,58 @@ module P = struct
           let* e = expr p in
           let* () = expected p Token.Rparen in
           Ok e
-    | Token.Ident n ->
+    | Token.Ident n -> (
         let sp = span p in
         ignore (bump p);
-        if n = "true" then Ok (Ast.Bool_lit (true, sp))
-        else if n = "false" then Ok (Ast.Bool_lit (false, sp))
-        else if n = "null" then Ok (Ast.Null sp)
-        else if
-          (n = "zext" || n = "sext" || n = "trunc" || n = "bitcast")
-          && (peek_n p 0).kind = Token.Lbracket
-        then (
-          let kind =
-            match n with
-            | "zext" -> Ast.Zext
-            | "sext" -> Ast.Sext
-            | "trunc" -> Ast.Trunc
-            | _ -> Ast.Bitcast
-          in
-          ignore (bump p);
-          let* t = ty p in
-          let* () = expected p Token.Rbracket in
-          let* () = expected p Token.Lparen in
-          let* e = expr p in
-          let* () = expected p Token.Rparen in
-          Ok (Ast.Cast (kind, t, e, sp)))
-        else if n = "sizeof" || n = "alignof" || n = "offsetof" then
-          let* () = expected p Token.Lbracket in
-          let* t = ty p in
-          if n = "offsetof" then
-            let* () = expected p Token.Comma in
-            let* f = ident p in
-            let* () = expected p Token.Rbracket in
-            Ok (Ast.Offsetof (t, f, sp))
-          else
-            let* () = expected p Token.Rbracket in
-            Ok (if n = "sizeof" then Ast.Sizeof (t, sp) else Ast.Alignof (t, sp))
-        else if n = "splat" && at p Token.Lparen then (
-          ignore (bump p);
-          let* e = expr p in
-          let* () = expected p Token.Rparen in
-          Ok (Ast.Splat (e, sp)))
-        else if (n = "ptr_add" || n = "ptr_add_bytes") && at p Token.Lparen then (
-          ignore (bump p);
-          let* a = expr p in
-          let* () = expected p Token.Comma in
-          let* b = expr p in
-          let* () = expected p Token.Rparen in
-          Ok (Ast.Ptr_add (n = "ptr_add_bytes", a, b, sp)))
-        else Ok (Ast.Ident (n, sp))
+        if Names.literal n = Some Names.True then Ok (Ast.Bool_lit (true, sp))
+        else if Names.literal n = Some Names.False then Ok (Ast.Bool_lit (false, sp))
+        else if Names.literal n = Some Names.Null then Ok (Ast.Null sp)
+        else
+          match (Names.parser_operation n, (peek_n p 0).kind) with
+          | ( Some ((Names.Zext | Names.Sext | Names.Trunc | Names.Bitcast) as operation),
+              Token.Lbracket ) ->
+              let kind =
+                match operation with
+                | Names.Zext -> Ast.Zext
+                | Names.Sext -> Ast.Sext
+                | Names.Trunc -> Ast.Trunc
+                | Names.Bitcast -> Ast.Bitcast
+                | _ -> assert false
+              in
+              ignore (bump p);
+              let* t = ty p in
+              let* () = expected p Token.Rbracket in
+              let* () = expected p Token.Lparen in
+              let* e = expr p in
+              let* () = expected p Token.Rparen in
+              Ok (Ast.Cast (kind, t, e, sp))
+          | Some ((Names.Sizeof | Names.Alignof | Names.Offsetof) as operation), _ ->
+              let* () = expected p Token.Lbracket in
+              let* t = ty p in
+              if operation = Names.Offsetof then
+                let* () = expected p Token.Comma in
+                let* f = ident p in
+                let* () = expected p Token.Rbracket in
+                Ok (Ast.Offsetof (t, f, sp))
+              else
+                let* () = expected p Token.Rbracket in
+                Ok
+                  (if operation = Names.Sizeof then Ast.Sizeof (t, sp)
+                   else Ast.Alignof (t, sp))
+          | Some Names.Splat, Token.Lparen ->
+              ignore (bump p);
+              let* e = expr p in
+              let* () = expected p Token.Rparen in
+              Ok (Ast.Splat (e, sp))
+          | ( Some ((Names.Legacy_ptr_add | Names.Legacy_ptr_add_bytes) as operation),
+              Token.Lparen ) ->
+              ignore (bump p);
+              let* a = expr p in
+              let* () = expected p Token.Comma in
+              let* b = expr p in
+              let* () = expected p Token.Rparen in
+              Ok (Ast.Ptr_add (operation = Names.Legacy_ptr_add_bytes, a, b, sp))
+          | _ -> Ok (Ast.Ident (n, sp)))
     | Token.Kw_raw ->
         Error [ Diag.error (span p) "`raw` is a declaration marker, not a value" ]
     | t ->

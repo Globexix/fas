@@ -16,12 +16,12 @@ fn return_read_only(value ptr[u64]) ptr[const u64] {
   return value
 }
 
-fn choose_read_only(select bool, mutable ptr[u64], read_only ptr[const u64]) ptr[const u64] {
-  return select ? mutable : read_only
+fn choose_read_only(choice bool, mutable ptr[u64], read_only ptr[const u64]) ptr[const u64] {
+  return choice ? mutable : read_only
 }
 
-fn choose_read_only_reversed(select bool, mutable ptr[u64], read_only ptr[const u64]) ptr[const u64] {
-  return select ? read_only : mutable
+fn choose_read_only_reversed(choice bool, mutable ptr[u64], read_only ptr[const u64]) ptr[const u64] {
+  return choice ? read_only : mutable
 }
 
 fn main() i32 {
@@ -62,8 +62,8 @@ fn main() i32 {
   second ptr[Second] = bitcast[ptr[Second]](first)
   if bitcast[ptr[First]](second) != first { return 14 }
 
-  handle ptr[Handle] = bitcast[ptr[Handle]](mutable)
-  if bitcast[ptr[u64]](handle) != mutable { return 15 }
+  object ptr[Handle] = bitcast[ptr[Handle]](mutable)
+  if bitcast[ptr[u64]](object) != mutable { return 15 }
 
   holder ptr[u64] = mutable
   nested ptr[ptr[u64]] = &holder

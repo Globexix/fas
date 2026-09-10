@@ -1189,7 +1189,7 @@ let () =
   in
   let explicit_assembly_program = lower_of explicit_assembly_dependency in
   let explicit_assembly_llvm = Ir.render explicit_assembly_program in
-  if not (contains explicit_assembly_llvm "define i64 @assembly_helper(i64 %x)") then
+  if not (contains explicit_assembly_llvm "define i64 @assembly_helper(i64 %a0)") then
     failwith "assembly-linkage-explicit: C ABI helper is not externally visible";
   if not (contains (Ir.raw_assembly explicit_assembly_program) "call assembly_helper")
   then failwith "assembly-linkage-explicit: raw assembly dependency was not preserved";
@@ -1299,7 +1299,7 @@ let () =
     failwith "forward-struct: declaration was not resolved before function checking";
   let use_file =
     ( "use.fas",
-      "fn read(handle ptr[Handle]) i64 { value Pair = (Pair){11}\n return value.x }\n"
+      "fn read(object ptr[Handle]) i64 { value Pair = (Pair){11}\n return value.x }\n"
     )
   in
   let declarations_file = ("types.fas", "opaque Handle\nstruct Pair { x i64 }\n") in
@@ -2027,9 +2027,135 @@ let () =
   List.iter
     (fun name ->
       semantic_error ("reserved-builtin-" ^ name)
-        (Printf.sprintf "`%s` is a reserved builtin name" name)
+        (Printf.sprintf "`%s` is reserved and cannot be used as a binding" name)
         (Printf.sprintf "fn %s(x i64) i64 { return x }\n" name))
-    [ "len"; "shl"; "lshr"; "ashr"; "rotl"; "rotr"; "popcount"; "ctz"; "clz" ];
+    Names.operation_names;
+
+  List.iter
+    (fun name ->
+      semantic_error ("reserved-type-" ^ name)
+        "is reserved and cannot be used as a binding"
+        (Printf.sprintf "struct %s { value i32 }\n" name))
+    Names.primitive_type_names;
+
+  List.iter
+    (fun name ->
+      semantic_error ("reserved-literal-" ^ name)
+        "is reserved and cannot be used as a binding"
+        (Printf.sprintf "const %s bool = false\n" name))
+    Names.literal_names;
+
+  List.iter
+    (fun (name, text) ->
+      semantic_error name "is reserved and cannot be used as a binding" text)
+    [
+      ("reserved-primitive-type", "struct i32 { value i32 }\n");
+      ("reserved-literal-const", "const true bool = false\n");
+      ("reserved-generic-parameter", "fn value[len](x i32) i32 { return x }\n");
+      ("reserved-const-parameter", "fn value[splat const i32](x i32) i32 { return x }\n");
+      ("reserved-runtime-parameter", "fn value(popcount i32) i32 { return popcount }\n");
+      ("reserved-local", "fn value() i32 { len i32 = 1\n return len }\n");
+    ];
+
+  let released_shift_names =
+    llvm_of
+      "fn shl(x i32) i32 { return x + 1 }\n\
+       fn lshr(x i32) i32 { return x + 2 }\n\
+       fn ashr(x i32) i32 { return x + 3 }\n\
+       fn main() i32 { return shl(1) + lshr(2) + ashr(3) }\n"
+  in
+  List.iter
+    (fun name ->
+      if not (contains released_shift_names ("call i32 @" ^ name)) then
+        failwith ("released-shift-name: user function was not called: " ^ name))
+    [ "shl"; "lshr"; "ashr" ];
+
+  let released_unreserved_names =
+    llvm_of
+      "struct Members { len i32 i32 i32 true i32 }\n\
+       fn sqrt(x i32) i32 { return x }\n\
+       fn fma(x i32) i32 { return x }\n\
+       fn main() i32 { value Members = (Members){1, 2, 3}\n\
+       return sqrt(value.len) + fma(value.i32) + value.true }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains released_unreserved_names marker) then
+        failwith ("released-unreserved-name: missing `" ^ marker ^ "`"))
+    [ "call i32 @sqrt"; "call i32 @fma"; "%struct.Members = type" ];
+
+  let hygienic_parameter_names =
+    llvm_of
+      "fn value_collision(v0 i32) i32 { return v0 }\n\
+       fn block_collision(b0 i32) i32 { if b0 == 0 { return 1 } else { return b0 } }\n\
+       fn main() i32 { return value_collision(7) + block_collision(2) }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains hygienic_parameter_names marker) then
+        failwith ("hygienic-parameter-names: missing `" ^ marker ^ "`"))
+    [
+      "define internal i32 @value_collision(i32 %a0)";
+      "define internal i32 @block_collision(i32 %a0)";
+      "%v0 = alloca i32";
+      "b0:";
+    ];
+  if
+    contains hygienic_parameter_names "@value_collision(i32 %v0)"
+    || contains hygienic_parameter_names "@block_collision(i32 %b0)"
+  then failwith "hygienic-parameter-names: source name escaped into LLVM identity";
+
+  (match
+     Parser.parse
+       (source
+          "fn main() i32 {\nswitch 0 {\ndefault:\nreturn 1\ndefault:\nreturn 2\n}\n}\n")
+   with
+  | Ok _ -> failwith "duplicate-default: expected parse rejection"
+  | Error [ diagnostic ] ->
+      if diagnostic.Diag.message <> "duplicate default arm" then
+        failwith "duplicate-default: unexpected message";
+      if diagnostic.primary.Span.line <> 5 then
+        failwith "duplicate-default: wrong primary location";
+      if
+        not
+          (List.exists (fun note -> contains note "regression.fas:3:") diagnostic.notes)
+      then failwith "duplicate-default: first location missing"
+  | Error _ -> failwith "duplicate-default: unexpected diagnostic count");
+
+  let leading_zero_literals =
+    llvm_of
+      "fn decimal() u64 { return 000000000000000000001 }\n\
+       fn hexadecimal() u64 { return 0x000000000000000000001 }\n\
+       fn octal() u64 { return 0o000000000000000000001 }\n\
+       fn binary() u64 { return 0b000000000000000000001 }\n\
+       fn separated() u64 { return 0000_0000_0000_0001 }\n\
+       fn zero() u64 { return 000000000000000000000 }\n\
+       fn decimal_max() u64 { return 00018446744073709551615 }\n\
+       fn hexadecimal_max() u64 { return 0x0000FFFFFFFFFFFFFFFF }\n\
+       fn octal_max() u64 { return 0o00001777777777777777777777 }\n\
+       fn binary_max() u64 { return \
+       0b00001111111111111111111111111111111111111111111111111111111111111111 }\n\
+       fn signed_minimum() i64 { return -00009223372036854775808 }\n"
+  in
+  if List.length (positions leading_zero_literals "ret i64 1") <> 5 then
+    failwith "leading-zero-literals: nonzero values were not normalized";
+  if not (contains leading_zero_literals "ret i64 0") then
+    failwith "leading-zero-literals: zero-only spelling was rejected";
+  if List.length (positions leading_zero_literals "ret i64 -1") <> 4 then
+    failwith "leading-zero-literals: padded maximum values were rejected";
+  if not (contains leading_zero_literals "ret i64 -9223372036854775808") then
+    failwith "leading-zero-literals: padded signed minimum was rejected";
+  List.iter
+    (fun (name, literal) ->
+      semantic_error name "integer literal overflows 64 bits"
+        (Printf.sprintf "fn value() u64 { return %s }\n" literal))
+    [
+      ("leading-zero-decimal-overflow", "00018446744073709551616");
+      ("leading-zero-hex-overflow", "0x000100000000000000000");
+      ("leading-zero-octal-overflow", "0o00002000000000000000000000");
+      ( "leading-zero-binary-overflow",
+        "0b000010000000000000000000000000000000000000000000000000000000000000000" );
+    ];
 
   let spec_count_limits = { Limits.default with max_specializations = 1 } in
   let repeated_spec_at_count_limit =
@@ -3191,8 +3317,8 @@ let () =
   let const_generic_function_type_source =
     "const THREE usize = 3\n\
      fn array_identity[T, N const usize](value arr[N, T]) arr[N, T] {\n\
-    \ copy arr[N, T] = value\n\
-    \ return copy\n\
+    \ result arr[N, T] = value\n\
+    \ return result\n\
      }\n\
      fn array_outer[T, N const usize](value arr[N, T]) arr[N, T] {\n\
     \ return array_identity[T, N](value)\n\
@@ -3508,8 +3634,8 @@ let () =
     (llvm_of
        "fn choose[N const i32](value i32) i32 {\n\
        \ prior i32 = value\n\
-       \ if N == 1 { return prior } else { copy i32 = prior\n\
-       \ return copy }\n\
+       \ if N == 1 { return prior } else { result i32 = prior\n\
+       \ return result }\n\
         }\n\
         fn main() i32 { return choose[1](7) }\n");
   ignore
@@ -3535,8 +3661,8 @@ let () =
      struct Buffer[T, N const usize] { data arr[N, T] }\n\
      struct Wrapped[T, N const usize] { value Buffer[T, N] }\n\
      fn pass[T, N const usize](value Buffer[T, N]) Buffer[T, N] {\n\
-    \ copy Buffer[T, N] = value\n\
-    \ return copy\n\
+    \ result Buffer[T, N] = value\n\
+    \ return result\n\
      }\n\
      fn wrap[T, N const usize](value Buffer[T, N]) Wrapped[T, N] {\n\
     \ return (Wrapped[T, N]){pass[T, N](value)}\n\

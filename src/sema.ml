@@ -155,8 +155,10 @@ let request_specialization state ~limits ~depth ~span ~description specializatio
         Queue.add specialization state.queue;
         Ok specialization)
 
-let reserved_builtin_names =
-  [ "len"; "shl"; "lshr"; "ashr"; "rotl"; "rotr"; "popcount"; "ctz"; "clz" ]
+let validate_binding_name span name =
+  if Names.reserved_binding_name name then
+    error span (Printf.sprintf "`%s` is reserved and cannot be used as a binding" name)
+  else Ok ()
 
 let src_int = function
   | Ast.U8 -> Hir.U8
@@ -305,8 +307,9 @@ let validate_generic_params named_types params =
   let* () =
     Result_list.iter
       (function
-        | Ast.Type_param _ -> Ok ()
+        | Ast.Type_param { name; span } -> validate_binding_name span name
         | Ast.Const_param cp ->
+            let* () = validate_binding_name cp.span cp.name in
             let* t = source_ty_diag named_types cp.span cp.ty in
             if t = Hir.Bool || is_int t then Ok ()
             else error cp.span "const parameter type must be a scalar integer or bool")
@@ -331,6 +334,7 @@ let validate_function_params generic_params params =
   let rec validate seen = function
     | [] -> Ok ()
     | (parameter : Ast.param) :: rest ->
+        let* () = validate_binding_name parameter.span parameter.name in
         if List.mem parameter.name generic_names then
           error parameter.span
             (Printf.sprintf "parameter `%s` conflicts with a generic parameter"
@@ -442,7 +446,20 @@ let parse_integer raw =
       | 2 -> String.make 64 '1'
       | _ -> ""
     in
-    let normalized = if radix = 16 then String.uppercase_ascii digits else digits in
+    let first_nonzero =
+      let rec find index =
+        if index = String.length digits || digits.[index] <> '0' then index
+        else find (index + 1)
+      in
+      find 0
+    in
+    let significant =
+      if first_nonzero = String.length digits then "0"
+      else String.sub digits first_nonzero (String.length digits - first_nonzero)
+    in
+    let normalized =
+      if radix = 16 then String.uppercase_ascii significant else significant
+    in
     let overflow =
       String.length normalized > String.length limit
       || String.length normalized = String.length limit
@@ -701,6 +718,7 @@ let lookup_local name c =
   go !(c.locals)
 
 let ensure_new_local name c span =
+  let* () = validate_binding_name span name in
   let scope = match !(c.locals) with scope :: _ -> scope | [] -> Hashtbl.create 8 in
   if Hashtbl.mem scope name then error span (Printf.sprintf "duplicate local `%s`" name)
   else Ok ()
@@ -2253,7 +2271,7 @@ and check_call c _expected fn args s =
                 let* checked = check_actuals c Reject s ps args in
                 Ok (Hir.Call (Hir.User specialization.name, checked, rt, s))
           | Some _ -> error s "const-generic symbol is not a function"))
-  | Ast.Ident ("len", _) ->
+  | Ast.Ident (name, _) when Names.value_operation name = Some Names.Len ->
       if List.length args <> 1 then error s "builtin `len` expects one argument"
       else
         let argument = List.hd args in
@@ -2272,16 +2290,16 @@ and check_call c _expected fn args s =
         Ok (Hir.EInt (Int64.of_int n, Hir.Int Hir.Usize, s))
   | Ast.Ident (name, _) -> (
       let builtin =
-        match name with
-        | "shl" -> Some Hir.Shl
-        | "lshr" -> Some Lshr
-        | "ashr" -> Some Ashr
-        | "rotl" -> Some Rotl
-        | "rotr" -> Some Rotr
-        | "popcount" -> Some Popcount
-        | "ctz" -> Some Ctz
-        | "clz" -> Some Clz
-        | _ -> None
+        match Names.value_operation name with
+        | Some Names.Legacy_shl -> Some Hir.Shl
+        | Some Names.Legacy_lshr -> Some Lshr
+        | Some Names.Legacy_ashr -> Some Ashr
+        | Some Names.Rotl -> Some Rotl
+        | Some Names.Rotr -> Some Rotr
+        | Some Names.Popcount -> Some Popcount
+        | Some Names.Ctz -> Some Ctz
+        | Some Names.Clz -> Some Clz
+        | Some Names.Len | None -> None
       in
       let check_builtin b =
         match b with
@@ -2327,8 +2345,12 @@ and check_call c _expected fn args s =
                              and an integer shift"))
       in
       match builtin with
-      | Some b -> check_builtin b
-      | None -> (
+      | Some b
+        when Names.reserved_binding_name name
+             || Option.is_none (lookup_local name c)
+                && Option.is_none (lookup_sig name c) ->
+          check_builtin b
+      | Some _ | None -> (
           match lookup_local name c with
           | Some _ -> error s (Printf.sprintf "`%s` is a value, not a function" name)
           | None -> (
@@ -3008,7 +3030,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
         validate_expression_names value_names type_names right
     | Ast.Call (Ast.Ident (name, span), arguments, _) ->
         let* () =
-          if List.mem name reserved_builtin_names then Ok ()
+          if Names.reserved_binding_name name then Ok ()
           else
             match nearest_kind value_names type_names name with
             | Some (`Function _) -> Ok ()
@@ -3110,6 +3132,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
         validate_expression_names value_names type_names base
   and validate_statement_names value_names type_names scope_names = function
     | Ast.Let { name; ty; init; span; _ } ->
+        let* () = validate_binding_name span name in
         if List.mem name scope_names then
           error span (Printf.sprintf "duplicate local `%s`" name)
         else
@@ -4650,6 +4673,7 @@ let check ?(limits = Limits.default) program =
         match declaration item with
         | None -> validate_declarations next_id seen bindings rest
         | Some (name, kind, span) -> (
+            let* () = validate_binding_name span name in
             match List.assoc_opt name seen with
             | None ->
                 let binding =
@@ -4898,15 +4922,7 @@ let check ?(limits = Limits.default) program =
         let* () = r in
         match item with
         | Ast.Func { name; params; ret; variadic; linkage; span; generic_params; _ } ->
-            let* () =
-              if List.mem name reserved_builtin_names then
-                error span
-                  (Printf.sprintf
-                     "`%s` is a reserved builtin name and cannot be used as a function \
-                      name"
-                     name)
-              else Ok ()
-            in
+            let* () = validate_binding_name span name in
             if List.mem name !declared_functions then
               error span (Printf.sprintf "duplicate function `%s`" name)
             else if List.exists (fun (n, _, _) -> n = name) !arrays then

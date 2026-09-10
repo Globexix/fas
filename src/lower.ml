@@ -955,10 +955,10 @@ let lower_func structs strings functions f =
   in
   let* () = if f.Hir.ret = Hir.Void then Ok () else layout_ok structs f.Hir.ret in
   let params =
-    List.map
-      (fun (local : Hir.local) ->
+    List.mapi
+      (fun index (local : Hir.local) ->
         ({
-           Ir.name = local.name;
+           Ir.name = "a" ^ string_of_int index;
            ty = ty local.ty;
            extension =
              (if f.linkage = Hir.External_c then c_extension local.ty
@@ -1017,16 +1017,16 @@ let lower_func structs strings functions f =
         }
       in
       push_scope s;
-      List.iter
-        (fun (local : Hir.local) ->
+      List.iter2
+        (fun (local : Hir.local) (parameter : Ir.param) ->
           let id = fresh s in
           emit s (Ir.Alloca (id, ty local.ty, align s local.ty));
           let p = Ir.Local (id, Ir.Ptr (ty local.ty)) in
           bind_local s local p;
           emit s
             (Ir.Store
-               (ty local.ty, Ir.Param (local.name, ty local.ty), p, align s local.ty)))
-        f.params;
+               (ty local.ty, Ir.Param (parameter.name, ty local.ty), p, align s local.ty)))
+        f.params params;
       let* () = scoped s body in
       let* () = if open_block s then emit_scope_defers s 0 else Ok () in
       if open_block s then
