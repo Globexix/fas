@@ -2948,6 +2948,36 @@ let () =
   in
   if not (contains runtime_const_generic_if "br i1") then
     failwith "const-generic-runtime-if: runtime condition was pruned";
+  let shadowed_specialization_condition =
+    llvm_of
+      "const Flag bool = false\n\
+       fn choose[N const i32](Flag bool) i32 {\n\
+      \ if Flag && true { return 7 }\n\
+      \ return 3\n\
+       }\n\
+       fn main() i32 { return choose[1](true) + choose[1](false) }\n"
+  in
+  if not (contains shadowed_specialization_condition "br i1") then
+    failwith "shadowed-specialization-condition: runtime parameter branch was pruned";
+  let const_dependent_if =
+    llvm_of
+      "fn choose[Flag const i32]() i32 {\n\
+      \ if Flag == 1 { return 7 }\n\
+      \ return 3\n\
+       }\n\
+       fn main() i32 { return choose[1]() + choose[0]() }\n"
+  in
+  if
+    (not (contains const_dependent_if "ret i32 7"))
+    || not (contains const_dependent_if "ret i32 3")
+  then failwith "const-dependent-if: specialization branches were not selected";
+  semantic_error "nondependent-specialization-condition" "unknown name `Missing`"
+    "const Flag bool = false\n\
+     fn choose[N const i32]() i32 {\n\
+    \ if Flag { return Missing }\n\
+    \ return 3\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
 
   let const_generic_struct_function_source =
     "const THREE usize = 3\n\

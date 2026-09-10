@@ -2361,6 +2361,47 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
   in
   let generated = ref [] in
   let current_trace = ref [] in
+  let rec type_mentions names = function
+    | Ast.Array (length, ty) | Ast.Vec (length, ty) ->
+        List.mem length names || type_mentions names ty
+    | Ast.Ptr ty | Ast.Ptr_const ty -> type_mentions names ty
+    | Ast.Applied_type (_, arguments, _) ->
+        List.exists (generic_argument_mentions names) arguments
+    | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Named_type _ -> false
+  and generic_argument_mentions names = function
+    | Ast.Type_arg ty -> type_mentions names ty
+    | Ast.Const_arg expression -> expression_mentions names expression
+    | Ast.Name_arg (name, _) -> List.mem name names
+  and expression_mentions names = function
+    | Ast.Ident (name, _) -> List.mem name names
+    | Ast.Unary (_, expression, _)
+    | Ast.Deref (expression, _)
+    | Ast.Addr_of (expression, _)
+    | Ast.Splat (expression, _) ->
+        expression_mentions names expression
+    | Ast.Binary (_, left, right, _)
+    | Ast.Index (left, right, _)
+    | Ast.Ptr_add (_, left, right, _) ->
+        expression_mentions names left || expression_mentions names right
+    | Ast.Call (callee, arguments, _) ->
+        expression_mentions names callee
+        || List.exists (expression_mentions names) arguments
+    | Ast.Generic_args (callee, arguments, _) ->
+        expression_mentions names callee
+        || List.exists (generic_argument_mentions names) arguments
+    | Ast.Cast (_, ty, expression, _) ->
+        type_mentions names ty || expression_mentions names expression
+    | Ast.Sizeof (ty, _) | Ast.Alignof (ty, _) | Ast.Offsetof (ty, _, _) ->
+        type_mentions names ty
+    | Ast.Field (expression, _, _) -> expression_mentions names expression
+    | Ast.Ternary (condition, yes, no, _) ->
+        expression_mentions names condition
+        || expression_mentions names yes || expression_mentions names no
+    | Ast.Array_lit (elements, _) -> List.exists (expression_mentions names) elements
+    | Ast.Struct_lit (ty, elements, _) ->
+        type_mentions names ty || List.exists (expression_mentions names) elements
+    | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ -> false
+  in
   let rec has_unresolved_application = function
     | Ast.Applied_type _ -> true
     | Ast.Ptr ty | Ast.Ptr_const ty | Ast.Array (_, ty) | Ast.Vec (_, ty) ->
@@ -2872,8 +2913,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
           resolve_expr ~values ~defer_const_structs substitutions depth base
         in
         Ok (Ast.Target_field (base, name))
-  and resolve_stmt ?(values = []) ?(defer_const_structs = false) substitutions depth =
-    function
+  and resolve_stmt ?(values = []) ?(shadowed_constants = [])
+      ?(defer_const_structs = false) substitutions depth = function
     | Ast.Let { name; ty; init; raw; span } ->
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         let* init =
@@ -2914,16 +2955,34 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
         in
         Ok (Ast.Return (expression, span))
     | Ast.If (condition, yes, no, span) -> (
+        let unresolved_condition = condition in
         let* condition =
           resolve_expr ~values ~defer_const_structs substitutions depth condition
         in
-        let resolve = resolve_stmt ~values ~defer_const_structs substitutions depth in
+        let resolve =
+          resolve_stmt ~values ~shadowed_constants ~defer_const_structs substitutions
+            depth
+        in
+        let specialization_values =
+          List.filter
+            (fun (name, _, _) -> not (List.mem name shadowed_constants))
+            values
+        in
+        let constant_environment =
+          List.filter
+            (fun (name, _, _) -> not (List.mem name shadowed_constants))
+            (values @ eval_consts)
+        in
+        let specialization_names =
+          List.map (fun (name, _, _) -> name) specialization_values
+        in
         let known_condition =
-          if values = [] then None
+          if not (expression_mentions specialization_names unresolved_condition) then
+            None
           else
             match
               const_expr ~structs:eval_structs ~named_types:eval_named_types
-                ~arrays:eval_arrays (values @ eval_consts) None condition
+                ~arrays:eval_arrays constant_environment None condition
             with
             | Ok (_, value) -> Some (value <> 0L)
             | Error _ -> None
@@ -2952,7 +3011,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
         in
         let* body =
           Result_list.map
-            (resolve_stmt ~values ~defer_const_structs substitutions depth)
+            (resolve_stmt ~values ~shadowed_constants ~defer_const_structs substitutions
+               depth)
             body
         in
         Ok (Ast.While (condition, body, span))
@@ -2960,7 +3020,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
     | Ast.Defer (body, span) ->
         let* body =
           Result_list.map
-            (resolve_stmt ~values ~defer_const_structs substitutions depth)
+            (resolve_stmt ~values ~shadowed_constants ~defer_const_structs substitutions
+               depth)
             body
         in
         Ok (Ast.Defer (body, span))
@@ -2972,7 +3033,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
     | Ast.Block (body, span) ->
         let* body =
           Result_list.map
-            (resolve_stmt ~values ~defer_const_structs substitutions depth)
+            (resolve_stmt ~values ~shadowed_constants ~defer_const_structs substitutions
+               depth)
             body
         in
         Ok (Ast.Block (body, span))
@@ -2984,7 +3046,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
               Ok (Some value)
         in
         let resolve_stmt =
-          resolve_stmt ~values ~defer_const_structs substitutions depth
+          resolve_stmt ~values ~shadowed_constants ~defer_const_structs substitutions
+            depth
         in
         let resolve_expr =
           resolve_expr ~values ~defer_const_structs substitutions depth
@@ -2999,7 +3062,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
           resolve_expr ~values ~defer_const_structs substitutions depth
         in
         let resolve_stmt =
-          resolve_stmt ~values ~defer_const_structs substitutions depth
+          resolve_stmt ~values ~shadowed_constants ~defer_const_structs substitutions
+            depth
         in
         let* expression = resolve_expr expression in
         let* cases =
@@ -3053,9 +3117,13 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
               | Ast.Declaration -> Ok Ast.Declaration
               | Ast.Asm raw -> Ok (Ast.Asm raw)
               | Ast.Statements statements ->
+                  let shadowed_constants =
+                    List.map (fun (parameter : Ast.param) -> parameter.name) params
+                  in
                   let* statements =
                     Result_list.map
-                      (resolve_stmt ~values ~defer_const_structs substitutions depth)
+                      (resolve_stmt ~values ~shadowed_constants ~defer_const_structs
+                         substitutions depth)
                       statements
                   in
                   Ok (Ast.Statements statements)
