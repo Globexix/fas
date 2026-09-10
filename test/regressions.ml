@@ -2529,6 +2529,33 @@ let () =
           ("generic-instantiation-cache: unexpected trace: "
           ^ String.concat " | " diagnostic.notes)
   | _ -> failwith "generic-instantiation-cache: expected one diagnostic");
+  let diamond_cache_failure =
+    "fn leaf[T](value T) T { return value + value }\n\
+     fn left[T](value T) T { return leaf[T](value) }\n\
+     fn right[T](value T) T { return leaf[T](value) }\n\
+     fn root[T](value T) T {\n\
+     first T = left[T](value)\n\
+     return right[T](first)\n\
+     }\n\
+     fn main(value ptr[u8]) ptr[u8] { return root[ptr[u8]](value) }\n"
+  in
+  (match semantic_diagnostics diamond_cache_failure with
+  | [ diagnostic ] ->
+      let rendered = Diag.render_all ~source:None [ diagnostic ] in
+      if
+        diagnostic.notes
+        <> [
+             "while instantiating `root[ptr[u8]]` at regression.fas:8:45";
+             "while instantiating `left[ptr[u8]]` at regression.fas:5:15";
+             "while instantiating `leaf[ptr[u8]]` at regression.fas:2:36";
+           ]
+      then
+        failwith
+          ("generic-instantiation-diamond-cache: unexpected trace: "
+          ^ String.concat " | " diagnostic.notes);
+      if contains rendered "$spec$" then
+        failwith "generic-instantiation-diamond-cache: internal name leaked"
+  | _ -> failwith "generic-instantiation-diamond-cache: expected one diagnostic");
   let render_failure source_text =
     Diag.render_all ~source:None (semantic_diagnostics source_text)
   in
