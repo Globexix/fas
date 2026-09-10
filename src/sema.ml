@@ -2340,6 +2340,11 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
       (function Ast.Func { name; _ } -> Some name | _ -> None)
       program.Ast.items
   in
+  let global_value_names =
+    List.filter_map
+      (function Ast.Const { name; _ } -> Some name | _ -> None)
+      program.Ast.items
+  in
   let named_type_names =
     List.filter_map
       (function
@@ -2401,6 +2406,190 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
     | Ast.Struct_lit (ty, elements, _) ->
         type_mentions names ty || List.exists (expression_mentions names) elements
     | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ -> false
+  in
+  let rec validate_type_names value_names type_names span = function
+    | Ast.Ptr ty | Ast.Ptr_const ty ->
+        validate_type_names value_names type_names span ty
+    | Ast.Array (length, ty) | Ast.Vec (length, ty) ->
+        let* () =
+          match parse_integer length with
+          | Ok _ -> Ok ()
+          | Error _ ->
+              if List.mem length value_names then Ok ()
+              else error span (Printf.sprintf "unknown name `%s`" length)
+        in
+        validate_type_names value_names type_names span ty
+    | Ast.Named_type name ->
+        if List.mem name named_type_names || List.mem name type_names then Ok ()
+        else error span (Printf.sprintf "unknown type `%s`" name)
+    | Ast.Applied_type (name, arguments, application_span) ->
+        if not (List.mem name struct_names) then
+          error span (Printf.sprintf "unknown generic struct `%s`" name)
+        else
+          Result_list.iter
+            (validate_generic_argument_names value_names type_names application_span)
+            arguments
+    | Ast.Bool | Ast.Void | Ast.Int _ -> Ok ()
+  and validate_generic_argument_names value_names type_names fallback_span = function
+    | Ast.Type_arg ty -> validate_type_names value_names type_names fallback_span ty
+    | Ast.Const_arg expression ->
+        validate_expression_names value_names type_names expression
+    | Ast.Name_arg (name, span) ->
+        if
+          List.mem name value_names
+          || List.mem name named_type_names
+          || List.mem name type_names
+        then Ok ()
+        else error span (Printf.sprintf "unknown name `%s`" name)
+  and validate_expression_names value_names type_names = function
+    | Ast.Ident (name, span) ->
+        if List.mem name value_names || List.mem name global_value_names then Ok ()
+        else error span (Printf.sprintf "unknown name `%s`" name)
+    | Ast.Unary (_, expression, _)
+    | Ast.Deref (expression, _)
+    | Ast.Addr_of (expression, _)
+    | Ast.Splat (expression, _) ->
+        validate_expression_names value_names type_names expression
+    | Ast.Binary (_, left, right, _)
+    | Ast.Index (left, right, _)
+    | Ast.Ptr_add (_, left, right, _) ->
+        let* () = validate_expression_names value_names type_names left in
+        validate_expression_names value_names type_names right
+    | Ast.Call (Ast.Ident (name, span), arguments, _) ->
+        let* () =
+          if List.mem name function_names || List.mem name reserved_builtin_names then
+            Ok ()
+          else error span (Printf.sprintf "unknown function `%s`" name)
+        in
+        Result_list.iter (validate_expression_names value_names type_names) arguments
+    | Ast.Call (callee, arguments, _) ->
+        let* () = validate_expression_names value_names type_names callee in
+        Result_list.iter (validate_expression_names value_names type_names) arguments
+    | Ast.Generic_args (Ast.Ident (name, span), arguments, application_span) ->
+        let* () =
+          if List.mem name function_names then Ok ()
+          else error span (Printf.sprintf "unknown generic function `%s`" name)
+        in
+        Result_list.iter
+          (validate_generic_argument_names value_names type_names application_span)
+          arguments
+    | Ast.Generic_args (callee, arguments, application_span) ->
+        let* () = validate_expression_names value_names type_names callee in
+        Result_list.iter
+          (validate_generic_argument_names value_names type_names application_span)
+          arguments
+    | Ast.Cast (_, ty, expression, span) ->
+        let* () = validate_type_names value_names type_names span ty in
+        validate_expression_names value_names type_names expression
+    | Ast.Sizeof (ty, span) | Ast.Alignof (ty, span) | Ast.Offsetof (ty, _, span) ->
+        validate_type_names value_names type_names span ty
+    | Ast.Field (expression, _, _) ->
+        validate_expression_names value_names type_names expression
+    | Ast.Ternary (condition, yes, no, _) ->
+        let* () = validate_expression_names value_names type_names condition in
+        let* () = validate_expression_names value_names type_names yes in
+        validate_expression_names value_names type_names no
+    | Ast.Array_lit (elements, _) ->
+        Result_list.iter (validate_expression_names value_names type_names) elements
+    | Ast.Struct_lit (ty, elements, span) ->
+        let* () = validate_type_names value_names type_names span ty in
+        Result_list.iter (validate_expression_names value_names type_names) elements
+    | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ -> Ok ()
+  in
+  let rec validate_target_names value_names type_names = function
+    | Ast.Target_ident (name, span) ->
+        if List.mem name value_names then Ok ()
+        else error span (Printf.sprintf "unknown assignment target `%s`" name)
+    | Ast.Target_deref expression ->
+        validate_expression_names value_names type_names expression
+    | Ast.Target_index (base, index) ->
+        let* () = validate_expression_names value_names type_names base in
+        validate_expression_names value_names type_names index
+    | Ast.Target_field (base, _) ->
+        validate_expression_names value_names type_names base
+  and validate_statement_names value_names type_names = function
+    | Ast.Let { name; ty; init; span; _ } ->
+        let* () = validate_type_names value_names type_names span ty in
+        let* () =
+          match init with
+          | None -> Ok ()
+          | Some expression ->
+              validate_expression_names value_names type_names expression
+        in
+        Ok (name :: value_names)
+    | Ast.Assign (target, expression, _) | Ast.Compound_assign (target, _, expression, _)
+      ->
+        let* () = validate_target_names value_names type_names target in
+        let* () = validate_expression_names value_names type_names expression in
+        Ok value_names
+    | Ast.Return (expression, _) ->
+        let* () =
+          match expression with
+          | None -> Ok ()
+          | Some expression ->
+              validate_expression_names value_names type_names expression
+        in
+        Ok value_names
+    | Ast.If (condition, yes, no, _) ->
+        let* () = validate_expression_names value_names type_names condition in
+        let* () = validate_statement_block_names value_names type_names yes in
+        let* () =
+          match no with
+          | None -> Ok ()
+          | Some statements ->
+              validate_statement_block_names value_names type_names statements
+        in
+        Ok value_names
+    | Ast.While (condition, body, _) ->
+        let* () = validate_expression_names value_names type_names condition in
+        let* () = validate_statement_block_names value_names type_names body in
+        Ok value_names
+    | Ast.Defer (body, _) | Ast.Block (body, _) ->
+        let* () = validate_statement_block_names value_names type_names body in
+        Ok value_names
+    | Ast.Expr_stmt (expression, _) ->
+        let* () = validate_expression_names value_names type_names expression in
+        Ok value_names
+    | Ast.For (init, condition, step, body, _) ->
+        let* loop_names =
+          match init with
+          | None -> Ok value_names
+          | Some statement -> validate_statement_names value_names type_names statement
+        in
+        let* () =
+          match condition with
+          | None -> Ok ()
+          | Some expression ->
+              validate_expression_names loop_names type_names expression
+        in
+        let* () = validate_statement_block_names loop_names type_names body in
+        let* _ =
+          match step with
+          | None -> Ok loop_names
+          | Some statement -> validate_statement_names loop_names type_names statement
+        in
+        Ok value_names
+    | Ast.Switch (expression, cases, default, _) ->
+        let* () = validate_expression_names value_names type_names expression in
+        let* () =
+          Result_list.iter
+            (fun (value, body) ->
+              let* () = validate_expression_names value_names type_names value in
+              validate_statement_block_names value_names type_names body)
+            cases
+        in
+        let* () =
+          match default with
+          | None -> Ok ()
+          | Some body -> validate_statement_block_names value_names type_names body
+        in
+        Ok value_names
+    | Ast.Break _ | Ast.Continue _ -> Ok value_names
+  and validate_statement_block_names value_names type_names = function
+    | [] -> Ok ()
+    | statement :: rest ->
+        let* value_names = validate_statement_names value_names type_names statement in
+        validate_statement_block_names value_names type_names rest
   in
   let rec has_unresolved_application = function
     | Ast.Applied_type _ -> true
@@ -3088,6 +3277,13 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
   and resolve_function ?(values = []) substitutions depth specialization_name = function
     | Ast.Func ({ params; ret; body; generic_params; span; _ } as item) ->
         with_generic_type_names (type_param_names generic_params) (fun () ->
+            let body_type_names = type_param_names generic_params in
+            let body_value_names =
+              List.map (fun (parameter : Ast.param) -> parameter.name) params
+              @ List.map
+                  (fun (parameter : Ast.const_param) -> parameter.name)
+                  (const_params generic_params)
+            in
             let defer_const_structs = values = [] && has_const_params generic_params in
             let* params =
               Result_list.map
@@ -3120,6 +3316,10 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
               | Ast.Declaration -> Ok Ast.Declaration
               | Ast.Asm raw -> Ok (Ast.Asm raw)
               | Ast.Statements statements ->
+                  let* () =
+                    validate_statement_block_names body_value_names body_type_names
+                      statements
+                  in
                   let shadowed_constants =
                     List.map (fun (parameter : Ast.param) -> parameter.name) params
                   in

@@ -2979,6 +2979,50 @@ let () =
     \ return 3\n\
      }\n\
      fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-unknown-value" "unknown name `Missing`"
+    "fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { return Missing }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-unknown-function"
+    "unknown function `missing`"
+    "fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { return missing() }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-unknown-generic"
+    "unknown generic function `missing`"
+    "fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { return missing[N]() }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-unknown-type" "unknown type `Missing`"
+    "fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { value Missing\n\
+    \ return 3 }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-unknown-target"
+    "unknown assignment target `Missing`"
+    "fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { Missing = 3\n\
+    \ return 3 }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-unknown-length" "unknown name `Missing`"
+    "fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { values arr[Missing,i32]\n\
+    \ return 3 }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  ignore
+    (llvm_of
+       "fn choose[N const i32](value i32) i32 {\n\
+       \ prior i32 = value\n\
+       \ if N == 1 { return prior } else { copy i32 = prior\n\
+       \ return copy }\n\
+        }\n\
+        fn main() i32 { return choose[1](7) }\n");
 
   let const_generic_struct_function_source =
     "const THREE usize = 3\n\
