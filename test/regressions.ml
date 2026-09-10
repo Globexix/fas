@@ -2005,6 +2005,19 @@ let () =
 
   semantic_error "const-param-duplicate" "duplicate generic parameter `N`"
     "fn id[N const usize, N const usize](x u64) u64 { return x + N }\n";
+  semantic_error "runtime-parameter-duplicate" "duplicate parameter `value`"
+    "fn id(value i32, value i32) i32 { return value }\n";
+  semantic_error "type-runtime-parameter-collision"
+    "parameter `T` conflicts with a generic parameter"
+    "fn id[T](T i32) i32 { return T }\n";
+  semantic_error "const-runtime-parameter-collision"
+    "parameter `N` conflicts with a generic parameter"
+    "fn id[N const i32](N i32) i32 { return N }\n";
+  ignore
+    (lower_of
+       "fn id[T](value T) T { { T i32 = 1 }\n\
+       \ return value }\n\
+        fn main() i32 { return id[i32](7) }\n");
 
   let generic_declarations =
     expect_ok

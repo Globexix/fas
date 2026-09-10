@@ -290,6 +290,26 @@ let validate_generic_params named_types params =
   in
   dup [] params
 
+let validate_function_params generic_params params =
+  let generic_names =
+    List.map
+      (function Ast.Type_param { name; _ } | Ast.Const_param { name; _ } -> name)
+      generic_params
+  in
+  let rec validate seen = function
+    | [] -> Ok ()
+    | (parameter : Ast.param) :: rest ->
+        if List.mem parameter.name generic_names then
+          error parameter.span
+            (Printf.sprintf "parameter `%s` conflicts with a generic parameter"
+               parameter.name)
+        else if List.mem parameter.name seen then
+          error parameter.span
+            (Printf.sprintf "duplicate parameter `%s`" parameter.name)
+        else validate (parameter.name :: seen) rest
+  in
+  validate [] params
+
 let equal = Hir.ty_equal
 let ty_name = Hir.ty_name
 
@@ -3601,8 +3621,9 @@ let check ?(limits = Limits.default) program =
       (function
         | Ast.Struct { generic_params; _ } ->
             validate_generic_params named_types generic_params
-        | Ast.Func { generic_params; _ } ->
-            validate_generic_params named_types generic_params
+        | Ast.Func { generic_params; params; _ } ->
+            let* () = validate_generic_params named_types generic_params in
+            validate_function_params generic_params params
         | _ -> Ok ())
       program.Ast.items
   in
@@ -3808,17 +3829,7 @@ let check ?(limits = Limits.default) program =
               error span "entry point `main` cannot have generic parameters"
             else
               let () = declared_functions := name :: !declared_functions in
-              let rec dup seen = function
-                | [] -> None
-                | (p : Ast.param) :: xs ->
-                    if List.mem p.name seen then Some p else dup (p.name :: seen) xs
-              in
-              let* () =
-                match dup [] params with
-                | Some p ->
-                    error p.span (Printf.sprintf "duplicate parameter `%s`" p.name)
-                | None -> Ok ()
-              in
+              let* () = validate_function_params generic_params params in
               let* () =
                 if linkage = Ast.External_c && generic_params <> [] then
                   error span
