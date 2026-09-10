@@ -96,6 +96,12 @@ type trailing_args = Reject | Promote_variadic
 type named_type_kind = Struct_name | Generic_struct_name | Opaque_name
 type top_level_kind = Top_type | Top_function | Top_const
 
+type top_level_binding = {
+  declaration_id : int;
+  declaration_name : string;
+  declaration_kind : top_level_kind;
+}
+
 type context = {
   structs : Hir.struct_def list;
   named_types : (string * named_type_kind) list;
@@ -103,6 +109,7 @@ type context = {
   arrays : (string * Hir.ty * int64 list) list;
   signatures : (string * signature) list;
   templates : (string * Ast.item) list;
+  top_level_bindings : top_level_binding list;
   specializations : specialization_state;
   spec_depth : int;
   spec_trace : instantiation_frame list;
@@ -117,6 +124,9 @@ type context = {
   mutable falls_through : bool;
   limits : Limits.t;
 }
+
+let lookup_top_level name bindings =
+  List.find_opt (fun binding -> binding.declaration_name = name) bindings
 
 let error span message = Error [ Diag.error span message ]
 let ok x = Ok x
@@ -687,14 +697,14 @@ let add_local name ty c span =
 let rec source_ty_in_context c span = function
   | Ast.Named_type name when Option.is_some (lookup_local name c) ->
       error span (Printf.sprintf "`%s` is a value, not a type" name)
-  | Ast.Named_type name when Option.is_some (lookup name c.consts) ->
-      error span (Printf.sprintf "`%s` is a constant, not a type" name)
-  | Ast.Named_type name when Option.is_some (lookup name c.arrays) ->
-      error span (Printf.sprintf "`%s` is a constant, not a type" name)
-  | Ast.Named_type name when Option.is_some (lookup_sig name c) ->
-      error span (Printf.sprintf "`%s` is a function, not a type" name)
-  | Ast.Named_type name when Option.is_some (List.assoc_opt name c.templates) ->
-      error span (Printf.sprintf "`%s` is a function, not a type" name)
+  | Ast.Named_type name -> (
+      match lookup_top_level name c.top_level_bindings with
+      | Some { declaration_kind = Top_const; _ } ->
+          error span (Printf.sprintf "`%s` is a constant, not a type" name)
+      | Some { declaration_kind = Top_function; _ } ->
+          error span (Printf.sprintf "`%s` is a function, not a type" name)
+      | Some { declaration_kind = Top_type; _ } | None ->
+          source_ty_diag c.named_types span (Ast.Named_type name))
   | Ast.Ptr ty ->
       let* ty = source_ty_in_context c span ty in
       Ok (Hir.Ptr ty)
@@ -1297,7 +1307,15 @@ let rec check_place (c : context) expr =
           match lookup n c.arrays with
           | Some (_, t, _) ->
               Ok { expr = Hir.Const_array (n, t, s); root = None; path = None }
-          | None -> error s (Printf.sprintf "unknown name `%s`" n)))
+          | None -> (
+              match lookup_top_level n c.top_level_bindings with
+              | Some { declaration_kind = Top_const; _ } ->
+                  error s (Printf.sprintf "constant `%s` is not a place" n)
+              | Some { declaration_kind = Top_type; _ } ->
+                  error s (Printf.sprintf "type `%s` is not a place" n)
+              | Some { declaration_kind = Top_function; _ } ->
+                  error s (Printf.sprintf "function `%s` is not a place" n)
+              | None -> error s (Printf.sprintf "unknown name `%s`" n))))
   | Ast.Index (a, i, s) -> (
       let* base = check_place c a in
       let* checked_index = check_expr c None i in
@@ -1407,19 +1425,18 @@ and check_expr (c : context) expected = function
           let* () = require_state b [] c s in
           Ok (Hir.Local (b, s))
       | None -> (
-          match lookup n c.consts with
-          | Some (_, t, v) -> Ok (Hir.EInt (v, t, s))
-          | None -> (
-              match lookup n c.arrays with
-              | Some (_, t, _) -> Ok (Hir.Const_array (n, t, s))
-              | None ->
-                  if Option.is_some (lookup_sig n c) then
-                    error s (Printf.sprintf "`%s` is a function, not a value" n)
-                  else if Option.is_some (List.assoc_opt n c.templates) then
-                    error s (Printf.sprintf "`%s` is a function, not a value" n)
-                  else if Option.is_some (List.assoc_opt n c.named_types) then
-                    error s (Printf.sprintf "`%s` is a type, not a value" n)
-                  else error s (Printf.sprintf "unknown name `%s`" n))))
+          match lookup_top_level n c.top_level_bindings with
+          | Some { declaration_kind = Top_type; _ } ->
+              error s (Printf.sprintf "`%s` is a type, not a value" n)
+          | Some { declaration_kind = Top_function; _ } ->
+              error s (Printf.sprintf "`%s` is a function, not a value" n)
+          | Some { declaration_kind = Top_const; _ } | None -> (
+              match lookup n c.consts with
+              | Some (_, t, v) -> Ok (Hir.EInt (v, t, s))
+              | None -> (
+                  match lookup n c.arrays with
+                  | Some (_, t, _) -> Ok (Hir.Const_array (n, t, s))
+                  | None -> error s (Printf.sprintf "unknown name `%s`" n)))))
   | Ast.Unary (Ast.Neg, Ast.Int_lit (raw, is), s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error is m ]) in
       let t = Option.value ~default:(Hir.Int Hir.I32) expected in
@@ -1982,7 +1999,15 @@ let check_target (c : context) = function
   | Ast.Target_ident (n, span) -> (
       match lookup_local n c with
       | Some b -> Ok { target = Hir.ALocal b; root = Some b; path = Some (Exact []) }
-      | None -> error span (Printf.sprintf "unknown assignment target `%s`" n))
+      | None -> (
+          match lookup_top_level n c.top_level_bindings with
+          | Some { declaration_kind = Top_const; _ } ->
+              error span (Printf.sprintf "constant `%s` is not assignable" n)
+          | Some { declaration_kind = Top_type; _ } ->
+              error span (Printf.sprintf "type `%s` is not assignable" n)
+          | Some { declaration_kind = Top_function; _ } ->
+              error span (Printf.sprintf "function `%s` is not assignable" n)
+          | None -> error span (Printf.sprintf "unknown assignment target `%s`" n)))
   | Ast.Target_deref e -> (
       let* x = check_expr c None e in
       if rooted_in_const_array x then
@@ -2392,8 +2417,8 @@ let mangle_type_specialization base arguments =
            string_of_int (String.length key) ^ "_" ^ key)
          arguments)
 
-let monomorphize_types ?eval_context ?(eager_functions = false) ~limits specializations
-    program =
+let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindings
+    ~limits specializations program =
   let eval_structs, eval_named_types, eval_consts, eval_arrays =
     match eval_context with
     | None -> ([], [], [], [])
@@ -2452,6 +2477,22 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
   in
   let generated = ref [] in
   let current_trace = ref [] in
+  let nearest_kind value_names type_names name =
+    if List.mem name value_names then Some (`Value None)
+    else if List.mem name type_names then Some (`Type None)
+    else
+      match lookup_top_level name top_level_bindings with
+      | Some { declaration_id; declaration_kind = Top_type; _ } ->
+          Some (`Type (Some declaration_id))
+      | Some { declaration_id; declaration_kind = Top_function; _ } ->
+          Some (`Function declaration_id)
+      | Some { declaration_id; declaration_kind = Top_const; _ } ->
+          Some (`Value (Some declaration_id))
+      | None when List.mem name named_type_names -> Some (`Type None)
+      | None when List.mem name function_names -> Some (`Function (-1))
+      | None when List.mem name global_value_names -> Some (`Value None)
+      | None -> None
+  in
   let rec type_mentions names = function
     | Ast.Array (length, ty) | Ast.Vec (length, ty) ->
         List.mem length names || type_mentions names ty
@@ -2505,9 +2546,14 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
               else error span (Printf.sprintf "unknown name `%s`" length)
         in
         validate_type_names value_names type_names span ty
-    | Ast.Named_type name ->
-        if List.mem name named_type_names || List.mem name type_names then Ok ()
-        else error span (Printf.sprintf "unknown type `%s`" name)
+    | Ast.Named_type name -> (
+        match nearest_kind value_names type_names name with
+        | Some (`Type _) -> Ok ()
+        | Some (`Value _) ->
+            error span (Printf.sprintf "`%s` is a value, not a type" name)
+        | Some (`Function _) ->
+            error span (Printf.sprintf "`%s` is a function, not a type" name)
+        | None -> error span (Printf.sprintf "unknown type `%s`" name))
     | Ast.Applied_type (name, arguments, application_span) ->
         if not (List.mem name struct_names) then
           error span (Printf.sprintf "unknown generic struct `%s`" name)
@@ -2529,9 +2575,14 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
         then Ok ()
         else error span (Printf.sprintf "unknown name `%s`" name)
   and validate_expression_names value_names type_names = function
-    | Ast.Ident (name, span) ->
-        if List.mem name value_names || List.mem name global_value_names then Ok ()
-        else error span (Printf.sprintf "unknown name `%s`" name)
+    | Ast.Ident (name, span) -> (
+        match nearest_kind value_names type_names name with
+        | Some (`Value _) -> Ok ()
+        | Some (`Type _) ->
+            error span (Printf.sprintf "`%s` is a type, not a value" name)
+        | Some (`Function _) ->
+            error span (Printf.sprintf "`%s` is a function, not a value" name)
+        | None -> error span (Printf.sprintf "unknown name `%s`" name))
     | Ast.Unary (_, expression, _)
     | Ast.Deref (expression, _)
     | Ast.Addr_of (expression, _)
@@ -2544,9 +2595,15 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
         validate_expression_names value_names type_names right
     | Ast.Call (Ast.Ident (name, span), arguments, _) ->
         let* () =
-          if List.mem name function_names || List.mem name reserved_builtin_names then
-            Ok ()
-          else error span (Printf.sprintf "unknown function `%s`" name)
+          if List.mem name reserved_builtin_names then Ok ()
+          else
+            match nearest_kind value_names type_names name with
+            | Some (`Function _) -> Ok ()
+            | Some (`Value _) ->
+                error span (Printf.sprintf "`%s` is a value, not a function" name)
+            | Some (`Type _) ->
+                error span (Printf.sprintf "`%s` is a type, not a function" name)
+            | None -> error span (Printf.sprintf "unknown function `%s`" name)
         in
         Result_list.iter (validate_expression_names value_names type_names) arguments
     | Ast.Call (callee, arguments, _) ->
@@ -2554,8 +2611,13 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
         Result_list.iter (validate_expression_names value_names type_names) arguments
     | Ast.Generic_args (Ast.Ident (name, span), arguments, application_span) ->
         let* () =
-          if List.mem name function_names then Ok ()
-          else error span (Printf.sprintf "unknown generic function `%s`" name)
+          match nearest_kind value_names type_names name with
+          | Some (`Function _) -> Ok ()
+          | Some (`Value _) ->
+              error span (Printf.sprintf "`%s` is a value, not a function" name)
+          | Some (`Type _) ->
+              error span (Printf.sprintf "`%s` is a type, not a function" name)
+          | None -> error span (Printf.sprintf "unknown generic function `%s`" name)
         in
         Result_list.iter
           (validate_generic_argument_names value_names type_names application_span)
@@ -2584,9 +2646,16 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
     | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ -> Ok ()
   in
   let rec validate_target_names value_names type_names = function
-    | Ast.Target_ident (name, span) ->
-        if List.mem name value_names then Ok ()
-        else error span (Printf.sprintf "unknown assignment target `%s`" name)
+    | Ast.Target_ident (name, span) -> (
+        match nearest_kind value_names type_names name with
+        | Some (`Value _) when List.mem name value_names -> Ok ()
+        | Some (`Value _) ->
+            error span (Printf.sprintf "constant `%s` is not assignable" name)
+        | Some (`Type _) ->
+            error span (Printf.sprintf "type `%s` is not assignable" name)
+        | Some (`Function _) ->
+            error span (Printf.sprintf "function `%s` is not assignable" name)
+        | None -> error span (Printf.sprintf "unknown assignment target `%s`" name))
     | Ast.Target_deref expression ->
         validate_expression_names value_names type_names expression
     | Ast.Target_index (base, index) ->
@@ -3667,14 +3736,23 @@ let check ?(limits = Limits.default) program =
     | Ast.Const { name; span; _ } -> Some (name, Top_const, span)
     | Ast.Func { name; span; _ } -> Some (name, Top_function, span)
   in
-  let rec validate_declarations seen = function
-    | [] -> Ok ()
+  let rec validate_declarations next_id seen bindings = function
+    | [] -> Ok (List.rev bindings)
     | item :: rest -> (
         match declaration item with
-        | None -> validate_declarations seen rest
+        | None -> validate_declarations next_id seen bindings rest
         | Some (name, kind, span) -> (
             match List.assoc_opt name seen with
-            | None -> validate_declarations ((name, kind) :: seen) rest
+            | None ->
+                let binding =
+                  {
+                    declaration_id = next_id;
+                    declaration_name = name;
+                    declaration_kind = kind;
+                  }
+                in
+                validate_declarations (next_id + 1) ((name, kind) :: seen)
+                  (binding :: bindings) rest
             | Some previous when previous = kind ->
                 let label =
                   match kind with
@@ -3685,7 +3763,7 @@ let check ?(limits = Limits.default) program =
                 error span (Printf.sprintf "duplicate %s `%s`" label name)
             | Some _ -> error span (Printf.sprintf "duplicate declaration `%s`" name)))
   in
-  let* () = validate_declarations [] program.Ast.items in
+  let* top_level_bindings = validate_declarations 0 [] [] program.Ast.items in
   let rec collect_named_types seen acc = function
     | [] -> Ok (List.rev acc)
     | Ast.Opaque { name; span } :: rest ->
@@ -3762,7 +3840,7 @@ let check ?(limits = Limits.default) program =
   let* program =
     monomorphize_types
       ~eval_context:(base_structs, named_types, early_consts, [])
-      ~limits specializations program
+      ~top_level_bindings ~limits specializations program
   in
   let* named_types = collect_named_types [] [] program.Ast.items in
   let rec collect_structs named_types acc = function
@@ -3869,7 +3947,7 @@ let check ?(limits = Limits.default) program =
   let* program =
     monomorphize_types
       ~eval_context:(structs, named_types, !consts, !arrays)
-      ~eager_functions:true ~limits specializations program
+      ~eager_functions:true ~top_level_bindings ~limits specializations program
   in
   let* named_types = collect_named_types [] [] program.Ast.items in
   let* structs_src = collect_structs named_types [] program.Ast.items in
@@ -3969,6 +4047,7 @@ let check ?(limits = Limits.default) program =
       arrays = !arrays;
       signatures = !sigs;
       templates;
+      top_level_bindings;
       specializations;
       spec_depth;
       spec_trace;

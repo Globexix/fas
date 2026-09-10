@@ -3135,6 +3135,33 @@ let () =
     \ return 3 }\n\
      }\n\
      fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-type-as-value" "type, not a value"
+    "opaque Item\n\
+     fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { return Item }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-const-as-function" "value, not a function"
+    "const Item i32 = 2\n\
+     fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { return Item() }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-local-shadows-function"
+    "value, not a function"
+    "fn Item() i32 { return 2 }\n\
+     fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { Item i32 = 3\n\
+    \ return Item() }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
+  semantic_error "unselected-specialization-const-target" "not assignable"
+    "const Item i32 = 2\n\
+     fn choose[N const i32]() i32 {\n\
+    \ if N == 1 { return 7 } else { Item = 3\n\
+    \ return Item }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-duplicate-local" "duplicate local `value`"
     "fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { value i32 = 1\n\
