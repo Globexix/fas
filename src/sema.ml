@@ -276,8 +276,8 @@ let validate_generic_params named_types params =
         | Ast.Type_param _ -> Ok ()
         | Ast.Const_param cp ->
             let* t = source_ty_diag named_types cp.span cp.ty in
-            if is_int t then Ok ()
-            else error cp.span "const parameter type must be an integer")
+            if t = Hir.Bool || is_int t then Ok ()
+            else error cp.span "const parameter type must be a scalar integer or bool")
       params
   in
   let rec dup seen = function

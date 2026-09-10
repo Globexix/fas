@@ -6,8 +6,16 @@ fn choose[N const i32]() i32 {
   }
 }
 
+fn choose_bool[Flag const bool]() i32 {
+  if Flag {
+    return 11
+  } else {
+    return 5
+  }
+}
+
 fn main() i32 {
-  if choose[1]() == 7 && choose[0]() == 3 {
+  if choose[1]() == 7 && choose[0]() == 3 && choose_bool[true]() == 11 && choose_bool[false]() == 5 && choose_bool[1]() == 11 && choose_bool[trunc[bool](3)]() == 11 {
     return 0
   } else {
     return 1

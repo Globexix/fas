@@ -1953,11 +1953,42 @@ let () =
   in
   if marker_positions <> List.sort compare marker_positions then
     failwith "specialization-order: work queue did not preserve discovery order";
-  semantic_error "const-param-bool-rejected" "const parameter type must be an integer"
-    "fn id[N const bool](x u64) u64 { return x }\n";
+  let bool_const_generic_llvm =
+    llvm_of
+      "const Enabled bool = true\n\
+       fn choose[Flag const bool]() i32 {\n\
+      \ if Flag { return 7 } else { return 3 }\n\
+       }\n\
+       fn byte[N const u8]() i32 { return zext[i32](N) }\n\
+       fn main() i32 {\n\
+      \ return choose[true]() + choose[false]() + choose[1]() + choose[Enabled]() \
+       +choose[trunc[bool](3)]() + byte[zext[u8](true)]()\n\
+       }\n"
+  in
+  if
+    (not
+       (contains bool_const_generic_llvm
+          "define internal i32 @\"choose$spec$6:4:Flag=bool:1\"()"))
+    || not
+         (contains bool_const_generic_llvm
+            "define internal i32 @\"choose$spec$6:4:Flag=bool:0\"()")
+  then failwith "const-param-bool: typed specializations were not emitted";
+  if contains bool_const_generic_llvm "br i1" then
+    failwith "const-param-bool: specialization condition was not pruned";
+  semantic_error "const-param-bool-named-integer" "const argument type mismatch"
+    "const One u8 = 1\n\
+     fn choose[Flag const bool]() i32 { if Flag { return 1 } else { return 0 } }\n\
+     fn main() i32 { return choose[One]() }\n";
+  semantic_error "const-param-bool-literal-range"
+    "integer literal is out of range for bool"
+    "fn choose[Flag const bool]() i32 { if Flag { return 1 } else { return 0 } }\n\
+     fn main() i32 { return choose[2]() }\n";
+  semantic_error "const-param-integer-bool-value" "const argument type mismatch"
+    "fn byte[N const u8]() i32 { return zext[i32](N) }\n\
+     fn main() i32 { return byte[true]() }\n";
 
   semantic_error "const-param-pointer-rejected"
-    "const parameter type must be an integer"
+    "const parameter type must be a scalar integer or bool"
     "fn id[N const ptr[u8]](x u64) u64 { return x }\n";
 
   semantic_error "const-param-duplicate" "duplicate generic parameter `N`"
@@ -2720,6 +2751,24 @@ let () =
     || contains const_generic_struct_llvm "%struct.Lanes = type"
     || contains const_generic_struct_llvm "%struct.Wrapped = type"
   then failwith "const-generic-struct-template: template reached LLVM output";
+  let bool_const_generic_struct_hir =
+    expect_ok
+      (Parser.parse
+         (source
+            "struct Tagged[Flag const bool] { value u8 }\n\
+             fn main() usize {\n\
+            \ return sizeof[Tagged[true]] + sizeof[Tagged[false]] +sizeof[Tagged[1]] + \
+             sizeof[Tagged[trunc[bool](3)]]\n\
+             }\n"))
+    |> Sema.check |> expect_ok
+  in
+  let tagged_specializations =
+    List.filter
+      (specialization_named "Tagged")
+      bool_const_generic_struct_hir.Hir.structs
+  in
+  if List.length tagged_specializations <> 2 then
+    failwith "const-generic-struct-bool: expected two typed specializations";
   let issue33_llvm =
     llvm_of
       "struct Bytes[N const usize] { data arr[N, u8] }\n\

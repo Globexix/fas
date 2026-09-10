@@ -318,6 +318,9 @@ module P = struct
 
   and generic_arg p =
     match ((peek p).kind, (peek_n p 1).kind) with
+    | Token.Ident ("true" | "false"), _ ->
+        let* e = expr p in
+        Ok (Ast.Const_arg e)
     | Token.Ident ("sizeof" | "alignof" | "offsetof"), Token.Lbracket ->
         let* e = expr p in
         Ok (Ast.Const_arg e)
