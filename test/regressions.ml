@@ -900,10 +900,38 @@ let () =
        \ { value i64 = 100\n\
        \ out.* += value - 100 }\n\
        \ }\n");
-  semantic_error "lexical-scope-const-shadow" "shadows a const"
-    "const value i64 = 1\nfn f() i64 { value i64 = 2\n return value }\n";
-  semantic_error "lexical-scope-const-array-shadow" "shadows a const"
-    "const values arr[1,i64] = {1}\n fn f() i64 { values i64 = 2\n return values }\n";
+  let lexical_const_shadow =
+    llvm_of "const value i64 = 1\nfn f() i64 { value i64 = 2\n return value }\n"
+  in
+  if
+    (not (contains lexical_const_shadow "store i64 2"))
+    || not (contains lexical_const_shadow "load i64, ptr")
+  then failwith "lexical-scope-const-shadow: local did not win lookup";
+  let lexical_const_array_shadow =
+    llvm_of
+      "const values arr[1,i64] = {1}\n fn f() i64 { values i64 = 2\n return values }\n"
+  in
+  if
+    (not (contains lexical_const_array_shadow "store i64 2"))
+    || not (contains lexical_const_array_shadow "load i64, ptr")
+  then failwith "lexical-scope-const-array-shadow: local did not win lookup";
+  let lexical_initializer_shadow =
+    llvm_of "const value i64 = 1\nfn f() i64 { value i64 = value + 1\n return value }\n"
+  in
+  if not (contains lexical_initializer_shadow "add i64 1, 1") then
+    failwith "lexical-scope-initializer-shadow: outer binding was not visible";
+  semantic_error "lexical-scope-function-call-shadow" "value, not a function"
+    "fn target() i32 { return 1 }\nfn use() i32 { target i32 = 2\n return target() }\n";
+  semantic_error "lexical-scope-generic-call-shadow" "value, not a function"
+    "fn target[N const i32]() i32 { return N }\n\
+     fn use() i32 { target i32 = 2\n\
+    \ return target[1]() }\n";
+  semantic_error "lexical-scope-type-shadow" "value, not a type"
+    "struct Item { value i32 }\nfn use(Item i32) i32 { local Item\n return 0 }\n";
+  semantic_error "lexical-scope-aggregate-length-shadow" "not a compile-time constant"
+    "const Count usize = 2\n\
+     fn use(Count usize) i32 { local arr[Count,i32]\n\
+    \ return 0 }\n";
   semantic_error "static-index-parameter-constant-shadow"
     "use of uninitialized local `values`"
     "const Index i32 = 0\n\
@@ -1734,6 +1762,24 @@ let () =
     "const F arr[2, i64] = {1, 2}\n\
      fn F() i64 { return 3 }\n\
      fn main() i64 { return F() }\n";
+  semantic_error "scalar-const-function-collision" "duplicate declaration `F`"
+    "const F i64 = 1\nfn F() i64 { return 3 }\n";
+  semantic_error "function-scalar-const-collision" "duplicate declaration `F`"
+    "fn F() i64 { return 3 }\nconst F i64 = 1\n";
+  semantic_error "type-function-collision" "duplicate declaration `F`"
+    "struct F { value i64 }\nfn F() i64 { return 3 }\n";
+  semantic_error "function-type-collision" "duplicate declaration `F`"
+    "fn F() i64 { return 3 }\nstruct F { value i64 }\n";
+  semantic_error "type-const-collision" "duplicate declaration `F`"
+    "opaque F\nconst F i64 = 1\n";
+  semantic_error "const-type-collision" "duplicate declaration `F`"
+    "const F i64 = 1\nopaque F\n";
+  semantic_error "constant-used-as-function" "constant, not a function"
+    "const F i64 = 1\nfn use() i64 { return F() }\n";
+  semantic_error "function-used-as-value" "function, not a value"
+    "fn F() i64 { return 1 }\nfn use() i64 { return F }\n";
+  semantic_error "type-used-as-value" "type, not a value"
+    "opaque F\nfn use() i64 { return F }\n";
 
   semantic_error "fas-021-local-aggregate-limit"
     "aggregate element count exceeds the configured limit"

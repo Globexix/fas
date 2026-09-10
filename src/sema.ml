@@ -94,6 +94,7 @@ type specialization_state = {
 
 type trailing_args = Reject | Promote_variadic
 type named_type_kind = Struct_name | Generic_struct_name | Opaque_name
+type top_level_kind = Top_type | Top_function | Top_const
 
 type context = {
   structs : Hir.struct_def list;
@@ -668,17 +669,57 @@ let lookup_local name c =
   in
   go !(c.locals)
 
+let ensure_new_local name c span =
+  let scope = match !(c.locals) with scope :: _ -> scope | [] -> Hashtbl.create 8 in
+  if Hashtbl.mem scope name then error span (Printf.sprintf "duplicate local `%s`" name)
+  else Ok ()
+
 let add_local name ty c span =
   let h = match !(c.locals) with h :: _ -> h | [] -> Hashtbl.create 8 in
-  let duplicate = Hashtbl.mem h name in
-  if duplicate then error span (Printf.sprintf "duplicate local `%s`" name)
-  else
-    let id = c.next_binding_id in
-    c.next_binding_id <- id + 1;
-    let binding : binding = { ty; id; name } in
-    Hashtbl.replace h name binding;
-    if !(c.locals) = [] then c.locals := [ h ];
-    ok binding
+  let* () = ensure_new_local name c span in
+  let id = c.next_binding_id in
+  c.next_binding_id <- id + 1;
+  let binding : binding = { ty; id; name } in
+  Hashtbl.replace h name binding;
+  if !(c.locals) = [] then c.locals := [ h ];
+  ok binding
+
+let rec source_ty_in_context c span = function
+  | Ast.Named_type name when Option.is_some (lookup_local name c) ->
+      error span (Printf.sprintf "`%s` is a value, not a type" name)
+  | Ast.Named_type name when Option.is_some (lookup name c.consts) ->
+      error span (Printf.sprintf "`%s` is a constant, not a type" name)
+  | Ast.Named_type name when Option.is_some (lookup name c.arrays) ->
+      error span (Printf.sprintf "`%s` is a constant, not a type" name)
+  | Ast.Named_type name when Option.is_some (lookup_sig name c) ->
+      error span (Printf.sprintf "`%s` is a function, not a type" name)
+  | Ast.Named_type name when Option.is_some (List.assoc_opt name c.templates) ->
+      error span (Printf.sprintf "`%s` is a function, not a type" name)
+  | Ast.Ptr ty ->
+      let* ty = source_ty_in_context c span ty in
+      Ok (Hir.Ptr ty)
+  | Ast.Ptr_const ty ->
+      let* ty = source_ty_in_context c span ty in
+      Ok (Hir.ConstPtr ty)
+  | Ast.Array (length, ty) ->
+      source_aggregate_in_context c span (fun n t -> Hir.Array (n, t)) length ty
+  | Ast.Vec (length, ty) ->
+      source_aggregate_in_context c span (fun n t -> Hir.Vec (n, t)) length ty
+  | ty -> source_ty_diag c.named_types span ty
+
+and source_aggregate_in_context c span make length element =
+  let* length =
+    match int_of_string_opt length with
+    | Some _ -> Ok length
+    | None when Option.is_some (lookup_local length c) ->
+        error span (Printf.sprintf "`%s` is not a compile-time constant" length)
+    | None -> resolve_aggregate_length c.consts span length
+  in
+  let* element = source_ty_in_context c span element in
+  match int_of_string_opt length with
+  | Some length when length < 0 -> error span "negative aggregate length"
+  | Some length -> Ok (make length element)
+  | None -> error span "aggregate length is not a machine integer"
 
 let push c = c.locals := Hashtbl.create 8 :: !(c.locals)
 let pop c = match !(c.locals) with _ :: rest -> c.locals := rest | [] -> ()
@@ -1371,7 +1412,14 @@ and check_expr (c : context) expected = function
           | None -> (
               match lookup n c.arrays with
               | Some (_, t, _) -> Ok (Hir.Const_array (n, t, s))
-              | None -> error s (Printf.sprintf "unknown name `%s`" n))))
+              | None ->
+                  if Option.is_some (lookup_sig n c) then
+                    error s (Printf.sprintf "`%s` is a function, not a value" n)
+                  else if Option.is_some (List.assoc_opt n c.templates) then
+                    error s (Printf.sprintf "`%s` is a function, not a value" n)
+                  else if Option.is_some (List.assoc_opt n c.named_types) then
+                    error s (Printf.sprintf "`%s` is a type, not a value" n)
+                  else error s (Printf.sprintf "unknown name `%s`" n))))
   | Ast.Unary (Ast.Neg, Ast.Int_lit (raw, is), s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error is m ]) in
       let t = Option.value ~default:(Hir.Int Hir.I32) expected in
@@ -1468,7 +1516,7 @@ and check_expr (c : context) expected = function
   | Ast.Generic_args (_fn, _, s) ->
       error s "generic specialization is not available in this context"
   | Ast.Cast (k, t, e, s) ->
-      let* t = source_ty_with_values c.named_types c.consts s t in
+      let* t = source_ty_in_context c s t in
       let* x =
         check_expr c
           (if
@@ -1540,15 +1588,15 @@ and check_expr (c : context) expected = function
         | Hir.ConstPtr t -> Ok (Hir.Ptr_add (bytes, tp, toff, Hir.ConstPtr t, s))
         | _ -> error s "pointer addition requires a pointer")
   | Ast.Sizeof (t, s) ->
-      let* t = source_ty_with_values c.named_types c.consts s t in
+      let* t = source_ty_in_context c s t in
       let* size, _ = layout_diag s c.structs t in
       Ok (Hir.Sizeof (t, size, s))
   | Ast.Alignof (t, s) ->
-      let* t = source_ty_with_values c.named_types c.consts s t in
+      let* t = source_ty_in_context c s t in
       let* _, a = layout_diag s c.structs t in
       Ok (Hir.Alignof (t, a, s))
   | Ast.Offsetof (t, n, s) -> (
-      let* t = source_ty_with_values c.named_types c.consts s t in
+      let* t = source_ty_in_context c s t in
       match t with
       | Hir.Struct sn -> (
           match field_info c.structs sn n with
@@ -1589,7 +1637,7 @@ and check_expr (c : context) expected = function
   | Ast.Array_lit (_, s) ->
       error s "array literals are only valid in global const declarations"
   | Ast.Struct_lit (source_type, xs, s) -> (
-      let* literal_type = source_ty_with_values c.named_types c.consts s source_type in
+      let* literal_type = source_ty_in_context c s source_type in
       match literal_type with
       | Hir.Struct n -> (
           match List.find_opt (fun (d : Hir.struct_def) -> d.name = n) c.structs with
@@ -1696,93 +1744,105 @@ and generic_const_argument span = function
 and check_call c _expected fn args s =
   match fn with
   | Ast.Generic_args (Ast.Ident (name, _), generic_args, application_span) -> (
-      match List.assoc_opt name c.templates with
-      | None -> error s (Printf.sprintf "unknown generic function `%s`" name)
-      | Some (Ast.Func { generic_params; _ } as item) ->
-          let const_params = const_params generic_params in
-          if has_type_params generic_params then
-            error s "type-generic call reached ordinary type checking"
-          else if List.length generic_args <> List.length const_params then
-            error s (Printf.sprintf "wrong number of const arguments to `%s`" name)
-          else
-            let* cargs = Result_list.map (generic_const_argument s) generic_args in
-            let rec eval acc cps actual =
-              match (cps, actual) with
-              | [], [] -> Ok (List.rev acc)
-              | cp :: cs, a :: rest ->
-                  let* ct = source_ty_diag c.named_types (Ast.expr_span a) cp.Ast.ty in
-                  let* vt, v =
-                    const_expr ~structs:c.structs ~named_types:c.named_types
-                      ~arrays:c.arrays c.consts (Some ct) a
-                  in
-                  if equal vt ct then eval ((cp.name, ct, v) :: acc) cs rest
-                  else error (Ast.expr_span a) "const argument type mismatch"
-              | _ -> error s "const argument arity mismatch"
-            in
-            let* values = eval [] const_params cargs in
-            let* staged =
-              staged_specialization_identity c.specializations name values
-            in
-            let mangled, key =
-              match staged with
-              | None ->
-                  ( mangle_specialization name values,
-                    function_specialization_key name values )
-              | Some (origin, arguments, _, _) ->
-                  ( mangle_mixed_specialization origin arguments,
-                    (Function_specialization, origin, arguments) )
-            in
-            let frame_name, frame_arguments, frame_span =
-              match staged with
-              | None ->
-                  ( name,
-                    List.map
-                      (fun (_, ty, value) -> Diagnostic_const_argument (ty, value))
-                      values,
-                    application_span )
-              | Some (origin, _, arguments, span) -> (origin, arguments, span)
-            in
-            let frame =
-              {
-                template_name = frame_name;
-                arguments = frame_arguments;
-                application_span = frame_span;
-              }
-            in
-            let spec =
-              {
-                key;
-                name = mangled;
-                depth = c.spec_depth;
-                payload =
-                  Function_payload
-                    { item; substitutions = []; values; staged_args = None };
-                trace = c.spec_trace @ [ frame ];
-                pending_frame = None;
-              }
-            in
-            let* specialization =
-              request_specialization c.specializations ~limits:c.limits
-                ~depth:c.spec_depth ~span:s ~description:"const specialization" spec
-            in
-            let params, ret =
-              match specialization.payload with
-              | Function_payload
-                  { item = Ast.Func { params; ret; _ }; substitutions = []; _ } ->
-                  (params, ret)
-              | _ -> assert false
-            in
-            let* ps =
-              Result_list.map
-                (fun (p : Ast.param) ->
-                  let* t = source_ty_with_values c.named_types values p.span p.ty in
-                  Ok (p.name, t))
-                params
-            in
-            let* rt = source_ty_with_values c.named_types values s ret in
-            let* checked = check_actuals c Reject s ps args in
-            Ok (Hir.Call (Hir.User specialization.name, checked, rt, s))
-      | Some _ -> error s "const-generic symbol is not a function")
+      match lookup_local name c with
+      | Some _ -> error s (Printf.sprintf "`%s` is a value, not a function" name)
+      | None -> (
+          match List.assoc_opt name c.templates with
+          | None ->
+              if
+                Option.is_some (lookup name c.consts)
+                || Option.is_some (lookup name c.arrays)
+              then error s (Printf.sprintf "`%s` is a constant, not a function" name)
+              else if Option.is_some (List.assoc_opt name c.named_types) then
+                error s (Printf.sprintf "`%s` is a type, not a function" name)
+              else error s (Printf.sprintf "unknown generic function `%s`" name)
+          | Some (Ast.Func { generic_params; _ } as item) ->
+              let const_params = const_params generic_params in
+              if has_type_params generic_params then
+                error s "type-generic call reached ordinary type checking"
+              else if List.length generic_args <> List.length const_params then
+                error s (Printf.sprintf "wrong number of const arguments to `%s`" name)
+              else
+                let* cargs = Result_list.map (generic_const_argument s) generic_args in
+                let rec eval acc cps actual =
+                  match (cps, actual) with
+                  | [], [] -> Ok (List.rev acc)
+                  | cp :: cs, a :: rest ->
+                      let* ct =
+                        source_ty_diag c.named_types (Ast.expr_span a) cp.Ast.ty
+                      in
+                      let* vt, v =
+                        const_expr ~structs:c.structs ~named_types:c.named_types
+                          ~arrays:c.arrays c.consts (Some ct) a
+                      in
+                      if equal vt ct then eval ((cp.name, ct, v) :: acc) cs rest
+                      else error (Ast.expr_span a) "const argument type mismatch"
+                  | _ -> error s "const argument arity mismatch"
+                in
+                let* values = eval [] const_params cargs in
+                let* staged =
+                  staged_specialization_identity c.specializations name values
+                in
+                let mangled, key =
+                  match staged with
+                  | None ->
+                      ( mangle_specialization name values,
+                        function_specialization_key name values )
+                  | Some (origin, arguments, _, _) ->
+                      ( mangle_mixed_specialization origin arguments,
+                        (Function_specialization, origin, arguments) )
+                in
+                let frame_name, frame_arguments, frame_span =
+                  match staged with
+                  | None ->
+                      ( name,
+                        List.map
+                          (fun (_, ty, value) -> Diagnostic_const_argument (ty, value))
+                          values,
+                        application_span )
+                  | Some (origin, _, arguments, span) -> (origin, arguments, span)
+                in
+                let frame =
+                  {
+                    template_name = frame_name;
+                    arguments = frame_arguments;
+                    application_span = frame_span;
+                  }
+                in
+                let spec =
+                  {
+                    key;
+                    name = mangled;
+                    depth = c.spec_depth;
+                    payload =
+                      Function_payload
+                        { item; substitutions = []; values; staged_args = None };
+                    trace = c.spec_trace @ [ frame ];
+                    pending_frame = None;
+                  }
+                in
+                let* specialization =
+                  request_specialization c.specializations ~limits:c.limits
+                    ~depth:c.spec_depth ~span:s ~description:"const specialization" spec
+                in
+                let params, ret =
+                  match specialization.payload with
+                  | Function_payload
+                      { item = Ast.Func { params; ret; _ }; substitutions = []; _ } ->
+                      (params, ret)
+                  | _ -> assert false
+                in
+                let* ps =
+                  Result_list.map
+                    (fun (p : Ast.param) ->
+                      let* t = source_ty_with_values c.named_types values p.span p.ty in
+                      Ok (p.name, t))
+                    params
+                in
+                let* rt = source_ty_with_values c.named_types values s ret in
+                let* checked = check_actuals c Reject s ps args in
+                Ok (Hir.Call (Hir.User specialization.name, checked, rt, s))
+          | Some _ -> error s "const-generic symbol is not a function"))
   | Ast.Ident ("len", _) ->
       if List.length args <> 1 then error s "builtin `len` expects one argument"
       else
@@ -1859,22 +1919,34 @@ and check_call c _expected fn args s =
       match builtin with
       | Some b -> check_builtin b
       | None -> (
-          match lookup_sig name c with
+          match lookup_local name c with
+          | Some _ -> error s (Printf.sprintf "`%s` is a value, not a function" name)
           | None -> (
-              match List.assoc_opt name c.templates with
-              | Some _ ->
-                  error s
-                    (Printf.sprintf "generic function `%s` requires arguments" name)
-              | None -> error s (Printf.sprintf "unknown function `%s`" name))
-          | Some sig_ ->
-              if
-                ((not sig_.variadic) && List.length args <> List.length sig_.params)
-                || (sig_.variadic && List.length args < List.length sig_.params)
-              then error s (Printf.sprintf "wrong number of arguments to `%s`" name)
-              else
-                let policy = if sig_.variadic then Promote_variadic else Reject in
-                let* xs = check_actuals c policy s sig_.params args in
-                Ok (Hir.Call (Hir.User name, xs, sig_.ret, s))))
+              match lookup_sig name c with
+              | None -> (
+                  match List.assoc_opt name c.templates with
+                  | Some _ ->
+                      error s
+                        (Printf.sprintf "generic function `%s` requires arguments" name)
+                  | None ->
+                      if
+                        Option.is_some (lookup name c.consts)
+                        || Option.is_some (lookup name c.arrays)
+                      then
+                        error s
+                          (Printf.sprintf "`%s` is a constant, not a function" name)
+                      else if Option.is_some (List.assoc_opt name c.named_types) then
+                        error s (Printf.sprintf "`%s` is a type, not a function" name)
+                      else error s (Printf.sprintf "unknown function `%s`" name))
+              | Some sig_ ->
+                  if
+                    ((not sig_.variadic) && List.length args <> List.length sig_.params)
+                    || (sig_.variadic && List.length args < List.length sig_.params)
+                  then error s (Printf.sprintf "wrong number of arguments to `%s`" name)
+                  else
+                    let policy = if sig_.variadic then Promote_variadic else Reject in
+                    let* xs = check_actuals c policy s sig_.params args in
+                    Ok (Hir.Call (Hir.User name, xs, sig_.ret, s)))))
   | _ -> error s "call target must be a function name"
 
 and check_actuals c policy span formals actuals =
@@ -2037,13 +2109,8 @@ let rec check_block (c : context) stmts =
 
 and check_stmt (c : context) = function
   | Ast.Let { name; ty; init; raw; span } ->
-      let* () =
-        if
-          Option.is_some (lookup name c.consts) || Option.is_some (lookup name c.arrays)
-        then error span (Printf.sprintf "local `%s` shadows a const" name)
-        else Ok ()
-      in
-      let* t = source_ty_with_values c.named_types c.consts span ty in
+      let* () = ensure_new_local name c span in
+      let* t = source_ty_in_context c span ty in
       let* () =
         object_type c.structs t |> Result.map_error (fun m -> [ Diag.error span m ])
       in
@@ -2051,18 +2118,17 @@ and check_stmt (c : context) = function
         if aggregate_within_limit c.limits c.structs t then Ok ()
         else error span "aggregate element count exceeds the configured limit"
       in
-      let* binding = add_local name t c span in
       let* x =
         match init with
-        | None ->
-            if raw then set_state c binding [] Raw;
-            Ok None
+        | None -> Ok None
         | Some e ->
             let* v = check_expr c (Some t) e in
             let* () = ensure_expected (Hir.expr_ty v) t (Ast.expr_span e) in
-            mark_init binding c;
             Ok (Some v)
       in
+      let* binding = add_local name t c span in
+      if raw then set_state c binding [] Raw;
+      if Option.is_some x then mark_init binding c;
       Ok (Hir.Let (binding, x, span))
   | Ast.Assign (t, e, span) ->
       let* checked_target = check_target c t in
@@ -3595,6 +3661,31 @@ let check ?(limits = Limits.default) program =
       by_name = Hashtbl.create 32;
     }
   in
+  let declaration = function
+    | Ast.Opaque { name; span } | Ast.Struct { name; span; _ } ->
+        Some (name, Top_type, span)
+    | Ast.Const { name; span; _ } -> Some (name, Top_const, span)
+    | Ast.Func { name; span; _ } -> Some (name, Top_function, span)
+  in
+  let rec validate_declarations seen = function
+    | [] -> Ok ()
+    | item :: rest -> (
+        match declaration item with
+        | None -> validate_declarations seen rest
+        | Some (name, kind, span) -> (
+            match List.assoc_opt name seen with
+            | None -> validate_declarations ((name, kind) :: seen) rest
+            | Some previous when previous = kind ->
+                let label =
+                  match kind with
+                  | Top_type -> "type"
+                  | Top_const -> "const"
+                  | Top_function -> "function"
+                in
+                error span (Printf.sprintf "duplicate %s `%s`" label name)
+            | Some _ -> error span (Printf.sprintf "duplicate declaration `%s`" name)))
+  in
+  let* () = validate_declarations [] program.Ast.items in
   let rec collect_named_types seen acc = function
     | [] -> Ok (List.rev acc)
     | Ast.Opaque { name; span } :: rest ->
