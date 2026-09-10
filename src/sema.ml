@@ -2994,8 +2994,11 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~limits speciali
               | None -> Ok []
               | Some statements -> Result_list.map resolve statements
             in
-            Ok (Ast.If (condition, [], Some no, span))
-        | Some true | None ->
+            Ok (Ast.Block (no, span))
+        | Some true ->
+            let* yes = Result_list.map resolve yes in
+            Ok (Ast.Block (yes, span))
+        | None ->
             let* yes = Result_list.map resolve yes in
             let* no =
               match no with

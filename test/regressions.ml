@@ -2962,8 +2962,7 @@ let () =
   let const_dependent_if =
     llvm_of
       "fn choose[Flag const i32]() i32 {\n\
-      \ if Flag == 1 { return 7 }\n\
-      \ return 3\n\
+      \ if Flag == 1 { return 7 } else { return 3 }\n\
        }\n\
        fn main() i32 { return choose[1]() + choose[0]() }\n"
   in
@@ -2971,6 +2970,8 @@ let () =
     (not (contains const_dependent_if "ret i32 7"))
     || not (contains const_dependent_if "ret i32 3")
   then failwith "const-dependent-if: specialization branches were not selected";
+  if contains const_dependent_if "br i1" then
+    failwith "const-dependent-if: selected specializations retained runtime branches";
   semantic_error "nondependent-specialization-condition" "unknown name `Missing`"
     "const Flag bool = false\n\
      fn choose[N const i32]() i32 {\n\
