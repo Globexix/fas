@@ -3718,7 +3718,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
               Ok (Ast.Applied_type (name, arguments, application_span))
             else
               let rec resolve_arguments resolved diagnostic types bindings values_out
-                  params arguments =
+                  source_arguments params arguments =
                 match (params, arguments) with
                 | [], [] ->
                     Ok
@@ -3726,7 +3726,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
                         List.rev diagnostic,
                         List.rev types,
                         List.rev bindings,
-                        List.rev values_out )
+                        List.rev values_out,
+                        List.rev source_arguments )
                 | ( Ast.Type_param { name = parameter; _ } :: params,
                     argument :: arguments ) ->
                     let* argument =
@@ -3750,7 +3751,9 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
                       (diagnostic_argument :: diagnostic)
                       (argument :: types)
                       ((parameter, argument) :: bindings)
-                      values_out params arguments
+                      values_out
+                      (Ast.Type_arg argument :: source_arguments)
+                      params arguments
                 | Ast.Const_param parameter :: params, argument :: arguments ->
                     let* expression = generic_const_argument span argument in
                     let* const_ty = source_ty_diag [] parameter.span parameter.ty in
@@ -3767,6 +3770,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
                         (Diagnostic_const_argument (const_ty, value) :: diagnostic)
                         types bindings
                         ((parameter.name, const_ty, value) :: values_out)
+                        (Ast.Const_arg expression :: source_arguments)
                         params arguments
                 | _ -> error span "generic argument arity mismatch"
               in
@@ -3774,41 +3778,45 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
                      diagnostic_arguments,
                      type_arguments,
                      substitutions,
-                     values ) =
-                resolve_arguments [] [] [] [] [] generic_params arguments
+                     values,
+                     source_arguments ) =
+                resolve_arguments [] [] [] [] [] [] generic_params arguments
               in
-              let specialization_name =
-                if values = [] then mangle_type_specialization name type_arguments
-                else mangle_mixed_specialization name ordered_arguments
-              in
-              let* declaration_id =
-                specialization_declaration_id top_level_bindings Top_type span name
-              in
-              let key = (Struct_specialization, declaration_id, ordered_arguments) in
-              let frame =
-                {
-                  template_name = name;
-                  arguments = diagnostic_arguments;
-                  application_span;
-                }
-              in
-              let specialization =
-                {
-                  key;
-                  name = specialization_name;
-                  depth;
-                  payload =
-                    Struct_payload
-                      { template = Ast.Struct template; substitutions; values };
-                  trace = !current_trace @ [ frame ];
-                  pending_frame = None;
-                }
-              in
-              let* specialization =
-                request_specialization specializations ~limits ~depth ~span
-                  ~description:"struct specialization" specialization
-              in
-              Ok (Ast.Named_type specialization.name)
+              if List.exists has_unresolved_application type_arguments then
+                Ok (Ast.Applied_type (name, source_arguments, application_span))
+              else
+                let specialization_name =
+                  if values = [] then mangle_type_specialization name type_arguments
+                  else mangle_mixed_specialization name ordered_arguments
+                in
+                let* declaration_id =
+                  specialization_declaration_id top_level_bindings Top_type span name
+                in
+                let key = (Struct_specialization, declaration_id, ordered_arguments) in
+                let frame =
+                  {
+                    template_name = name;
+                    arguments = diagnostic_arguments;
+                    application_span;
+                  }
+                in
+                let specialization =
+                  {
+                    key;
+                    name = specialization_name;
+                    depth;
+                    payload =
+                      Struct_payload
+                        { template = Ast.Struct template; substitutions; values };
+                    trace = !current_trace @ [ frame ];
+                    pending_frame = None;
+                  }
+                in
+                let* specialization =
+                  request_specialization specializations ~limits ~depth ~span
+                    ~description:"struct specialization" specialization
+                in
+                Ok (Ast.Named_type specialization.name)
         | Some _ -> error span "internal error: generic struct template is malformed")
   and resolve_expr ?(values = []) ?(defer_const_structs = false) substitutions depth =
     function

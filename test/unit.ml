@@ -61,6 +61,38 @@ let () =
   let lowered = expect_ok (Lower.lower specialized) in
   assert (List.length lowered.Ir.funcs = 2);
   assert (Ir.render lowered = Ir.render lowered);
+  let unresolved_template_call =
+    {
+      Hir.structs = [];
+      consts = [];
+      const_arrays = [];
+      funcs =
+        [
+          {
+            Hir.name = "main";
+            params = [];
+            ret = Hir.Int Hir.I64;
+            body =
+              Hir.Statements
+                [
+                  Hir.Return
+                    ( Some
+                        (Hir.Call
+                           (Hir.User "identity", [], Hir.Int Hir.I64, Span.synthetic)),
+                      Span.synthetic );
+                ];
+            linkage = Hir.Internal;
+            variadic = false;
+          };
+        ];
+      strings = [];
+    }
+  in
+  (match Lower.lower unresolved_template_call with
+  | Ok _ -> assert false
+  | Error [ diagnostic ] ->
+      assert (diagnostic.message = "unknown function `identity` reached lowering")
+  | Error _ -> assert false);
   let golden_source = source "fn main() i64 { x i64 = 2\n return x + 3\n }\n" in
   let golden_ast = expect_ok (Parser.parse golden_source) in
   let golden_hir = expect_ok (Sema.check golden_ast) in

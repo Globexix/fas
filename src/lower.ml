@@ -17,7 +17,7 @@ type state = {
   ret : Ir.ty;
   structs : Hir.struct_def list;
   strings : string list;
-  c_functions : Hir.func list;
+  functions : Hir.func list;
   mutable defer_scopes : Hir.stmt list list list;
   mutable loops : loop list;
 }
@@ -374,9 +374,14 @@ let rec expr s = function
         emit s (Ir.Cmp (id, cmp_for (Hir.expr_ty a) op, value_ty x, x, y));
         Ok (Ir.Local (id, ty t)))
       else Ok (emit_binary s (Hir.expr_ty a) op (ty t) x y)
-  | Hir.Call (Hir.User n, args, t, _) ->
+  | Hir.Call (Hir.User n, args, t, sp) ->
+      let* target =
+        match List.find_opt (fun (f : Hir.func) -> f.name = n) s.functions with
+        | Some target -> Ok target
+        | None -> error sp ("unknown function `" ^ n ^ "` reached lowering")
+      in
       let* vs = exprs s args in
-      let c_function = List.find_opt (fun (f : Hir.func) -> f.name = n) s.c_functions in
+      let c_function = if target.linkage = Hir.External_c then Some target else None in
       let av =
         List.mapi
           (fun index v ->
@@ -942,7 +947,7 @@ and lower_switch s e arms default =
   s.current <- join;
   Ok ()
 
-let lower_func structs strings c_functions f =
+let lower_func structs strings functions f =
   let* () =
     Result_list.iter
       (fun (local : Hir.local) -> layout_ok structs local.ty)
@@ -1006,7 +1011,7 @@ let lower_func structs strings c_functions f =
           ret = ty f.ret;
           structs;
           strings;
-          c_functions;
+          functions;
           defer_scopes = [];
           loops = [];
         }
@@ -1117,11 +1122,8 @@ let lower (p : Hir.program) =
          message)
   in
   let* funcs =
-    let c_functions =
-      List.filter (fun (f : Hir.func) -> f.linkage = Hir.External_c) p.funcs
-    in
     Result_list.map
-      (fun (f : Hir.func) -> lower_func p.Hir.structs p.strings c_functions f)
+      (fun (f : Hir.func) -> lower_func p.Hir.structs p.strings p.funcs f)
       p.funcs
   in
   let* structs =

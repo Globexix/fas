@@ -2771,6 +2771,7 @@ let () =
          direct_recursive_specialization.Hir.funcs)
     <> 1
   then failwith "generic-function-recursion: expected one concrete function";
+  ignore (expect_ok (Lower.lower direct_recursive_specialization));
   let mutual_recursive_limits = { Limits.default with max_specialization_depth = 2 } in
   let mutual_recursive_specializations =
     expect_ok
@@ -2794,6 +2795,7 @@ let () =
          mutual_recursive_specializations.Hir.funcs)
     <> 2
   then failwith "generic-function-mutual-recursion: expected two concrete functions";
+  ignore (expect_ok (Lower.lower mutual_recursive_specializations));
   let recursive_function_limits =
     { Limits.default with max_specialization_depth = 2 }
   in
@@ -3149,6 +3151,42 @@ let () =
     const_generic_struct_type_argument_llvm
     <> llvm_of const_generic_struct_type_argument_source
   then failwith "const-generic-struct-type-key: generated output was not deterministic";
+
+  let deferred_nested_struct_source =
+    "struct Inner[N const usize] { data arr[N, u8] }\n\
+     struct Outer[T] { value T }\n\
+     fn pass[T, N const usize](value Outer[Inner[N]]) Outer[Inner[N]] {\n\
+     return value\n\
+     }\n\
+     fn main(value Outer[Inner[1]]) Outer[Inner[1]] {\n\
+     return pass[u8, 1](value)\n\
+     }\n"
+  in
+  let deferred_nested_struct_hir =
+    expect_ok (Parser.parse (source deferred_nested_struct_source))
+    |> Sema.check |> expect_ok
+  in
+  if
+    List.length
+      (List.filter
+         (specialization_named "Inner")
+         deferred_nested_struct_hir.Hir.structs)
+    <> 1
+  then failwith "nested-const-struct-deferral: expected one concrete inner layout";
+  if
+    List.length
+      (List.filter
+         (specialization_named "Outer")
+         deferred_nested_struct_hir.Hir.structs)
+    <> 1
+  then failwith "nested-const-struct-deferral: expected one concrete outer layout";
+  let deferred_nested_struct_llvm =
+    Ir.render (expect_ok (Lower.lower deferred_nested_struct_hir))
+  in
+  if
+    contains deferred_nested_struct_llvm "Inner["
+    || contains deferred_nested_struct_llvm "Outer["
+  then failwith "nested-const-struct-deferral: unresolved type reached LLVM";
 
   let const_generic_function_type_source =
     "const THREE usize = 3\n\
