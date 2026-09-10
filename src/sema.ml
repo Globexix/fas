@@ -1217,10 +1217,13 @@ let require_place_value c span place =
   | _ -> Ok ()
 
 let rec check_place (c : context) expr =
-  let static_index e =
+  let visible_consts =
+    List.filter (fun (name, _, _) -> Option.is_none (lookup_local name c)) c.consts
+  in
+  let static_index source =
     match
-      const_expr ~structs:c.structs ~named_types:c.named_types ~arrays:c.arrays c.consts
-        None e
+      const_expr ~structs:c.structs ~named_types:c.named_types ~arrays:c.arrays
+        visible_consts None source
     with
     | Ok (ty, value) -> Known (ty, value)
     | Error _ -> Dynamic

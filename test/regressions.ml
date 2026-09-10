@@ -892,6 +892,46 @@ let () =
     "const value i64 = 1\nfn f() i64 { value i64 = 2\n return value }\n";
   semantic_error "lexical-scope-const-array-shadow" "shadows a const"
     "const values arr[1,i64] = {1}\n fn f() i64 { values i64 = 2\n return values }\n";
+  semantic_error "static-index-parameter-constant-shadow"
+    "use of uninitialized local `values`"
+    "const Index i32 = 0\n\
+     fn read(Index i32) i32 { values arr[2,i32]\n\
+    \ values[0] = 7\n\
+    \ return values[Index] }\n\
+     fn main() i32 { return read(1) }\n";
+  semantic_error "static-index-nested-parameter-constant-shadow"
+    "use of uninitialized local `values`"
+    "const Index i32 = 0\n\
+     fn read(Index i32) i32 { values arr[2,i32]\n\
+    \ values[0] = 7\n\
+    \ return values[Index + 0] }\n\
+     fn main() i32 { return read(1) }\n";
+  let static_global_index =
+    llvm_of
+      "const Index i32 = 1\n\
+       fn read() i32 { values arr[2,i32]\n\
+      \ values[Index] = 9\n\
+      \ return values[Index] }\n"
+  in
+  if not (contains static_global_index "ret i32 %") then
+    failwith "static-global-index: constant index lost its initialization proof";
+  let dynamic_shadowed_index =
+    llvm_of
+      "const Index i32 = 0\n\
+       fn read(Index i32) i32 { values arr[2,i32]\n\
+      \ values[0] = 7\n\
+      \ values[1] = 11\n\
+      \ return values[Index] }\n"
+  in
+  if not (contains dynamic_shadowed_index "sext i32 %") then
+    failwith "dynamic-shadowed-index: parameter was replaced by the global constant";
+  ignore
+    (lower_of
+       "const Index i32 = 1\n\
+        const Hidden i32 = 0\n\
+        fn read(Hidden i32) i32 { values arr[2,i32]\n\
+       \ values[Index] = 9\n\
+       \ return values[true ? Index : Hidden] }\n");
   semantic_error "lexical-scope-declaration-before-use" "unknown assignment target"
     "fn f() i64 { value = 1\n value i64 = 2\n return value }\n";
   semantic_error "void-value-return" "void function cannot return a value"
