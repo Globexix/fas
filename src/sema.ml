@@ -20,7 +20,7 @@ type specialization_arg =
   | Type_specialization_arg of string
   | Const_specialization_arg of Hir.ty * int64
 
-type specialization_key = specialization_kind * string * specialization_arg list
+type specialization_key = specialization_kind * int * specialization_arg list
 
 type diagnostic_type =
   | Diagnostic_bool
@@ -132,6 +132,12 @@ let lookup_top_level name bindings =
 let error span message = Error [ Diag.error span message ]
 let ok x = Ok x
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
+
+let specialization_declaration_id bindings kind span name =
+  match lookup_top_level name bindings with
+  | Some { declaration_id; declaration_kind; _ } when declaration_kind = kind ->
+      Ok declaration_id
+  | _ -> error span "internal error: specialization declaration is missing"
 
 let request_specialization state ~limits ~depth ~span ~description specialization =
   match Specialization_cache.find_opt state.cache specialization.key with
@@ -2060,9 +2066,9 @@ and mangle_specialization base values =
            string_of_int (String.length n) ^ ":" ^ n ^ "=" ^ const_key_value t v)
          values)
 
-and function_specialization_key name values =
+and function_specialization_key declaration_id values =
   ( Function_specialization,
-    name,
+    declaration_id,
     List.map (fun (_, t, v) -> Const_specialization_arg (t, v)) values )
 
 and staged_specialization_identity state name values =
@@ -2070,17 +2076,23 @@ and staged_specialization_identity state name values =
     match Hashtbl.find_opt state.by_name (Function_specialization, name) with
     | Some
         {
-          key = Function_specialization, origin, _;
-          payload = Function_payload { staged_args = Some arguments; _ };
+          key = Function_specialization, origin_id, _;
+          payload =
+            Function_payload
+              {
+                item = Ast.Func { name = origin_name; _ };
+                staged_args = Some arguments;
+                _;
+              };
           pending_frame = Some pending;
           _;
         } ->
-        Some (origin, arguments, pending)
+        Some (origin_id, origin_name, arguments, pending)
     | _ -> None
   in
   match staged with
   | None -> Ok None
-  | Some (origin, arguments, pending) ->
+  | Some (origin_id, origin_name, arguments, pending) ->
       let rec resolve acc = function
         | [] -> Ok (List.rev acc)
         | Staged_type_arg key :: rest ->
@@ -2108,7 +2120,12 @@ and staged_specialization_identity state name values =
       in
       let* diagnostic_arguments = resolve_diagnostic [] pending.pending_arguments in
       Ok
-        (Some (origin, arguments, diagnostic_arguments, pending.pending_application_span))
+        (Some
+           ( origin_id,
+             origin_name,
+             arguments,
+             diagnostic_arguments,
+             pending.pending_application_span ))
 
 and mangle_mixed_specialization base arguments =
   let argument_name = function
@@ -2169,14 +2186,20 @@ and check_call c _expected fn args s =
                 let* staged =
                   staged_specialization_identity c.specializations name values
                 in
-                let mangled, key =
+                let* mangled, key =
                   match staged with
                   | None ->
-                      ( mangle_specialization name values,
-                        function_specialization_key name values )
-                  | Some (origin, arguments, _, _) ->
-                      ( mangle_mixed_specialization origin arguments,
-                        (Function_specialization, origin, arguments) )
+                      let* declaration_id =
+                        specialization_declaration_id c.top_level_bindings Top_function
+                          s name
+                      in
+                      Ok
+                        ( mangle_specialization name values,
+                          function_specialization_key declaration_id values )
+                  | Some (origin_id, origin_name, arguments, _, _) ->
+                      Ok
+                        ( mangle_mixed_specialization origin_name arguments,
+                          (Function_specialization, origin_id, arguments) )
                 in
                 let frame_name, frame_arguments, frame_span =
                   match staged with
@@ -2186,7 +2209,8 @@ and check_call c _expected fn args s =
                           (fun (_, ty, value) -> Diagnostic_const_argument (ty, value))
                           values,
                         application_span )
-                  | Some (origin, _, arguments, span) -> (origin, arguments, span)
+                  | Some (_, origin_name, _, arguments, span) ->
+                      (origin_name, arguments, span)
                 in
                 let frame =
                   {
@@ -3757,7 +3781,10 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
                 if values = [] then mangle_type_specialization name type_arguments
                 else mangle_mixed_specialization name ordered_arguments
               in
-              let key = (Struct_specialization, name, ordered_arguments) in
+              let* declaration_id =
+                specialization_declaration_id top_level_bindings Top_type span name
+              in
+              let key = (Struct_specialization, declaration_id, ordered_arguments) in
               let frame =
                 {
                   template_name = name;
@@ -3919,14 +3946,21 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
                       staged_specialization_identity specializations name
                         concrete_values
                     in
-                    let specialization_name, key =
+                    let* specialization_name, key =
                       match staged with
                       | None ->
-                          ( mangle_specialization name concrete_values,
-                            function_specialization_key name concrete_values )
-                      | Some (origin, arguments, _, _) ->
-                          ( mangle_mixed_specialization origin arguments,
-                            (Function_specialization, origin, arguments) )
+                          let* declaration_id =
+                            specialization_declaration_id top_level_bindings
+                              Top_function span name
+                          in
+                          Ok
+                            ( mangle_specialization name concrete_values,
+                              function_specialization_key declaration_id concrete_values
+                            )
+                      | Some (origin_id, origin_name, arguments, _, _) ->
+                          Ok
+                            ( mangle_mixed_specialization origin_name arguments,
+                              (Function_specialization, origin_id, arguments) )
                     in
                     let frame_name, frame_arguments, frame_span =
                       match staged with
@@ -3937,8 +3971,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
                                 Diagnostic_const_argument (ty, value))
                               concrete_values,
                             span )
-                      | Some (origin, _, arguments, application_span) ->
-                          (origin, arguments, application_span)
+                      | Some (_, origin_name, _, arguments, application_span) ->
+                          (origin_name, arguments, application_span)
                     in
                     let frame =
                       {
@@ -3976,9 +4010,13 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
                 let specialization_name =
                   mangle_type_specialization name type_arguments
                 in
+                let* declaration_id =
+                  specialization_declaration_id top_level_bindings Top_function span
+                    name
+                in
                 let key =
                   ( Function_specialization,
-                    name,
+                    declaration_id,
                     List.map
                       (fun ty -> Type_specialization_arg (specialization_type_key ty))
                       type_arguments )

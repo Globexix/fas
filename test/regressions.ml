@@ -2753,6 +2753,24 @@ let () =
                 (source
                    "fn identity[T](value T) T { return value }\n\
                     fn main() i64 { return identity[i64](identity[i64](1)) }\n")))));
+  let canonical_type_specialization =
+    expect_ok
+      (Sema.check ~limits:one_function_limit
+         (expect_ok
+            (Parser.parse
+               (source
+                  "fn identity[T](value T) T { return value }\n\
+                   fn main(left arr[1, u8], right arr[01, u8]) arr[1, u8] {\n\
+                   first arr[1, u8] = identity[arr[01, u8]](right)\n\
+                   return identity[arr[1, u8]](first) }\n"))))
+  in
+  if
+    List.length
+      (List.filter
+         (fun (func : Hir.func) -> contains func.name "identity$spec$")
+         canonical_type_specialization.Hir.funcs)
+    <> 1
+  then failwith "generic-function-canonical-key: expected one concrete function";
   (match
      Sema.check ~limits:one_function_limit
        (expect_ok
