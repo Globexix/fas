@@ -993,88 +993,6 @@ and check_expr (c : context) expected = function
       | Hir.Opaque n -> error s (Printf.sprintf "opaque type `%s` is not a struct" n)
       | _ -> error s "struct literal requires a struct type")
 
-and const_key_value (t : Hir.ty) v = Hir.ty_name t ^ ":" ^ Int64.to_string v
-
-and mangle_specialization base values =
-  base ^ "$spec$"
-  ^ string_of_int (String.length base)
-  ^ ":"
-  ^ String.concat ";"
-      (List.map
-         (fun (n, t, v) ->
-           string_of_int (String.length n) ^ ":" ^ n ^ "=" ^ const_key_value t v)
-         values)
-
-and function_specialization_key declaration_id values =
-  ( Function_specialization,
-    declaration_id,
-    List.map (fun (_, t, v) -> Const_specialization_arg (t, v)) values )
-
-and staged_specialization_identity state name values =
-  let staged =
-    match Sema_specialization.find_by_name state Function_specialization name with
-    | Some
-        {
-          key = Function_specialization, origin_id, _;
-          payload =
-            Function_payload
-              {
-                item = Ast.Func { name = origin_name; _ };
-                staged_args = Some arguments;
-                _;
-              };
-          pending_frame = Some pending;
-          _;
-        } ->
-        Some (origin_id, origin_name, arguments, pending)
-    | _ -> None
-  in
-  match staged with
-  | None -> Ok None
-  | Some (origin_id, origin_name, arguments, pending) ->
-      let rec resolve acc = function
-        | [] -> Ok (List.rev acc)
-        | Staged_type_arg key :: rest ->
-            resolve (Type_specialization_arg key :: acc) rest
-        | Staged_const_arg name :: rest -> (
-            match List.find_opt (fun (parameter, _, _) -> parameter = name) values with
-            | Some (_, ty, value) ->
-                resolve (Const_specialization_arg (ty, value) :: acc) rest
-            | None ->
-                error Span.synthetic
-                  "internal error: staged const specialization argument is missing")
-      in
-      let* arguments = resolve [] arguments in
-      let rec resolve_diagnostic acc = function
-        | [] -> Ok (List.rev acc)
-        | Pending_diagnostic_type ty :: rest ->
-            resolve_diagnostic (Diagnostic_type_argument ty :: acc) rest
-        | Pending_diagnostic_const name :: rest -> (
-            match List.find_opt (fun (parameter, _, _) -> parameter = name) values with
-            | Some (_, ty, value) ->
-                resolve_diagnostic (Diagnostic_const_argument (ty, value) :: acc) rest
-            | None ->
-                error Span.synthetic
-                  "internal error: staged const diagnostic argument is missing")
-      in
-      let* diagnostic_arguments = resolve_diagnostic [] pending.pending_arguments in
-      Ok
-        (Some
-           ( origin_id,
-             origin_name,
-             arguments,
-             diagnostic_arguments,
-             pending.pending_application_span ))
-
-and mangle_mixed_specialization base arguments =
-  let argument_name = function
-    | Type_specialization_arg key -> "t" ^ string_of_int (String.length key) ^ ":" ^ key
-    | Const_specialization_arg (ty, value) ->
-        let key = const_key_value ty value in
-        "c" ^ string_of_int (String.length key) ^ ":" ^ key
-  in
-  base ^ "$spec$" ^ String.concat ";" (List.map argument_name arguments)
-
 and generic_const_argument span = function
   | Ast.Const_arg expression -> Ok expression
   | Ast.Name_arg (name, span) -> Ok (Ast.Ident (name, span))
@@ -1790,41 +1708,6 @@ and check_stmt (c : context) = function
                  :: rest
            | [] -> ());
         Ok (Hir.Defer (body, s))
-
-let rec specialization_type_key = function
-  | Ast.Bool -> "bool"
-  | Ast.Void -> "void"
-  | Ast.Int kind -> Ast.type_name (Ast.Int kind)
-  | Ast.Ptr ty ->
-      let key = specialization_type_key ty in
-      "ptr" ^ string_of_int (String.length key) ^ "_" ^ key
-  | Ast.Ptr_const ty ->
-      let key = specialization_type_key ty in
-      "cptr" ^ string_of_int (String.length key) ^ "_" ^ key
-  | Ast.Array (length, ty) ->
-      let length =
-        try string_of_int (int_of_string length) with Failure _ -> length
-      in
-      let key = specialization_type_key ty in
-      "arr" ^ length ^ "_" ^ string_of_int (String.length key) ^ "_" ^ key
-  | Ast.Vec (length, ty) ->
-      let length =
-        try string_of_int (int_of_string length) with Failure _ -> length
-      in
-      let key = specialization_type_key ty in
-      "vec" ^ length ^ "_" ^ string_of_int (String.length key) ^ "_" ^ key
-  | Ast.Named_type name -> "named" ^ string_of_int (String.length name) ^ "_" ^ name
-  | Ast.Applied_type (name, _, _) ->
-      "applied" ^ string_of_int (String.length name) ^ "_" ^ name
-
-let mangle_type_specialization base arguments =
-  base ^ "$spec$"
-  ^ String.concat "$"
-      (List.map
-         (fun ty ->
-           let key = specialization_type_key ty in
-           string_of_int (String.length key) ^ "_" ^ key)
-         arguments)
 
 let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindings
     ~limits specializations program =

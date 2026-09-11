@@ -86,3 +86,17 @@ val trace_result :
 
 val specialization_trace : t -> kind -> string -> instantiation_frame list
 val specialization_source_name : t -> kind -> string -> string
+val mangle_specialization : string -> (string * Hir.ty * int64) list -> string
+val function_specialization_key : int -> (string * Hir.ty * int64) list -> key
+
+val staged_specialization_identity :
+  t ->
+  string ->
+  (string * Hir.ty * int64) list ->
+  ( (int * string * arg list * diagnostic_argument list * Span.t) option,
+    Diag.t list )
+  result
+
+val mangle_mixed_specialization : string -> arg list -> string
+val specialization_type_key : Ast.ty -> string
+val mangle_type_specialization : string -> Ast.ty list -> string
