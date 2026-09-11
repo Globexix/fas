@@ -79,3 +79,10 @@ val fold_by_name : (kind * string -> specialization -> 'a -> 'a) -> t -> 'a -> '
 val take_pending : t -> specialization option
 val requeue_materialized : t -> specialization -> unit
 val update_materialized : t -> specialization -> unit
+val diagnostic_type_of_ast : t -> Ast.ty -> diagnostic_type
+
+val trace_result :
+  t -> instantiation_frame list -> ('a, Diag.t list) result -> ('a, Diag.t list) result
+
+val specialization_trace : t -> kind -> string -> instantiation_frame list
+val specialization_source_name : t -> kind -> string -> string
