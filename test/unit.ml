@@ -552,6 +552,96 @@ let () =
       ]
   in
   expect_ir_error "phi after a non-phi instruction" misplaced_phi;
+  let call_target =
+    {
+      (ir_function []) with
+      Ir.name = "callee";
+      params = [ { Ir.name = "x"; ty = Ir.I8; extension = Ir.Zero_extension } ];
+      ret = Ir.I16;
+      ret_extension = Ir.Sign_extension;
+      variadic = true;
+    }
+  in
+  let call_caller call =
+    {
+      (ir_function [ ir_block ~instrs:[ call ] 0 (Ir.Ret None) ]) with
+      Ir.name = "caller";
+    }
+  in
+  let valid_call =
+    Ir.Call
+      ( Some 0,
+        Ir.Sign_extension,
+        Ir.I16,
+        "callee",
+        [
+          (Ir.I8, Ir.Zero_extension, Ir.Const (Ir.I8, 7L));
+          (Ir.I64, Ir.No_extension, Ir.Const (Ir.I64, 9L));
+        ] )
+  in
+  assert (Ir.validate (ir_module [ call_target; call_caller valid_call ]) = Ok ());
+  expect_ir_error "duplicate function name `callee`"
+    (ir_module [ call_target; call_target ]);
+  expect_ir_error "call to `missing` has no matching function"
+    (ir_module
+       [ call_caller (Ir.Call (None, Ir.No_extension, Ir.Void, "missing", [])) ]);
+  expect_ir_error "call to `callee` has the wrong return type"
+    (ir_module
+       [
+         call_target;
+         call_caller
+           (Ir.Call
+              ( Some 0,
+                Ir.Sign_extension,
+                Ir.I8,
+                "callee",
+                [ (Ir.I8, Ir.Zero_extension, Ir.Const (Ir.I8, 7L)) ] ));
+       ]);
+  expect_ir_error "call to `callee` has the wrong return extension"
+    (ir_module
+       [
+         call_target;
+         call_caller
+           (Ir.Call
+              ( Some 0,
+                Ir.Zero_extension,
+                Ir.I16,
+                "callee",
+                [ (Ir.I8, Ir.Zero_extension, Ir.Const (Ir.I8, 7L)) ] ));
+       ]);
+  expect_ir_error "call to `callee` argument 0 has the wrong type"
+    (ir_module
+       [
+         call_target;
+         call_caller
+           (Ir.Call
+              ( Some 0,
+                Ir.Sign_extension,
+                Ir.I16,
+                "callee",
+                [ (Ir.I16, Ir.Zero_extension, Ir.Const (Ir.I16, 7L)) ] ));
+       ]);
+  expect_ir_error "call to `callee` argument 0 has the wrong extension"
+    (ir_module
+       [
+         call_target;
+         call_caller
+           (Ir.Call
+              ( Some 0,
+                Ir.Sign_extension,
+                Ir.I16,
+                "callee",
+                [ (Ir.I8, Ir.Sign_extension, Ir.Const (Ir.I8, 7L)) ] ));
+       ]);
+  expect_ir_error "call to `callee` has 0 arguments but requires at least 1"
+    (ir_module
+       [
+         call_target;
+         call_caller (Ir.Call (Some 0, Ir.Sign_extension, Ir.I16, "callee", []));
+       ]);
+  let fixed_target = { call_target with Ir.variadic = false } in
+  expect_ir_error "call to `callee` has 2 arguments but requires exactly 1"
+    (ir_module [ fixed_target; call_caller valid_call ]);
   assert (Ir.render lowered = Ir.render lowered);
   let unresolved_template_call =
     {

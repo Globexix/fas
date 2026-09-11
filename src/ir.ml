@@ -158,6 +158,10 @@ let is_integer ty = Option.is_some (integer_width ty)
 let is_integer_like ty = Option.is_some (integer_shape ty)
 let is_pointer = function Ptr _ -> true | _ -> false
 
+let valid_extension ty = function
+  | No_extension -> true
+  | Sign_extension | Zero_extension -> is_integer ty
+
 let is_equality_type = function
   | Vector (_, Ptr _) | Ptr _ -> true
   | ty -> is_integer_like ty
@@ -247,6 +251,8 @@ let validate_function (func : func) =
           fail "has duplicate parameter name `%s`" parameter.name
         else if not (valid_value_type parameter.ty) then
           fail "parameter `%s` has an invalid type" parameter.name
+        else if not (valid_extension parameter.ty parameter.extension) then
+          fail "parameter `%s` has an invalid extension" parameter.name
         else (
           Hashtbl.add parameters parameter.name parameter.ty;
           collect_parameters rest)
@@ -553,6 +559,10 @@ let validate_function (func : func) =
     if func.ret = Void || valid_value_type func.ret then Ok ()
     else fail "has an invalid return type"
   in
+  let* () =
+    if valid_extension func.ret func.ret_extension then Ok ()
+    else fail "has an invalid return extension"
+  in
   let* () = collect_blocks func.blocks in
   let* () = collect_parameters func.params in
   let* () = collect_edges func.blocks in
@@ -560,13 +570,90 @@ let validate_function (func : func) =
   validate_blocks func.blocks
 
 let validate module_ =
-  let rec validate = function
+  let functions = Hashtbl.create (List.length module_.funcs) in
+  let rec collect_functions = function
+    | [] -> Ok ()
+    | (func : func) :: rest ->
+        if Hashtbl.mem functions func.name then
+          Error ("module has duplicate function name `" ^ func.name ^ "`")
+        else (
+          Hashtbl.add functions func.name func;
+          collect_functions rest)
+  in
+  let validate_call (caller : func) block_id result_extension result_ty target_name
+      arguments =
+    let fail format =
+      Printf.ksprintf
+        (fun message ->
+          Error
+            (Printf.sprintf "function `%s` block %d call to `%s` %s" caller.name
+               block_id target_name message))
+        format
+    in
+    match Hashtbl.find_opt functions target_name with
+    | None -> fail "has no matching function"
+    | Some target ->
+        if not (type_equal result_ty target.ret) then fail "has the wrong return type"
+        else if result_extension <> target.ret_extension then
+          fail "has the wrong return extension"
+        else if not (valid_extension result_ty result_extension) then
+          fail "has an invalid return extension"
+        else
+          let fixed_count = List.length target.params in
+          let argument_count = List.length arguments in
+          if argument_count < fixed_count then
+            fail "has %d arguments but requires at least %d" argument_count fixed_count
+          else if (not target.variadic) && argument_count <> fixed_count then
+            fail "has %d arguments but requires exactly %d" argument_count fixed_count
+          else
+            let rec validate_arguments index params args =
+              match (params, args) with
+              | [], rest ->
+                  let rec validate_variadic index = function
+                    | [] -> Ok ()
+                    | (ty, extension, _) :: tail ->
+                        if valid_extension ty extension then
+                          validate_variadic (index + 1) tail
+                        else fail "argument %d has an invalid extension" index
+                  in
+                  validate_variadic index rest
+              | (parameter : param) :: params, (ty, extension, _) :: args ->
+                  if not (type_equal ty parameter.ty) then
+                    fail "argument %d has the wrong type" index
+                  else if extension <> parameter.extension then
+                    fail "argument %d has the wrong extension" index
+                  else if not (valid_extension ty extension) then
+                    fail "argument %d has an invalid extension" index
+                  else validate_arguments (index + 1) params args
+              | _ :: _, [] -> fail "is missing fixed argument %d" index
+            in
+            validate_arguments 0 target.params arguments
+  in
+  let validate_function_calls (func : func) =
+    let rec validate_instructions block_id = function
+      | [] -> Ok ()
+      | Call (_, extension, ty, name, arguments) :: rest ->
+          let* () = validate_call func block_id extension ty name arguments in
+          validate_instructions block_id rest
+      | _ :: rest -> validate_instructions block_id rest
+    in
+    let rec validate_blocks = function
+      | [] -> Ok ()
+      | (block : block) :: rest ->
+          let* () = validate_instructions block.id block.instrs in
+          validate_blocks rest
+    in
+    validate_blocks func.blocks
+  in
+  let rec validate_functions = function
     | [] -> Ok ()
     | func :: rest ->
         let* () = validate_function func in
-        validate rest
+        let* () = validate_function_calls func in
+        validate_functions rest
   in
-  validate module_.funcs
+  let* () = collect_functions module_.funcs in
+  validate_functions module_.funcs
 
 let symbol n =
   if
