@@ -253,7 +253,21 @@ module P = struct
   let ( let* ) = bind
   let span p = (peek p).Token.span
 
+  let within_nesting p s message parse =
+    p.depth <- p.depth + 1;
+    if p.depth > p.limits.Limits.max_nesting then (
+      p.depth <- p.depth - 1;
+      Error [ Diag.error s message ])
+    else
+      let result = parse () in
+      p.depth <- p.depth - 1;
+      result
+
   let rec ty p =
+    within_nesting p (span p) "type nesting exceeds the configured limit" (fun () ->
+        ty_inner p)
+
+  and ty_inner p =
     match (peek p).kind with
     | Token.Ident "bool" ->
         ignore (bump p);
@@ -824,40 +838,41 @@ module P = struct
 
   and switch_stmt p =
     let s = span p in
-    ignore (bump p);
-    let* scr = expr_before_block p in
-    skip_newlines p;
-    let* () = expected p Token.Lbrace in
-    let rec cases arms default =
-      skip_newlines p;
-      match (peek p).kind with
-      | Token.Kw_case ->
-          ignore (bump p);
-          let* e = expr p in
-          let* () = expected p Token.Colon in
-          let* b = case_body p in
-          cases ((e, b) :: arms) default
-      | Token.Kw_default -> (
-          let default_span = span p in
-          ignore (bump p);
-          match default with
-          | Some (first_span, _) ->
-              Error
-                [
-                  Diag.error
-                    ~notes:[ "first default is at " ^ Span.to_string first_span ]
-                    default_span "duplicate default arm";
-                ]
-          | None ->
+    within_nesting p s "switch nesting exceeds the configured limit" (fun () ->
+        ignore (bump p);
+        let* scr = expr_before_block p in
+        skip_newlines p;
+        let* () = expected p Token.Lbrace in
+        let rec cases arms default =
+          skip_newlines p;
+          match (peek p).kind with
+          | Token.Kw_case ->
+              ignore (bump p);
+              let* e = expr p in
               let* () = expected p Token.Colon in
               let* b = case_body p in
-              cases arms (Some (default_span, b)))
-      | Token.Rbrace ->
-          let* () = expected p Token.Rbrace in
-          Ok (Ast.Switch (scr, List.rev arms, Option.map snd default, s))
-      | _ -> Error [ Diag.error (span p) "expected case, default, or `}`" ]
-    in
-    cases [] None
+              cases ((e, b) :: arms) default
+          | Token.Kw_default -> (
+              let default_span = span p in
+              ignore (bump p);
+              match default with
+              | Some (first_span, _) ->
+                  Error
+                    [
+                      Diag.error
+                        ~notes:[ "first default is at " ^ Span.to_string first_span ]
+                        default_span "duplicate default arm";
+                    ]
+              | None ->
+                  let* () = expected p Token.Colon in
+                  let* b = case_body p in
+                  cases arms (Some (default_span, b)))
+          | Token.Rbrace ->
+              let* () = expected p Token.Rbrace in
+              Ok (Ast.Switch (scr, List.rev arms, Option.map snd default, s))
+          | _ -> Error [ Diag.error (span p) "expected case, default, or `}`" ]
+        in
+        cases [] None)
 
   and case_body p =
     skip_newlines p;
@@ -940,24 +955,28 @@ module P = struct
     match (peek p).kind with
     | Token.Amp ->
         let s = span p in
-        ignore (bump p);
-        let* e = unary p in
-        Ok (Ast.Addr_of (e, s))
+        within_nesting p s "unary nesting exceeds the configured limit" (fun () ->
+            ignore (bump p);
+            let* e = unary p in
+            Ok (Ast.Addr_of (e, s)))
     | Token.Minus ->
         let s = span p in
-        ignore (bump p);
-        let* e = unary p in
-        Ok (Ast.Unary (Ast.Neg, e, s))
+        within_nesting p s "unary nesting exceeds the configured limit" (fun () ->
+            ignore (bump p);
+            let* e = unary p in
+            Ok (Ast.Unary (Ast.Neg, e, s)))
     | Token.Not ->
         let s = span p in
-        ignore (bump p);
-        let* e = unary p in
-        Ok (Ast.Unary (Ast.Not, e, s))
+        within_nesting p s "unary nesting exceeds the configured limit" (fun () ->
+            ignore (bump p);
+            let* e = unary p in
+            Ok (Ast.Unary (Ast.Not, e, s)))
     | Token.Tilde ->
         let s = span p in
-        ignore (bump p);
-        let* e = unary p in
-        Ok (Ast.Unary (Ast.Bit_not, e, s))
+        within_nesting p s "unary nesting exceeds the configured limit" (fun () ->
+            ignore (bump p);
+            let* e = unary p in
+            Ok (Ast.Unary (Ast.Bit_not, e, s)))
     | _ -> postfix p
 
   and postfix p =

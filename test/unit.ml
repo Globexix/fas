@@ -265,6 +265,53 @@ let () =
   | Error diagnostics ->
       assert (contains (Diag.render_all ~source:None diagnostics) "token limit exceeded")
   | Ok _ -> assert false);
+  let type_nesting_limits = { Limits.default with max_nesting = 2 } in
+  ignore
+    (expect_ok
+       (Parser.parse ~limits:type_nesting_limits
+          (source "fn f(value ptr[i64]) void { return }\n")));
+  (match
+     Parser.parse ~limits:type_nesting_limits
+       (source "fn f(value ptr[ptr[i64]]) void { return }\n")
+   with
+  | Error diagnostics ->
+      assert (
+        contains
+          (Diag.render_all ~source:None diagnostics)
+          "type nesting exceeds the configured limit")
+  | Ok _ -> assert false);
+  let unary_nesting_limits = { Limits.default with max_nesting = 3 } in
+  ignore
+    (expect_ok
+       (Parser.parse ~limits:unary_nesting_limits
+          (source "fn f(value bool) bool { return !value }\n")));
+  (match
+     Parser.parse ~limits:unary_nesting_limits
+       (source "fn f(value bool) bool { return !!value }\n")
+   with
+  | Error diagnostics ->
+      assert (
+        contains
+          (Diag.render_all ~source:None diagnostics)
+          "unary nesting exceeds the configured limit")
+  | Ok _ -> assert false);
+  let switch_nesting_limits = { Limits.default with max_nesting = 3 } in
+  ignore
+    (expect_ok
+       (Parser.parse ~limits:switch_nesting_limits
+          (source "fn f(value i64) void { switch value { default: { return } } }\n")));
+  (match
+     Parser.parse ~limits:switch_nesting_limits
+       (source
+          "fn f(value i64) void { switch value { default: switch value { default: \
+           return } } }\n")
+   with
+  | Error diagnostics ->
+      assert (
+        contains
+          (Diag.render_all ~source:None diagnostics)
+          "nesting exceeds the configured limit")
+  | Ok _ -> assert false);
   (match Process.run [||] with Error _ -> () | Ok _ -> assert false);
   (match Process.run [| "/definitely/missing/fas-tool" |] with
   | Error _ -> ()
