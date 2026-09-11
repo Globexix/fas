@@ -18,6 +18,76 @@ let () =
   assert (Limits.default.max_specializations = 10_000);
   assert (Limits.default.max_specialization_depth = 64);
   assert (Limits.default.max_aggregate_elements = 1_000_000);
+  let aggregate_budget_program =
+    expect_ok
+      (Parser.parse
+         (source
+            "struct Pair { left arr[3,u8] right arr[3,u8] }\n\
+             fn f() void { value Pair\n\
+            \ return }\n"))
+  in
+  ignore
+    (expect_ok
+       (Sema.check
+          ~limits:{ Limits.default with max_aggregate_elements = 6 }
+          aggregate_budget_program));
+  (match
+     Sema.check
+       ~limits:{ Limits.default with max_aggregate_elements = 5 }
+       aggregate_budget_program
+   with
+  | Error diagnostics ->
+      assert (
+        contains
+          (Diag.render_all ~source:None diagnostics)
+          "aggregate element count exceeds the configured limit")
+  | Ok _ -> assert false);
+  let aggregate_substitution_program =
+    expect_ok
+      (Parser.parse
+         (source
+            "struct Pair[T] { left T right T }\n\
+             fn f(value Pair[arr[3,u8]]) void { return }\n"))
+  in
+  ignore
+    (expect_ok
+       (Sema.check
+          ~limits:{ Limits.default with max_aggregate_elements = 6 }
+          aggregate_substitution_program));
+  (match
+     Sema.check
+       ~limits:{ Limits.default with max_aggregate_elements = 5 }
+       aggregate_substitution_program
+   with
+  | Error diagnostics ->
+      assert (
+        contains
+          (Diag.render_all ~source:None diagnostics)
+          "aggregate element count exceeds the configured limit")
+  | Ok _ -> assert false);
+  let nested_vector_budget_program =
+    expect_ok
+      (Parser.parse
+         (source
+            "struct Wrapped { values arr[2,vec[3,u8]] }\n\
+             fn f(value Wrapped) void { return }\n"))
+  in
+  ignore
+    (expect_ok
+       (Sema.check
+          ~limits:{ Limits.default with max_aggregate_elements = 6 }
+          nested_vector_budget_program));
+  (match
+     Sema.check
+       ~limits:{ Limits.default with max_aggregate_elements = 5 }
+       nested_vector_budget_program
+   with
+  | Error diagnostics ->
+      assert (
+        contains
+          (Diag.render_all ~source:None diagnostics)
+          "aggregate element count exceeds the configured limit")
+  | Ok _ -> assert false);
   let diagnostic_source = Source.create ~file:"first.fas" ~text:"wrong line\n" in
   let foreign_span =
     Span.make ~file:"second.fas" ~start_offset:0 ~end_offset:1 ~line:1 ~column:1

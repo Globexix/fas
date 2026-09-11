@@ -407,19 +407,32 @@ let validate_extern_c_signature span params converted ret =
 
 let aggregate_within_limit limits structs ty =
   let max_elements = limits.Limits.max_aggregate_elements in
-  let rec check count = function
-    | Hir.Array (n, t) | Hir.Vec (n, t) ->
-        if n = 0 then true else n <= max_elements / count && check (count * n) t
+  let rec count visiting = function
+    | Hir.Array (n, t) | Hir.Vec (n, t) -> (
+        if n = 0 then Some 0
+        else
+          match count visiting t with
+          | Some elements when elements = 0 || n <= max_elements / elements ->
+              Some (n * elements)
+          | Some _ | None -> None)
     | Hir.Struct name -> (
-        match List.find_opt (fun (s : Hir.struct_def) -> s.name = name) structs with
-        | Some definition ->
-            List.for_all
-              (fun (field : Hir.field) -> check count field.ty)
-              definition.fields
-        | None -> count <= max_elements)
-    | _ -> count <= max_elements
+        if List.mem name visiting then None
+        else
+          let visiting = name :: visiting in
+          match List.find_opt (fun (s : Hir.struct_def) -> s.name = name) structs with
+          | Some definition ->
+              List.fold_left
+                (fun total (field : Hir.field) ->
+                  match (total, count visiting field.ty) with
+                  | Some total, Some field_count
+                    when field_count <= max_elements - total ->
+                      Some (total + field_count)
+                  | Some _, Some _ | None, _ | _, None -> None)
+                (Some 0) definition.fields
+          | None -> Some 1)
+    | _ -> if max_elements >= 1 then Some 1 else None
   in
-  check 1 ty
+  Option.is_some (count [] ty)
 
 let parse_integer raw =
   let clean = String.concat "" (String.split_on_char '_' raw) in
