@@ -1086,6 +1086,13 @@ let () =
   ignore (lower_of "fn spin() i32 { while true { } }\n");
   ignore (lower_of "fn spin() i32 { for ; ; { continue } }\n");
   ignore (lower_of "fn spin() i32 { while true { while true { break } } }\n");
+  ignore (lower_of "fn finish() i32 { defer { while true { } } }\n");
+  ignore
+    (lower_of
+       "fn finish(choice bool) i32 { if choice { return 1 }\n\
+       \ defer { while true { } } }\n");
+  ignore
+    (lower_of "fn spin() i32 { while true { defer { while true { } }\n break } }\n");
   semantic_error "conditional-loop-fallthrough" "may reach the end without returning"
     "fn spin(condition bool) i32 { while condition { } }\n";
   semantic_error "unconditional-loop-reachable-break"
@@ -1098,6 +1105,11 @@ let () =
      default:\n\
      continue\n\
      } } }\n";
+  semantic_error "conditional-defer-divergence" "may reach the end without returning"
+    "fn finish(choice bool) i32 { defer { if choice { while true { } } } }\n";
+  semantic_error "unreached-defer-does-not-consume-break"
+    "may reach the end without returning"
+    "fn spin() i32 { while true { break\n defer { while true { } } } }\n";
   semantic_error "extern-c-struct-parameter" "cannot use `S` by value; use a pointer"
     "struct S { x i64 }\nextern \"C\" { fn take(value S) void }\n";
   semantic_error "extern-c-struct-return"

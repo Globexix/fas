@@ -2526,6 +2526,14 @@ let sequence_flow left right =
     continues = left.continues || (left.falls_through && right.continues);
   }
 
+let cleanup_flow cleanup exits =
+  {
+    falls_through = cleanup.falls_through && exits.falls_through;
+    returns = cleanup.falls_through && exits.returns;
+    breaks = cleanup.falls_through && exits.breaks;
+    continues = cleanup.falls_through && exits.continues;
+  }
+
 let condition_is_true = function Hir.EBool (true, _) -> true | _ -> false
 
 let rec stmt_flow = function
@@ -2560,13 +2568,13 @@ let rec stmt_flow = function
         | Some expression -> condition_is_true expression
       in
       sequence_flow prefix (loop_flow unconditional iteration)
-  | Hir.Let _ | Hir.Assign _ | Hir.Compound_assign _ | Hir.Expr _ | Hir.Defer _ ->
-      flowing
+  | Hir.Defer (body, _) -> cleanup_flow (block_flow body) flowing
+  | Hir.Let _ | Hir.Assign _ | Hir.Compound_assign _ | Hir.Expr _ -> flowing
 
-and block_flow body =
-  List.fold_left
-    (fun flow statement -> sequence_flow flow (stmt_flow statement))
-    flowing body
+and block_flow = function
+  | [] -> flowing
+  | Hir.Defer (body, _) :: rest -> cleanup_flow (block_flow body) (block_flow rest)
+  | statement :: rest -> sequence_flow (stmt_flow statement) (block_flow rest)
 
 and loop_flow unconditional body =
   {
