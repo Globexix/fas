@@ -38,6 +38,7 @@ let extract_asm source limits =
   let text = Source.text source and n = Source.length source in
   let buffer = Bytes.of_string text in
   let bodies = ref [] in
+  let total_body_bytes = ref 0 in
   let rec find_body_open i quote line_comment block_comment =
     if i >= n then None
     else if line_comment then
@@ -143,14 +144,23 @@ let extract_asm source limits =
                 ]
           | Some close_pos ->
               let body = String.sub text (open_pos + 1) (close_pos - open_pos - 1) in
-              if String.length body > limits.Limits.max_asm_bytes then
+              let body_bytes = String.length body in
+              if body_bytes > limits.Limits.max_asm_bytes then
                 Error
                   [
                     Diag.error
                       (Source.span source ~start_offset:open_pos ~end_offset:close_pos)
                       "raw asm body exceeds the configured limit";
                   ]
+              else if !total_body_bytes > limits.Limits.max_asm_bytes - body_bytes then
+                Error
+                  [
+                    Diag.error
+                      (Source.span source ~start_offset:open_pos ~end_offset:close_pos)
+                      "cumulative raw asm bytes exceed the configured limit";
+                  ]
               else begin
+                total_body_bytes := !total_body_bytes + body_bytes;
                 bodies := { name; text = body } :: !bodies;
                 blank_range buffer text (open_pos + 1) close_pos;
                 scan (close_pos + 1)

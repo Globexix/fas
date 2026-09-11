@@ -411,6 +411,30 @@ let () =
   (match List.nth asm_program.Ast.items 1 with
   | Ast.Func { body = Ast.Asm text; _ } -> assert (String.length text > 10)
   | _ -> assert false);
+  let cumulative_asm =
+    source "asm fn first() void {1234}\nasm fn second() void {5678}\n"
+  in
+  ignore
+    (expect_ok
+       (Parser.parse ~limits:{ Limits.default with max_asm_bytes = 8 } cumulative_asm));
+  (match
+     Parser.parse ~limits:{ Limits.default with max_asm_bytes = 7 } cumulative_asm
+   with
+  | Error diagnostics ->
+      assert (
+        contains
+          (Diag.render_all ~source:None diagnostics)
+          "cumulative raw asm bytes exceed the configured limit")
+  | Ok _ -> assert false);
+  (match
+     Parser.parse ~limits:{ Limits.default with max_asm_bytes = 3 } cumulative_asm
+   with
+  | Error diagnostics ->
+      assert (
+        contains
+          (Diag.render_all ~source:None diagnostics)
+          "raw asm body exceeds the configured limit")
+  | Ok _ -> assert false);
   (match Lexer.lex (source "/* unterminated") with
   | Ok _ -> assert false
   | Error _ -> ());
