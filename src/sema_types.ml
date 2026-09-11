@@ -98,6 +98,19 @@ let rec source_ty_with_values named_types values span = function
       with Failure _ -> error span "aggregate length is not a machine integer")
   | ty -> source_ty_diag named_types span ty
 
+let layout_diag span structs ty =
+  Hir.layout structs ty |> Result.map_error (fun message -> [ Diag.error span message ])
+
+let field_info structs name field =
+  match
+    List.find_opt (fun (struct_def : Hir.struct_def) -> struct_def.name = name) structs
+  with
+  | None -> None
+  | Some struct_def ->
+      List.find_opt
+        (fun (candidate : Hir.field) -> candidate.name = field)
+        struct_def.fields
+
 let compatible actual expected =
   Hir.ty_equal actual expected
   ||

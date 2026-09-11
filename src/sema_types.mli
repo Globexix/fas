@@ -11,6 +11,10 @@ val resolve_aggregate_length :
 val source_ty_with_values :
   named_types -> const_values -> Span.t -> Ast.ty -> (Hir.ty, Diag.t list) result
 
+val layout_diag :
+  Span.t -> Hir.struct_def list -> Hir.ty -> (int * int, Diag.t list) result
+
+val field_info : Hir.struct_def list -> string -> string -> Hir.field option
 val compatible : Hir.ty -> Hir.ty -> bool
 val ensure_expected : Hir.ty -> Hir.ty -> Span.t -> (unit, Diag.t list) result
 
