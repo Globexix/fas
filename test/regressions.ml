@@ -1083,6 +1083,21 @@ let () =
     "extern \"C\" { fn sink() void }\nfn f() void { return sink() }\n";
   semantic_error "nonvoid-fallthrough" "may reach the end without returning"
     "fn f() i64 { }\n";
+  ignore (lower_of "fn spin() i32 { while true { } }\n");
+  ignore (lower_of "fn spin() i32 { for ; ; { continue } }\n");
+  ignore (lower_of "fn spin() i32 { while true { while true { break } } }\n");
+  semantic_error "conditional-loop-fallthrough" "may reach the end without returning"
+    "fn spin(condition bool) i32 { while condition { } }\n";
+  semantic_error "unconditional-loop-reachable-break"
+    "may reach the end without returning"
+    "fn spin(condition bool) i32 { while true { if condition { break } } }\n";
+  semantic_error "switch-break-exits-loop" "may reach the end without returning"
+    "fn spin(value i32) i32 { while true { switch value {\n\
+     case 0:\n\
+     break\n\
+     default:\n\
+     continue\n\
+     } } }\n";
   semantic_error "extern-c-struct-parameter" "cannot use `S` by value; use a pointer"
     "struct S { x i64 }\nextern \"C\" { fn take(value S) void }\n";
   semantic_error "extern-c-struct-return"

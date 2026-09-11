@@ -2500,17 +2500,81 @@ let target_ty c = function
             (field_info c.structs struct_name name)
       | _ -> None)
 
-let rec stmt_must_return = function
-  | Hir.Return _ -> true
-  | Hir.Block (body, _) -> block_must_return body
-  | Hir.If (_, then_body, Some else_body, _) ->
-      block_must_return then_body && block_must_return else_body
-  | Hir.Switch (_, arms, Some default, _) ->
-      block_must_return default
-      && List.for_all (fun (_, body) -> block_must_return body) arms
-  | _ -> false
+type flow_summary = {
+  falls_through : bool;
+  returns : bool;
+  breaks : bool;
+  continues : bool;
+}
 
-and block_must_return body = List.exists stmt_must_return body
+let flowing =
+  { falls_through = true; returns = false; breaks = false; continues = false }
+
+let choose_flow left right =
+  {
+    falls_through = left.falls_through || right.falls_through;
+    returns = left.returns || right.returns;
+    breaks = left.breaks || right.breaks;
+    continues = left.continues || right.continues;
+  }
+
+let sequence_flow left right =
+  {
+    falls_through = left.falls_through && right.falls_through;
+    returns = left.returns || (left.falls_through && right.returns);
+    breaks = left.breaks || (left.falls_through && right.breaks);
+    continues = left.continues || (left.falls_through && right.continues);
+  }
+
+let condition_is_true = function Hir.EBool (true, _) -> true | _ -> false
+
+let rec stmt_flow = function
+  | Hir.Return _ -> { flowing with falls_through = false; returns = true }
+  | Hir.Break _ -> { flowing with falls_through = false; breaks = true }
+  | Hir.Continue _ -> { flowing with falls_through = false; continues = true }
+  | Hir.Block (body, _) -> block_flow body
+  | Hir.If (_, then_body, else_body, _) ->
+      choose_flow (block_flow then_body)
+        (match else_body with None -> flowing | Some body -> block_flow body)
+  | Hir.Switch (_, arms, default, _) ->
+      let branches = List.map (fun (_, body) -> block_flow body) arms in
+      let branches =
+        match default with
+        | None -> flowing :: branches
+        | Some body -> block_flow body :: branches
+      in
+      List.fold_left choose_flow { flowing with falls_through = false } branches
+  | Hir.While (condition, body, _) ->
+      loop_flow (condition_is_true condition) (block_flow body)
+  | Hir.For (init, condition, step, body, _) ->
+      let prefix =
+        match init with None -> flowing | Some statement -> stmt_flow statement
+      in
+      let iteration =
+        sequence_flow (block_flow body)
+          (match step with None -> flowing | Some statement -> stmt_flow statement)
+      in
+      let unconditional =
+        match condition with
+        | None -> true
+        | Some expression -> condition_is_true expression
+      in
+      sequence_flow prefix (loop_flow unconditional iteration)
+  | Hir.Let _ | Hir.Assign _ | Hir.Compound_assign _ | Hir.Expr _ | Hir.Defer _ ->
+      flowing
+
+and block_flow body =
+  List.fold_left
+    (fun flow statement -> sequence_flow flow (stmt_flow statement))
+    flowing body
+
+and loop_flow unconditional body =
+  {
+    falls_through = (not unconditional) || body.breaks;
+    returns = body.returns;
+    breaks = false;
+    continues = false;
+  }
 
 let rec stmt_terminates = function
   | Ast.Return _ | Ast.Break _ | Ast.Continue _ -> true
@@ -5013,7 +5077,7 @@ let check ?(limits = Limits.default) program =
     in
     let* body = check_block context stmts in
     let* () =
-      if require_return && ret <> Hir.Void && not (block_must_return body) then
+      if require_return && ret <> Hir.Void && (block_flow body).falls_through then
         error span
           (description ^ " `" ^ diagnostic_name
          ^ "` may reach the end without returning")
