@@ -247,7 +247,11 @@ and loop_flow unconditional body =
   }
 
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
-let round_up x a = if a <= 1 then x else (x + a - 1) / a * a
+
+let add_size left right =
+  if left < 0 || right < 0 || left > max_int - right then
+    Error "aggregate size overflows"
+  else Ok (left + right)
 
 let int_bytes ?(target = Target_layout.current) = function
   | U8 | I8 -> 1
@@ -313,14 +317,8 @@ let compute_struct_cached cache name =
               let rec each off maxa out = function
                 | [] ->
                     let align = max maxa (Option.value ~default:1 explicit) in
-                    let definition =
-                      {
-                        name = n;
-                        fields = List.rev out;
-                        size = round_up off align;
-                        align;
-                      }
-                    in
+                    let* size = Target_layout.round_up_size off align in
+                    let definition = { name = n; fields = List.rev out; size; align } in
                     Hashtbl.replace cache.definitions n definition;
                     Ok (definition.fields, definition.size, definition.align)
                 | (fname, fty) :: rest ->
@@ -331,8 +329,9 @@ let compute_struct_cached cache name =
                           Ok (sz, al)
                       | _ -> field_layout (n :: visiting) fty
                     in
-                    let next = round_up off align in
-                    each (next + size) (max maxa align)
+                    let* next = Target_layout.round_up_size off align in
+                    let* next_offset = add_size next size in
+                    each next_offset (max maxa align)
                       ({ name = fname; ty = fty; offset = next } :: out)
                       rest
               in

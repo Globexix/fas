@@ -439,13 +439,20 @@ let validate_object_limits limits structs span ty =
     object_type structs ty
     |> Result.map_error (fun message -> [ Diag.error span message ])
   in
-  let* _, alignment = layout_diag span structs ty in
+  let* size, alignment = layout_diag span structs ty in
   let* () =
     if alignment <= limits.Limits.max_object_alignment then Ok ()
     else
       error span
         (Printf.sprintf "alignment exceeds compiler budget of %d"
            limits.Limits.max_object_alignment)
+  in
+  let* () =
+    if size <= limits.Limits.max_object_size then Ok ()
+    else
+      error span
+        (Printf.sprintf "object size exceeds compiler budget of %d bytes"
+           limits.Limits.max_object_size)
   in
   if aggregate_within_limit limits structs ty then Ok ty
   else error span "aggregate element count exceeds the configured limit"

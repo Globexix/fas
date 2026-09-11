@@ -19,6 +19,7 @@ let () =
   assert (Limits.default.max_specialization_depth = 64);
   assert (Limits.default.max_aggregate_elements = 1_000_000);
   assert (Limits.default.max_object_alignment = 1_048_576);
+  assert (Limits.default.max_object_size = 1_073_741_824);
   let layout_declarations =
     [
       ("Leaf", [ ("value", Hir.Int Hir.U8) ], None);
@@ -73,6 +74,92 @@ let () =
   | Error message -> assert (message = "recursive by-value struct `First`")
   | Ok _ -> assert false);
   assert (Hashtbl.length recursive_cache.definitions = 0);
+  let overflowing_declarations =
+    [
+      ( "Overflowing",
+        [ ("large", Hir.Array (max_int, Hir.Int Hir.U8)); ("tail", Hir.Int Hir.U8) ],
+        None );
+    ]
+  in
+  let overflowing_cache = Hir.struct_layout_cache overflowing_declarations in
+  (match Hir.compute_struct_cached overflowing_cache "Overflowing" with
+  | Error message -> assert (message = "aggregate size overflows")
+  | Ok _ -> assert false);
+  assert (Hashtbl.length overflowing_cache.definitions = 0);
+  let overflowing_program =
+    expect_ok
+      (Parser.parse
+         (source
+            (Printf.sprintf
+               "struct Overflowing { large arr[%d,u8] tail u8 }\n\
+                fn f() void { return }\n"
+               max_int)))
+  in
+  (match
+     Sema.check
+       ~limits:
+         {
+           Limits.default with
+           max_aggregate_elements = max_int;
+           max_object_size = max_int;
+         }
+       overflowing_program
+   with
+  | Error diagnostics ->
+      assert (
+        contains (Diag.render_all ~source:None diagnostics) "aggregate size overflows")
+  | Ok _ -> assert false);
+  let padding_overflow_declarations =
+    [
+      ( "PaddingOverflow",
+        [ ("large", Hir.Array (max_int - 1, Hir.Int Hir.U8)) ],
+        Some (1 lsl 31) );
+    ]
+  in
+  let padding_overflow_cache = Hir.struct_layout_cache padding_overflow_declarations in
+  (match Hir.compute_struct_cached padding_overflow_cache "PaddingOverflow" with
+  | Error message -> assert (message = "aggregate size overflows")
+  | Ok _ -> assert false);
+  assert (Hashtbl.length padding_overflow_cache.definitions = 0);
+  let object_size_program =
+    expect_ok (Parser.parse (source "fn f() void { value arr[16,u8]\n return }\n"))
+  in
+  ignore
+    (expect_ok
+       (Sema.check
+          ~limits:{ Limits.default with max_object_size = 16 }
+          object_size_program));
+  (match
+     Sema.check ~limits:{ Limits.default with max_object_size = 15 } object_size_program
+   with
+  | Error diagnostics ->
+      assert (
+        contains
+          (Diag.render_all ~source:None diagnostics)
+          "object size exceeds compiler budget of 15 bytes")
+  | Ok _ -> assert false);
+  let generic_object_size_program =
+    expect_ok
+      (Parser.parse
+         (source
+            "struct Box[T] { value T }\nfn f(value Box[arr[16,u8]]) void { return }\n"))
+  in
+  ignore
+    (expect_ok
+       (Sema.check
+          ~limits:{ Limits.default with max_object_size = 16 }
+          generic_object_size_program));
+  (match
+     Sema.check
+       ~limits:{ Limits.default with max_object_size = 15 }
+       generic_object_size_program
+   with
+  | Error diagnostics ->
+      assert (
+        contains
+          (Diag.render_all ~source:None diagnostics)
+          "object size exceeds compiler budget of 15 bytes")
+  | Ok _ -> assert false);
   let aligned_program =
     expect_ok
       (Parser.parse
