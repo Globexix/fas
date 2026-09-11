@@ -1,6 +1,7 @@
 module IM = Map.Make (Int)
 open Sema_numeric
 open Sema_specialization
+open Sema_types
 
 type binding = Hir.local = { name : string; ty : Hir.ty; id : int }
 type selector = Field of string | Element of int
@@ -31,7 +32,6 @@ type loop_init_flow = {
 
 type signature = { params : (string * Hir.ty) list; ret : Hir.ty; variadic : bool }
 type trailing_args = Reject | Promote_variadic
-type named_type_kind = Struct_name | Generic_struct_name | Opaque_name
 type top_level_kind = Top_type | Top_function | Top_const
 
 type top_level_binding = {
@@ -84,53 +84,6 @@ let validate_binding_name span name =
   if Names.reserved_binding_name name then
     error span (Printf.sprintf "`%s` is reserved and cannot be used as a binding" name)
   else Ok ()
-
-let src_int = function
-  | Ast.U8 -> Hir.U8
-  | U16 -> U16
-  | U32 -> U32
-  | U64 -> U64
-  | I8 -> I8
-  | I16 -> I16
-  | I32 -> I32
-  | I64 -> I64
-  | Usize -> Usize
-  | Isize -> Isize
-
-let rec source_ty named_types = function
-  | Ast.Bool -> Ok Hir.Bool
-  | Ast.Void -> Ok Hir.Void
-  | Ast.Int k -> Ok (Hir.Int (src_int k))
-  | Ast.Ptr t ->
-      let* t = source_ty named_types t in
-      Ok (Hir.Ptr t)
-  | Ast.Ptr_const t ->
-      let* t = source_ty named_types t in
-      Ok (Hir.ConstPtr t)
-  | Ast.Array (raw, t) ->
-      source_aggregate named_types (fun n t -> Hir.Array (n, t)) raw t
-  | Ast.Vec (raw, t) -> source_aggregate named_types (fun n t -> Hir.Vec (n, t)) raw t
-  | Ast.Named_type n -> (
-      match List.assoc_opt n named_types with
-      | Some Struct_name -> Ok (Hir.Struct n)
-      | Some Generic_struct_name ->
-          Error (Printf.sprintf "generic struct `%s` requires type arguments" n)
-      | Some Opaque_name -> Ok (Hir.Opaque n)
-      | None -> Error (Printf.sprintf "unknown type `%s`" n))
-  | Ast.Applied_type _ ->
-      Error "generic type application reached ordinary type checking"
-
-and source_aggregate named_types make raw element =
-  try
-    let length = int_of_string raw in
-    if length < 0 then Error "negative aggregate length"
-    else
-      let* element = source_ty named_types element in
-      Ok (make length element)
-  with Failure _ -> Error "aggregate length is not a machine integer"
-
-let source_ty_diag named_types span t =
-  source_ty named_types t |> Result.map_error (fun m -> [ Diag.error span m ])
 
 let layout_diag span structs t =
   Hir.layout structs t |> Result.map_error (fun m -> [ Diag.error span m ])
@@ -364,46 +317,6 @@ let specialization_source_name specializations kind name =
 
 let lookup name table = List.find_opt (fun (n, _, _) -> n = name) table
 let lookup_sig name c = List.assoc_opt name c.signatures
-
-let resolve_aggregate_length values span length =
-  match lookup length values with
-  | None -> Ok length
-  | Some (_, ty, value) ->
-      if is_unsigned ty then
-        if Int64.unsigned_compare value (Int64.of_int max_int) > 0 then
-          error span "aggregate length is not a machine integer"
-        else Ok (Int64.to_string value)
-      else
-        let value = sign_extend_value ty value in
-        if value < 0L then error span "negative aggregate length"
-        else if value > Int64.of_int max_int then
-          error span "aggregate length is not a machine integer"
-        else Ok (Int64.to_string value)
-
-let rec source_ty_with_values named_types values span = function
-  | Ast.Ptr ty ->
-      let* ty = source_ty_with_values named_types values span ty in
-      Ok (Hir.Ptr ty)
-  | Ast.Ptr_const ty ->
-      let* ty = source_ty_with_values named_types values span ty in
-      Ok (Hir.ConstPtr ty)
-  | Ast.Array (length, ty) -> (
-      let* length = resolve_aggregate_length values span length in
-      let* ty = source_ty_with_values named_types values span ty in
-      try
-        let length = int_of_string length in
-        if length < 0 then error span "negative aggregate length"
-        else Ok (Hir.Array (length, ty))
-      with Failure _ -> error span "aggregate length is not a machine integer")
-  | Ast.Vec (length, ty) -> (
-      let* length = resolve_aggregate_length values span length in
-      let* ty = source_ty_with_values named_types values span ty in
-      try
-        let length = int_of_string length in
-        if length < 0 then error span "negative aggregate length"
-        else Ok (Hir.Vec (length, ty))
-      with Failure _ -> error span "aggregate length is not a machine integer")
-  | ty -> source_ty_diag named_types span ty
 
 let lookup_local name c =
   let rec go = function
