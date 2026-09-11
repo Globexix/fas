@@ -194,11 +194,8 @@ let require_state binding path c span = Sema_flow.require_state binding path c.f
 let require_place_state binding path c span =
   Sema_flow.require_place_state binding path c.flow span
 
-let merge_maps c left right = Sema_flow.merge_maps c.flow left right
-let validate_defer_list c defers = Sema_flow.validate_defer_list c.flow defers
-let exit_defer_state c keep = Sema_flow.exit_defer_state c.flow keep
+let merge_maps c left right = Sema_flow.merge c.flow left right
 let validate_exit_defers c keep = Sema_flow.validate_exit_defers c.flow keep
-let merge_flow_states c states = Sema_flow.merge_flow_states c.flow states
 let mark_init binding c = Sema_flow.mark_init binding c.flow
 
 let intern_string c s =
@@ -443,7 +440,7 @@ and check_expr (c : context) expected = function
   | Ast.Binary (op, l, r, s) ->
       if op = Ast.And || op = Ast.Or then (
         let* a = check_expr c None l in
-        let after_left = c.flow.initialized in
+        let after_left = Sema_flow.snapshot c.flow in
         let dead =
           match (op, a) with
           | Ast.And, Hir.EBool (false, _) | Ast.Or, Hir.EBool (true, _) -> true
@@ -452,8 +449,8 @@ and check_expr (c : context) expected = function
           | _ -> false
         in
         let* b = with_dead_check c dead (fun () -> check_expr c None r) in
-        let after_right = c.flow.initialized in
-        c.flow.initialized <- merge_maps c after_left after_right;
+        let after_right = Sema_flow.snapshot c.flow in
+        Sema_flow.restore c.flow (merge_maps c after_left after_right);
         if is_truthy (Hir.expr_ty a) && is_truthy (Hir.expr_ty b) then
           Ok (Hir.Binary (op, a, b, Hir.Bool, s))
         else error s "logical operands must be scalar")
@@ -487,7 +484,7 @@ and check_expr (c : context) expected = function
         in
         if
           (op = Ast.Div || op = Ast.Rem)
-          && (not c.flow.checking_dead)
+          && (not (Sema_flow.checking_dead c.flow))
           && match b with Hir.EInt (v, _, _) -> v = 0L | _ -> false
         then error s "division by zero is not a defined runtime operation"
         else Ok (Hir.Binary (op, a, b, result_ty, s))
@@ -594,7 +591,7 @@ and check_expr (c : context) expected = function
       if not (is_truthy (Hir.expr_ty tq)) then
         error s "ternary condition must be scalar"
       else
-        let before_arms = c.flow.initialized in
+        let before_arms = Sema_flow.snapshot c.flow in
         let condition =
           match tq with
           | Hir.EBool (value, _) -> Some value
@@ -604,14 +601,14 @@ and check_expr (c : context) expected = function
         let* ta =
           with_dead_check c (condition = Some false) (fun () -> check_expr c expected a)
         in
-        let after_a = c.flow.initialized in
-        c.flow.initialized <- before_arms;
+        let after_a = Sema_flow.snapshot c.flow in
+        Sema_flow.restore c.flow before_arms;
         let* tb =
           with_dead_check c (condition = Some true) (fun () ->
               check_expr c (Some (Hir.expr_ty ta)) b)
         in
-        let after_b = c.flow.initialized in
-        c.flow.initialized <- merge_maps c after_a after_b;
+        let after_b = Sema_flow.snapshot c.flow in
+        Sema_flow.restore c.flow (merge_maps c after_a after_b);
         let at = Hir.expr_ty ta and bt = Hir.expr_ty tb in
         let result_ty =
           if equal at bt then Some at
@@ -1019,22 +1016,12 @@ let rec check_block (c : context) stmts =
   let rec go acc = function
     | [] ->
         let out = List.rev acc in
-        let result =
-          if c.flow.falls_through then
-            match c.flow.defer_scopes with
-            | scope :: _ -> validate_defer_list c scope
-            | [] -> Ok true
-          else Ok false
-        in
-        pop c;
-        let* falls_through = result in
-        c.flow.falls_through <- c.flow.falls_through && falls_through;
+        let* () = Sema_flow.finish_block_scope c.flow in
         Ok out
     | s :: rest ->
-        let before = c.flow.initialized in
+        let before = Sema_flow.snapshot c.flow in
         let* x = check_stmt c s in
-        if not c.flow.falls_through then c.flow.initialized <- before
-        else if stmt_terminates s then c.flow.falls_through <- false;
+        Sema_flow.finish_statement c.flow ~before ~terminates:(stmt_terminates s);
         go (x :: acc) rest
   in
   go [] stmts
@@ -1093,10 +1080,7 @@ and check_stmt (c : context) = function
         | _ -> ());
         Ok (Hir.Compound_assign (target, op, v, et, span)))
   | Ast.Return (e, span) ->
-      let* () =
-        if c.flow.in_defer then error span "return is not allowed inside defer"
-        else Ok ()
-      in
+      let* () = Sema_flow.validate_return c.flow span in
       let* x =
         match (e, c.ret_ty) with
         | None, Hir.Void -> Ok None
@@ -1108,7 +1092,9 @@ and check_stmt (c : context) = function
         | None, _ ->
             error span ("return value required (expected " ^ ty_name c.ret_ty ^ ")")
       in
-      let* () = if c.flow.falls_through then validate_exit_defers c 0 else Ok () in
+      let* () =
+        if Sema_flow.falls_through c.flow then validate_exit_defers c 0 else Ok ()
+      in
       Ok (Hir.Return (x, span))
   | Ast.Expr_stmt (e, s) ->
       let* x = check_expr c None e in
@@ -1120,14 +1106,14 @@ and check_stmt (c : context) = function
       let* tq = check_expr c None q in
       if not (is_truthy (Hir.expr_ty tq)) then error s "if condition must be scalar"
       else
-        let before = c.flow.initialized in
-        let before_falls = c.flow.falls_through in
-        c.flow.falls_through <- before_falls;
+        let before = Sema_flow.snapshot c.flow in
+        let before_falls = Sema_flow.falls_through c.flow in
+        Sema_flow.set_falls_through c.flow before_falls;
         let* ta = check_block c a in
-        let ia = c.flow.initialized in
-        let fa = c.flow.falls_through in
-        c.flow.initialized <- before;
-        c.flow.falls_through <- before_falls;
+        let ia = Sema_flow.snapshot c.flow in
+        let fa = Sema_flow.falls_through c.flow in
+        Sema_flow.restore c.flow before;
+        Sema_flow.set_falls_through c.flow before_falls;
         let* tb =
           match b with
           | None -> Ok None
@@ -1135,44 +1121,25 @@ and check_stmt (c : context) = function
               let* x = check_block c xs in
               Ok (Some x)
         in
-        let ib = c.flow.initialized in
-        let fb = c.flow.falls_through in
-        c.flow.initialized <-
+        let ib = Sema_flow.snapshot c.flow in
+        let fb = Sema_flow.falls_through c.flow in
+        Sema_flow.restore c.flow
           (match (fa, fb) with
           | true, true -> merge_maps c ia ib
           | true, false -> ia
           | false, true -> ib
           | false, false -> before);
-        c.flow.falls_through <- fa || fb;
-        if not before_falls then c.flow.falls_through <- false;
+        Sema_flow.set_falls_through c.flow (before_falls && (fa || fb));
         Ok (Hir.If (tq, ta, tb, s))
   | Ast.While (q, b, s) ->
       let* tq = check_expr c None q in
       if not (is_truthy (Hir.expr_ty tq)) then error s "while condition must be scalar"
       else
-        let before = c.flow.initialized in
-        let before_falls = c.flow.falls_through in
-        let loop_flow =
-          {
-            keep_defer_depth = List.length c.flow.defer_scopes;
-            break_states = [];
-            continue_states = [];
-          }
-        in
-        c.flow.loop_depth <- c.flow.loop_depth + 1;
-        c.flow.loop_init_flows <- loop_flow :: c.flow.loop_init_flows;
-        c.flow.falls_through <- before_falls;
+        let loop = Sema_flow.begin_loop c.flow in
         let checked = check_block c b in
-        c.flow.loop_depth <- c.flow.loop_depth - 1;
-        c.flow.loop_init_flows <- List.tl c.flow.loop_init_flows;
+        Sema_flow.end_loop c.flow;
         let* tb = checked in
-        let exit_states =
-          if Hir.condition_is_true tq then loop_flow.break_states
-          else before :: loop_flow.break_states
-        in
-        c.flow.initialized <-
-          Option.value ~default:before (merge_flow_states c exit_states);
-        c.flow.falls_through <- before_falls && exit_states <> [];
+        Sema_flow.finish_while c.flow loop ~condition_is_true:(Hir.condition_is_true tq);
         Ok (Hir.While (tq, tb, s))
   | Ast.For (i, q, step, b, s) ->
       push c;
@@ -1192,29 +1159,11 @@ and check_stmt (c : context) = function
               if is_truthy (Hir.expr_ty y) then Ok (Some y)
               else error (Ast.expr_span x) "for condition must be scalar"
         in
-        let before = c.flow.initialized in
-        let before_falls = c.flow.falls_through in
-        let loop_flow =
-          {
-            keep_defer_depth = List.length c.flow.defer_scopes;
-            break_states = [];
-            continue_states = [];
-          }
-        in
-        c.flow.loop_depth <- c.flow.loop_depth + 1;
-        c.flow.loop_init_flows <- loop_flow :: c.flow.loop_init_flows;
-        c.flow.falls_through <- before_falls;
+        let loop = Sema_flow.begin_loop c.flow in
         let body_result = check_block c b in
         let* tb = body_result in
-        let body_state = c.flow.initialized in
-        let step_states =
-          if (Hir.block_flow tb).falls_through then
-            body_state :: loop_flow.continue_states
-          else loop_flow.continue_states
-        in
-        c.flow.initialized <-
-          Option.value ~default:before (merge_flow_states c step_states);
-        c.flow.falls_through <- step_states <> [];
+        Sema_flow.prepare_for_step c.flow loop
+          ~body_falls_through:(Hir.block_flow tb).falls_through;
         let* ts =
           match step with
           | None -> Ok None
@@ -1227,15 +1176,8 @@ and check_stmt (c : context) = function
           | None -> true
           | Some condition -> Hir.condition_is_true condition
         in
-        let exit_states =
-          if unconditional then loop_flow.break_states
-          else before :: loop_flow.break_states
-        in
-        c.flow.initialized <-
-          Option.value ~default:before (merge_flow_states c exit_states);
-        c.flow.falls_through <- before_falls && exit_states <> [];
-        c.flow.loop_depth <- c.flow.loop_depth - 1;
-        c.flow.loop_init_flows <- List.tl c.flow.loop_init_flows;
+        Sema_flow.finish_for c.flow loop ~unconditional;
+        Sema_flow.end_loop c.flow;
         Ok (Hir.For (ti, tq, ts, tb, s))
       in
       pop c;
@@ -1246,8 +1188,10 @@ and check_stmt (c : context) = function
       if not (is_int et || et = Hir.Bool) then
         error s "switch scrutinee must be an integer or bool"
       else
-        let before = c.flow.initialized and seen = ref [] and branch_states = ref [] in
-        let before_falls = c.flow.falls_through in
+        let before = Sema_flow.snapshot c.flow
+        and seen = ref []
+        and branch_states = ref [] in
+        let before_falls = Sema_flow.falls_through c.flow in
         let branch_falls = ref [] in
         let rec ar acc = function
           | [] -> Ok (List.rev acc)
@@ -1271,26 +1215,26 @@ and check_stmt (c : context) = function
                   | Hir.Bool -> Hir.EBool (kv <> 0L, Ast.expr_span k)
                   | _ -> Hir.EInt (mask_value et kv, et, Ast.expr_span k)
                 in
-                c.flow.initialized <- before;
-                c.flow.falls_through <- before_falls;
+                Sema_flow.restore c.flow before;
+                Sema_flow.set_falls_through c.flow before_falls;
                 let* tb = check_block c b in
-                if c.flow.falls_through then
-                  branch_states := c.flow.initialized :: !branch_states;
-                branch_falls := c.flow.falls_through :: !branch_falls;
+                if Sema_flow.falls_through c.flow then
+                  branch_states := Sema_flow.snapshot c.flow :: !branch_states;
+                branch_falls := Sema_flow.falls_through c.flow :: !branch_falls;
                 ar ((tk, tb) :: acc) xs)
         in
         let result = ar [] arms in
         let* ta = result in
-        c.flow.initialized <- before;
-        c.flow.falls_through <- before_falls;
+        Sema_flow.restore c.flow before;
+        Sema_flow.set_falls_through c.flow before_falls;
         let* td =
           match d with
           | None -> Ok None
           | Some x ->
               let* y = check_block c x in
-              if c.flow.falls_through then
-                branch_states := c.flow.initialized :: !branch_states;
-              branch_falls := c.flow.falls_through :: !branch_falls;
+              if Sema_flow.falls_through c.flow then
+                branch_states := Sema_flow.snapshot c.flow :: !branch_states;
+              branch_falls := Sema_flow.falls_through c.flow :: !branch_falls;
               Ok (Some y)
         in
         (match d with
@@ -1298,85 +1242,27 @@ and check_stmt (c : context) = function
             branch_states := before :: !branch_states;
             branch_falls := true :: !branch_falls
         | Some _ -> ());
-        c.flow.initialized <-
+        Sema_flow.restore c.flow
           (match !branch_states with
           | [] -> before
           | first :: rest -> List.fold_left (merge_maps c) first rest);
-        c.flow.falls_through <- List.exists (fun value -> value) !branch_falls;
-        if not before_falls then c.flow.falls_through <- false;
+        Sema_flow.set_falls_through c.flow
+          (before_falls && List.exists (fun value -> value) !branch_falls);
         Ok (Hir.Switch (te, ta, td, s))
-  | Ast.Break s -> (
-      if c.flow.in_defer then error s "break is not allowed inside defer"
-      else if c.flow.loop_depth = 0 then error s "break outside loop"
-      else if not c.flow.falls_through then Ok (Hir.Break s)
-      else
-        match c.flow.loop_init_flows with
-        | loop_flow :: _ ->
-            let* state = exit_defer_state c loop_flow.keep_defer_depth in
-            Option.iter
-              (fun state -> loop_flow.break_states <- state :: loop_flow.break_states)
-              state;
-            Ok (Hir.Break s)
-        | [] -> error s "internal error: missing loop initialization flow")
-  | Ast.Continue s -> (
-      if c.flow.in_defer then error s "continue is not allowed inside defer"
-      else if c.flow.loop_depth = 0 then error s "continue outside loop"
-      else if not c.flow.falls_through then Ok (Hir.Continue s)
-      else
-        match c.flow.loop_init_flows with
-        | loop_flow :: _ ->
-            let* state = exit_defer_state c loop_flow.keep_defer_depth in
-            Option.iter
-              (fun state ->
-                loop_flow.continue_states <- state :: loop_flow.continue_states)
-              state;
-            Ok (Hir.Continue s)
-        | [] -> error s "internal error: missing loop initialization flow")
+  | Ast.Break s ->
+      let* () = Sema_flow.record_break c.flow s in
+      Ok (Hir.Break s)
+  | Ast.Continue s ->
+      let* () = Sema_flow.record_continue c.flow s in
+      Ok (Hir.Continue s)
   | Ast.Defer (xs, s) ->
-      if c.flow.in_defer then error s "nested defer is not allowed"
-      else
-        let before = c.flow.initialized in
-        let before_falls = c.flow.falls_through in
-        let visible_bindings =
-          List.concat_map
-            (fun scope ->
-              Hashtbl.fold (fun _ binding bindings -> binding :: bindings) scope [])
-            !(c.flow.locals)
-        in
-        c.flow.in_defer <- true;
-        c.flow.collecting_defer <- Some [];
-        c.flow.falls_through <- true;
-        let checked = check_block c xs in
-        let after = c.flow.initialized in
-        let requirements =
-          Option.value ~default:[] c.flow.collecting_defer |> List.rev
-        in
-        c.flow.in_defer <- false;
-        c.flow.collecting_defer <- None;
-        c.flow.initialized <- before;
-        c.flow.falls_through <- before_falls;
-        let* body = checked in
-        let effects =
-          List.filter_map
-            (fun binding ->
-              Option.map
-                (fun state -> (binding, state))
-                (State_map.find_opt binding.id after))
-            visible_bindings
-        in
-        (if before_falls then
-           match c.flow.defer_scopes with
-           | scope :: rest ->
-               c.flow.defer_scopes <-
-                 ({
-                    requirements;
-                    effects;
-                    falls_through = (Hir.block_flow body).falls_through;
-                  }
-                 :: scope)
-                 :: rest
-           | [] -> ());
-        Ok (Hir.Defer (body, s))
+      let* capture = Sema_flow.begin_defer c.flow s in
+      let checked = check_block c xs in
+      let* body =
+        Sema_flow.finish_defer c.flow capture checked ~falls_through:(fun body ->
+            (Hir.block_flow body).falls_through)
+      in
+      Ok (Hir.Defer (body, s))
 
 let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindings
     ~limits specializations program =

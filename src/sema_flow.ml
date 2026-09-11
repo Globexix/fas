@@ -14,8 +14,19 @@ type checked_defer = {
 
 type loop_init_flow = {
   keep_defer_depth : int;
+  entry_state : init_state State_map.t;
+  entry_falls_through : bool;
   mutable break_states : init_state State_map.t list;
   mutable continue_states : init_state State_map.t list;
+}
+
+type snapshot = init_state State_map.t
+type loop = loop_init_flow
+
+type defer_capture = {
+  defer_before : snapshot;
+  defer_before_falls_through : bool;
+  defer_visible_bindings : binding list;
 }
 
 type t = {
@@ -415,3 +426,138 @@ let with_dead_check flow dead check =
   let result = check () in
   flow.checking_dead <- previous;
   result
+
+let checking_dead flow = flow.checking_dead
+let snapshot flow = flow.initialized
+let restore flow state = flow.initialized <- state
+let merge = merge_maps
+let falls_through flow = flow.falls_through
+let set_falls_through flow value = flow.falls_through <- value
+
+let finish_block_scope flow =
+  let result =
+    if flow.falls_through then
+      match flow.defer_scopes with
+      | scope :: _ -> validate_defer_list flow scope
+      | [] -> Ok true
+    else Ok false
+  in
+  pop flow;
+  let* deferred_falls_through = result in
+  flow.falls_through <- flow.falls_through && deferred_falls_through;
+  Ok ()
+
+let finish_statement flow ~before ~terminates =
+  if not flow.falls_through then flow.initialized <- before
+  else if terminates then flow.falls_through <- false
+
+let validate_return flow span =
+  if flow.in_defer then error span "return is not allowed inside defer" else Ok ()
+
+let begin_loop flow =
+  let loop =
+    {
+      keep_defer_depth = List.length flow.defer_scopes;
+      entry_state = flow.initialized;
+      entry_falls_through = flow.falls_through;
+      break_states = [];
+      continue_states = [];
+    }
+  in
+  flow.loop_depth <- flow.loop_depth + 1;
+  flow.loop_init_flows <- loop :: flow.loop_init_flows;
+  flow.falls_through <- loop.entry_falls_through;
+  loop
+
+let end_loop flow =
+  flow.loop_depth <- flow.loop_depth - 1;
+  flow.loop_init_flows <- List.tl flow.loop_init_flows
+
+let finish_while flow loop ~condition_is_true =
+  let exit_states =
+    if condition_is_true then loop.break_states
+    else loop.entry_state :: loop.break_states
+  in
+  flow.initialized <-
+    Option.value ~default:loop.entry_state (merge_flow_states flow exit_states);
+  flow.falls_through <- loop.entry_falls_through && exit_states <> []
+
+let prepare_for_step flow loop ~body_falls_through =
+  let step_states =
+    if body_falls_through then flow.initialized :: loop.continue_states
+    else loop.continue_states
+  in
+  flow.initialized <-
+    Option.value ~default:loop.entry_state (merge_flow_states flow step_states);
+  flow.falls_through <- step_states <> []
+
+let finish_for flow loop ~unconditional =
+  let exit_states =
+    if unconditional then loop.break_states else loop.entry_state :: loop.break_states
+  in
+  flow.initialized <-
+    Option.value ~default:loop.entry_state (merge_flow_states flow exit_states);
+  flow.falls_through <- loop.entry_falls_through && exit_states <> []
+
+let record_loop_exit flow span kind =
+  if flow.in_defer then error span (kind ^ " is not allowed inside defer")
+  else if flow.loop_depth = 0 then error span (kind ^ " outside loop")
+  else if not flow.falls_through then Ok ()
+  else
+    match flow.loop_init_flows with
+    | loop :: _ ->
+        let* state = exit_defer_state flow loop.keep_defer_depth in
+        Option.iter
+          (fun state ->
+            if kind = "break" then loop.break_states <- state :: loop.break_states
+            else loop.continue_states <- state :: loop.continue_states)
+          state;
+        Ok ()
+    | [] -> error span "internal error: missing loop initialization flow"
+
+let record_break flow span = record_loop_exit flow span "break"
+let record_continue flow span = record_loop_exit flow span "continue"
+
+let begin_defer flow span =
+  if flow.in_defer then error span "nested defer is not allowed"
+  else
+    let visible_bindings =
+      List.concat_map
+        (fun scope ->
+          Hashtbl.fold (fun _ binding bindings -> binding :: bindings) scope [])
+        !(flow.locals)
+    in
+    let capture =
+      {
+        defer_before = flow.initialized;
+        defer_before_falls_through = flow.falls_through;
+        defer_visible_bindings = visible_bindings;
+      }
+    in
+    flow.in_defer <- true;
+    flow.collecting_defer <- Some [];
+    flow.falls_through <- true;
+    Ok capture
+
+let finish_defer flow capture checked ~falls_through:body_falls_through =
+  let after = flow.initialized in
+  let requirements = Option.value ~default:[] flow.collecting_defer |> List.rev in
+  flow.in_defer <- false;
+  flow.collecting_defer <- None;
+  flow.initialized <- capture.defer_before;
+  flow.falls_through <- capture.defer_before_falls_through;
+  let* body = checked in
+  let effects =
+    List.filter_map
+      (fun binding ->
+        Option.map (fun state -> (binding, state)) (State_map.find_opt binding.id after))
+      capture.defer_visible_bindings
+  in
+  (if capture.defer_before_falls_through then
+     match flow.defer_scopes with
+     | scope :: rest ->
+         flow.defer_scopes <-
+           ({ requirements; effects; falls_through = body_falls_through body } :: scope)
+           :: rest
+     | [] -> ());
+  Ok body
