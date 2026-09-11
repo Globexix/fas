@@ -1,3 +1,5 @@
+type budget_version = V0_15
+
 type t = {
   max_tokens : int;
   max_nesting : int;
@@ -7,4 +9,7 @@ type t = {
   max_aggregate_elements : int;
 }
 
+val budget_version_name : budget_version -> string
+val default_budget_version : budget_version
+val for_budget_version : budget_version -> t
 val default : t

@@ -10,6 +10,14 @@ let contains text needle =
   m = 0 || go 0
 
 let () =
+  assert (Limits.budget_version_name Limits.default_budget_version = "0.15");
+  assert (Limits.for_budget_version Limits.V0_15 = Limits.default);
+  assert (Limits.default.max_tokens = 1_000_000);
+  assert (Limits.default.max_nesting = 128);
+  assert (Limits.default.max_asm_bytes = 4_000_000);
+  assert (Limits.default.max_specializations = 10_000);
+  assert (Limits.default.max_specialization_depth = 64);
+  assert (Limits.default.max_aggregate_elements = 1_000_000);
   let diagnostic_source = Source.create ~file:"first.fas" ~text:"wrong line\n" in
   let foreign_span =
     Span.make ~file:"second.fas" ~start_offset:0 ~end_offset:1 ~line:1 ~column:1
