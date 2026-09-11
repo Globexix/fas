@@ -2333,22 +2333,33 @@ let () =
   in
   if List.length repeated_spec_at_count_limit.Hir.funcs <> 2 then
     failwith "spec-count-limit: repeated specialization was not deduplicated";
-  (match
-     Sema.check ~limits:spec_count_limits
-       (expect_ok
-          (Parser.parse
-             (source
-                "fn id[N const usize](x u64) u64 { return x + bitcast[u64](N) }\n\
-                 fn main() u64 { return id[3](2) + id[4](3) }\n")))
-   with
-  | Ok _ -> failwith "spec-count-limit: expected rejection at the count limit"
-  | Error diagnostics ->
-      if
-        not
-          (contains
-             (Diag.render_all ~source:None diagnostics)
-             "const specialization count limit exceeded")
-      then failwith "spec-count-limit: unexpected diagnostic");
+  let distinct_spec_at_count_limit =
+    expect_ok
+      (Parser.parse
+         (source
+            "fn id[N const usize](x u64) u64 { return x + bitcast[u64](N) }\n\
+             fn main() u64 { return id[3](2) + id[4](3) }\n"))
+  in
+  let count_limit_failure () =
+    match Sema.check ~limits:spec_count_limits distinct_spec_at_count_limit with
+    | Ok _ -> failwith "spec-count-limit: expected rejection at the count limit"
+    | Error diagnostics -> Diag.render_all ~source:None diagnostics
+  in
+  let first_count_limit_failure = count_limit_failure () in
+  let second_count_limit_failure = count_limit_failure () in
+  if first_count_limit_failure <> second_count_limit_failure then
+    failwith "spec-count-limit: exhaustion diagnostic was not deterministic";
+  ignore
+    (expect_ok
+       (Sema.check ~limits:spec_count_limits
+          (expect_ok
+             (Parser.parse
+                (source
+                   "fn id[N const usize](x u64) u64 { return x + bitcast[u64](N) }\n\
+                    fn main() u64 { return id[3](2) + id[3](3) }\n")))));
+  if
+    not (contains first_count_limit_failure "const specialization count limit exceeded")
+  then failwith "spec-count-limit: unexpected diagnostic";
 
   let spec_depth_limits = { Limits.default with max_specialization_depth = 1 } in
   let repeated_spec_at_depth_limit =
