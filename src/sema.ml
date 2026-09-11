@@ -2713,7 +2713,7 @@ and check_stmt (c : context) = function
         | None, _ ->
             error span ("return value required (expected " ^ ty_name c.ret_ty ^ ")")
       in
-      let* () = validate_exit_defers c 0 in
+      let* () = if c.falls_through then validate_exit_defers c 0 else Ok () in
       Ok (Hir.Return (x, span))
   | Ast.Expr_stmt (e, s) ->
       let* x = check_expr c None e in
@@ -2727,12 +2727,12 @@ and check_stmt (c : context) = function
       else
         let before = c.initialized in
         let before_falls = c.falls_through in
-        c.falls_through <- true;
+        c.falls_through <- before_falls;
         let* ta = check_block c a in
         let ia = c.initialized in
         let fa = c.falls_through in
         c.initialized <- before;
-        c.falls_through <- true;
+        c.falls_through <- before_falls;
         let* tb =
           match b with
           | None -> Ok None
@@ -2766,7 +2766,7 @@ and check_stmt (c : context) = function
         in
         c.loop_depth <- c.loop_depth + 1;
         c.loop_init_flows <- loop_flow :: c.loop_init_flows;
-        c.falls_through <- true;
+        c.falls_through <- before_falls;
         let checked = check_block c b in
         c.loop_depth <- c.loop_depth - 1;
         c.loop_init_flows <- List.tl c.loop_init_flows;
@@ -2807,7 +2807,7 @@ and check_stmt (c : context) = function
         in
         c.loop_depth <- c.loop_depth + 1;
         c.loop_init_flows <- loop_flow :: c.loop_init_flows;
-        c.falls_through <- true;
+        c.falls_through <- before_falls;
         let body_result = check_block c b in
         let* tb = body_result in
         let body_state = c.initialized in
@@ -2874,7 +2874,7 @@ and check_stmt (c : context) = function
                   | _ -> Hir.EInt (mask_value et kv, et, Ast.expr_span k)
                 in
                 c.initialized <- before;
-                c.falls_through <- true;
+                c.falls_through <- before_falls;
                 let* tb = check_block c b in
                 if c.falls_through then branch_states := c.initialized :: !branch_states;
                 branch_falls := c.falls_through :: !branch_falls;
@@ -2883,7 +2883,7 @@ and check_stmt (c : context) = function
         let result = ar [] arms in
         let* ta = result in
         c.initialized <- before;
-        c.falls_through <- true;
+        c.falls_through <- before_falls;
         let* td =
           match d with
           | None -> Ok None
@@ -2908,6 +2908,7 @@ and check_stmt (c : context) = function
   | Ast.Break s -> (
       if c.in_defer then error s "break is not allowed inside defer"
       else if c.loop_depth = 0 then error s "break outside loop"
+      else if not c.falls_through then Ok (Hir.Break s)
       else
         match c.loop_init_flows with
         | loop_flow :: _ ->
@@ -2920,6 +2921,7 @@ and check_stmt (c : context) = function
   | Ast.Continue s -> (
       if c.in_defer then error s "continue is not allowed inside defer"
       else if c.loop_depth = 0 then error s "continue outside loop"
+      else if not c.falls_through then Ok (Hir.Continue s)
       else
         match c.loop_init_flows with
         | loop_flow :: _ ->

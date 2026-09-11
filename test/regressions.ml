@@ -919,6 +919,11 @@ let () =
        \ return 0 }\n");
   semantic_error "defer-normal-exit-uninitialized" "use of uninitialized local `x`"
     "fn f() void { x i64\n defer { observed i64 = x } }\n";
+  semantic_error "defer-return-exit-uninitialized" "use of uninitialized local `x`"
+    "fn f() i64 { x i64\n defer { observed i64 = x }\n return 0 }\n";
+  ignore
+    (lower_of
+       "fn f() i64 { x i64\n defer { observed i64 = x }\n while true { }\n return 0 }\n");
   ignore
     (lower_of
        "fn f() i64 { x i64\n\
@@ -1002,6 +1007,36 @@ let () =
        \ value = 1\n\
        \ break }\n\
        \ return value }\n");
+  ignore
+    (lower_of
+       "fn f(condition bool) i64 { value i64\n\
+       \ while true { if condition { value = 1\n\
+       \ break } else { continue\n\
+       \ switch 0 { default: { break } } } }\n\
+       \ return value }\n");
+  ignore
+    (lower_of
+       "fn f(choice i64) i64 { value i64\n\
+       \ while true { switch choice {\n\
+       \ case 0: { defer { value = 1 }\n\
+       \ break }\n\
+       \ default: { defer { value = 2 }\n\
+       \ break }\n\
+       \ } }\n\
+       \ return value }\n");
+  ignore
+    (lower_of
+       "fn f() i64 { value i64\n\
+       \ while true { while true { switch 0 { default: { break } } }\n\
+       \ value = 1\n\
+       \ break }\n\
+       \ return value }\n");
+  ignore
+    (lower_of
+       "fn f() void { while true { continue\n\
+       \ { value i64\n\
+       \ defer { observed i64 = value }\n\
+       \ continue } } }\n");
   semantic_error "switch-loop-exit-initialization" "use of uninitialized local `value`"
     "fn f(choice i64) i64 { value i64\n\
     \ while true { switch choice {\n\
