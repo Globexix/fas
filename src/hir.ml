@@ -162,6 +162,90 @@ let expr_span = function
   | Struct_lit (_, _, _, s) ->
       s
 
+type flow_summary = {
+  falls_through : bool;
+  returns : bool;
+  breaks : bool;
+  continues : bool;
+}
+
+let flowing =
+  { falls_through = true; returns = false; breaks = false; continues = false }
+
+let choose_flow left right =
+  {
+    falls_through = left.falls_through || right.falls_through;
+    returns = left.returns || right.returns;
+    breaks = left.breaks || right.breaks;
+    continues = left.continues || right.continues;
+  }
+
+let sequence_flow left right =
+  {
+    falls_through = left.falls_through && right.falls_through;
+    returns = left.returns || (left.falls_through && right.returns);
+    breaks = left.breaks || (left.falls_through && right.breaks);
+    continues = left.continues || (left.falls_through && right.continues);
+  }
+
+let cleanup_flow cleanup exits =
+  {
+    falls_through = cleanup.falls_through && exits.falls_through;
+    returns = cleanup.falls_through && exits.returns;
+    breaks = cleanup.falls_through && exits.breaks;
+    continues = cleanup.falls_through && exits.continues;
+  }
+
+let condition_is_true = function EBool (true, _) -> true | _ -> false
+
+let rec stmt_flow = function
+  | Return _ -> { flowing with falls_through = false; returns = true }
+  | Break _ -> { flowing with falls_through = false; breaks = true }
+  | Continue _ -> { flowing with falls_through = false; continues = true }
+  | Block (body, _) -> block_flow body
+  | If (_, then_body, else_body, _) ->
+      choose_flow (block_flow then_body)
+        (match else_body with None -> flowing | Some body -> block_flow body)
+  | Switch (_, arms, default, _) ->
+      let branches = List.map (fun (_, body) -> block_flow body) arms in
+      let branches =
+        match default with
+        | None -> flowing :: branches
+        | Some body -> block_flow body :: branches
+      in
+      List.fold_left choose_flow { flowing with falls_through = false } branches
+  | While (condition, body, _) ->
+      loop_flow (condition_is_true condition) (block_flow body)
+  | For (init, condition, step, body, _) ->
+      let prefix =
+        match init with None -> flowing | Some statement -> stmt_flow statement
+      in
+      let iteration =
+        sequence_flow (block_flow body)
+          (match step with None -> flowing | Some statement -> stmt_flow statement)
+      in
+      let unconditional =
+        match condition with
+        | None -> true
+        | Some expression -> condition_is_true expression
+      in
+      sequence_flow prefix (loop_flow unconditional iteration)
+  | Defer (body, _) -> cleanup_flow (block_flow body) flowing
+  | Let _ | Assign _ | Compound_assign _ | Expr _ -> flowing
+
+and block_flow = function
+  | [] -> flowing
+  | Defer (body, _) :: rest -> cleanup_flow (block_flow body) (block_flow rest)
+  | statement :: rest -> sequence_flow (stmt_flow statement) (block_flow rest)
+
+and loop_flow unconditional body =
+  {
+    falls_through = (not unconditional) || body.breaks;
+    returns = body.returns;
+    breaks = false;
+    continues = false;
+  }
+
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 let round_up x a = if a <= 1 then x else (x + a - 1) / a * a
 

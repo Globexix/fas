@@ -13,6 +13,14 @@ type checked_target = {
   path : place_path option;
 }
 
+type deferred_requirement = binding * selector list * Span.t
+
+type checked_defer = {
+  requirements : deferred_requirement list;
+  effects : (binding * init_state) list;
+  falls_through : bool;
+}
+
 type signature = { params : (string * Hir.ty) list; ret : Hir.ty; variadic : bool }
 type specialization_kind = Function_specialization | Struct_specialization
 
@@ -120,7 +128,10 @@ type context = {
   mutable string_ids : (string * int) list;
   ret_ty : Hir.ty;
   mutable loop_depth : int;
+  mutable loop_defer_depths : int list;
   mutable in_defer : bool;
+  mutable collecting_defer : deferred_requirement list option;
+  mutable defer_scopes : checked_defer list list;
   mutable falls_through : bool;
   mutable checking_dead : bool;
   limits : Limits.t;
@@ -770,8 +781,13 @@ and source_aggregate_in_context c span make length element =
   | Some length -> Ok (make length element)
   | None -> error span "aggregate length is not a machine integer"
 
-let push c = c.locals := Hashtbl.create 8 :: !(c.locals)
-let pop c = match !(c.locals) with _ :: rest -> c.locals := rest | [] -> ()
+let push c =
+  c.locals := Hashtbl.create 8 :: !(c.locals);
+  c.defer_scopes <- [] :: c.defer_scopes
+
+let pop c =
+  (match !(c.locals) with _ :: rest -> c.locals := rest | [] -> ());
+  match c.defer_scopes with _ :: rest -> c.defer_scopes <- rest | [] -> ()
 
 let field_info structs name field =
   match List.find_opt (fun (s : Hir.struct_def) -> s.name = name) structs with
@@ -914,7 +930,12 @@ let require_state binding path c span =
             | None -> Error ()))
   in
   if walk binding.ty (state_of c binding) path = Ok () then Ok ()
-  else error span (Printf.sprintf "use of uninitialized local `%s`" binding.name)
+  else
+    match c.collecting_defer with
+    | Some requirements ->
+        c.collecting_defer <- Some ((binding, path, span) :: requirements);
+        Ok ()
+    | None -> error span (Printf.sprintf "use of uninitialized local `%s`" binding.name)
 
 let require_place_state binding path c span =
   match path with
@@ -995,6 +1016,68 @@ let merge_maps c left right =
             (find !(c.locals))
       | _ -> None)
     left right
+
+let add_init_state c ty left right =
+  let rec add ty left right =
+    match (left, right) with
+    | Uninit, state | state, Uninit -> state
+    | Full, _ | _, Full -> Full
+    | Raw, _ | _, Raw -> Raw
+    | Partial left, Partial right ->
+        let selectors = List.map fst left @ List.map fst right in
+        let selectors = List.sort_uniq compare selectors in
+        Partial
+          (List.filter_map
+             (fun selector ->
+               match child_type c ty selector with
+               | None -> None
+               | Some child_ty ->
+                   let left =
+                     Option.value ~default:Uninit (List.assoc_opt selector left)
+                   in
+                   let right =
+                     Option.value ~default:Uninit (List.assoc_opt selector right)
+                   in
+                   let state = add child_ty left right in
+                   if state = Uninit then None else Some (selector, state))
+             selectors)
+  in
+  normalize_state c ty (add ty left right)
+
+let apply_defer_effect c (binding, deferred_state) =
+  let current = state_of c binding in
+  let state = add_init_state c binding.ty current deferred_state in
+  if state = Uninit then c.initialized <- IM.remove binding.id c.initialized
+  else c.initialized <- IM.add binding.id state c.initialized
+
+let rec validate_defer_list c = function
+  | [] -> Ok true
+  | deferred :: rest ->
+      let* () =
+        Result_list.iter
+          (fun (binding, path, span) -> require_state binding path c span)
+          deferred.requirements
+      in
+      List.iter (apply_defer_effect c) deferred.effects;
+      if deferred.falls_through then validate_defer_list c rest else Ok false
+
+let validate_defer_scopes c keep =
+  let count = List.length c.defer_scopes - keep in
+  let rec run remaining = function
+    | _ when remaining <= 0 -> Ok true
+    | [] -> Ok true
+    | scope :: rest ->
+        let* falls_through = validate_defer_list c scope in
+        if falls_through then run (remaining - 1) rest else Ok false
+  in
+  run count c.defer_scopes
+
+let validate_exit_defers c keep =
+  let before = c.initialized in
+  let result = validate_defer_scopes c keep in
+  c.initialized <- before;
+  let* _ = result in
+  Ok ()
 
 let mark_init binding c = set_state c binding [] Full
 
@@ -2500,90 +2583,6 @@ let target_ty c = function
             (field_info c.structs struct_name name)
       | _ -> None)
 
-type flow_summary = {
-  falls_through : bool;
-  returns : bool;
-  breaks : bool;
-  continues : bool;
-}
-
-let flowing =
-  { falls_through = true; returns = false; breaks = false; continues = false }
-
-let choose_flow left right =
-  {
-    falls_through = left.falls_through || right.falls_through;
-    returns = left.returns || right.returns;
-    breaks = left.breaks || right.breaks;
-    continues = left.continues || right.continues;
-  }
-
-let sequence_flow left right =
-  {
-    falls_through = left.falls_through && right.falls_through;
-    returns = left.returns || (left.falls_through && right.returns);
-    breaks = left.breaks || (left.falls_through && right.breaks);
-    continues = left.continues || (left.falls_through && right.continues);
-  }
-
-let cleanup_flow cleanup exits =
-  {
-    falls_through = cleanup.falls_through && exits.falls_through;
-    returns = cleanup.falls_through && exits.returns;
-    breaks = cleanup.falls_through && exits.breaks;
-    continues = cleanup.falls_through && exits.continues;
-  }
-
-let condition_is_true = function Hir.EBool (true, _) -> true | _ -> false
-
-let rec stmt_flow = function
-  | Hir.Return _ -> { flowing with falls_through = false; returns = true }
-  | Hir.Break _ -> { flowing with falls_through = false; breaks = true }
-  | Hir.Continue _ -> { flowing with falls_through = false; continues = true }
-  | Hir.Block (body, _) -> block_flow body
-  | Hir.If (_, then_body, else_body, _) ->
-      choose_flow (block_flow then_body)
-        (match else_body with None -> flowing | Some body -> block_flow body)
-  | Hir.Switch (_, arms, default, _) ->
-      let branches = List.map (fun (_, body) -> block_flow body) arms in
-      let branches =
-        match default with
-        | None -> flowing :: branches
-        | Some body -> block_flow body :: branches
-      in
-      List.fold_left choose_flow { flowing with falls_through = false } branches
-  | Hir.While (condition, body, _) ->
-      loop_flow (condition_is_true condition) (block_flow body)
-  | Hir.For (init, condition, step, body, _) ->
-      let prefix =
-        match init with None -> flowing | Some statement -> stmt_flow statement
-      in
-      let iteration =
-        sequence_flow (block_flow body)
-          (match step with None -> flowing | Some statement -> stmt_flow statement)
-      in
-      let unconditional =
-        match condition with
-        | None -> true
-        | Some expression -> condition_is_true expression
-      in
-      sequence_flow prefix (loop_flow unconditional iteration)
-  | Hir.Defer (body, _) -> cleanup_flow (block_flow body) flowing
-  | Hir.Let _ | Hir.Assign _ | Hir.Compound_assign _ | Hir.Expr _ -> flowing
-
-and block_flow = function
-  | [] -> flowing
-  | Hir.Defer (body, _) :: rest -> cleanup_flow (block_flow body) (block_flow rest)
-  | statement :: rest -> sequence_flow (stmt_flow statement) (block_flow rest)
-
-and loop_flow unconditional body =
-  {
-    falls_through = (not unconditional) || body.breaks;
-    returns = body.returns;
-    breaks = false;
-    continues = false;
-  }
-
 let rec stmt_terminates = function
   | Ast.Return _ | Ast.Break _ | Ast.Continue _ -> true
   | Ast.Block (body, _) -> block_terminates body
@@ -2605,7 +2604,16 @@ let rec check_block (c : context) stmts =
   let rec go acc = function
     | [] ->
         let out = List.rev acc in
+        let result =
+          if c.falls_through then
+            match c.defer_scopes with
+            | scope :: _ -> validate_defer_list c scope
+            | [] -> Ok true
+          else Ok false
+        in
         pop c;
+        let* falls_through = result in
+        c.falls_through <- c.falls_through && falls_through;
         Ok out
     | s :: rest ->
         let before = c.initialized in
@@ -2690,6 +2698,7 @@ and check_stmt (c : context) = function
         | None, _ ->
             error span ("return value required (expected " ^ ty_name c.ret_ty ^ ")")
       in
+      let* () = validate_exit_defers c 0 in
       Ok (Hir.Return (x, span))
   | Ast.Expr_stmt (e, s) ->
       let* x = check_expr c None e in
@@ -2734,9 +2743,11 @@ and check_stmt (c : context) = function
         let before = c.initialized in
         let before_falls = c.falls_through in
         c.loop_depth <- c.loop_depth + 1;
+        c.loop_defer_depths <- List.length c.defer_scopes :: c.loop_defer_depths;
         c.falls_through <- true;
         let checked = check_block c b in
         c.loop_depth <- c.loop_depth - 1;
+        c.loop_defer_depths <- List.tl c.loop_defer_depths;
         let* tb = checked in
         c.initialized <- before;
         c.falls_through <- before_falls;
@@ -2762,6 +2773,7 @@ and check_stmt (c : context) = function
         let before = c.initialized in
         let before_falls = c.falls_through in
         c.loop_depth <- c.loop_depth + 1;
+        c.loop_defer_depths <- List.length c.defer_scopes :: c.loop_defer_depths;
         c.falls_through <- true;
         let body_result = check_block c b in
         let* tb = body_result in
@@ -2777,6 +2789,7 @@ and check_stmt (c : context) = function
         c.initialized <- before;
         c.falls_through <- before_falls;
         c.loop_depth <- c.loop_depth - 1;
+        c.loop_defer_depths <- List.tl c.loop_defer_depths;
         Ok (Hir.For (ti, tq, ts, tb, s))
       in
       pop c;
@@ -2847,23 +2860,55 @@ and check_stmt (c : context) = function
   | Ast.Break s ->
       if c.in_defer then error s "break is not allowed inside defer"
       else if c.loop_depth = 0 then error s "break outside loop"
-      else Ok (Hir.Break s)
+      else
+        let* () = validate_exit_defers c (List.hd c.loop_defer_depths) in
+        Ok (Hir.Break s)
   | Ast.Continue s ->
       if c.in_defer then error s "continue is not allowed inside defer"
       else if c.loop_depth = 0 then error s "continue outside loop"
-      else Ok (Hir.Continue s)
+      else
+        let* () = validate_exit_defers c (List.hd c.loop_defer_depths) in
+        Ok (Hir.Continue s)
   | Ast.Defer (xs, s) ->
       if c.in_defer then error s "nested defer is not allowed"
       else
         let before = c.initialized in
         let before_falls = c.falls_through in
+        let visible_bindings =
+          List.concat_map
+            (fun scope ->
+              Hashtbl.fold (fun _ binding bindings -> binding :: bindings) scope [])
+            !(c.locals)
+        in
         c.in_defer <- true;
+        c.collecting_defer <- Some [];
         c.falls_through <- true;
         let checked = check_block c xs in
+        let after = c.initialized in
+        let requirements = Option.value ~default:[] c.collecting_defer |> List.rev in
         c.in_defer <- false;
+        c.collecting_defer <- None;
         c.initialized <- before;
         c.falls_through <- before_falls;
         let* body = checked in
+        let effects =
+          List.filter_map
+            (fun binding ->
+              Option.map (fun state -> (binding, state)) (IM.find_opt binding.id after))
+            visible_bindings
+        in
+        (if before_falls then
+           match c.defer_scopes with
+           | scope :: rest ->
+               c.defer_scopes <-
+                 ({
+                    requirements;
+                    effects;
+                    falls_through = (Hir.block_flow body).falls_through;
+                  }
+                 :: scope)
+                 :: rest
+           | [] -> ());
         Ok (Hir.Defer (body, s))
 
 let rec specialization_type_key = function
@@ -3364,7 +3409,10 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
       string_ids = [];
       ret_ty;
       loop_depth = 0;
+      loop_defer_depths = [];
       in_defer = false;
+      collecting_defer = None;
+      defer_scopes = [];
       falls_through = true;
       checking_dead = false;
       limits;
@@ -5063,7 +5111,10 @@ let check ?(limits = Limits.default) program =
       string_ids = List.mapi (fun i value -> (value, i)) !all_strings;
       ret_ty;
       loop_depth = 0;
+      loop_defer_depths = [];
       in_defer = false;
+      collecting_defer = None;
+      defer_scopes = [];
       falls_through = true;
       checking_dead = false;
       limits;
@@ -5085,7 +5136,7 @@ let check ?(limits = Limits.default) program =
     in
     let* body = check_block context stmts in
     let* () =
-      if require_return && ret <> Hir.Void && (block_flow body).falls_through then
+      if require_return && ret <> Hir.Void && (Hir.block_flow body).falls_through then
         error span
           (description ^ " `" ^ diagnostic_name
          ^ "` may reach the end without returning")

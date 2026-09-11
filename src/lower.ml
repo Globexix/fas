@@ -996,6 +996,15 @@ let lower_func structs strings functions f =
           asm_body = None;
         }
   | Hir.Statements body ->
+      let* () =
+        if f.ret <> Hir.Void && (Hir.block_flow body).falls_through then
+          error Span.synthetic
+            (Printf.sprintf
+               "internal error: non-void function `%s` reached lowering with \
+                fallthrough"
+               f.name)
+        else Ok ()
+      in
       let entry = { id = 0; instrs = Queue.create (); term = ref None } in
       let blocks = Queue.create () in
       Queue.add entry blocks;

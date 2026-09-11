@@ -908,6 +908,48 @@ let () =
   then failwith "place-init: aggregate declaration emitted implicit initialization";
   semantic_error "defer-does-not-initialize" "use of uninitialized local `x`"
     "fn f() i64 { x i64\n defer { x = 1 }\n return x }\n";
+  ignore
+    (lower_of "fn f() i64 { x i64\n defer { observed i64 = x }\n x = 1\n return 0 }\n");
+  ignore (lower_of "fn f() void { x i64\n defer { observed i64 = x }\n x = 1 }\n");
+  ignore
+    (lower_of
+       "fn f() i64 { x i64\n\
+       \ defer { observed i64 = x }\n\
+       \ { defer { x = 1 } }\n\
+       \ return 0 }\n");
+  semantic_error "defer-normal-exit-uninitialized" "use of uninitialized local `x`"
+    "fn f() void { x i64\n defer { observed i64 = x } }\n";
+  ignore
+    (lower_of
+       "fn f() i64 { x i64\n\
+       \ defer { observed i64 = x }\n\
+       \ defer { x = 1 }\n\
+       \ return 0 }\n");
+  semantic_error "defer-lifo-read-before-write" "use of uninitialized local `x`"
+    "fn f() i64 { x i64\n defer { x = 1 }\n defer { observed i64 = x }\n return 0 }\n";
+  ignore
+    (lower_of
+       "fn f() i64 { x i64\n defer { observed i64 = x }\n defer { while true { } } }\n");
+  semantic_error "defer-read-before-divergence" "use of uninitialized local `x`"
+    "fn f() i64 { x i64\n defer { while true { } }\n defer { observed i64 = x } }\n";
+  ignore
+    (lower_of
+       "fn f() void { while true { x i64\n\
+       \ defer { observed i64 = x }\n\
+       \ x = 1\n\
+       \ break } }\n");
+  semantic_error "defer-break-uninitialized" "use of uninitialized local `x`"
+    "fn f() void { while true { x i64\n defer { observed i64 = x }\n break } }\n";
+  ignore
+    (lower_of
+       "fn f() void { index i64 = 0\n\
+       \ while index < 1 { x i64\n\
+       \ defer { observed i64 = x }\n\
+       \ x = 1\n\
+       \ index += 1\n\
+       \ continue } }\n");
+  semantic_error "defer-continue-uninitialized" "use of uninitialized local `x`"
+    "fn f() void { while true { x i64\n defer { observed i64 = x }\n continue } }\n";
   semantic_error "nested-defer" "nested defer is not allowed"
     "fn f() void { defer { defer { } } }\n";
   semantic_error "defer-return" "return is not allowed inside defer"
@@ -3900,6 +3942,35 @@ let () =
   | Error diagnostics ->
       if not (contains (Diag.render_all ~source:None diagnostics) "internal error") then
         failwith "layout-invariant: unexpected diagnostic");
+
+  (match
+     Lower.lower
+       {
+         Hir.structs = [];
+         consts = [];
+         const_arrays = [];
+         strings = [];
+         funcs =
+           [
+             {
+               Hir.name = "fallthrough";
+               params = [];
+               ret = Hir.Int Hir.I32;
+               body = Hir.Statements [];
+               linkage = Hir.Internal;
+               variadic = false;
+             };
+           ];
+       }
+   with
+  | Ok _ -> failwith "lower-fallthrough: malformed non-void HIR lowered"
+  | Error diagnostics ->
+      if
+        not
+          (contains
+             (Diag.render_all ~source:None diagnostics)
+             "non-void function `fallthrough` reached lowering with fallthrough")
+      then failwith "lower-fallthrough: unexpected diagnostic");
 
   (match
      Lower.lower
