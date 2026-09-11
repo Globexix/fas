@@ -1,4 +1,5 @@
 module IM = Map.Make (Int)
+open Sema_specialization
 
 type binding = Hir.local = { name : string; ty : Hir.ty; id : int }
 type selector = Field of string | Element of int
@@ -28,84 +29,6 @@ type loop_init_flow = {
 }
 
 type signature = { params : (string * Hir.ty) list; ret : Hir.ty; variadic : bool }
-type specialization_kind = Function_specialization | Struct_specialization
-
-type specialization_arg =
-  | Type_specialization_arg of string
-  | Const_specialization_arg of Hir.ty * int64
-
-type specialization_key = specialization_kind * int * specialization_arg list
-
-type diagnostic_type =
-  | Diagnostic_bool
-  | Diagnostic_void
-  | Diagnostic_int of Ast.int_kind
-  | Diagnostic_ptr of diagnostic_type
-  | Diagnostic_const_ptr of diagnostic_type
-  | Diagnostic_array of string * diagnostic_type
-  | Diagnostic_vec of string * diagnostic_type
-  | Diagnostic_named of string
-  | Diagnostic_applied of string * diagnostic_argument list
-
-and diagnostic_argument =
-  | Diagnostic_type_argument of diagnostic_type
-  | Diagnostic_const_argument of Hir.ty * int64
-  | Diagnostic_source_const_argument of string
-
-type instantiation_frame = {
-  template_name : string;
-  arguments : diagnostic_argument list;
-  application_span : Span.t;
-}
-
-type pending_diagnostic_argument =
-  | Pending_diagnostic_type of diagnostic_type
-  | Pending_diagnostic_const of string
-
-type pending_instantiation_frame = {
-  pending_arguments : pending_diagnostic_argument list;
-  pending_application_span : Span.t;
-}
-
-type staged_specialization_arg =
-  | Staged_type_arg of string
-  | Staged_const_arg of string
-
-type specialization_payload =
-  | Function_payload of {
-      item : Ast.item;
-      substitutions : (string * Ast.ty) list;
-      values : (string * Hir.ty * int64) list;
-      staged_args : staged_specialization_arg list option;
-    }
-  | Struct_payload of {
-      template : Ast.item;
-      substitutions : (string * Ast.ty) list;
-      values : (string * Hir.ty * int64) list;
-    }
-
-type specialization = {
-  key : specialization_key;
-  name : string;
-  depth : int;
-  payload : specialization_payload;
-  trace : instantiation_frame list;
-  pending_frame : pending_instantiation_frame option;
-}
-
-module Specialization_cache = Hashtbl.Make (struct
-  type t = specialization_key
-
-  let equal = ( = )
-  let hash = Hashtbl.hash
-end)
-
-type specialization_state = {
-  cache : specialization Specialization_cache.t;
-  queue : specialization Queue.t;
-  by_name : (specialization_kind * string, specialization) Hashtbl.t;
-}
-
 type trailing_args = Reject | Promote_variadic
 type named_type_kind = Struct_name | Generic_struct_name | Opaque_name
 type top_level_kind = Top_type | Top_function | Top_const
@@ -124,7 +47,7 @@ type context = {
   signatures : (string * signature) list;
   templates : (string * Ast.item) list;
   top_level_bindings : top_level_binding list;
-  specializations : specialization_state;
+  specializations : Sema_specialization.t;
   spec_depth : int;
   spec_trace : instantiation_frame list;
   locals : (string, binding) Hashtbl.t list ref;
@@ -155,22 +78,6 @@ let specialization_declaration_id bindings kind span name =
   | Some { declaration_id; declaration_kind; _ } when declaration_kind = kind ->
       Ok declaration_id
   | _ -> error span "internal error: specialization declaration is missing"
-
-let request_specialization state ~limits ~depth ~span ~description specialization =
-  match Specialization_cache.find_opt state.cache specialization.key with
-  | Some existing -> Ok existing
-  | None ->
-      if depth >= limits.Limits.max_specialization_depth then
-        error span (description ^ " recursion depth limit exceeded")
-      else if
-        Specialization_cache.length state.cache >= limits.Limits.max_specializations
-      then error span (description ^ " count limit exceeded")
-      else (
-        Specialization_cache.add state.cache specialization.key specialization;
-        let kind, _, _ = specialization.key in
-        Hashtbl.replace state.by_name (kind, specialization.name) specialization;
-        Queue.add specialization state.queue;
-        Ok specialization)
 
 let validate_binding_name span name =
   if Names.reserved_binding_name name then
@@ -527,7 +434,9 @@ let rec diagnostic_type_of_ast specializations = function
   | Ast.Vec (length, ty) ->
       Diagnostic_vec (length, diagnostic_type_of_ast specializations ty)
   | Ast.Named_type name -> (
-      match Hashtbl.find_opt specializations.by_name (Struct_specialization, name) with
+      match
+        Sema_specialization.find_by_name specializations Struct_specialization name
+      with
       | Some specialization -> (
           match current_instantiation_frame specialization.trace with
           | Some frame -> Diagnostic_applied (frame.template_name, frame.arguments)
@@ -607,7 +516,7 @@ let replace_all text target replacement =
     Buffer.contents buffer
 
 let source_name_replacements specializations =
-  Hashtbl.fold
+  Sema_specialization.fold_by_name
     (fun (_, name) specialization replacements ->
       match
         (specialization.pending_frame, current_instantiation_frame specialization.trace)
@@ -615,7 +524,7 @@ let source_name_replacements specializations =
       | None, Some frame ->
           (name, render_instantiation_application frame) :: replacements
       | _ -> replacements)
-    specializations.by_name []
+    specializations []
   |> List.sort (fun (left, _) (right, _) ->
       let by_length = Int.compare (String.length right) (String.length left) in
       if by_length <> 0 then by_length else String.compare left right)
@@ -642,7 +551,7 @@ let trace_result specializations trace =
   Result.map_error (append_instantiation_trace specializations trace)
 
 let specialization_trace specializations kind name =
-  match Hashtbl.find_opt specializations.by_name (kind, name) with
+  match Sema_specialization.find_by_name specializations kind name with
   | Some specialization -> specialization.trace
   | None -> []
 
@@ -2158,7 +2067,7 @@ and function_specialization_key declaration_id values =
 
 and staged_specialization_identity state name values =
   let staged =
-    match Hashtbl.find_opt state.by_name (Function_specialization, name) with
+    match Sema_specialization.find_by_name state Function_specialization name with
     | Some
         {
           key = Function_specialization, origin_id, _;
@@ -2317,7 +2226,7 @@ and check_call c _expected fn args s =
                   }
                 in
                 let* specialization =
-                  request_specialization c.specializations ~limits:c.limits
+                  Sema_specialization.request c.specializations ~limits:c.limits
                     ~depth:c.spec_depth ~span:s ~description:"const specialization" spec
                 in
                 let params, ret =
@@ -3982,7 +3891,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
                   }
                 in
                 let* specialization =
-                  request_specialization specializations ~limits ~depth ~span
+                  Sema_specialization.request specializations ~limits ~depth ~span
                     ~description:"struct specialization" specialization
                 in
                 Ok (Ast.Named_type specialization.name)
@@ -4176,7 +4085,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
                       }
                     in
                     let* _ =
-                      request_specialization specializations ~limits ~depth ~span
+                      Sema_specialization.request specializations ~limits ~depth ~span
                         ~description:"const specialization" specialization
                     in
                     Ok ()
@@ -4239,7 +4148,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
                   }
                 in
                 let* specialization =
-                  request_specialization specializations ~limits ~depth ~span
+                  Sema_specialization.request specializations ~limits ~depth ~span
                     ~description:"function specialization" specialization
                 in
                 if const_arguments = [] then
@@ -4711,7 +4620,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
   let* items = Result_list.map resolve_program_item program.Ast.items in
   let late_functions = ref [] in
   let rec materialize () =
-    match Queue.take_opt specializations.queue with
+    match Sema_specialization.take_pending specializations with
     | None -> Ok ()
     | Some
         ({
@@ -4783,11 +4692,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
               Function_payload { item; substitutions = []; values; staged_args = None };
           }
         in
-        Specialization_cache.replace specializations.cache specialization.key
-          specialization;
-        Hashtbl.replace specializations.by_name
-          (Function_specialization, specialization.name)
-          specialization;
+        Sema_specialization.update_materialized specializations specialization;
         late_functions := specialization :: !late_functions;
         materialize ()
     | Some { payload = Function_payload _; _ } ->
@@ -4795,18 +4700,12 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
   in
   let* () = materialize () in
   List.iter
-    (fun specialization -> Queue.add specialization specializations.queue)
+    (Sema_specialization.requeue_materialized specializations)
     (List.rev !late_functions);
   Ok ({ Ast.items = items @ List.rev !generated } : Ast.program)
 
 let check ?(limits = Limits.default) program =
-  let specializations =
-    {
-      cache = Specialization_cache.create 32;
-      queue = Queue.create ();
-      by_name = Hashtbl.create 32;
-    }
-  in
+  let specializations = Sema_specialization.create () in
   let declaration = function
     | Ast.Opaque { name; span } | Ast.Struct { name; span; _ } ->
         Some (name, Top_type, span)
@@ -5168,7 +5067,8 @@ let check ?(limits = Limits.default) program =
         in
         let spec_depth =
           match
-            Hashtbl.find_opt specializations.by_name (Function_specialization, name)
+            Sema_specialization.find_by_name specializations Function_specialization
+              name
           with
           | Some specialization -> specialization.depth + 1
           | None -> 0
@@ -5213,7 +5113,7 @@ let check ?(limits = Limits.default) program =
   in
   let* () = Result_list.iter check_func program.items in
   let rec materialize () =
-    match Queue.take_opt specializations.queue with
+    match Sema_specialization.take_pending specializations with
     | None -> Ok ()
     | Some sp -> (
         match sp.payload with
