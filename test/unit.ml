@@ -349,6 +349,62 @@ let () =
   assert (List.length specialized.Hir.funcs = 2);
   let lowered = expect_ok (Lower.lower specialized) in
   assert (List.length lowered.Ir.funcs = 2);
+  let ir_module funcs =
+    {
+      Ir.target_triple = Target_layout.current.triple;
+      data_layout = Target_layout.current.llvm_data_layout;
+      structs = [];
+      globals = [];
+      funcs;
+      no_inline_function = None;
+    }
+  in
+  let ir_function blocks =
+    {
+      Ir.name = "control_flow";
+      params = [];
+      ret = Ir.Void;
+      ret_extension = Ir.No_extension;
+      blocks;
+      linkage = Ir.Internal;
+      variadic = false;
+      asm_body = None;
+    }
+  in
+  let ir_block id terminator = { Ir.id; label = "b"; instrs = []; terminator } in
+  let valid_control_flow =
+    ir_module
+      [
+        ir_function
+          [
+            ir_block 0 (Ir.CondBr (Ir.Const (Ir.I1, 1L), 1, 2));
+            ir_block 1 (Ir.Switch (Ir.I8, Ir.Const (Ir.I8, 0L), [ (0L, 2) ], 3));
+            ir_block 2 (Ir.Br 3);
+            ir_block 3 (Ir.Ret None);
+          ];
+      ]
+  in
+  assert (Ir.validate valid_control_flow = Ok ());
+  let duplicate_block_ids =
+    ir_module [ ir_function [ ir_block 0 (Ir.Ret None); ir_block 0 (Ir.Ret None) ] ]
+  in
+  (match Ir.validate duplicate_block_ids with
+  | Error message -> assert (contains message "duplicate block id 0")
+  | Ok () -> assert false);
+  let missing_branch_successor = ir_module [ ir_function [ ir_block 0 (Ir.Br 1) ] ] in
+  (match Ir.validate missing_branch_successor with
+  | Error message -> assert (contains message "block 0 has unknown successor 1")
+  | Ok () -> assert false);
+  let missing_switch_successor =
+    ir_module
+      [
+        ir_function
+          [ ir_block 0 (Ir.Switch (Ir.I8, Ir.Const (Ir.I8, 0L), [ (0L, 1) ], 0)) ];
+      ]
+  in
+  (match Ir.validate missing_switch_successor with
+  | Error message -> assert (contains message "block 0 has unknown successor 1")
+  | Ok () -> assert false);
   assert (Ir.render lowered = Ir.render lowered);
   let unresolved_template_call =
     {

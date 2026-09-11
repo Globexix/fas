@@ -1204,7 +1204,7 @@ let lower (p : Hir.program) =
               (Ir.Array_global { name = a.name; elem_ty = Ir.I8; elems = []; align = 1 }))
       p.const_arrays
   in
-  Ok
+  let module_ =
     {
       Ir.target_triple = Target_layout.current.triple;
       data_layout = Target_layout.current.llvm_data_layout;
@@ -1213,3 +1213,7 @@ let lower (p : Hir.program) =
       funcs = funcs @ intrinsic_decls funcs;
       no_inline_function = None;
     }
+  in
+  match Ir.validate module_ with
+  | Ok () -> Ok module_
+  | Error message -> error Span.synthetic ("internal error: " ^ message)

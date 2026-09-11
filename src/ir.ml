@@ -95,6 +95,62 @@ type module_ = {
   no_inline_function : string option;
 }
 
+let validate_function_control_flow (func : func) =
+  let block_ids = Hashtbl.create (List.length func.blocks) in
+  let rec collect = function
+    | [] -> Ok ()
+    | (block : block) :: rest ->
+        if Hashtbl.mem block_ids block.id then
+          Error
+            (Printf.sprintf "function `%s` has duplicate block id %d" func.name block.id)
+        else (
+          Hashtbl.add block_ids block.id ();
+          collect rest)
+  in
+  let validate_successor block_id successor =
+    if Hashtbl.mem block_ids successor then Ok ()
+    else
+      Error
+        (Printf.sprintf "function `%s` block %d has unknown successor %d" func.name
+           block_id successor)
+  in
+  let rec validate_successors block_id = function
+    | [] -> Ok ()
+    | successor :: rest -> (
+        match validate_successor block_id successor with
+        | Error _ as error -> error
+        | Ok () -> validate_successors block_id rest)
+  in
+  let terminator_successors = function
+    | Ret _ | Unreachable -> []
+    | Br successor -> [ successor ]
+    | CondBr (_, yes, no) -> [ yes; no ]
+    | Switch (_, _, cases, default) -> default :: List.map snd cases
+  in
+  match collect func.blocks with
+  | Error _ as error -> error
+  | Ok () ->
+      let rec validate = function
+        | [] -> Ok ()
+        | (block : block) :: rest -> (
+            match
+              validate_successors block.id (terminator_successors block.terminator)
+            with
+            | Error _ as error -> error
+            | Ok () -> validate rest)
+      in
+      validate func.blocks
+
+let validate module_ =
+  let rec validate = function
+    | [] -> Ok ()
+    | func :: rest -> (
+        match validate_function_control_flow func with
+        | Error _ as error -> error
+        | Ok () -> validate rest)
+  in
+  validate module_.funcs
+
 let quote_identifier n =
   if
     String.for_all
