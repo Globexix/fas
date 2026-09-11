@@ -1,34 +1,16 @@
-module IM = Map.Make (Int)
 open Sema_constants
+open Sema_flow
 open Sema_numeric
 open Sema_specialization
 open Sema_types
 
-type binding = Hir.local = { name : string; ty : Hir.ty; id : int }
-type selector = Field of string | Element of int
-type init_state = Uninit | Full | Raw | Partial of (selector * init_state) list
 type static_index = Dynamic | Known of Hir.ty * int64
-type place_path = Exact of selector list | Dynamic_prefix of selector list
 type place_info = { expr : Hir.expr; root : binding option; path : place_path option }
 
 type checked_target = {
   target : Hir.assign_target;
   root : binding option;
   path : place_path option;
-}
-
-type deferred_requirement = binding * selector list * Span.t
-
-type checked_defer = {
-  requirements : deferred_requirement list;
-  effects : (binding * init_state) list;
-  falls_through : bool;
-}
-
-type loop_init_flow = {
-  keep_defer_depth : int;
-  mutable break_states : init_state IM.t list;
-  mutable continue_states : init_state IM.t list;
 }
 
 type signature = { params : (string * Hir.ty) list; ret : Hir.ty; variadic : bool }
@@ -52,19 +34,10 @@ type context = {
   specializations : Sema_specialization.t;
   spec_depth : int;
   spec_trace : instantiation_frame list;
-  locals : (string, binding) Hashtbl.t list ref;
-  mutable initialized : init_state IM.t;
-  mutable next_binding_id : int;
+  flow : Sema_flow.t;
   mutable strings : string list;
   mutable string_ids : (string * int) list;
   ret_ty : Hir.ty;
-  mutable loop_depth : int;
-  mutable loop_init_flows : loop_init_flow list;
-  mutable in_defer : bool;
-  mutable collecting_defer : deferred_requirement list option;
-  mutable defer_scopes : checked_defer list list;
-  mutable falls_through : bool;
-  mutable checking_dead : bool;
   limits : Limits.t;
 }
 
@@ -72,7 +45,6 @@ let lookup_top_level name bindings =
   List.find_opt (fun binding -> binding.declaration_name = name) bindings
 
 let error span message = Error [ Diag.error span message ]
-let ok x = Ok x
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 
 let specialization_declaration_id bindings kind span name =
@@ -173,29 +145,9 @@ let validate_extern_c_signature span params converted ret =
 
 let lookup name table = List.find_opt (fun (n, _, _) -> n = name) table
 let lookup_sig name c = List.assoc_opt name c.signatures
-
-let lookup_local name c =
-  let rec go = function
-    | [] -> None
-    | h :: t -> ( match Hashtbl.find_opt h name with Some x -> Some x | None -> go t)
-  in
-  go !(c.locals)
-
-let ensure_new_local name c span =
-  let* () = validate_binding_name span name in
-  let scope = match !(c.locals) with scope :: _ -> scope | [] -> Hashtbl.create 8 in
-  if Hashtbl.mem scope name then error span (Printf.sprintf "duplicate local `%s`" name)
-  else Ok ()
-
-let add_local name ty c span =
-  let h = match !(c.locals) with h :: _ -> h | [] -> Hashtbl.create 8 in
-  let* () = ensure_new_local name c span in
-  let id = c.next_binding_id in
-  c.next_binding_id <- id + 1;
-  let binding : binding = { ty; id; name } in
-  Hashtbl.replace h name binding;
-  if !(c.locals) = [] then c.locals := [ h ];
-  ok binding
+let lookup_local name c = Sema_flow.lookup_local name c.flow
+let ensure_new_local name c span = Sema_flow.ensure_new_local name c.flow span
+let add_local name ty c span = Sema_flow.add_local name ty c.flow span
 
 let rec source_ty_in_context c span = function
   | Ast.Named_type name when Option.is_some (lookup_local name c) ->
@@ -234,308 +186,20 @@ and source_aggregate_in_context c span make length element =
   | Some length -> Ok (make length element)
   | None -> error span "aggregate length is not a machine integer"
 
-let push c =
-  c.locals := Hashtbl.create 8 :: !(c.locals);
-  c.defer_scopes <- [] :: c.defer_scopes
-
-let pop c =
-  (match !(c.locals) with _ :: rest -> c.locals := rest | [] -> ());
-  match c.defer_scopes with _ :: rest -> c.defer_scopes <- rest | [] -> ()
-
-let state_of c binding =
-  Option.value ~default:Uninit (IM.find_opt binding.id c.initialized)
-
-let state_usable = function Full | Raw -> true | Uninit | Partial _ -> false
-
-let child_type c ty selector =
-  match (ty, selector) with
-  | Hir.Struct n, Field name ->
-      Option.map (fun (f : Hir.field) -> f.ty) (field_info c.structs n name)
-  | (Hir.Array (_, t) | Hir.Vec (_, t)), Element _ -> Some t
-  | _ -> None
-
-let is_vacuous_type c ty =
-  let rec go seen = function
-    | Hir.Struct name ->
-        if List.mem name seen then false
-        else
-          Option.value ~default:false
-            (Option.map
-               (fun (s : Hir.struct_def) ->
-                 List.for_all (fun (f : Hir.field) -> go (name :: seen) f.ty) s.fields)
-               (List.find_opt (fun (s : Hir.struct_def) -> s.name = name) c.structs))
-    | Hir.Array (n, element) -> n = 0 || go seen element
-    | _ -> false
-  in
-  go [] ty
-
-let rec normalize_state c ty = function
-  | Uninit -> Uninit
-  | (Full | Raw) as state -> state
-  | Partial entries ->
-      let entries =
-        List.filter_map
-          (fun (selector, state) ->
-            match child_type c ty selector with
-            | None -> None
-            | Some child_ty ->
-                let state = normalize_state c child_ty state in
-                if state = Uninit then None else Some (selector, state))
-          entries
-      in
-      let complete, any_raw =
-        match ty with
-        | Hir.Struct n -> (
-            match List.find_opt (fun (s : Hir.struct_def) -> s.name = n) c.structs with
-            | None -> (false, false)
-            | Some s ->
-                let all =
-                  List.for_all
-                    (fun (f : Hir.field) ->
-                      match List.assoc_opt (Field f.name) entries with
-                      | Some state -> state_usable state || is_vacuous_type c f.ty
-                      | None -> is_vacuous_type c f.ty)
-                    s.fields
-                in
-                let raw =
-                  List.exists
-                    (fun (f : Hir.field) ->
-                      match List.assoc_opt (Field f.name) entries with
-                      | Some Raw -> true
-                      | _ -> false)
-                    s.fields
-                in
-                (all, raw))
-        | Hir.Array (n, element_ty) | Hir.Vec (n, element_ty) ->
-            let all =
-              n >= 0
-              &&
-              let rec each i =
-                if i = n then true
-                else
-                  match List.assoc_opt (Element i) entries with
-                  | Some state when state_usable state -> each (i + 1)
-                  | Some _ | None ->
-                      if is_vacuous_type c element_ty then each (i + 1) else false
-              in
-              each 0
-            in
-            let raw =
-              List.exists
-                (fun (_, state) -> match state with Raw -> true | _ -> false)
-                entries
-            in
-            (all, raw)
-        | _ -> (false, false)
-      in
-      if complete then if any_raw then Raw else Full
-      else if entries = [] then Uninit
-      else Partial entries
-
-let rec update_state c ty state path replacement =
-  match path with
-  | [] -> replacement
-  | selector :: rest -> (
-      if state_usable state then state
-      else
-        let entries = match state with Partial xs -> xs | Uninit -> [] | _ -> [] in
-        match child_type c ty selector with
-        | None -> state
-        | Some child_ty ->
-            let child =
-              Option.value ~default:Uninit (List.assoc_opt selector entries)
-            in
-            let child = update_state c child_ty child rest replacement in
-            let entries =
-              List.remove_assoc selector entries |> fun xs ->
-              if child = Uninit then xs else (selector, child) :: xs
-            in
-            normalize_state c ty (Partial entries))
-
-let set_state c binding path replacement =
-  let state = update_state c binding.ty (state_of c binding) path replacement in
-  if state = Uninit then c.initialized <- IM.remove binding.id c.initialized
-  else c.initialized <- IM.add binding.id state c.initialized
-
-let require_state binding path c span =
-  let rec walk ty state = function
-    | [] -> if state_usable state || is_vacuous_type c ty then Ok () else Error ()
-    | selector :: rest -> (
-        match state with
-        | Full | Raw -> Ok ()
-        | Partial entries -> (
-            match child_type c ty selector with
-            | Some child_ty ->
-                let child =
-                  Option.value ~default:Uninit (List.assoc_opt selector entries)
-                in
-                walk child_ty child rest
-            | _ -> Error ())
-        | Uninit -> (
-            match child_type c ty selector with
-            | Some child_ty -> walk child_ty Uninit rest
-            | None -> Error ()))
-  in
-  if walk binding.ty (state_of c binding) path = Ok () then Ok ()
-  else
-    match c.collecting_defer with
-    | Some requirements ->
-        c.collecting_defer <- Some ((binding, path, span) :: requirements);
-        Ok ()
-    | None -> error span (Printf.sprintf "use of uninitialized local `%s`" binding.name)
+let push c = Sema_flow.push c.flow
+let pop c = Sema_flow.pop c.flow
+let set_state c binding path state = Sema_flow.set_state c.flow binding path state
+let require_state binding path c span = Sema_flow.require_state binding path c.flow span
 
 let require_place_state binding path c span =
-  match path with
-  | Exact path | Dynamic_prefix path -> require_state binding path c span
+  Sema_flow.require_place_state binding path c.flow span
 
-let merge_state c ty left right =
-  let rec merge ty left right =
-    let merge_partial whole entries =
-      Partial
-        (List.filter_map
-           (fun (selector, state) ->
-             match child_type c ty selector with
-             | Some child_ty -> (
-                 match merge child_ty whole state with
-                 | Uninit -> None
-                 | state -> Some (selector, state))
-             | None -> None)
-           entries)
-    in
-    let result =
-      match (left, right) with
-      | Uninit, _ | _, Uninit -> Uninit
-      | Full, Full -> Full
-      | Raw, Raw -> Raw
-      | Full, Raw | Raw, Full -> Raw
-      | Full, Partial entries | Partial entries, Full -> merge_partial Full entries
-      | Raw, Partial entries | Partial entries, Raw -> merge_partial Raw entries
-      | Partial left, Partial right ->
-          let selectors = List.map fst left @ List.map fst right in
-          let selectors =
-            List.fold_left
-              (fun acc selector ->
-                if List.mem selector acc then acc else selector :: acc)
-              [] selectors
-          in
-          Partial
-            (List.filter_map
-               (fun selector ->
-                 let left =
-                   Option.value ~default:Uninit (List.assoc_opt selector left)
-                 in
-                 let right =
-                   Option.value ~default:Uninit (List.assoc_opt selector right)
-                 in
-                 match child_type c ty selector with
-                 | Some child_ty -> (
-                     match merge child_ty left right with
-                     | Uninit -> None
-                     | state -> Some (selector, state))
-                 | None -> None)
-               selectors)
-    in
-    normalize_state c ty result
-  in
-  merge ty left right
-
-let merge_maps c left right =
-  IM.merge
-    (fun id left right ->
-      match (left, right) with
-      | Some left, Some right ->
-          let rec find = function
-            | [] -> None
-            | scope :: rest -> (
-                match
-                  Hashtbl.fold
-                    (fun _ binding result ->
-                      match result with
-                      | Some _ -> result
-                      | None -> if binding.id = id then Some binding else None)
-                    scope None
-                with
-                | Some binding -> Some binding
-                | None -> find rest)
-          in
-          Option.map
-            (fun binding -> merge_state c binding.ty left right)
-            (find !(c.locals))
-      | _ -> None)
-    left right
-
-let add_init_state c ty left right =
-  let rec add ty left right =
-    match (left, right) with
-    | Uninit, state | state, Uninit -> state
-    | Full, _ | _, Full -> Full
-    | Raw, _ | _, Raw -> Raw
-    | Partial left, Partial right ->
-        let selectors = List.map fst left @ List.map fst right in
-        let selectors = List.sort_uniq compare selectors in
-        Partial
-          (List.filter_map
-             (fun selector ->
-               match child_type c ty selector with
-               | None -> None
-               | Some child_ty ->
-                   let left =
-                     Option.value ~default:Uninit (List.assoc_opt selector left)
-                   in
-                   let right =
-                     Option.value ~default:Uninit (List.assoc_opt selector right)
-                   in
-                   let state = add child_ty left right in
-                   if state = Uninit then None else Some (selector, state))
-             selectors)
-  in
-  normalize_state c ty (add ty left right)
-
-let apply_defer_effect c (binding, deferred_state) =
-  let current = state_of c binding in
-  let state = add_init_state c binding.ty current deferred_state in
-  if state = Uninit then c.initialized <- IM.remove binding.id c.initialized
-  else c.initialized <- IM.add binding.id state c.initialized
-
-let rec validate_defer_list c = function
-  | [] -> Ok true
-  | deferred :: rest ->
-      let* () =
-        Result_list.iter
-          (fun (binding, path, span) -> require_state binding path c span)
-          deferred.requirements
-      in
-      List.iter (apply_defer_effect c) deferred.effects;
-      if deferred.falls_through then validate_defer_list c rest else Ok false
-
-let validate_defer_scopes c keep =
-  let count = List.length c.defer_scopes - keep in
-  let rec run remaining = function
-    | _ when remaining <= 0 -> Ok true
-    | [] -> Ok true
-    | scope :: rest ->
-        let* falls_through = validate_defer_list c scope in
-        if falls_through then run (remaining - 1) rest else Ok false
-  in
-  run count c.defer_scopes
-
-let exit_defer_state c keep =
-  let before = c.initialized in
-  let result = validate_defer_scopes c keep in
-  let after = c.initialized in
-  c.initialized <- before;
-  let* falls_through = result in
-  Ok (if falls_through then Some after else None)
-
-let validate_exit_defers c keep =
-  let* _ = exit_defer_state c keep in
-  Ok ()
-
-let merge_flow_states c = function
-  | [] -> None
-  | state :: states -> Some (List.fold_left (merge_maps c) state states)
-
-let mark_init binding c = set_state c binding [] Full
+let merge_maps c left right = Sema_flow.merge_maps c.flow left right
+let validate_defer_list c defers = Sema_flow.validate_defer_list c.flow defers
+let exit_defer_state c keep = Sema_flow.exit_defer_state c.flow keep
+let validate_exit_defers c keep = Sema_flow.validate_exit_defers c.flow keep
+let merge_flow_states c states = Sema_flow.merge_flow_states c.flow states
+let mark_init binding c = Sema_flow.mark_init binding c.flow
 
 let intern_string c s =
   match List.assoc_opt s c.string_ids with
@@ -546,12 +210,7 @@ let intern_string c s =
       c.string_ids <- (s, i) :: c.string_ids;
       i
 
-let with_dead_check c dead check =
-  let previous = c.checking_dead in
-  c.checking_dead <- previous || dead;
-  let result = check () in
-  c.checking_dead <- previous;
-  result
+let with_dead_check c dead check = Sema_flow.with_dead_check c.flow dead check
 
 let rec rooted_in_constant = function
   | Hir.Const_array _ | Hir.EVector _ -> true
@@ -784,7 +443,7 @@ and check_expr (c : context) expected = function
   | Ast.Binary (op, l, r, s) ->
       if op = Ast.And || op = Ast.Or then (
         let* a = check_expr c None l in
-        let after_left = c.initialized in
+        let after_left = c.flow.initialized in
         let dead =
           match (op, a) with
           | Ast.And, Hir.EBool (false, _) | Ast.Or, Hir.EBool (true, _) -> true
@@ -793,8 +452,8 @@ and check_expr (c : context) expected = function
           | _ -> false
         in
         let* b = with_dead_check c dead (fun () -> check_expr c None r) in
-        let after_right = c.initialized in
-        c.initialized <- merge_maps c after_left after_right;
+        let after_right = c.flow.initialized in
+        c.flow.initialized <- merge_maps c after_left after_right;
         if is_truthy (Hir.expr_ty a) && is_truthy (Hir.expr_ty b) then
           Ok (Hir.Binary (op, a, b, Hir.Bool, s))
         else error s "logical operands must be scalar")
@@ -828,7 +487,7 @@ and check_expr (c : context) expected = function
         in
         if
           (op = Ast.Div || op = Ast.Rem)
-          && (not c.checking_dead)
+          && (not c.flow.checking_dead)
           && match b with Hir.EInt (v, _, _) -> v = 0L | _ -> false
         then error s "division by zero is not a defined runtime operation"
         else Ok (Hir.Binary (op, a, b, result_ty, s))
@@ -935,7 +594,7 @@ and check_expr (c : context) expected = function
       if not (is_truthy (Hir.expr_ty tq)) then
         error s "ternary condition must be scalar"
       else
-        let before_arms = c.initialized in
+        let before_arms = c.flow.initialized in
         let condition =
           match tq with
           | Hir.EBool (value, _) -> Some value
@@ -945,14 +604,14 @@ and check_expr (c : context) expected = function
         let* ta =
           with_dead_check c (condition = Some false) (fun () -> check_expr c expected a)
         in
-        let after_a = c.initialized in
-        c.initialized <- before_arms;
+        let after_a = c.flow.initialized in
+        c.flow.initialized <- before_arms;
         let* tb =
           with_dead_check c (condition = Some true) (fun () ->
               check_expr c (Some (Hir.expr_ty ta)) b)
         in
-        let after_b = c.initialized in
-        c.initialized <- merge_maps c after_a after_b;
+        let after_b = c.flow.initialized in
+        c.flow.initialized <- merge_maps c after_a after_b;
         let at = Hir.expr_ty ta and bt = Hir.expr_ty tb in
         let result_ty =
           if equal at bt then Some at
@@ -1361,21 +1020,21 @@ let rec check_block (c : context) stmts =
     | [] ->
         let out = List.rev acc in
         let result =
-          if c.falls_through then
-            match c.defer_scopes with
+          if c.flow.falls_through then
+            match c.flow.defer_scopes with
             | scope :: _ -> validate_defer_list c scope
             | [] -> Ok true
           else Ok false
         in
         pop c;
         let* falls_through = result in
-        c.falls_through <- c.falls_through && falls_through;
+        c.flow.falls_through <- c.flow.falls_through && falls_through;
         Ok out
     | s :: rest ->
-        let before = c.initialized in
+        let before = c.flow.initialized in
         let* x = check_stmt c s in
-        if not c.falls_through then c.initialized <- before
-        else if stmt_terminates s then c.falls_through <- false;
+        if not c.flow.falls_through then c.flow.initialized <- before
+        else if stmt_terminates s then c.flow.falls_through <- false;
         go (x :: acc) rest
   in
   go [] stmts
@@ -1435,7 +1094,8 @@ and check_stmt (c : context) = function
         Ok (Hir.Compound_assign (target, op, v, et, span)))
   | Ast.Return (e, span) ->
       let* () =
-        if c.in_defer then error span "return is not allowed inside defer" else Ok ()
+        if c.flow.in_defer then error span "return is not allowed inside defer"
+        else Ok ()
       in
       let* x =
         match (e, c.ret_ty) with
@@ -1448,7 +1108,7 @@ and check_stmt (c : context) = function
         | None, _ ->
             error span ("return value required (expected " ^ ty_name c.ret_ty ^ ")")
       in
-      let* () = if c.falls_through then validate_exit_defers c 0 else Ok () in
+      let* () = if c.flow.falls_through then validate_exit_defers c 0 else Ok () in
       Ok (Hir.Return (x, span))
   | Ast.Expr_stmt (e, s) ->
       let* x = check_expr c None e in
@@ -1460,14 +1120,14 @@ and check_stmt (c : context) = function
       let* tq = check_expr c None q in
       if not (is_truthy (Hir.expr_ty tq)) then error s "if condition must be scalar"
       else
-        let before = c.initialized in
-        let before_falls = c.falls_through in
-        c.falls_through <- before_falls;
+        let before = c.flow.initialized in
+        let before_falls = c.flow.falls_through in
+        c.flow.falls_through <- before_falls;
         let* ta = check_block c a in
-        let ia = c.initialized in
-        let fa = c.falls_through in
-        c.initialized <- before;
-        c.falls_through <- before_falls;
+        let ia = c.flow.initialized in
+        let fa = c.flow.falls_through in
+        c.flow.initialized <- before;
+        c.flow.falls_through <- before_falls;
         let* tb =
           match b with
           | None -> Ok None
@@ -1475,43 +1135,44 @@ and check_stmt (c : context) = function
               let* x = check_block c xs in
               Ok (Some x)
         in
-        let ib = c.initialized in
-        let fb = c.falls_through in
-        c.initialized <-
+        let ib = c.flow.initialized in
+        let fb = c.flow.falls_through in
+        c.flow.initialized <-
           (match (fa, fb) with
           | true, true -> merge_maps c ia ib
           | true, false -> ia
           | false, true -> ib
           | false, false -> before);
-        c.falls_through <- fa || fb;
-        if not before_falls then c.falls_through <- false;
+        c.flow.falls_through <- fa || fb;
+        if not before_falls then c.flow.falls_through <- false;
         Ok (Hir.If (tq, ta, tb, s))
   | Ast.While (q, b, s) ->
       let* tq = check_expr c None q in
       if not (is_truthy (Hir.expr_ty tq)) then error s "while condition must be scalar"
       else
-        let before = c.initialized in
-        let before_falls = c.falls_through in
+        let before = c.flow.initialized in
+        let before_falls = c.flow.falls_through in
         let loop_flow =
           {
-            keep_defer_depth = List.length c.defer_scopes;
+            keep_defer_depth = List.length c.flow.defer_scopes;
             break_states = [];
             continue_states = [];
           }
         in
-        c.loop_depth <- c.loop_depth + 1;
-        c.loop_init_flows <- loop_flow :: c.loop_init_flows;
-        c.falls_through <- before_falls;
+        c.flow.loop_depth <- c.flow.loop_depth + 1;
+        c.flow.loop_init_flows <- loop_flow :: c.flow.loop_init_flows;
+        c.flow.falls_through <- before_falls;
         let checked = check_block c b in
-        c.loop_depth <- c.loop_depth - 1;
-        c.loop_init_flows <- List.tl c.loop_init_flows;
+        c.flow.loop_depth <- c.flow.loop_depth - 1;
+        c.flow.loop_init_flows <- List.tl c.flow.loop_init_flows;
         let* tb = checked in
         let exit_states =
           if Hir.condition_is_true tq then loop_flow.break_states
           else before :: loop_flow.break_states
         in
-        c.initialized <- Option.value ~default:before (merge_flow_states c exit_states);
-        c.falls_through <- before_falls && exit_states <> [];
+        c.flow.initialized <-
+          Option.value ~default:before (merge_flow_states c exit_states);
+        c.flow.falls_through <- before_falls && exit_states <> [];
         Ok (Hir.While (tq, tb, s))
   | Ast.For (i, q, step, b, s) ->
       push c;
@@ -1531,28 +1192,29 @@ and check_stmt (c : context) = function
               if is_truthy (Hir.expr_ty y) then Ok (Some y)
               else error (Ast.expr_span x) "for condition must be scalar"
         in
-        let before = c.initialized in
-        let before_falls = c.falls_through in
+        let before = c.flow.initialized in
+        let before_falls = c.flow.falls_through in
         let loop_flow =
           {
-            keep_defer_depth = List.length c.defer_scopes;
+            keep_defer_depth = List.length c.flow.defer_scopes;
             break_states = [];
             continue_states = [];
           }
         in
-        c.loop_depth <- c.loop_depth + 1;
-        c.loop_init_flows <- loop_flow :: c.loop_init_flows;
-        c.falls_through <- before_falls;
+        c.flow.loop_depth <- c.flow.loop_depth + 1;
+        c.flow.loop_init_flows <- loop_flow :: c.flow.loop_init_flows;
+        c.flow.falls_through <- before_falls;
         let body_result = check_block c b in
         let* tb = body_result in
-        let body_state = c.initialized in
+        let body_state = c.flow.initialized in
         let step_states =
           if (Hir.block_flow tb).falls_through then
             body_state :: loop_flow.continue_states
           else loop_flow.continue_states
         in
-        c.initialized <- Option.value ~default:before (merge_flow_states c step_states);
-        c.falls_through <- step_states <> [];
+        c.flow.initialized <-
+          Option.value ~default:before (merge_flow_states c step_states);
+        c.flow.falls_through <- step_states <> [];
         let* ts =
           match step with
           | None -> Ok None
@@ -1569,10 +1231,11 @@ and check_stmt (c : context) = function
           if unconditional then loop_flow.break_states
           else before :: loop_flow.break_states
         in
-        c.initialized <- Option.value ~default:before (merge_flow_states c exit_states);
-        c.falls_through <- before_falls && exit_states <> [];
-        c.loop_depth <- c.loop_depth - 1;
-        c.loop_init_flows <- List.tl c.loop_init_flows;
+        c.flow.initialized <-
+          Option.value ~default:before (merge_flow_states c exit_states);
+        c.flow.falls_through <- before_falls && exit_states <> [];
+        c.flow.loop_depth <- c.flow.loop_depth - 1;
+        c.flow.loop_init_flows <- List.tl c.flow.loop_init_flows;
         Ok (Hir.For (ti, tq, ts, tb, s))
       in
       pop c;
@@ -1583,8 +1246,8 @@ and check_stmt (c : context) = function
       if not (is_int et || et = Hir.Bool) then
         error s "switch scrutinee must be an integer or bool"
       else
-        let before = c.initialized and seen = ref [] and branch_states = ref [] in
-        let before_falls = c.falls_through in
+        let before = c.flow.initialized and seen = ref [] and branch_states = ref [] in
+        let before_falls = c.flow.falls_through in
         let branch_falls = ref [] in
         let rec ar acc = function
           | [] -> Ok (List.rev acc)
@@ -1608,24 +1271,26 @@ and check_stmt (c : context) = function
                   | Hir.Bool -> Hir.EBool (kv <> 0L, Ast.expr_span k)
                   | _ -> Hir.EInt (mask_value et kv, et, Ast.expr_span k)
                 in
-                c.initialized <- before;
-                c.falls_through <- before_falls;
+                c.flow.initialized <- before;
+                c.flow.falls_through <- before_falls;
                 let* tb = check_block c b in
-                if c.falls_through then branch_states := c.initialized :: !branch_states;
-                branch_falls := c.falls_through :: !branch_falls;
+                if c.flow.falls_through then
+                  branch_states := c.flow.initialized :: !branch_states;
+                branch_falls := c.flow.falls_through :: !branch_falls;
                 ar ((tk, tb) :: acc) xs)
         in
         let result = ar [] arms in
         let* ta = result in
-        c.initialized <- before;
-        c.falls_through <- before_falls;
+        c.flow.initialized <- before;
+        c.flow.falls_through <- before_falls;
         let* td =
           match d with
           | None -> Ok None
           | Some x ->
               let* y = check_block c x in
-              if c.falls_through then branch_states := c.initialized :: !branch_states;
-              branch_falls := c.falls_through :: !branch_falls;
+              if c.flow.falls_through then
+                branch_states := c.flow.initialized :: !branch_states;
+              branch_falls := c.flow.falls_through :: !branch_falls;
               Ok (Some y)
         in
         (match d with
@@ -1633,19 +1298,19 @@ and check_stmt (c : context) = function
             branch_states := before :: !branch_states;
             branch_falls := true :: !branch_falls
         | Some _ -> ());
-        c.initialized <-
+        c.flow.initialized <-
           (match !branch_states with
           | [] -> before
           | first :: rest -> List.fold_left (merge_maps c) first rest);
-        c.falls_through <- List.exists (fun value -> value) !branch_falls;
-        if not before_falls then c.falls_through <- false;
+        c.flow.falls_through <- List.exists (fun value -> value) !branch_falls;
+        if not before_falls then c.flow.falls_through <- false;
         Ok (Hir.Switch (te, ta, td, s))
   | Ast.Break s -> (
-      if c.in_defer then error s "break is not allowed inside defer"
-      else if c.loop_depth = 0 then error s "break outside loop"
-      else if not c.falls_through then Ok (Hir.Break s)
+      if c.flow.in_defer then error s "break is not allowed inside defer"
+      else if c.flow.loop_depth = 0 then error s "break outside loop"
+      else if not c.flow.falls_through then Ok (Hir.Break s)
       else
-        match c.loop_init_flows with
+        match c.flow.loop_init_flows with
         | loop_flow :: _ ->
             let* state = exit_defer_state c loop_flow.keep_defer_depth in
             Option.iter
@@ -1654,11 +1319,11 @@ and check_stmt (c : context) = function
             Ok (Hir.Break s)
         | [] -> error s "internal error: missing loop initialization flow")
   | Ast.Continue s -> (
-      if c.in_defer then error s "continue is not allowed inside defer"
-      else if c.loop_depth = 0 then error s "continue outside loop"
-      else if not c.falls_through then Ok (Hir.Continue s)
+      if c.flow.in_defer then error s "continue is not allowed inside defer"
+      else if c.flow.loop_depth = 0 then error s "continue outside loop"
+      else if not c.flow.falls_through then Ok (Hir.Continue s)
       else
-        match c.loop_init_flows with
+        match c.flow.loop_init_flows with
         | loop_flow :: _ ->
             let* state = exit_defer_state c loop_flow.keep_defer_depth in
             Option.iter
@@ -1668,37 +1333,41 @@ and check_stmt (c : context) = function
             Ok (Hir.Continue s)
         | [] -> error s "internal error: missing loop initialization flow")
   | Ast.Defer (xs, s) ->
-      if c.in_defer then error s "nested defer is not allowed"
+      if c.flow.in_defer then error s "nested defer is not allowed"
       else
-        let before = c.initialized in
-        let before_falls = c.falls_through in
+        let before = c.flow.initialized in
+        let before_falls = c.flow.falls_through in
         let visible_bindings =
           List.concat_map
             (fun scope ->
               Hashtbl.fold (fun _ binding bindings -> binding :: bindings) scope [])
-            !(c.locals)
+            !(c.flow.locals)
         in
-        c.in_defer <- true;
-        c.collecting_defer <- Some [];
-        c.falls_through <- true;
+        c.flow.in_defer <- true;
+        c.flow.collecting_defer <- Some [];
+        c.flow.falls_through <- true;
         let checked = check_block c xs in
-        let after = c.initialized in
-        let requirements = Option.value ~default:[] c.collecting_defer |> List.rev in
-        c.in_defer <- false;
-        c.collecting_defer <- None;
-        c.initialized <- before;
-        c.falls_through <- before_falls;
+        let after = c.flow.initialized in
+        let requirements =
+          Option.value ~default:[] c.flow.collecting_defer |> List.rev
+        in
+        c.flow.in_defer <- false;
+        c.flow.collecting_defer <- None;
+        c.flow.initialized <- before;
+        c.flow.falls_through <- before_falls;
         let* body = checked in
         let effects =
           List.filter_map
             (fun binding ->
-              Option.map (fun state -> (binding, state)) (IM.find_opt binding.id after))
+              Option.map
+                (fun state -> (binding, state))
+                (State_map.find_opt binding.id after))
             visible_bindings
         in
         (if before_falls then
-           match c.defer_scopes with
+           match c.flow.defer_scopes with
            | scope :: rest ->
-               c.defer_scopes <-
+               c.flow.defer_scopes <-
                  ({
                     requirements;
                     effects;
@@ -2165,19 +1834,10 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
       specializations;
       spec_depth = 0;
       spec_trace = [];
-      locals = ref [ Hashtbl.create 8 ];
-      initialized = IM.empty;
-      next_binding_id = 0;
+      flow = Sema_flow.create ~initial_scope:true eval_structs;
       strings = [];
       string_ids = [];
       ret_ty;
-      loop_depth = 0;
-      loop_init_flows = [];
-      in_defer = false;
-      collecting_defer = None;
-      defer_scopes = [];
-      falls_through = true;
-      checking_dead = false;
       limits;
     }
   in
@@ -3842,19 +3502,10 @@ let check ?(limits = Limits.default) program =
       specializations;
       spec_depth;
       spec_trace;
-      locals = ref [];
-      initialized = IM.empty;
-      next_binding_id = 0;
+      flow = Sema_flow.create ~initial_scope:false structs;
       strings = !all_strings;
       string_ids = List.mapi (fun i value -> (value, i)) !all_strings;
       ret_ty;
-      loop_depth = 0;
-      loop_init_flows = [];
-      in_defer = false;
-      collecting_defer = None;
-      defer_scopes = [];
-      falls_through = true;
-      checking_dead = false;
       limits;
     }
   in
