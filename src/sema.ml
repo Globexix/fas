@@ -4958,10 +4958,11 @@ let check ?(limits = Limits.default) program =
         | _ -> None)
       program.Ast.items
   in
+  let base_struct_cache = Hir.struct_layout_cache base_structs_src in
   let base_structs =
     List.filter_map
       (fun (name, _, _) ->
-        match Hir.compute_struct base_structs_src name with
+        match Hir.compute_struct_cached base_struct_cache name with
         | Ok definition -> Some definition
         | Error _ -> None)
       base_structs_src
@@ -5019,18 +5020,22 @@ let check ?(limits = Limits.default) program =
     | _ :: rest -> collect_structs named_types acc rest
   in
   let* structs_src = collect_structs named_types [] program.Ast.items in
-  let rec build structs_src acc = function
-    | [] -> Ok (List.rev acc)
-    | (name, _, _) :: xs ->
-        let* s =
-          Hir.compute_struct structs_src name
-          |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
-          |> trace_result specializations
-               (specialization_trace specializations Struct_specialization name)
-        in
-        build structs_src (s :: acc) xs
+  let build structs_src =
+    let cache = Hir.struct_layout_cache structs_src in
+    let rec go acc = function
+      | [] -> Ok (List.rev acc)
+      | (name, _, _) :: xs ->
+          let* s =
+            Hir.compute_struct_cached cache name
+            |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
+            |> trace_result specializations
+                 (specialization_trace specializations Struct_specialization name)
+          in
+          go (s :: acc) xs
+    in
+    go [] structs_src
   in
-  let* structs = build structs_src [] structs_src in
+  let* structs = build structs_src in
   let source_obj span t =
     let* t =
       source_ty named_types t |> Result.map_error (fun m -> [ Diag.error span m ])
@@ -5099,7 +5104,7 @@ let check ?(limits = Limits.default) program =
   in
   let* named_types = collect_named_types [] [] program.Ast.items in
   let* structs_src = collect_structs named_types [] program.Ast.items in
-  let* structs = build structs_src [] structs_src in
+  let* structs = build structs_src in
   let validate_object span t = validate_object_limits limits structs span t in
   let source_obj span t =
     let* t = source_ty_diag named_types span t in

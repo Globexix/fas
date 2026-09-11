@@ -19,6 +19,60 @@ let () =
   assert (Limits.default.max_specialization_depth = 64);
   assert (Limits.default.max_aggregate_elements = 1_000_000);
   assert (Limits.default.max_object_alignment = 1_048_576);
+  let layout_declarations =
+    [
+      ("Leaf", [ ("value", Hir.Int Hir.U8) ], None);
+      ("Left", [ ("leaf", Hir.Struct "Leaf") ], None);
+      ("Right", [ ("leaf", Hir.Struct "Leaf") ], None);
+      ("Root", [ ("left", Hir.Struct "Left"); ("right", Hir.Struct "Right") ], None);
+    ]
+  in
+  let layout_cache = Hir.struct_layout_cache layout_declarations in
+  let root_layout =
+    match Hir.compute_struct_cached layout_cache "Root" with
+    | Ok definition -> definition
+    | Error message -> failwith message
+  in
+  assert (root_layout.size = 2);
+  assert (Hashtbl.length layout_cache.definitions = 4);
+  ignore
+    (match Hir.compute_struct_cached layout_cache "Root" with
+    | Ok definition -> definition
+    | Error message -> failwith message);
+  assert (Hashtbl.length layout_cache.definitions = 4);
+  let pointer_declarations =
+    [ ("Pointer", [ ("value", Hir.Ptr (Hir.Int Hir.U8)) ], None) ]
+  in
+  let target32 = { Target_layout.current with pointer_size = 4; pointer_align = 4 } in
+  let pointer64 =
+    match
+      Hir.compute_struct_cached (Hir.struct_layout_cache pointer_declarations) "Pointer"
+    with
+    | Ok definition -> definition
+    | Error message -> failwith message
+  in
+  let pointer32 =
+    match
+      Hir.compute_struct_cached
+        (Hir.struct_layout_cache ~target:target32 pointer_declarations)
+        "Pointer"
+    with
+    | Ok definition -> definition
+    | Error message -> failwith message
+  in
+  assert (pointer64.size = 8);
+  assert (pointer32.size = 4);
+  let recursive_declarations =
+    [
+      ("First", [ ("second", Hir.Struct "Second") ], None);
+      ("Second", [ ("first", Hir.Struct "First") ], None);
+    ]
+  in
+  let recursive_cache = Hir.struct_layout_cache recursive_declarations in
+  (match Hir.compute_struct_cached recursive_cache "First" with
+  | Error message -> assert (message = "recursive by-value struct `First`")
+  | Ok _ -> assert false);
+  assert (Hashtbl.length recursive_cache.definitions = 0);
   let aligned_program =
     expect_ok
       (Parser.parse

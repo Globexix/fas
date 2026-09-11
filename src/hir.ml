@@ -288,32 +288,55 @@ let layout ?(target = Target_layout.current) structs ty =
   in
   go [] ty
 
-let compute_struct ?(target = Target_layout.current) decls name =
+type struct_layout_cache = {
+  target : Target_layout.t;
+  decls : (string * (string * ty) list * int option) list;
+  definitions : (string, struct_def) Hashtbl.t;
+}
+
+let struct_layout_cache ?(target = Target_layout.current) decls =
+  { target; decls; definitions = Hashtbl.create (List.length decls) }
+
+let compute_struct_cached cache name =
+  let target = cache.target in
+  let decls = cache.decls in
   let rec calc visiting n =
-    if List.mem n visiting then
-      Error (Printf.sprintf "recursive by-value struct `%s`" n)
-    else
-      match List.find_opt (fun (x, _, _) -> x = n) decls with
-      | None -> Error (Printf.sprintf "unknown struct `%s`" n)
-      | Some (_, fields, explicit) ->
-          let rec each off maxa out = function
-            | [] ->
-                let align = max maxa (Option.value ~default:1 explicit) in
-                Ok (List.rev out, round_up off align, align)
-            | (fname, fty) :: rest ->
-                let* size, align =
-                  match fty with
-                  | Struct sn ->
-                      let* _, sz, al = calc (n :: visiting) sn in
-                      Ok (sz, al)
-                  | _ -> field_layout (n :: visiting) fty
-                in
-                let next = round_up off align in
-                each (next + size) (max maxa align)
-                  ({ name = fname; ty = fty; offset = next } :: out)
-                  rest
-          in
-          each 0 1 [] fields
+    match Hashtbl.find_opt cache.definitions n with
+    | Some definition -> Ok (definition.fields, definition.size, definition.align)
+    | None -> (
+        if List.mem n visiting then
+          Error (Printf.sprintf "recursive by-value struct `%s`" n)
+        else
+          match List.find_opt (fun (x, _, _) -> x = n) decls with
+          | None -> Error (Printf.sprintf "unknown struct `%s`" n)
+          | Some (_, fields, explicit) ->
+              let rec each off maxa out = function
+                | [] ->
+                    let align = max maxa (Option.value ~default:1 explicit) in
+                    let definition =
+                      {
+                        name = n;
+                        fields = List.rev out;
+                        size = round_up off align;
+                        align;
+                      }
+                    in
+                    Hashtbl.replace cache.definitions n definition;
+                    Ok (definition.fields, definition.size, definition.align)
+                | (fname, fty) :: rest ->
+                    let* size, align =
+                      match fty with
+                      | Struct sn ->
+                          let* _, sz, al = calc (n :: visiting) sn in
+                          Ok (sz, al)
+                      | _ -> field_layout (n :: visiting) fty
+                    in
+                    let next = round_up off align in
+                    each (next + size) (max maxa align)
+                      ({ name = fname; ty = fty; offset = next } :: out)
+                      rest
+              in
+              each 0 1 [] fields)
   and field_layout visiting = function
     | Bool -> Target_layout.integer target 1
     | Int k -> int_layout target k
@@ -333,6 +356,9 @@ let compute_struct ?(target = Target_layout.current) decls name =
   in
   let* fields, size, align = calc [] name in
   Ok { name; fields; size; align }
+
+let compute_struct ?target decls name =
+  compute_struct_cached (struct_layout_cache ?target decls) name
 
 let render p =
   let one_struct (s : struct_def) =
