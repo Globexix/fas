@@ -371,16 +371,38 @@ let () =
       asm_body = None;
     }
   in
-  let ir_block id terminator = { Ir.id; label = "b"; instrs = []; terminator } in
+  let ir_block ?(instrs = []) id terminator =
+    { Ir.id; label = "b"; instrs; terminator }
+  in
+  let expect_ir_error fragment module_ =
+    match Ir.validate module_ with
+    | Error message -> assert (contains message fragment)
+    | Ok () -> assert false
+  in
   let valid_control_flow =
     ir_module
       [
         ir_function
           [
-            ir_block 0 (Ir.CondBr (Ir.Const (Ir.I1, 1L), 1, 2));
+            ir_block
+              ~instrs:
+                [
+                  Ir.Cast (0, "zext", Ir.I8, Ir.Const (Ir.I8, 255L), Ir.I16);
+                  Ir.Bin (1, Ir.Add, Ir.I16, Ir.Local (0, Ir.I16), Ir.Const (Ir.I16, 1L));
+                ]
+              0
+              (Ir.CondBr (Ir.Const (Ir.I1, 1L), 1, 2));
             ir_block 1 (Ir.Switch (Ir.I8, Ir.Const (Ir.I8, 0L), [ (0L, 2) ], 3));
             ir_block 2 (Ir.Br 3);
-            ir_block 3 (Ir.Ret None);
+            ir_block
+              ~instrs:
+                [
+                  Ir.Phi
+                    ( 2,
+                      Ir.I16,
+                      [ (Ir.Const (Ir.I16, 1L), 1); (Ir.Local (1, Ir.I16), 2) ] );
+                ]
+              3 (Ir.Ret None);
           ];
       ]
   in
@@ -388,13 +410,11 @@ let () =
   let duplicate_block_ids =
     ir_module [ ir_function [ ir_block 0 (Ir.Ret None); ir_block 0 (Ir.Ret None) ] ]
   in
-  (match Ir.validate duplicate_block_ids with
-  | Error message -> assert (contains message "duplicate block id 0")
-  | Ok () -> assert false);
+  expect_ir_error "duplicate block id 0" duplicate_block_ids;
+  expect_ir_error "negative block id -1"
+    (ir_module [ ir_function [ ir_block (-1) (Ir.Ret None) ] ]);
   let missing_branch_successor = ir_module [ ir_function [ ir_block 0 (Ir.Br 1) ] ] in
-  (match Ir.validate missing_branch_successor with
-  | Error message -> assert (contains message "block 0 has unknown successor 1")
-  | Ok () -> assert false);
+  expect_ir_error "block 0 has unknown successor 1" missing_branch_successor;
   let missing_switch_successor =
     ir_module
       [
@@ -402,9 +422,136 @@ let () =
           [ ir_block 0 (Ir.Switch (Ir.I8, Ir.Const (Ir.I8, 0L), [ (0L, 1) ], 0)) ];
       ]
   in
-  (match Ir.validate missing_switch_successor with
-  | Error message -> assert (contains message "block 0 has unknown successor 1")
-  | Ok () -> assert false);
+  expect_ir_error "block 0 has unknown successor 1" missing_switch_successor;
+  let mistyped_operand =
+    ir_module
+      [
+        ir_function
+          [
+            ir_block
+              ~instrs:
+                [
+                  Ir.Bin (0, Ir.Add, Ir.I8, Ir.Const (Ir.I16, 1L), Ir.Const (Ir.I8, 2L));
+                ]
+              0 (Ir.Ret None);
+          ];
+      ]
+  in
+  expect_ir_error "operand with the wrong type" mistyped_operand;
+  let malformed_constant =
+    ir_module
+      [
+        ir_function
+          [
+            ir_block
+              ~instrs:
+                [
+                  Ir.Bin (0, Ir.And, Ir.I1, Ir.Const (Ir.I1, -1L), Ir.Const (Ir.I1, 1L));
+                ]
+              0 (Ir.Ret None);
+          ];
+      ]
+  in
+  expect_ir_error "integer constant does not fit its type" malformed_constant;
+  let invalid_cast =
+    ir_module
+      [
+        ir_function
+          [
+            ir_block
+              ~instrs:[ Ir.Cast (0, "zext", Ir.I16, Ir.Const (Ir.I16, 1L), Ir.I8) ]
+              0 (Ir.Ret None);
+          ];
+      ]
+  in
+  expect_ir_error "invalid `zext` types" invalid_cast;
+  let duplicate_value_ids =
+    ir_module
+      [
+        ir_function
+          [
+            ir_block
+              ~instrs:[ Ir.Alloca (0, Ir.I8, 1); Ir.Alloca (0, Ir.I16, 2) ]
+              0 (Ir.Ret None);
+          ];
+      ]
+  in
+  expect_ir_error "duplicate value id 0" duplicate_value_ids;
+  let undefined_value =
+    ir_module
+      [
+        ir_function
+          [
+            ir_block
+              ~instrs:
+                [ Ir.Bin (0, Ir.Add, Ir.I8, Ir.Local (4, Ir.I8), Ir.Const (Ir.I8, 1L)) ]
+              0 (Ir.Ret None);
+          ];
+      ]
+  in
+  expect_ir_error "uses undefined value 4" undefined_value;
+  let wrong_value_claim =
+    ir_module
+      [
+        ir_function
+          [
+            ir_block
+              ~instrs:
+                [ Ir.Alloca (0, Ir.I8, 1); Ir.Load (1, Ir.I8, Ir.Local (0, Ir.I16), 1) ]
+              0 (Ir.Ret None);
+          ];
+      ]
+  in
+  expect_ir_error "value 0 claims the wrong type" wrong_value_claim;
+  let incomplete_phi =
+    ir_module
+      [
+        ir_function
+          [
+            ir_block 0 (Ir.CondBr (Ir.Const (Ir.I1, 1L), 1, 2));
+            ir_block 1 (Ir.Br 3);
+            ir_block 2 (Ir.Br 3);
+            ir_block
+              ~instrs:[ Ir.Phi (0, Ir.I8, [ (Ir.Const (Ir.I8, 1L), 1) ]) ]
+              3 (Ir.Ret None);
+          ];
+      ]
+  in
+  expect_ir_error "phi inputs do not match its predecessors" incomplete_phi;
+  let duplicate_phi_input =
+    ir_module
+      [
+        ir_function
+          [
+            ir_block 0 (Ir.Br 1);
+            ir_block
+              ~instrs:
+                [
+                  Ir.Phi
+                    (0, Ir.I8, [ (Ir.Const (Ir.I8, 1L), 0); (Ir.Const (Ir.I8, 2L), 0) ]);
+                ]
+              1 (Ir.Ret None);
+          ];
+      ]
+  in
+  expect_ir_error "phi has duplicate incoming block 0" duplicate_phi_input;
+  let misplaced_phi =
+    ir_module
+      [
+        ir_function
+          [
+            ir_block 0 (Ir.Br 1);
+            ir_block
+              ~instrs:
+                [
+                  Ir.Alloca (0, Ir.I8, 1);
+                  Ir.Phi (1, Ir.I8, [ (Ir.Const (Ir.I8, 1L), 0) ]);
+                ]
+              1 (Ir.Ret None);
+          ];
+      ]
+  in
+  expect_ir_error "phi after a non-phi instruction" misplaced_phi;
   assert (Ir.render lowered = Ir.render lowered);
   let unresolved_template_call =
     {
