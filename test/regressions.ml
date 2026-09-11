@@ -950,6 +950,66 @@ let () =
        \ continue } }\n");
   semantic_error "defer-continue-uninitialized" "use of uninitialized local `x`"
     "fn f() void { while true { x i64\n defer { observed i64 = x }\n continue } }\n";
+  ignore
+    (lower_of
+       "fn take(value i64) void { return }\n\
+       \ fn f() void { for value i64; true; take(value) {\n\
+       \ defer { value = 1 }\n\
+       \ continue\n\
+       \ } }\n");
+  ignore
+    (lower_of
+       "fn take(value i64) void { return }\n\
+       \ fn f() void { for value i64; true; take(value) {\n\
+       \ defer { value = 1 }\n\
+       \ } }\n");
+  semantic_error "for-step-uninitialized" "use of uninitialized local `value`"
+    "fn take(value i64) void { return }\n\
+    \ fn f() void { for value i64; true; take(value) { continue } }\n";
+  semantic_error "for-step-path-merge" "use of uninitialized local `value`"
+    "fn take(value i64) void { return }\n\
+    \ fn f(condition bool) void { for value i64; true; take(value) {\n\
+    \ if condition { value = 1 } else { continue }\n\
+    \ } }\n";
+  ignore
+    (lower_of
+       "fn f() i64 { value i64\n while true { value = 1\n break }\n return value }\n");
+  ignore
+    (lower_of
+       "fn f() i64 { value i64\n\
+       \ while true { defer { value = 1 }\n\
+       \ break }\n\
+       \ return value }\n");
+  semantic_error "conditional-loop-initialization" "use of uninitialized local `value`"
+    "fn f(condition bool) i64 { value i64\n\
+    \ while condition { value = 1\n\
+    \ break }\n\
+    \ return value }\n";
+  ignore
+    (lower_of
+       "fn f(choice i64) i64 { value i64\n\
+       \ while true { switch choice {\n\
+       \ case 0: { value = 1\n\
+       \ break }\n\
+       \ default: { value = 2\n\
+       \ break }\n\
+       \ } }\n\
+       \ return value }\n");
+  ignore
+    (lower_of
+       "fn f() i64 { value i64\n\
+       \ while true { while true { break }\n\
+       \ value = 1\n\
+       \ break }\n\
+       \ return value }\n");
+  semantic_error "switch-loop-exit-initialization" "use of uninitialized local `value`"
+    "fn f(choice i64) i64 { value i64\n\
+    \ while true { switch choice {\n\
+    \ case 0: { value = 1\n\
+    \ break }\n\
+    \ default: { break }\n\
+    \ } }\n\
+    \ return value }\n";
   semantic_error "nested-defer" "nested defer is not allowed"
     "fn f() void { defer { defer { } } }\n";
   semantic_error "defer-return" "return is not allowed inside defer"

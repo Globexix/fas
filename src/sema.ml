@@ -21,6 +21,12 @@ type checked_defer = {
   falls_through : bool;
 }
 
+type loop_init_flow = {
+  keep_defer_depth : int;
+  mutable break_states : init_state IM.t list;
+  mutable continue_states : init_state IM.t list;
+}
+
 type signature = { params : (string * Hir.ty) list; ret : Hir.ty; variadic : bool }
 type specialization_kind = Function_specialization | Struct_specialization
 
@@ -128,7 +134,7 @@ type context = {
   mutable string_ids : (string * int) list;
   ret_ty : Hir.ty;
   mutable loop_depth : int;
-  mutable loop_defer_depths : int list;
+  mutable loop_init_flows : loop_init_flow list;
   mutable in_defer : bool;
   mutable collecting_defer : deferred_requirement list option;
   mutable defer_scopes : checked_defer list list;
@@ -1072,12 +1078,21 @@ let validate_defer_scopes c keep =
   in
   run count c.defer_scopes
 
-let validate_exit_defers c keep =
+let exit_defer_state c keep =
   let before = c.initialized in
   let result = validate_defer_scopes c keep in
+  let after = c.initialized in
   c.initialized <- before;
-  let* _ = result in
+  let* falls_through = result in
+  Ok (if falls_through then Some after else None)
+
+let validate_exit_defers c keep =
+  let* _ = exit_defer_state c keep in
   Ok ()
+
+let merge_flow_states c = function
+  | [] -> None
+  | state :: states -> Some (List.fold_left (merge_maps c) state states)
 
 let mark_init binding c = set_state c binding [] Full
 
@@ -2742,15 +2757,26 @@ and check_stmt (c : context) = function
       else
         let before = c.initialized in
         let before_falls = c.falls_through in
+        let loop_flow =
+          {
+            keep_defer_depth = List.length c.defer_scopes;
+            break_states = [];
+            continue_states = [];
+          }
+        in
         c.loop_depth <- c.loop_depth + 1;
-        c.loop_defer_depths <- List.length c.defer_scopes :: c.loop_defer_depths;
+        c.loop_init_flows <- loop_flow :: c.loop_init_flows;
         c.falls_through <- true;
         let checked = check_block c b in
         c.loop_depth <- c.loop_depth - 1;
-        c.loop_defer_depths <- List.tl c.loop_defer_depths;
+        c.loop_init_flows <- List.tl c.loop_init_flows;
         let* tb = checked in
-        c.initialized <- before;
-        c.falls_through <- before_falls;
+        let exit_states =
+          if Hir.condition_is_true tq then loop_flow.break_states
+          else before :: loop_flow.break_states
+        in
+        c.initialized <- Option.value ~default:before (merge_flow_states c exit_states);
+        c.falls_through <- before_falls && exit_states <> [];
         Ok (Hir.While (tq, tb, s))
   | Ast.For (i, q, step, b, s) ->
       push c;
@@ -2772,13 +2798,26 @@ and check_stmt (c : context) = function
         in
         let before = c.initialized in
         let before_falls = c.falls_through in
+        let loop_flow =
+          {
+            keep_defer_depth = List.length c.defer_scopes;
+            break_states = [];
+            continue_states = [];
+          }
+        in
         c.loop_depth <- c.loop_depth + 1;
-        c.loop_defer_depths <- List.length c.defer_scopes :: c.loop_defer_depths;
+        c.loop_init_flows <- loop_flow :: c.loop_init_flows;
         c.falls_through <- true;
         let body_result = check_block c b in
         let* tb = body_result in
-        c.initialized <- before;
-        c.falls_through <- true;
+        let body_state = c.initialized in
+        let step_states =
+          if (Hir.block_flow tb).falls_through then
+            body_state :: loop_flow.continue_states
+          else loop_flow.continue_states
+        in
+        c.initialized <- Option.value ~default:before (merge_flow_states c step_states);
+        c.falls_through <- step_states <> [];
         let* ts =
           match step with
           | None -> Ok None
@@ -2786,10 +2825,19 @@ and check_stmt (c : context) = function
               let* y = check_stmt c x in
               Ok (Some y)
         in
-        c.initialized <- before;
-        c.falls_through <- before_falls;
+        let unconditional =
+          match tq with
+          | None -> true
+          | Some condition -> Hir.condition_is_true condition
+        in
+        let exit_states =
+          if unconditional then loop_flow.break_states
+          else before :: loop_flow.break_states
+        in
+        c.initialized <- Option.value ~default:before (merge_flow_states c exit_states);
+        c.falls_through <- before_falls && exit_states <> [];
         c.loop_depth <- c.loop_depth - 1;
-        c.loop_defer_depths <- List.tl c.loop_defer_depths;
+        c.loop_init_flows <- List.tl c.loop_init_flows;
         Ok (Hir.For (ti, tq, ts, tb, s))
       in
       pop c;
@@ -2857,18 +2905,31 @@ and check_stmt (c : context) = function
         c.falls_through <- List.exists (fun value -> value) !branch_falls;
         if not before_falls then c.falls_through <- false;
         Ok (Hir.Switch (te, ta, td, s))
-  | Ast.Break s ->
+  | Ast.Break s -> (
       if c.in_defer then error s "break is not allowed inside defer"
       else if c.loop_depth = 0 then error s "break outside loop"
       else
-        let* () = validate_exit_defers c (List.hd c.loop_defer_depths) in
-        Ok (Hir.Break s)
-  | Ast.Continue s ->
+        match c.loop_init_flows with
+        | loop_flow :: _ ->
+            let* state = exit_defer_state c loop_flow.keep_defer_depth in
+            Option.iter
+              (fun state -> loop_flow.break_states <- state :: loop_flow.break_states)
+              state;
+            Ok (Hir.Break s)
+        | [] -> error s "internal error: missing loop initialization flow")
+  | Ast.Continue s -> (
       if c.in_defer then error s "continue is not allowed inside defer"
       else if c.loop_depth = 0 then error s "continue outside loop"
       else
-        let* () = validate_exit_defers c (List.hd c.loop_defer_depths) in
-        Ok (Hir.Continue s)
+        match c.loop_init_flows with
+        | loop_flow :: _ ->
+            let* state = exit_defer_state c loop_flow.keep_defer_depth in
+            Option.iter
+              (fun state ->
+                loop_flow.continue_states <- state :: loop_flow.continue_states)
+              state;
+            Ok (Hir.Continue s)
+        | [] -> error s "internal error: missing loop initialization flow")
   | Ast.Defer (xs, s) ->
       if c.in_defer then error s "nested defer is not allowed"
       else
@@ -3409,7 +3470,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
       string_ids = [];
       ret_ty;
       loop_depth = 0;
-      loop_defer_depths = [];
+      loop_init_flows = [];
       in_defer = false;
       collecting_defer = None;
       defer_scopes = [];
@@ -5111,7 +5172,7 @@ let check ?(limits = Limits.default) program =
       string_ids = List.mapi (fun i value -> (value, i)) !all_strings;
       ret_ty;
       loop_depth = 0;
-      loop_defer_depths = [];
+      loop_init_flows = [];
       in_defer = false;
       collecting_defer = None;
       defer_scopes = [];
