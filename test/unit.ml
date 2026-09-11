@@ -18,6 +18,76 @@ let () =
   assert (Limits.default.max_specializations = 10_000);
   assert (Limits.default.max_specialization_depth = 64);
   assert (Limits.default.max_aggregate_elements = 1_000_000);
+  assert (Limits.default.max_object_alignment = 1_048_576);
+  let aligned_program =
+    expect_ok
+      (Parser.parse
+         (source "struct Aligned @align(16) { value u8 }\nfn f() void { return }\n"))
+  in
+  ignore
+    (expect_ok
+       (Sema.check
+          ~limits:{ Limits.default with max_object_alignment = 16 }
+          aligned_program));
+  (match
+     Sema.check ~limits:{ Limits.default with max_object_alignment = 8 } aligned_program
+   with
+  | Error diagnostics ->
+      assert (
+        contains
+          (Diag.render_all ~source:None diagnostics)
+          "alignment exceeds compiler budget of 8")
+  | Ok _ -> assert false);
+  let target_alignment_program =
+    expect_ok (Parser.parse (source "struct Invalid @align(4294967296) { value u8 }\n"))
+  in
+  (match
+     Sema.check
+       ~limits:{ Limits.default with max_object_alignment = 8 }
+       target_alignment_program
+   with
+  | Error diagnostics ->
+      assert (
+        contains
+          (Diag.render_all ~source:None diagnostics)
+          "alignment exceeds target maximum of 2147483648")
+  | Ok _ -> assert false);
+  let natural_alignment_program =
+    expect_ok (Parser.parse (source "fn f() void { value vec[16,u8]\n return }\n"))
+  in
+  ignore
+    (expect_ok
+       (Sema.check
+          ~limits:{ Limits.default with max_object_alignment = 16 }
+          natural_alignment_program));
+  (match
+     Sema.check
+       ~limits:{ Limits.default with max_object_alignment = 8 }
+       natural_alignment_program
+   with
+  | Error diagnostics ->
+      assert (
+        contains
+          (Diag.render_all ~source:None diagnostics)
+          "alignment exceeds compiler budget of 8")
+  | Ok _ -> assert false);
+  let generic_alignment_program =
+    expect_ok
+      (Parser.parse
+         (source
+            "struct Box[T] { value T }\nfn f(value Box[vec[16,u8]]) void { return }\n"))
+  in
+  (match
+     Sema.check
+       ~limits:{ Limits.default with max_object_alignment = 8 }
+       generic_alignment_program
+   with
+  | Error diagnostics ->
+      assert (
+        contains
+          (Diag.render_all ~source:None diagnostics)
+          "alignment exceeds compiler budget of 8")
+  | Ok _ -> assert false);
   let aggregate_budget_program =
     expect_ok
       (Parser.parse

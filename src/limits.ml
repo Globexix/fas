@@ -7,6 +7,7 @@ type t = {
   max_specializations : int;
   max_specialization_depth : int;
   max_aggregate_elements : int;
+  max_object_alignment : int;
 }
 
 let budget_version_name = function V0_15 -> "0.15"
@@ -21,6 +22,7 @@ let for_budget_version = function
         max_specializations = 10_000;
         max_specialization_depth = 64;
         max_aggregate_elements = 1_000_000;
+        max_object_alignment = 1_048_576;
       }
 
 let default = for_budget_version default_budget_version

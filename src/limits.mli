@@ -7,6 +7,7 @@ type t = {
   max_specializations : int;
   max_specialization_depth : int;
   max_aggregate_elements : int;
+  max_object_alignment : int;
 }
 
 val budget_version_name : budget_version -> string

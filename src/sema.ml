@@ -434,6 +434,22 @@ let aggregate_within_limit limits structs ty =
   in
   Option.is_some (count [] ty)
 
+let validate_object_limits limits structs span ty =
+  let* () =
+    object_type structs ty
+    |> Result.map_error (fun message -> [ Diag.error span message ])
+  in
+  let* _, alignment = layout_diag span structs ty in
+  let* () =
+    if alignment <= limits.Limits.max_object_alignment then Ok ()
+    else
+      error span
+        (Printf.sprintf "alignment exceeds compiler budget of %d"
+           limits.Limits.max_object_alignment)
+  in
+  if aggregate_within_limit limits structs ty then Ok ty
+  else error span "aggregate element count exceeds the configured limit"
+
 let parse_integer raw =
   let clean = String.concat "" (String.split_on_char '_' raw) in
   let radix, digits =
@@ -2656,13 +2672,7 @@ and check_stmt (c : context) = function
   | Ast.Let { name; ty; init; raw; span } ->
       let* () = ensure_new_local name c span in
       let* t = source_ty_in_context c span ty in
-      let* () =
-        object_type c.structs t |> Result.map_error (fun m -> [ Diag.error span m ])
-      in
-      let* () =
-        if aggregate_within_limit c.limits c.structs t then Ok ()
-        else error span "aggregate element count exceeds the configured limit"
-      in
+      let* _ = validate_object_limits c.limits c.structs span t in
       let* x =
         match init with
         | None -> Ok None
@@ -4909,8 +4919,15 @@ let check ?(limits = Limits.default) program =
   let* named_types = collect_named_types [] [] program.Ast.items in
   let validate_struct_alignment span = function
     | Some a ->
-        Target_layout.validate_type_alignment Target_layout.current a
-        |> Result.map_error (fun message -> [ Diag.error span message ])
+        let* () =
+          Target_layout.validate_type_alignment Target_layout.current a
+          |> Result.map_error (fun message -> [ Diag.error span message ])
+        in
+        if a <= limits.Limits.max_object_alignment then Ok ()
+        else
+          error span
+            (Printf.sprintf "alignment exceeds compiler budget of %d"
+               limits.Limits.max_object_alignment)
     | None -> Ok ()
   in
   let* () =
@@ -5014,17 +5031,11 @@ let check ?(limits = Limits.default) program =
         build structs_src (s :: acc) xs
   in
   let* structs = build structs_src [] structs_src in
-  let source_obj t =
+  let source_obj span t =
     let* t =
-      source_ty named_types t
-      |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
+      source_ty named_types t |> Result.map_error (fun m -> [ Diag.error span m ])
     in
-    let* () =
-      object_type structs t
-      |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
-    in
-    if aggregate_within_limit limits structs t then Ok t
-    else error Span.synthetic "aggregate element count exceeds the configured limit"
+    validate_object_limits limits structs span t
   in
   let map_params convert params =
     Result_list.map
@@ -5041,7 +5052,7 @@ let check ?(limits = Limits.default) program =
           || List.exists (fun (n, _, _) -> n = name) !arrays
         then error span (Printf.sprintf "duplicate const `%s`" name)
         else
-          let* t = source_obj ty in
+          let* t = source_obj span ty in
           match (t, value) with
           | Hir.Array (n, elem), Ast.Array_lit (xs, _) ->
               if List.length xs <> n then error span "const array length mismatch"
@@ -5089,27 +5100,17 @@ let check ?(limits = Limits.default) program =
   let* named_types = collect_named_types [] [] program.Ast.items in
   let* structs_src = collect_structs named_types [] program.Ast.items in
   let* structs = build structs_src [] structs_src in
-  let validate_object span t =
-    let* () =
-      object_type structs t |> Result.map_error (fun m -> [ Diag.error span m ])
-    in
-    if aggregate_within_limit limits structs t then Ok t
-    else error span "aggregate element count exceeds the configured limit"
-  in
-  let source_obj t =
-    let* t =
-      source_ty named_types t
-      |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
-    in
-    validate_object Span.synthetic t
+  let validate_object span t = validate_object_limits limits structs span t in
+  let source_obj span t =
+    let* t = source_ty_diag named_types span t in
+    validate_object span t
   in
   let source_return span t =
     let* t = source_ty_diag named_types span t in
     if t = Hir.Void then Ok t else validate_object span t
   in
   let source_params =
-    map_params (fun (param : Ast.param) ->
-        source_ty_diag named_types param.span param.ty)
+    map_params (fun (param : Ast.param) -> source_obj param.span param.ty)
   in
   let sigs = ref [] and declared_functions = ref [] in
   let* () =
@@ -5142,7 +5143,9 @@ let check ?(limits = Limits.default) program =
               else if generic_params <> [] then Ok ()
               else
                 let* ps =
-                  map_params (fun (param : Ast.param) -> source_obj param.ty) params
+                  map_params
+                    (fun (param : Ast.param) -> source_obj param.span param.ty)
+                    params
                 in
                 let* rt = source_return span ret in
                 let* () =
