@@ -366,21 +366,6 @@ let validate_function_params generic_params params =
 let equal = Hir.ty_equal
 let ty_name = Hir.ty_name
 
-let rec object_type (structs : Hir.struct_def list) = function
-  | Hir.Void -> Error "void is not an object type"
-  | Hir.Opaque n -> Error ("opaque type `" ^ n ^ "` may only be used behind a pointer")
-  | Hir.Ptr _ | Hir.ConstPtr _ | Hir.Bool | Hir.Int _ -> Ok ()
-  | Hir.Array (n, t) ->
-      if n < 0 then Error "negative array length" else object_type structs t
-  | Hir.Vec (n, t) when n > 0 -> (
-      match t with
-      | Hir.Int _ | Hir.Bool | Hir.Ptr _ | Hir.ConstPtr _ -> Ok ()
-      | _ -> Error "vector element type must be a scalar (bool, integer, or pointer)")
-  | Hir.Vec _ -> Error "vector lane count must be positive"
-  | Hir.Struct n ->
-      if List.exists (fun (s : Hir.struct_def) -> s.name = n) structs then Ok ()
-      else Error ("unknown struct `" ^ n ^ "`")
-
 let extern_c_value_type = function
   | Hir.Bool | Hir.Int _ | Hir.Ptr _ | Hir.ConstPtr _ -> true
   | Hir.Void | Hir.Array _ | Hir.Vec _ | Hir.Struct _ | Hir.Opaque _ -> false
@@ -404,58 +389,6 @@ let validate_extern_c_signature span params converted ret =
     error span
       (Printf.sprintf "extern \"C\" cannot return `%s` by value; use an output pointer"
          (Hir.ty_name ret))
-
-let aggregate_within_limit limits structs ty =
-  let max_elements = limits.Limits.max_aggregate_elements in
-  let rec count visiting = function
-    | Hir.Array (n, t) | Hir.Vec (n, t) -> (
-        if n = 0 then Some 0
-        else
-          match count visiting t with
-          | Some elements when elements = 0 || n <= max_elements / elements ->
-              Some (n * elements)
-          | Some _ | None -> None)
-    | Hir.Struct name -> (
-        if List.mem name visiting then None
-        else
-          let visiting = name :: visiting in
-          match List.find_opt (fun (s : Hir.struct_def) -> s.name = name) structs with
-          | Some definition ->
-              List.fold_left
-                (fun total (field : Hir.field) ->
-                  match (total, count visiting field.ty) with
-                  | Some total, Some field_count
-                    when field_count <= max_elements - total ->
-                      Some (total + field_count)
-                  | Some _, Some _ | None, _ | _, None -> None)
-                (Some 0) definition.fields
-          | None -> Some 1)
-    | _ -> if max_elements >= 1 then Some 1 else None
-  in
-  Option.is_some (count [] ty)
-
-let validate_object_limits limits structs span ty =
-  let* () =
-    object_type structs ty
-    |> Result.map_error (fun message -> [ Diag.error span message ])
-  in
-  let* size, alignment = layout_diag span structs ty in
-  let* () =
-    if alignment <= limits.Limits.max_object_alignment then Ok ()
-    else
-      error span
-        (Printf.sprintf "alignment exceeds compiler budget of %d"
-           limits.Limits.max_object_alignment)
-  in
-  let* () =
-    if size <= limits.Limits.max_object_size then Ok ()
-    else
-      error span
-        (Printf.sprintf "object size exceeds compiler budget of %d bytes"
-           limits.Limits.max_object_size)
-  in
-  if aggregate_within_limit limits structs ty then Ok ty
-  else error span "aggregate element count exceeds the configured limit"
 
 let parse_integer raw =
   let clean = String.concat "" (String.split_on_char '_' raw) in
@@ -2679,7 +2612,7 @@ and check_stmt (c : context) = function
   | Ast.Let { name; ty; init; raw; span } ->
       let* () = ensure_new_local name c span in
       let* t = source_ty_in_context c span ty in
-      let* _ = validate_object_limits c.limits c.structs span t in
+      let* _ = Sema_limits.validate_object c.limits c.structs span t in
       let* x =
         match init with
         | None -> Ok None
@@ -4924,19 +4857,6 @@ let check ?(limits = Limits.default) program =
     | _ :: rest -> collect_named_types seen acc rest
   in
   let* named_types = collect_named_types [] [] program.Ast.items in
-  let validate_struct_alignment span = function
-    | Some a ->
-        let* () =
-          Target_layout.validate_type_alignment Target_layout.current a
-          |> Result.map_error (fun message -> [ Diag.error span message ])
-        in
-        if a <= limits.Limits.max_object_alignment then Ok ()
-        else
-          error span
-            (Printf.sprintf "alignment exceeds compiler budget of %d"
-               limits.Limits.max_object_alignment)
-    | None -> Ok ()
-  in
   let* () =
     Result_list.iter
       (function
@@ -4999,11 +4919,11 @@ let check ?(limits = Limits.default) program =
   let rec collect_structs named_types acc = function
     | [] -> Ok (List.rev acc)
     | Ast.Struct { generic_params = _ :: _; align; span; _ } :: rest ->
-        let* () = validate_struct_alignment span align in
+        let* () = Sema_limits.validate_struct_alignment limits span align in
         collect_structs named_types acc rest
     | Ast.Struct { name; fields; align; span; _ } :: rest ->
         let result =
-          let* () = validate_struct_alignment span align in
+          let* () = Sema_limits.validate_struct_alignment limits span align in
           let rec collect_fields seen out = function
             | [] -> Ok (List.rev out)
             | (f : Ast.field) :: fields ->
@@ -5047,7 +4967,7 @@ let check ?(limits = Limits.default) program =
     let* t =
       source_ty named_types t |> Result.map_error (fun m -> [ Diag.error span m ])
     in
-    validate_object_limits limits structs span t
+    Sema_limits.validate_object limits structs span t
   in
   let map_params convert params =
     Result_list.map
@@ -5112,7 +5032,7 @@ let check ?(limits = Limits.default) program =
   let* named_types = collect_named_types [] [] program.Ast.items in
   let* structs_src = collect_structs named_types [] program.Ast.items in
   let* structs = build structs_src in
-  let validate_object span t = validate_object_limits limits structs span t in
+  let validate_object span t = Sema_limits.validate_object limits structs span t in
   let source_obj span t =
     let* t = source_ty_diag named_types span t in
     validate_object span t
