@@ -20,6 +20,15 @@ let () =
   assert (Limits.default.max_aggregate_elements = 1_000_000);
   assert (Limits.default.max_object_alignment = 1_048_576);
   assert (Limits.default.max_object_size = 1_073_741_824);
+  assert (Target_layout.pointer_integer_bits Target_layout.current = Ok 64);
+  assert (
+    Target_layout.pointer_integer_bits
+      { Target_layout.current with pointer_size = 4; pointer_align = 4 }
+    = Ok 32);
+  assert (
+    Target_layout.pointer_integer_bits
+      { Target_layout.current with pointer_size = 16; pointer_align = 16 }
+    = Error "unsupported pointer size: 16");
   let layout_declarations =
     [
       ("Leaf", [ ("value", Hir.Int Hir.U8) ], None);

@@ -439,7 +439,8 @@ let () =
   semantic_error "constant-vector-dead-ternary-type" "type mismatch"
     "const Invalid vec[4,u8] = true ? splat(7) : splat(true)\n\
      fn main() i32 { return 0 }\n";
-  ignore (llvm_of "fn f() bool { return 0 && (1 / 0 == 0) }\n");
+  semantic_error "runtime-logical-integer-left" "logical operands must be bool"
+    "fn f() bool { return 0 && (1 / 0 == 0) }\n";
   let integer_vector_comparisons =
     llvm_of
       "fn signed(left vec[4,i32], right vec[4,i32]) bool {\n\
@@ -482,13 +483,13 @@ let () =
     "fn f(left vec[4,i32], right i32) vec[4,bool] { return left == right }\n";
   semantic_error "integer-vector-comparison-bool-order" "requires integer operands"
     "fn f(left vec[4,bool], right vec[4,bool]) vec[4,bool] { return left < right }\n";
-  semantic_error "integer-vector-comparison-condition" "if condition must be scalar"
+  semantic_error "integer-vector-comparison-condition" "if condition must be bool"
     "fn f(left vec[4,i32], right vec[4,i32]) i32 {\n\
     \ if left == right { return 1 }\n\
     \ return 0\n\
      }\n";
   semantic_error "integer-vector-comparison-no-reduction"
-    "logical operands must be scalar"
+    "logical operands must be bool"
     "fn f(left vec[4,i32], right vec[4,i32]) vec[4,bool] {\n\
     \ return (left == right) && (left != right)\n\
      }\n";
@@ -720,7 +721,11 @@ let () =
   | call :: _, first :: second :: _ when first < call && call < second -> ()
   | _ -> failwith "vector-lane-compound: rhs was not between vector loads");
   semantic_error "place-init-short-circuit-escape" "use of uninitialized local `s`"
-    "struct S { x i64 y i64 }\nfn f() i64 { s S\n true || &s\n t S = s\n return 0 }\n";
+    "struct S { x i64 y i64 }\n\
+     fn f() i64 { s S\n\
+    \ true || (&s != null)\n\
+    \ t S = s\n\
+    \ return 0 }\n";
   ignore
     (lower_of
        "struct S { x i64 y i64 }\n\
@@ -732,14 +737,14 @@ let () =
        \ return 0 }\n");
   semantic_error "place-init-ternary-escape" "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\n\
-     fn f(p i64) i64 { s S\n\
+     fn f(p bool) i64 { s S\n\
     \ q ptr[S] = p ? &s : null\n\
      t S = s\n\
     \ return 0 }\n";
   semantic_error "place-init-ternary-cross-arm" "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\n\
      fn choose(p ptr[S], x S) S { return x }\n\
-     fn f(p i64) i64 { s S\n\
+     fn f(p bool) i64 { s S\n\
     \ t S = p ? choose(&s, s) : s\n\
     \ return 0 }\n";
   semantic_error "place-init-binding-identity" "use of uninitialized local `x`"
@@ -820,11 +825,11 @@ let () =
   semantic_error "aggregate-direct-return" "use of uninitialized local `s`"
     "struct S { x i64 }\nfn f() S { s S\nreturn s }\n";
   semantic_error "aggregate-branch-no-else" "use of uninitialized local `s`"
-    "struct S { x i64 }\nfn f(p i64) i64 { s S\nif p { s.x = 1 }\nreturn s.x }\n";
+    "struct S { x i64 }\nfn f(p bool) i64 { s S\nif p { s.x = 1 }\nreturn s.x }\n";
   ignore
     (lower_of
        "struct S { x i64 y i64 }\n\
-        fn f(p i64) i64 { s S\n\
+        fn f(p bool) i64 { s S\n\
        \ if p { s.x = 1\n\
        \ s.y = 2 } else { s.x = 3\n\
        \ s.y = 4 }\n\
@@ -887,41 +892,41 @@ let () =
        \ return 0 }\n");
   semantic_error "aggregate-branch-partial" "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\n\
-     fn f(p i64) i64 { s S\n\
+     fn f(p bool) i64 { s S\n\
      if p { s.x = 1 } else { s.y = 2 }\n\
     \ return s.x }\n";
   ignore
     (lower_of
        "struct S { x i64 y i64 }\n\
-        fn f(p i64) i64 { s S\n\
+        fn f(p bool) i64 { s S\n\
         if p { s.x = 1 } else { return 0 }\n\
        \ return s.x }\n");
   semantic_error "aggregate-loop-only" "use of uninitialized local `s`"
-    "struct S { x i64 }\nfn f(p i64) i64 { s S\n while p { s.x = 1 }\n return s.x }\n";
+    "struct S { x i64 }\nfn f(p bool) i64 { s S\n while p { s.x = 1 }\n return s.x }\n";
   ignore
     (lower_of
        "struct S { x i64 y i64 }\n\
         fn take(p ptr[S]) void { return }\n\
-        fn f(p i64) i64 { s S\n\
+        fn f(p bool) i64 { s S\n\
        \ if p { take(&s) } else { s.x = 1 }\n\
         return s.x }\n");
   semantic_error "aggregate-branch-raw-missing-field" "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\n\
      fn take(p ptr[S]) void { return }\n\
-     fn f(p i64) i64 { s S\n\
+     fn f(p bool) i64 { s S\n\
     \ if p { take(&s) } else { s.x = 1 }\n\
      return s.y }\n";
   semantic_error "aggregate-branch-raw-whole" "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\n\
      fn take(p ptr[S]) void { return }\n\
-     fn f(p i64) i64 { s S\n\
+     fn f(p bool) i64 { s S\n\
     \ if p { take(&s) } else { s.x = 1 }\n\
      t S = s\n\
     \ return 0 }\n";
   semantic_error "aggregate-compound-read" "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\nfn f() i64 { s S\n s.x += 1\n return 0 }\n";
   semantic_error "place-init-after-return" "use of uninitialized local `x`"
-    "fn f(p i64) i64 { x i64\n if p { return 0\n x = 1 }\n return x }\n";
+    "fn f(p bool) i64 { x i64\n if p { return 0\n x = 1 }\n return x }\n";
   semantic_error "place-init-after-break" "use of uninitialized local `x`"
     "fn f() i64 { x i64\n while true { break\n x = 1 }\n return x }\n";
   semantic_error "place-init-after-continue" "use of uninitialized local `x`"
@@ -1637,10 +1642,10 @@ let () =
     (lower_of "fn choose(value bool) i64 { if (value){ return 1 } else { return 0 } }\n");
   ignore
     (lower_of
-       "fn controls(value i64) i64 {\n\
-        while (value){ break }\n\
+       "fn controls(value i64, condition bool) i64 {\n\
+        while (condition){ break }\n\
         switch (value){ case 0: { return 0 } default: { } }\n\
-        for ; value; (value){ break }\n\
+        for ; condition; (value){ break }\n\
         return value\n\
         }\n");
   semantic_error "fas-005-void-ternary" "ternary arms cannot have void type"
@@ -4191,6 +4196,22 @@ let () =
               Span.synthetic ),
           Span.synthetic );
     ];
+  lower_function_error "lower-logical-not-type"
+    "internal error: logical not has a non-bool type" []
+    [
+      Hir.Expr
+        ( Hir.Unary
+            ( Ast.Not,
+              Hir.EInt (1L, Hir.Int Hir.I64, Span.synthetic),
+              Hir.Int Hir.I64,
+              Span.synthetic ),
+          Span.synthetic );
+    ];
+  lower_function_error "lower-condition-type"
+    "internal error: condition lowering received a non-bool value" []
+    [
+      Hir.If (Hir.EInt (1L, Hir.Int Hir.I64, Span.synthetic), [], None, Span.synthetic);
+    ];
 
   (match
      Lower.lower
@@ -4246,18 +4267,50 @@ let () =
     "division by zero is not a defined runtime operation"
     "fn f() bool { return true && (1 / 0 == 0) }\n";
 
-  (match
-     Sema.check (expect_ok (Parser.parse (source "const B bool = 1 && true\n")))
-   with
-  | Ok _ -> ()
-  | Error diagnostics ->
-      failwith
-        ("const-logical-mixed: unexpected diagnostic: "
-        ^ Diag.render_all ~source:None diagnostics));
-
-  let mixed_runtime = llvm_of "fn f() bool { return 1 && true }\n" in
-  if not (contains mixed_runtime "phi") then
-    failwith "runtime-logical-mixed: short-circuit lowering missing";
+  semantic_error "const-logical-bool-only" "logical operands must be bool"
+    "const B bool = 1 && true\n";
+  semantic_error "runtime-logical-bool-only" "logical operands must be bool"
+    "fn f() bool { return 1 && true }\n";
+  semantic_error "logical-not-integer" "logical not requires bool or a bool vector"
+    "fn f(value i64) bool { return !value }\n";
+  semantic_error "logical-not-integer-vector"
+    "logical not requires bool or a bool vector"
+    "fn f(value vec[4,i64]) vec[4,bool] { return !value }\n";
+  semantic_error "if-condition-bool-only" "if condition must be bool"
+    "fn f(value i64) i64 { if value { return 1 } return 0 }\n";
+  semantic_error "while-condition-bool-only" "while condition must be bool"
+    "fn f(value ptr[i64]) void { while value { break } }\n";
+  semantic_error "for-condition-bool-only" "for condition must be bool"
+    "fn f() void { for ; 1; (1) { break } }\n";
+  semantic_error "ternary-condition-bool-only" "ternary condition must be bool"
+    "fn f(value i64) i64 { return value ? 1 : 0 }\n";
+  semantic_error "constant-ternary-condition-bool-only" "ternary condition must be bool"
+    "const X i64 = 1 ? 2 : 3\n";
+  ignore
+    (llvm_of
+       "const Explicit bool = (1 != 0) && true\n\
+        fn integer(value i64) i64 {\n\
+       \ if value != 0 { return (value != 0) ? 1 : 0 }\n\
+       \ return 0\n\
+       \ }\n\
+        fn pointer(value ptr[i64]) bool {\n\
+       \ while value != null { break }\n\
+       \ return value != null\n\
+       \ }\n\
+        fn counted(value i64) i64 {\n\
+       \ for ; value != 0; (value) { break }\n\
+       \ return value\n\
+       \ }\n");
+  let vector_logical_not =
+    llvm_of
+      "const Clear vec[4,bool] = splat(false)\n\
+       const Set vec[4,bool] = !Clear\n\
+       fn invert(value vec[4,bool]) vec[4,bool] { return !value }\n\
+       fn clear() vec[4,bool] { return !splat(true) }\n\
+       fn first() bool { return Set[0] }\n"
+  in
+  if not (contains vector_logical_not "xor <4 x i1>") then
+    failwith "vector-logical-not: mask lowering missing";
   ignore
     (llvm_of
        "struct Pair[T] { left T right T }\n\

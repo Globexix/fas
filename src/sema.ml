@@ -425,7 +425,10 @@ and check_expr (c : context) expected = function
   | Ast.Unary (op, e, s) -> (
       let* te =
         check_expr c
-          (match op with Ast.Neg | Ast.Bit_not -> expected | Ast.Not -> None)
+          (match (op, expected) with
+          | (Ast.Neg | Ast.Bit_not), _ -> expected
+          | Ast.Not, Some (Hir.Vec (_, Hir.Bool)) -> expected
+          | Ast.Not, _ -> None)
           e
       in
       match op with
@@ -434,9 +437,12 @@ and check_expr (c : context) expected = function
             error s "integer unary operator requires an integer"
           else Ok (Hir.Unary (op, te, Hir.expr_ty te, s))
       | Ast.Not ->
-          if not (is_truthy (Hir.expr_ty te)) then
-            error s "logical not requires a scalar"
-          else Ok (Hir.Unary (op, te, Hir.Bool, s)))
+          let result_ty = Hir.expr_ty te in
+          if
+            result_ty = Hir.Bool
+            || match result_ty with Hir.Vec (_, Hir.Bool) -> true | _ -> false
+          then Ok (Hir.Unary (op, te, result_ty, s))
+          else error s "logical not requires bool or a bool vector")
   | Ast.Binary (op, l, r, s) ->
       if op = Ast.And || op = Ast.Or then (
         let* a = check_expr c None l in
@@ -451,9 +457,9 @@ and check_expr (c : context) expected = function
         let* b = with_dead_check c dead (fun () -> check_expr c None r) in
         let after_right = Sema_flow.snapshot c.flow in
         Sema_flow.restore c.flow (merge_maps c after_left after_right);
-        if is_truthy (Hir.expr_ty a) && is_truthy (Hir.expr_ty b) then
+        if Hir.expr_ty a = Hir.Bool && Hir.expr_ty b = Hir.Bool then
           Ok (Hir.Binary (op, a, b, Hir.Bool, s))
-        else error s "logical operands must be scalar")
+        else error s "logical operands must be bool")
       else
         let* a, b =
           match l with
@@ -588,8 +594,7 @@ and check_expr (c : context) expected = function
       | _ -> error s "splat requires a vector type context")
   | Ast.Ternary (q, a, b, s) -> (
       let* tq = check_expr c None q in
-      if not (is_truthy (Hir.expr_ty tq)) then
-        error s "ternary condition must be scalar"
+      if Hir.expr_ty tq <> Hir.Bool then error s "ternary condition must be bool"
       else
         let before_arms = Sema_flow.snapshot c.flow in
         let condition =
@@ -1104,7 +1109,7 @@ and check_stmt (c : context) = function
       Ok (Hir.Block (x, s))
   | Ast.If (q, a, b, s) ->
       let* tq = check_expr c None q in
-      if not (is_truthy (Hir.expr_ty tq)) then error s "if condition must be scalar"
+      if Hir.expr_ty tq <> Hir.Bool then error s "if condition must be bool"
       else
         let before = Sema_flow.snapshot c.flow in
         let before_falls = Sema_flow.falls_through c.flow in
@@ -1133,7 +1138,7 @@ and check_stmt (c : context) = function
         Ok (Hir.If (tq, ta, tb, s))
   | Ast.While (q, b, s) ->
       let* tq = check_expr c None q in
-      if not (is_truthy (Hir.expr_ty tq)) then error s "while condition must be scalar"
+      if Hir.expr_ty tq <> Hir.Bool then error s "while condition must be bool"
       else
         let loop = Sema_flow.begin_loop c.flow in
         let checked = check_block c b in
@@ -1156,8 +1161,8 @@ and check_stmt (c : context) = function
           | None -> Ok None
           | Some x ->
               let* y = check_expr c None x in
-              if is_truthy (Hir.expr_ty y) then Ok (Some y)
-              else error (Ast.expr_span x) "for condition must be scalar"
+              if Hir.expr_ty y = Hir.Bool then Ok (Some y)
+              else error (Ast.expr_span x) "for condition must be bool"
         in
         let loop = Sema_flow.begin_loop c.flow in
         let body_result = check_block c b in
@@ -1961,8 +1966,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
       validate_non_dependent_expression c dependent None expression
     else
       let* checked = check_expr c None expression in
-      if is_truthy (Hir.expr_ty checked) then Ok ()
-      else error (Ast.expr_span expression) (label ^ " condition must be scalar")
+      if Hir.expr_ty checked = Hir.Bool then Ok ()
+      else error (Ast.expr_span expression) (label ^ " condition must be bool")
   in
   let target_mentions names = function
     | Ast.Target_ident (name, _) -> List.mem name names

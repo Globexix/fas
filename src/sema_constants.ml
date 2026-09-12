@@ -50,18 +50,19 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts exp
       in
       if not (is_int t) then error s "bitwise not requires an integer"
       else Ok (t, mask_value t (Int64.lognot v))
-  | Ast.Unary (Ast.Not, e, _) ->
-      let* _, v =
+  | Ast.Unary (Ast.Not, e, s) ->
+      let* t, v =
         const_expr ~structs ~named_types ~arrays consts None ~check_only ~validate_dead
           e
       in
-      Ok (Hir.Bool, if v = 0L then 1L else 0L)
+      if t <> Hir.Bool then error s "logical not requires bool"
+      else Ok (Hir.Bool, if v = 0L then 1L else 0L)
   | Ast.Binary (((Ast.And | Ast.Or) as op), l, r, s) ->
       let* lt, lv =
         const_expr ~structs ~named_types ~arrays consts None ~check_only ~validate_dead
           l
       in
-      if not (is_truthy lt) then error s "logical operands must be scalar"
+      if lt <> Hir.Bool then error s "logical operands must be bool"
       else if
         (not check_only) && ((op = Ast.And && lv = 0L) || (op = Ast.Or && lv <> 0L))
       then
@@ -75,7 +76,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts exp
           const_expr ~structs ~named_types ~arrays consts None ~check_only
             ~validate_dead r
         in
-        if not (is_truthy rt) then error s "logical operands must be scalar"
+        if rt <> Hir.Bool then error s "logical operands must be bool"
         else Ok (Hir.Bool, if rv <> 0L then 1L else 0L)
   | Ast.Binary (op, l, r, s) ->
       let* (lt, lv), (rt, rv) =
@@ -164,7 +165,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts exp
         const_expr ~structs ~named_types ~arrays consts None ~check_only ~validate_dead
           c
       in
-      if not (is_truthy ct) then error s "ternary condition must be scalar"
+      if ct <> Hir.Bool then error s "ternary condition must be bool"
       else if cv <> 0L then
         let* at, av =
           const_expr ~structs ~named_types ~arrays consts expected ~check_only
@@ -343,6 +344,12 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts 
           let* () = ensure_expected actual element (Ast.expr_span expression) in
           Ok (ty, List.init lanes (fun _ -> lane_mask element value))
       | _ -> error span "splat requires a vector type context")
+  | Ast.Unary (Ast.Not, value, span) -> (
+      let* ty, values = evaluate expected value in
+      match ty with
+      | Hir.Vec (_, Hir.Bool) ->
+          Ok (ty, List.map (fun value -> if value = 0L then 1L else 0L) values)
+      | _ -> error span "logical not requires a bool vector")
   | Ast.Binary (operation, left, right, span) ->
       let* left_ty, left_values = evaluate expected left in
       let* right_ty, right_values = evaluate (Some left_ty) right in
@@ -464,7 +471,7 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) consts 
       let* condition_ty, condition_value =
         const_expr ~structs ~named_types ~arrays consts None ~check_only condition
       in
-      if not (is_truthy condition_ty) then error span "ternary condition must be scalar"
+      if condition_ty <> Hir.Bool then error span "ternary condition must be bool"
       else if condition_value <> 0L then
         let* yes_ty, yes_values = evaluate expected yes in
         let* no_ty, _ =

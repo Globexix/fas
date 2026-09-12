@@ -150,8 +150,8 @@ let binary_result_type ~mismatch span operation left right =
         if Sema_numeric.is_numeric left then Ok left
         else error span "arithmetic requires integer or vector operands"
     | Ast.And | Ast.Or ->
-        if Sema_numeric.is_truthy left && Sema_numeric.is_truthy right then Ok Hir.Bool
-        else error span "logical operands must be scalar"
+        if left = Hir.Bool && right = Hir.Bool then Ok Hir.Bool
+        else error span "logical operands must be bool"
 
 let variadic_promote expression =
   match Hir.expr_ty expression with

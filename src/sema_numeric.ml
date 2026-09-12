@@ -25,7 +25,6 @@ let is_scalar = function
   | _ -> false
 
 let is_numeric = function Hir.Int _ | Hir.Vec (_, Hir.Int _) -> true | _ -> false
-let is_truthy = is_scalar
 
 let cast_legal kind from target =
   let pointer_bits = Target_layout.current.pointer_size * 8 in

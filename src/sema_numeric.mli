@@ -4,7 +4,6 @@ val is_int : Hir.ty -> bool
 val is_unsigned : Hir.ty -> bool
 val is_scalar : Hir.ty -> bool
 val is_numeric : Hir.ty -> bool
-val is_truthy : Hir.ty -> bool
 val cast_legal : Ast.cast_kind -> Hir.ty -> Hir.ty -> bool
 val parse_integer : string -> (int64, string) result
 val mask_value : Hir.ty -> int64 -> int64

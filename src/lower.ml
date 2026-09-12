@@ -66,10 +66,11 @@ let rec ty = function
   | Hir.Int Hir.U32 | Hir.Int Hir.I32 -> I32
   | Hir.Int Hir.U64 | Hir.Int Hir.I64 -> I64
   | Hir.Int Hir.Usize | Hir.Int Hir.Isize -> (
-      match Target_layout.current.pointer_size with
-      | 4 -> I32
-      | 8 -> I64
-      | size -> invalid_arg (Printf.sprintf "unsupported pointer size: %d" size))
+      match Target_layout.pointer_integer_bits Target_layout.current with
+      | Ok 32 -> I32
+      | Ok 64 -> I64
+      | Ok bits -> invalid_arg (Printf.sprintf "unsupported pointer width: %d" bits)
+      | Error message -> invalid_arg message)
   | Hir.Ptr t | Hir.ConstPtr t -> Ir.Ptr (ty t)
   | Hir.Vec (n, t) -> Ir.Vector (n, ty t)
   | Hir.Array (n, t) -> Ir.Array (n, ty t)
@@ -294,14 +295,10 @@ let emit_binary s span source_ty op ir_ty lhs rhs =
     emit s (Ir.Bin (result, binop, ir_ty, lhs, rhs));
     Ok (Ir.Local (result, ir_ty))
 
-let truth s v =
+let require_bool span v =
   match value_ty v with
-  | Ir.I1 -> v
-  | t ->
-      let id = fresh s in
-      emit s
-        (Ir.Cmp (id, Ir.Ne, t, v, match t with Ir.Ptr _ -> Ir.Null t | _ -> zero t));
-      Ir.Local (id, Ir.I1)
+  | Ir.I1 -> Ok v
+  | _ -> error span "internal error: condition lowering received a non-bool value"
 
 let bind_local s binding value =
   let old = Hashtbl.find_opt s.env binding.Hir.id in
@@ -384,11 +381,17 @@ let rec expr s = function
           let id = fresh s in
           emit s (Ir.Bin (id, Xor, rt, v, Ir.Const (rt, mask)));
           Ok (Ir.Local (id, rt))
-      | Not ->
-          let b = truth s v in
+      | Not when rt = Ir.I1 ->
           let id = fresh s in
-          emit s (Ir.Cmp (id, Ir.Eq, Ir.I1, b, Ir.Const (Ir.I1, 0L)));
-          Ok (Ir.Local (id, Ir.I1)))
+          emit s (Ir.Cmp (id, Ir.Eq, Ir.I1, v, Ir.Const (Ir.I1, 0L)));
+          Ok (Ir.Local (id, Ir.I1))
+      | Not -> (
+          match rt with
+          | Ir.Vector (_, Ir.I1) ->
+              let id = fresh s in
+              emit s (Ir.Bin (id, Ir.Xor, rt, v, value_const s rt 1L));
+              Ok (Ir.Local (id, rt))
+          | _ -> error span "internal error: logical not has a non-bool type"))
   | Hir.Binary (((Ast.And | Ast.Or) as op), a, b, _, _) -> lower_short s op a b
   | Hir.Binary (op, a, b, t, span) ->
       let* x = expr s a in
@@ -607,7 +610,7 @@ and lower_builtin s b args t span =
 
 and lower_short s op a b =
   let* lv = expr s a in
-  let lv = truth s lv in
+  let* lv = require_bool (Hir.expr_span a) lv in
   let pred = s.current.id and rhs = fresh_block s and join = fresh_block s in
   s.current.term :=
     Some
@@ -617,7 +620,7 @@ and lower_short s op a b =
            if op = Ast.And then join.id else rhs.id ));
   s.current <- rhs;
   let* rv = expr s b in
-  let rv = truth s rv in
+  let* rv = require_bool (Hir.expr_span b) rv in
   let rp = s.current.id in
   if open_block s then s.current.term := Some (Ir.Br join.id);
   s.current <- join;
@@ -634,7 +637,7 @@ and lower_short s op a b =
 
 and lower_ternary s c a b t =
   let* cv = expr s c in
-  let cv = truth s cv in
+  let* cv = require_bool (Hir.expr_span c) cv in
   let tb = fresh_block s and eb = fresh_block s and join = fresh_block s in
   s.current.term := Some (Ir.CondBr (cv, tb.id, eb.id));
   s.current <- tb;
@@ -881,7 +884,7 @@ and vector_lane s aggregate index =
 
 and lower_if s c a b =
   let* cv = expr s c in
-  let cv = truth s cv in
+  let* cv = require_bool (Hir.expr_span c) cv in
   let tb = fresh_block s and eb = fresh_block s and join = fresh_block s in
   s.current.term := Some (Ir.CondBr (cv, tb.id, eb.id));
   s.current <- tb;
@@ -903,7 +906,7 @@ and lower_while s c body =
   s.current.term := Some (Ir.Br head.id);
   s.current <- head;
   let* cv = expr s c in
-  let cv = truth s cv in
+  let* cv = require_bool (Hir.expr_span c) cv in
   s.current.term := Some (Ir.CondBr (cv, bb.id, exit.id));
   s.current <- bb;
   s.loops <-
@@ -938,7 +941,8 @@ and lower_for s init cond step body =
           Ok ()
       | Some c ->
           let* v = expr s c in
-          s.current.term := Some (Ir.CondBr (truth s v, bb.id, exit.id));
+          let* condition = require_bool (Hir.expr_span c) v in
+          s.current.term := Some (Ir.CondBr (condition, bb.id, exit.id));
           Ok ()
     in
     s.current <- bb;
@@ -1203,6 +1207,11 @@ let intrinsic_decls funcs =
   |> List.sort (fun (a : Ir.func) b -> String.compare a.name b.name)
 
 let lower (p : Hir.program) =
+  let* () =
+    match Target_layout.pointer_integer_bits Target_layout.current with
+    | Ok _ -> Ok ()
+    | Error message -> error Span.synthetic ("internal error: " ^ message)
+  in
   let no_layout t m =
     error Span.synthetic
       (Printf.sprintf "internal error: type `%s` has no layout: %s" (Hir.ty_name t) m)

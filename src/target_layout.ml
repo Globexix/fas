@@ -65,6 +65,12 @@ let validate_type_alignment target align =
       (Printf.sprintf "alignment exceeds target maximum of %d" target.max_type_alignment)
   else Ok ()
 
+let pointer_integer_bits target =
+  match target.pointer_size with
+  | 4 -> Ok 32
+  | 8 -> Ok 64
+  | size -> Error (Printf.sprintf "unsupported pointer size: %d" size)
+
 let c_integer_extension target ~signed bits =
   match
     List.find_opt
