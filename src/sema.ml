@@ -3172,21 +3172,12 @@ let check ?(limits = Limits.default) program =
         | Error _ -> None)
       base_structs_src
   in
-  let early_consts =
-    List.fold_left
-      (fun consts -> function
-        | Ast.Const { name; ty; value; _ } -> (
-            match source_ty named_types ty with
-            | Ok ty when is_int ty -> (
-                match
-                  const_expr ~structs:base_structs ~named_types consts (Some ty) value
-                with
-                | Ok (actual_ty, bits) when equal actual_ty ty ->
-                    consts @ [ (name, ty, bits) ]
-                | _ -> consts)
-            | _ -> consts)
-        | _ -> consts)
-      [] program.Ast.items
+  let* early_consts =
+    Sema_constants.resolve_scalar_declarations ~structs:base_structs ~named_types
+      ~resolve_type:(fun span ty ->
+        source_ty named_types ty
+        |> Result.map_error (fun message -> [ Diag.error span message ]))
+      ~strict:false program.Ast.items
   in
   let* program =
     monomorphize_types
@@ -3254,13 +3245,16 @@ let check ?(limits = Limits.default) program =
         Ok (param.name, ty))
       params
   in
-  let consts = ref [] and arrays = ref [] in
+  let* scalar_consts =
+    Sema_constants.resolve_scalar_declarations ~structs ~named_types
+      ~resolve_type:source_obj ~strict:true program.Ast.items
+  in
+  let consts = ref scalar_consts and arrays = ref [] in
   let eval_const_item = function
     | Ast.Const { name; ty; value; span } -> (
-        if
-          List.exists (fun (n, _, _) -> n = name) !consts
-          || List.exists (fun (n, _, _) -> n = name) !arrays
-        then error span (Printf.sprintf "duplicate const `%s`" name)
+        if List.exists (fun (n, _, _) -> n = name) !consts then Ok ()
+        else if List.exists (fun (n, _, _) -> n = name) !arrays then
+          error span (Printf.sprintf "duplicate const `%s`" name)
         else
           let* t = source_obj span ty in
           match (t, value) with

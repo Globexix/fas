@@ -2958,6 +2958,42 @@ let () =
     "extern \"C\" { fn identity[T](value T) T }\n";
   semantic_error "generic-main" "entry point `main` cannot have generic parameters"
     "fn main[T]() i64 { return 42 }\n";
+  let forward_constant_use =
+    ( "use.fas",
+      "const SIZE usize = LATER_SIZE\n\
+       const FLAG bool = LATER_FLAG\n\
+       fn main() usize { return add[SIZE](choose[FLAG]()) }\n" )
+  in
+  let forward_constant_declarations =
+    ( "declarations.fas",
+      "const LATER_SIZE usize = 3\n\
+       const LATER_FLAG bool = true\n\
+       fn add[N const usize](value usize) usize { return value + N }\n\
+       fn choose[Flag const bool]() usize {\n\
+      \ if Flag { return 4 } else { return 0 }\n\
+      \ }\n" )
+  in
+  List.iter
+    (fun files -> ignore (expect_ok (check_files files) |> Lower.lower |> expect_ok))
+    [
+      [ forward_constant_use; forward_constant_declarations ];
+      [ forward_constant_declarations; forward_constant_use ];
+    ];
+  ignore
+    (llvm_of
+       "const NARROW u8 = trunc[u8](WIDE)\n\
+        const WIDE u16 = 7\n\
+        fn value[N const u8]() u8 { return N }\n\
+        fn main() u8 { return value[NARROW]() }\n");
+  semantic_error "forward-constant-type-preservation"
+    "constant initializer type mismatch" "const NARROW u8 = WIDE\nconst WIDE u16 = 7\n";
+  semantic_error "forward-constant-cycle" "cyclic constant dependency"
+    "const LEFT usize = RIGHT\nconst RIGHT usize = LEFT\n";
+  ignore
+    (llvm_of
+       "const LEFT bool = false && RIGHT\n\
+        const RIGHT bool = LEFT\n\
+        fn main() bool { return RIGHT }\n");
   let mixed_generic_source =
     "const THREE usize = 3\n\
      struct Box[T] { value T }\n\
