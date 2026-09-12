@@ -4078,6 +4078,47 @@ let () =
              "non-void function `fallthrough` reached lowering with fallthrough")
       then failwith "lower-fallthrough: unexpected diagnostic");
 
+  let infinite_loop_ir = llvm_of "fn spin() i64 { while true { } }\n" in
+  if not (contains infinite_loop_ir "unreachable") then
+    failwith "lower-infinite-loop: proven-dead exit was not terminated";
+
+  (match
+     Lower.lower
+       {
+         Hir.structs = [];
+         consts = [];
+         const_arrays = [];
+         strings = [];
+         funcs =
+           [
+             {
+               Hir.name = "malformed_switch";
+               params = [];
+               ret = Hir.Void;
+               body =
+                 Hir.Statements
+                   [
+                     Hir.Switch
+                       ( Hir.EInt (0L, Hir.Int Hir.I32, Span.synthetic),
+                         [ (Hir.EString (0, Span.synthetic), []) ],
+                         None,
+                         Span.synthetic );
+                   ];
+               linkage = Hir.Internal;
+               variadic = false;
+             };
+           ];
+       }
+   with
+  | Ok _ -> failwith "lower-switch-case: malformed HIR lowered"
+  | Error diagnostics ->
+      if
+        not
+          (contains
+             (Diag.render_all ~source:None diagnostics)
+             "internal error: non-constant switch case")
+      then failwith "lower-switch-case: unexpected diagnostic");
+
   (match
      Lower.lower
        {

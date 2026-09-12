@@ -236,8 +236,10 @@ let validate_function struct_names globals (func : func) =
   in
   let valid_module_value_type ty = valid_value_type ty && references_defined_type ty in
   let block_ids = Hashtbl.create (List.length func.blocks) in
+  let blocks_by_id = Hashtbl.create (List.length func.blocks) in
   let predecessors = Hashtbl.create (List.length func.blocks) in
   let definitions = Hashtbl.create 64 in
+  let definition_locations = Hashtbl.create 64 in
   let parameters = Hashtbl.create (List.length func.params) in
   let rec collect_blocks = function
     | [] -> Ok ()
@@ -247,6 +249,7 @@ let validate_function struct_names globals (func : func) =
           fail "has duplicate block id %d" block.id
         else (
           Hashtbl.add block_ids block.id ();
+          Hashtbl.add blocks_by_id block.id block;
           Hashtbl.add predecessors block.id [];
           collect_blocks rest)
   in
@@ -285,7 +288,14 @@ let validate_function struct_names globals (func : func) =
         in
         collect_edges rest
   in
-  let add_definition block_id instruction =
+  let validate_entry_predecessors () =
+    match func.blocks with
+    | [] -> Ok ()
+    | (entry : block) :: _ ->
+        if Hashtbl.find predecessors entry.id = [] then Ok ()
+        else fail "entry block %d has predecessors" entry.id
+  in
+  let add_definition block_id instruction_index instruction =
     match instruction_result instruction with
     | None -> Ok ()
     | Some (id, ty) ->
@@ -295,18 +305,19 @@ let validate_function struct_names globals (func : func) =
           fail "block %d value %d has invalid result type `%s`" block_id id (ty_name ty)
         else (
           Hashtbl.add definitions id ty;
+          Hashtbl.add definition_locations id (block_id, instruction_index);
           Ok ())
   in
-  let rec collect_instructions block_id = function
+  let rec collect_instructions block_id instruction_index = function
     | [] -> Ok ()
     | instruction :: rest ->
-        let* () = add_definition block_id instruction in
-        collect_instructions block_id rest
+        let* () = add_definition block_id instruction_index instruction in
+        collect_instructions block_id (instruction_index + 1) rest
   in
   let rec collect_definitions = function
     | [] -> Ok ()
     | (block : block) :: rest ->
-        let* () = collect_instructions block.id block.instrs in
+        let* () = collect_instructions block.id 0 block.instrs in
         collect_definitions rest
   in
   let validate_reference block_id value =
@@ -579,6 +590,142 @@ let validate_function struct_names globals (func : func) =
         let* () = validate_terminator block.id block.terminator in
         validate_blocks rest
   in
+  let reachable = Hashtbl.create (List.length func.blocks) in
+  let rec mark_reachable block_id =
+    if not (Hashtbl.mem reachable block_id) then (
+      Hashtbl.add reachable block_id ();
+      let block = Hashtbl.find blocks_by_id block_id in
+      List.iter mark_reachable (terminator_successors block.terminator))
+  in
+  let dominators = Hashtbl.create (List.length func.blocks) in
+  let compute_dominators () =
+    match func.blocks with
+    | [] -> ()
+    | (entry : block) :: _ ->
+        mark_reachable entry.id;
+        let reachable_ids =
+          List.filter_map
+            (fun (block : block) ->
+              if Hashtbl.mem reachable block.id then Some block.id else None)
+            func.blocks
+        in
+        List.iter
+          (fun block_id ->
+            Hashtbl.add dominators block_id
+              (if block_id = entry.id then [ entry.id ] else reachable_ids))
+          reachable_ids;
+        let intersection left right = List.filter (fun id -> List.mem id right) left in
+        let changed = ref true in
+        while !changed do
+          changed := false;
+          List.iter
+            (fun block_id ->
+              if block_id <> entry.id then
+                let reachable_predecessors =
+                  Option.value ~default:[] (Hashtbl.find_opt predecessors block_id)
+                  |> List.filter (Hashtbl.mem reachable)
+                in
+                let common =
+                  match reachable_predecessors with
+                  | [] -> []
+                  | first :: rest ->
+                      List.fold_left
+                        (fun current predecessor ->
+                          intersection current (Hashtbl.find dominators predecessor))
+                        (Hashtbl.find dominators first)
+                        rest
+                in
+                let next = List.sort_uniq compare (block_id :: common) in
+                if next <> Hashtbl.find dominators block_id then (
+                  Hashtbl.replace dominators block_id next;
+                  changed := true))
+            reachable_ids
+        done
+  in
+  let validate_dominance () =
+    compute_dominators ();
+    let validate_use report_block use_block use_index = function
+      | Local (id, _) -> (
+          match Hashtbl.find_opt definition_locations id with
+          | None -> Ok ()
+          | Some (definition_block, definition_index) ->
+              let dominates =
+                if not (Hashtbl.mem reachable use_block) then true
+                else if definition_block = use_block then definition_index < use_index
+                else
+                  match Hashtbl.find_opt dominators use_block with
+                  | Some blocks -> List.mem definition_block blocks
+                  | None -> false
+              in
+              if dominates then Ok ()
+              else fail "block %d value %d does not dominate its use" report_block id)
+      | Const _ | Const_vector _ | Null _ | Undef _ | Zero _ | Param _ | Global _ ->
+          Ok ()
+    in
+    let rec validate_uses report_block use_block use_index = function
+      | [] -> Ok ()
+      | value :: rest ->
+          let* () = validate_use report_block use_block use_index value in
+          validate_uses report_block use_block use_index rest
+    in
+    let instruction_uses = function
+      | Bin (_, _, _, left, right) | Cmp (_, _, _, left, right) -> [ left; right ]
+      | Load (_, _, pointer, _) -> [ pointer ]
+      | Store (_, value, pointer, _) -> [ value; pointer ]
+      | Gep (_, _, pointer, indices) ->
+          pointer
+          :: List.filter_map
+               (function Zero -> None | Index value -> Some value)
+               indices
+      | Cast (_, _, _, value, _) -> [ value ]
+      | Call (_, _, _, _, arguments) -> List.map (fun (_, _, value) -> value) arguments
+      | Select (_, condition, yes, no) -> [ condition; yes; no ]
+      | Extract (_, _, vector, index) -> [ vector; index ]
+      | Insert (_, _, vector, index, value) -> [ vector; index; value ]
+      | Shuffle_zero (_, _, vector) -> [ vector ]
+      | Alloca _ | Phi _ | String_ptr _ | Global_ptr _ | Trap -> []
+    in
+    let rec validate_phi_uses block_id = function
+      | [] -> Ok ()
+      | (value, predecessor) :: rest ->
+          let predecessor_block = Hashtbl.find blocks_by_id predecessor in
+          let* () =
+            validate_use block_id predecessor
+              (List.length predecessor_block.instrs)
+              value
+          in
+          validate_phi_uses block_id rest
+    in
+    let rec validate_instructions block_id instruction_index = function
+      | [] -> Ok ()
+      | Phi (_, _, incoming) :: rest ->
+          let* () = validate_phi_uses block_id incoming in
+          validate_instructions block_id (instruction_index + 1) rest
+      | instruction :: rest ->
+          let* () =
+            validate_uses block_id block_id instruction_index
+              (instruction_uses instruction)
+          in
+          validate_instructions block_id (instruction_index + 1) rest
+    in
+    let terminator_uses = function
+      | Ret None | Br _ | Unreachable -> []
+      | Ret (Some (_, value)) -> [ value ]
+      | CondBr (condition, _, _) -> [ condition ]
+      | Switch (_, value, _, _) -> [ value ]
+    in
+    let rec validate_block_uses = function
+      | [] -> Ok ()
+      | (block : block) :: rest ->
+          let* () = validate_instructions block.id 0 block.instrs in
+          let* () =
+            validate_uses block.id block.id (List.length block.instrs)
+              (terminator_uses block.terminator)
+          in
+          validate_block_uses rest
+    in
+    validate_block_uses func.blocks
+  in
   let* () =
     if func.ret = Void || valid_module_value_type func.ret then Ok ()
     else fail "has an invalid return type"
@@ -590,8 +737,10 @@ let validate_function struct_names globals (func : func) =
   let* () = collect_blocks func.blocks in
   let* () = collect_parameters func.params in
   let* () = collect_edges func.blocks in
+  let* () = validate_entry_predecessors () in
   let* () = collect_definitions func.blocks in
-  validate_blocks func.blocks
+  let* () = validate_blocks func.blocks in
+  validate_dominance ()
 
 let validate module_ =
   let struct_names = Hashtbl.create (List.length module_.structs) in

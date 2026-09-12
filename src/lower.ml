@@ -800,7 +800,7 @@ and stmt s = function
       | [] -> error Span.synthetic "defer outside scope")
   | Hir.While (c, b, _) -> lower_while s c b
   | Hir.For (i, c, st, b, _) -> lower_for s i c st b
-  | Hir.Switch (e, arms, d, _) -> lower_switch s e arms d
+  | Hir.Switch (e, arms, d, span) -> lower_switch s e arms d span
   | Hir.Break sp -> (
       match s.loops with
       | l :: _ ->
@@ -851,6 +851,11 @@ and lower_if s c a b =
   let* () = match b with None -> Ok () | Some xs -> scoped s xs in
   if open_block s then s.current.term := Some (Ir.Br join.id);
   s.current <- join;
+  let falls_through =
+    (Hir.block_flow a).falls_through
+    || match b with None -> true | Some body -> (Hir.block_flow body).falls_through
+  in
+  if not falls_through then s.current.term := Some Ir.Unreachable;
   Ok ()
 
 and lower_while s c body =
@@ -872,6 +877,8 @@ and lower_while s c body =
   s.loops <- List.tl s.loops;
   if open_block s then s.current.term := Some (Ir.Br head.id);
   s.current <- exit;
+  if Hir.condition_is_true c && not (Hir.block_flow body).breaks then
+    s.current.term := Some Ir.Unreachable;
   Ok ()
 
 and lower_for s init cond step body =
@@ -910,25 +917,36 @@ and lower_for s init cond step body =
     if open_block s then s.current.term := Some (Ir.Br head.id);
     s.current <- exit;
     let* () = if open_block s then emit_scope_defers s 0 else Ok () in
+    let unconditional =
+      match cond with None -> true | Some condition -> Hir.condition_is_true condition
+    in
+    if unconditional && not (Hir.block_flow body).breaks then
+      s.current.term := Some Ir.Unreachable;
     Ok ()
   in
   pop_scope s;
   lowered
 
-and lower_switch s e arms default =
+and lower_switch s e arms default span =
   let* v = expr s e in
   let join = fresh_block s in
   let blocks = List.map (fun _ -> fresh_block s) arms in
   let db = fresh_block s in
-  let cases =
-    List.map2
-      (fun (k, _) b ->
-        match k with
-        | Hir.EInt (n, _, _) -> (n, b.id)
-        | Hir.EBool (x, _) -> ((if x then 1L else 0L), b.id)
-        | _ -> (0L, b.id))
-      arms blocks
+  let rec lower_cases arms blocks =
+    match (arms, blocks) with
+    | [], [] -> Ok []
+    | (case, _) :: arm_rest, block :: block_rest ->
+        let* value =
+          match case with
+          | Hir.EInt (value, _, _) -> Ok value
+          | Hir.EBool (value, _) -> Ok (if value then 1L else 0L)
+          | _ -> error (Hir.expr_span case) "internal error: non-constant switch case"
+        in
+        let* rest = lower_cases arm_rest block_rest in
+        Ok ((value, block.id) :: rest)
+    | _ -> error span "internal error: switch arm/block mismatch"
   in
+  let* cases = lower_cases arms blocks in
   s.current.term := Some (Ir.Switch (value_ty v, v, cases, db.id));
   let rec each as_ bs =
     match (as_, bs) with
@@ -938,13 +956,23 @@ and lower_switch s e arms default =
         let* () = scoped s body in
         if open_block s then s.current.term := Some (Ir.Br join.id);
         each at bt
-    | _ -> Ok ()
+    | _ -> error span "internal error: switch arm/block mismatch"
   in
   let* () = each arms blocks in
   s.current <- db;
   let* () = match default with None -> Ok () | Some xs -> scoped s xs in
   if open_block s then s.current.term := Some (Ir.Br join.id);
   s.current <- join;
+  let falls_through =
+    let branches = List.map (fun (_, body) -> Hir.block_flow body) arms in
+    let branches =
+      match default with
+      | None -> Hir.flowing :: branches
+      | Some body -> Hir.block_flow body :: branches
+    in
+    List.exists (fun (flow : Hir.flow_summary) -> flow.falls_through) branches
+  in
+  if not falls_through then s.current.term := Some Ir.Unreachable;
   Ok ()
 
 let lower_func structs strings functions f =
@@ -1038,19 +1066,38 @@ let lower_func structs strings functions f =
         f.params params;
       let* () = scoped s body in
       let* () = if open_block s then emit_scope_defers s 0 else Ok () in
-      if open_block s then
-        s.current.term := Some (if s.ret = Ir.Void then Ir.Ret None else Ir.Unreachable);
+      let* () =
+        if not (open_block s) then Ok ()
+        else if s.ret = Ir.Void then (
+          s.current.term := Some (Ir.Ret None);
+          Ok ())
+        else
+          error Span.synthetic
+            (Printf.sprintf
+               "internal error: non-void function `%s` ended lowering without a \
+                terminator"
+               f.name)
+      in
       pop_scope s;
-      let blocks =
-        List.map
+      let* blocks =
+        Result_list.map
           (fun b ->
-            ({
-               Ir.id = b.id;
-               label = "b" ^ string_of_int b.id;
-               instrs = List.of_seq (Queue.to_seq b.instrs);
-               terminator = Option.value ~default:Ir.Unreachable !(b.term);
-             }
-              : Ir.block))
+            match !(b.term) with
+            | None ->
+                error Span.synthetic
+                  (Printf.sprintf
+                     "internal error: function `%s` block %d ended lowering without a \
+                      terminator"
+                     f.name b.id)
+            | Some terminator ->
+                Ok
+                  ({
+                     Ir.id = b.id;
+                     label = "b" ^ string_of_int b.id;
+                     instrs = List.of_seq (Queue.to_seq b.instrs);
+                     terminator;
+                   }
+                    : Ir.block))
           (List.of_seq (Queue.to_seq s.blocks))
       in
       Ok

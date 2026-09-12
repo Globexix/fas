@@ -415,6 +415,8 @@ let () =
     (ir_module [ ir_function [ ir_block (-1) (Ir.Ret None) ] ]);
   let missing_branch_successor = ir_module [ ir_function [ ir_block 0 (Ir.Br 1) ] ] in
   expect_ir_error "block 0 has unknown successor 1" missing_branch_successor;
+  expect_ir_error "entry block 0 has predecessors"
+    (ir_module [ ir_function [ ir_block 0 (Ir.Br 1); ir_block 1 (Ir.Br 0) ] ]);
   let missing_switch_successor =
     ir_module
       [
@@ -503,6 +505,67 @@ let () =
       ]
   in
   expect_ir_error "value 0 claims the wrong type" wrong_value_claim;
+  let forward_value_use =
+    ir_module
+      [
+        ir_function
+          [
+            ir_block
+              ~instrs:
+                [
+                  Ir.Bin (1, Ir.Add, Ir.I8, Ir.Local (0, Ir.I8), Ir.Const (Ir.I8, 1L));
+                  Ir.Bin (0, Ir.Add, Ir.I8, Ir.Const (Ir.I8, 2L), Ir.Const (Ir.I8, 3L));
+                ]
+              0 (Ir.Ret None);
+          ];
+      ]
+  in
+  expect_ir_error "value 0 does not dominate its use" forward_value_use;
+  let sibling_value_use =
+    ir_module
+      [
+        ir_function
+          [
+            ir_block 0 (Ir.CondBr (Ir.Const (Ir.I1, 1L), 1, 2));
+            ir_block
+              ~instrs:
+                [
+                  Ir.Bin (0, Ir.Add, Ir.I8, Ir.Const (Ir.I8, 1L), Ir.Const (Ir.I8, 2L));
+                ]
+              1 (Ir.Br 3);
+            ir_block
+              ~instrs:
+                [ Ir.Bin (1, Ir.Add, Ir.I8, Ir.Local (0, Ir.I8), Ir.Const (Ir.I8, 3L)) ]
+              2 (Ir.Br 3);
+            ir_block 3 (Ir.Ret None);
+          ];
+      ]
+  in
+  expect_ir_error "value 0 does not dominate its use" sibling_value_use;
+  let invalid_phi_edge_use =
+    ir_module
+      [
+        ir_function
+          [
+            ir_block 0 (Ir.CondBr (Ir.Const (Ir.I1, 1L), 1, 2));
+            ir_block
+              ~instrs:
+                [
+                  Ir.Bin (0, Ir.Add, Ir.I8, Ir.Const (Ir.I8, 1L), Ir.Const (Ir.I8, 2L));
+                ]
+              1 (Ir.Br 3);
+            ir_block 2 (Ir.Br 3);
+            ir_block
+              ~instrs:
+                [
+                  Ir.Phi
+                    (1, Ir.I8, [ (Ir.Const (Ir.I8, 0L), 1); (Ir.Local (0, Ir.I8), 2) ]);
+                ]
+              3 (Ir.Ret None);
+          ];
+      ]
+  in
+  expect_ir_error "value 0 does not dominate its use" invalid_phi_edge_use;
   let incomplete_phi =
     ir_module
       [
