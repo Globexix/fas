@@ -97,6 +97,33 @@ let lower_struct_error name fragment (struct_def : Hir.struct_def) =
       if not (contains rendered fragment) then
         failwith (name ^ ": unexpected diagnostic: " ^ rendered)
 
+let lower_function_error name fragment params body =
+  match
+    Lower.lower
+      {
+        Hir.structs = [];
+        consts = [];
+        const_arrays = [];
+        funcs =
+          [
+            {
+              Hir.name;
+              params;
+              ret = Hir.Void;
+              body = Hir.Statements body;
+              linkage = Hir.Internal;
+              variadic = false;
+            };
+          ];
+        strings = [];
+      }
+  with
+  | Ok _ -> failwith (name ^ ": malformed HIR lowered without error")
+  | Error diagnostics ->
+      let rendered = Diag.render_all ~source:None diagnostics in
+      if not (contains rendered fragment) then
+        failwith (name ^ ": unexpected diagnostic: " ^ rendered)
+
 let () =
   let expect_layout name expected ty =
     match Hir.layout [] ty with
@@ -4119,6 +4146,52 @@ let () =
              "internal error: non-constant switch case")
       then failwith "lower-switch-case: unexpected diagnostic");
 
+  let malformed_compound_local = { Hir.name = "x"; ty = Hir.Int Hir.I8; id = 0 } in
+  lower_function_error "lower-compound-operator"
+    "internal error: non-arithmetic operator reached binary lowering"
+    [ malformed_compound_local ]
+    [
+      Hir.Compound_assign
+        ( Hir.ALocal malformed_compound_local,
+          Ast.And,
+          Hir.EInt (1L, Hir.Int Hir.I8, Span.synthetic),
+          Hir.Int Hir.I8,
+          Span.synthetic );
+    ];
+  lower_function_error "lower-index-type"
+    "internal error: index lowering received a non-integer value" []
+    [
+      Hir.Expr
+        ( Hir.Index
+            ( Hir.EVector ([ 7L ], Hir.Vec (1, Hir.Int Hir.I8), Span.synthetic),
+              Hir.EBool (true, Span.synthetic),
+              Hir.Int Hir.I8,
+              Span.synthetic ),
+          Span.synthetic );
+    ];
+  lower_function_error "lower-intrinsic-type"
+    "internal error: integer intrinsic has a non-integer type" []
+    [
+      Hir.Expr
+        ( Hir.Call
+            ( Hir.Builtin Hir.Popcount,
+              [ Hir.EBool (true, Span.synthetic) ],
+              Hir.Bool,
+              Span.synthetic ),
+          Span.synthetic );
+    ];
+  lower_function_error "lower-complement-type"
+    "internal error: bitwise complement has a non-integer type" []
+    [
+      Hir.Expr
+        ( Hir.Unary
+            ( Ast.Bit_not,
+              Hir.Null (Hir.Ptr (Hir.Int Hir.I8), Span.synthetic),
+              Hir.Ptr (Hir.Int Hir.I8),
+              Span.synthetic ),
+          Span.synthetic );
+    ];
+
   (match
      Lower.lower
        {
@@ -4137,38 +4210,9 @@ let () =
       if not (contains (Diag.render_all ~source:None diagnostics) "internal error") then
         failwith "layout-invariant: unexpected diagnostic");
 
-  if
-    not
-      (try
-         ignore
-           (Lower.lower
-              {
-                Hir.structs = [];
-                consts = [];
-                const_arrays = [];
-                strings = [];
-                funcs =
-                  [
-                    {
-                      Hir.name = "f";
-                      params = [];
-                      ret = Hir.Void;
-                      body =
-                        Hir.Statements
-                          [
-                            Hir.Let
-                              ( { Hir.name = "x"; ty = Hir.Opaque "X"; id = 0 },
-                                None,
-                                Span.synthetic );
-                          ];
-                      linkage = Hir.Internal;
-                      variadic = false;
-                    };
-                  ];
-              });
-         false
-       with Failure message -> contains message "internal error")
-  then failwith "layout-invariant: opaque local did not fail with an internal error";
+  lower_function_error "layout-invariant-local" "internal error: type `X` has no layout"
+    []
+    [ Hir.Let ({ Hir.name = "x"; ty = Hir.Opaque "X"; id = 0 }, None, Span.synthetic) ];
   (match
      Sema.check
        (expect_ok
