@@ -223,12 +223,18 @@ let terminator_successors = function
   | CondBr (_, yes, no) -> [ yes; no ]
   | Switch (_, _, cases, default) -> default :: List.map snd cases
 
-let validate_function (func : func) =
+let validate_function struct_names globals (func : func) =
   let fail format =
     Printf.ksprintf
       (fun message -> Error ("function `" ^ func.name ^ "` " ^ message))
       format
   in
+  let rec references_defined_type = function
+    | Struct name -> Hashtbl.mem struct_names name
+    | Array (_, elem) | Vector (_, elem) -> references_defined_type elem
+    | Ptr _ | I1 | I8 | I16 | I32 | I64 | Void -> true
+  in
+  let valid_module_value_type ty = valid_value_type ty && references_defined_type ty in
   let block_ids = Hashtbl.create (List.length func.blocks) in
   let predecessors = Hashtbl.create (List.length func.blocks) in
   let definitions = Hashtbl.create 64 in
@@ -249,7 +255,7 @@ let validate_function (func : func) =
     | (parameter : param) :: rest ->
         if Hashtbl.mem parameters parameter.name then
           fail "has duplicate parameter name `%s`" parameter.name
-        else if not (valid_value_type parameter.ty) then
+        else if not (valid_module_value_type parameter.ty) then
           fail "parameter `%s` has an invalid type" parameter.name
         else if not (valid_extension parameter.ty parameter.extension) then
           fail "parameter `%s` has an invalid extension" parameter.name
@@ -285,7 +291,7 @@ let validate_function (func : func) =
     | Some (id, ty) ->
         if id < 0 then fail "block %d defines negative value id %d" block_id id
         else if Hashtbl.mem definitions id then fail "has duplicate value id %d" id
-        else if not (valid_value_type ty) then
+        else if not (valid_module_value_type ty) then
           fail "block %d value %d has invalid result type `%s`" block_id id (ty_name ty)
         else (
           Hashtbl.add definitions id ty;
@@ -305,9 +311,12 @@ let validate_function (func : func) =
   in
   let validate_reference block_id value =
     let* () =
-      match validate_value_form value with
-      | Ok () -> Ok ()
-      | Error message -> fail "block %d has invalid value: %s" block_id message
+      if not (valid_module_value_type (value_ty value)) then
+        fail "block %d has a value with an invalid type" block_id
+      else
+        match validate_value_form value with
+        | Ok () -> Ok ()
+        | Error message -> fail "block %d has invalid value: %s" block_id message
     in
     match value with
     | Local (id, claimed) -> (
@@ -320,7 +329,12 @@ let validate_function (func : func) =
         | None -> fail "block %d uses unknown parameter `%s`" block_id name
         | Some actual when type_equal actual claimed -> Ok ()
         | Some _ -> fail "block %d parameter `%s` claims the wrong type" block_id name)
-    | Const _ | Const_vector _ | Null _ | Undef _ | Zero _ | Global _ -> Ok ()
+    | Global (name, claimed) -> (
+        match Hashtbl.find_opt globals name with
+        | None -> fail "block %d uses unknown global `%s`" block_id name
+        | Some actual when type_equal claimed (Ptr actual) -> Ok ()
+        | Some _ -> fail "block %d global `%s` claims the wrong type" block_id name)
+    | Const _ | Const_vector _ | Null _ | Undef _ | Zero _ -> Ok ()
   in
   let operand block_id expected value =
     let* () = validate_reference block_id value in
@@ -423,23 +437,24 @@ let validate_function (func : func) =
           let* () = operand block_id ty left in
           operand block_id ty right
     | Alloca (_, ty, alignment) ->
-        if not (valid_value_type ty) then
+        if not (valid_module_value_type ty) then
           fail "block %d allocates an invalid type" block_id
         else validate_alignment block_id alignment
     | Load (_, ty, pointer, alignment) ->
-        if not (valid_value_type ty) then fail "block %d loads an invalid type" block_id
+        if not (valid_module_value_type ty) then
+          fail "block %d loads an invalid type" block_id
         else
           let* () = pointer_operand block_id pointer in
           validate_alignment block_id alignment
     | Store (ty, value, pointer, alignment) ->
-        if not (valid_value_type ty) then
+        if not (valid_module_value_type ty) then
           fail "block %d stores an invalid type" block_id
         else
           let* () = operand block_id ty value in
           let* () = pointer_operand block_id pointer in
           validate_alignment block_id alignment
     | Gep (_, ty, pointer, indices) ->
-        if not (valid_value_type ty) then
+        if not (valid_module_value_type ty) then
           fail "block %d indexes an invalid type" block_id
         else
           let* () = pointer_operand block_id pointer in
@@ -496,12 +511,21 @@ let validate_function (func : func) =
         match vector_ty with
         | Vector _ -> operand block_id vector_ty vector
         | _ -> fail "block %d shuffles a non-vector type" block_id)
-    | String_ptr (_, index, length) ->
-        if index >= 0 && length >= 0 then Ok ()
-        else fail "block %d has invalid string pointer metadata" block_id
-    | Global_ptr (_, _, ty) ->
-        if valid_value_type ty then Ok ()
-        else fail "block %d has an invalid global pointer type" block_id
+    | String_ptr (_, index, length) -> (
+        let name = ".str." ^ string_of_int index in
+        match Hashtbl.find_opt globals name with
+        | Some (Array (actual_length, I8)) when actual_length = length -> Ok ()
+        | Some (Array (_, I8)) ->
+            fail "block %d string pointer `%s` has the wrong length" block_id name
+        | Some _ ->
+            fail "block %d string pointer `%s` has the wrong global type" block_id name
+        | None -> fail "block %d references unknown string global `%s`" block_id name)
+    | Global_ptr (_, name, ty) -> (
+        match Hashtbl.find_opt globals name with
+        | None -> fail "block %d references unknown global `%s`" block_id name
+        | Some actual when type_equal actual ty -> Ok ()
+        | Some _ -> fail "block %d global pointer `%s` has the wrong type" block_id name
+        )
     | Trap -> Ok ()
   in
   let validate_phi_order block_id instructions =
@@ -556,7 +580,7 @@ let validate_function (func : func) =
         validate_blocks rest
   in
   let* () =
-    if func.ret = Void || valid_value_type func.ret then Ok ()
+    if func.ret = Void || valid_module_value_type func.ret then Ok ()
     else fail "has an invalid return type"
   in
   let* () =
@@ -570,11 +594,108 @@ let validate_function (func : func) =
   validate_blocks func.blocks
 
 let validate module_ =
+  let struct_names = Hashtbl.create (List.length module_.structs) in
+  let rec collect_structs = function
+    | [] -> Ok ()
+    | (struct_def : struct_def) :: rest ->
+        if Hashtbl.mem struct_names struct_def.name then
+          Error ("module has duplicate struct name `" ^ struct_def.name ^ "`")
+        else (
+          Hashtbl.add struct_names struct_def.name struct_def;
+          collect_structs rest)
+  in
+  let rec references_defined_type = function
+    | Struct name -> Hashtbl.mem struct_names name
+    | Array (_, elem) | Vector (_, elem) -> references_defined_type elem
+    | Ptr _ | I1 | I8 | I16 | I32 | I64 | Void -> true
+  in
+  let validate_struct (struct_def : struct_def) =
+    let rec validate_fields = function
+      | [] -> Ok ()
+      | field :: rest ->
+          if not (valid_value_type field) then
+            Error ("struct `" ^ struct_def.name ^ "` has an invalid field type")
+          else if not (references_defined_type field) then
+            Error ("struct `" ^ struct_def.name ^ "` references an unknown struct")
+          else validate_fields rest
+    in
+    if struct_def.tail_padding < 0 then
+      Error ("struct `" ^ struct_def.name ^ "` has negative tail padding")
+    else validate_fields struct_def.fields
+  in
+  let rec validate_structs = function
+    | [] -> Ok ()
+    | struct_def :: rest ->
+        let* () = validate_struct struct_def in
+        validate_structs rest
+  in
+  let struct_states = Hashtbl.create (List.length module_.structs) in
+  let rec validate_struct_cycles name =
+    match Hashtbl.find_opt struct_states name with
+    | Some 2 -> Ok ()
+    | Some 1 -> Error ("struct `" ^ name ^ "` has a recursive value layout")
+    | _ ->
+        Hashtbl.replace struct_states name 1;
+        let struct_def = Hashtbl.find struct_names name in
+        let rec validate_type = function
+          | Struct referenced -> validate_struct_cycles referenced
+          | Array (_, elem) | Vector (_, elem) -> validate_type elem
+          | Ptr _ | I1 | I8 | I16 | I32 | I64 | Void -> Ok ()
+        in
+        let rec validate_fields = function
+          | [] -> Ok ()
+          | field :: rest ->
+              let* () = validate_type field in
+              validate_fields rest
+        in
+        let* () = validate_fields struct_def.fields in
+        Hashtbl.replace struct_states name 2;
+        Ok ()
+  in
+  let rec validate_all_struct_cycles = function
+    | [] -> Ok ()
+    | (struct_def : struct_def) :: rest ->
+        let* () = validate_struct_cycles struct_def.name in
+        validate_all_struct_cycles rest
+  in
+  let globals = Hashtbl.create (List.length module_.globals) in
+  let valid_alignment alignment = alignment > 0 && alignment land (alignment - 1) = 0 in
+  let global_name = function
+    | String_global { name; _ } | Array_global { name; _ } -> name
+  in
+  let global_type = function
+    | String_global { bytes; _ } -> Array (String.length bytes, I8)
+    | Array_global { elem_ty; elems; _ } -> Array (List.length elems, elem_ty)
+  in
+  let validate_global = function
+    | String_global _ -> Ok ()
+    | Array_global { name; elem_ty; elems; align } ->
+        if not (is_integer elem_ty) then
+          Error ("global `" ^ name ^ "` has a non-integer element type")
+        else if not (List.for_all (integer_constant_fits elem_ty) elems) then
+          Error ("global `" ^ name ^ "` has an element outside its type")
+        else if not (valid_alignment align) then
+          Error (Printf.sprintf "global `%s` has invalid alignment %d" name align)
+        else Ok ()
+  in
+  let rec collect_globals = function
+    | [] -> Ok ()
+    | global :: rest ->
+        let name = global_name global in
+        if Hashtbl.mem globals name then
+          Error ("module has duplicate global name `" ^ name ^ "`")
+        else
+          let* () = validate_global global in
+          Hashtbl.add globals name (global_type global);
+          collect_globals rest
+  in
   let functions = Hashtbl.create (List.length module_.funcs) in
   let rec collect_functions = function
     | [] -> Ok ()
     | (func : func) :: rest ->
-        if Hashtbl.mem functions func.name then
+        if Hashtbl.mem globals func.name then
+          Error ("module symbol `" ^ func.name ^ "` is both a global and a function")
+        else if Hashtbl.mem functions func.name then
           Error ("module has duplicate function name `" ^ func.name ^ "`")
         else (
           Hashtbl.add functions func.name func;
@@ -648,11 +769,24 @@ let validate module_ =
   let rec validate_functions = function
     | [] -> Ok ()
     | func :: rest ->
-        let* () = validate_function func in
+        let* () = validate_function struct_names globals func in
         let* () = validate_function_calls func in
         validate_functions rest
   in
+  let* () = collect_structs module_.structs in
+  let* () = validate_structs module_.structs in
+  let* () = validate_all_struct_cycles module_.structs in
+  let* () = collect_globals module_.globals in
   let* () = collect_functions module_.funcs in
+  let* () =
+    match module_.no_inline_function with
+    | None -> Ok ()
+    | Some name -> (
+        match Hashtbl.find_opt functions name with
+        | Some func when func.blocks <> [] -> Ok ()
+        | Some _ -> Error ("no-inline function `" ^ name ^ "` has no definition")
+        | None -> Error ("no-inline function `" ^ name ^ "` does not exist"))
+  in
   validate_functions module_.funcs
 
 let symbol n =

@@ -349,14 +349,14 @@ let () =
   assert (List.length specialized.Hir.funcs = 2);
   let lowered = expect_ok (Lower.lower specialized) in
   assert (List.length lowered.Ir.funcs = 2);
-  let ir_module funcs =
+  let ir_module ?(structs = []) ?(globals = []) ?no_inline_function funcs =
     {
       Ir.target_triple = Target_layout.current.triple;
       data_layout = Target_layout.current.llvm_data_layout;
-      structs = [];
-      globals = [];
+      structs;
+      globals;
       funcs;
-      no_inline_function = None;
+      no_inline_function;
     }
   in
   let ir_function blocks =
@@ -642,6 +642,85 @@ let () =
   let fixed_target = { call_target with Ir.variadic = false } in
   expect_ir_error "call to `callee` has 2 arguments but requires exactly 1"
     (ir_module [ fixed_target; call_caller valid_call ]);
+  let byte_struct = { Ir.name = "Byte"; fields = [ Ir.I8 ]; tail_padding = 0 } in
+  let string_global = Ir.String_global { name = ".str.0"; bytes = "ok" } in
+  let array_global =
+    Ir.Array_global { name = "numbers"; elem_ty = Ir.I8; elems = [ 1L; 2L ]; align = 1 }
+  in
+  let module_reference_user =
+    {
+      (ir_function
+         [
+           ir_block
+             ~instrs:
+               [
+                 Ir.Alloca (0, Ir.Struct "Byte", 1);
+                 Ir.String_ptr (1, 0, 2);
+                 Ir.Global_ptr (2, "numbers", Ir.Array (2, Ir.I8));
+                 Ir.Load
+                   (3, Ir.I8, Ir.Global ("numbers", Ir.Ptr (Ir.Array (2, Ir.I8))), 1);
+               ]
+             0 (Ir.Ret None);
+         ])
+      with
+      Ir.name = "module_reference_user";
+    }
+  in
+  assert (
+    Ir.validate
+      (ir_module ~structs:[ byte_struct ]
+         ~globals:[ string_global; array_global ]
+         [ module_reference_user ])
+    = Ok ());
+  expect_ir_error "duplicate struct name `Byte`"
+    (ir_module ~structs:[ byte_struct; byte_struct ] []);
+  expect_ir_error "struct `Broken` references an unknown struct"
+    (ir_module
+       ~structs:
+         [ { Ir.name = "Broken"; fields = [ Ir.Struct "Missing" ]; tail_padding = 0 } ]
+       []);
+  expect_ir_error "struct `Recursive` has a recursive value layout"
+    (ir_module
+       ~structs:
+         [
+           {
+             Ir.name = "Recursive";
+             fields = [ Ir.Array (1, Ir.Struct "Recursive") ];
+             tail_padding = 0;
+           };
+         ]
+       []);
+  expect_ir_error "duplicate global name `numbers`"
+    (ir_module ~globals:[ array_global; array_global ] []);
+  expect_ir_error "global `numbers` has an element outside its type"
+    (ir_module
+       ~globals:
+         [
+           Ir.Array_global
+             { name = "numbers"; elem_ty = Ir.I1; elems = [ 2L ]; align = 1 };
+         ]
+       []);
+  expect_ir_error "symbol `collision` is both a global and a function"
+    (ir_module
+       ~globals:
+         [
+           Ir.Array_global
+             { name = "collision"; elem_ty = Ir.I8; elems = []; align = 1 };
+         ]
+       [ { (ir_function []) with Ir.name = "collision" } ]);
+  expect_ir_error "string pointer `.str.0` has the wrong length"
+    (ir_module ~globals:[ string_global ] [ call_caller (Ir.String_ptr (0, 0, 3)) ]);
+  expect_ir_error "global pointer `numbers` has the wrong type"
+    (ir_module ~globals:[ array_global ]
+       [ call_caller (Ir.Global_ptr (0, "numbers", Ir.Array (1, Ir.I8))) ]);
+  expect_ir_error "uses unknown global `missing`"
+    (ir_module
+       [ call_caller (Ir.Load (0, Ir.I8, Ir.Global ("missing", Ir.Ptr Ir.I8), 1)) ]);
+  expect_ir_error "global `numbers` claims the wrong type"
+    (ir_module ~globals:[ array_global ]
+       [ call_caller (Ir.Load (0, Ir.I8, Ir.Global ("numbers", Ir.I8), 1)) ]);
+  expect_ir_error "no-inline function `missing` does not exist"
+    (ir_module ~no_inline_function:"missing" []);
   assert (Ir.render lowered = Ir.render lowered);
   let unresolved_template_call =
     {
