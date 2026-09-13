@@ -23,6 +23,17 @@ type top_level_binding = {
   declaration_kind : top_level_kind;
 }
 
+type string_pool = {
+  mutable reversed : string list;
+  index : (string, int) Hashtbl.t;
+  mutable next_id : int;
+  mutable bytes_used : int;
+  budget : int;
+}
+
+let create_string_pool budget =
+  { reversed = []; index = Hashtbl.create 64; next_id = 0; bytes_used = 0; budget }
+
 type context = {
   structs : Hir.struct_def list;
   named_types : (string * named_type_kind) list;
@@ -35,12 +46,9 @@ type context = {
   spec_depth : int;
   spec_trace : instantiation_frame list;
   flow : Sema_flow.t;
-  mutable strings : string list;
-  mutable string_ids : (string * int) list;
+  string_pool : string_pool;
   ret_ty : Hir.ty;
   limits : Limits.t;
-  mutable string_bytes_used : int;
-  string_bytes_budget : int;
 }
 
 let lookup_top_level name bindings =
@@ -200,27 +208,29 @@ let merge_maps c left right = Sema_flow.merge c.flow left right
 let validate_exit_defers c keep = Sema_flow.validate_exit_defers c.flow keep
 let mark_init binding c = Sema_flow.mark_init binding c.flow
 
-let intern_string c s =
-  match List.assoc_opt s c.string_ids with
-  | Some i -> i
-  | None ->
-      let i = List.length c.strings in
-      c.strings <- c.strings @ [ s ];
-      c.string_ids <- (s, i) :: c.string_ids;
-      c.string_bytes_used <- c.string_bytes_used + String.length s;
-      i
-
-let check_string_budget c span s =
-  match List.assoc_opt s c.string_ids with
-  | Some _ -> Ok ()
+let intern_string c span s =
+  let pool = c.string_pool in
+  match Hashtbl.find_opt pool.index s with
+  | Some id -> Ok id
   | None ->
       let size = String.length s in
-      let budget = c.string_bytes_budget in
-      if size > budget || c.string_bytes_used > budget - size then
+      let budget = pool.budget in
+      if size > budget then
+        error span
+          (Printf.sprintf "string literal exceeds the configured limit of %d bytes"
+             budget)
+      else if pool.bytes_used > budget - size then
         error span
           (Printf.sprintf
-             "interned string data exceeds the configured limit of %d bytes" budget)
-      else Ok ()
+             "cumulative interned string bytes exceed the configured limit of %d bytes"
+             budget)
+      else
+        let id = pool.next_id in
+        pool.next_id <- id + 1;
+        pool.reversed <- s :: pool.reversed;
+        pool.bytes_used <- pool.bytes_used + size;
+        Hashtbl.add pool.index s id;
+        Ok id
 
 let with_dead_check c dead check = Sema_flow.with_dead_check c.flow dead check
 
@@ -402,8 +412,8 @@ and check_expr (c : context) expected = function
         error s "C string literal cannot contain embedded NUL"
       else
         let value = if cstr then v ^ "\000" else v in
-        let* () = check_string_budget c s value in
-        Ok (Hir.EString (intern_string c value, s))
+        let* id = intern_string c s value in
+        Ok (Hir.EString (id, s))
   | Ast.Ident (n, s) -> (
       match lookup_local n c with
       | Some b ->
@@ -1742,12 +1752,9 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
       spec_depth = 0;
       spec_trace = [];
       flow = Sema_flow.create ~initial_scope:true eval_structs;
-      strings = [];
-      string_ids = [];
+      string_pool = create_string_pool limits.Limits.max_interned_string_bytes;
       ret_ty;
       limits;
-      string_bytes_used = 0;
-      string_bytes_budget = max_int;
     }
   in
   let rec has_generic_arguments = function
@@ -2115,6 +2122,45 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
         in
         Ok dependent
     | Ast.Break _ | Ast.Continue _ -> Ok dependent
+  in
+  let validate_generic_legality ~span ~ret ~params ~generic_params statements =
+    let generic_value_names =
+      List.map
+        (fun (parameter : Ast.const_param) -> parameter.name)
+        (const_params generic_params)
+    in
+    let dependent = type_param_names generic_params @ generic_value_names in
+    let expected_return =
+      if type_mentions dependent ret then None
+      else
+        match source_ty_with_values eval_named_types eval_consts span ret with
+        | Ok ty -> Some ty
+        | Error _ -> None
+    in
+    let context =
+      make_legality_context (Option.value ~default:Hir.Void expected_return)
+    in
+    let rec add_parameters dependent = function
+      | [] -> Ok dependent
+      | (parameter : Ast.param) :: rest ->
+          if type_mentions dependent parameter.ty then
+            add_parameters (parameter.name :: dependent) rest
+          else
+            let* ty =
+              source_ty_with_values eval_named_types eval_consts parameter.span
+                parameter.ty
+            in
+            let* binding = add_local parameter.name ty context parameter.span in
+            mark_init binding context;
+            add_parameters
+              (List.filter (fun name -> name <> parameter.name) dependent)
+              rest
+    in
+    let* dependent = add_parameters dependent params in
+    let* _ =
+      validate_non_dependent_statements context dependent expected_return statements
+    in
+    Ok ()
   in
   let rec has_unresolved_application = function
     | Ast.Applied_type _ -> true
@@ -2871,52 +2917,9 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
                   let* () =
                     if (not eager_functions) || item.generic_params = [] then Ok ()
                     else
-                      let generic_value_names =
-                        List.map
-                          (fun (parameter : Ast.const_param) -> parameter.name)
-                          (const_params item.generic_params)
-                      in
-                      let dependent = body_type_names @ generic_value_names in
-                      let expected_return =
-                        if type_mentions dependent item.ret then None
-                        else
-                          match
-                            source_ty_with_values eval_named_types eval_consts item.span
-                              item.ret
-                          with
-                          | Ok ty -> Some ty
-                          | Error _ -> None
-                      in
-                      let context =
-                        make_legality_context
-                          (Option.value ~default:Hir.Void expected_return)
-                      in
-                      let rec add_parameters dependent = function
-                        | [] -> Ok dependent
-                        | (parameter : Ast.param) :: rest ->
-                            if type_mentions dependent parameter.ty then
-                              add_parameters (parameter.name :: dependent) rest
-                            else
-                              let* ty =
-                                source_ty_with_values eval_named_types eval_consts
-                                  parameter.span parameter.ty
-                              in
-                              let* binding =
-                                add_local parameter.name ty context parameter.span
-                              in
-                              mark_init binding context;
-                              add_parameters
-                                (List.filter
-                                   (fun name -> name <> parameter.name)
-                                   dependent)
-                                rest
-                      in
-                      let* dependent = add_parameters dependent item.params in
-                      let* _ =
-                        validate_non_dependent_statements context dependent
-                          expected_return statements
-                      in
-                      Ok ()
+                      validate_generic_legality ~span:item.span ~ret:item.ret
+                        ~params:item.params ~generic_params:item.generic_params
+                        statements
                   in
                   let shadowed_constants =
                     List.map (fun (parameter : Ast.param) -> parameter.name) params
@@ -3388,8 +3391,8 @@ let check ?(limits = Limits.default) program =
         | _ -> None)
       program.items
   in
-  let all_strings = ref [] and funcs = ref [] in
-  let string_bytes_pool_used = ref 0 in
+  let program_strings = create_string_pool limits.Limits.max_interned_string_bytes in
+  let funcs = ref [] in
   let hir_linkage = function
     | Ast.External_c -> Hir.External_c
     | Ast.Internal -> Hir.Internal
@@ -3407,12 +3410,9 @@ let check ?(limits = Limits.default) program =
       spec_depth;
       spec_trace;
       flow = Sema_flow.create ~initial_scope:false structs;
-      strings = !all_strings;
-      string_ids = List.mapi (fun i value -> (value, i)) !all_strings;
+      string_pool = program_strings;
       ret_ty;
       limits;
-      string_bytes_used = !string_bytes_pool_used;
-      string_bytes_budget = limits.Limits.max_interned_string_bytes;
     }
   in
   let hir_params params =
@@ -3437,8 +3437,6 @@ let check ?(limits = Limits.default) program =
          ^ "` may reach the end without returning")
       else Ok ()
     in
-    all_strings := context.strings;
-    string_bytes_pool_used := context.string_bytes_used;
     Ok
       ({ Hir.name; params; ret; body = Hir.Statements body; linkage; variadic }
         : Hir.func)
@@ -3570,6 +3568,6 @@ let check ?(limits = Limits.default) program =
        consts = hconsts;
        const_arrays = harrays;
        funcs = List.rev !funcs;
-       strings = !all_strings;
+       strings = List.rev program_strings.reversed;
      }
       : Hir.program)

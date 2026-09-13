@@ -880,52 +880,63 @@ let () =
           (Diag.render_all ~source:None diagnostics)
           "raw asm body exceeds the configured limit")
   | Ok _ -> assert false);
+  let func_string_ids (func : Hir.func) =
+    let from_expr = function Hir.EString (id, _) -> [ id ] | _ -> [] in
+    match func.Hir.body with
+    | Hir.Statements statements ->
+        List.concat_map
+          (function
+            | Hir.Let (_, Some value, _) -> from_expr value
+            | Hir.Assign (_, value, _) -> from_expr value
+            | Hir.Return (Some value, _) -> from_expr value
+            | Hir.Expr (value, _) -> from_expr value
+            | _ -> [])
+          statements
+    | _ -> []
+  in
+  let expect_budget_error name ~line ~column ~message ~notes outcome =
+    match outcome with
+    | Error [ diagnostic ] ->
+        assert (diagnostic.Diag.message = message);
+        assert (diagnostic.Diag.primary.Span.file = "test.fas");
+        assert (diagnostic.Diag.primary.Span.line = line);
+        assert (diagnostic.Diag.primary.Span.column = column);
+        assert (diagnostic.Diag.notes = notes)
+    | _ -> failwith (name ^ ": expected a single budget diagnostic")
+  in
   let string_literal_program =
     expect_ok
       (Parser.parse (source "fn f() void { s ptr[const u8] = \"abc\"\n return }\n"))
   in
-  ignore
-    (expect_ok
-       (Sema.check
-          ~limits:{ Limits.default with max_interned_string_bytes = 4 }
-          string_literal_program));
-  ignore
-    (expect_ok
-       (Sema.check
-          ~limits:{ Limits.default with max_interned_string_bytes = 3 }
-          string_literal_program));
-  (match
-     Sema.check
+  expect_budget_error "string single" ~line:1 ~column:33
+    ~message:"string literal exceeds the configured limit of 2 bytes" ~notes:[]
+    (Sema.check
        ~limits:{ Limits.default with max_interned_string_bytes = 2 }
-       string_literal_program
-   with
-  | Error diagnostics ->
-      let rendered = Diag.render_all ~source:None diagnostics in
-      assert (
-        contains rendered "interned string data exceeds the configured limit of 2 bytes");
-      assert (contains rendered "test.fas:1:")
-  | Ok _ -> assert false);
+       string_literal_program);
+  let boundary_strings =
+    expect_ok
+      (Sema.check
+         ~limits:{ Limits.default with max_interned_string_bytes = 3 }
+         string_literal_program)
+  in
+  assert (boundary_strings.Hir.strings = [ "abc" ]);
   let c_string_program =
     expect_ok
       (Parser.parse (source "fn f() void { s ptr[const u8] = c\"abc\"\n return }\n"))
   in
-  ignore
-    (expect_ok
-       (Sema.check
-          ~limits:{ Limits.default with max_interned_string_bytes = 4 }
-          c_string_program));
-  (match
-     Sema.check
+  expect_budget_error "c-string single" ~line:1 ~column:33
+    ~message:"string literal exceeds the configured limit of 3 bytes" ~notes:[]
+    (Sema.check
        ~limits:{ Limits.default with max_interned_string_bytes = 3 }
-       c_string_program
-   with
-  | Error diagnostics ->
-      assert (
-        contains
-          (Diag.render_all ~source:None diagnostics)
-          "interned string data exceeds the configured limit of 3 bytes")
-  | Ok _ -> assert false);
-  let deduplicated_strings =
+       c_string_program);
+  let nul_charged_strings =
+    expect_ok
+      (Sema.check
+         ~limits:{ Limits.default with max_interned_string_bytes = 4 }
+         c_string_program)
+  in
+  assert (nul_charged_strings.Hir.strings = [ "abc\000" ]);
+  let duplicated_strings =
     expect_ok
       (Parser.parse
          (source
@@ -933,36 +944,42 @@ let () =
             \ b ptr[const u8] = \"abc\"\n\
             \ return }\n"))
   in
-  ignore
-    (expect_ok
-       (Sema.check
-          ~limits:{ Limits.default with max_interned_string_bytes = 3 }
-          deduplicated_strings));
-  let cumulative_strings =
+  let deduplicated =
+    expect_ok
+      (Sema.check
+         ~limits:{ Limits.default with max_interned_string_bytes = 3 }
+         duplicated_strings)
+  in
+  assert (deduplicated.Hir.strings = [ "abc" ]);
+  let function_named name hir =
+    List.find (fun (func : Hir.func) -> func.Hir.name = name) hir.Hir.funcs
+  in
+  assert (func_string_ids (function_named "f" deduplicated) = [ 0; 0 ]);
+  let cross_function_strings =
     expect_ok
       (Parser.parse
          (source
             "fn f() void { a ptr[const u8] = \"ab\"\n\
             \ return }\n\
-             fn g() void { b ptr[const u8] = \"cd\"\n\
+             fn g() void { b ptr[const u8] = \"ab\"\n\
+            \ c ptr[const u8] = \"cd\"\n\
             \ return }\n"))
   in
-  ignore
-    (expect_ok
-       (Sema.check
-          ~limits:{ Limits.default with max_interned_string_bytes = 4 }
-          cumulative_strings));
-  (match
-     Sema.check
+  expect_budget_error "cross-function cumulative" ~line:4 ~column:20
+    ~message:"cumulative interned string bytes exceed the configured limit of 3 bytes"
+    ~notes:[]
+    (Sema.check
        ~limits:{ Limits.default with max_interned_string_bytes = 3 }
-       cumulative_strings
-   with
-  | Error diagnostics ->
-      let rendered = Diag.render_all ~source:None diagnostics in
-      assert (
-        contains rendered "interned string data exceeds the configured limit of 3 bytes");
-      assert (contains rendered "test.fas:3:")
-  | Ok _ -> assert false);
+       cross_function_strings);
+  let shared_strings =
+    expect_ok
+      (Sema.check
+         ~limits:{ Limits.default with max_interned_string_bytes = 4 }
+         cross_function_strings)
+  in
+  assert (shared_strings.Hir.strings = [ "ab"; "cd" ]);
+  assert (func_string_ids (function_named "f" shared_strings) = [ 0 ]);
+  assert (func_string_ids (function_named "g" shared_strings) = [ 0; 1 ]);
   let ordering_strings =
     expect_ok
       (Parser.parse
@@ -972,22 +989,95 @@ let () =
              fn g() void { b ptr[const u8] = \"cde\"\n\
             \ return }\n"))
   in
-  ignore
-    (expect_ok
-       (Sema.check
-          ~limits:{ Limits.default with max_interned_string_bytes = 5 }
-          ordering_strings));
-  (match
-     Sema.check
+  expect_budget_error "ordering cumulative" ~line:3 ~column:33
+    ~message:"cumulative interned string bytes exceed the configured limit of 4 bytes"
+    ~notes:[]
+    (Sema.check
        ~limits:{ Limits.default with max_interned_string_bytes = 4 }
-       ordering_strings
-   with
-  | Error diagnostics ->
-      let rendered = Diag.render_all ~source:None diagnostics in
-      assert (
-        contains rendered "interned string data exceeds the configured limit of 4 bytes");
-      assert (contains rendered "test.fas:3:")
-  | Ok _ -> assert false);
+       ordering_strings);
+  let ordered_strings =
+    expect_ok
+      (Sema.check
+         ~limits:{ Limits.default with max_interned_string_bytes = 5 }
+         ordering_strings)
+  in
+  assert (ordered_strings.Hir.strings = [ "ab"; "cde" ]);
+  assert (func_string_ids (function_named "f" ordered_strings) = [ 0 ]);
+  assert (func_string_ids (function_named "g" ordered_strings) = [ 1 ]);
+  let specialized_strings =
+    expect_ok
+      (Parser.parse
+         (source
+            "fn echo[T](v T) ptr[const u8] { return \"abc\" }\n\
+             fn main() void { a ptr[const u8] = echo[u8](1)\n\
+            \ b ptr[const u8] = echo[i64](2)\n\
+            \ return }\n"))
+  in
+  let specialization_shared =
+    expect_ok
+      (Sema.check
+         ~limits:{ Limits.default with max_interned_string_bytes = 3 }
+         specialized_strings)
+  in
+  assert (specialization_shared.Hir.strings = [ "abc" ]);
+  let specializations =
+    List.filter
+      (fun (func : Hir.func) -> contains func.Hir.name "$spec$")
+      specialization_shared.Hir.funcs
+  in
+  assert (List.length specializations = 2);
+  assert (List.for_all (fun func -> func_string_ids func = [ 0 ]) specializations);
+  let legality_single_strings =
+    expect_ok
+      (Parser.parse
+         (source
+            "fn big[N const u64](v ptr[u8]) ptr[const u8] { return \"toolongstr\" }\n\
+             fn main(v ptr[u8]) void { d ptr[const u8] = big[1](v)\n\
+            \ return }\n"))
+  in
+  expect_budget_error "legality single" ~line:1 ~column:55
+    ~message:"string literal exceeds the configured limit of 8 bytes"
+    ~notes:[ "while instantiating `big[1]` at test.fas:2:48" ]
+    (Sema.check
+       ~limits:{ Limits.default with max_interned_string_bytes = 8 }
+       legality_single_strings);
+  let legality_cumulative_strings =
+    expect_ok
+      (Parser.parse
+         (source
+            "fn pair[N const u64](v ptr[u8]) ptr[const u8] {\n\
+            \ a ptr[const u8] = \"aa\"\n\
+            \ b ptr[const u8] = \"bb\"\n\
+            \ return v }\n\
+             fn main(v ptr[u8]) void { d ptr[const u8] = pair[1](v)\n\
+            \ return }\n"))
+  in
+  expect_budget_error "legality cumulative" ~line:3 ~column:20
+    ~message:"cumulative interned string bytes exceed the configured limit of 3 bytes"
+    ~notes:[ "while instantiating `pair[1]` at test.fas:5:49" ]
+    (Sema.check
+       ~limits:{ Limits.default with max_interned_string_bytes = 3 }
+       legality_cumulative_strings);
+  expect_budget_error "fresh state failure repeat" ~line:4 ~column:20
+    ~message:"cumulative interned string bytes exceed the configured limit of 3 bytes"
+    ~notes:[]
+    (Sema.check
+       ~limits:{ Limits.default with max_interned_string_bytes = 3 }
+       cross_function_strings);
+  let refreshed =
+    expect_ok
+      (Sema.check
+         ~limits:{ Limits.default with max_interned_string_bytes = 5 }
+         ordering_strings)
+  in
+  assert (refreshed.Hir.strings = [ "ab"; "cde" ]);
+  let after_failure =
+    expect_ok
+      (Sema.check
+         ~limits:{ Limits.default with max_interned_string_bytes = 4 }
+         cross_function_strings)
+  in
+  assert (after_failure.Hir.strings = [ "ab"; "cd" ]);
   (match Lexer.lex (source "/* unterminated") with
   | Ok _ -> assert false
   | Error _ -> ());
