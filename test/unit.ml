@@ -15,6 +15,7 @@ let () =
   assert (Limits.default.max_tokens = 1_000_000);
   assert (Limits.default.max_nesting = 128);
   assert (Limits.default.max_asm_bytes = 4_000_000);
+  assert (Limits.default.max_interned_string_bytes = 4_000_000);
   assert (Limits.default.max_specializations = 10_000);
   assert (Limits.default.max_specialization_depth = 64);
   assert (Limits.default.max_aggregate_elements = 1_000_000);
@@ -878,6 +879,114 @@ let () =
         contains
           (Diag.render_all ~source:None diagnostics)
           "raw asm body exceeds the configured limit")
+  | Ok _ -> assert false);
+  let string_literal_program =
+    expect_ok
+      (Parser.parse (source "fn f() void { s ptr[const u8] = \"abc\"\n return }\n"))
+  in
+  ignore
+    (expect_ok
+       (Sema.check
+          ~limits:{ Limits.default with max_interned_string_bytes = 4 }
+          string_literal_program));
+  ignore
+    (expect_ok
+       (Sema.check
+          ~limits:{ Limits.default with max_interned_string_bytes = 3 }
+          string_literal_program));
+  (match
+     Sema.check
+       ~limits:{ Limits.default with max_interned_string_bytes = 2 }
+       string_literal_program
+   with
+  | Error diagnostics ->
+      let rendered = Diag.render_all ~source:None diagnostics in
+      assert (
+        contains rendered "interned string data exceeds the configured limit of 2 bytes");
+      assert (contains rendered "test.fas:1:")
+  | Ok _ -> assert false);
+  let c_string_program =
+    expect_ok
+      (Parser.parse (source "fn f() void { s ptr[const u8] = c\"abc\"\n return }\n"))
+  in
+  ignore
+    (expect_ok
+       (Sema.check
+          ~limits:{ Limits.default with max_interned_string_bytes = 4 }
+          c_string_program));
+  (match
+     Sema.check
+       ~limits:{ Limits.default with max_interned_string_bytes = 3 }
+       c_string_program
+   with
+  | Error diagnostics ->
+      assert (
+        contains
+          (Diag.render_all ~source:None diagnostics)
+          "interned string data exceeds the configured limit of 3 bytes")
+  | Ok _ -> assert false);
+  let deduplicated_strings =
+    expect_ok
+      (Parser.parse
+         (source
+            "fn f() void { a ptr[const u8] = \"abc\"\n\
+            \ b ptr[const u8] = \"abc\"\n\
+            \ return }\n"))
+  in
+  ignore
+    (expect_ok
+       (Sema.check
+          ~limits:{ Limits.default with max_interned_string_bytes = 3 }
+          deduplicated_strings));
+  let cumulative_strings =
+    expect_ok
+      (Parser.parse
+         (source
+            "fn f() void { a ptr[const u8] = \"ab\"\n\
+            \ return }\n\
+             fn g() void { b ptr[const u8] = \"cd\"\n\
+            \ return }\n"))
+  in
+  ignore
+    (expect_ok
+       (Sema.check
+          ~limits:{ Limits.default with max_interned_string_bytes = 4 }
+          cumulative_strings));
+  (match
+     Sema.check
+       ~limits:{ Limits.default with max_interned_string_bytes = 3 }
+       cumulative_strings
+   with
+  | Error diagnostics ->
+      let rendered = Diag.render_all ~source:None diagnostics in
+      assert (
+        contains rendered "interned string data exceeds the configured limit of 3 bytes");
+      assert (contains rendered "test.fas:3:")
+  | Ok _ -> assert false);
+  let ordering_strings =
+    expect_ok
+      (Parser.parse
+         (source
+            "fn f() void { a ptr[const u8] = \"ab\"\n\
+            \ return }\n\
+             fn g() void { b ptr[const u8] = \"cde\"\n\
+            \ return }\n"))
+  in
+  ignore
+    (expect_ok
+       (Sema.check
+          ~limits:{ Limits.default with max_interned_string_bytes = 5 }
+          ordering_strings));
+  (match
+     Sema.check
+       ~limits:{ Limits.default with max_interned_string_bytes = 4 }
+       ordering_strings
+   with
+  | Error diagnostics ->
+      let rendered = Diag.render_all ~source:None diagnostics in
+      assert (
+        contains rendered "interned string data exceeds the configured limit of 4 bytes");
+      assert (contains rendered "test.fas:3:")
   | Ok _ -> assert false);
   (match Lexer.lex (source "/* unterminated") with
   | Ok _ -> assert false

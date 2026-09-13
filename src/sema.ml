@@ -39,6 +39,8 @@ type context = {
   mutable string_ids : (string * int) list;
   ret_ty : Hir.ty;
   limits : Limits.t;
+  mutable string_bytes_used : int;
+  string_bytes_budget : int;
 }
 
 let lookup_top_level name bindings =
@@ -205,7 +207,20 @@ let intern_string c s =
       let i = List.length c.strings in
       c.strings <- c.strings @ [ s ];
       c.string_ids <- (s, i) :: c.string_ids;
+      c.string_bytes_used <- c.string_bytes_used + String.length s;
       i
+
+let check_string_budget c span s =
+  match List.assoc_opt s c.string_ids with
+  | Some _ -> Ok ()
+  | None ->
+      let size = String.length s in
+      let budget = c.string_bytes_budget in
+      if size > budget || c.string_bytes_used > budget - size then
+        error span
+          (Printf.sprintf
+             "interned string data exceeds the configured limit of %d bytes" budget)
+      else Ok ()
 
 let with_dead_check c dead check = Sema_flow.with_dead_check c.flow dead check
 
@@ -387,6 +402,7 @@ and check_expr (c : context) expected = function
         error s "C string literal cannot contain embedded NUL"
       else
         let value = if cstr then v ^ "\000" else v in
+        let* () = check_string_budget c s value in
         Ok (Hir.EString (intern_string c value, s))
   | Ast.Ident (n, s) -> (
       match lookup_local n c with
@@ -1730,6 +1746,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
       string_ids = [];
       ret_ty;
       limits;
+      string_bytes_used = 0;
+      string_bytes_budget = max_int;
     }
   in
   let rec has_generic_arguments = function
@@ -3371,6 +3389,7 @@ let check ?(limits = Limits.default) program =
       program.items
   in
   let all_strings = ref [] and funcs = ref [] in
+  let string_bytes_pool_used = ref 0 in
   let hir_linkage = function
     | Ast.External_c -> Hir.External_c
     | Ast.Internal -> Hir.Internal
@@ -3392,6 +3411,8 @@ let check ?(limits = Limits.default) program =
       string_ids = List.mapi (fun i value -> (value, i)) !all_strings;
       ret_ty;
       limits;
+      string_bytes_used = !string_bytes_pool_used;
+      string_bytes_budget = limits.Limits.max_interned_string_bytes;
     }
   in
   let hir_params params =
@@ -3417,6 +3438,7 @@ let check ?(limits = Limits.default) program =
       else Ok ()
     in
     all_strings := context.strings;
+    string_bytes_pool_used := context.string_bytes_used;
     Ok
       ({ Hir.name; params; ret; body = Hir.Statements body; linkage; variadic }
         : Hir.func)
