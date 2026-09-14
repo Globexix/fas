@@ -1861,6 +1861,48 @@ let () =
           if not (contains rendered "not a normal definition") then
             failwith "no-inline: raw assembly diagnostic changed"
       | Ok _ -> failwith "no-inline: raw assembly was accepted");
+  let budget_source_path = Filename.temp_file "fas-budget-source-" ".fas" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove budget_source_path)
+    (fun () ->
+      let channel = open_out_bin budget_source_path in
+      output_string channel "fn main() i32 {\n  s ptr[const u8] = \"";
+      output_string channel (String.make 3_999_999 'A');
+      output_string channel "\"\n  return 0\n}\n";
+      close_out channel;
+      let expect_budget_rejection config label =
+        match Driver.run config with
+        | Error diagnostics ->
+            let rendered = Diag.render_all ~source:None diagnostics in
+            if
+              not
+                (contains rendered
+                   "rendered LLVM text exceeds the configured limit of 4000000 bytes")
+            then failwith (label ^ ": unexpected diagnostic: " ^ rendered)
+        | Ok _ -> failwith (label ^ ": oversized render was accepted")
+      in
+      let llvm_output_path = Filename.temp_file "fas-budget-output-" ".ll" in
+      Sys.remove llvm_output_path;
+      Fun.protect
+        ~finally:(fun () ->
+          if Sys.file_exists llvm_output_path then Sys.remove llvm_output_path)
+        (fun () ->
+          let config =
+            cli_run [ "--emit-llvm"; "-o"; llvm_output_path; budget_source_path ]
+          in
+          expect_budget_rejection config "budget";
+          if Sys.file_exists llvm_output_path then
+            failwith "budget: rejected emission wrote output");
+      let asm_output_path = Filename.temp_file "fas-budget-asm-" ".s" in
+      Sys.remove asm_output_path;
+      Fun.protect
+        ~finally:(fun () ->
+          if Sys.file_exists asm_output_path then Sys.remove asm_output_path)
+        (fun () ->
+          let config = cli_run [ "-S"; "-o"; asm_output_path; budget_source_path ] in
+          expect_budget_rejection config "budget asm";
+          if Sys.file_exists asm_output_path then
+            failwith "budget: rejected assembly emission wrote output"));
   semantic_error "fas-002-switch-default-init-leak" "use of uninitialized local `x`"
     "fn main() i32 {\n\
     \     x i32\n\

@@ -917,6 +917,94 @@ let () =
   assert (
     Ir.render_bounded ~budget:rendered_bytes rendered_module
     = Ir.render_bounded ~budget:rendered_bytes rendered_module);
+  (match Ir.render_bounded ~budget:(-1) rendered_module with
+  | Error message -> assert (message = "rendered LLVM text budget must not be negative")
+  | Ok _ -> assert false);
+  (match Ir.render_bounded ~budget:min_int rendered_module with
+  | Error message -> assert (message = "rendered LLVM text budget must not be negative")
+  | Ok _ -> assert false);
+  let multi_block =
+    ir_module
+      [
+        {
+          (ir_function
+             [
+               ir_block 0 (Ir.CondBr (Ir.Const (Ir.I1, 1L), 1, 2));
+               ir_block 1 (Ir.Br 2);
+               ir_block 2 (Ir.Ret (Some (Ir.I32, Ir.Const (Ir.I32, 0L))));
+             ])
+          with
+          Ir.name = "flow";
+          Ir.ret = Ir.I32;
+        };
+      ]
+  in
+  assert (Ir.validate multi_block = Ok ());
+  let multi_block_expected =
+    "; ModuleID = 'fas'\n\
+     source_filename = \"fas\"\n\
+     target datalayout = \
+     \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n\
+     target triple = \"x86_64-unknown-linux-gnu\"\n\n\
+     define internal i32 @flow() {\n\
+     b0:\n\
+    \  br i1 true, label %b1, label %b2\n\
+     b1:\n\
+    \  br label %b2\n\
+     b2:\n\
+    \  ret i32 0\n\
+     }\n"
+  in
+  assert (Ir.render multi_block = multi_block_expected);
+  assert (
+    Ir.render_bounded ~budget:(String.length multi_block_expected) multi_block
+    = Ok multi_block_expected);
+  let verify_path = Filename.temp_file "fas-render-verify-" ".ll" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove verify_path)
+    (fun () ->
+      let channel = open_out_bin verify_path in
+      output_string channel multi_block_expected;
+      close_out channel;
+      match
+        Process.run [| "opt-22"; "-passes=verify"; "-disable-output"; verify_path |]
+      with
+      | Ok _ -> ()
+      | Error failure ->
+          failwith
+            ("opt-22 rejected rendered multi-block LLVM: " ^ failure.Process.stderr));
+  let wide_module =
+    let params =
+      List.init 100_000 (fun i ->
+          { Ir.name = "p" ^ string_of_int i; ty = Ir.I8; extension = Ir.No_extension })
+    in
+    let args =
+      List.init 100_000 (fun _ -> (Ir.I8, Ir.No_extension, Ir.Const (Ir.I8, 1L)))
+    in
+    ir_module
+      [
+        { (ir_function []) with Ir.name = "wide"; Ir.params };
+        {
+          (ir_function
+             [
+               ir_block
+                 ~instrs:[ Ir.Call (None, Ir.No_extension, Ir.Void, "wide", args) ]
+                 0 (Ir.Ret None);
+             ])
+          with
+          Ir.name = "caller";
+        };
+      ]
+  in
+  assert (Ir.validate wide_module = Ok ());
+  (match Ir.render_bounded ~budget:1024 wide_module with
+  | Error message ->
+      assert (message = "rendered LLVM text exceeds the configured limit of 1024 bytes")
+  | Ok _ -> assert false);
+  let wide_text = Ir.render wide_module in
+  (match Ir.render_bounded ~budget:(String.length wide_text) wide_module with
+  | Ok text -> assert (text = wide_text)
+  | Error _ -> assert false);
   let func_string_ids (func : Hir.func) =
     let from_expr = function Hir.EString (id, _) -> [ id ] | _ -> [] in
     match func.Hir.body with

@@ -71,6 +71,7 @@ let build_assembly config ir llc opt_path asm_path =
   Ok assembly
 
 let emit_tools_unprotected config ir =
+  let* ll_text = render_ir ir in
   let ll_path = Filename.temp_file "fas-module-" ".ll" in
   let opt_path = Filename.temp_file "fas-opt-" ".ll" in
   let asm_path = Filename.temp_file "fas-module-" ".s" in
@@ -78,7 +79,6 @@ let emit_tools_unprotected config ir =
     if not config.Cli.keep then List.iter remove [ ll_path; opt_path; asm_path ]
   in
   Fun.protect ~finally:cleanup (fun () ->
-      let* ll_text = render_ir ir in
       write_file ll_path ll_text;
       let opt = tool "FAS_OPT" "opt-22" in
       let llc = tool "FAS_LLC" "llc-22" in

@@ -957,24 +957,31 @@ let extension_attr = function
   | Sign_extension -> " signext"
   | Zero_extension -> " zeroext"
 
-let value_name = function
-  | Const (I1, 0L) -> "false"
-  | Const (I1, _) -> "true"
-  | Const (_, v) -> Int64.to_string v
+let emit_value emit = function
+  | Const (I1, 0L) -> emit "false"
+  | Const (I1, _) -> emit "true"
+  | Const (_, v) -> emit (Int64.to_string v)
   | Const_vector (Vector (_, element_ty), values) ->
-      "<"
-      ^ String.concat ", "
-          (List.map
-             (fun value -> ty_name element_ty ^ " " ^ Int64.to_string value)
-             values)
-      ^ ">"
+      emit "<";
+      List.iteri
+        (fun i value ->
+          if i > 0 then emit ", ";
+          emit (ty_name element_ty);
+          emit " ";
+          emit (Int64.to_string value))
+        values;
+      emit ">"
   | Const_vector (_, _) -> invalid_arg "vector constant requires a vector type"
-  | Null _ -> "null"
-  | Undef _ -> "poison"
-  | Zero _ -> "zeroinitializer"
-  | Local (i, _) -> Printf.sprintf "%%v%d" i
-  | Param (n, _) -> "%" ^ n
-  | Global (n, _) -> symbol n
+  | Null _ -> emit "null"
+  | Undef _ -> emit "poison"
+  | Zero _ -> emit "zeroinitializer"
+  | Local (i, _) ->
+      emit "%v";
+      emit (string_of_int i)
+  | Param (n, _) ->
+      emit "%";
+      emit n
+  | Global (n, _) -> emit (symbol n)
 
 let bin_name = function
   | Add -> "add"
@@ -1003,253 +1010,404 @@ let cmp_name = function
   | Ugt -> "ugt"
   | Uge -> "uge"
 
-let instr_line = function
+let emit_instr emit = function
   | Bin (i, op, t, a, b) ->
-      Printf.sprintf "  %%v%d = %s %s %s, %s" i (bin_name op) (ty_name t) (value_name a)
-        (value_name b)
+      emit "  %v";
+      emit (string_of_int i);
+      emit " = ";
+      emit (bin_name op);
+      emit " ";
+      emit (ty_name t);
+      emit " ";
+      emit_value emit a;
+      emit ", ";
+      emit_value emit b
   | Cmp (i, c, t, a, b) ->
-      Printf.sprintf "  %%v%d = icmp %s %s %s, %s" i (cmp_name c) (ty_name t)
-        (value_name a) (value_name b)
-  | Alloca (i, t, a) -> Printf.sprintf "  %%v%d = alloca %s, align %d" i (ty_name t) a
+      emit "  %v";
+      emit (string_of_int i);
+      emit " = icmp ";
+      emit (cmp_name c);
+      emit " ";
+      emit (ty_name t);
+      emit " ";
+      emit_value emit a;
+      emit ", ";
+      emit_value emit b
+  | Alloca (i, t, a) ->
+      emit "  %v";
+      emit (string_of_int i);
+      emit " = alloca ";
+      emit (ty_name t);
+      emit ", align ";
+      emit (string_of_int a)
   | Load (i, t, p, a) ->
-      Printf.sprintf "  %%v%d = load %s, ptr %s, align %d" i (ty_name t) (value_name p)
-        a
+      emit "  %v";
+      emit (string_of_int i);
+      emit " = load ";
+      emit (ty_name t);
+      emit ", ptr ";
+      emit_value emit p;
+      emit ", align ";
+      emit (string_of_int a)
   | Store (t, v, p, a) ->
-      Printf.sprintf "  store %s %s, ptr %s, align %d" (ty_name t) (value_name v)
-        (value_name p) a
+      emit "  store ";
+      emit (ty_name t);
+      emit " ";
+      emit_value emit v;
+      emit ", ptr ";
+      emit_value emit p;
+      emit ", align ";
+      emit (string_of_int a)
   | Gep (i, t, p, idxs) ->
-      let one = function
-        | Zero -> "i64 0"
-        | Index v -> ty_name (value_ty v) ^ " " ^ value_name v
-      in
-      Printf.sprintf "  %%v%d = getelementptr %s, ptr %s, %s" i (ty_name t)
-        (value_name p)
-        (String.concat ", " (List.map one idxs))
+      emit "  %v";
+      emit (string_of_int i);
+      emit " = getelementptr ";
+      emit (ty_name t);
+      emit ", ptr ";
+      emit_value emit p;
+      emit ", ";
+      List.iteri
+        (fun i idx ->
+          if i > 0 then emit ", ";
+          match idx with
+          | Zero -> emit "i64 0"
+          | Index v ->
+              emit (ty_name (value_ty v));
+              emit " ";
+              emit_value emit v)
+        idxs
   | Cast (i, k, st, v, dt) ->
-      Printf.sprintf "  %%v%d = %s %s %s to %s" i k (ty_name st) (value_name v)
-        (ty_name dt)
-  | Call (Some i, extension, t, n, args) ->
-      Printf.sprintf "  %%v%d = call %s%s %s(%s)" i (extension_name extension)
-        (ty_name t) (symbol n)
-        (String.concat ", "
-           (List.map
-              (fun (t, extension, v) ->
-                ty_name t ^ " " ^ extension_name extension ^ value_name v)
-              args))
-  | Call (None, extension, t, n, args) ->
-      Printf.sprintf "  call %s%s %s(%s)" (extension_name extension) (ty_name t)
-        (symbol n)
-        (String.concat ", "
-           (List.map
-              (fun (t, extension, v) ->
-                ty_name t ^ " " ^ extension_name extension ^ value_name v)
-              args))
+      emit "  %v";
+      emit (string_of_int i);
+      emit " = ";
+      emit k;
+      emit " ";
+      emit (ty_name st);
+      emit " ";
+      emit_value emit v;
+      emit " to ";
+      emit (ty_name dt)
+  | Call (result, extension, t, n, args) ->
+      (match result with
+      | Some i ->
+          emit "  %v";
+          emit (string_of_int i);
+          emit " = call "
+      | None -> emit "  call ");
+      emit (extension_name extension);
+      emit (ty_name t);
+      emit " ";
+      emit (symbol n);
+      emit "(";
+      List.iteri
+        (fun i (t, extension, v) ->
+          if i > 0 then emit ", ";
+          emit (ty_name t);
+          emit " ";
+          emit (extension_name extension);
+          emit_value emit v)
+        args;
+      emit ")"
   | Phi (i, t, xs) ->
-      Printf.sprintf "  %%v%d = phi %s %s" i (ty_name t)
-        (String.concat ", "
-           (List.map (fun (v, b) -> Printf.sprintf "[ %s, %%b%d ]" (value_name v) b) xs))
+      emit "  %v";
+      emit (string_of_int i);
+      emit " = phi ";
+      emit (ty_name t);
+      emit " ";
+      List.iteri
+        (fun i (v, b) ->
+          if i > 0 then emit ", ";
+          emit "[ ";
+          emit_value emit v;
+          emit ", %b";
+          emit (string_of_int b);
+          emit " ]")
+        xs
   | Select (i, c, a, b) ->
-      Printf.sprintf "  %%v%d = select %s %s, %s %s, %s %s" i
-        (ty_name (value_ty c))
-        (value_name c)
-        (ty_name (value_ty a))
-        (value_name a)
-        (ty_name (value_ty b))
-        (value_name b)
+      emit "  %v";
+      emit (string_of_int i);
+      emit " = select ";
+      emit (ty_name (value_ty c));
+      emit " ";
+      emit_value emit c;
+      emit ", ";
+      emit (ty_name (value_ty a));
+      emit " ";
+      emit_value emit a;
+      emit ", ";
+      emit (ty_name (value_ty b));
+      emit " ";
+      emit_value emit b
   | Extract (i, vt, v, l) ->
-      Printf.sprintf "  %%v%d = extractelement %s %s, %s %s" i (ty_name vt)
-        (value_name v)
-        (ty_name (value_ty l))
-        (value_name l)
+      emit "  %v";
+      emit (string_of_int i);
+      emit " = extractelement ";
+      emit (ty_name vt);
+      emit " ";
+      emit_value emit v;
+      emit ", ";
+      emit (ty_name (value_ty l));
+      emit " ";
+      emit_value emit l
   | Insert (i, vt, v, l, x) ->
-      Printf.sprintf "  %%v%d = insertelement %s %s, %s %s, %s %s" i (ty_name vt)
-        (value_name v)
-        (ty_name (value_ty x))
-        (value_name x)
-        (ty_name (value_ty l))
-        (value_name l)
+      emit "  %v";
+      emit (string_of_int i);
+      emit " = insertelement ";
+      emit (ty_name vt);
+      emit " ";
+      emit_value emit v;
+      emit ", ";
+      emit (ty_name (value_ty x));
+      emit " ";
+      emit_value emit x;
+      emit ", ";
+      emit (ty_name (value_ty l));
+      emit " ";
+      emit_value emit l
   | Shuffle_zero (i, vt, v) ->
       let n = match vt with Vector (n, _) -> n | _ -> 0 in
-      Printf.sprintf
-        "  %%v%d = shufflevector %s %s, %s poison, <%d x i32> zeroinitializer" i
-        (ty_name vt) (value_name v) (ty_name vt) n
+      emit "  %v";
+      emit (string_of_int i);
+      emit " = shufflevector ";
+      emit (ty_name vt);
+      emit " ";
+      emit_value emit v;
+      emit ", ";
+      emit (ty_name vt);
+      emit " poison, <";
+      emit (string_of_int n);
+      emit " x i32> zeroinitializer"
   | String_ptr (i, index, n) ->
-      Printf.sprintf "  %%v%d = getelementptr [%d x i8], ptr @.str.%d, i64 0, i64 0" i n
-        index
+      emit "  %v";
+      emit (string_of_int i);
+      emit " = getelementptr [";
+      emit (string_of_int n);
+      emit " x i8], ptr @.str.";
+      emit (string_of_int index);
+      emit ", i64 0, i64 0"
   | Global_ptr (i, n, t) ->
-      Printf.sprintf "  %%v%d = getelementptr %s, ptr @%s, i64 0" i (ty_name t) n
-  | Trap -> "  call void @llvm.trap()"
+      emit "  %v";
+      emit (string_of_int i);
+      emit " = getelementptr ";
+      emit (ty_name t);
+      emit ", ptr @";
+      emit n;
+      emit ", i64 0"
+  | Trap -> emit "  call void @llvm.trap()"
 
-let term_line = function
-  | Ret None -> "  ret void"
-  | Ret (Some (t, v)) -> Printf.sprintf "  ret %s %s" (ty_name t) (value_name v)
-  | Br b -> Printf.sprintf "  br label %%b%d" b
+let instr_line instr =
+  let buffer = Buffer.create 64 in
+  emit_instr (Buffer.add_string buffer) instr;
+  Buffer.contents buffer
+
+let emit_term emit = function
+  | Ret None -> emit "  ret void"
+  | Ret (Some (t, v)) ->
+      emit "  ret ";
+      emit (ty_name t);
+      emit " ";
+      emit_value emit v
+  | Br b ->
+      emit "  br label %b";
+      emit (string_of_int b)
   | CondBr (c, a, b) ->
-      Printf.sprintf "  br i1 %s, label %%b%d, label %%b%d" (value_name c) a b
+      emit "  br i1 ";
+      emit_value emit c;
+      emit ", label %b";
+      emit (string_of_int a);
+      emit ", label %b";
+      emit (string_of_int b)
   | Switch (t, v, cases, d) ->
-      Printf.sprintf "  switch %s %s, label %%b%d [ %s ]" (ty_name t) (value_name v) d
-        (String.concat " "
-           (List.map
-              (fun (k, b) -> Printf.sprintf "%s %Ld, label %%b%d" (ty_name t) k b)
-              cases))
-  | Unreachable -> "  unreachable"
+      emit "  switch ";
+      emit (ty_name t);
+      emit " ";
+      emit_value emit v;
+      emit ", label %b";
+      emit (string_of_int d);
+      emit " [";
+      emit " ";
+      List.iteri
+        (fun i (k, b) ->
+          if i > 0 then emit " ";
+          emit (ty_name t);
+          emit " ";
+          emit (Int64.to_string k);
+          emit ", label %b";
+          emit (string_of_int b))
+        cases;
+      emit " ]"
+  | Unreachable -> emit "  unreachable"
 
-let param_string named p =
-  ty_name p.ty ^ extension_attr p.extension ^ if named then " %" ^ p.name else ""
+let term_line terminator =
+  let buffer = Buffer.create 64 in
+  emit_term (Buffer.add_string buffer) terminator;
+  Buffer.contents buffer
+
+exception Render_exhausted
 
 let render_bounded ~budget m =
-  let buffer = Buffer.create 4096 in
-  let exhausted = ref false in
-  let add s =
-    if not !exhausted then
-      if Buffer.length buffer > budget - String.length s then exhausted := true
+  if budget < 0 then Error "rendered LLVM text budget must not be negative"
+  else
+    let buffer = Buffer.create 4096 in
+    let add s =
+      if Buffer.length buffer > budget - String.length s then raise Render_exhausted
       else Buffer.add_string buffer s
-  in
-  let newline () = add "\n" in
-  let add_escaped_bytes s =
-    let len = String.length s in
-    let plain j =
-      let n = Char.code s.[j] in
-      n >= 32 && n < 127 && s.[j] <> '"' && s.[j] <> '\\'
     in
-    let rec run i =
-      if i < len then
-        if plain i then (
-          let rec end_of_run j = if j < len && plain j then end_of_run (j + 1) else j in
-          let stop = min (end_of_run i) (i + 256) in
-          add (String.sub s i (stop - i));
-          run stop)
-        else (
-          add (Printf.sprintf "\\%02X" (Char.code s.[i]));
-          run (i + 1))
+    let newline () = add "\n" in
+    let add_escaped_bytes s =
+      let len = String.length s in
+      let plain j =
+        let n = Char.code s.[j] in
+        n >= 32 && n < 127 && s.[j] <> '"' && s.[j] <> '\\'
+      in
+      let rec run i =
+        if i < len then
+          if plain i then (
+            let rec next_escape j =
+              if j < len && plain j then next_escape (j + 1) else j
+            in
+            let escape = next_escape i in
+            let rec emit_chunk from =
+              if from < escape then (
+                let stop = min escape (from + 256) in
+                add (String.sub s from (stop - from));
+                emit_chunk stop)
+            in
+            emit_chunk i;
+            run escape)
+          else (
+            add (Printf.sprintf "\\%02X" (Char.code s.[i]));
+            run (i + 1))
+      in
+      run 0
     in
-    run 0
-  in
-  let add_params named variadic params =
-    let emitted = ref false in
-    List.iter
-      (fun (p : param) ->
-        if !emitted then add ", " else emitted := true;
-        add (ty_name p.ty);
-        add (extension_attr p.extension);
-        if named then (
-          add " %";
-          add p.name))
-      params;
-    if variadic then if !emitted then add ", ..." else add "..."
-  in
-  add "; ModuleID = 'fas'";
-  newline ();
-  add "source_filename = \"fas\"";
-  newline ();
-  add "target datalayout = \"";
-  add m.data_layout;
-  add "\"";
-  newline ();
-  add "target triple = \"";
-  add m.target_triple;
-  add "\"";
-  newline ();
-  newline ();
-  List.iter
-    (fun s ->
-      add (struct_name s.name);
-      add " = type { ";
-      List.iteri
-        (fun i ty ->
-          if i > 0 then add ", ";
-          add (ty_name ty))
-        s.fields;
-      if s.tail_padding <> 0 then (
-        if s.fields <> [] then add ", ";
-        add "[";
-        add (string_of_int s.tail_padding);
-        add " x i8]");
-      add " }";
-      newline ())
-    m.structs;
-  List.iter
-    (function
-      | String_global { name; bytes } ->
-          add "@";
-          add name;
-          add " = private unnamed_addr constant [";
-          add (string_of_int (String.length bytes));
-          add " x i8] c\"";
-          add_escaped_bytes bytes;
-          add "\"";
-          newline ()
-      | Array_global { name; elem_ty; elems; align } ->
-          add "@";
-          add name;
-          add " = private unnamed_addr constant [";
-          add (string_of_int (List.length elems));
-          add " x ";
-          add (ty_name elem_ty);
-          add "] [";
+    let add_params named variadic params =
+      let emitted = ref false in
+      List.iter
+        (fun (p : param) ->
+          if !emitted then add ", " else emitted := true;
+          add (ty_name p.ty);
+          add (extension_attr p.extension);
+          if named then (
+            add " %";
+            add p.name))
+        params;
+      if variadic then if !emitted then add ", ..." else add "..."
+    in
+    try
+      add "; ModuleID = 'fas'";
+      newline ();
+      add "source_filename = \"fas\"";
+      newline ();
+      add "target datalayout = \"";
+      add m.data_layout;
+      add "\"";
+      newline ();
+      add "target triple = \"";
+      add m.target_triple;
+      add "\"";
+      newline ();
+      newline ();
+      List.iter
+        (fun s ->
+          add (struct_name s.name);
+          add " = type { ";
           List.iteri
-            (fun i v ->
+            (fun i ty ->
               if i > 0 then add ", ";
-              add (ty_name elem_ty);
-              add " ";
-              add (Int64.to_string v))
-            elems;
-          add "], align ";
-          add (string_of_int align);
+              add (ty_name ty))
+            s.fields;
+          if s.tail_padding <> 0 then (
+            if s.fields <> [] then add ", ";
+            add "[";
+            add (string_of_int s.tail_padding);
+            add " x i8]");
+          add " }";
           newline ())
-    m.globals;
-  List.iter
-    (fun f ->
-      (if f.blocks = [] || Option.is_some f.asm_body then (
-         add "declare ";
-         add (extension_name f.ret_extension);
-         add (ty_name f.ret);
-         add " ";
-         add (symbol f.name);
-         add "(";
-         add_params (f.blocks <> []) f.variadic f.params;
-         add ")")
-       else
-         let link = if f.linkage = Internal then "internal " else "" in
-         let no_inline =
-           match m.no_inline_function with
-           | Some name when name = f.name -> " noinline"
-           | _ -> ""
-         in
-         add "define ";
-         add link;
-         add (extension_name f.ret_extension);
-         add (ty_name f.ret);
-         add " ";
-         add (symbol f.name);
-         add "(";
-         add_params (f.blocks <> []) f.variadic f.params;
-         add ")";
-         add no_inline;
-         add " {";
-         newline ();
-         List.iter
-           (fun b ->
-             add "b";
-             add (string_of_int b.id);
-             add ":";
-             List.iter
-               (fun instr ->
-                 newline ();
-                 add (instr_line instr))
-               b.instrs;
+        m.structs;
+      List.iter
+        (function
+          | String_global { name; bytes } ->
+              add "@";
+              add name;
+              add " = private unnamed_addr constant [";
+              add (string_of_int (String.length bytes));
+              add " x i8] c\"";
+              add_escaped_bytes bytes;
+              add "\"";
+              newline ()
+          | Array_global { name; elem_ty; elems; align } ->
+              add "@";
+              add name;
+              add " = private unnamed_addr constant [";
+              add (string_of_int (List.length elems));
+              add " x ";
+              add (ty_name elem_ty);
+              add "] [";
+              List.iteri
+                (fun i v ->
+                  if i > 0 then add ", ";
+                  add (ty_name elem_ty);
+                  add " ";
+                  add (Int64.to_string v))
+                elems;
+              add "], align ";
+              add (string_of_int align);
+              newline ())
+        m.globals;
+      List.iter
+        (fun f ->
+          (if f.blocks = [] || Option.is_some f.asm_body then (
+             add "declare ";
+             add (extension_name f.ret_extension);
+             add (ty_name f.ret);
+             add " ";
+             add (symbol f.name);
+             add "(";
+             add_params (f.blocks <> []) f.variadic f.params;
+             add ")")
+           else
+             let link = if f.linkage = Internal then "internal " else "" in
+             let no_inline =
+               match m.no_inline_function with
+               | Some name when name = f.name -> " noinline"
+               | _ -> ""
+             in
+             add "define ";
+             add link;
+             add (extension_name f.ret_extension);
+             add (ty_name f.ret);
+             add " ";
+             add (symbol f.name);
+             add "(";
+             add_params (f.blocks <> []) f.variadic f.params;
+             add ")";
+             add no_inline;
+             add " {";
              newline ();
-             add (term_line b.terminator))
-           f.blocks;
-         newline ();
-         add "}");
-      newline ())
-    m.funcs;
-  if !exhausted then
-    Error
-      (Printf.sprintf "rendered LLVM text exceeds the configured limit of %d bytes"
-         budget)
-  else Ok (Buffer.contents buffer)
+             List.iteri
+               (fun i b ->
+                 if i > 0 then newline ();
+                 add "b";
+                 add (string_of_int b.id);
+                 add ":";
+                 List.iter
+                   (fun instr ->
+                     newline ();
+                     emit_instr add instr)
+                   b.instrs;
+                 newline ();
+                 emit_term add b.terminator)
+               f.blocks;
+             newline ();
+             add "}");
+          newline ())
+        m.funcs;
+      Ok (Buffer.contents buffer)
+    with Render_exhausted ->
+      Error
+        (Printf.sprintf "rendered LLVM text exceeds the configured limit of %d bytes"
+           budget)
 
 let render m =
   match render_bounded ~budget:max_int m with
