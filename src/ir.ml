@@ -95,14 +95,12 @@ type module_ = {
   no_inline_function : string option;
 }
 
+let safe_identifier_char = function
+  | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '.' | '$' -> true
+  | _ -> false
+
 let quote_identifier n =
-  if
-    String.for_all
-      (function
-        | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '.' | '$' -> true | _ -> false)
-      n
-  then n
-  else "\"" ^ String.escaped n ^ "\""
+  if String.for_all safe_identifier_char n then n else "\"" ^ String.escaped n ^ "\""
 
 let struct_name n = "%" ^ quote_identifier ("struct." ^ n)
 
@@ -938,15 +936,6 @@ let validate module_ =
   in
   validate_functions module_.funcs
 
-let symbol n =
-  if
-    String.for_all
-      (function
-        | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '.' | '$' -> true | _ -> false)
-      n
-  then "@" ^ n
-  else "@\"" ^ String.escaped n ^ "\""
-
 let extension_name = function
   | No_extension -> ""
   | Sign_extension -> "signext "
@@ -957,31 +946,90 @@ let extension_attr = function
   | Sign_extension -> " signext"
   | Zero_extension -> " zeroext"
 
-let emit_value emit = function
-  | Const (I1, 0L) -> emit "false"
-  | Const (I1, _) -> emit "true"
-  | Const (_, v) -> emit (Int64.to_string v)
+exception Render_exhausted
+
+type sink = { text : string -> unit; room : int -> bool }
+
+let emit_escaped_identifier sink n =
+  let len = String.length n in
+  let rec run i =
+    if i < len then (
+      let stop = min len (i + 256) in
+      sink.text (String.escaped (String.sub n i (stop - i)));
+      run stop)
+  in
+  run 0
+
+let emit_symbol sink n =
+  if not (sink.room (String.length n + 1)) then raise Render_exhausted;
+  if String.for_all safe_identifier_char n then (
+    sink.text "@";
+    sink.text n)
+  else (
+    sink.text "@\"";
+    emit_escaped_identifier sink n;
+    sink.text "\"")
+
+let emit_struct_name sink n =
+  if not (sink.room (String.length n + 8)) then raise Render_exhausted;
+  if String.for_all safe_identifier_char n then (
+    sink.text "%struct.";
+    sink.text n)
+  else (
+    sink.text "%\"struct.";
+    emit_escaped_identifier sink n;
+    sink.text "\"")
+
+let emit_ty sink t =
+  let rec go = function
+    | I1 -> sink.text "i1"
+    | I8 -> sink.text "i8"
+    | I16 -> sink.text "i16"
+    | I32 -> sink.text "i32"
+    | I64 -> sink.text "i64"
+    | Ptr _ -> sink.text "ptr"
+    | Vector (n, t) ->
+        sink.text "<";
+        sink.text (string_of_int n);
+        sink.text " x ";
+        go t;
+        sink.text ">"
+    | Struct n -> emit_struct_name sink n
+    | Array (n, t) ->
+        sink.text "[";
+        sink.text (string_of_int n);
+        sink.text " x ";
+        go t;
+        sink.text "]"
+    | Void -> sink.text "void"
+  in
+  go t
+
+let emit_value sink = function
+  | Const (I1, 0L) -> sink.text "false"
+  | Const (I1, _) -> sink.text "true"
+  | Const (_, v) -> sink.text (Int64.to_string v)
   | Const_vector (Vector (_, element_ty), values) ->
-      emit "<";
+      sink.text "<";
       List.iteri
         (fun i value ->
-          if i > 0 then emit ", ";
-          emit (ty_name element_ty);
-          emit " ";
-          emit (Int64.to_string value))
+          if i > 0 then sink.text ", ";
+          emit_ty sink element_ty;
+          sink.text " ";
+          sink.text (Int64.to_string value))
         values;
-      emit ">"
+      sink.text ">"
   | Const_vector (_, _) -> invalid_arg "vector constant requires a vector type"
-  | Null _ -> emit "null"
-  | Undef _ -> emit "poison"
-  | Zero _ -> emit "zeroinitializer"
+  | Null _ -> sink.text "null"
+  | Undef _ -> sink.text "poison"
+  | Zero _ -> sink.text "zeroinitializer"
   | Local (i, _) ->
-      emit "%v";
-      emit (string_of_int i)
+      sink.text "%v";
+      sink.text (string_of_int i)
   | Param (n, _) ->
-      emit "%";
-      emit n
-  | Global (n, _) -> emit (symbol n)
+      sink.text "%";
+      sink.text n
+  | Global (n, _) -> emit_symbol sink n
 
 let bin_name = function
   | Add -> "add"
@@ -1010,240 +1058,238 @@ let cmp_name = function
   | Ugt -> "ugt"
   | Uge -> "uge"
 
-let emit_instr emit = function
+let emit_instr sink = function
   | Bin (i, op, t, a, b) ->
-      emit "  %v";
-      emit (string_of_int i);
-      emit " = ";
-      emit (bin_name op);
-      emit " ";
-      emit (ty_name t);
-      emit " ";
-      emit_value emit a;
-      emit ", ";
-      emit_value emit b
+      sink.text "  %v";
+      sink.text (string_of_int i);
+      sink.text " = ";
+      sink.text (bin_name op);
+      sink.text " ";
+      emit_ty sink t;
+      sink.text " ";
+      emit_value sink a;
+      sink.text ", ";
+      emit_value sink b
   | Cmp (i, c, t, a, b) ->
-      emit "  %v";
-      emit (string_of_int i);
-      emit " = icmp ";
-      emit (cmp_name c);
-      emit " ";
-      emit (ty_name t);
-      emit " ";
-      emit_value emit a;
-      emit ", ";
-      emit_value emit b
+      sink.text "  %v";
+      sink.text (string_of_int i);
+      sink.text " = icmp ";
+      sink.text (cmp_name c);
+      sink.text " ";
+      emit_ty sink t;
+      sink.text " ";
+      emit_value sink a;
+      sink.text ", ";
+      emit_value sink b
   | Alloca (i, t, a) ->
-      emit "  %v";
-      emit (string_of_int i);
-      emit " = alloca ";
-      emit (ty_name t);
-      emit ", align ";
-      emit (string_of_int a)
+      sink.text "  %v";
+      sink.text (string_of_int i);
+      sink.text " = alloca ";
+      emit_ty sink t;
+      sink.text ", align ";
+      sink.text (string_of_int a)
   | Load (i, t, p, a) ->
-      emit "  %v";
-      emit (string_of_int i);
-      emit " = load ";
-      emit (ty_name t);
-      emit ", ptr ";
-      emit_value emit p;
-      emit ", align ";
-      emit (string_of_int a)
+      sink.text "  %v";
+      sink.text (string_of_int i);
+      sink.text " = load ";
+      emit_ty sink t;
+      sink.text ", ptr ";
+      emit_value sink p;
+      sink.text ", align ";
+      sink.text (string_of_int a)
   | Store (t, v, p, a) ->
-      emit "  store ";
-      emit (ty_name t);
-      emit " ";
-      emit_value emit v;
-      emit ", ptr ";
-      emit_value emit p;
-      emit ", align ";
-      emit (string_of_int a)
+      sink.text "  store ";
+      emit_ty sink t;
+      sink.text " ";
+      emit_value sink v;
+      sink.text ", ptr ";
+      emit_value sink p;
+      sink.text ", align ";
+      sink.text (string_of_int a)
   | Gep (i, t, p, idxs) ->
-      emit "  %v";
-      emit (string_of_int i);
-      emit " = getelementptr ";
-      emit (ty_name t);
-      emit ", ptr ";
-      emit_value emit p;
-      emit ", ";
+      sink.text "  %v";
+      sink.text (string_of_int i);
+      sink.text " = getelementptr ";
+      emit_ty sink t;
+      sink.text ", ptr ";
+      emit_value sink p;
+      sink.text ", ";
       List.iteri
         (fun i idx ->
-          if i > 0 then emit ", ";
+          if i > 0 then sink.text ", ";
           match idx with
-          | Zero -> emit "i64 0"
+          | Zero -> sink.text "i64 0"
           | Index v ->
-              emit (ty_name (value_ty v));
-              emit " ";
-              emit_value emit v)
+              emit_ty sink (value_ty v);
+              sink.text " ";
+              emit_value sink v)
         idxs
   | Cast (i, k, st, v, dt) ->
-      emit "  %v";
-      emit (string_of_int i);
-      emit " = ";
-      emit k;
-      emit " ";
-      emit (ty_name st);
-      emit " ";
-      emit_value emit v;
-      emit " to ";
-      emit (ty_name dt)
+      sink.text "  %v";
+      sink.text (string_of_int i);
+      sink.text " = ";
+      sink.text k;
+      sink.text " ";
+      emit_ty sink st;
+      sink.text " ";
+      emit_value sink v;
+      sink.text " to ";
+      emit_ty sink dt
   | Call (result, extension, t, n, args) ->
       (match result with
       | Some i ->
-          emit "  %v";
-          emit (string_of_int i);
-          emit " = call "
-      | None -> emit "  call ");
-      emit (extension_name extension);
-      emit (ty_name t);
-      emit " ";
-      emit (symbol n);
-      emit "(";
+          sink.text "  %v";
+          sink.text (string_of_int i);
+          sink.text " = call "
+      | None -> sink.text "  call ");
+      sink.text (extension_name extension);
+      emit_ty sink t;
+      sink.text " ";
+      emit_symbol sink n;
+      sink.text "(";
       List.iteri
         (fun i (t, extension, v) ->
-          if i > 0 then emit ", ";
-          emit (ty_name t);
-          emit " ";
-          emit (extension_name extension);
-          emit_value emit v)
+          if i > 0 then sink.text ", ";
+          emit_ty sink t;
+          sink.text " ";
+          sink.text (extension_name extension);
+          emit_value sink v)
         args;
-      emit ")"
+      sink.text ")"
   | Phi (i, t, xs) ->
-      emit "  %v";
-      emit (string_of_int i);
-      emit " = phi ";
-      emit (ty_name t);
-      emit " ";
+      sink.text "  %v";
+      sink.text (string_of_int i);
+      sink.text " = phi ";
+      emit_ty sink t;
+      sink.text " ";
       List.iteri
         (fun i (v, b) ->
-          if i > 0 then emit ", ";
-          emit "[ ";
-          emit_value emit v;
-          emit ", %b";
-          emit (string_of_int b);
-          emit " ]")
+          if i > 0 then sink.text ", ";
+          sink.text "[ ";
+          emit_value sink v;
+          sink.text ", %b";
+          sink.text (string_of_int b);
+          sink.text " ]")
         xs
   | Select (i, c, a, b) ->
-      emit "  %v";
-      emit (string_of_int i);
-      emit " = select ";
-      emit (ty_name (value_ty c));
-      emit " ";
-      emit_value emit c;
-      emit ", ";
-      emit (ty_name (value_ty a));
-      emit " ";
-      emit_value emit a;
-      emit ", ";
-      emit (ty_name (value_ty b));
-      emit " ";
-      emit_value emit b
+      sink.text "  %v";
+      sink.text (string_of_int i);
+      sink.text " = select ";
+      emit_ty sink (value_ty c);
+      sink.text " ";
+      emit_value sink c;
+      sink.text ", ";
+      emit_ty sink (value_ty a);
+      sink.text " ";
+      emit_value sink a;
+      sink.text ", ";
+      emit_ty sink (value_ty b);
+      sink.text " ";
+      emit_value sink b
   | Extract (i, vt, v, l) ->
-      emit "  %v";
-      emit (string_of_int i);
-      emit " = extractelement ";
-      emit (ty_name vt);
-      emit " ";
-      emit_value emit v;
-      emit ", ";
-      emit (ty_name (value_ty l));
-      emit " ";
-      emit_value emit l
+      sink.text "  %v";
+      sink.text (string_of_int i);
+      sink.text " = extractelement ";
+      emit_ty sink vt;
+      sink.text " ";
+      emit_value sink v;
+      sink.text ", ";
+      emit_ty sink (value_ty l);
+      sink.text " ";
+      emit_value sink l
   | Insert (i, vt, v, l, x) ->
-      emit "  %v";
-      emit (string_of_int i);
-      emit " = insertelement ";
-      emit (ty_name vt);
-      emit " ";
-      emit_value emit v;
-      emit ", ";
-      emit (ty_name (value_ty x));
-      emit " ";
-      emit_value emit x;
-      emit ", ";
-      emit (ty_name (value_ty l));
-      emit " ";
-      emit_value emit l
+      sink.text "  %v";
+      sink.text (string_of_int i);
+      sink.text " = insertelement ";
+      emit_ty sink vt;
+      sink.text " ";
+      emit_value sink v;
+      sink.text ", ";
+      emit_ty sink (value_ty x);
+      sink.text " ";
+      emit_value sink x;
+      sink.text ", ";
+      emit_ty sink (value_ty l);
+      sink.text " ";
+      emit_value sink l
   | Shuffle_zero (i, vt, v) ->
       let n = match vt with Vector (n, _) -> n | _ -> 0 in
-      emit "  %v";
-      emit (string_of_int i);
-      emit " = shufflevector ";
-      emit (ty_name vt);
-      emit " ";
-      emit_value emit v;
-      emit ", ";
-      emit (ty_name vt);
-      emit " poison, <";
-      emit (string_of_int n);
-      emit " x i32> zeroinitializer"
+      sink.text "  %v";
+      sink.text (string_of_int i);
+      sink.text " = shufflevector ";
+      emit_ty sink vt;
+      sink.text " ";
+      emit_value sink v;
+      sink.text ", ";
+      emit_ty sink vt;
+      sink.text " poison, <";
+      sink.text (string_of_int n);
+      sink.text " x i32> zeroinitializer"
   | String_ptr (i, index, n) ->
-      emit "  %v";
-      emit (string_of_int i);
-      emit " = getelementptr [";
-      emit (string_of_int n);
-      emit " x i8], ptr @.str.";
-      emit (string_of_int index);
-      emit ", i64 0, i64 0"
+      sink.text "  %v";
+      sink.text (string_of_int i);
+      sink.text " = getelementptr [";
+      sink.text (string_of_int n);
+      sink.text " x i8], ptr @.str.";
+      sink.text (string_of_int index);
+      sink.text ", i64 0, i64 0"
   | Global_ptr (i, n, t) ->
-      emit "  %v";
-      emit (string_of_int i);
-      emit " = getelementptr ";
-      emit (ty_name t);
-      emit ", ptr @";
-      emit n;
-      emit ", i64 0"
-  | Trap -> emit "  call void @llvm.trap()"
+      sink.text "  %v";
+      sink.text (string_of_int i);
+      sink.text " = getelementptr ";
+      emit_ty sink t;
+      sink.text ", ptr @";
+      sink.text n;
+      sink.text ", i64 0"
+  | Trap -> sink.text "  call void @llvm.trap()"
 
 let instr_line instr =
   let buffer = Buffer.create 64 in
-  emit_instr (Buffer.add_string buffer) instr;
+  emit_instr { text = Buffer.add_string buffer; room = (fun _ -> true) } instr;
   Buffer.contents buffer
 
-let emit_term emit = function
-  | Ret None -> emit "  ret void"
+let emit_term sink = function
+  | Ret None -> sink.text "  ret void"
   | Ret (Some (t, v)) ->
-      emit "  ret ";
-      emit (ty_name t);
-      emit " ";
-      emit_value emit v
+      sink.text "  ret ";
+      emit_ty sink t;
+      sink.text " ";
+      emit_value sink v
   | Br b ->
-      emit "  br label %b";
-      emit (string_of_int b)
+      sink.text "  br label %b";
+      sink.text (string_of_int b)
   | CondBr (c, a, b) ->
-      emit "  br i1 ";
-      emit_value emit c;
-      emit ", label %b";
-      emit (string_of_int a);
-      emit ", label %b";
-      emit (string_of_int b)
+      sink.text "  br i1 ";
+      emit_value sink c;
+      sink.text ", label %b";
+      sink.text (string_of_int a);
+      sink.text ", label %b";
+      sink.text (string_of_int b)
   | Switch (t, v, cases, d) ->
-      emit "  switch ";
-      emit (ty_name t);
-      emit " ";
-      emit_value emit v;
-      emit ", label %b";
-      emit (string_of_int d);
-      emit " [";
-      emit " ";
+      sink.text "  switch ";
+      emit_ty sink t;
+      sink.text " ";
+      emit_value sink v;
+      sink.text ", label %b";
+      sink.text (string_of_int d);
+      sink.text " [";
+      sink.text " ";
       List.iteri
         (fun i (k, b) ->
-          if i > 0 then emit " ";
-          emit (ty_name t);
-          emit " ";
-          emit (Int64.to_string k);
-          emit ", label %b";
-          emit (string_of_int b))
+          if i > 0 then sink.text " ";
+          emit_ty sink t;
+          sink.text " ";
+          sink.text (Int64.to_string k);
+          sink.text ", label %b";
+          sink.text (string_of_int b))
         cases;
-      emit " ]"
-  | Unreachable -> emit "  unreachable"
+      sink.text " ]"
+  | Unreachable -> sink.text "  unreachable"
 
 let term_line terminator =
   let buffer = Buffer.create 64 in
-  emit_term (Buffer.add_string buffer) terminator;
+  emit_term { text = Buffer.add_string buffer; room = (fun _ -> true) } terminator;
   Buffer.contents buffer
-
-exception Render_exhausted
 
 let render_bounded ~budget m =
   if budget < 0 then Error "rendered LLVM text budget must not be negative"
@@ -1253,6 +1299,7 @@ let render_bounded ~budget m =
       if Buffer.length buffer > budget - String.length s then raise Render_exhausted
       else Buffer.add_string buffer s
     in
+    let sink = { text = add; room = (fun n -> Buffer.length buffer <= budget - n) } in
     let newline () = add "\n" in
     let add_escaped_bytes s =
       let len = String.length s in
@@ -1263,18 +1310,12 @@ let render_bounded ~budget m =
       let rec run i =
         if i < len then
           if plain i then (
-            let rec next_escape j =
-              if j < len && plain j then next_escape (j + 1) else j
+            let rec scan j =
+              if j < len && j - i < 256 && plain j then scan (j + 1) else j
             in
-            let escape = next_escape i in
-            let rec emit_chunk from =
-              if from < escape then (
-                let stop = min escape (from + 256) in
-                add (String.sub s from (stop - from));
-                emit_chunk stop)
-            in
-            emit_chunk i;
-            run escape)
+            let stop = scan i in
+            add (String.sub s i (stop - i));
+            run stop)
           else (
             add (Printf.sprintf "\\%02X" (Char.code s.[i]));
             run (i + 1))
@@ -1286,7 +1327,7 @@ let render_bounded ~budget m =
       List.iter
         (fun (p : param) ->
           if !emitted then add ", " else emitted := true;
-          add (ty_name p.ty);
+          emit_ty sink p.ty;
           add (extension_attr p.extension);
           if named then (
             add " %";
@@ -1310,12 +1351,12 @@ let render_bounded ~budget m =
       newline ();
       List.iter
         (fun s ->
-          add (struct_name s.name);
+          emit_struct_name sink s.name;
           add " = type { ";
           List.iteri
             (fun i ty ->
               if i > 0 then add ", ";
-              add (ty_name ty))
+              emit_ty sink ty)
             s.fields;
           if s.tail_padding <> 0 then (
             if s.fields <> [] then add ", ";
@@ -1342,12 +1383,12 @@ let render_bounded ~budget m =
               add " = private unnamed_addr constant [";
               add (string_of_int (List.length elems));
               add " x ";
-              add (ty_name elem_ty);
+              emit_ty sink elem_ty;
               add "] [";
               List.iteri
                 (fun i v ->
                   if i > 0 then add ", ";
-                  add (ty_name elem_ty);
+                  emit_ty sink elem_ty;
                   add " ";
                   add (Int64.to_string v))
                 elems;
@@ -1360,9 +1401,9 @@ let render_bounded ~budget m =
           (if f.blocks = [] || Option.is_some f.asm_body then (
              add "declare ";
              add (extension_name f.ret_extension);
-             add (ty_name f.ret);
+             emit_ty sink f.ret;
              add " ";
-             add (symbol f.name);
+             emit_symbol sink f.name;
              add "(";
              add_params (f.blocks <> []) f.variadic f.params;
              add ")")
@@ -1376,9 +1417,9 @@ let render_bounded ~budget m =
              add "define ";
              add link;
              add (extension_name f.ret_extension);
-             add (ty_name f.ret);
+             emit_ty sink f.ret;
              add " ";
-             add (symbol f.name);
+             emit_symbol sink f.name;
              add "(";
              add_params (f.blocks <> []) f.variadic f.params;
              add ")";
@@ -1394,10 +1435,10 @@ let render_bounded ~budget m =
                  List.iter
                    (fun instr ->
                      newline ();
-                     emit_instr add instr)
+                     emit_instr sink instr)
                    b.instrs;
                  newline ();
-                 emit_term add b.terminator)
+                 emit_term sink b.terminator)
                f.blocks;
              newline ();
              add "}");

@@ -983,7 +983,6 @@ let () =
     in
     ir_module
       [
-        { (ir_function []) with Ir.name = "wide"; Ir.params };
         {
           (ir_function
              [
@@ -994,6 +993,7 @@ let () =
           with
           Ir.name = "caller";
         };
+        { (ir_function []) with Ir.name = "wide"; Ir.params };
       ]
   in
   assert (Ir.validate wide_module = Ok ());
@@ -1005,6 +1005,38 @@ let () =
   (match Ir.render_bounded ~budget:(String.length wide_text) wide_module with
   | Ok text -> assert (text = wide_text)
   | Error _ -> assert false);
+  let expect_budget_rejection module_ =
+    match Ir.render_bounded ~budget:256 module_ with
+    | Error message ->
+        assert (message = "rendered LLVM text exceeds the configured limit of 256 bytes")
+    | Ok _ -> assert false
+  in
+  let long_name_module =
+    ir_module [ { (ir_function []) with Ir.name = String.make 1_000_000 'a' } ]
+  in
+  assert (Ir.validate long_name_module = Ok ());
+  expect_budget_rejection long_name_module;
+  let long_struct_module =
+    ir_module
+      ~structs:
+        [ { Ir.name = String.make 1_000_000 's'; fields = []; tail_padding = 0 } ]
+      [ ir_function [ ir_block 0 (Ir.Ret None) ] ]
+  in
+  assert (Ir.validate long_struct_module = Ok ());
+  expect_budget_rejection long_struct_module;
+  let long_plain_global =
+    ir_module
+      ~globals:
+        [ Ir.String_global { name = ".str.0"; bytes = String.make 1_000_000 'A' } ]
+      [ ir_function [ ir_block 0 (Ir.Ret None) ] ]
+  in
+  assert (Ir.validate long_plain_global = Ok ());
+  expect_budget_rejection long_plain_global;
+  let quoted_name_module = ir_module [ { (ir_function []) with Ir.name = "a\nb" } ] in
+  assert (Ir.validate quoted_name_module = Ok ());
+  assert (contains (Ir.render quoted_name_module) "@\"a\\nb\"");
+  expect_budget_rejection
+    (ir_module [ { (ir_function []) with Ir.name = String.make 1_000_000 '\n' } ]);
   let func_string_ids (func : Hir.func) =
     let from_expr = function Hir.EString (id, _) -> [ id ] | _ -> [] in
     match func.Hir.body with
