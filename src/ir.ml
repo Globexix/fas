@@ -976,16 +976,6 @@ let value_name = function
   | Param (n, _) -> "%" ^ n
   | Global (n, _) -> symbol n
 
-let quote_bytes s =
-  let b = Buffer.create (String.length s * 2) in
-  String.iter
-    (fun c ->
-      let n = Char.code c in
-      if n >= 32 && n < 127 && c <> '"' && c <> '\\' then Buffer.add_char b c
-      else Buffer.add_string b (Printf.sprintf "\\%02X" n))
-    s;
-  Buffer.contents b
-
 let bin_name = function
   | Add -> "add"
   | Sub -> "sub"
@@ -1107,69 +1097,164 @@ let term_line = function
 let param_string named p =
   ty_name p.ty ^ extension_attr p.extension ^ if named then " %" ^ p.name else ""
 
+let render_bounded ~budget m =
+  let buffer = Buffer.create 4096 in
+  let exhausted = ref false in
+  let add s =
+    if not !exhausted then
+      if Buffer.length buffer > budget - String.length s then exhausted := true
+      else Buffer.add_string buffer s
+  in
+  let newline () = add "\n" in
+  let add_escaped_bytes s =
+    let len = String.length s in
+    let plain j =
+      let n = Char.code s.[j] in
+      n >= 32 && n < 127 && s.[j] <> '"' && s.[j] <> '\\'
+    in
+    let rec run i =
+      if i < len then
+        if plain i then (
+          let rec end_of_run j = if j < len && plain j then end_of_run (j + 1) else j in
+          let stop = min (end_of_run i) (i + 256) in
+          add (String.sub s i (stop - i));
+          run stop)
+        else (
+          add (Printf.sprintf "\\%02X" (Char.code s.[i]));
+          run (i + 1))
+    in
+    run 0
+  in
+  let add_params named variadic params =
+    let emitted = ref false in
+    List.iter
+      (fun (p : param) ->
+        if !emitted then add ", " else emitted := true;
+        add (ty_name p.ty);
+        add (extension_attr p.extension);
+        if named then (
+          add " %";
+          add p.name))
+      params;
+    if variadic then if !emitted then add ", ..." else add "..."
+  in
+  add "; ModuleID = 'fas'";
+  newline ();
+  add "source_filename = \"fas\"";
+  newline ();
+  add "target datalayout = \"";
+  add m.data_layout;
+  add "\"";
+  newline ();
+  add "target triple = \"";
+  add m.target_triple;
+  add "\"";
+  newline ();
+  newline ();
+  List.iter
+    (fun s ->
+      add (struct_name s.name);
+      add " = type { ";
+      List.iteri
+        (fun i ty ->
+          if i > 0 then add ", ";
+          add (ty_name ty))
+        s.fields;
+      if s.tail_padding <> 0 then (
+        if s.fields <> [] then add ", ";
+        add "[";
+        add (string_of_int s.tail_padding);
+        add " x i8]");
+      add " }";
+      newline ())
+    m.structs;
+  List.iter
+    (function
+      | String_global { name; bytes } ->
+          add "@";
+          add name;
+          add " = private unnamed_addr constant [";
+          add (string_of_int (String.length bytes));
+          add " x i8] c\"";
+          add_escaped_bytes bytes;
+          add "\"";
+          newline ()
+      | Array_global { name; elem_ty; elems; align } ->
+          add "@";
+          add name;
+          add " = private unnamed_addr constant [";
+          add (string_of_int (List.length elems));
+          add " x ";
+          add (ty_name elem_ty);
+          add "] [";
+          List.iteri
+            (fun i v ->
+              if i > 0 then add ", ";
+              add (ty_name elem_ty);
+              add " ";
+              add (Int64.to_string v))
+            elems;
+          add "], align ";
+          add (string_of_int align);
+          newline ())
+    m.globals;
+  List.iter
+    (fun f ->
+      (if f.blocks = [] || Option.is_some f.asm_body then (
+         add "declare ";
+         add (extension_name f.ret_extension);
+         add (ty_name f.ret);
+         add " ";
+         add (symbol f.name);
+         add "(";
+         add_params (f.blocks <> []) f.variadic f.params;
+         add ")")
+       else
+         let link = if f.linkage = Internal then "internal " else "" in
+         let no_inline =
+           match m.no_inline_function with
+           | Some name when name = f.name -> " noinline"
+           | _ -> ""
+         in
+         add "define ";
+         add link;
+         add (extension_name f.ret_extension);
+         add (ty_name f.ret);
+         add " ";
+         add (symbol f.name);
+         add "(";
+         add_params (f.blocks <> []) f.variadic f.params;
+         add ")";
+         add no_inline;
+         add " {";
+         newline ();
+         List.iter
+           (fun b ->
+             add "b";
+             add (string_of_int b.id);
+             add ":";
+             List.iter
+               (fun instr ->
+                 newline ();
+                 add (instr_line instr))
+               b.instrs;
+             newline ();
+             add (term_line b.terminator))
+           f.blocks;
+         newline ();
+         add "}");
+      newline ())
+    m.funcs;
+  if !exhausted then
+    Error
+      (Printf.sprintf "rendered LLVM text exceeds the configured limit of %d bytes"
+         budget)
+  else Ok (Buffer.contents buffer)
+
 let render m =
-  let header =
-    [
-      "; ModuleID = 'fas'";
-      "source_filename = \"fas\"";
-      "target datalayout = \"" ^ m.data_layout ^ "\"";
-      "target triple = \"" ^ m.target_triple ^ "\"";
-      "";
-    ]
-  in
-  let structs =
-    List.map
-      (fun s ->
-        let fields = List.map ty_name s.fields in
-        let fields =
-          if s.tail_padding = 0 then fields
-          else fields @ [ Printf.sprintf "[%d x i8]" s.tail_padding ]
-        in
-        Printf.sprintf "%s = type { %s }" (struct_name s.name)
-          (String.concat ", " fields))
-      m.structs
-  in
-  let globals =
-    List.map
-      (function
-        | String_global { name; bytes } ->
-            Printf.sprintf "@%s = private unnamed_addr constant [%d x i8] c\"%s\"" name
-              (String.length bytes) (quote_bytes bytes)
-        | Array_global { name; elem_ty; elems; align } ->
-            let es =
-              String.concat ", "
-                (List.map (fun v -> ty_name elem_ty ^ " " ^ Int64.to_string v) elems)
-            in
-            Printf.sprintf
-              "@%s = private unnamed_addr constant [%d x %s] [%s], align %d" name
-              (List.length elems) (ty_name elem_ty) es align)
-      m.globals
-  in
-  let fn f =
-    let ps = String.concat ", " (List.map (param_string (f.blocks <> [])) f.params) in
-    let ps = if f.variadic then ps ^ if ps = "" then "..." else ", ..." else ps in
-    if f.blocks = [] || Option.is_some f.asm_body then
-      Printf.sprintf "declare %s%s %s(%s)"
-        (extension_name f.ret_extension)
-        (ty_name f.ret) (symbol f.name) ps
-    else
-      let link = if f.linkage = Internal then "internal " else "" in
-      let no_inline =
-        match m.no_inline_function with
-        | Some name when name = f.name -> " noinline"
-        | _ -> ""
-      in
-      Printf.sprintf "define %s%s%s %s(%s)%s {\n%s\n}" link
-        (extension_name f.ret_extension)
-        (ty_name f.ret) (symbol f.name) ps no_inline
-        (String.concat "\n"
-           (List.concat_map
-              (fun b ->
-                (("b" ^ string_of_int b.id ^ ":") :: List.map instr_line b.instrs)
-                @ [ term_line b.terminator ])
-              f.blocks))
-  in
-  String.concat "\n" (header @ structs @ globals @ List.map fn m.funcs) ^ "\n"
+  match render_bounded ~budget:max_int m with
+  | Ok text -> text
+  | Error _ -> assert false
 
 let render_debug m =
   let global = function

@@ -41,6 +41,11 @@ let run_tool label argv =
 let remove path = try Sys.remove path with Sys_error _ -> ()
 let optimization_level level = max 0 (min 3 level)
 
+let render_ir ir =
+  match Ir.render_bounded ~budget:Limits.default.Limits.max_rendered_ir_bytes ir with
+  | Ok text -> Ok text
+  | Error message -> Error [ Diag.error Span.synthetic message ]
+
 let opt_pass level =
   match Sys.getenv_opt "FAS_OPT_PASSES" with
   | Some value when value <> "" -> value
@@ -73,7 +78,8 @@ let emit_tools_unprotected config ir =
     if not config.Cli.keep then List.iter remove [ ll_path; opt_path; asm_path ]
   in
   Fun.protect ~finally:cleanup (fun () ->
-      write_file ll_path (Ir.render ir);
+      let* ll_text = render_ir ir in
+      write_file ll_path ll_text;
       let opt = tool "FAS_OPT" "opt-22" in
       let llc = tool "FAS_LLC" "llc-22" in
       let cc = tool "FAS_CC" "clang-22" in
@@ -184,5 +190,7 @@ let run config =
         match config.emit with
         | Cli.Ast -> assert false
         | Cli.Ir -> emit_text config (Ir.render_debug ir)
-        | Cli.Llvm -> emit_text config (Ir.render ir)
+        | Cli.Llvm ->
+            let* text = render_ir ir in
+            emit_text config text
         | Cli.Asm | Cli.Obj | Cli.Executable -> emit_tools config ir)

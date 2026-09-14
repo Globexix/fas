@@ -16,6 +16,7 @@ let () =
   assert (Limits.default.max_nesting = 128);
   assert (Limits.default.max_asm_bytes = 4_000_000);
   assert (Limits.default.max_interned_string_bytes = 4_000_000);
+  assert (Limits.default.max_rendered_ir_bytes = 4_000_000);
   assert (Limits.default.max_specializations = 10_000);
   assert (Limits.default.max_specialization_depth = 64);
   assert (Limits.default.max_aggregate_elements = 1_000_000);
@@ -880,6 +881,42 @@ let () =
           (Diag.render_all ~source:None diagnostics)
           "raw asm body exceeds the configured limit")
   | Ok _ -> assert false);
+  let rendered_module =
+    let parsed =
+      expect_ok
+        (Parser.parse
+           (source
+              "fn main() i64 { s ptr[const u8] = \"a\\n\\t\\\\\\\"z\\0\"\n\
+              \ return 0\n\
+              \ }\n"))
+    in
+    let hir = expect_ok (Sema.check parsed) in
+    expect_ok (Lower.lower hir)
+  in
+  let rendered_text = Ir.render rendered_module in
+  let rendered_bytes = String.length rendered_text in
+  assert (contains rendered_text "c\"a\\0A\\09\\5C\\22z\\00\"");
+  let expect_render_ok budget =
+    match Ir.render_bounded ~budget rendered_module with
+    | Ok text -> assert (text = rendered_text)
+    | Error _ -> assert false
+  in
+  let expect_render_error budget =
+    match Ir.render_bounded ~budget rendered_module with
+    | Error message ->
+        assert (
+          message
+          = Printf.sprintf "rendered LLVM text exceeds the configured limit of %d bytes"
+              budget)
+    | Ok _ -> assert false
+  in
+  expect_render_ok rendered_bytes;
+  expect_render_error (rendered_bytes - 1);
+  expect_render_error 0;
+  expect_render_ok rendered_bytes;
+  assert (
+    Ir.render_bounded ~budget:rendered_bytes rendered_module
+    = Ir.render_bounded ~budget:rendered_bytes rendered_module);
   let func_string_ids (func : Hir.func) =
     let from_expr = function Hir.EString (id, _) -> [ id ] | _ -> [] in
     match func.Hir.body with
