@@ -1228,6 +1228,29 @@ let () =
       assert (contains message "cumulative rendered AST bytes exceed");
       assert (span = second_span)
   | Ok _ -> assert false);
+  (match Ast.render_bounded ~budget:(first_length + 1) two_program with
+  | Error (Ast.Render_failure (message, span)) ->
+      assert (contains message "cumulative rendered AST bytes exceed");
+      assert (span = second_span)
+  | Ok _ -> assert false);
+  let first_span =
+    match first_program.Ast.items with
+    | [ Ast.Func { span; _ } ] -> span
+    | _ -> failwith "unexpected single-item program shape"
+  in
+  (match Ast.render_bounded ~budget:first_length first_program with
+  | Error (Ast.Render_failure (message, span)) ->
+      assert (contains message "cumulative rendered AST bytes exceed");
+      assert (span = first_span)
+  | Ok _ -> assert false);
+  (match Ast.render_bounded ~budget:1 { Ast.items = [] } with
+  | Ok text -> assert (text = "\n")
+  | Error _ -> assert false);
+  (match Ast.render_bounded ~budget:0 { Ast.items = [] } with
+  | Error (Ast.Render_failure (message, span)) ->
+      assert (contains message "cumulative rendered AST bytes exceed");
+      assert (span = Span.synthetic)
+  | Ok _ -> assert false);
   let wide_program =
     expect_ok
       (Parser.parse
@@ -1547,11 +1570,12 @@ let () =
   let huge_ast_path = Filename.temp_file "fas-ast-single-" ".fas" in
   let cumulative_ast_path = Filename.temp_file "fas-ast-cumulative-" ".fas" in
   let ast_output_path = Filename.temp_file "fas-ast-output-" ".txt" in
+  let separator_ast_path = Filename.temp_file "fas-ast-separator-" ".fas" in
   Fun.protect
     ~finally:(fun () ->
       List.iter
         (fun path -> if Sys.file_exists path then Sys.remove path)
-        [ huge_ast_path; cumulative_ast_path; ast_output_path ])
+        [ huge_ast_path; cumulative_ast_path; ast_output_path; separator_ast_path ])
     (fun () ->
       let write path text =
         let channel = open_out_bin path in
@@ -1592,9 +1616,24 @@ let () =
       in
       assert config.Cli.output_explicit;
       Sys.remove ast_output_path;
-      match Driver.run config with
+      (match Driver.run config with
       | Error _ -> assert (not (Sys.file_exists ast_output_path))
       | Ok _ -> assert false);
+      write separator_ast_path
+        (Printf.sprintf "opaque %s\nopaque B\n" (String.make 3_999_992 'a'));
+      match
+        Driver.run
+          (expect_cli (Cli.parse [| "fas"; "--emit-ast"; separator_ast_path |]))
+      with
+      | Error [ diagnostic ] ->
+          assert (
+            diagnostic.Diag.message
+            = "cumulative rendered AST bytes exceed the configured limit of 4000000 \
+               bytes");
+          assert (diagnostic.Diag.primary.Span.file = separator_ast_path);
+          assert (diagnostic.Diag.primary.Span.line = 2);
+          assert (diagnostic.Diag.primary.Span.column = 1)
+      | Ok _ | Error _ -> assert false);
   (match Cli.parse [| "fas"; "--unknown" |] with Ok _ -> assert false | Error _ -> ());
   let sema_error ?message text =
     let program = expect_ok (Parser.parse (source text)) in

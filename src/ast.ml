@@ -653,12 +653,19 @@ let render_bounded ~budget program =
               emit_body body)
     in
     try
+      let last_span = ref None in
       List.iteri
         (fun i item ->
-          if i > 0 then text "\n\n";
+          if i > 0 then
+            at (item_span item) (fun () ->
+                text "\n";
+                text "\n");
+          last_span := Some (item_span item);
           emit_item item)
         program.items;
-      text "\n";
+      (match !last_span with
+      | None -> text "\n"
+      | Some span -> at span (fun () -> text "\n"));
       Ok (Buffer.contents buffer)
     with Render_exhausted (message, span) -> Error (Render_failure (message, span))
 
