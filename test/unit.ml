@@ -17,6 +17,7 @@ let () =
   assert (Limits.default.max_asm_bytes = 4_000_000);
   assert (Limits.default.max_interned_string_bytes = 4_000_000);
   assert (Limits.default.max_rendered_ir_bytes = 4_000_000);
+  assert (Limits.default.max_rendered_ast_bytes = 4_000_000);
   assert (Limits.default.max_specializations = 10_000);
   assert (Limits.default.max_specialization_depth = 64);
   assert (Limits.default.max_aggregate_elements = 1_000_000);
@@ -1037,6 +1038,230 @@ let () =
   assert (contains (Ir.render quoted_name_module) "@\"a\\nb\"");
   expect_budget_rejection
     (ir_module [ { (ir_function []) with Ir.name = String.make 1_000_000 '\n' } ]);
+  let ast_source text = Source.create ~file:"ast.fas" ~text in
+  let ast_expected = "fn f(a i64) i64 {\n  y i64 = a + 1\n  return y\n}\n" in
+  let ast_program =
+    expect_ok
+      (Parser.parse (ast_source "fn f(a i64) i64 { y i64 = a + 1\n return y }\n"))
+  in
+  assert (Ast.render_program ast_program = ast_expected);
+  let ast_length = String.length ast_expected in
+  let expect_ast_ok budget =
+    match Ast.render_bounded ~budget ast_program with
+    | Ok text -> assert (text = ast_expected)
+    | Error _ -> assert false
+  in
+  let expect_ast_error budget fragment =
+    match Ast.render_bounded ~budget ast_program with
+    | Error (Ast.Render_failure (message, _)) -> assert (contains message fragment)
+    | Ok _ -> assert false
+  in
+  expect_ast_ok ast_length;
+  expect_ast_ok (ast_length + 128);
+  expect_ast_error (ast_length - 1) "cumulative rendered AST bytes exceed";
+  expect_ast_error 0
+    "cumulative rendered AST bytes exceed the configured limit of 0 bytes";
+  (match Ast.render_bounded ~budget:(-1) ast_program with
+  | Error (Ast.Render_failure (message, _)) ->
+      assert (message = "rendered AST text budget must not be negative")
+  | Ok _ -> assert false);
+  (match Ast.render_bounded ~budget:min_int ast_program with
+  | Error (Ast.Render_failure (message, _)) ->
+      assert (message = "rendered AST text budget must not be negative")
+  | Ok _ -> assert false);
+  assert (
+    Ast.render_bounded ~budget:ast_length ast_program
+    = Ast.render_bounded ~budget:ast_length ast_program);
+  expect_ast_ok ast_length;
+  let rich_program =
+    expect_ok
+      (Parser.parse
+         (ast_source
+            "struct Box[T] { value T }\n\
+             struct Pair @align(8) { a u8 b i64 }\n\
+             opaque Ctx\n\
+             const K arr[3,u32] = { 1, 2, 3 }\n\
+             const S ptr[const u8] = \"x\\n\\t\\\\\\\"y\\0z\"\n\
+             fn generic[N const u64](v vec[N,u8]) u64 { return zext[u64](N) }\n\
+             fn f(p ptr[Box[u8]], w ptr[const u8]) void { defer { w.* = 0 }\n\
+            \ if p.value != 1 { return } else { x u64 = K[0] }\n\
+            \ while x != 0 { x = x - 1 }\n\
+            \ switch x { case 1: { return } default: { return } }\n\
+            \ p.value = 1 + zext[u8](true ? 2 : 3) }\n"))
+  in
+  let rich_text = Ast.render_program rich_program in
+  (match Ast.render_bounded ~budget:(String.length rich_text) rich_program with
+  | Ok text -> assert (text = rich_text)
+  | Error _ -> assert false);
+  (match Ast.render_bounded ~budget:64 rich_program with
+  | Error (Ast.Render_failure (message, _)) ->
+      assert (contains message "cumulative rendered AST bytes exceed")
+  | Ok _ -> assert false);
+  let ident_program =
+    expect_ok
+      (Parser.parse
+         (ast_source
+            (Printf.sprintf "fn f() u64 { x u64 = %s\n return x }\n"
+               (String.make 1_000_000 'a'))))
+  in
+  let ident_span =
+    match ident_program.Ast.items with
+    | [
+     Ast.Func
+       {
+         body = Ast.Statements [ Ast.Let { init = Some (Ast.Ident (_, span)); _ }; _ ];
+         _;
+       };
+    ] ->
+        span
+    | _ -> failwith "unexpected identifier program shape"
+  in
+  (match Ast.render_bounded ~budget:1024 ident_program with
+  | Error (Ast.Render_failure (message, span)) ->
+      assert (message = "rendered AST node exceeds the configured limit of 1024 bytes");
+      assert (span = ident_span)
+  | Ok _ -> assert false);
+  let literal_program =
+    expect_ok
+      (Parser.parse
+         (ast_source
+            (Printf.sprintf "fn f() void { s ptr[const u8] = \"%s\"\n return }\n"
+               (String.make 1_000_000 'z'))))
+  in
+  let literal_span =
+    match literal_program.Ast.items with
+    | [
+     Ast.Func
+       {
+         body =
+           Ast.Statements
+             [ Ast.Let { init = Some (Ast.String_lit (_, _, span)); _ }; _ ];
+         _;
+       };
+    ] ->
+        span
+    | _ -> failwith "unexpected literal program shape"
+  in
+  (match Ast.render_bounded ~budget:1024 literal_program with
+  | Error (Ast.Render_failure (message, span)) ->
+      assert (message = "rendered AST node exceeds the configured limit of 1024 bytes");
+      assert (span = literal_span)
+  | Ok _ -> assert false);
+  let escaped_program =
+    expect_ok
+      (Parser.parse
+         (ast_source "fn f() void { s ptr[const u8] = \"\\n\\n\\n\"\n return }\n"))
+  in
+  let escaped_span =
+    match escaped_program.Ast.items with
+    | [
+     Ast.Func
+       {
+         body =
+           Ast.Statements
+             [ Ast.Let { init = Some (Ast.String_lit (_, _, span)); _ }; _ ];
+         _;
+       };
+    ] ->
+        span
+    | _ -> failwith "unexpected escaped program shape"
+  in
+  let escaped_text = Ast.render_program escaped_program in
+  assert (
+    Ast.render_bounded ~budget:(String.length escaped_text) escaped_program
+    = Ok escaped_text);
+  let escaped_prefix =
+    String.length (String.sub escaped_text 0 (String.index escaped_text '\\'))
+  in
+  (match Ast.render_bounded ~budget:(escaped_prefix + 5) escaped_program with
+  | Error (Ast.Render_failure (message, span)) ->
+      assert (contains message "cumulative rendered AST bytes exceed");
+      assert (span = escaped_span)
+  | Ok _ -> assert false);
+  let escape_single_program =
+    expect_ok
+      (Parser.parse
+         (ast_source
+            (Printf.sprintf "fn f() void { s ptr[const u8] = \"%s\"\n return }\n"
+               (String.make 1024 '\n'))))
+  in
+  let escape_single_span =
+    match escape_single_program.Ast.items with
+    | [
+     Ast.Func
+       {
+         body =
+           Ast.Statements
+             [ Ast.Let { init = Some (Ast.String_lit (_, _, span)); _ }; _ ];
+         _;
+       };
+    ] ->
+        span
+    | _ -> failwith "unexpected escape-single program shape"
+  in
+  (match Ast.render_bounded ~budget:1024 escape_single_program with
+  | Error (Ast.Render_failure (message, span)) ->
+      assert (message = "rendered AST node exceeds the configured limit of 1024 bytes");
+      assert (span = escape_single_span)
+  | Ok _ -> assert false);
+  let first_program =
+    expect_ok (Parser.parse (ast_source "fn first() u64 { return 1 }\n"))
+  in
+  let first_length = String.length (Ast.render_program first_program) - 1 in
+  let two_program =
+    expect_ok
+      (Parser.parse
+         (ast_source "fn first() u64 { return 1 }\nfn second() u64 { return 2 }\n"))
+  in
+  let second_span =
+    match two_program.Ast.items with
+    | [ _; Ast.Func { span; _ } ] -> span
+    | _ -> failwith "unexpected two-item program shape"
+  in
+  (match Ast.render_bounded ~budget:(first_length + 3) two_program with
+  | Error (Ast.Render_failure (message, span)) ->
+      assert (contains message "cumulative rendered AST bytes exceed");
+      assert (span = second_span)
+  | Ok _ -> assert false);
+  (match Ast.render_bounded ~budget:(first_length + 2) two_program with
+  | Error (Ast.Render_failure (message, span)) ->
+      assert (contains message "cumulative rendered AST bytes exceed");
+      assert (span = second_span)
+  | Ok _ -> assert false);
+  let wide_program =
+    expect_ok
+      (Parser.parse
+         (ast_source
+            ("const W arr[10000,u8] = { "
+            ^ String.concat ", " (List.init 10_000 (fun _ -> "1"))
+            ^ " }\n")))
+  in
+  let wide_text = Ast.render_program wide_program in
+  (match Ast.render_bounded ~budget:(String.length wide_text) wide_program with
+  | Ok text -> assert (text = wide_text)
+  | Error _ -> assert false);
+  (match Ast.render_bounded ~budget:1024 wide_program with
+  | Error (Ast.Render_failure (message, _)) ->
+      assert (contains message "cumulative rendered AST bytes exceed")
+  | Ok _ -> assert false);
+  let nested_expr =
+    let rec build depth =
+      if depth = 0 then "1" else "1 + (" ^ build (depth - 1) ^ ")"
+    in
+    build 32
+  in
+  let nested_program =
+    expect_ok
+      (Parser.parse (ast_source ("fn f() u64 { return " ^ nested_expr ^ " }\n")))
+  in
+  let nested_text = Ast.render_program nested_program in
+  (match Ast.render_bounded ~budget:(String.length nested_text) nested_program with
+  | Ok text -> assert (text = nested_text)
+  | Error _ -> assert false);
+  (match Ast.render_bounded ~budget:64 nested_program with
+  | Error (Ast.Render_failure (message, _)) ->
+      assert (contains message "cumulative rendered AST bytes exceed")
+  | Ok _ -> assert false);
   let func_string_ids (func : Hir.func) =
     let from_expr = function Hir.EString (id, _) -> [ id ] | _ -> [] in
     match func.Hir.body with
@@ -1319,6 +1544,57 @@ let () =
               close_in channel;
               assert (contents <> "")))
         [ "--emit-ast"; "--emit-ir"; "--emit-llvm" ]);
+  let huge_ast_path = Filename.temp_file "fas-ast-single-" ".fas" in
+  let cumulative_ast_path = Filename.temp_file "fas-ast-cumulative-" ".fas" in
+  let ast_output_path = Filename.temp_file "fas-ast-output-" ".txt" in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun path -> if Sys.file_exists path then Sys.remove path)
+        [ huge_ast_path; cumulative_ast_path; ast_output_path ])
+    (fun () ->
+      let write path text =
+        let channel = open_out_bin path in
+        output_string channel text;
+        close_out channel
+      in
+      write huge_ast_path
+        (Printf.sprintf "fn f() u64 { x u64 = %s\n return x }\n"
+           (String.make 4_000_001 'a'));
+      (match
+         Driver.run (expect_cli (Cli.parse [| "fas"; "--emit-ast"; huge_ast_path |]))
+       with
+      | Error [ diagnostic ] ->
+          assert (
+            diagnostic.Diag.message
+            = "rendered AST node exceeds the configured limit of 4000000 bytes")
+      | Ok _ | Error _ -> assert false);
+      write cumulative_ast_path
+        (Printf.sprintf
+           "fn f() u64 { x u64 = %s\n\
+           \ return x }\n\
+            fn g() u64 { y u64 = %s\n\
+           \ return y }\n"
+           (String.make 2_200_000 'q') (String.make 2_200_000 'r'));
+      (match
+         Driver.run
+           (expect_cli (Cli.parse [| "fas"; "--emit-ast"; cumulative_ast_path |]))
+       with
+      | Error [ diagnostic ] ->
+          assert (
+            diagnostic.Diag.message
+            = "cumulative rendered AST bytes exceed the configured limit of 4000000 \
+               bytes")
+      | Ok _ | Error _ -> assert false);
+      let config =
+        expect_cli
+          (Cli.parse [| "fas"; "--emit-ast"; "-o"; ast_output_path; huge_ast_path |])
+      in
+      assert config.Cli.output_explicit;
+      Sys.remove ast_output_path;
+      match Driver.run config with
+      | Error _ -> assert (not (Sys.file_exists ast_output_path))
+      | Ok _ -> assert false);
   (match Cli.parse [| "fas"; "--unknown" |] with Ok _ -> assert false | Error _ -> ());
   let sema_error ?message text =
     let program = expect_ok (Parser.parse (source text)) in

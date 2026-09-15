@@ -182,7 +182,14 @@ let run config =
                   (Printf.sprintf
                      "-no-inline function `%s` requires an emitted function" name);
               ]
-        | None -> emit_text config (Ast.render_program program)
+        | None -> (
+            match
+              Ast.render_bounded ~budget:Limits.default.Limits.max_rendered_ast_bytes
+                program
+            with
+            | Ok text -> emit_text config text
+            | Error (Ast.Render_failure (message, span)) ->
+                Error [ Diag.error span message ])
       else
         let* hir = Sema.check program in
         let* ir = Lower.lower hir in
