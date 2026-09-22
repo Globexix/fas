@@ -2575,7 +2575,92 @@ let () =
     | Error message -> assert (message = over)
     | Ok _ -> assert false
   in
+  let run_scratch_budget_tests () =
+    let one =
+      ir_module
+        [
+          ir_function
+            [
+              ir_block ~instrs:[ Ir.Alloca (0, Ir.I32, 4) ] 0 (Ir.Br 1);
+              ir_block ~instrs:[ Ir.Alloca (1, Ir.I64, 8) ] 1 (Ir.Ret None);
+            ];
+        ]
+    in
+    assert (
+      Ir.check_stack_scratch_bytes
+        ~limits:{ Limits.default with max_stack_scratch_bytes = 12 }
+        one
+      = Ok ());
+    assert (
+      Ir.check_stack_scratch_bytes
+        ~limits:{ Limits.default with max_stack_scratch_bytes = max_int }
+        one
+      = Ok ());
+    assert (
+      Ir.check_stack_scratch_bytes
+        ~limits:{ Limits.default with max_stack_scratch_bytes = 0 }
+        (ir_module [])
+      = Ok ());
+    (match
+       Ir.check_stack_scratch_bytes
+         ~limits:{ Limits.default with max_stack_scratch_bytes = 11 }
+         one
+     with
+    | Error (offender, message) ->
+        assert (offender = Some "control_flow");
+        assert (
+          contains message
+            "cumulative alloca scratch bytes exceed budget max_stack_scratch_bytes of \
+             11");
+        assert (contains message "(profile 0.15)");
+        assert (contains message "at function `control_flow`")
+    | Ok () -> assert false);
+    (match
+       Ir.check_stack_scratch_bytes
+         ~limits:{ Limits.default with max_stack_scratch_bytes = min_int }
+         one
+     with
+    | Error (offender, message) ->
+        assert (offender = None);
+        assert (contains message "budget max_stack_scratch_bytes must not be negative")
+    | Ok () -> assert false);
+    let overflow =
+      ir_module
+        [
+          ir_function
+            [
+              ir_block
+                ~instrs:
+                  [ Ir.Alloca (0, Ir.Array (max_int, Ir.Array (max_int, Ir.I8)), 1) ]
+                0 (Ir.Ret None);
+            ];
+        ]
+    in
+    (match
+       Ir.check_stack_scratch_bytes
+         ~limits:{ Limits.default with max_stack_scratch_bytes = max_int }
+         overflow
+     with
+    | Error (offender, message) ->
+        assert (offender = Some "control_flow");
+        assert (
+          contains message
+            "cumulative alloca scratch bytes exceed budget max_stack_scratch_bytes")
+    | Ok () -> assert false);
+    let over_first =
+      Ir.check_stack_scratch_bytes
+        ~limits:{ Limits.default with max_stack_scratch_bytes = 11 }
+        one
+    in
+    let over_second =
+      Ir.check_stack_scratch_bytes
+        ~limits:{ Limits.default with max_stack_scratch_bytes = 11 }
+        one
+    in
+    assert (over_first = over_second)
+  in
   run_diagnostic_naming_tests ();
   run_specialization_span_tests ();
   run_debug_ir_budget_tests ();
+  run_scratch_budget_tests ();
   print_endline "frontend unit tests: ok"

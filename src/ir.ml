@@ -1676,6 +1676,54 @@ let check_static_data_bytes ~limits m =
     in
     go 0 m.globals
 
+let check_stack_scratch_bytes ~limits m =
+  let budget = limits.Limits.max_stack_scratch_bytes in
+  if budget < 0 then
+    Error
+      ( None,
+        Printf.sprintf
+          "budget max_stack_scratch_bytes must not be negative (profile %s)"
+          (Limits.budget_profile_name limits) )
+  else
+    let func_scratch (f : func) =
+      let rec instrs_total total = function
+        | [] -> Ok total
+        | Alloca (_, slot_ty, _) :: rest -> (
+            match static_type_bytes m.structs [] slot_ty with
+            | Error () -> Error ()
+            | Ok bytes ->
+                if bytes > max_int - total then Error ()
+                else instrs_total (total + bytes) rest)
+        | _ :: rest -> instrs_total total rest
+      in
+      let rec blocks_total total = function
+        | [] -> Ok total
+        | b :: rest -> (
+            match instrs_total total b.instrs with
+            | Error () -> Error ()
+            | Ok total -> blocks_total total rest)
+      in
+      blocks_total 0 f.blocks
+    in
+    let message name =
+      Printf.sprintf
+        "cumulative alloca scratch bytes exceed budget max_stack_scratch_bytes of %d \
+         (profile %s) at function `%s`"
+        budget
+        (Limits.budget_profile_name limits)
+        name
+    in
+    let rec go total = function
+      | [] -> Ok ()
+      | f :: rest -> (
+          match func_scratch f with
+          | Error () -> Error (Some f.name, message f.name)
+          | Ok bytes ->
+              if bytes > budget - total then Error (Some f.name, message f.name)
+              else go (total + bytes) rest)
+    in
+    go 0 m.funcs
+
 let check_raw_asm_bytes ~limits m =
   let budget = limits.Limits.max_asm_bytes in
   if budget < 0 then

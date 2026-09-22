@@ -217,6 +217,7 @@ let run config =
         let* ir = Lower.lower hir in
         let* ir = apply_no_inline config ir in
         let* () = ir_budget program (Ir.check_lowered_nodes ~limits ir) in
+        let* () = ir_budget program (Ir.check_stack_scratch_bytes ~limits ir) in
         match config.emit with
         | Cli.Ast -> assert false
         | Cli.Ir -> (
