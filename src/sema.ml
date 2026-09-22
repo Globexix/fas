@@ -3618,7 +3618,7 @@ let check ?(limits = Limits.default) program =
     Sema_constants.resolve_scalar_declarations ~structs ~named_types
       ~resolve_type:source_obj ~strict:true program.Ast.items
   in
-  let consts = ref scalar_consts and arrays = ref [] in
+  let consts = ref (List.rev scalar_consts) and arrays = ref [] in
   let eval_const_item = function
     | Ast.Const { name; ty; value; span } -> (
         if List.exists (fun (n, _, _) -> n = name) !consts then Ok ()
@@ -3641,7 +3641,7 @@ let check ?(limits = Limits.default) program =
                       else error (Ast.expr_span x) "const array element type mismatch"
                 in
                 let* vs = values [] xs in
-                arrays := !arrays @ [ (name, t, vs) ];
+                arrays := (name, t, vs) :: !arrays;
                 Ok ()
           | Hir.Array _, _ -> error span "const array needs a brace-list initializer"
           | (Hir.Vec _ as vector_ty), _ ->
@@ -3650,7 +3650,7 @@ let check ?(limits = Limits.default) program =
                   (Some vector_ty) value
               in
               if equal actual_ty vector_ty then (
-                arrays := !arrays @ [ (name, vector_ty, values) ];
+                arrays := (name, vector_ty, values) :: !arrays;
                 Ok ())
               else error span "constant initializer type mismatch"
           | _, Ast.Array_lit _ -> error span "brace-list requires an array type"
@@ -3659,15 +3659,16 @@ let check ?(limits = Limits.default) program =
                 const_expr ~structs ~named_types ~arrays:!arrays !consts (Some t) value
               in
               if equal vt t then (
-                consts := !consts @ [ (name, t, v) ];
+                consts := (name, t, v) :: !consts;
                 Ok ())
               else error span "constant initializer type mismatch")
     | _ -> Ok ()
   in
   let* () = Result_list.iter eval_const_item program.items in
+  let consts_ordered = List.rev !consts and arrays_ordered = List.rev !arrays in
   let* program =
     monomorphize_types
-      ~eval_context:(structs, named_types, !consts, !arrays)
+      ~eval_context:(structs, named_types, consts_ordered, arrays_ordered)
       ~eager_functions:true ~top_level_bindings ~limits ~type_node_account
       specializations program
   in
@@ -3727,11 +3728,12 @@ let check ?(limits = Limits.default) program =
                     validate_extern_c_signature span params ps rt
                   else Ok ()
                 in
-                sigs := !sigs @ [ (name, { params = ps; ret = rt; variadic }) ];
+                sigs := (name, { params = ps; ret = rt; variadic }) :: !sigs;
                 Ok ()
         | _ -> Ok ())
       (Ok ()) program.items
   in
+  let sigs_ordered = List.rev !sigs in
   let templates =
     List.filter_map
       (fun item ->
@@ -3750,9 +3752,10 @@ let check ?(limits = Limits.default) program =
     {
       structs;
       named_types;
-      consts = (if extra_consts = [] then !consts else extra_consts @ !consts);
-      arrays = !arrays;
-      signatures = !sigs;
+      consts =
+        (if extra_consts = [] then consts_ordered else extra_consts @ consts_ordered);
+      arrays = arrays_ordered;
+      signatures = sigs_ordered;
       templates;
       top_level_bindings;
       specializations;
@@ -3901,7 +3904,7 @@ let check ?(limits = Limits.default) program =
   let hconsts =
     List.map
       (fun (n, t, v) -> ({ Hir.name = n; ty = t; bits = v } : Hir.const_def))
-      !consts
+      consts_ordered
   in
   let harrays =
     List.filter_map
@@ -3909,7 +3912,7 @@ let check ?(limits = Limits.default) program =
         match t with
         | Hir.Array _ -> Some ({ Hir.name = n; ty = t; elems = vs } : Hir.const_arr_def)
         | _ -> None)
-      !arrays
+      arrays_ordered
   in
   Ok
     ({
