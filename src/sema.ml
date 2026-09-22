@@ -1615,22 +1615,26 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
     List.filter_map
       (function Ast.Struct { name; _ } -> Some name | _ -> None)
       program.Ast.items
+    |> String_set.of_list
   in
   let function_names =
     List.filter_map
       (function Ast.Func { name; _ } -> Some name | _ -> None)
       program.Ast.items
+    |> String_set.of_list
   in
   let global_value_names =
     List.filter_map
       (function Ast.Const { name; _ } -> Some name | _ -> None)
       program.Ast.items
+    |> String_set.of_list
   in
   let named_type_names =
     List.filter_map
       (function
         | Ast.Opaque { name; _ } | Ast.Struct { name; _ } -> Some name | _ -> None)
       program.Ast.items
+    |> String_set.of_list
   in
   let validation_signatures =
     List.filter_map
@@ -1670,8 +1674,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
   let generated = ref [] in
   let current_trace = ref [] in
   let nearest_kind value_names type_names name =
-    if List.mem name value_names then Some (`Value None)
-    else if List.mem name type_names then Some (`Type None)
+    if String_set.mem name value_names then Some (`Value None)
+    else if String_set.mem name type_names then Some (`Type None)
     else
       match lookup_top_level name top_level_bindings with
       | Some { declaration_id; declaration_kind = Top_type; _ } ->
@@ -1680,9 +1684,9 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
           Some (`Function declaration_id)
       | Some { declaration_id; declaration_kind = Top_const; _ } ->
           Some (`Value (Some declaration_id))
-      | None when List.mem name named_type_names -> Some (`Type None)
-      | None when List.mem name function_names -> Some (`Function (-1))
-      | None when List.mem name global_value_names -> Some (`Value None)
+      | None when String_set.mem name named_type_names -> Some (`Type None)
+      | None when String_set.mem name function_names -> Some (`Function (-1))
+      | None when String_set.mem name global_value_names -> Some (`Value None)
       | None -> None
   in
   let rec type_mentions names = function
@@ -1735,7 +1739,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
           match parse_integer length with
           | Ok _ -> Ok ()
           | Error _ ->
-              if List.mem length value_names then Ok ()
+              if String_set.mem length value_names then Ok ()
               else error span (Printf.sprintf "unknown name `%s`" length)
         in
         validate_type_names value_names type_names span ty
@@ -1748,7 +1752,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
             error span (Printf.sprintf "`%s` is a function, not a type" name)
         | None -> error span (Printf.sprintf "unknown type `%s`" name))
     | Ast.Applied_type (name, arguments, application_span) ->
-        if not (List.mem name struct_names) then
+        if not (String_set.mem name struct_names) then
           error span (Printf.sprintf "unknown generic struct `%s`" name)
         else
           Result_list.iter
@@ -1761,10 +1765,10 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
         validate_expression_names value_names type_names expression
     | Ast.Name_arg (name, span) ->
         if
-          List.mem name value_names
-          || List.mem name global_value_names
-          || List.mem name named_type_names
-          || List.mem name type_names
+          String_set.mem name value_names
+          || String_set.mem name global_value_names
+          || String_set.mem name named_type_names
+          || String_set.mem name type_names
         then Ok ()
         else error span (Printf.sprintf "unknown name `%s`" name)
   and validate_expression_names value_names type_names = function
@@ -1873,7 +1877,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
   let rec validate_target_names value_names type_names = function
     | Ast.Target_ident (name, span) -> (
         match nearest_kind value_names type_names name with
-        | Some (`Value _) when List.mem name value_names -> Ok ()
+        | Some (`Value _) when String_set.mem name value_names -> Ok ()
         | Some (`Value _) ->
             error span (Printf.sprintf "constant `%s` is not assignable" name)
         | Some (`Type _) ->
@@ -1901,7 +1905,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
             | Some expression ->
                 validate_expression_names value_names type_names expression
           in
-          Ok (name :: value_names, String_set.add name scope_names)
+          Ok (String_set.add name value_names, String_set.add name scope_names)
     | Ast.Assign (target, expression, _) | Ast.Compound_assign (target, _, expression, _)
       ->
         let* () = validate_target_names value_names type_names target in
@@ -2506,13 +2510,14 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
             if List.mem_assoc name struct_templates then
               error span
                 (Printf.sprintf "generic struct `%s` requires type arguments" name)
-            else if List.mem name named_type_names || List.mem name !generic_type_names
+            else if
+              String_set.mem name named_type_names || List.mem name !generic_type_names
             then Ok (Ast.Named_type name)
             else error span (Printf.sprintf "unknown type `%s`" name))
     | Ast.Applied_type (name, arguments, application_span) -> (
         match List.assoc_opt name struct_templates with
         | None ->
-            if List.mem name struct_names then
+            if String_set.mem name struct_names then
               error span (Printf.sprintf "struct `%s` is not generic" name)
             else error span (Printf.sprintf "unknown generic struct `%s`" name)
         | Some (Ast.Struct ({ generic_params; _ } as template)) ->
@@ -2682,7 +2687,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
     | Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span) -> (
         match List.assoc_opt name function_templates with
         | None ->
-            if List.mem name function_names then
+            if String_set.mem name function_names then
               error span (Printf.sprintf "function `%s` is not generic" name)
             else error span (Printf.sprintf "unknown generic function `%s`" name)
         | Some (Ast.Func ({ generic_params; _ } as template)) ->
@@ -3182,12 +3187,15 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
   and resolve_function ?(values = []) substitutions depth specialization_name = function
     | Ast.Func ({ params; ret; body; generic_params; span; _ } as item) ->
         with_generic_type_names (type_param_names generic_params) (fun () ->
-            let body_type_names = type_param_names generic_params in
+            let body_type_names =
+              type_param_names generic_params |> String_set.of_list
+            in
             let body_value_names =
               List.map (fun (parameter : Ast.param) -> parameter.name) params
               @ List.map
                   (fun (parameter : Ast.const_param) -> parameter.name)
                   (const_params generic_params)
+              |> String_set.of_list
             in
             let defer_const_structs = values = [] && has_const_params generic_params in
             let* params =
@@ -3223,8 +3231,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
               | Ast.Statements statements ->
                   let* () =
                     validate_statement_block_names
-                      ~scope_names:
-                        (String_set.of_list (body_value_names @ body_type_names))
+                      ~scope_names:(String_set.union body_value_names body_type_names)
                       body_value_names body_type_names statements
                   in
                   let* () =
@@ -3305,10 +3312,10 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
           | Ast.Statements statements ->
               let body_value_names =
                 List.map (fun (parameter : Ast.param) -> parameter.name) params
+                |> String_set.of_list
               in
               let* () =
-                validate_statement_block_duplicates
-                  ~scope_names:(String_set.of_list body_value_names)
+                validate_statement_block_duplicates ~scope_names:body_value_names
                   statements
               in
               let* statements =
