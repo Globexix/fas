@@ -867,12 +867,33 @@ let check_cumulative_asm_bytes ~limits program =
     in
     go 0 program.items
 
+let specialization_name_delimiter = "$spec$"
+
+let specialization_template_name name =
+  let delimiter_length = String.length specialization_name_delimiter in
+  let limit = String.length name - delimiter_length in
+  let rec find index =
+    if index > limit then None
+    else if String.sub name index delimiter_length = specialization_name_delimiter then
+      Some (String.sub name 0 index)
+    else find (index + 1)
+  in
+  find 0
+
 let item_span_by_name program name =
-  List.find_map
-    (fun item ->
-      match item with
-      | (Func { name = item_name; span; _ } | Const { name = item_name; span; _ })
-        when item_name = name ->
-          Some span
-      | _ -> None)
-    program.items
+  let lookup name =
+    List.find_map
+      (fun item ->
+        match item with
+        | (Func { name = item_name; span; _ } | Const { name = item_name; span; _ })
+          when item_name = name ->
+            Some span
+        | _ -> None)
+      program.items
+  in
+  match lookup name with
+  | Some _ as span -> span
+  | None ->
+      Option.fold ~none:None
+        ~some:(fun template -> lookup template)
+        (specialization_template_name name)

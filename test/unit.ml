@@ -2407,5 +2407,41 @@ let () =
        struct Outer[T] { inner Inner[T] }\n\
        fn main(value Outer[u8]) i64 { return 0 }\n"
   in
+  let run_specialization_span_tests () =
+    let program =
+      expect_ok
+        (Parser.parse
+           (Source.create ~file:"spans.fas"
+              ~text:
+                "fn first() u64 { return 1 }\n\
+                 fn second[T](value T) T { return value }\n\
+                 fn main() i64 { return first() }\n"))
+    in
+    let first_span, template_span =
+      match program.Ast.items with
+      | [ Ast.Func { span = first; _ }; Ast.Func { span = template; _ }; _ ] ->
+          (first, template)
+      | _ -> failwith "unexpected span-mapping program shape"
+    in
+    assert (Ast.item_span_by_name program "first" = Some first_span);
+    assert (Ast.item_span_by_name program "second" = Some template_span);
+    assert (Ast.item_span_by_name program "missing" = None);
+    let type_mangled =
+      Sema_specialization.mangle_type_specialization "second" [ Ast.Bool ]
+    in
+    assert (Ast.item_span_by_name program type_mangled = Some template_span);
+    assert (
+      Ast.item_span_by_name program ("second" ^ Ast.specialization_name_delimiter)
+      = Some template_span);
+    assert (
+      Ast.item_span_by_name program
+        ("missing" ^ Ast.specialization_name_delimiter ^ "4_bool")
+      = None);
+    assert (
+      Ast.item_span_by_name program
+        ("first" ^ Ast.specialization_name_delimiter ^ "named6_nope$spec$4_bool")
+      = Some first_span)
+  in
   run_diagnostic_naming_tests ();
+  run_specialization_span_tests ();
   print_endline "frontend unit tests: ok"

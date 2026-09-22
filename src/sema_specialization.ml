@@ -345,7 +345,8 @@ let mangle_mixed_specialization base arguments =
         let key = const_key_value ty value in
         "c" ^ string_of_int (String.length key) ^ ":" ^ key
   in
-  base ^ "$spec$" ^ String.concat ";" (List.map argument_name arguments)
+  base ^ Ast.specialization_name_delimiter
+  ^ String.concat ";" (List.map argument_name arguments)
 
 let rec specialization_type_key = function
   | Ast.Bool -> "bool"
@@ -374,7 +375,7 @@ let rec specialization_type_key = function
       "applied" ^ string_of_int (String.length name) ^ "_" ^ name
 
 let mangle_type_specialization base arguments =
-  base ^ "$spec$"
+  base ^ Ast.specialization_name_delimiter
   ^ String.concat "$"
       (List.map
          (fun ty ->
