@@ -2148,6 +2148,63 @@ let () =
         static_small
     in
     assert (static_over_first = static_over_second);
+    let static_padded =
+      ir_module
+        ~structs:
+          [
+            {
+              Ir.name = "P";
+              fields = [ Ir.I8; Ir.Array (3, Ir.I8); Ir.I32; Ir.I16 ];
+              tail_padding = 2;
+            };
+            {
+              Ir.name = "Q";
+              fields =
+                [
+                  Ir.Array (0, Ir.Vector (8, Ir.I8));
+                  Ir.Struct "P";
+                  Ir.Array (4, Ir.I8);
+                  Ir.I64;
+                ];
+              tail_padding = 0;
+            };
+          ]
+        ~globals:
+          [
+            Ir.Array_global
+              {
+                name = "padded";
+                elem_ty = Ir.Struct "P";
+                elems = [ 0L; 0L ];
+                align = 4;
+              };
+            Ir.Array_global
+              { name = "nested"; elem_ty = Ir.Struct "Q"; elems = [ 0L ]; align = 8 };
+          ]
+        []
+    in
+    assert (
+      Ir.check_static_data_bytes
+        ~limits:{ Limits.default with max_static_data_bytes = 48 }
+        static_padded
+      = Ok ());
+    expect_ir_diag
+      [ "max_static_data_bytes"; "47"; "0.15"; "at global `nested`" ]
+      (Some "nested")
+      (Ir.check_static_data_bytes
+         ~limits:{ Limits.default with max_static_data_bytes = 47 }
+         static_padded);
+    let static_padded_first =
+      Ir.check_static_data_bytes
+        ~limits:{ Limits.default with max_static_data_bytes = 47 }
+        static_padded
+    in
+    let static_padded_second =
+      Ir.check_static_data_bytes
+        ~limits:{ Limits.default with max_static_data_bytes = 47 }
+        static_padded
+    in
+    assert (static_padded_first = static_padded_second);
     let asm_a_path = Filename.temp_file "fas-budget-asm-a-" ".fas" in
     let asm_b_path = Filename.temp_file "fas-budget-asm-b-" ".fas" in
     let asm_out_path = Filename.temp_file "fas-budget-asm-out-" ".s" in
