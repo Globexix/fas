@@ -1518,3 +1518,157 @@ let raw_assembly m =
             f.name f.name raw f.name f.name)
         f.asm_body)
   |> String.concat "\n"
+
+let count_lowered_nodes m =
+  List.fold_left
+    (fun total (f : func) ->
+      total + 1
+      + List.fold_left
+          (fun block_total (b : block) -> block_total + 1 + List.length b.instrs + 1)
+          0 f.blocks)
+    0 m.funcs
+
+let check_lowered_nodes ~limits m =
+  let budget = limits.Limits.max_ir_nodes in
+  if budget < 0 then
+    Error
+      ( None,
+        Printf.sprintf "budget max_ir_nodes must not be negative (profile %s)"
+          (Limits.budget_profile_name limits) )
+  else
+    let rec go total = function
+      | [] -> Ok ()
+      | (f : func) :: rest ->
+          let func_nodes =
+            1
+            + List.fold_left
+                (fun block_total (b : block) ->
+                  block_total + 1 + List.length b.instrs + 1)
+                0 f.blocks
+          in
+          if func_nodes > budget - total then
+            Error
+              ( Some f.name,
+                Printf.sprintf
+                  "cumulative lowered IR nodes exceed budget max_ir_nodes of %d \
+                   (profile %s) at function `%s`"
+                  budget
+                  (Limits.budget_profile_name limits)
+                  f.name )
+          else go (total + func_nodes) rest
+    in
+    go 0 m.funcs
+
+let rec static_type_bytes structs visiting ty =
+  match ty with
+  | I1 | I8 -> Ok 1
+  | I16 -> Ok 2
+  | I32 -> Ok 4
+  | I64 -> Ok 8
+  | Void -> Ok 0
+  | Ptr _ -> Ok Target_layout.current.pointer_size
+  | Struct name ->
+      if List.mem name visiting then Error ()
+      else
+        List.find_map
+          (fun (def : struct_def) -> if def.name = name then Some def else None)
+          structs
+        |> Option.fold ~none:(Error ()) ~some:(fun (def : struct_def) ->
+            let visiting = name :: visiting in
+            let rec go_fields total = function
+              | [] ->
+                  if def.tail_padding > max_int - total then Error ()
+                  else Ok (total + def.tail_padding)
+              | field :: rest -> (
+                  match static_type_bytes structs visiting field with
+                  | Error () -> Error ()
+                  | Ok bytes ->
+                      if bytes > max_int - total then Error ()
+                      else go_fields (total + bytes) rest)
+            in
+            go_fields 0 def.fields)
+  | Array (length, elem) | Vector (length, elem) -> (
+      if length < 0 then Error ()
+      else if length = 0 then Ok 0
+      else
+        match static_type_bytes structs visiting elem with
+        | Error () -> Error ()
+        | Ok bytes ->
+            if bytes <> 0 && length > max_int / bytes then Error ()
+            else Ok (length * bytes))
+
+let check_static_data_bytes ~limits m =
+  let budget = limits.Limits.max_static_data_bytes in
+  if budget < 0 then
+    Error
+      ( None,
+        Printf.sprintf "budget max_static_data_bytes must not be negative (profile %s)"
+          (Limits.budget_profile_name limits) )
+  else
+    let global_bytes = function
+      | String_global { bytes; _ } -> Ok (String.length bytes)
+      | Array_global { elem_ty; elems; _ } -> (
+          match static_type_bytes m.structs [] elem_ty with
+          | Error () -> Error ()
+          | Ok width ->
+              let length = List.length elems in
+              if width <> 0 && length > max_int / width then Error ()
+              else Ok (length * width))
+    in
+    let name_of = function
+      | String_global { name; _ } | Array_global { name; _ } -> name
+    in
+    let rec go total = function
+      | [] -> Ok ()
+      | global :: rest -> (
+          match global_bytes global with
+          | Error () ->
+              Error
+                ( Some (name_of global),
+                  Printf.sprintf
+                    "declared static data bytes exceed budget max_static_data_bytes of \
+                     %d (profile %s) at global `%s`"
+                    budget
+                    (Limits.budget_profile_name limits)
+                    (name_of global) )
+          | Ok bytes ->
+              if bytes > budget - total then
+                Error
+                  ( Some (name_of global),
+                    Printf.sprintf
+                      "declared static data bytes exceed budget max_static_data_bytes \
+                       of %d (profile %s) at global `%s`"
+                      budget
+                      (Limits.budget_profile_name limits)
+                      (name_of global) )
+              else go (total + bytes) rest)
+    in
+    go 0 m.globals
+
+let check_raw_asm_bytes ~limits m =
+  let budget = limits.Limits.max_asm_bytes in
+  if budget < 0 then
+    Error
+      ( None,
+        Printf.sprintf "budget max_asm_bytes must not be negative (profile %s)"
+          (Limits.budget_profile_name limits) )
+  else
+    let rec go total = function
+      | [] -> Ok ()
+      | (f : func) :: rest -> (
+          match f.asm_body with
+          | None -> go total rest
+          | Some raw ->
+              let bytes = String.length raw in
+              if bytes > budget - total then
+                Error
+                  ( Some f.name,
+                    Printf.sprintf
+                      "cumulative raw asm bytes exceed budget max_asm_bytes of %d \
+                       (profile %s) at function `%s`"
+                      budget
+                      (Limits.budget_profile_name limits)
+                      f.name )
+              else go (total + bytes) rest)
+    in
+    go 0 m.funcs

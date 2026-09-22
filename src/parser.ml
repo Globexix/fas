@@ -1162,4 +1162,10 @@ let parse ?(limits = Limits.default) source =
               block_expression_depth = None;
             }
           in
-          match P.items p with Ok items -> Ok { Ast.items } | Error e -> Error e))
+          match P.items p with
+          | Ok items -> (
+              let program = { Ast.items } in
+              match Ast.check_expanded_nodes ~limits program with
+              | Ok () -> Ok program
+              | Error diagnostic -> Error [ diagnostic ])
+          | Error e -> Error e))

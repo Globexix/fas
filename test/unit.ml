@@ -1770,4 +1770,403 @@ let () =
     ];
   assert (not (contains pir "noalias"));
   assert (not (contains pir "align 16"));
+  let run_budget_tests () =
+    assert (Limits.default.Limits.max_ast_nodes = 4_000_000);
+    assert (Limits.default.Limits.max_ir_nodes = 4_000_000);
+    assert (Limits.default.Limits.max_static_data_bytes = 1_073_741_824);
+    assert (Limits.budget_profile_name Limits.default = "0.15");
+    let expect_diag needles result =
+      match result with
+      | Ok _ -> assert false
+      | Error diagnostics ->
+          let rendered = Diag.render_all ~source:None diagnostics in
+          List.iter (fun needle -> assert (contains rendered needle)) needles
+    in
+    let expect_ir_diag needles offender result =
+      match result with
+      | Ok () -> assert false
+      | Error (actual, message) ->
+          assert (actual = offender);
+          List.iter (fun needle -> assert (contains message needle)) needles
+    in
+    let ast_unit_text = "fn f(a i64) i64 { x i64 = a + 1\n return x }\n" in
+    let ast_program = expect_ok (Parser.parse (source ast_unit_text)) in
+    let ast_nodes = Ast.count_expanded_nodes ast_program in
+    assert (ast_nodes > 8);
+    let ast_exact = { Limits.default with max_ast_nodes = ast_nodes } in
+    let ast_over = { Limits.default with max_ast_nodes = ast_nodes - 1 } in
+    assert (
+      Ast.render_program
+        (expect_ok (Parser.parse ~limits:ast_exact (source ast_unit_text)))
+      = Ast.render_program ast_program);
+    (match Parser.parse ~limits:ast_over (source ast_unit_text) with
+    | Ok _ -> assert false
+    | Error [ diagnostic ] ->
+        assert (contains diagnostic.Diag.message "max_ast_nodes");
+        assert (contains diagnostic.Diag.message (string_of_int (ast_nodes - 1)));
+        assert (contains diagnostic.Diag.message "0.15");
+        assert (diagnostic.Diag.primary.Span.file = "test.fas")
+    | Error _ -> assert false);
+    let ast_over_first =
+      Parser.parse ~limits:ast_over (source ast_unit_text)
+      |> Result.map_error (fun diagnostics -> Diag.render_all ~source:None diagnostics)
+    in
+    let ast_over_second =
+      Parser.parse ~limits:ast_over (source ast_unit_text)
+      |> Result.map_error (fun diagnostics -> Diag.render_all ~source:None diagnostics)
+    in
+    assert (ast_over_first = ast_over_second);
+    ignore
+      (expect_ok
+         (Parser.parse
+            ~limits:{ Limits.default with max_ast_nodes = max_int }
+            (source ast_unit_text)));
+    expect_diag
+      [ "budget max_ast_nodes must not be negative"; "0.15" ]
+      (Parser.parse
+         ~limits:{ Limits.default with max_ast_nodes = min_int }
+         (source ast_unit_text));
+    ignore
+      (expect_ok
+         (Parser.parse ~limits:{ Limits.default with max_ast_nodes = 0 } (source "")));
+    expect_diag [ "max_ast_nodes"; "0.15" ]
+      (Parser.parse
+         ~limits:{ Limits.default with max_ast_nodes = 0 }
+         (source "opaque Q\n"));
+    let many_functions =
+      String.concat ""
+        (List.init 12 (fun i -> Printf.sprintf "fn f%d() i64 { return %d }\n" i i))
+    in
+    let many_nodes =
+      Ast.count_expanded_nodes (expect_ok (Parser.parse (source many_functions)))
+    in
+    let one_nodes =
+      Ast.count_expanded_nodes
+        (expect_ok (Parser.parse (source "fn f0() i64 { return 0 }\n")))
+    in
+    let many_over = { Limits.default with max_ast_nodes = many_nodes - 1 } in
+    assert (one_nodes < many_nodes - 1);
+    ignore
+      (expect_ok (Parser.parse ~limits:many_over (source "fn f0() i64 { return 0 }\n")));
+    expect_diag [ "max_ast_nodes"; "0.15" ]
+      (Parser.parse ~limits:many_over (source many_functions));
+    let unit_a =
+      expect_ok
+        (Parser.parse
+           (Source.create ~file:"unit_a.fas" ~text:"fn a() i64 { return 1 }\n"))
+    in
+    let unit_b =
+      expect_ok
+        (Parser.parse
+           (Source.create ~file:"unit_b.fas" ~text:"fn b() i64 { return 2 }\n"))
+    in
+    let combined = { Ast.items = unit_a.Ast.items @ unit_b.Ast.items } in
+    let combined_nodes = Ast.count_expanded_nodes combined in
+    assert (
+      Ast.check_expanded_nodes
+        ~limits:{ Limits.default with max_ast_nodes = combined_nodes }
+        combined
+      = Ok ());
+    (match
+       Ast.check_expanded_nodes
+         ~limits:{ Limits.default with max_ast_nodes = combined_nodes - 1 }
+         combined
+     with
+    | Ok () -> assert false
+    | Error diagnostic ->
+        assert (contains diagnostic.Diag.message "max_ast_nodes");
+        assert (contains diagnostic.Diag.message "0.15");
+        assert (diagnostic.Diag.primary.Span.file = "unit_b.fas"));
+    assert (
+      Ast.check_expanded_nodes
+        ~limits:{ Limits.default with max_ast_nodes = 0 }
+        { Ast.items = [] }
+      = Ok ());
+    (match Ast.item_span_by_name ast_program "f" with
+    | Some span -> assert (span.Span.file = "test.fas")
+    | None -> assert false);
+    assert (Ast.item_span_by_name ast_program "missing" = None);
+    let asm_text =
+      "asm fn first() void {1234}\n\
+       asm fn second() void {5678}\n\
+       asm fn third() void {abcd}\n"
+    in
+    let asm_units = expect_ok (Parser.parse (source asm_text)) in
+    assert (
+      Ast.render_program
+        (expect_ok
+           (Parser.parse
+              ~limits:{ Limits.default with max_asm_bytes = 12 }
+              (source asm_text)))
+      = Ast.render_program asm_units);
+    assert (
+      Ast.check_cumulative_asm_bytes
+        ~limits:{ Limits.default with max_asm_bytes = 12 }
+        asm_units
+      = Ok ());
+    (match
+       Ast.check_cumulative_asm_bytes
+         ~limits:{ Limits.default with max_asm_bytes = 11 }
+         asm_units
+     with
+    | Ok () -> assert false
+    | Error diagnostic ->
+        assert (contains diagnostic.Diag.message "max_asm_bytes");
+        assert (contains diagnostic.Diag.message "11");
+        assert (contains diagnostic.Diag.message "0.15");
+        assert (diagnostic.Diag.primary.Span.line = 3));
+    let asm_over_first =
+      Ast.check_cumulative_asm_bytes
+        ~limits:{ Limits.default with max_asm_bytes = 11 }
+        asm_units
+      |> Result.map_error (fun diagnostic ->
+          Diag.render_all ~source:None [ diagnostic ])
+    in
+    let asm_over_second =
+      Ast.check_cumulative_asm_bytes
+        ~limits:{ Limits.default with max_asm_bytes = 11 }
+        asm_units
+      |> Result.map_error (fun diagnostic ->
+          Diag.render_all ~source:None [ diagnostic ])
+    in
+    assert (asm_over_first = asm_over_second);
+    assert (
+      Ast.check_cumulative_asm_bytes
+        ~limits:{ Limits.default with max_asm_bytes = max_int }
+        asm_units
+      = Ok ());
+    expect_diag
+      [ "budget max_asm_bytes must not be negative"; "0.15" ]
+      (Result.map_error
+         (fun diagnostic -> [ diagnostic ])
+         (Ast.check_cumulative_asm_bytes
+            ~limits:{ Limits.default with max_asm_bytes = min_int }
+            asm_units));
+    let asm_unit_a =
+      expect_ok
+        (Parser.parse
+           (Source.create ~file:"asm_a.fas" ~text:"asm fn first() void {1234}\n"))
+    in
+    let asm_unit_b =
+      expect_ok
+        (Parser.parse
+           (Source.create ~file:"asm_b.fas" ~text:"asm fn second() void {5678}\n"))
+    in
+    let asm_combined = { Ast.items = asm_unit_a.Ast.items @ asm_unit_b.Ast.items } in
+    assert (
+      Ast.check_cumulative_asm_bytes
+        ~limits:{ Limits.default with max_asm_bytes = 8 }
+        asm_combined
+      = Ok ());
+    (match
+       Ast.check_cumulative_asm_bytes
+         ~limits:{ Limits.default with max_asm_bytes = 7 }
+         asm_combined
+     with
+    | Ok () -> assert false
+    | Error diagnostic ->
+        assert (contains diagnostic.Diag.message "max_asm_bytes");
+        assert (diagnostic.Diag.primary.Span.file = "asm_b.fas"));
+    let raw_ir =
+      expect_ok
+        (Lower.lower
+           (expect_ok
+              (Sema.check
+                 (expect_ok (Parser.parse (source "asm fn rawbody() void {1234}\n"))))))
+    in
+    assert (
+      Ir.check_raw_asm_bytes ~limits:{ Limits.default with max_asm_bytes = 4 } raw_ir
+      = Ok ());
+    expect_ir_diag
+      [ "max_asm_bytes"; "3"; "0.15"; "at function `rawbody`" ]
+      (Some "rawbody")
+      (Ir.check_raw_asm_bytes ~limits:{ Limits.default with max_asm_bytes = 3 } raw_ir);
+    let medium_functions =
+      String.concat ""
+        (List.init 8 (fun i ->
+             Printf.sprintf
+               "fn m%d(x i64) i64 { a i64 = x + %d\n\
+               \ b i64 = a * 2\n\
+               \ c i64 = b - x\n\
+               \ return c }\n"
+               i i))
+    in
+    let medium_ir =
+      expect_ok
+        (Lower.lower
+           (expect_ok (Sema.check (expect_ok (Parser.parse (source medium_functions))))))
+    in
+    let rendered_before = Ir.render medium_ir in
+    let medium_nodes = Ir.count_lowered_nodes medium_ir in
+    assert (medium_nodes > 8);
+    assert (
+      Ir.check_lowered_nodes
+        ~limits:{ Limits.default with max_ir_nodes = medium_nodes }
+        medium_ir
+      = Ok ());
+    assert (Ir.render medium_ir = rendered_before);
+    let per_function_nodes =
+      List.map
+        (fun f -> Ir.count_lowered_nodes { medium_ir with Ir.funcs = [ f ] })
+        medium_ir.Ir.funcs
+    in
+    let ir_over = { Limits.default with max_ir_nodes = medium_nodes - 1 } in
+    assert (List.for_all (fun n -> n < medium_nodes - 1) per_function_nodes);
+    expect_ir_diag
+      [ "max_ir_nodes"; string_of_int (medium_nodes - 1); "0.15"; "at function `m7`" ]
+      (Some "m7")
+      (Ir.check_lowered_nodes ~limits:ir_over medium_ir);
+    let ir_over_first = Ir.check_lowered_nodes ~limits:ir_over medium_ir in
+    let ir_over_second = Ir.check_lowered_nodes ~limits:ir_over medium_ir in
+    assert (ir_over_first = ir_over_second);
+    assert (
+      Ir.check_lowered_nodes
+        ~limits:{ Limits.default with max_ir_nodes = max_int }
+        medium_ir
+      = Ok ());
+    expect_ir_diag
+      [ "budget max_ir_nodes must not be negative"; "0.15" ]
+      None
+      (Ir.check_lowered_nodes
+         ~limits:{ Limits.default with max_ir_nodes = min_int }
+         medium_ir);
+    let static_small =
+      ir_module
+        ~globals:
+          [
+            Ir.String_global { name = "s0"; bytes = "ok" };
+            Ir.Array_global
+              { name = "a0"; elem_ty = Ir.I32; elems = [ 1L; 2L; 3L; 4L ]; align = 4 };
+          ]
+        []
+    in
+    assert (
+      Ir.check_static_data_bytes
+        ~limits:{ Limits.default with max_static_data_bytes = 18 }
+        static_small
+      = Ok ());
+    assert (
+      Ir.check_static_data_bytes
+        ~limits:{ Limits.default with max_static_data_bytes = max_int }
+        static_small
+      = Ok ());
+    expect_ir_diag
+      [ "max_static_data_bytes"; "17"; "0.15"; "at global `a0`" ]
+      (Some "a0")
+      (Ir.check_static_data_bytes
+         ~limits:{ Limits.default with max_static_data_bytes = 17 }
+         static_small);
+    expect_ir_diag
+      [ "budget max_static_data_bytes must not be negative"; "0.15" ]
+      None
+      (Ir.check_static_data_bytes
+         ~limits:{ Limits.default with max_static_data_bytes = min_int }
+         static_small);
+    let six = String.make 6 's' in
+    let static_cumulative =
+      ir_module
+        ~globals:
+          [
+            Ir.String_global { name = "g0"; bytes = six };
+            Ir.String_global { name = "g1"; bytes = six };
+            Ir.String_global { name = "g2"; bytes = six };
+          ]
+        []
+    in
+    assert (
+      Ir.check_static_data_bytes
+        ~limits:{ Limits.default with max_static_data_bytes = 18 }
+        static_cumulative
+      = Ok ());
+    expect_ir_diag
+      [ "max_static_data_bytes"; "10"; "0.15"; "at global `g1`" ]
+      (Some "g1")
+      (Ir.check_static_data_bytes
+         ~limits:{ Limits.default with max_static_data_bytes = 10 }
+         static_cumulative);
+    let static_overflow =
+      ir_module
+        ~globals:
+          [
+            Ir.Array_global
+              {
+                name = "huge";
+                elem_ty = Ir.Array (max_int, Ir.Array (max_int, Ir.I8));
+                elems = [ 0L ];
+                align = 1;
+              };
+          ]
+        []
+    in
+    expect_ir_diag
+      [ "max_static_data_bytes"; "0.15"; "at global `huge`" ]
+      (Some "huge")
+      (Ir.check_static_data_bytes
+         ~limits:{ Limits.default with max_static_data_bytes = max_int }
+         static_overflow);
+    let static_overflow_pair =
+      ir_module
+        ~globals:
+          [
+            Ir.Array_global
+              {
+                name = "wide";
+                elem_ty = Ir.Array (max_int, Ir.I8);
+                elems = [ 0L; 0L ];
+                align = 1;
+              };
+          ]
+        []
+    in
+    expect_ir_diag
+      [ "max_static_data_bytes"; "0.15"; "at global `wide`" ]
+      (Some "wide")
+      (Ir.check_static_data_bytes
+         ~limits:{ Limits.default with max_static_data_bytes = max_int }
+         static_overflow_pair);
+    let static_over_first =
+      Ir.check_static_data_bytes
+        ~limits:{ Limits.default with max_static_data_bytes = 17 }
+        static_small
+    in
+    let static_over_second =
+      Ir.check_static_data_bytes
+        ~limits:{ Limits.default with max_static_data_bytes = 17 }
+        static_small
+    in
+    assert (static_over_first = static_over_second);
+    let asm_a_path = Filename.temp_file "fas-budget-asm-a-" ".fas" in
+    let asm_b_path = Filename.temp_file "fas-budget-asm-b-" ".fas" in
+    let asm_out_path = Filename.temp_file "fas-budget-asm-out-" ".s" in
+    Fun.protect
+      ~finally:(fun () ->
+        List.iter
+          (fun path -> if Sys.file_exists path then Sys.remove path)
+          [ asm_a_path; asm_b_path; asm_out_path ])
+      (fun () ->
+        let write_budget_file path text =
+          let channel = open_out_bin path in
+          output_string channel text;
+          close_out channel
+        in
+        let big_body = String.make 2_200_000 'x' in
+        write_budget_file asm_a_path ("asm fn first() void {" ^ big_body ^ "}\n");
+        write_budget_file asm_b_path ("asm fn second() void {" ^ big_body ^ "}\n");
+        Sys.remove asm_out_path;
+        match
+          Driver.run
+            (expect_cli
+               (Cli.parse
+                  [| "fas"; "--emit-asm"; "-o"; asm_out_path; asm_a_path; asm_b_path |]))
+        with
+        | Ok _ -> assert false
+        | Error [ diagnostic ] ->
+            assert (contains diagnostic.Diag.message "max_asm_bytes");
+            assert (contains diagnostic.Diag.message "4000000");
+            assert (contains diagnostic.Diag.message "0.15");
+            assert (diagnostic.Diag.primary.Span.file = asm_b_path);
+            assert (not (Sys.file_exists asm_out_path))
+        | Error _ -> assert false)
+  in
+  run_budget_tests ();
   print_endline "frontend unit tests: ok"

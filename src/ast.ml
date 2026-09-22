@@ -673,3 +673,206 @@ let render_program program =
   match render_bounded ~budget:max_int program with
   | Ok text -> text
   | Error _ -> assert false
+
+let fold_expanded_nodes ~limit program =
+  let total = ref 0 in
+  let failed = ref None in
+  let count span =
+    if !failed = None then if !total >= limit then failed := Some span else incr total
+  in
+  let rec go_ty at ty =
+    if !failed = None then
+      match ty with
+      | Bool | Int _ | Void | Named_type _ -> count at
+      | Ptr inner | Ptr_const inner ->
+          count at;
+          go_ty at inner
+      | Array (_, inner) | Vec (_, inner) ->
+          count at;
+          go_ty at inner
+      | Applied_type (_, args, span) ->
+          count span;
+          List.iter (go_generic_arg span) args
+  and go_generic_arg at = function
+    | Type_arg inner ->
+        count at;
+        go_ty at inner
+    | Const_arg e ->
+        count at;
+        go_expr e
+    | Name_arg (_, span) -> count span
+  and go_expr e =
+    if !failed = None then (
+      let at = expr_span e in
+      count at;
+      match e with
+      | Int_lit _ | Bool_lit _ | Null _ | String_lit _ | Ident _ -> ()
+      | Unary (_, x, _) -> go_expr x
+      | Binary (_, l, r, _) ->
+          go_expr l;
+          go_expr r
+      | Call (f, xs, _) ->
+          go_expr f;
+          List.iter go_expr xs
+      | Generic_args (f, args, _) ->
+          go_expr f;
+          List.iter (go_generic_arg at) args
+      | Cast (_, ty, x, _) ->
+          go_ty at ty;
+          go_expr x
+      | Index (a, i, _) ->
+          go_expr a;
+          go_expr i
+      | Field (a, _, _) -> go_expr a
+      | Deref (x, _) | Addr_of (x, _) -> go_expr x
+      | Ptr_add (_, p, o, _) ->
+          go_expr p;
+          go_expr o
+      | Sizeof (ty, _) | Alignof (ty, _) -> go_ty at ty
+      | Offsetof (ty, _, _) -> go_ty at ty
+      | Splat (x, _) -> go_expr x
+      | Ternary (c, a, b, _) ->
+          go_expr c;
+          go_expr a;
+          go_expr b
+      | Array_lit (xs, _) -> List.iter go_expr xs
+      | Struct_lit (ty, xs, _) ->
+          go_ty at ty;
+          List.iter go_expr xs)
+  and go_target = function
+    | Target_ident (_, span) -> count span
+    | Target_deref x ->
+        count (expr_span x);
+        go_expr x
+    | Target_index (a, i) ->
+        count (expr_span a);
+        go_expr a;
+        go_expr i
+    | Target_field (a, _) ->
+        count (expr_span a);
+        go_expr a
+  and go_stmts xs = List.iter go_stmt xs
+  and go_stmt s =
+    if !failed = None then (
+      count (stmt_span s);
+      match s with
+      | Let { ty; init; span; _ } ->
+          go_ty span ty;
+          Option.iter go_expr init
+      | Assign (t, e, _) | Compound_assign (t, _, e, _) ->
+          go_target t;
+          go_expr e
+      | Return (e, _) -> Option.iter go_expr e
+      | If (c, yes, no, _) ->
+          go_expr c;
+          go_stmts yes;
+          Option.iter go_stmts no
+      | While (c, xs, _) ->
+          go_expr c;
+          go_stmts xs
+      | Break _ | Continue _ -> ()
+      | Defer (xs, _) | Block (xs, _) -> go_stmts xs
+      | Expr_stmt (e, _) -> go_expr e
+      | For (i, c, st, body, _) ->
+          Option.iter go_stmt i;
+          Option.iter go_expr c;
+          Option.iter go_stmt st;
+          go_stmts body
+      | Switch (scr, arms, default, _) ->
+          go_expr scr;
+          List.iter
+            (fun (e, xs) ->
+              go_expr e;
+              go_stmts xs)
+            arms;
+          Option.iter go_stmts default)
+  and go_field (f : field) =
+    if !failed = None then (
+      count f.span;
+      go_ty f.span f.ty)
+  and go_param (p : param) =
+    if !failed = None then (
+      count p.span;
+      go_ty p.span p.ty)
+  and go_generic_param = function
+    | Type_param { span; _ } -> count span
+    | Const_param { ty; span; _ } ->
+        count span;
+        go_ty span ty
+  and go_item item =
+    if !failed = None then (
+      let at = item_span item in
+      count at;
+      match item with
+      | Const { ty; value; span; _ } ->
+          go_ty span ty;
+          go_expr value
+      | Struct { generic_params; fields; _ } ->
+          List.iter go_generic_param generic_params;
+          List.iter go_field fields
+      | Opaque _ -> ()
+      | Func { params; ret; body; generic_params; span; _ } -> (
+          List.iter go_generic_param generic_params;
+          List.iter go_param params;
+          go_ty span ret;
+          match body with Statements xs -> go_stmts xs | Declaration | Asm _ -> ()))
+  in
+  List.iter go_item program.items;
+  (!total, !failed)
+
+let count_expanded_nodes program = fst (fold_expanded_nodes ~limit:max_int program)
+
+let check_expanded_nodes ~limits program =
+  if limits.Limits.max_ast_nodes < 0 then
+    Error
+      (Diag.error Span.synthetic
+         (Printf.sprintf "budget max_ast_nodes must not be negative (profile %s)"
+            (Limits.budget_profile_name limits)))
+  else
+    match fold_expanded_nodes ~limit:limits.Limits.max_ast_nodes program with
+    | _, None -> Ok ()
+    | _, Some span ->
+        Error
+          (Diag.error span
+             (Printf.sprintf
+                "cumulative expanded AST nodes exceed budget max_ast_nodes of %d \
+                 (profile %s)"
+                limits.Limits.max_ast_nodes
+                (Limits.budget_profile_name limits)))
+
+let check_cumulative_asm_bytes ~limits program =
+  let budget = limits.Limits.max_asm_bytes in
+  if budget < 0 then
+    Error
+      (Diag.error Span.synthetic
+         (Printf.sprintf "budget max_asm_bytes must not be negative (profile %s)"
+            (Limits.budget_profile_name limits)))
+  else
+    let rec go total = function
+      | [] -> Ok ()
+      | item :: rest -> (
+          match item with
+          | Func { body = Asm raw; span; _ } ->
+              let bytes = String.length raw in
+              if bytes > budget - total then
+                Error
+                  (Diag.error span
+                     (Printf.sprintf
+                        "cumulative raw asm bytes exceed budget max_asm_bytes of %d \
+                         (profile %s)"
+                        budget
+                        (Limits.budget_profile_name limits)))
+              else go (total + bytes) rest
+          | _ -> go total rest)
+    in
+    go 0 program.items
+
+let item_span_by_name program name =
+  List.find_map
+    (fun item ->
+      match item with
+      | (Func { name = item_name; span; _ } | Const { name = item_name; span; _ })
+        when item_name = name ->
+          Some span
+      | _ -> None)
+    program.items

@@ -33,6 +33,25 @@ let tool_error label failure =
 let ( let* ) result next =
   match result with Ok value -> next value | Error diagnostics -> Error diagnostics
 
+let limits = Limits.default
+
+let ast_budget result =
+  match result with Ok () -> Ok () | Error diagnostic -> Error [ diagnostic ]
+
+let ir_budget program result =
+  match result with
+  | Ok () -> Ok ()
+  | Error (offender, message) ->
+      let span =
+        match offender with
+        | Some name -> (
+            match Ast.item_span_by_name program name with
+            | Some span -> span
+            | None -> Span.synthetic)
+        | None -> Span.synthetic
+      in
+      Error [ Diag.error span message ]
+
 let run_tool label argv =
   match Process.run argv with
   | Ok _ -> Ok ()
@@ -42,7 +61,7 @@ let remove path = try Sys.remove path with Sys_error _ -> ()
 let optimization_level level = max 0 (min 3 level)
 
 let render_ir ir =
-  match Ir.render_bounded ~budget:Limits.default.Limits.max_rendered_ir_bytes ir with
+  match Ir.render_bounded ~budget:limits.Limits.max_rendered_ir_bytes ir with
   | Ok text -> Ok text
   | Error message -> Error [ Diag.error Span.synthetic message ]
 
@@ -70,7 +89,9 @@ let build_assembly config ir llc opt_path asm_path =
   write_file asm_path assembly;
   Ok assembly
 
-let emit_tools_unprotected config ir =
+let emit_tools_unprotected config program ir =
+  let* () = ir_budget program (Ir.check_static_data_bytes ~limits ir) in
+  let* () = ir_budget program (Ir.check_raw_asm_bytes ~limits ir) in
   let* ll_text = render_ir ir in
   let ll_path = Filename.temp_file "fas-module-" ".ll" in
   let opt_path = Filename.temp_file "fas-opt-" ".ll" in
@@ -116,8 +137,8 @@ let emit_tools_unprotected config ir =
       | Cli.Ast | Cli.Ir | Cli.Llvm ->
           invalid_arg "Driver.emit_tools: non-tool emission")
 
-let emit_tools config ir =
-  try emit_tools_unprotected config ir with
+let emit_tools config program ir =
+  try emit_tools_unprotected config program ir with
   | Sys_error message ->
       Error [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ]
   | Unix.Unix_error (code, operation, argument) ->
@@ -173,6 +194,8 @@ let run config =
           Ast.items = List.concat (List.map (fun program -> program.Ast.items) programs);
         }
       in
+      let* () = ast_budget (Ast.check_cumulative_asm_bytes ~limits program) in
+      let* () = ast_budget (Ast.check_expanded_nodes ~limits program) in
       if config.emit = Cli.Ast then
         match config.no_inline_function with
         | Some name ->
@@ -184,20 +207,20 @@ let run config =
               ]
         | None -> (
             match
-              Ast.render_bounded ~budget:Limits.default.Limits.max_rendered_ast_bytes
-                program
+              Ast.render_bounded ~budget:limits.Limits.max_rendered_ast_bytes program
             with
             | Ok text -> emit_text config text
             | Error (Ast.Render_failure (message, span)) ->
                 Error [ Diag.error span message ])
       else
-        let* hir = Sema.check program in
+        let* hir = Sema.check ~limits program in
         let* ir = Lower.lower hir in
         let* ir = apply_no_inline config ir in
+        let* () = ir_budget program (Ir.check_lowered_nodes ~limits ir) in
         match config.emit with
         | Cli.Ast -> assert false
         | Cli.Ir -> emit_text config (Ir.render_debug ir)
         | Cli.Llvm ->
             let* text = render_ir ir in
             emit_text config text
-        | Cli.Asm | Cli.Obj | Cli.Executable -> emit_tools config ir)
+        | Cli.Asm | Cli.Obj | Cli.Executable -> emit_tools config program ir)
