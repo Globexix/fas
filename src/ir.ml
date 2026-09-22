@@ -1618,7 +1618,7 @@ let rec static_type_bytes structs visiting ty =
                       else go_fields (total + bytes) rest)
             in
             go_fields 0 def.fields)
-  | Array (length, elem) | Vector (length, elem) -> (
+  | Array (length, elem) -> (
       if length < 0 then Error ()
       else if length = 0 then Ok 0
       else
@@ -1627,6 +1627,26 @@ let rec static_type_bytes structs visiting ty =
         | Ok bytes ->
             if bytes <> 0 && length > max_int / bytes then Error ()
             else Ok (length * bytes))
+  | Vector (length, elem) -> (
+      if length < 0 then Error ()
+      else if length = 0 then Ok 0
+      else
+        let elem_bits =
+          match elem with
+          | I1 -> Ok 1
+          | I8 -> Ok 8
+          | I16 -> Ok 16
+          | I32 -> Ok 32
+          | I64 -> Ok 64
+          | Ptr _ -> Ok (Target_layout.current.pointer_size * 8)
+          | _ -> Error ()
+        in
+        match elem_bits with
+        | Error () -> Error ()
+        | Ok bits -> (
+            match Target_layout.vector Target_layout.current length bits with
+            | Error _ -> Error ()
+            | Ok (size, _) -> Ok size))
 
 let check_static_data_bytes ~limits m =
   let budget = limits.Limits.max_static_data_bytes in

@@ -2659,8 +2659,85 @@ let () =
     in
     assert (over_first = over_second)
   in
+  let run_vector_size_tests () =
+    let check_scratch budget slot_ty =
+      Ir.check_stack_scratch_bytes
+        ~limits:{ Limits.default with max_stack_scratch_bytes = budget }
+        (ir_module
+           [
+             ir_function
+               [ ir_block ~instrs:[ Ir.Alloca (0, slot_ty, 1) ] 0 (Ir.Ret None) ];
+           ])
+    in
+    assert (check_scratch 8 (Ir.Vector (3, Ir.I16)) = Ok ());
+    assert (check_scratch 1 (Ir.Vector (8, Ir.I1)) = Ok ());
+    assert (check_scratch 16 (Ir.Vector (3, Ir.I32)) = Ok ());
+    assert (check_scratch 4 (Ir.Vector (3, Ir.I8)) = Ok ());
+    assert (check_scratch 8 (Ir.Array (2, Ir.Vector (3, Ir.I8))) = Ok ());
+    let over budget slot_ty =
+      match check_scratch budget slot_ty with
+      | Error (offender, message) ->
+          assert (offender = Some "control_flow");
+          assert (
+            contains message
+              "cumulative alloca scratch bytes exceed budget max_stack_scratch_bytes")
+      | Ok () -> assert false
+    in
+    over 7 (Ir.Vector (3, Ir.I16));
+    over 0 (Ir.Vector (8, Ir.I1));
+    over 15 (Ir.Vector (3, Ir.I32));
+    over 3 (Ir.Vector (3, Ir.I8));
+    over 7 (Ir.Array (2, Ir.Vector (3, Ir.I8)));
+    let vec_global elem_ty =
+      ir_module
+        ~globals:[ Ir.Array_global { name = "vg"; elem_ty; elems = [ 0L ]; align = 4 } ]
+        []
+    in
+    assert (
+      Ir.check_static_data_bytes
+        ~limits:{ Limits.default with max_static_data_bytes = 4 }
+        (vec_global (Ir.Vector (3, Ir.I8)))
+      = Ok ());
+    (match
+       Ir.check_static_data_bytes
+         ~limits:{ Limits.default with max_static_data_bytes = 3 }
+         (vec_global (Ir.Vector (3, Ir.I8)))
+     with
+    | Error (offender, _) -> assert (offender = Some "vg")
+    | Ok () -> assert false);
+    let wrapped =
+      ir_module
+        ~structs:
+          [
+            {
+              Ir.name = "W";
+              fields = [ Ir.Array (2, Ir.Vector (3, Ir.I8)) ];
+              tail_padding = 0;
+            };
+          ]
+        ~globals:
+          [
+            Ir.Array_global
+              { name = "w"; elem_ty = Ir.Struct "W"; elems = [ 0L ]; align = 4 };
+          ]
+        []
+    in
+    assert (
+      Ir.check_static_data_bytes
+        ~limits:{ Limits.default with max_static_data_bytes = 8 }
+        wrapped
+      = Ok ());
+    match
+      Ir.check_static_data_bytes
+        ~limits:{ Limits.default with max_static_data_bytes = 7 }
+        wrapped
+    with
+    | Error (offender, _) -> assert (offender = Some "w")
+    | Ok () -> assert false
+  in
   run_diagnostic_naming_tests ();
   run_specialization_span_tests ();
   run_debug_ir_budget_tests ();
   run_scratch_budget_tests ();
+  run_vector_size_tests ();
   print_endline "frontend unit tests: ok"

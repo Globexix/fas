@@ -268,7 +268,7 @@ let ( let* ) result continuation =
 let const_key_value (t : Hir.ty) v = Hir.ty_name t ^ ":" ^ Int64.to_string v
 
 let mangle_specialization base values =
-  base ^ "$spec$"
+  base ^ Ast.specialization_name_delimiter
   ^ string_of_int (String.length base)
   ^ ":"
   ^ String.concat ";"
