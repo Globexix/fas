@@ -82,9 +82,25 @@ let request state ~limits ~depth ~span ~description specialization =
   | Some existing -> Ok existing
   | None ->
       if depth >= limits.Limits.max_specialization_depth then
-        Error [ Diag.error span (description ^ " recursion depth limit exceeded") ]
+        Error
+          [
+            Diag.error span
+              (Printf.sprintf
+                 "%s recursion depth limit exceeded: budget max_specialization_depth \
+                  of %d (profile %s)"
+                 description limits.Limits.max_specialization_depth
+                 (Limits.budget_profile_name limits));
+          ]
       else if Cache.length state.cache >= limits.Limits.max_specializations then
-        Error [ Diag.error span (description ^ " count limit exceeded") ]
+        Error
+          [
+            Diag.error span
+              (Printf.sprintf
+                 "%s count limit exceeded: budget max_specializations of %d (profile \
+                  %s)"
+                 description limits.Limits.max_specializations
+                 (Limits.budget_profile_name limits));
+          ]
       else (
         Cache.add state.cache specialization.key specialization;
         let kind, _, _ = specialization.key in

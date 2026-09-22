@@ -16,6 +16,7 @@ type t = {
   max_ast_nodes : int;
   max_ir_nodes : int;
   max_static_data_bytes : int;
+  max_type_nodes : int;
 }
 
 let budget_version_name = function V0_15 -> "0.15"
@@ -41,6 +42,7 @@ let for_budget_version version =
         max_ast_nodes = 4_000_000;
         max_ir_nodes = 4_000_000;
         max_static_data_bytes = 1_073_741_824;
+        max_type_nodes = 4_000_000;
       }
 
 let default = for_budget_version default_budget_version

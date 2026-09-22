@@ -148,7 +148,7 @@ let () =
       assert (
         contains
           (Diag.render_all ~source:None diagnostics)
-          "object size exceeds compiler budget of 15 bytes")
+          "object size exceeds budget max_object_size of 15 (profile 0.15)")
   | Ok _ -> assert false);
   let generic_object_size_program =
     expect_ok
@@ -170,7 +170,7 @@ let () =
       assert (
         contains
           (Diag.render_all ~source:None diagnostics)
-          "object size exceeds compiler budget of 15 bytes")
+          "object size exceeds budget max_object_size of 15 (profile 0.15)")
   | Ok _ -> assert false);
   let aligned_program =
     expect_ok
@@ -189,7 +189,7 @@ let () =
       assert (
         contains
           (Diag.render_all ~source:None diagnostics)
-          "alignment exceeds compiler budget of 8")
+          "alignment exceeds budget max_object_alignment of 8 (profile 0.15)")
   | Ok _ -> assert false);
   let target_alignment_program =
     expect_ok (Parser.parse (source "struct Invalid @align(4294967296) { value u8 }\n"))
@@ -222,7 +222,7 @@ let () =
       assert (
         contains
           (Diag.render_all ~source:None diagnostics)
-          "alignment exceeds compiler budget of 8")
+          "alignment exceeds budget max_object_alignment of 8 (profile 0.15)")
   | Ok _ -> assert false);
   let generic_alignment_program =
     expect_ok
@@ -239,7 +239,7 @@ let () =
       assert (
         contains
           (Diag.render_all ~source:None diagnostics)
-          "alignment exceeds compiler budget of 8")
+          "alignment exceeds budget max_object_alignment of 8 (profile 0.15)")
   | Ok _ -> assert false);
   let aggregate_budget_program =
     expect_ok
@@ -1314,7 +1314,9 @@ let () =
       (Parser.parse (source "fn f() void { s ptr[const u8] = \"abc\"\n return }\n"))
   in
   expect_budget_error "string single" ~line:1 ~column:33
-    ~message:"string literal exceeds the configured limit of 2 bytes" ~notes:[]
+    ~message:
+      "string literal bytes exceed budget max_interned_string_bytes of 2 (profile 0.15)"
+    ~notes:[]
     (Sema.check
        ~limits:{ Limits.default with max_interned_string_bytes = 2 }
        string_literal_program);
@@ -1330,7 +1332,9 @@ let () =
       (Parser.parse (source "fn f() void { s ptr[const u8] = c\"abc\"\n return }\n"))
   in
   expect_budget_error "c-string single" ~line:1 ~column:33
-    ~message:"string literal exceeds the configured limit of 3 bytes" ~notes:[]
+    ~message:
+      "string literal bytes exceed budget max_interned_string_bytes of 3 (profile 0.15)"
+    ~notes:[]
     (Sema.check
        ~limits:{ Limits.default with max_interned_string_bytes = 3 }
        c_string_program);
@@ -1371,7 +1375,9 @@ let () =
             \ return }\n"))
   in
   expect_budget_error "cross-function cumulative" ~line:4 ~column:20
-    ~message:"cumulative interned string bytes exceed the configured limit of 3 bytes"
+    ~message:
+      "cumulative interned string bytes exceed budget max_interned_string_bytes of 3 \
+       (profile 0.15)"
     ~notes:[]
     (Sema.check
        ~limits:{ Limits.default with max_interned_string_bytes = 3 }
@@ -1395,7 +1401,9 @@ let () =
             \ return }\n"))
   in
   expect_budget_error "ordering cumulative" ~line:3 ~column:33
-    ~message:"cumulative interned string bytes exceed the configured limit of 4 bytes"
+    ~message:
+      "cumulative interned string bytes exceed budget max_interned_string_bytes of 4 \
+       (profile 0.15)"
     ~notes:[]
     (Sema.check
        ~limits:{ Limits.default with max_interned_string_bytes = 4 }
@@ -1441,7 +1449,8 @@ let () =
             \ return }\n"))
   in
   expect_budget_error "legality single" ~line:1 ~column:55
-    ~message:"string literal exceeds the configured limit of 8 bytes"
+    ~message:
+      "string literal bytes exceed budget max_interned_string_bytes of 8 (profile 0.15)"
     ~notes:[ "while instantiating `big[1]` at test.fas:2:48" ]
     (Sema.check
        ~limits:{ Limits.default with max_interned_string_bytes = 8 }
@@ -1458,13 +1467,17 @@ let () =
             \ return }\n"))
   in
   expect_budget_error "legality cumulative" ~line:3 ~column:20
-    ~message:"cumulative interned string bytes exceed the configured limit of 3 bytes"
+    ~message:
+      "cumulative interned string bytes exceed budget max_interned_string_bytes of 3 \
+       (profile 0.15)"
     ~notes:[ "while instantiating `pair[1]` at test.fas:5:49" ]
     (Sema.check
        ~limits:{ Limits.default with max_interned_string_bytes = 3 }
        legality_cumulative_strings);
   expect_budget_error "fresh state failure repeat" ~line:4 ~column:20
-    ~message:"cumulative interned string bytes exceed the configured limit of 3 bytes"
+    ~message:
+      "cumulative interned string bytes exceed budget max_interned_string_bytes of 3 \
+       (profile 0.15)"
     ~notes:[]
     (Sema.check
        ~limits:{ Limits.default with max_interned_string_bytes = 3 }
@@ -2169,4 +2182,230 @@ let () =
         | Error _ -> assert false)
   in
   run_budget_tests ();
+  let run_type_node_budget_tests () =
+    assert (Limits.default.Limits.max_type_nodes = 4_000_000);
+    let expect_type_diag needles result =
+      match result with
+      | Ok _ -> assert false
+      | Error diagnostics ->
+          let rendered = Diag.render_all ~source:None diagnostics in
+          List.iter (fun needle -> assert (contains rendered needle)) needles
+    in
+    let two_use_text =
+      "fn two[T](x0 T, x1 T) i64 { return 0 }\n\
+       fn use0(a ptr[u8]) i64 { return two[ptr[u8]](a, a) }\n"
+    in
+    let two_program = expect_ok (Parser.parse (source two_use_text)) in
+    let exact_two =
+      expect_ok
+        (Sema.check ~limits:{ Limits.default with max_type_nodes = 5 } two_program)
+    in
+    assert (List.length exact_two.Hir.funcs = 2);
+    assert (
+      Ir.render (expect_ok (Lower.lower exact_two))
+      = Ir.render (expect_ok (Lower.lower (expect_ok (Sema.check two_program)))));
+    (match
+       Sema.check
+         ~limits:{ Limits.default with max_type_nodes = 4 }
+         (expect_ok (Parser.parse (source two_use_text)))
+     with
+    | Ok _ -> assert false
+    | Error [ diagnostic ] ->
+        assert (contains diagnostic.Diag.message "max_type_nodes");
+        assert (contains diagnostic.Diag.message "of 4 (profile 0.15)");
+        assert (contains diagnostic.Diag.message "two");
+        assert (diagnostic.Diag.primary.Span.file = "test.fas")
+    | Error _ -> assert false);
+    let two_over_first =
+      Sema.check
+        ~limits:{ Limits.default with max_type_nodes = 4 }
+        (expect_ok (Parser.parse (source two_use_text)))
+      |> Result.map_error (fun diagnostics -> Diag.render_all ~source:None diagnostics)
+    in
+    let two_over_second =
+      Sema.check
+        ~limits:{ Limits.default with max_type_nodes = 4 }
+        (expect_ok (Parser.parse (source two_use_text)))
+      |> Result.map_error (fun diagnostics -> Diag.render_all ~source:None diagnostics)
+    in
+    assert (two_over_first = two_over_second);
+    ignore
+      (expect_ok
+         (Sema.check
+            ~limits:{ Limits.default with max_type_nodes = max_int }
+            (expect_ok (Parser.parse (source two_use_text)))));
+    expect_type_diag
+      [ "budget max_type_nodes must not be negative"; "0.15" ]
+      (Sema.check
+         ~limits:{ Limits.default with max_type_nodes = min_int }
+         (expect_ok (Parser.parse (source two_use_text))));
+    ignore
+      (expect_ok
+         (Sema.check
+            ~limits:{ Limits.default with max_type_nodes = 0 }
+            (expect_ok (Parser.parse (source "")))));
+    expect_type_diag [ "max_type_nodes"; "0.15" ]
+      (Sema.check
+         ~limits:{ Limits.default with max_type_nodes = 0 }
+         (expect_ok (Parser.parse (source two_use_text))));
+    let cumulative_text =
+      "fn two[T](x0 T, x1 T) i64 { return 0 }\n\
+       fn use0(a ptr[u8], b ptr[const u8]) i64 { return two[ptr[u8]](a, a) + \
+       two[ptr[const u8]](b, b) }\n"
+    in
+    let cumulative_program = expect_ok (Parser.parse (source cumulative_text)) in
+    let exact_cumulative =
+      expect_ok
+        (Sema.check
+           ~limits:{ Limits.default with max_type_nodes = 10 }
+           cumulative_program)
+    in
+    assert (List.length exact_cumulative.Hir.funcs = 3);
+    expect_type_diag
+      [ "max_type_nodes"; "of 9 (profile 0.15)"; "test.fas" ]
+      (Sema.check
+         ~limits:{ Limits.default with max_type_nodes = 9 }
+         (expect_ok (Parser.parse (source cumulative_text))));
+    let box_text =
+      "struct Box[T] { a T, b T }\nfn use0(x Box[ptr[u8]]) i64 { return 0 }\n"
+    in
+    let box_program = expect_ok (Parser.parse (source box_text)) in
+    let exact_box =
+      expect_ok
+        (Sema.check ~limits:{ Limits.default with max_type_nodes = 4 } box_program)
+    in
+    assert (List.length exact_box.Hir.structs = 1);
+    (match
+       Sema.check
+         ~limits:{ Limits.default with max_type_nodes = 3 }
+         (expect_ok (Parser.parse (source box_text)))
+     with
+    | Ok _ -> assert false
+    | Error [ diagnostic ] ->
+        assert (contains diagnostic.Diag.message "struct specialization");
+        assert (contains diagnostic.Diag.message "Box");
+        assert (contains diagnostic.Diag.message "of 3 (profile 0.15)");
+        assert (diagnostic.Diag.primary.Span.file = "test.fas")
+    | Error _ -> assert false);
+    let pick_text =
+      "fn pick[N const i64](x i64) i64 { return x + N }\n\
+       fn use0(a i64) i64 { return pick[1](a) }\n"
+    in
+    let pick_program = expect_ok (Parser.parse (source pick_text)) in
+    let exact_pick =
+      expect_ok
+        (Sema.check ~limits:{ Limits.default with max_type_nodes = 3 } pick_program)
+    in
+    assert (List.length exact_pick.Hir.funcs = 2);
+    expect_type_diag
+      [ "function specialization"; "pick"; "of 2 (profile 0.15)"; "test.fas" ]
+      (Sema.check
+         ~limits:{ Limits.default with max_type_nodes = 2 }
+         (expect_ok (Parser.parse (source pick_text))));
+    let widen_text =
+      "fn widen[T](x0 T, x1 T, x2 T, x3 T) i64 { return 0 }\n\
+       fn use0(a arr[2,arr[2,u8]]) i64 { return widen[arr[2,arr[2,u8]]](a, a, a, a) }\n\
+       fn use1(b arr[3,arr[2,u8]]) i64 { return widen[arr[3,arr[2,u8]]](b, b, b, b) }\n"
+    in
+    let widen_program = expect_ok (Parser.parse (source widen_text)) in
+    let exact_widen =
+      expect_ok
+        (Sema.check ~limits:{ Limits.default with max_type_nodes = 26 } widen_program)
+    in
+    assert (List.length exact_widen.Hir.funcs = 4);
+    expect_type_diag
+      [ "max_type_nodes"; "of 25 (profile 0.15)"; "widen" ]
+      (Sema.check
+         ~limits:{ Limits.default with max_type_nodes = 25 }
+         (expect_ok (Parser.parse (source widen_text))));
+    let widen_over_first =
+      Sema.check
+        ~limits:{ Limits.default with max_type_nodes = 25 }
+        (expect_ok (Parser.parse (source widen_text)))
+      |> Result.map_error (fun diagnostics -> Diag.render_all ~source:None diagnostics)
+    in
+    let widen_over_second =
+      Sema.check
+        ~limits:{ Limits.default with max_type_nodes = 25 }
+        (expect_ok (Parser.parse (source widen_text)))
+      |> Result.map_error (fun diagnostics -> Diag.render_all ~source:None diagnostics)
+    in
+    assert (widen_over_first = widen_over_second)
+  in
+  run_type_node_budget_tests ();
+  let run_diagnostic_naming_tests () =
+    let expect_naming needles ~limits text =
+      match Sema.check ~limits (expect_ok (Parser.parse (source text))) with
+      | Ok _ -> assert false
+      | Error diagnostics ->
+          let rendered = Diag.render_all ~source:None diagnostics in
+          List.iter (fun needle -> assert (contains rendered needle)) needles
+    in
+    expect_naming
+      [
+        "string literal bytes exceed budget max_interned_string_bytes of 2 (profile \
+         0.15)";
+      ]
+      ~limits:{ Limits.default with max_interned_string_bytes = 2 }
+      "fn f() void { s ptr[const u8] = \"abc\"\n return }\n";
+    expect_naming
+      [
+        "cumulative interned string bytes exceed budget max_interned_string_bytes of 3 \
+         (profile 0.15)";
+      ]
+      ~limits:{ Limits.default with max_interned_string_bytes = 3 }
+      "fn f() void { a ptr[const u8] = \"ab\"\n b ptr[const u8] = \"cd\"\n return }\n";
+    expect_naming
+      [ "object size exceeds budget max_object_size of 15 (profile 0.15)" ]
+      ~limits:{ Limits.default with max_object_size = 15 }
+      "fn f() void { value arr[16,u8]\n return }\n";
+    expect_naming
+      [ "alignment exceeds budget max_object_alignment of 8 (profile 0.15)" ]
+      ~limits:{ Limits.default with max_object_alignment = 8 }
+      "struct Aligned @align(16) { value u8 }\nfn f() void { return }\n";
+    expect_naming
+      [
+        "aggregate element count exceeds the configured limit";
+        "budget max_aggregate_elements of 99 (profile 0.15)";
+      ]
+      ~limits:{ Limits.default with max_aggregate_elements = 99 }
+      "fn f() void { value arr[100,u8]\n return }\n";
+    expect_naming
+      [
+        "const specialization count limit exceeded";
+        "budget max_specializations of 1 (profile 0.15)";
+      ]
+      ~limits:{ Limits.default with max_specializations = 1 }
+      "fn id[N const i64]() i64 { return N }\n\
+       fn a() i64 { return id[1]() }\n\
+       fn b() i64 { return id[2]() }\n";
+    expect_naming
+      [
+        "const specialization recursion depth limit exceeded";
+        "budget max_specialization_depth of 1 (profile 0.15)";
+      ]
+      ~limits:{ Limits.default with max_specialization_depth = 1 }
+      "fn inner[N const i64]() i64 { return N }\n\
+       fn outer[M const i64]() i64 { return inner[M]() }\n\
+       fn main() i64 { return outer[5]() }\n";
+    expect_naming
+      [
+        "function specialization count limit exceeded";
+        "budget max_specializations of 1 (profile 0.15)";
+      ]
+      ~limits:{ Limits.default with max_specializations = 1 }
+      "fn identity[T](value T) T { return value }\n\
+       fn main() i64 { a u8 = identity[u8](1)\n\
+      \ return identity[i64](1) }\n";
+    expect_naming
+      [
+        "struct specialization recursion depth limit exceeded";
+        "budget max_specialization_depth of 1 (profile 0.15)";
+      ]
+      ~limits:{ Limits.default with max_specialization_depth = 1 }
+      "struct Inner[T] { value T }\n\
+       struct Outer[T] { inner Inner[T] }\n\
+       fn main(value Outer[u8]) i64 { return 0 }\n"
+  in
+  run_diagnostic_naming_tests ();
   print_endline "frontend unit tests: ok"

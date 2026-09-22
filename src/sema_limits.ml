@@ -69,18 +69,27 @@ let validate_object limits structs span ty =
     if alignment <= limits.Limits.max_object_alignment then Ok ()
     else
       error span
-        (Printf.sprintf "alignment exceeds compiler budget of %d"
-           limits.Limits.max_object_alignment)
+        (Printf.sprintf
+           "alignment exceeds budget max_object_alignment of %d (profile %s)"
+           limits.Limits.max_object_alignment
+           (Limits.budget_profile_name limits))
   in
   let* () =
     if size <= limits.Limits.max_object_size then Ok ()
     else
       error span
-        (Printf.sprintf "object size exceeds compiler budget of %d bytes"
-           limits.Limits.max_object_size)
+        (Printf.sprintf "object size exceeds budget max_object_size of %d (profile %s)"
+           limits.Limits.max_object_size
+           (Limits.budget_profile_name limits))
   in
   if aggregate_within_limit limits structs ty then Ok ty
-  else error span "aggregate element count exceeds the configured limit"
+  else
+    error span
+      (Printf.sprintf
+         "aggregate element count exceeds the configured limit: budget \
+          max_aggregate_elements of %d (profile %s)"
+         limits.Limits.max_aggregate_elements
+         (Limits.budget_profile_name limits))
 
 let validate_struct_alignment limits span = function
   | Some alignment ->
@@ -91,6 +100,8 @@ let validate_struct_alignment limits span = function
       if alignment <= limits.Limits.max_object_alignment then Ok ()
       else
         error span
-          (Printf.sprintf "alignment exceeds compiler budget of %d"
-             limits.Limits.max_object_alignment)
+          (Printf.sprintf
+             "alignment exceeds budget max_object_alignment of %d (profile %s)"
+             limits.Limits.max_object_alignment
+             (Limits.budget_profile_name limits))
   | None -> Ok ()
