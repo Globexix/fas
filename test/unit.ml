@@ -2805,7 +2805,15 @@ let () =
     | Error _ -> ()
     | Ok _ -> assert false);
     assert (Ir.static_type_bytes [] [] (Ir.Vector (2, Ir.Void)) = Error ());
-    match Hir.layout [] (Hir.Vec (2, Hir.Void)) with
+    (match Hir.layout [] (Hir.Vec (2, Hir.Void)) with
+    | Error _ -> ()
+    | Ok _ -> assert false);
+    assert (Ir.static_type_bytes [] [] (Ir.Vector (2, Ir.Struct "s")) = Error ());
+    (match Hir.layout [] (Hir.Vec (2, Hir.Struct "s")) with
+    | Error _ -> ()
+    | Ok _ -> assert false);
+    assert (Ir.static_type_bytes [] [] (Ir.Vector (2, Ir.Vector (2, Ir.I8))) = Error ());
+    match Hir.layout [] (Hir.Vec (2, Hir.Vec (2, Hir.Int Hir.U8))) with
     | Error _ -> ()
     | Ok _ -> assert false
   in
