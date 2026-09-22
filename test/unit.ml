@@ -2817,10 +2817,33 @@ let () =
     | Error _ -> ()
     | Ok _ -> assert false
   in
+  let run_top_level_order_tests () =
+    let source_program =
+      expect_ok
+        (Parser.parse
+           (Source.create ~file:"top_level_order.fas"
+              ~text:
+                "const a u32 = 1\n\
+                 const b u32 = 2\n\
+                 const g0 arr[2,u8] = { 1, 2 }\n\
+                 const c u32 = 3\n\
+                 const g1 arr[2,u8] = { 3, 4 }\n\
+                 const d u32 = 4\n\
+                 fn f() void { return }\n"))
+    in
+    let hir = expect_ok (Sema.check source_program) in
+    assert (
+      List.map (fun (c : Hir.const_def) -> c.Hir.name) hir.Hir.consts
+      = [ "a"; "b"; "c"; "d" ]);
+    assert (
+      List.map (fun (c : Hir.const_arr_def) -> c.Hir.name) hir.Hir.const_arrays
+      = [ "g0"; "g1" ])
+  in
   run_diagnostic_naming_tests ();
   run_specialization_span_tests ();
   run_debug_ir_budget_tests ();
   run_scratch_budget_tests ();
   run_vector_size_tests ();
   run_layout_accounting_parity_tests ();
+  run_top_level_order_tests ();
   print_endline "frontend unit tests: ok"
