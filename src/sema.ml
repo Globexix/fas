@@ -3,6 +3,7 @@ open Sema_flow
 open Sema_numeric
 open Sema_specialization
 open Sema_types
+module String_set = Set.Make (String)
 
 type static_index = Dynamic | Known of Hir.ty * int64
 type place_info = { expr : Hir.expr; root : binding option; path : place_path option }
@@ -1890,7 +1891,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
   and validate_statement_names value_names type_names scope_names = function
     | Ast.Let { name; ty; init; span; _ } ->
         let* () = validate_binding_name span name in
-        if List.mem name scope_names then
+        if String_set.mem name scope_names then
           error span (Printf.sprintf "duplicate local `%s`" name)
         else
           let* () = validate_type_names value_names type_names span ty in
@@ -1900,7 +1901,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
             | Some expression ->
                 validate_expression_names value_names type_names expression
           in
-          Ok (name :: value_names, name :: scope_names)
+          Ok (name :: value_names, String_set.add name scope_names)
     | Ast.Assign (target, expression, _) | Ast.Compound_assign (target, _, expression, _)
       ->
         let* () = validate_target_names value_names type_names target in
@@ -1937,9 +1938,9 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
     | Ast.For (init, condition, step, body, _) ->
         let* loop_names, loop_scope_names =
           match init with
-          | None -> Ok (value_names, [])
+          | None -> Ok (value_names, String_set.empty)
           | Some statement ->
-              validate_statement_names value_names type_names [] statement
+              validate_statement_names value_names type_names String_set.empty statement
         in
         let* () =
           match condition with
@@ -1971,8 +1972,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
         in
         Ok (value_names, scope_names)
     | Ast.Break _ | Ast.Continue _ -> Ok (value_names, scope_names)
-  and validate_statement_block_names ?(scope_names = []) value_names type_names =
-    function
+  and validate_statement_block_names ?(scope_names = String_set.empty) value_names
+      type_names = function
     | [] -> Ok ()
     | statement :: rest ->
         let* value_names, scope_names =
@@ -1982,9 +1983,9 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
   in
   let rec validate_statement_duplicates scope_names = function
     | Ast.Let { name; span; _ } ->
-        if List.mem name scope_names then
+        if String_set.mem name scope_names then
           error span (Printf.sprintf "duplicate local `%s`" name)
-        else Ok (name :: scope_names)
+        else Ok (String_set.add name scope_names)
     | Ast.If (_, yes, no, _) ->
         let* () = validate_statement_block_duplicates yes in
         let* () =
@@ -1999,8 +2000,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
     | Ast.For (init, _, step, body, _) ->
         let* loop_scope_names =
           match init with
-          | None -> Ok []
-          | Some statement -> validate_statement_duplicates [] statement
+          | None -> Ok String_set.empty
+          | Some statement -> validate_statement_duplicates String_set.empty statement
         in
         let* () = validate_statement_block_duplicates body in
         let* _ =
@@ -2024,7 +2025,7 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
     | Ast.Assign _ | Ast.Compound_assign _ | Ast.Return _ | Ast.Expr_stmt _
     | Ast.Break _ | Ast.Continue _ ->
         Ok scope_names
-  and validate_statement_block_duplicates ?(scope_names = []) = function
+  and validate_statement_block_duplicates ?(scope_names = String_set.empty) = function
     | [] -> Ok ()
     | statement :: rest ->
         let* scope_names = validate_statement_duplicates scope_names statement in
@@ -3222,7 +3223,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
               | Ast.Statements statements ->
                   let* () =
                     validate_statement_block_names
-                      ~scope_names:(body_value_names @ body_type_names)
+                      ~scope_names:
+                        (String_set.of_list (body_value_names @ body_type_names))
                       body_value_names body_type_names statements
                   in
                   let* () =
@@ -3305,7 +3307,8 @@ let monomorphize_types ?eval_context ?(eager_functions = false) ~top_level_bindi
                 List.map (fun (parameter : Ast.param) -> parameter.name) params
               in
               let* () =
-                validate_statement_block_duplicates ~scope_names:body_value_names
+                validate_statement_block_duplicates
+                  ~scope_names:(String_set.of_list body_value_names)
                   statements
               in
               let* statements =
