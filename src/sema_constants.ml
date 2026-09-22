@@ -11,6 +11,57 @@ let ( let* ) result continuation =
 let lookup name table = List.find_opt (fun (entry, _, _) -> entry = name) table
 let ty_name = Hir.ty_name
 
+type unresolved_shape = Unresolved_int | Unresolved_vector | Unresolved_null
+
+let rec unresolved_shape_of expression =
+  let combined left right =
+    match (unresolved_shape_of left, unresolved_shape_of right) with
+    | Some left_shape, Some right_shape when left_shape = right_shape -> Some left_shape
+    | _ -> None
+  in
+  match expression with
+  | Ast.Int_lit _ -> Some Unresolved_int
+  | Ast.Null _ -> Some Unresolved_null
+  | Ast.Unary ((Ast.Neg | Ast.Bit_not), operand, _) -> (
+      match unresolved_shape_of operand with
+      | Some Unresolved_int -> Some Unresolved_int
+      | _ -> None)
+  | Ast.Binary
+      ( ( Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
+        | Ast.Bit_xor ),
+        left,
+        right,
+        _ ) ->
+      combined left right
+  | Ast.Splat (_, _) -> Some Unresolved_vector
+  | _ -> None
+
+let rec unresolved_vector_elements expression =
+  match expression with
+  | Ast.Splat (element, _) -> (
+      match unresolved_shape_of element with Some Unresolved_int -> true | _ -> false)
+  | Ast.Binary
+      ( ( Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
+        | Ast.Bit_xor ),
+        left,
+        right,
+        _ ) ->
+      unresolved_vector_elements left && unresolved_vector_elements right
+  | _ -> false
+
+let operand_type_hint operation expected left right =
+  match operation with
+  | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
+  | Ast.Bit_xor ->
+      expected
+  | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
+      match expected with
+      | Some (Hir.Vec (lanes, _))
+        when unresolved_vector_elements left && unresolved_vector_elements right ->
+          Some (Hir.Vec (lanes, Hir.Int Hir.I32))
+      | _ -> None)
+  | Ast.And | Ast.Or -> None
+
 let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve consts
     expected ?(check_only = false) ?(validate_dead = true) = function
   | Ast.Int_lit (raw, s) ->
@@ -83,11 +134,11 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
         else Ok (Hir.Bool, if rv <> 0L then 1L else 0L)
   | Ast.Binary (op, l, r, s) ->
       let* (lt, lv), (rt, rv) =
-        match (l, op) with
-        | ( (Ast.Int_lit _ | Ast.Unary (Ast.Neg, Ast.Int_lit _, _)),
-            (Ast.Eq | Ne | Lt | Le | Gt | Ge) ) ->
+        let hint = operand_type_hint op expected l r in
+        match (unresolved_shape_of l, unresolved_shape_of r) with
+        | Some _, None ->
             let* rt, rv =
-              const_expr ~structs ~named_types ~arrays ?resolve consts None ~check_only
+              const_expr ~structs ~named_types ~arrays ?resolve consts hint ~check_only
                 ~validate_dead r
             in
             let* lt, lv =
@@ -97,8 +148,8 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
             Ok ((lt, lv), (rt, rv))
         | _ ->
             let* lt, lv =
-              const_expr ~structs ~named_types ~arrays ?resolve consts expected
-                ~check_only ~validate_dead l
+              const_expr ~structs ~named_types ~arrays ?resolve consts hint ~check_only
+                ~validate_dead l
             in
             let* rt, rv =
               const_expr ~structs ~named_types ~arrays ?resolve consts (Some lt)
@@ -359,8 +410,18 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
           Ok (ty, List.map (fun value -> if value = 0L then 1L else 0L) values)
       | _ -> error span "logical not requires a bool vector")
   | Ast.Binary (operation, left, right, span) ->
-      let* left_ty, left_values = evaluate expected left in
-      let* right_ty, right_values = evaluate (Some left_ty) right in
+      let hint = operand_type_hint operation expected left right in
+      let* left_ty, left_values, right_ty, right_values =
+        match (unresolved_shape_of left, unresolved_shape_of right) with
+        | Some _, None ->
+            let* right_ty, right_values = evaluate hint right in
+            let* left_ty, left_values = evaluate (Some right_ty) left in
+            Ok (left_ty, left_values, right_ty, right_values)
+        | _ ->
+            let* left_ty, left_values = evaluate hint left in
+            let* right_ty, right_values = evaluate (Some left_ty) right in
+            Ok (left_ty, left_values, right_ty, right_values)
+      in
       let* result_ty =
         binary_result_type ~mismatch:"constant operands have different types" span
           operation left_ty right_ty

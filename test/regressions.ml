@@ -4394,4 +4394,74 @@ let () =
        "struct Pair[T] { left T right T }\n\
         fn main() i64 { return ((Pair[i64]){12, 4}).left }\n");
 
-  print_endline "regression tests: 291 passed"
+  ignore (llvm_of "fn f(x u64) bool { return 1 == x }\n");
+  let context_literal_arith_left =
+    llvm_of "fn f(x u64) bool { return (1 + 2) == x }\n"
+  in
+  if not (contains context_literal_arith_left "add i64 1, 2") then
+    failwith
+      "context-literal-arith-left-peer: literal subtree did not take the peer type";
+  ignore (llvm_of "fn f(x u64) bool { return x == (1 + 2) }\n");
+  let context_splat_left =
+    llvm_of "fn f(x vec[4,u32]) vec[4,bool] { return splat(1) == x }\n"
+  in
+  if not (contains context_splat_left "icmp eq <4 x i32>") then
+    failwith "context-splat-left-peer: splat element did not take the peer type";
+  if contains context_splat_left "icmp eq <4 x i1>" then
+    failwith "context-splat-left-peer: comparison result leaked into splat element";
+  ignore (llvm_of "fn f(x vec[4,u32]) vec[4,bool] { return x == splat(1) }\n");
+  ignore (llvm_of "fn f() bool { return (1 + 2) == 3 }\n");
+  ignore (llvm_of "const C u64 = 3\nfn f() bool { return (1 + 2) == C }\n");
+  let context_const_splat_destination =
+    llvm_of
+      "const C vec[4,u32] = splat(1)\n\
+       fn f(x vec[4,u32]) vec[4,bool] { return C == x }\n"
+  in
+  if not (contains context_const_splat_destination "icmp eq <4 x i32>") then
+    failwith
+      "context-const-splat-destination: splat shape did not come from the declared type";
+  ignore
+    (llvm_of "const C u64 = 3\nconst D bool = (1 + 2) == C\nfn f() bool { return D }\n");
+  ignore
+    (llvm_of
+       "const C vec[4,u32] = splat(1)\n\
+        const D vec[4,bool] = splat(1) == C\n\
+        const E vec[4,bool] = C == splat(1)\n\
+        fn f() vec[4,bool] { return D }\n\
+        fn g() vec[4,bool] { return E }\n");
+  semantic_error "context-null-unconstrained" "null requires a pointer context"
+    "fn f() bool { return null == null }\n";
+  semantic_error "context-conflicting-anchors-comparison"
+    "binary operands must have the same type"
+    "fn f(x u32, y u64) bool { return x == y }\n";
+  semantic_error "context-conflicting-anchors-arithmetic"
+    "binary operands must have the same type"
+    "fn f(x u32, y u64) u64 { return x + y }\n";
+  semantic_error "context-splat-no-invented-lanes"
+    "splat requires a vector type context" "fn f() usize { return len(splat(1)) }\n";
+  semantic_error "context-literal-range-left" "integer literal is out of range for u8"
+    "fn f(x u8) bool { return 300 == x }\n";
+  semantic_error "context-literal-range-right" "integer literal is out of range for u8"
+    "fn f(x u8) bool { return x == 300 }\n";
+  semantic_error "context-generic-call-needs-explicit-arguments"
+    "generic function `id` requires arguments"
+    "fn id[N const u64](x u64) u64 { return x }\nfn f() u64 { return id(1) }\n";
+  ignore (llvm_of "fn f(x u32, y u64) u64 { return zext[u64](x) + y }\n");
+  ignore (llvm_of "fn f(x i32, y i64) i64 { return sext[i64](x) + y }\n");
+  ignore (llvm_of "fn f(x u64) u32 { return trunc[u32](x) }\n");
+  semantic_error "context-no-implicit-equal-width"
+    "type mismatch: expected u64, got u32" "fn f(x u32) u64 { return x + 1 }\n";
+  semantic_error "context-no-implicit-wrong-direction"
+    "type mismatch: expected u32, got u64" "fn f(x u64) u32 { return x + 1 }\n";
+  semantic_error "context-literal-takes-peer-not-destination"
+    "type mismatch: expected u64, got u32" "fn f(x u32) u64 { return 1 + x }\n";
+  ignore
+    (llvm_of
+       "fn f(p ptr[u8]) bool { return p == null }\n\
+        fn g(p ptr[u8]) bool { return null == p }\n");
+  ignore
+    (llvm_of
+       "fn f(x u64, n u32) u64 { return shl(x, n) }\n\
+        fn g(x u64) u64 { return shl(x, 3) }\n");
+
+  print_endline "regression tests: 316 passed"

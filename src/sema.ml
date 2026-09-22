@@ -270,6 +270,57 @@ let rec rooted_in_readonly_pointer = function
       rooted_in_readonly_pointer a || rooted_in_readonly_pointer b
   | _ -> false
 
+type unresolved_shape = Unresolved_int | Unresolved_vector | Unresolved_null
+
+let rec unresolved_shape_of expression =
+  let combined left right =
+    match (unresolved_shape_of left, unresolved_shape_of right) with
+    | Some left_shape, Some right_shape when left_shape = right_shape -> Some left_shape
+    | _ -> None
+  in
+  match expression with
+  | Ast.Int_lit _ -> Some Unresolved_int
+  | Ast.Null _ -> Some Unresolved_null
+  | Ast.Unary ((Ast.Neg | Ast.Bit_not), operand, _) -> (
+      match unresolved_shape_of operand with
+      | Some Unresolved_int -> Some Unresolved_int
+      | _ -> None)
+  | Ast.Binary
+      ( ( Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
+        | Ast.Bit_xor ),
+        left,
+        right,
+        _ ) ->
+      combined left right
+  | Ast.Splat (_, _) -> Some Unresolved_vector
+  | _ -> None
+
+let rec unresolved_vector_elements expression =
+  match expression with
+  | Ast.Splat (element, _) -> (
+      match unresolved_shape_of element with Some Unresolved_int -> true | _ -> false)
+  | Ast.Binary
+      ( ( Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
+        | Ast.Bit_xor ),
+        left,
+        right,
+        _ ) ->
+      unresolved_vector_elements left && unresolved_vector_elements right
+  | _ -> false
+
+let operand_type_hint operation expected left right =
+  match operation with
+  | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
+  | Ast.Bit_xor ->
+      expected
+  | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
+      match expected with
+      | Some (Hir.Vec (lanes, _))
+        when unresolved_vector_elements left && unresolved_vector_elements right ->
+          Some (Hir.Vec (lanes, Hir.Int Hir.I32))
+      | _ -> None)
+  | Ast.And | Ast.Or -> None
+
 let require_place_value c span place =
   match Hir.expr_ty place.expr with
   | Hir.Ptr _ | Hir.ConstPtr _ -> (
@@ -488,23 +539,13 @@ and check_expr (c : context) expected = function
         else error s "logical operands must be bool")
       else
         let* a, b =
-          match l with
-          | Ast.Int_lit _ | Ast.Unary (Ast.Neg, Ast.Int_lit _, _) -> (
-              match expected with
-              | Some t when is_int t ->
-                  let* a = check_expr c (Some t) l in
-                  let* b = check_expr c (Some t) r in
-                  Ok (a, b)
-              | _ ->
-                  let* b = check_expr c None r in
-                  let* a = check_expr c (Some (Hir.expr_ty b)) l in
-                  Ok (a, b))
-          | Ast.Null _ ->
-              let* b = check_expr c None r in
+          match (unresolved_shape_of l, unresolved_shape_of r) with
+          | Some _, None ->
+              let* b = check_expr c (operand_type_hint op expected l r) r in
               let* a = check_expr c (Some (Hir.expr_ty b)) l in
               Ok (a, b)
           | _ ->
-              let* a = check_expr c expected l in
+              let* a = check_expr c (operand_type_hint op expected l r) l in
               let* b = check_expr c (Some (Hir.expr_ty a)) r in
               Ok (a, b)
         in
