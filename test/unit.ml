@@ -2759,9 +2759,60 @@ let () =
             "cumulative alloca scratch bytes exceed budget max_stack_scratch_bytes")
     | Ok () -> assert false
   in
+  let run_layout_accounting_parity_tests () =
+    let hir_size ty =
+      match Hir.layout [] ty with
+      | Ok (size, _) -> size
+      | Error message -> failwith message
+    in
+    let assert_pair ir_ty hir_ty =
+      match Ir.static_type_bytes [] [] ir_ty with
+      | Ok bytes -> assert (bytes = hir_size hir_ty)
+      | Error () -> assert false
+    in
+    let elems =
+      [
+        (Ir.I1, Hir.Bool);
+        (Ir.I8, Hir.Int Hir.U8);
+        (Ir.I16, Hir.Int Hir.U16);
+        (Ir.I32, Hir.Int Hir.U32);
+        (Ir.I64, Hir.Int Hir.U64);
+        (Ir.Ptr Ir.I8, Hir.Ptr (Hir.Int Hir.U8));
+      ]
+    in
+    List.iter (fun (ir_e, hir_e) -> assert_pair ir_e hir_e) elems;
+    List.iter
+      (fun lanes ->
+        List.iter
+          (fun (ir_e, hir_e) ->
+            assert_pair (Ir.Vector (lanes, ir_e)) (Hir.Vec (lanes, hir_e)))
+          elems)
+      [ 1; 2; 3; 4; 5; 7; 8; 9; 16; 31; 64 ];
+    List.iter
+      (fun count ->
+        List.iter
+          (fun lanes ->
+            List.iter
+              (fun (ir_e, hir_e) ->
+                assert_pair
+                  (Ir.Array (count, Ir.Vector (lanes, ir_e)))
+                  (Hir.Array (count, Hir.Vec (lanes, hir_e))))
+              [ (Ir.I1, Hir.Bool); (Ir.I8, Hir.Int Hir.U8); (Ir.I16, Hir.Int Hir.U16) ])
+          [ 1; 3; 8 ])
+      [ 0; 1; 2; 3 ];
+    assert (Ir.static_type_bytes [] [] (Ir.Vector (2, Ir.Array (2, Ir.I8))) = Error ());
+    (match Hir.layout [] (Hir.Vec (2, Hir.Array (2, Hir.Int Hir.U8))) with
+    | Error _ -> ()
+    | Ok _ -> assert false);
+    assert (Ir.static_type_bytes [] [] (Ir.Vector (2, Ir.Void)) = Error ());
+    match Hir.layout [] (Hir.Vec (2, Hir.Void)) with
+    | Error _ -> ()
+    | Ok _ -> assert false
+  in
   run_diagnostic_naming_tests ();
   run_specialization_span_tests ();
   run_debug_ir_budget_tests ();
   run_scratch_budget_tests ();
   run_vector_size_tests ();
+  run_layout_accounting_parity_tests ();
   print_endline "frontend unit tests: ok"
