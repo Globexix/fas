@@ -2499,6 +2499,83 @@ let () =
         ("first" ^ Ast.specialization_name_delimiter ^ "named6_nope$spec$4_bool")
       = Some first_span)
   in
+  let run_debug_ir_budget_tests () =
+    let empty = ir_module [] in
+    let expected_empty =
+      Printf.sprintf
+        "Module {\n\
+        \  target_triple = %S;\n\
+        \  data_layout = %S;\n\
+        \  no_inline_function = None;\n\
+        \  globals = [\n\
+        \  ];\n\
+        \  functions = [\n\
+        \  ];\n\
+         }\n"
+        empty.Ir.target_triple empty.Ir.data_layout
+    in
+    (match Ir.render_debug_bounded ~limits:Limits.default empty with
+    | Ok text -> assert (text = expected_empty)
+    | Error _ -> assert false);
+    let small =
+      ir_module
+        ~globals:[ Ir.String_global { name = "s"; bytes = "abc" } ]
+        [ ir_function [ ir_block 0 (Ir.Ret None) ] ]
+    in
+    let full =
+      match
+        Ir.render_debug_bounded
+          ~limits:{ Limits.default with max_rendered_ir_bytes = max_int }
+          small
+      with
+      | Ok text -> text
+      | Error _ -> assert false
+    in
+    let length = String.length full in
+    (match
+       Ir.render_debug_bounded
+         ~limits:{ Limits.default with max_rendered_ir_bytes = length }
+         small
+     with
+    | Ok text -> assert (text = full)
+    | Error _ -> assert false);
+    (match
+       Ir.render_debug_bounded
+         ~limits:{ Limits.default with max_rendered_ir_bytes = length - 1 }
+         small
+     with
+    | Error message ->
+        assert (
+          contains message
+            "rendered debug IR bytes exceed budget max_rendered_ir_bytes of");
+        assert (contains message "(profile 0.15)")
+    | Ok _ -> assert false);
+    (match
+       Ir.render_debug_bounded
+         ~limits:{ Limits.default with max_rendered_ir_bytes = min_int }
+         small
+     with
+    | Error message ->
+        assert (contains message "budget max_rendered_ir_bytes must not be negative")
+    | Ok _ -> assert false);
+    let over =
+      match
+        Ir.render_debug_bounded
+          ~limits:{ Limits.default with max_rendered_ir_bytes = length - 1 }
+          small
+      with
+      | Error message -> message
+      | Ok _ -> assert false
+    in
+    match
+      Ir.render_debug_bounded
+        ~limits:{ Limits.default with max_rendered_ir_bytes = length - 1 }
+        small
+    with
+    | Error message -> assert (message = over)
+    | Ok _ -> assert false
+  in
   run_diagnostic_naming_tests ();
   run_specialization_span_tests ();
+  run_debug_ir_budget_tests ();
   print_endline "frontend unit tests: ok"

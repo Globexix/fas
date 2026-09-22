@@ -219,7 +219,10 @@ let run config =
         let* () = ir_budget program (Ir.check_lowered_nodes ~limits ir) in
         match config.emit with
         | Cli.Ast -> assert false
-        | Cli.Ir -> emit_text config (Ir.render_debug ir)
+        | Cli.Ir -> (
+            match Ir.render_debug_bounded ~limits ir with
+            | Ok text -> emit_text config text
+            | Error message -> Error [ Diag.error Span.synthetic message ])
         | Cli.Llvm ->
             let* text = render_ir ir in
             emit_text config text

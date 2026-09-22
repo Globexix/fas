@@ -1455,58 +1455,89 @@ let render m =
   | Ok text -> text
   | Error _ -> assert false
 
-let render_debug m =
-  let global = function
-    | String_global { name; bytes } ->
-        Printf.sprintf "    String_global { name = %S; bytes = %S }" name bytes
-    | Array_global { name; elem_ty; elems; align } ->
-        Printf.sprintf
-          "    Array_global { name = %S; elem_ty = %s; elems = [%s]; align = %d }" name
-          (ty_name elem_ty)
-          (String.concat "; " (List.map Int64.to_string elems))
-          align
-  in
-  let block (b : block) =
-    String.concat "\n"
-      ([ Printf.sprintf "      Block { id = %d; label = %S; instrs = [" b.id b.label ]
-      @ List.map
-          (fun instruction -> "        " ^ String.trim (instr_line instruction))
-          b.instrs
-      @ [
-          "      ];";
-          "      terminator = " ^ String.trim (term_line b.terminator);
-          "      }";
-        ])
-  in
-  let func (f : func) =
-    let params =
-      f.params
-      |> List.map (fun (p : param) -> Printf.sprintf "%s:%s" p.name (ty_name p.ty))
-      |> String.concat ", "
+let render_debug_bounded ~limits m =
+  let budget = limits.Limits.max_rendered_ir_bytes in
+  if budget < 0 then
+    Error
+      (Printf.sprintf "budget max_rendered_ir_bytes must not be negative (profile %s)"
+         (Limits.budget_profile_name limits))
+  else
+    let buffer = Buffer.create 4096 in
+    let add s =
+      if Buffer.length buffer > budget - String.length s then raise Render_exhausted
+      else Buffer.add_string buffer s
     in
-    String.concat "\n"
-      ([
-         Printf.sprintf
+    let line s =
+      add s;
+      add "\n"
+    in
+    let global = function
+      | String_global { name; bytes } ->
+          line (Printf.sprintf "    String_global { name = %S; bytes = %S }" name bytes)
+      | Array_global { name; elem_ty; elems; align } ->
+          line
+            (Printf.sprintf
+               "    Array_global { name = %S; elem_ty = %s; elems = [%s]; align = %d }"
+               name (ty_name elem_ty)
+               (String.concat "; " (List.map Int64.to_string elems))
+               align)
+    in
+    let block (b : block) =
+      line (Printf.sprintf "      Block { id = %d; label = %S; instrs = [" b.id b.label);
+      List.iter
+        (fun instruction -> line ("        " ^ String.trim (instr_line instruction)))
+        b.instrs;
+      line "      ];";
+      line ("      terminator = " ^ String.trim (term_line b.terminator));
+      line "      }"
+    in
+    let func (f : func) =
+      let params =
+        f.params
+        |> List.map (fun (p : param) -> Printf.sprintf "%s:%s" p.name (ty_name p.ty))
+        |> String.concat ", "
+      in
+      line
+        (Printf.sprintf
            "    Function { name = %S; params = [%s]; ret = %s; variadic = %b; blocks = \
             ["
-           f.name params (ty_name f.ret) f.variadic;
-       ]
-      @ List.map block f.blocks @ [ "    ] }" ])
-  in
-  String.concat "\n"
-    ([
-       "Module {";
-       Printf.sprintf "  target_triple = %S;" m.target_triple;
-       Printf.sprintf "  data_layout = %S;" m.data_layout;
-       Printf.sprintf "  no_inline_function = %s;"
-         (match m.no_inline_function with
-         | None -> "None"
-         | Some name -> Printf.sprintf "Some %S" name);
-       "  globals = [";
-     ]
-    @ List.map global m.globals @ [ "  ];"; "  functions = [" ] @ List.map func m.funcs
-    @ [ "  ];"; "}" ])
-  ^ "\n"
+           f.name params (ty_name f.ret) f.variadic);
+      List.iter block f.blocks;
+      line "    ] }"
+    in
+    try
+      line "Module {";
+      line (Printf.sprintf "  target_triple = %S;" m.target_triple);
+      line (Printf.sprintf "  data_layout = %S;" m.data_layout);
+      line
+        (Printf.sprintf "  no_inline_function = %s;"
+           (match m.no_inline_function with
+           | None -> "None"
+           | Some name -> Printf.sprintf "Some %S" name));
+      line "  globals = [";
+      List.iter global m.globals;
+      line "  ];";
+      line "  functions = [";
+      List.iter func m.funcs;
+      line "  ];";
+      line "}";
+      Ok (Buffer.contents buffer)
+    with Render_exhausted ->
+      Error
+        (Printf.sprintf
+           "rendered debug IR bytes exceed budget max_rendered_ir_bytes of %d (profile \
+            %s)"
+           budget
+           (Limits.budget_profile_name limits))
+
+let render_debug m =
+  match
+    render_debug_bounded
+      ~limits:{ Limits.default with max_rendered_ir_bytes = max_int }
+      m
+  with
+  | Ok text -> text
+  | Error _ -> assert false
 
 let raw_assembly m =
   m.funcs
