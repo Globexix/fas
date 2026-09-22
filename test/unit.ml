@@ -2727,12 +2727,36 @@ let () =
         ~limits:{ Limits.default with max_static_data_bytes = 8 }
         wrapped
       = Ok ());
-    match
-      Ir.check_static_data_bytes
-        ~limits:{ Limits.default with max_static_data_bytes = 7 }
-        wrapped
-    with
+    (match
+       Ir.check_static_data_bytes
+         ~limits:{ Limits.default with max_static_data_bytes = 7 }
+         wrapped
+     with
     | Error (offender, _) -> assert (offender = Some "w")
+    | Ok () -> assert false);
+    let source_program =
+      expect_ok
+        (Parser.parse
+           (Source.create ~file:"vec_size.fas"
+              ~text:"fn f(x vec[3,u16]) void { return }\n"))
+    in
+    let source_hir = expect_ok (Sema.check source_program) in
+    let source_ir = expect_ok (Lower.lower source_hir) in
+    assert (
+      Ir.check_stack_scratch_bytes
+        ~limits:{ Limits.default with max_stack_scratch_bytes = 8 }
+        source_ir
+      = Ok ());
+    match
+      Ir.check_stack_scratch_bytes
+        ~limits:{ Limits.default with max_stack_scratch_bytes = 7 }
+        source_ir
+    with
+    | Error (offender, message) ->
+        assert (offender = Some "f");
+        assert (
+          contains message
+            "cumulative alloca scratch bytes exceed budget max_stack_scratch_bytes")
     | Ok () -> assert false
   in
   run_diagnostic_naming_tests ();
