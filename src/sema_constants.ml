@@ -409,7 +409,7 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
       | Hir.Vec (_, Hir.Bool) ->
           Ok (ty, List.map (fun value -> if value = 0L then 1L else 0L) values)
       | _ -> error span "logical not requires a bool vector")
-  | Ast.Binary (operation, left, right, span) ->
+  | Ast.Binary (operation, left, right, span) -> (
       let hint = operand_type_hint operation expected left right in
       let* left_ty, left_values, right_ty, right_values =
         match (unresolved_shape_of left, unresolved_shape_of right) with
@@ -431,32 +431,34 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
         | Some element -> Ok element
         | None -> error span "vector operation requires vector operands"
       in
-      if
-        (not check_only)
-        && (operation = Ast.Div || operation = Ast.Rem)
-        && List.exists (( = ) 0L) right_values
-      then error span "division by zero in constant expression"
-      else
-        let signed_min =
-          match element with
-          | Hir.Int kind ->
-              let bits = int_bits kind in
-              if bits = 64 then Int64.min_int
-              else Int64.neg (Int64.shift_left 1L (bits - 1))
-          | _ -> 0L
-        in
-        let signed_overflow =
-          operation = Ast.Div
-          && (not (is_unsigned element))
-          && List.exists2
-               (fun left right ->
-                 lane_signed element left = signed_min
-                 && lane_signed element right = Int64.minus_one)
-               left_values right_values
-        in
-        if (not check_only) && signed_overflow then
-          error span "signed division overflow in constant expression"
-        else
+      let signed_min =
+        match element with
+        | Hir.Int kind ->
+            let bits = int_bits kind in
+            if bits = 64 then Int64.min_int
+            else Int64.neg (Int64.shift_left 1L (bits - 1))
+        | _ -> 0L
+      in
+      let rec first_offense lefts rights =
+        match (lefts, rights) with
+        | left :: left_rest, right :: right_rest ->
+            if (operation = Ast.Div || operation = Ast.Rem) && right = 0L then
+              Some "division by zero in constant expression"
+            else if
+              operation = Ast.Div
+              && (not (is_unsigned element))
+              && lane_signed element left = signed_min
+              && lane_signed element right = Int64.minus_one
+            then Some "signed division overflow in constant expression"
+            else first_offense left_rest right_rest
+        | _ -> None
+      in
+      let offense =
+        if check_only then None else first_offense left_values right_values
+      in
+      match offense with
+      | Some message -> error span message
+      | None ->
           let result_element =
             match operation with
             | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> Hir.Bool
@@ -502,7 +504,7 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
             ( result_ty,
               List.map2
                 (fun left right -> lane_mask result_element (apply left right))
-                left_values right_values )
+                left_values right_values ))
   | Ast.Call (Ast.Ident (name, _), [ value; count ], span)
     when List.mem name [ "shl"; "lshr"; "ashr"; "rotl"; "rotr" ] ->
       let* ty, values = evaluate expected value in
@@ -564,9 +566,19 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
         match evaluate None value with
         | Ok result -> Ok result
         | Error _ ->
+            let context =
+              if
+                kind = Ast.Bitcast
+                &&
+                match value with
+                | Ast.Int_lit _ | Ast.Unary (Ast.Neg, Ast.Int_lit _, _) -> true
+                | _ -> false
+              then Some destination
+              else None
+            in
             let* source, value =
-              const_expr ~structs ~named_types ~arrays ?resolve consts None ~check_only
-                value
+              const_expr ~structs ~named_types ~arrays ?resolve consts context
+                ~check_only value
             in
             Ok (source, [ value ])
       in

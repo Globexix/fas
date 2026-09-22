@@ -4464,4 +4464,251 @@ let () =
        "fn f(x u64, n u32) u64 { return shl(x, n) }\n\
         fn g(x u64) u64 { return shl(x, 3) }\n");
 
-  print_endline "regression tests: 316 passed"
+  let lane_paired_division_guard =
+    llvm_of
+      "fn div(left vec[2,i64], right vec[2,i64]) vec[2,i64] { return left / right }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains lane_paired_division_guard marker) then
+        failwith ("lane-paired-division-guard: missing `" ^ marker ^ "`"))
+    [
+      "and <2 x i1>";
+      "or <2 x i1>";
+      "icmp eq <2 x i64>";
+      "sdiv <2 x i64>";
+      "call void @llvm.trap()";
+    ];
+  if
+    List.length
+      (positions lane_paired_division_guard "call i1 @llvm.vector.reduce.or.v2i1")
+    <> 1
+  then
+    failwith
+      "lane-paired-division-guard: overflow pairing must collapse to one reduction";
+  let scan_indices =
+    List.map
+      (fun offset ->
+        let rec line_end index =
+          if lane_paired_division_guard.[index] = '\n' then index
+          else line_end (index + 1)
+        in
+        lane_paired_division_guard.[line_end
+                                      (offset + String.length "extractelement <2 x i1> ")
+                                    - 1])
+      (positions lane_paired_division_guard "extractelement <2 x i1> ")
+  in
+  if scan_indices <> [ '0'; '1' ] then
+    failwith
+      "lane-paired-division-guard: trap checks must scan lanes in scalar element order";
+  let bool_one_lane_bitcasts =
+    llvm_of
+      "fn to_bool(mask vec[1,bool]) bool { return bitcast[bool](mask) }\n\
+       fn to_mask(value bool) vec[1,bool] { return bitcast[vec[1,bool]](value) }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains bool_one_lane_bitcasts marker) then
+        failwith ("bool-one-lane-bitcasts: missing `" ^ marker ^ "`"))
+    [ "bitcast <1 x i1>"; "bitcast i1 " ];
+  List.iter
+    (fun forbidden ->
+      if contains bool_one_lane_bitcasts forbidden then
+        failwith ("bool-one-lane-bitcasts: unexpected `" ^ forbidden ^ "` lowering"))
+    [ "trunc <1 x i1>"; "zext i1 "; "sext i1 " ];
+  let cross_shape_value_bitcasts =
+    llvm_of
+      "fn one_to_int(value vec[1,u64]) u64 { return bitcast[u64](value) }\n\
+       fn int_to_one(value u64) vec[1,u64] { return bitcast[vec[1,u64]](value) }\n\
+       fn widen(value vec[4,u32]) vec[16,u8] { return bitcast[vec[16,u8]](value) }\n\
+       fn narrow(value vec[16,u8]) vec[4,u32] { return bitcast[vec[4,u32]](value) }\n\
+       fn odd_reshape(value vec[3,u16]) vec[6,u8] { return bitcast[vec[6,u8]](value) }\n\
+       fn odd_restore(value vec[6,u8]) vec[3,u16] {\n\
+      \       return bitcast[vec[3,u16]](value)\n\
+      \ }\n\
+       fn pack_bool(value vec[8,bool]) u8 { return bitcast[u8](value) }\n\
+       fn unpack_bool(value u8) vec[8,bool] { return bitcast[vec[8,bool]](value) }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains cross_shape_value_bitcasts marker) then
+        failwith ("cross-shape-value-bitcasts: missing `" ^ marker ^ "`"))
+    [
+      "bitcast <1 x i64>";
+      "bitcast i64 ";
+      "bitcast <4 x i32>";
+      "bitcast <16 x i8>";
+      "bitcast <3 x i16>";
+      "bitcast <6 x i8>";
+      "bitcast <8 x i1>";
+      "bitcast i8 ";
+    ];
+  if List.length (positions cross_shape_value_bitcasts "bitcast ") <> 8 then
+    failwith "cross-shape-value-bitcasts: expected eight mechanical LLVM bitcasts";
+  let odd_lane_conversions =
+    llvm_of
+      "fn widen_bool(value vec[3,bool]) vec[3,u16] { return zext[vec[3,u16]](value) }\n\
+       fn sign_widen(value vec[3,i8]) vec[3,i64] { return sext[vec[3,i64]](value) }\n\
+       fn narrow(value vec[3,u64]) vec[3,u8] { return trunc[vec[3,u8]](value) }\n\
+       fn truth_bits(value vec[3,u32]) vec[3,bool] { return trunc[vec[3,bool]](value) }\n\
+       fn one_sign(value vec[1,bool]) vec[1,i64] { return sext[vec[1,i64]](value) }\n\
+       fn one_zero(value vec[1,bool]) vec[1,u64] { return zext[vec[1,u64]](value) }\n\
+       fn widen_unsigned(value vec[3,u8]) vec[3,u64] { return zext[vec[3,u64]](value) }\n\
+       fn sign_from_unsigned(value vec[2,u8]) vec[2,u32] {\n\
+      \       return sext[vec[2,u32]](value)\n\
+      \ }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains odd_lane_conversions marker) then
+        failwith ("odd-lane-conversions: missing `" ^ marker ^ "`"))
+    [
+      "zext <3 x i1>";
+      "sext <3 x i8>";
+      "trunc <3 x i64>";
+      "trunc <3 x i32>";
+      "sext <1 x i1>";
+      "zext <1 x i1>";
+      "zext <3 x i8>";
+      "sext <2 x i8>";
+    ];
+  let scalar_width_conversions =
+    llvm_of
+      "fn widen(value u8) u64 { return zext[u64](value) }\n\
+       fn sign_widen(value i8) i64 { return sext[i64](value) }\n\
+       fn sign_from_unsigned(value u8) u32 { return sext[u32](value) }\n\
+       fn low_bit(value u32) bool { return trunc[bool](value) }\n\
+       fn narrow(value u64) u16 { return trunc[u16](value) }\n\
+       fn widen_size(value u16) usize { return zext[usize](value) }\n\
+       fn sign_size(value i16) isize { return sext[isize](value) }\n\
+       fn bool_zero(value bool) u64 { return zext[u64](value) }\n\
+       fn bool_sign(value bool) i64 { return sext[i64](value) }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains scalar_width_conversions marker) then
+        failwith ("scalar-width-conversions: missing `" ^ marker ^ "`"))
+    [
+      "zext i8";
+      "sext i8";
+      "trunc i32";
+      "trunc i64";
+      "zext i16";
+      "sext i16";
+      "zext i1";
+      "sext i1";
+    ];
+  semantic_error "vector-zext-equal-width" "illegal cast"
+    "fn f(value vec[4,u8]) vec[4,u8] { return zext[vec[4,u8]](value) }\n";
+  semantic_error "vector-sext-equal-width" "illegal cast"
+    "fn f(value vec[4,i32]) vec[4,i32] { return sext[vec[4,i32]](value) }\n";
+  semantic_error "vector-trunc-equal-width" "illegal cast"
+    "fn f(value vec[4,u32]) vec[4,u32] { return trunc[vec[4,u32]](value) }\n";
+  semantic_error "vector-zext-bool-equal-width" "illegal cast"
+    "fn f(value vec[4,bool]) vec[4,bool] { return zext[vec[4,bool]](value) }\n";
+  semantic_error "vector-sext-lane-count" "illegal cast"
+    "fn f(value vec[4,i8]) vec[2,i16] { return sext[vec[2,i16]](value) }\n";
+  semantic_error "vector-trunc-lane-count" "illegal cast"
+    "fn f(value vec[4,u16]) vec[2,u8] { return trunc[vec[2,u8]](value) }\n";
+  semantic_error "scalar-zext-bool-destination" "illegal cast"
+    "fn f(value u8) bool { return zext[bool](value) }\n";
+  semantic_error "scalar-sext-bool-destination" "illegal cast"
+    "fn f(value u8) bool { return sext[bool](value) }\n";
+  semantic_error "bitcast-bool-padding-source" "illegal cast"
+    "fn f(value vec[3,bool]) u8 { return bitcast[u8](value) }\n";
+  semantic_error "bitcast-bool-padding-destination" "illegal cast"
+    "fn f(value u8) vec[3,bool] { return bitcast[vec[3,bool]](value) }\n";
+  semantic_error "bitcast-unequal-scalar-widths" "illegal cast"
+    "fn f(value u64) u32 { return bitcast[u32](value) }\n";
+  semantic_error "bitcast-array-destination" "illegal cast"
+    "fn f(value vec[2,u32]) arr[2,u32] { return bitcast[arr[2,u32]](value) }\n";
+  semantic_error "bitcast-struct-destination" "illegal cast"
+    "struct Pair { left u32 right u32 }\n\
+    \ fn f(value vec[2,u32]) Pair { return bitcast[Pair](value) }\n";
+  semantic_error "cast-pointer-zext" "illegal cast"
+    "fn f(value ptr[u8]) u64 { return zext[u64](value) }\n";
+  semantic_error "cast-pointer-sext" "illegal cast"
+    "fn f(value ptr[u8]) u64 { return sext[u64](value) }\n";
+  semantic_error "cast-pointer-trunc" "illegal cast"
+    "fn f(value ptr[u8]) u32 { return trunc[u32](value) }\n";
+  semantic_error "cast-pointer-bitcast-bool" "illegal cast"
+    "fn f(value ptr[u8]) bool { return bitcast[bool](value) }\n";
+  semantic_error "cast-vector-bitcast-pointer" "illegal cast"
+    "fn f(value vec[1,u64]) ptr[u8] { return bitcast[ptr[u8]](value) }\n";
+  semantic_error "cast-aggregate-zext" "illegal cast"
+    "struct Pair { left u32 right u32 }\n\
+    \ fn f() u64 {\n\
+    \ value Pair = (Pair){1, 2}\n\
+    \ return zext[u64](value)\n\
+    \ }\n";
+  semantic_error "constant-vector-division-first-lane-overflow"
+    "signed division overflow in constant expression"
+    "const XA u64 = 6442450944\n\
+     const XB u64 = 4294967295\n\
+     const A vec[2,i32] = bitcast[vec[2,i32]](XA)\n\
+     const B vec[2,i32] = bitcast[vec[2,i32]](XB)\n\
+     const Q vec[2,i32] = A / B\n\
+     fn main() i32 { return 0 }\n";
+  semantic_error "constant-vector-division-first-lane-zero"
+    "division by zero in constant expression"
+    "const XC u64 = 9223372036854775809\n\
+     const XD u64 = 18446744069414584320\n\
+     const C vec[2,i32] = bitcast[vec[2,i32]](XC)\n\
+     const D vec[2,i32] = bitcast[vec[2,i32]](XD)\n\
+     const R vec[2,i32] = C / D\n\
+     fn main() i32 { return 0 }\n";
+  let constant_division_cross_pairs =
+    llvm_of
+      "const XE u64 = 19327352832\n\
+       const XF u64 = 18446744069414584321\n\
+       const E vec[2,i32] = bitcast[vec[2,i32]](XE)\n\
+       const F vec[2,i32] = bitcast[vec[2,i32]](XF)\n\
+       const S vec[2,i32] = E / F\n\
+       fn low() i32 { return S[0] }\n"
+  in
+  if not (contains constant_division_cross_pairs "<i32 2147483648, i32 4294967292>")
+  then failwith "constant-division-cross-pairs: expected paired lane result";
+  let constant_remainder_edges =
+    llvm_of
+      "const XA u64 = 23622320128\n\
+       const XB u64 = 12884901887\n\
+       const A vec[2,i32] = bitcast[vec[2,i32]](XA)\n\
+       const B vec[2,i32] = bitcast[vec[2,i32]](XB)\n\
+       const R vec[2,i32] = A % B\n\
+       fn low() i32 { return R[0] }\n"
+  in
+  if not (contains constant_remainder_edges "<i32 0, i32 1>") then
+    failwith "constant-remainder-edges: MIN % -1 lane must yield zero";
+  let constant_bool_pack =
+    llvm_of
+      "const A u8 = 204\n\
+       const P vec[8,bool] = bitcast[vec[8,bool]](A)\n\
+       const M vec[1,bool] = splat(true)\n\
+       const B bool = bitcast[bool](M)\n\
+       const M2 vec[1,bool] = bitcast[vec[1,bool]](true)\n\
+       fn packed() vec[8,bool] { return P }\n\
+       fn single() bool { return B }\n"
+  in
+  if
+    not (contains constant_bool_pack "<i1 0, i1 0, i1 1, i1 1, i1 0, i1 0, i1 1, i1 1>")
+  then failwith "constant-bool-pack: expected packed value bits";
+  semantic_error "constant-bitcast-literal-parity"
+    "integer literal is out of range for vec[8, bool]"
+    "const P vec[8,bool] = bitcast[vec[8,bool]](204)\nfn main() i32 { return 0 }\n";
+  semantic_error "runtime-bitcast-literal-parity"
+    "integer literal is out of range for vec[8, bool]"
+    "fn f() vec[8,bool] { return bitcast[vec[8,bool]](204) }\n";
+  let generic_cast_path =
+    llvm_of
+      "fn unwrap[N const u64](mask vec[1,bool]) bool { return bitcast[bool](mask) }\n\
+       fn widen_generic[N const u64](value u8) u64 { return zext[u64](value) + N }\n\
+       fn use_it() bool { return unwrap[7](splat(true)) }\n\
+       fn use_wide() u64 { return widen_generic[2](255) }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains generic_cast_path marker) then
+        failwith ("generic-cast-path: missing `" ^ marker ^ "`"))
+    [ "bitcast <1 x i1>"; "zext i8" ];
+
+  print_endline "regression tests: 352 passed"

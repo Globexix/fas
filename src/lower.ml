@@ -220,15 +220,23 @@ let reduce_any s span value =
       Ok (Ir.Local (id, Ir.I1))
   | _ -> error span "internal error: boolean reduction has a non-boolean type"
 
+let condition_ty value =
+  match value_ty value with
+  | Ir.I1 as t -> t
+  | Ir.Vector (_, Ir.I1) as t -> t
+  | _ -> Ir.I1
+
 let combine_conditions s lhs rhs =
+  let t = condition_ty lhs in
   let id = fresh s in
-  emit s (Ir.Bin (id, Ir.And, Ir.I1, lhs, rhs));
-  Ir.Local (id, Ir.I1)
+  emit s (Ir.Bin (id, Ir.And, t, lhs, rhs));
+  Ir.Local (id, t)
 
 let either_condition s lhs rhs =
+  let t = condition_ty lhs in
   let id = fresh s in
-  emit s (Ir.Bin (id, Ir.Or, Ir.I1, lhs, rhs));
-  Ir.Local (id, Ir.I1)
+  emit s (Ir.Bin (id, Ir.Or, t, lhs, rhs));
+  Ir.Local (id, t)
 
 let emit_trap s =
   emit s Ir.Trap;
@@ -248,27 +256,48 @@ let signed_type = function
   | _ -> false
 
 let division_guard s span source_ty binop ir_ty lhs rhs =
-  let* zero_condition =
-    reduce_any s span (compare s Ir.Eq ir_ty rhs (value_const s ir_ty 0L))
-  in
+  let zero_condition = compare s Ir.Eq ir_ty rhs (value_const s ir_ty 0L) in
   let* condition =
     if binop = Ir.Sdiv && signed_type source_ty then
       let* bits = width span (match ir_ty with Ir.Vector (_, t) -> t | t -> t) in
       let minimum = Int64.shift_left 1L (bits - 1) in
-      let* lhs_minimum =
-        reduce_any s span (compare s Ir.Eq ir_ty lhs (value_const s ir_ty minimum))
-      in
-      let* rhs_minus_one =
-        reduce_any s span
-          (compare s Ir.Eq ir_ty rhs (value_const s ir_ty Int64.minus_one))
+      let lhs_minimum = compare s Ir.Eq ir_ty lhs (value_const s ir_ty minimum) in
+      let rhs_minus_one =
+        compare s Ir.Eq ir_ty rhs (value_const s ir_ty Int64.minus_one)
       in
       Ok
         (either_condition s zero_condition
            (combine_conditions s lhs_minimum rhs_minus_one))
     else Ok zero_condition
   in
-  guard_condition s condition;
-  Ok ()
+  match value_ty condition with
+  | Ir.I1 ->
+      guard_condition s condition;
+      Ok ()
+  | Ir.Vector (lanes, Ir.I1) ->
+      let* any_lane = reduce_any s span condition in
+      let ordered = fresh_block s and proceed = fresh_block s in
+      s.current.term := Some (Ir.CondBr (any_lane, ordered.id, proceed.id));
+      s.current <- ordered;
+      let rec guard_lane lane =
+        if lane >= lanes then Ok ()
+        else
+          let id = fresh s in
+          emit s
+            (Ir.Extract
+               (id, value_ty condition, condition, Ir.Const (Ir.I64, Int64.of_int lane)));
+          let trap = fresh_block s and next = fresh_block s in
+          s.current.term := Some (Ir.CondBr (Ir.Local (id, Ir.I1), trap.id, next.id));
+          s.current <- trap;
+          emit_trap s;
+          s.current <- next;
+          guard_lane (lane + 1)
+      in
+      let* () = guard_lane 0 in
+      emit_trap s;
+      s.current <- proceed;
+      Ok ()
+  | _ -> error span "internal error: division guard has a non-boolean condition"
 
 let emit_binary s span source_ty op ir_ty lhs rhs =
   let* binop = bin_for span source_ty op in
@@ -446,18 +475,16 @@ let rec expr s = function
       if st = dt && not vector_bitcast then Ok v
       else
         let k =
-          match (st, dt) with
-          | Ir.Ptr _, Ir.Ptr _ -> ""
-          | Ir.Ptr _, _ -> "ptrtoint"
-          | _, Ir.Ptr _ -> "inttoptr"
-          | _, Ir.I1 -> "trunc"
-          | Ir.I1, _ -> if kind = Ast.Sext then "sext" else "zext"
-          | _ -> (
-              match kind with
-              | Ast.Zext -> "zext"
-              | Sext -> "sext"
-              | Trunc -> if st = Ir.I1 then "zext" else "trunc"
-              | Bitcast -> "bitcast")
+          match kind with
+          | Ast.Bitcast -> (
+              match (st, dt) with
+              | Ir.Ptr _, Ir.Ptr _ -> ""
+              | Ir.Ptr _, _ -> "ptrtoint"
+              | _, Ir.Ptr _ -> "inttoptr"
+              | _ -> "bitcast")
+          | Ast.Zext -> "zext"
+          | Ast.Sext -> "sext"
+          | Ast.Trunc -> "trunc"
         in
         if k = "" then Ok v
         else

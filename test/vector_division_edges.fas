@@ -1,0 +1,122 @@
+fn pair(lo i64, hi i64) vec[2,i64] {
+  v vec[2,i64] = splat(0)
+  v[0] = lo
+  v[1] = hi
+  return v
+}
+
+fn one(value i64) vec[1,i64] {
+  v vec[1,i64] = splat(0)
+  v[0] = value
+  return v
+}
+
+fn upair(lo u64, hi u64) vec[2,u64] {
+  v vec[2,u64] = splat(0)
+  v[0] = lo
+  v[1] = hi
+  return v
+}
+
+fn triple32(a u32, b u32, c u32) vec[3,u32] {
+  v vec[3,u32] = splat(0)
+  v[0] = a
+  v[1] = b
+  v[2] = c
+  return v
+}
+
+fn valid_edges() i32 {
+  q vec[2,i64] = pair(-9223372036854775808, 4) / pair(1, -1)
+  if q[0] != -9223372036854775808 { return 1 }
+  if q[1] != -4 { return 2 }
+
+  t vec[2,i64] = pair(-7, 7) / pair(3, -3)
+  if t[0] != -2 { return 3 }
+  if t[1] != -2 { return 4 }
+
+  m vec[2,i64] = pair(8, -9) % pair(3, 4)
+  if m[0] != 2 { return 5 }
+  if m[1] != -1 { return 6 }
+
+  n vec[2,i64] = pair(-8, 9) % pair(3, 4)
+  if n[0] != -2 { return 7 }
+  if n[1] != 1 { return 8 }
+
+  uq vec[2,u64] = upair(18446744073709551615, 9) / upair(1, 4)
+  if uq[0] != 18446744073709551615 { return 9 }
+  if uq[1] != 2 { return 10 }
+
+  um vec[2,u64] = upair(18446744073709551615, 9) % upair(7, 4)
+  if um[0] != 1 { return 11 }
+  if um[1] != 1 { return 12 }
+
+  o vec[1,i64] = one(6) / one(-3)
+  if o[0] != -2 { return 13 }
+
+  s i64 = -9223372036854775808
+  d i64 = -1
+  if s % d != 0 { return 14 }
+
+  return 0
+}
+
+fn remainder_edges() i32 {
+  r vec[2,i64] = pair(-9223372036854775808, 7) % pair(-1, 2)
+  if r[0] != 0 { return 1 }
+  if r[1] != 1 { return 2 }
+
+  o vec[1,i64] = one(-9223372036854775808) % one(-1)
+  if o[0] != 0 { return 3 }
+
+  return 0
+}
+
+fn unselected_edges() i32 {
+  if argc_impossible() {
+    bad vec[2,i64] = pair(1, 2) / pair(0, 0)
+    if bad[0] == 123 { return 1 }
+  }
+  for i i32 = 0; i < 0; i += 1 {
+    bad vec[2,i64] = pair(1, 2) / pair(0, 0)
+    if bad[0] == 123 { return 2 }
+  }
+  while false {
+    bad vec[2,i64] = pair(1, 2) % pair(0, 0)
+  }
+  return 0
+}
+
+fn argc_impossible() bool {
+  return false
+}
+
+fn main(argc i32, argv ptr[u8]) i32 {
+  if argc == 2 {
+    bad vec[2,i64] = pair(1, 2) / pair(0, 1)
+    return 100
+  }
+  if argc == 3 {
+    bad vec[2,i64] = pair(1, 2) / pair(1, 0)
+    return 100
+  }
+  if argc == 4 {
+    bad vec[2,i64] = pair(-9223372036854775808, -9223372036854775808) / pair(1, -1)
+    return 100
+  }
+  if argc == 5 {
+    bad vec[2,i64] = pair(1, 2) % pair(0, 1)
+    return 100
+  }
+  if argc == 8 {
+    bad vec[3,u32] = triple32(1, 2, 3) / triple32(4, 0, 5)
+    return 100
+  }
+  if argc == 6 {
+    return remainder_edges()
+  }
+  if argc == 7 {
+    return unselected_edges()
+  }
+  return valid_edges()
+}
