@@ -4,6 +4,7 @@ open Sema_numeric
 open Sema_specialization
 open Sema_types
 module String_set = Set.Make (String)
+module String_map = Map.Make (String)
 
 type static_index = Dynamic | Known of Hir.ty * int64
 type place_info = { expr : Hir.expr; root : binding option; path : place_path option }
@@ -3467,7 +3468,7 @@ let check ?(limits = Limits.default) program =
         | None -> validate_declarations next_id seen bindings rest
         | Some (name, kind, span) -> (
             let* () = validate_binding_name span name in
-            match List.assoc_opt name seen with
+            match String_map.find_opt name seen with
             | None ->
                 let binding =
                   {
@@ -3476,7 +3477,8 @@ let check ?(limits = Limits.default) program =
                     declaration_kind = kind;
                   }
                 in
-                validate_declarations (next_id + 1) ((name, kind) :: seen)
+                validate_declarations (next_id + 1)
+                  (String_map.add name kind seen)
                   (binding :: bindings) rest
             | Some previous when previous = kind ->
                 let label =
@@ -3488,22 +3490,26 @@ let check ?(limits = Limits.default) program =
                 error span (Printf.sprintf "duplicate %s `%s`" label name)
             | Some _ -> error span (Printf.sprintf "duplicate declaration `%s`" name)))
   in
-  let* top_level_bindings = validate_declarations 0 [] [] program.Ast.items in
+  let* top_level_bindings =
+    validate_declarations 0 String_map.empty [] program.Ast.items
+  in
   let rec collect_named_types seen acc = function
     | [] -> Ok (List.rev acc)
     | Ast.Opaque { name; span } :: rest ->
-        if List.mem name seen then
+        if String_set.mem name seen then
           error span (Printf.sprintf "duplicate type `%s`" name)
-        else collect_named_types (name :: seen) ((name, Opaque_name) :: acc) rest
+        else
+          collect_named_types (String_set.add name seen) ((name, Opaque_name) :: acc)
+            rest
     | Ast.Struct { name; generic_params; span; _ } :: rest ->
-        if List.mem name seen then
+        if String_set.mem name seen then
           error span (Printf.sprintf "duplicate type `%s`" name)
         else
           let kind = if generic_params = [] then Struct_name else Generic_struct_name in
-          collect_named_types (name :: seen) ((name, kind) :: acc) rest
+          collect_named_types (String_set.add name seen) ((name, kind) :: acc) rest
     | _ :: rest -> collect_named_types seen acc rest
   in
-  let* named_types = collect_named_types [] [] program.Ast.items in
+  let* named_types = collect_named_types String_set.empty [] program.Ast.items in
   let* () =
     Result_list.iter
       (function
@@ -3553,7 +3559,7 @@ let check ?(limits = Limits.default) program =
       ~eval_context:(base_structs, named_types, early_consts, [])
       ~top_level_bindings ~limits ~type_node_account specializations program
   in
-  let* named_types = collect_named_types [] [] program.Ast.items in
+  let* named_types = collect_named_types String_set.empty [] program.Ast.items in
   let rec collect_structs named_types acc = function
     | [] -> Ok (List.rev acc)
     | Ast.Struct { generic_params = _ :: _; align; span; _ } :: rest ->
@@ -3565,16 +3571,17 @@ let check ?(limits = Limits.default) program =
           let rec collect_fields seen out = function
             | [] -> Ok (List.rev out)
             | (f : Ast.field) :: fields ->
-                if List.mem f.name seen then
+                if String_set.mem f.name seen then
                   error f.span (Printf.sprintf "duplicate field `%s`" f.name)
                 else
                   let* ty =
                     source_ty named_types f.ty
                     |> Result.map_error (fun message -> [ Diag.error f.span message ])
                   in
-                  collect_fields (f.name :: seen) ((f.name, ty) :: out) fields
+                  collect_fields (String_set.add f.name seen) ((f.name, ty) :: out)
+                    fields
           in
-          collect_fields [] [] fields
+          collect_fields String_set.empty [] fields
         in
         let* fields =
           result
@@ -3619,10 +3626,13 @@ let check ?(limits = Limits.default) program =
       ~resolve_type:source_obj ~strict:true program.Ast.items
   in
   let consts = ref (List.rev scalar_consts) and arrays = ref [] in
+  let consts_names =
+    ref (String_set.of_list (List.map (fun (n, _, _) -> n) scalar_consts))
+  and arrays_names = ref String_set.empty in
   let eval_const_item = function
     | Ast.Const { name; ty; value; span } -> (
-        if List.exists (fun (n, _, _) -> n = name) !consts then Ok ()
-        else if List.exists (fun (n, _, _) -> n = name) !arrays then
+        if String_set.mem name !consts_names then Ok ()
+        else if String_set.mem name !arrays_names then
           error span (Printf.sprintf "duplicate const `%s`" name)
         else
           let* t = source_obj span ty in
@@ -3642,6 +3652,7 @@ let check ?(limits = Limits.default) program =
                 in
                 let* vs = values [] xs in
                 arrays := (name, t, vs) :: !arrays;
+                arrays_names := String_set.add name !arrays_names;
                 Ok ()
           | Hir.Array _, _ -> error span "const array needs a brace-list initializer"
           | (Hir.Vec _ as vector_ty), _ ->
@@ -3651,6 +3662,7 @@ let check ?(limits = Limits.default) program =
               in
               if equal actual_ty vector_ty then (
                 arrays := (name, vector_ty, values) :: !arrays;
+                arrays_names := String_set.add name !arrays_names;
                 Ok ())
               else error span "constant initializer type mismatch"
           | _, Ast.Array_lit _ -> error span "brace-list requires an array type"
@@ -3660,6 +3672,7 @@ let check ?(limits = Limits.default) program =
               in
               if equal vt t then (
                 consts := (name, t, v) :: !consts;
+                consts_names := String_set.add name !consts_names;
                 Ok ())
               else error span "constant initializer type mismatch")
     | _ -> Ok ()
@@ -3672,7 +3685,7 @@ let check ?(limits = Limits.default) program =
       ~eager_functions:true ~top_level_bindings ~limits ~type_node_account
       specializations program
   in
-  let* named_types = collect_named_types [] [] program.Ast.items in
+  let* named_types = collect_named_types String_set.empty [] program.Ast.items in
   let* structs_src = collect_structs named_types [] program.Ast.items in
   let* structs = build structs_src in
   let validate_object span t = Sema_limits.validate_object limits structs span t in
@@ -3687,7 +3700,7 @@ let check ?(limits = Limits.default) program =
   let source_params =
     map_params (fun (param : Ast.param) -> source_obj param.span param.ty)
   in
-  let sigs = ref [] and declared_functions = ref [] in
+  let sigs = ref [] and declared_functions = ref String_set.empty in
   let* () =
     List.fold_left
       (fun r item ->
@@ -3695,14 +3708,14 @@ let check ?(limits = Limits.default) program =
         match item with
         | Ast.Func { name; params; ret; variadic; linkage; span; generic_params; _ } ->
             let* () = validate_binding_name span name in
-            if List.mem name !declared_functions then
+            if String_set.mem name !declared_functions then
               error span (Printf.sprintf "duplicate function `%s`" name)
-            else if List.exists (fun (n, _, _) -> n = name) !arrays then
+            else if String_set.mem name !arrays_names then
               error span (Printf.sprintf "duplicate declaration `%s`" name)
             else if name = "main" && generic_params <> [] then
               error span "entry point `main` cannot have generic parameters"
             else
-              let () = declared_functions := name :: !declared_functions in
+              let () = declared_functions := String_set.add name !declared_functions in
               let* () = validate_function_params generic_params params in
               let* () =
                 if linkage = Ast.External_c && generic_params <> [] then
