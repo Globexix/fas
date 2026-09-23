@@ -1,0 +1,52 @@
+extern "C" {
+  fn note(value i32) void
+  fn next_index() usize
+  fn next_count() u32
+}
+
+const ITEMS arr[2,u32] = { 8, 12 }
+
+fn bump_other(p ptr[vec[4,u32]], n u32) u32 {
+  p[0][0] = 99
+  note(1)
+  return n
+}
+
+fn bump_self(p ptr[vec[4,u32]], n u32) u32 {
+  p[0][1] = 777
+  note(2)
+  return n
+}
+
+fn bump_whole(p ptr[vec[4,u32]], n u32) u32 {
+  p[0][0] = 99
+  p[0][3] = 77
+  note(3)
+  return n
+}
+
+fn main() i32 {
+  items arr[2,u32] = ITEMS
+  items[next_index()] >>= next_count()
+  if items[0] != 4 { return 1 }
+  if items[1] != 12 { return 2 }
+
+  v vec[4,u32] = splat(2)
+  v[1] = 16
+  v[1] <<= bump_other(&v, 1)
+  if v[0] != 99 { return 3 }
+  if v[1] != 32 { return 4 }
+
+  w vec[4,u32] = splat(2)
+  w[1] = 16
+  w[1] <<= bump_self(&w, 1)
+  if w[1] != 32 { return 5 }
+
+  u vec[4,u32] = splat(2)
+  u[0] = 8
+  u >>= bump_whole(&u, 1)
+  if u[0] != 4 { return 6 }
+  if u[3] != 1 { return 7 }
+
+  return 0
+}
