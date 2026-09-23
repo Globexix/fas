@@ -2829,12 +2829,18 @@ let () =
                  const c u32 = 3\n\
                  const g1 arr[2,u8] = { 3, 4 }\n\
                  const d u32 = 4\n\
+                 const w0 i64 = 7\n\
+                 const v0 vec[2,i32] = bitcast[vec[2,i32]](w0)\n\
+                 const l0 i64 = bitcast[i64](v0)\n\
+                 const w1 i64 = 9\n\
+                 const v1 vec[2,i32] = bitcast[vec[2,i32]](w1)\n\
+                 const l1 i64 = bitcast[i64](v1)\n\
                  fn f() void { return }\n"))
     in
     let hir = expect_ok (Sema.check source_program) in
     assert (
       List.map (fun (c : Hir.const_def) -> c.Hir.name) hir.Hir.consts
-      = [ "a"; "b"; "c"; "d" ]);
+      = [ "a"; "b"; "c"; "d"; "w0"; "w1"; "l0"; "l1" ]);
     assert (
       List.map (fun (c : Hir.const_arr_def) -> c.Hir.name) hir.Hir.const_arrays
       = [ "g0"; "g1" ])
