@@ -155,7 +155,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
         | Hir.Vec _ -> error s "shift count must be a scalar integer for a scalar value"
         | _ -> error s "shift count must be an integer"
       in
-      let bits = match lt with Hir.Int k -> int_bits k | _ -> 32 in
+      let bits = match lt with Hir.Int k -> int_bits k | _ -> 64 in
       let k = Int64.to_int (Int64.logand rv (Int64.of_int (bits - 1))) in
       let v =
         if k = 0 then lv

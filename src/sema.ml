@@ -1423,18 +1423,21 @@ and check_stmt (c : context) = function
       let* v = check_expr c (if is_shift then None else Some et) e in
       let* () =
         if is_shift then
+          let* () =
+            match et with
+            | Hir.Int _ | Hir.Vec (_, Hir.Int _) -> Ok ()
+            | _ -> error span "shift value must be an integer or integer vector"
+          in
           match (et, Hir.expr_ty v) with
+          | Hir.Vec (lanes, _), Hir.Vec (count_lanes, Hir.Int _) ->
+              if lanes = count_lanes then Ok ()
+              else error span "shift count lanes must match the value lanes"
+          | Hir.Vec _, Hir.Int _ -> Ok ()
           | Hir.Int _, Hir.Int _ -> Ok ()
-          | Hir.Vec (_, Hir.Int _), Hir.Int _ -> Ok ()
-          | Hir.Vec (lanes, Hir.Int _), Hir.Vec (count_lanes, Hir.Int _)
-            when lanes = count_lanes ->
-              Ok ()
           | _, Hir.Vec (_, Hir.Bool) -> error span "shift count must be an integer"
-          | (Hir.Int _ | Hir.Vec (_, Hir.Int _)), Hir.Vec _ ->
+          | (Hir.Int _ | Hir.Vec _), Hir.Vec _ ->
               error span "shift count must be a scalar integer for a scalar value"
-          | Hir.Vec _, Hir.Int _ ->
-              error span "shift count lanes must match the value lanes"
-          | _ -> error span "shift value must be an integer or integer vector"
+          | _ -> error span "shift count must be an integer"
         else ensure_expected (Hir.expr_ty v) et span
       in
       if not (is_numeric et) then

@@ -87,7 +87,7 @@ body.append("fn main() i32 {\n")
 idx = [0]
 for (vt, vw, vs) in widths:
     for (nw, ns) in count_types:
-        xbits_pool = [0, mask(vw), 1 << (vw - 1), 1]
+        xbits_pool = [0, mask(vw), 1 << (vw - 1), (1 << (vw - 1)) - 1, 1]
         nbits_pool = [b & mask(nw) for b in
                       ([0, 1, vw - 1, vw, vw + 1, mask(nw), 1 << (nw - 1), (1 << (nw - 1)) - 1]
                        if ns else [0, 1, vw - 1, vw, vw + 1, mask(nw)])]
@@ -142,16 +142,14 @@ chains.append("  counts vec[4,u32] = splat(0)\n  counts[0] = 1\n  counts[1] = 2\
 chains.append("  if r[0] != 4 || r[1] != 16 || r[2] != 4 || r[3] != 2 { return 16 }\n")
 chains.append("  if use_const(3) != 128 { return 17 }\n")
 chains.append("  if use_local(3) != 24 { return 18 }\n")
+chains.append("  s i32 = 0\n  for i u8 = 1; i < 8; i <<= 1 { s += zext[i32](i) }\n")
+chains.append("  if s != 7 { return 19 }\n")
 chains.append("  return 0\n}\n")
 open(os.path.join(out, "chains.fas"), "w").write("".join(chains))
 EOF
 
 "$OCAML_FAS" --emit-llvm "$SHIFT_TMP/exhaustive8.fas" >"$SHIFT_TMP/exhaustive8.ll"
 "$LLVM_OPT" -passes=verify "$SHIFT_TMP/exhaustive8.ll" -disable-output
-if grep -E ' (nuw|nsw|exact) ' "$SHIFT_TMP/exhaustive8.ll" >/dev/null; then
-  echo "shift operator edges: unexpected shift flags in IR" >&2
-  exit 1
-fi
 grep -q 'and i8' "$SHIFT_TMP/exhaustive8.ll" || {
   echo "shift operator edges: missing count normalization" >&2
   exit 1
@@ -160,6 +158,16 @@ grep -q 'and i8' "$SHIFT_TMP/exhaustive8.ll" || {
 "$LLVM_OPT" -passes=verify "$SHIFT_TMP/boundaries.ll" -disable-output
 "$OCAML_FAS" --emit-llvm "$SHIFT_TMP/chains.fas" >"$SHIFT_TMP/chains.ll"
 "$LLVM_OPT" -passes=verify "$SHIFT_TMP/chains.ll" -disable-output
+for ll in exhaustive8 boundaries chains; do
+  if grep -E ' (nuw|nsw|exact) ' "$SHIFT_TMP/$ll.ll" >/dev/null; then
+    echo "shift operator edges: unexpected shift flags in $ll.ll" >&2
+    exit 1
+  fi
+done
+if grep -q 'undef' "$SHIFT_TMP/exhaustive8.ll"; then
+  echo "shift operator edges: undef in shift-only IR" >&2
+  exit 1
+fi
 
 ulimit -c 0 || true
 for level in 0 2; do

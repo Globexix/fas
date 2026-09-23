@@ -563,6 +563,25 @@ let () =
   semantic_error "integer-vector-shift-count-noninteger"
     "shift count must be an integer"
     "fn f(values vec[4,u32], count bool) vec[4,u32] { return values << count }\n";
+  semantic_error "shift-count-scalar-value-vector-count"
+    "shift count must be a scalar integer for a scalar value"
+    "fn f(x u32, count vec[4,u32]) u32 { return x << count }\n";
+  semantic_error "shift-count-lane-mismatch"
+    "shift count lanes must match the value lanes"
+    "fn f(values vec[4,u32], count vec[2,u32]) vec[4,u32] { return values << count }\n";
+  semantic_error "shift-compound-lane-mismatch"
+    "shift count lanes must match the value lanes"
+    "fn f(values vec[4,u32], count vec[2,u32]) vec[4,u32] { values <<= count\n\
+    \ return values }\n";
+  semantic_error "shift-compound-bool-destination"
+    "shift value must be an integer or integer vector"
+    "fn f(values vec[4,bool], count u32) vec[4,bool] { values <<= count\n\
+    \ return values }\n";
+  semantic_error "shift-compound-scalar-value-vector-count"
+    "shift count must be a scalar integer for a scalar value"
+    "fn f(x u32, count vec[4,u32]) u32 { x <<= count\n return x }\n";
+  semantic_error "shift-no-splat-lift" "type mismatch"
+    "fn f(n u32) vec[4,u32] { return 1 << n }\n";
   semantic_error "len-returns-usize" "type mismatch: expected u64, got usize"
     "fn size(values arr[3,u8]) u64 { return len(values) }\n";
   semantic_error "sizeof-returns-usize" "type mismatch: expected u64, got usize"
@@ -2311,13 +2330,14 @@ let () =
       "fn shl(x i32) i32 { return x + 1 }\n\
        fn lshr(x i32) i32 { return x + 2 }\n\
        fn ashr(x i32) i32 { return x + 3 }\n\
-       fn main() i32 { return shl(1) + lshr(2) + ashr(3) }\n"
+       fn shr(x i32) i32 { return x + 4 }\n\
+       fn main() i32 { return shl(1) + lshr(2) + ashr(3) + shr(4) }\n"
   in
   List.iter
     (fun name ->
       if not (contains released_shift_names ("call i32 @" ^ name)) then
         failwith ("released-shift-name: user function was not called: " ^ name))
-    [ "shl"; "lshr"; "ashr" ];
+    [ "shl"; "lshr"; "ashr"; "shr" ];
 
   let released_unreserved_names =
     llvm_of
@@ -4721,4 +4741,4 @@ let () =
         failwith ("generic-cast-path: missing `" ^ marker ^ "`"))
     [ "bitcast <1 x i1>"; "zext i8" ];
 
-  print_endline "regression tests: 352 passed"
+  print_endline "regression tests: 354 passed"
