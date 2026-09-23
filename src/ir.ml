@@ -1222,7 +1222,7 @@ let emit_instr sink = function
       emit_value sink v;
       sink.text ", ";
       emit_ty sink vt;
-      sink.text " poison, <";
+      sink.text " zeroinitializer, <";
       sink.text (string_of_int n);
       sink.text " x i32> zeroinitializer"
   | String_ptr (i, index, n) ->

@@ -156,6 +156,8 @@ chains.append("  if shg2[i32](3, 2) != 12 { return 22 }\n")
 chains.append("  cnt u64 = 33\n  zl u64 = 1 << cnt\n  if zl != 8589934592 { return 23 }\n")
 chains.append("  if lit_u8(33) != 2 { return 24 }\n")
 chains.append("  if lit_u64(-1) != 9223372036854775808 { return 25 }\n")
+chains.append("  if shg2[u8](1, 8) != 1 { return 26 }\n")
+chains.append("  rb vec[4,u32] = splat(1)\n  rc vec[4,u32] = rotl(rb, 1)\n  if rc[0] != 2 || rc[3] != 2 { return 27 }\n")
 chains.append("  return 0\n}\n")
 open(os.path.join(out, "chains.fas"), "w").write("".join(chains))
 EOF
@@ -175,11 +177,11 @@ for ll in exhaustive8 boundaries chains; do
     echo "shift operator edges: unexpected shift flags in $ll.ll" >&2
     exit 1
   fi
+  if grep -E 'shufflevector.*(undef|poison)' "$SHIFT_TMP/$ll.ll" >/dev/null; then
+    echo "shift operator edges: undefined shuffle operand in $ll.ll" >&2
+    exit 1
+  fi
 done
-if grep -q 'undef' "$SHIFT_TMP/exhaustive8.ll"; then
-  echo "shift operator edges: undef in shift-only IR" >&2
-  exit 1
-fi
 
 ulimit -c 0 || true
 for level in 0 2 3; do
