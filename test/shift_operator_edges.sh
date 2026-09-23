@@ -170,7 +170,7 @@ if grep -q 'undef' "$SHIFT_TMP/exhaustive8.ll"; then
 fi
 
 ulimit -c 0 || true
-for level in 0 2; do
+for level in 0 2 3; do
   for prog in exhaustive8 boundaries chains; do
     FAS_OPT="$LLVM_OPT" FAS_LLC="$LLVM_LLC" FAS_CC="$CC" \
       "$OCAML_FAS" -O"$level" "$SHIFT_TMP/$prog.fas" -o "$SHIFT_TMP/$prog-$level"
