@@ -159,22 +159,45 @@ let splat_scalar s span vector_ty elem_ty value =
   let* value = coerce s span value elem_ty in
   let inserted = fresh s in
   emit s
-    (Ir.Insert (inserted, vector_ty, Ir.Undef vector_ty, Ir.Const (Ir.I32, 0L), value));
+    (Ir.Insert (inserted, vector_ty, Ir.Zero vector_ty, Ir.Const (Ir.I32, 0L), value));
   let shuffled = fresh s in
   emit s (Ir.Shuffle_zero (shuffled, vector_ty, Ir.Local (inserted, vector_ty)));
   Ok (Ir.Local (shuffled, vector_ty))
 
 let shift_amount s span target value =
   let elem_ty = match target with Ir.Vector (_, t) -> t | t -> t in
-  let* value = coerce s span value elem_ty in
-  let* bits = width span elem_ty in
-  let mask = Int64.of_int (bits - 1) in
-  let id = fresh s in
-  emit s (Ir.Bin (id, Ir.And, elem_ty, value, Ir.Const (elem_ty, mask)));
-  let value = Ir.Local (id, elem_ty) in
-  match target with
-  | Ir.Vector _ -> splat_scalar s span target elem_ty value
-  | _ -> Ok value
+  match (target, value_ty value) with
+  | (Ir.Vector (lanes, _) as target_ty), Ir.Vector (count_lanes, count_elem)
+    when count_lanes = lanes ->
+      let* bits = width span elem_ty in
+      let mask = Int64.of_int (bits - 1) in
+      let* count =
+        if value_ty value = target_ty then Ok value
+        else
+          let from = value_ty value in
+          let* from_width = width span count_elem in
+          let* target_width = width span elem_ty in
+          let id = fresh s in
+          let k = if from_width < target_width then "zext" else "trunc" in
+          emit s (Ir.Cast (id, k, from, value, target_ty));
+          Ok (Ir.Local (id, target_ty))
+      in
+      let* mask_vec =
+        splat_scalar s span target_ty elem_ty (Ir.Const (elem_ty, mask))
+      in
+      let id = fresh s in
+      emit s (Ir.Bin (id, Ir.And, target_ty, count, mask_vec));
+      Ok (Ir.Local (id, target_ty))
+  | _ -> (
+      let* value = coerce s span value elem_ty in
+      let* bits = width span elem_ty in
+      let mask = Int64.of_int (bits - 1) in
+      let id = fresh s in
+      emit s (Ir.Bin (id, Ir.And, elem_ty, value, Ir.Const (elem_ty, mask)));
+      let value = Ir.Local (id, elem_ty) in
+      match target with
+      | Ir.Vector _ -> splat_scalar s span target elem_ty value
+      | _ -> Ok value)
 
 let rec intrinsic_suffix span = function
   | Ir.I8 -> Ok "i8"
@@ -300,29 +323,42 @@ let division_guard s span source_ty binop ir_ty lhs rhs =
   | _ -> error span "internal error: division guard has a non-boolean condition"
 
 let emit_binary s span source_ty op ir_ty lhs rhs =
-  let* binop = bin_for span source_ty op in
-  let division = match binop with Ir.Sdiv | Srem | Udiv | Urem -> true | _ -> false in
-  let* () =
-    if division then division_guard s span source_ty binop ir_ty lhs rhs else Ok ()
-  in
-  if binop = Ir.Srem then (
-    let is_minus_one =
-      compare s Ir.Eq ir_ty rhs (value_const s ir_ty Int64.minus_one)
+  if op = Ast.Shl || op = Ast.Shr then (
+    let* count = shift_amount s span ir_ty rhs in
+    let binop =
+      match op with
+      | Ast.Shr -> if unsigned source_ty then Ir.Lshr else Ir.Ashr
+      | _ -> Ir.Shl
     in
-    let safe_rhs_id = fresh s in
-    let safe_rhs = value_const s ir_ty 1L in
-    emit s (Ir.Select (safe_rhs_id, is_minus_one, safe_rhs, rhs));
-    let raw_id = fresh s in
-    emit s (Ir.Bin (raw_id, binop, ir_ty, lhs, Ir.Local (safe_rhs_id, ir_ty)));
-    let result_id = fresh s in
-    emit s
-      (Ir.Select
-         (result_id, is_minus_one, value_const s ir_ty 0L, Ir.Local (raw_id, ir_ty)));
-    Ok (Ir.Local (result_id, ir_ty)))
-  else
     let result = fresh s in
-    emit s (Ir.Bin (result, binop, ir_ty, lhs, rhs));
-    Ok (Ir.Local (result, ir_ty))
+    emit s (Ir.Bin (result, binop, ir_ty, lhs, count));
+    Ok (Ir.Local (result, ir_ty)))
+  else
+    let* binop = bin_for span source_ty op in
+    let division =
+      match binop with Ir.Sdiv | Srem | Udiv | Urem -> true | _ -> false
+    in
+    let* () =
+      if division then division_guard s span source_ty binop ir_ty lhs rhs else Ok ()
+    in
+    if binop = Ir.Srem then (
+      let is_minus_one =
+        compare s Ir.Eq ir_ty rhs (value_const s ir_ty Int64.minus_one)
+      in
+      let safe_rhs_id = fresh s in
+      let safe_rhs = value_const s ir_ty 1L in
+      emit s (Ir.Select (safe_rhs_id, is_minus_one, safe_rhs, rhs));
+      let raw_id = fresh s in
+      emit s (Ir.Bin (raw_id, binop, ir_ty, lhs, Ir.Local (safe_rhs_id, ir_ty)));
+      let result_id = fresh s in
+      emit s
+        (Ir.Select
+           (result_id, is_minus_one, value_const s ir_ty 0L, Ir.Local (raw_id, ir_ty)));
+      Ok (Ir.Local (result_id, ir_ty)))
+    else
+      let result = fresh s in
+      emit s (Ir.Bin (result, binop, ir_ty, lhs, rhs));
+      Ok (Ir.Local (result, ir_ty))
 
 let require_bool span v =
   match value_ty v with
@@ -584,13 +620,6 @@ and lower_builtin s b args t span =
   let* vs = exprs s args in
   let rt = ty t in
   match (b, vs) with
-  | (Hir.Shl | Lshr | Ashr), [ x; n ] ->
-      let xt = value_ty x in
-      let* n = shift_amount s span xt n in
-      let id = fresh s in
-      emit s
-        (Ir.Bin (id, (match b with Shl -> Ir.Shl | Lshr -> Lshr | _ -> Ashr), xt, x, n));
-      Ok (Ir.Local (id, xt))
   | (Rotl | Rotr), [ x; n ] ->
       let* n = shift_amount s span rt n in
       let* suffix = intrinsic_suffix span rt in

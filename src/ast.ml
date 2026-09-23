@@ -55,6 +55,8 @@ and binop =
   | Ge
   | And
   | Or
+  | Shl
+  | Shr
 
 and cast_kind = Zext | Sext | Trunc | Bitcast
 
@@ -207,7 +209,9 @@ and expr_name = function
         | Gt -> ">"
         | Ge -> ">="
         | And -> "&&"
-        | Or -> "||")
+        | Or -> "||"
+        | Shl -> "<<"
+        | Shr -> ">>")
       ^ " " ^ expr_name r
   | Call (f, xs, _) ->
       expr_name f ^ "(" ^ String.concat ", " (List.map expr_name xs) ^ ")"
@@ -402,7 +406,9 @@ let render_bounded ~budget program =
                 | Gt -> ">"
                 | Ge -> ">="
                 | And -> "&&"
-                | Or -> "||");
+                | Or -> "||"
+                | Shl -> "<<"
+                | Shr -> ">>");
               text " ";
               emit_expr r
           | Call (f, xs, _) ->

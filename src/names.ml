@@ -10,17 +10,7 @@ type parser_operation =
   | Legacy_ptr_add
   | Legacy_ptr_add_bytes
 
-type value_operation =
-  | Len
-  | Legacy_shl
-  | Legacy_lshr
-  | Legacy_ashr
-  | Rotl
-  | Rotr
-  | Popcount
-  | Ctz
-  | Clz
-
+type value_operation = Len | Rotl | Rotr | Popcount | Ctz | Clz
 type type_constructor = Legacy_ptr | Array | Vector
 type literal = True | False | Null
 
@@ -128,9 +118,4 @@ let value_operation name =
   match List.assoc_opt name operations with
   | Some (Value operation) -> Some operation
   | Some (Parser _ | Reserved) -> None
-  | None -> (
-      match name with
-      | "shl" -> Some Legacy_shl
-      | "lshr" -> Some Legacy_lshr
-      | "ashr" -> Some Legacy_ashr
-      | _ -> None)
+  | None -> None

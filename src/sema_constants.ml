@@ -61,6 +61,7 @@ let operand_type_hint operation expected left right =
           Some (Hir.Vec (lanes, Hir.Int Hir.I32))
       | _ -> None)
   | Ast.And | Ast.Or -> None
+  | Ast.Shl | Ast.Shr -> None
 
 let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve consts
     expected ?(check_only = false) ?(validate_dead = true) = function
@@ -132,6 +133,40 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
         in
         if rt <> Hir.Bool then error s "logical operands must be bool"
         else Ok (Hir.Bool, if rv <> 0L then 1L else 0L)
+  | Ast.Binary (((Ast.Shl | Ast.Shr) as op), l, r, s) ->
+      let* lt, lv =
+        const_expr ~structs ~named_types ~arrays ?resolve consts
+          (match expected with Some (Hir.Int _) -> expected | _ -> None)
+          ~check_only ~validate_dead l
+      in
+      let* rt, rv =
+        const_expr ~structs ~named_types ~arrays ?resolve consts None ~check_only
+          ~validate_dead r
+      in
+      let* () =
+        match lt with
+        | Hir.Int _ -> Ok ()
+        | _ -> error s "shift value must be an integer or integer vector"
+      in
+      let* () =
+        match rt with
+        | Hir.Int _ -> Ok ()
+        | Hir.Vec (_, Hir.Bool) -> error s "shift count must be an integer"
+        | Hir.Vec _ -> error s "shift count must be a scalar integer for a scalar value"
+        | _ -> error s "shift count must be an integer"
+      in
+      let bits = match lt with Hir.Int k -> int_bits k | _ -> 32 in
+      let k = Int64.to_int (Int64.logand rv (Int64.of_int (bits - 1))) in
+      let v =
+        if k = 0 then lv
+        else
+          match op with
+          | Ast.Shl -> Int64.shift_left lv k
+          | _ ->
+              if is_unsigned lt then Int64.shift_right_logical lv k
+              else Int64.shift_right (sign_extend_bits lt lv) k
+      in
+      Ok (lt, mask_value lt v)
   | Ast.Binary (op, l, r, s) ->
       let* (lt, lv), (rt, rv) =
         let hint = operand_type_hint op expected l r in
@@ -210,6 +245,13 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
             | Le -> if cmp <= 0 then 1L else 0L
             | Gt -> if cmp > 0 then 1L else 0L
             | Ge -> if cmp >= 0 then 1L else 0L
+            | Ast.Shl | Ast.Shr ->
+                let bits = match lt with Hir.Int q -> int_bits q | _ -> 64 in
+                let k = Int64.to_int (Int64.logand rv (Int64.of_int (bits - 1))) in
+                if k = 0 then lv
+                else if op = Ast.Shl then Int64.shift_left lv k
+                else if is_unsigned lt then Int64.shift_right_logical lv k
+                else Int64.shift_right (sign_extend_bits lt lv) k
             | And -> if lv <> 0L && rv <> 0L then 1L else 0L
             | Or -> if lv <> 0L || rv <> 0L then 1L else 0L
           in
@@ -322,7 +364,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
           args
       in
       match (name, vals) with
-      | ("shl" | "lshr" | "ashr" | "rotl" | "rotr"), [ (t, x); (count_ty, n) ] ->
+      | ("rotl" | "rotr"), [ (t, x); (count_ty, n) ] ->
           let* () =
             if is_int t && is_int count_ty then Ok ()
             else error s "builtin shift arguments must be integers"
@@ -333,9 +375,6 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
             if k = 0 then x
             else
               match name with
-              | "shl" -> Int64.shift_left x k
-              | "lshr" -> Int64.shift_right_logical x k
-              | "ashr" -> Int64.shift_right (sign_extend_bits t x) k
               | "rotl" ->
                   Int64.logor (Int64.shift_left x k)
                     (Int64.shift_right_logical x (bits - k))
@@ -409,6 +448,45 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
       | Hir.Vec (_, Hir.Bool) ->
           Ok (ty, List.map (fun value -> if value = 0L then 1L else 0L) values)
       | _ -> error span "logical not requires a bool vector")
+  | Ast.Binary (((Ast.Shl | Ast.Shr) as op), value, count, span) ->
+      let* ty, values = evaluate expected value in
+      let* element =
+        match lane_type ty with
+        | Some (Hir.Int _ as element) -> Ok element
+        | _ -> error span "shift value must be an integer or integer vector"
+      in
+      let* count_ty, counts =
+        match evaluate None count with
+        | Ok (count_ty, counts) -> Ok (count_ty, counts)
+        | Error _ -> (
+            match
+              const_expr ~structs ~named_types ~arrays ?resolve consts None ~check_only
+                count
+            with
+            | Ok (count_ty, count_value) -> Ok (count_ty, [ count_value ])
+            | Error diagnostics -> Error diagnostics)
+      in
+      let* per_lane =
+        match count_ty with
+        | Hir.Int _ -> Ok (List.map (fun _ -> List.hd counts) values)
+        | Hir.Vec (count_lanes, Hir.Int _) ->
+            if count_lanes = List.length values then Ok counts
+            else error span "shift count lanes must match the value lanes"
+        | Hir.Vec (_, Hir.Bool) -> error span "shift count must be an integer"
+        | _ -> error span "shift count must be an integer"
+      in
+      let bits = Option.get (integer_value_bit_width element) in
+      let apply amount value =
+        let amount = Int64.to_int (Int64.logand amount (Int64.of_int (bits - 1))) in
+        if amount = 0 then value
+        else
+          match op with
+          | Ast.Shl -> Int64.shift_left value amount
+          | _ ->
+              if is_unsigned element then Int64.shift_right_logical value amount
+              else Int64.shift_right (lane_signed element value) amount
+      in
+      Ok (ty, List.map2 (fun c v -> lane_mask element (apply c v)) per_lane values)
   | Ast.Binary (operation, left, right, span) -> (
       let hint = operand_type_hint operation expected left right in
       let* left_ty, left_values, right_ty, right_values =
@@ -498,6 +576,15 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
             | Ast.Le -> if compare <= 0 then 1L else 0L
             | Ast.Gt -> if compare > 0 then 1L else 0L
             | Ast.Ge -> if compare >= 0 then 1L else 0L
+            | Ast.Shl | Ast.Shr ->
+                let bits = Option.get (integer_value_bit_width element) in
+                let amount =
+                  Int64.to_int (Int64.logand right (Int64.of_int (bits - 1)))
+                in
+                if amount = 0 then left
+                else if operation = Ast.Shl then Int64.shift_left left amount
+                else if is_unsigned element then Int64.shift_right_logical left amount
+                else Int64.shift_right (lane_signed element left) amount
             | Ast.And | Ast.Or -> 0L
           in
           Ok
@@ -506,7 +593,7 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
                 (fun left right -> lane_mask result_element (apply left right))
                 left_values right_values ))
   | Ast.Call (Ast.Ident (name, _), [ value; count ], span)
-    when List.mem name [ "shl"; "lshr"; "ashr"; "rotl"; "rotr" ] ->
+    when List.mem name [ "rotl"; "rotr" ] ->
       let* ty, values = evaluate expected value in
       let* element =
         match lane_type ty with
@@ -524,9 +611,6 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
           if amount = 0 then value
           else
             match name with
-            | "shl" -> Int64.shift_left value amount
-            | "lshr" -> Int64.shift_right_logical value amount
-            | "ashr" -> Int64.shift_right (lane_signed element value) amount
             | "rotl" ->
                 Int64.logor
                   (Int64.shift_left value amount)

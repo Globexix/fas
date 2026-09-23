@@ -18,7 +18,7 @@ type const_arr_def = { name : string; ty : ty; elems : int64 list }
 type func_sig = { params : (string * ty) list; ret : ty; variadic : bool }
 type local = { name : string; ty : ty; id : int }
 type linkage = Internal | External_c
-type builtin = Shl | Lshr | Ashr | Rotl | Rotr | Popcount | Ctz | Clz
+type builtin = Rotl | Rotr | Popcount | Ctz | Clz
 type call_target = User of string | Builtin of builtin
 
 type expr =

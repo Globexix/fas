@@ -48,6 +48,8 @@ type kind =
   | Amp_eq
   | Pipe_eq
   | Caret_eq
+  | Ltlt_eq
+  | Gtgt_eq
   | Amp
   | Pipe
   | Caret
@@ -56,8 +58,10 @@ type kind =
   | Neq
   | Lt
   | Le
+  | Ltlt
   | Gt
   | Ge
+  | Gtgt
   | Andand
   | Oror
   | Not
@@ -116,6 +120,8 @@ let show = function
   | Amp_eq -> "`&=`"
   | Pipe_eq -> "`|=`"
   | Caret_eq -> "`^=`"
+  | Ltlt_eq -> "`<<=`"
+  | Gtgt_eq -> "`>>=`"
   | Amp -> "`&`"
   | Pipe -> "`|`"
   | Caret -> "`^`"
@@ -124,8 +130,10 @@ let show = function
   | Neq -> "`!=`"
   | Lt -> "`<`"
   | Le -> "`<=`"
+  | Ltlt -> "`<<`"
   | Gt -> "`>`"
   | Ge -> "`>=`"
+  | Gtgt -> "`>>`"
   | Andand -> "`&&`"
   | Oror -> "`||`"
   | Not -> "`!`"

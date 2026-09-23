@@ -186,8 +186,36 @@ let lex ?(limits = Limits.default) source =
         | '%' -> two '=' Percent Percent_eq
         | '=' -> two '=' Assign Eqeq
         | '!' -> two '=' Not Neq
-        | '<' -> two '=' Lt Le
-        | '>' -> two '=' Gt Ge
+        | '<' ->
+            if offset + 1 < n && text.[offset + 1] = '<' then
+              if offset + 2 < n && text.[offset + 2] = '=' then
+                let sp =
+                  Source.span source ~start_offset:offset ~end_offset:(offset + 3)
+                in
+                loop (offset + 3) (count + 1)
+                  ({ Token.kind = Ltlt_eq; span = sp } :: tokens)
+              else
+                let sp =
+                  Source.span source ~start_offset:offset ~end_offset:(offset + 2)
+                in
+                loop (offset + 2) (count + 1)
+                  ({ Token.kind = Ltlt; span = sp } :: tokens)
+            else two '=' Lt Le
+        | '>' ->
+            if offset + 1 < n && text.[offset + 1] = '>' then
+              if offset + 2 < n && text.[offset + 2] = '=' then
+                let sp =
+                  Source.span source ~start_offset:offset ~end_offset:(offset + 3)
+                in
+                loop (offset + 3) (count + 1)
+                  ({ Token.kind = Gtgt_eq; span = sp } :: tokens)
+              else
+                let sp =
+                  Source.span source ~start_offset:offset ~end_offset:(offset + 2)
+                in
+                loop (offset + 2) (count + 1)
+                  ({ Token.kind = Gtgt; span = sp } :: tokens)
+            else two '=' Gt Ge
         | '&' ->
             if offset + 1 < n && text.[offset + 1] = '&' then two '&' Amp Andand
             else two '=' Amp Amp_eq

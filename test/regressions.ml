@@ -374,8 +374,9 @@ let () =
   semantic_error "constant-bool-arithmetic"
     "arithmetic requires integer or vector operands"
     "const Invalid bool = true + true\nfn main() i32 { return 0 }\n";
-  semantic_error "constant-bool-shift" "builtin shift arguments must be integers"
-    "const Invalid bool = shl(true, false)\nfn main() i32 { return 0 }\n";
+  semantic_error "constant-bool-shift"
+    "shift value must be an integer or integer vector"
+    "const Invalid bool = true << false\nfn main() i32 { return 0 }\n";
   semantic_error "constant-dead-ternary-type" "type mismatch"
     "const Invalid i32 = true ? 1 : false\nfn main() i32 { return Invalid }\n";
   ignore (llvm_of "const Safe i32 = true ? 7 : 1 / 0\nfn main() i32 { return Safe }\n");
@@ -391,7 +392,7 @@ let () =
        const BoolSigned vec[4,i8] = sext[vec[4,i8]](Flags)\n\
        const LowBits vec[4,bool] = trunc[vec[4,bool]](Narrow)\n\
        const Added vec[4,u8] = Narrow + splat(1)\n\
-       const Shifted vec[4,u8] = shl(Added, 1)\n\
+       const Shifted vec[4,u8] = Added << 1\n\
        const Matches vec[4,bool] = Shifted == splat(0)\n\
        fn unsigned_lane() u16 { return WideUnsigned[2] }\n\
        fn signed_lane() i16 { return WideSigned[1] }\n\
@@ -497,15 +498,15 @@ let () =
     llvm_of
       "fn shifts(values vec[4,u32], signed_values vec[4,i32], narrow u8, equal u32, \
        wide u64) vec[4,u32] {\n\
-      \ shl_narrow vec[4,u32] = shl(values, narrow)\n\
-      \ shl_equal vec[4,u32] = shl(values, equal)\n\
-      \ shl_wide vec[4,u32] = shl(values, wide)\n\
-      \ lshr_narrow vec[4,u32] = lshr(values, narrow)\n\
-      \ lshr_equal vec[4,u32] = lshr(values, equal)\n\
-      \ lshr_wide vec[4,u32] = lshr(values, wide)\n\
-      \ ashr_narrow vec[4,i32] = ashr(signed_values, narrow)\n\
-      \ ashr_equal vec[4,i32] = ashr(signed_values, equal)\n\
-      \ ashr_wide vec[4,i32] = ashr(signed_values, wide)\n\
+      \ shl_narrow vec[4,u32] = values << narrow\n\
+      \ shl_equal vec[4,u32] = values << equal\n\
+      \ shl_wide vec[4,u32] = values << wide\n\
+      \ lshr_narrow vec[4,u32] = values >> narrow\n\
+      \ lshr_equal vec[4,u32] = values >> equal\n\
+      \ lshr_wide vec[4,u32] = values >> wide\n\
+      \ ashr_narrow vec[4,i32] = signed_values >> narrow\n\
+      \ ashr_equal vec[4,i32] = signed_values >> equal\n\
+      \ ashr_wide vec[4,i32] = signed_values >> wide\n\
       \ rotl_narrow vec[4,u32] = rotl(values, narrow)\n\
       \ rotl_equal vec[4,u32] = rotl(values, equal)\n\
       \ rotl_wide vec[4,u32] = rotl(values, wide)\n\
@@ -537,21 +538,31 @@ let () =
   List.iter
     (fun operation ->
       semantic_error
-        ("integer-vector-shift-count-splat-" ^ operation)
+        ("integer-vector-rotate-count-splat-" ^ operation)
         "vector shifts require a scalar integer count"
         (Printf.sprintf
            "fn f(values vec[4,u32]) vec[4,u32] { return %s(values, splat(1)) }\n"
            operation);
       semantic_error
-        ("integer-vector-shift-count-named-" ^ operation)
+        ("integer-vector-rotate-count-named-" ^ operation)
         "vector shifts require a scalar integer count"
         (Printf.sprintf
            "fn f(values vec[4,u32], count vec[4,u32]) vec[4,u32] { return %s(values, \
             count) }\n"
            operation))
-    [ "shl"; "lshr"; "ashr"; "rotl"; "rotr" ];
-  semantic_error "integer-vector-shift-count-noninteger" "integer shift"
-    "fn f(values vec[4,u32], count bool) vec[4,u32] { return shl(values, count) }\n";
+    [ "rotl"; "rotr" ];
+  List.iter
+    (fun (operation, name) ->
+      semantic_error
+        ("integer-vector-shift-count-splat-" ^ name)
+        "splat requires a vector type context"
+        (Printf.sprintf
+           "fn f(values vec[4,u32]) vec[4,u32] { return values %s splat(1) }\n"
+           operation))
+    [ ("<<", "shl"); (">>", "lshr") ];
+  semantic_error "integer-vector-shift-count-noninteger"
+    "shift count must be an integer"
+    "fn f(values vec[4,u32], count bool) vec[4,u32] { return values << count }\n";
   semantic_error "len-returns-usize" "type mismatch: expected u64, got usize"
     "fn size(values arr[3,u8]) u64 { return len(values) }\n";
   semantic_error "sizeof-returns-usize" "type mismatch: expected u64, got usize"
@@ -1442,7 +1453,7 @@ let () =
     llvm_of
       "const X i8 = -4 / 2\n\
        const R i8 = -5 % 2\n\
-       const A i8 = ashr(-4, 1)\n\
+       const A i8 = -4 >> 1\n\
        const B bool = -1 < 0\n\
        fn main() i32 { return sext[i32](X) + sext[i32](R) + sext[i32](A) + \
        sext[i32](B) }\n"
@@ -2065,8 +2076,8 @@ let () =
 
   let wide_shift =
     llvm_of
-      "const C u8 = shl(1, 8)\n\
-       fn run(x u8, n u8) u8 { return shl(x, n) }\n\
+      "const C u8 = 1 << 8\n\
+       fn run(x u8, n u8) u8 { return x << n }\n\
        fn main() i32 { return zext[i32](C) - zext[i32](run(1, 8)) }\n"
   in
   if not (contains wide_shift "and i8") then
@@ -4461,8 +4472,7 @@ let () =
         fn g(p ptr[u8]) bool { return null == p }\n");
   ignore
     (llvm_of
-       "fn f(x u64, n u32) u64 { return shl(x, n) }\n\
-        fn g(x u64) u64 { return shl(x, 3) }\n");
+       "fn f(x u64, n u32) u64 { return x << n }\nfn g(x u64) u64 { return x << 3 }\n");
 
   let lane_paired_division_guard =
     llvm_of

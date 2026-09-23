@@ -152,6 +152,7 @@ let binary_result_type ~mismatch span operation left right =
     | Ast.And | Ast.Or ->
         if left = Hir.Bool && right = Hir.Bool then Ok Hir.Bool
         else error span "logical operands must be bool"
+    | Ast.Shl | Ast.Shr -> Ok left
 
 let variadic_promote expression =
   match Hir.expr_ty expression with

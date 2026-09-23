@@ -7,15 +7,15 @@ fn main() i32 {
   negative vec[4,i32] = splat(-2)
   two vec[4,u32] = splat(2)
 
-  shl_narrow vec[4,u32] = shl(one, narrow)
-  shl_equal vec[4,u32] = shl(one, equal)
-  shl_wide vec[4,u32] = shl(one, wide)
-  lshr_narrow vec[4,u32] = lshr(high, narrow)
-  lshr_equal vec[4,u32] = lshr(high, equal)
-  lshr_wide vec[4,u32] = lshr(high, wide)
-  ashr_narrow vec[4,i32] = ashr(negative, narrow)
-  ashr_equal vec[4,i32] = ashr(negative, equal)
-  ashr_wide vec[4,i32] = ashr(negative, wide)
+  shl_narrow vec[4,u32] = one << narrow
+  shl_equal vec[4,u32] = one << equal
+  shl_wide vec[4,u32] = one << wide
+  lshr_narrow vec[4,u32] = high >> narrow
+  lshr_equal vec[4,u32] = high >> equal
+  lshr_wide vec[4,u32] = high >> wide
+  ashr_narrow vec[4,i32] = negative >> narrow
+  ashr_equal vec[4,i32] = negative >> equal
+  ashr_wide vec[4,i32] = negative >> wide
   rotl_narrow vec[4,u32] = rotl(one, narrow)
   rotl_equal vec[4,u32] = rotl(one, equal)
   rotl_wide vec[4,u32] = rotl(one, wide)

@@ -558,6 +558,7 @@ let rec unresolved_vector_elements expression =
         right,
         _ ) ->
       unresolved_vector_elements left && unresolved_vector_elements right
+  | Ast.Binary ((Ast.Shl | Ast.Shr), _, _, _) -> false
   | _ -> false
 
 let operand_type_hint operation expected left right =
@@ -572,6 +573,7 @@ let operand_type_hint operation expected left right =
           Some (Hir.Vec (lanes, Hir.Int Hir.I32))
       | _ -> None)
   | Ast.And | Ast.Or -> None
+  | Ast.Shl | Ast.Shr -> None
 
 let require_place_value c span place =
   match Hir.expr_ty place.expr with
@@ -789,6 +791,32 @@ and check_expr (c : context) expected = function
         if Hir.expr_ty a = Hir.Bool && Hir.expr_ty b = Hir.Bool then
           Ok (Hir.Binary (op, a, b, Hir.Bool, s))
         else error s "logical operands must be bool")
+      else if op = Ast.Shl || op = Ast.Shr then
+        let* a =
+          check_expr c
+            (match expected with Some (Hir.Int _) -> expected | _ -> None)
+            l
+        in
+        let* b = check_expr c None r in
+        let at = Hir.expr_ty a in
+        let* () =
+          match at with
+          | Hir.Int _ | Hir.Vec (_, Hir.Int _) -> Ok ()
+          | _ -> error s "shift value must be an integer or integer vector"
+        in
+        let* () =
+          match (at, Hir.expr_ty b) with
+          | Hir.Vec (lanes, _), Hir.Vec (count_lanes, Hir.Int _) ->
+              if lanes = count_lanes then Ok ()
+              else error s "shift count lanes must match the value lanes"
+          | Hir.Vec _, Hir.Int _ -> Ok ()
+          | Hir.Int _, Hir.Int _ -> Ok ()
+          | _, Hir.Vec (_, Hir.Bool) -> error s "shift count must be an integer"
+          | (Hir.Int _ | Hir.Vec _), Hir.Vec _ ->
+              error s "shift count must be a scalar integer for a scalar value"
+          | _ -> error s "shift count must be an integer"
+        in
+        Ok (Hir.Binary (op, a, b, at, s))
       else
         let* a, b =
           match (unresolved_shape_of l, unresolved_shape_of r) with
@@ -1110,10 +1138,7 @@ and check_call c _expected fn args s =
   | Ast.Ident (name, _) -> (
       let builtin =
         match Names.value_operation name with
-        | Some Names.Legacy_shl -> Some Hir.Shl
-        | Some Names.Legacy_lshr -> Some Lshr
-        | Some Names.Legacy_ashr -> Some Ashr
-        | Some Names.Rotl -> Some Rotl
+        | Some Names.Rotl -> Some Hir.Rotl
         | Some Names.Rotr -> Some Rotr
         | Some Names.Popcount -> Some Popcount
         | Some Names.Ctz -> Some Ctz
@@ -1394,8 +1419,24 @@ and check_stmt (c : context) = function
         | Some binding, Some path -> require_place_state binding path c span
         | _ -> Ok ()
       in
-      let* v = check_expr c (Some et) e in
-      let* () = ensure_expected (Hir.expr_ty v) et span in
+      let is_shift = op = Ast.Shl || op = Ast.Shr in
+      let* v = check_expr c (if is_shift then None else Some et) e in
+      let* () =
+        if is_shift then
+          match (et, Hir.expr_ty v) with
+          | Hir.Int _, Hir.Int _ -> Ok ()
+          | Hir.Vec (_, Hir.Int _), Hir.Int _ -> Ok ()
+          | Hir.Vec (lanes, Hir.Int _), Hir.Vec (count_lanes, Hir.Int _)
+            when lanes = count_lanes ->
+              Ok ()
+          | _, Hir.Vec (_, Hir.Bool) -> error span "shift count must be an integer"
+          | (Hir.Int _ | Hir.Vec (_, Hir.Int _)), Hir.Vec _ ->
+              error span "shift count must be a scalar integer for a scalar value"
+          | Hir.Vec _, Hir.Int _ ->
+              error span "shift count lanes must match the value lanes"
+          | _ -> error span "shift value must be an integer or integer vector"
+        else ensure_expected (Hir.expr_ty v) et span
+      in
       if not (is_numeric et) then
         error span "compound assignment requires an integer or vector"
       else (

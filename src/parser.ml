@@ -405,6 +405,8 @@ module P = struct
     | Token.Amp_eq -> Some Ast.Bit_and
     | Token.Pipe_eq -> Some Ast.Bit_or
     | Token.Caret_eq -> Some Ast.Bit_xor
+    | Token.Ltlt_eq -> Some Ast.Shl
+    | Token.Gtgt_eq -> Some Ast.Shr
     | _ -> None
 
   and finish_statement p consume_end = if consume_end then end_stmt p else Ok ()
@@ -951,8 +953,10 @@ module P = struct
   and equality p = binary p relational [ (Token.Eqeq, Ast.Eq); (Token.Neq, Ast.Ne) ]
 
   and relational p =
-    binary p additive
+    binary p shift
       [ (Token.Lt, Ast.Lt); (Token.Le, Ast.Le); (Token.Gt, Ast.Gt); (Token.Ge, Ast.Ge) ]
+
+  and shift p = binary p additive [ (Token.Ltlt, Ast.Shl); (Token.Gtgt, Ast.Shr) ]
 
   and additive p =
     binary p multiplicative [ (Token.Plus, Ast.Add); (Token.Minus, Ast.Sub) ]
