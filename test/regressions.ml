@@ -4529,6 +4529,11 @@ let () =
   in
   if not (contains shift_compound "lshr i64") then
     failwith "shift-compound: missing lshr";
+  let shift_vector_broadcast =
+    llvm_of "fn f(v vec[4,u32], n u32) vec[4,u32] { return v << n }\n"
+  in
+  if contains shift_vector_broadcast "poison" || contains shift_vector_broadcast "undef"
+  then failwith "shift-vector-broadcast: undefined operand in count broadcast";
   List.iter
     (fun (name, ir) ->
       if contains ir " nuw " || contains ir " nsw " || contains ir " exact " then
@@ -4539,6 +4544,7 @@ let () =
       ("shift-left", shift_left);
       ("shift-generic", shift_generic);
       ("shift-compound", shift_compound);
+      ("shift-vector-broadcast", shift_vector_broadcast);
     ];
 
   let lane_paired_division_guard =
