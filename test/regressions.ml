@@ -4490,9 +4490,56 @@ let () =
     (llvm_of
        "fn f(p ptr[u8]) bool { return p == null }\n\
         fn g(p ptr[u8]) bool { return null == p }\n");
-  ignore
-    (llvm_of
-       "fn f(x u64, n u32) u64 { return x << n }\nfn g(x u64) u64 { return x << 3 }\n");
+  let shift_unsigned_right = llvm_of "fn f(x u64, n u32) u64 { return x >> n }\n" in
+  if not (contains shift_unsigned_right "lshr i64") then
+    failwith "shift-unsigned-right: missing lshr";
+  if contains shift_unsigned_right "ashr" then
+    failwith "shift-unsigned-right: unexpected ashr";
+  let shift_signed_right = llvm_of "fn f(x i64, n u32) i64 { return x >> n }\n" in
+  if not (contains shift_signed_right "ashr i64") then
+    failwith "shift-signed-right: missing ashr";
+  if contains shift_signed_right "lshr" then
+    failwith "shift-signed-right: unexpected lshr";
+  let shift_left =
+    llvm_of
+      "fn f(x u64, n u32) u64 { return x << n }\nfn g(x u64) u64 { return x << 3 }\n"
+  in
+  if not (contains shift_left "shl i64") then failwith "shift-left: missing shl";
+  if not (contains shift_left "and i64") then
+    failwith "shift-left: missing count normalization";
+  let shift_generic =
+    llvm_of
+      "fn shg[T](x T, n u32) T { return x << n }\n\
+       fn main() i32 {\n\
+      \  a u8 = shg[u8](1, 1)\n\
+      \  b i32 = shg[i32](1, 1)\n\
+      \  return 0\n\
+       }\n"
+  in
+  if not (contains shift_generic "shl i8") then
+    failwith "shift-generic-u8: missing shl i8";
+  if not (contains shift_generic "and i8") then
+    failwith "shift-generic-u8: normalization not at element width 8";
+  if not (contains shift_generic "shl i32") then
+    failwith "shift-generic-i32: missing shl i32";
+  if not (contains shift_generic "and i32") then
+    failwith "shift-generic-i32: normalization not at element width 32";
+  let shift_compound =
+    llvm_of "fn f(n u32) u64 { x u64 = 8\n  x >>= n\n  return x }\n"
+  in
+  if not (contains shift_compound "lshr i64") then
+    failwith "shift-compound: missing lshr";
+  List.iter
+    (fun (name, ir) ->
+      if contains ir " nuw " || contains ir " nsw " || contains ir " exact " then
+        failwith (name ^ ": unexpected shift flags"))
+    [
+      ("shift-unsigned-right", shift_unsigned_right);
+      ("shift-signed-right", shift_signed_right);
+      ("shift-left", shift_left);
+      ("shift-generic", shift_generic);
+      ("shift-compound", shift_compound);
+    ];
 
   let lane_paired_division_guard =
     llvm_of
