@@ -2839,6 +2839,54 @@ let () =
       List.map (fun (c : Hir.const_arr_def) -> c.Hir.name) hir.Hir.const_arrays
       = [ "g0"; "g1" ])
   in
+  let run_phase_invariant_tests () =
+    let ok = function Ok () -> () | Error message -> failwith message in
+    let rejected needle = function
+      | Ok () -> failwith ("phase invariant accepted invalid input: " ^ needle)
+      | Error message ->
+          if not (contains message needle) then
+            failwith ("phase invariant wrong diagnostic: " ^ message)
+    in
+    ok (Sema_invariants.check_declarations [ (0, "a"); (1, "b"); (2, "c") ]);
+    rejected "not dense" (Sema_invariants.check_declarations [ (0, "a"); (0, "b") ]);
+    rejected "collected twice"
+      (Sema_invariants.check_declarations [ (0, "a"); (1, "a") ]);
+    ok
+      (Sema_invariants.check_const_environment ~declared:[ "a"; "g0"; "b"; "g1" ]
+         ~early:[ "a"; "b" ] ~consts:[ "a"; "b" ] ~arrays:[ "g0"; "g1" ]);
+    ok
+      (Sema_invariants.check_const_environment ~declared:[ "a"; "g0"; "c" ]
+         ~early:[ "a" ] ~consts:[ "a"; "c" ] ~arrays:[ "g0" ]);
+    rejected "do not match declared"
+      (Sema_invariants.check_const_environment ~declared:[ "a"; "b" ] ~early:[ "a" ]
+         ~consts:[ "a" ] ~arrays:[]);
+    rejected "emitted twice"
+      (Sema_invariants.check_const_environment ~declared:[ "a" ] ~early:[ "a" ]
+         ~consts:[ "a"; "a" ] ~arrays:[]);
+    rejected "emitted twice"
+      (Sema_invariants.check_const_environment ~declared:[ "g0" ] ~early:[] ~consts:[]
+         ~arrays:[ "g0"; "g0" ]);
+    rejected "do not match declared"
+      (Sema_invariants.check_const_environment ~declared:[ "a" ] ~early:[ "a" ]
+         ~consts:[ "a" ] ~arrays:[ "a" ]);
+    rejected "array and vector constants are not in declaration order"
+      (Sema_invariants.check_const_environment ~declared:[ "g0"; "g1" ] ~early:[]
+         ~consts:[] ~arrays:[ "g1"; "g0" ]);
+    rejected "early-resolved set"
+      (Sema_invariants.check_const_environment ~declared:[ "a"; "b" ] ~early:[ "b" ]
+         ~consts:[ "a"; "b" ] ~arrays:[]);
+    rejected "early-resolved scalar constants are not in declaration order"
+      (Sema_invariants.check_const_environment ~declared:[ "a"; "b" ]
+         ~early:[ "b"; "a" ] ~consts:[ "b"; "a" ] ~arrays:[]);
+    rejected "late scalar constants are not in declaration order"
+      (Sema_invariants.check_const_environment ~declared:[ "a"; "x"; "y" ]
+         ~early:[ "a" ] ~consts:[ "a"; "y"; "x" ] ~arrays:[]);
+    ok (Sema_invariants.check_materialization ~pending:0 ~functions:[ "f"; "g" ]);
+    rejected "remain pending"
+      (Sema_invariants.check_materialization ~pending:2 ~functions:[]);
+    rejected "emitted twice"
+      (Sema_invariants.check_materialization ~pending:0 ~functions:[ "f"; "f" ])
+  in
   run_diagnostic_naming_tests ();
   run_specialization_span_tests ();
   run_debug_ir_budget_tests ();
@@ -2846,4 +2894,5 @@ let () =
   run_vector_size_tests ();
   run_layout_accounting_parity_tests ();
   run_top_level_order_tests ();
+  run_phase_invariant_tests ();
   print_endline "frontend unit tests: ok"

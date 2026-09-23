@@ -77,6 +77,7 @@ val request :
 val find_by_name : t -> kind -> string -> specialization option
 val fold_by_name : (kind * string -> specialization -> 'a -> 'a) -> t -> 'a -> 'a
 val take_pending : t -> specialization option
+val pending_count : t -> int
 val requeue_materialized : t -> specialization -> unit
 val update_materialized : t -> specialization -> unit
 val diagnostic_type_of_ast : t -> Ast.ty -> diagnostic_type

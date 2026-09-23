@@ -111,6 +111,7 @@ let request state ~limits ~depth ~span ~description specialization =
 let find_by_name state kind name = Hashtbl.find_opt state.by_name (kind, name)
 let fold_by_name f state initial = Hashtbl.fold f state.by_name initial
 let take_pending state = Queue.take_opt state.queue
+let pending_count state = Queue.length state.queue
 let requeue_materialized state specialization = Queue.add specialization state.queue
 
 let update_materialized state specialization =

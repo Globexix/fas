@@ -67,6 +67,10 @@ let lookup_top_level name bindings =
 let error span message = Error [ Diag.error span message ]
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 
+let phase_invariant = function
+  | Ok () -> Ok ()
+  | Error message -> error Span.synthetic ("internal error: " ^ message)
+
 type type_node_account = {
   type_node_limits : Limits.t;
   mutable expanded_type_nodes : int;
@@ -3537,6 +3541,13 @@ let check ?(limits = Limits.default) program =
   let* top_level_bindings =
     validate_declarations 0 String_map.empty [] program.Ast.items
   in
+  let* () =
+    Sema_invariants.check_declarations
+      (List.map
+         (fun binding -> (binding.declaration_id, binding.declaration_name))
+         top_level_bindings)
+    |> phase_invariant
+  in
   let rec collect_named_types seen acc = function
     | [] -> Ok (List.rev acc)
     | Ast.Opaque { name; span } :: rest ->
@@ -3723,6 +3734,17 @@ let check ?(limits = Limits.default) program =
   in
   let* () = Result_list.iter eval_const_item program.items in
   let consts_ordered = List.rev !consts and arrays_ordered = List.rev !arrays in
+  let* () =
+    Sema_invariants.check_const_environment
+      ~declared:
+        (List.filter_map
+           (function Ast.Const { name; _ } -> Some name | _ -> None)
+           program.Ast.items)
+      ~early:(List.map (fun (name, _, _) -> name) scalar_consts)
+      ~consts:(List.map (fun (name, _, _) -> name) consts_ordered)
+      ~arrays:(List.map (fun (name, _, _) -> name) arrays_ordered)
+    |> phase_invariant
+  in
   let* program =
     monomorphize_types
       ~eval_context:(structs, named_types, consts_ordered, arrays_ordered)
@@ -3958,6 +3980,12 @@ let check ?(limits = Limits.default) program =
               "internal error: struct specialization was queued too late")
   in
   let* () = materialize () in
+  let* () =
+    Sema_invariants.check_materialization
+      ~pending:(Sema_specialization.pending_count specializations)
+      ~functions:(List.map (fun (func : Hir.func) -> func.name) (List.rev !funcs))
+    |> phase_invariant
+  in
   let hconsts =
     List.map
       (fun (n, t, v) -> ({ Hir.name = n; ty = t; bits = v } : Hir.const_def))
