@@ -3227,6 +3227,19 @@ let () =
   semantic_error "vector-size-cap-rejected"
     "vector size exceeds the portable cap of 2048 bits"
     "fn f(a vec[33, u64]) u64 { return a[0] }\nfn main() i32 { return 0 }\n";
+  semantic_error "literal-range-const-u8-rejected"
+    "integer literal is out of range for u8"
+    "const C u8 = 256\n\
+     fn w[N const u8]() u8 { return N }\n\
+     fn main() u8 { return w[C]() }\n";
+  semantic_error "literal-range-const-i8-rejected"
+    "integer literal is out of range for i8"
+    "const C i8 = -129\n\
+     fn w[N const i8]() i8 { return N }\n\
+     fn main() i8 { return w[C]() }\n";
+  semantic_error "literal-range-runtime-u8-rejected"
+    "integer literal is out of range for u8"
+    "fn f() u8 { return 256 }\nfn main() i32 { return 0 }\n";
   let unused_generic_function =
     expect_ok
       (Sema.check
