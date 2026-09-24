@@ -68,12 +68,14 @@ let parse_error_message name fragment text =
         failwith (name ^ ": unexpected diagnostic: " ^ rendered)
 
 let cli_error name fragment args =
+  incr checks_run;
   match Cli.parse (Array.of_list ("fas" :: args)) with
   | Error message when contains message fragment -> ()
   | Error message -> failwith (name ^ ": unexpected diagnostic: " ^ message)
   | Ok _ -> failwith (name ^ ": expected CLI rejection")
 
 let cli_run args =
+  incr checks_run;
   match Cli.parse (Array.of_list ("fas" :: args)) with
   | Ok (Cli.Run config) -> config
   | Ok Cli.Help -> failwith "expected compiler invocation"
@@ -88,6 +90,7 @@ let lower_of text =
 let llvm_of text = Ir.render (lower_of text)
 
 let lower_struct_error name fragment (struct_def : Hir.struct_def) =
+  incr checks_run;
   match
     Lower.lower
       {
