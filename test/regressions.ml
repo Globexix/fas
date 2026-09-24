@@ -3235,6 +3235,17 @@ let () =
   (match (cond_calls, cond_branches, body_stores) with
   | [ call ], [ branch ], [ store ] when call < branch && branch < store -> ()
   | _ -> failwith "eval-order: condition or body misordered");
+  let or_short_circuit =
+    llvm_of
+      "fn q() bool { return true }\n\
+       fn k(a bool) bool { return a || q() }\n\
+       fn main() i32 { return 0 }\n"
+  in
+  let or_guards = positions or_short_circuit "br i1" in
+  let or_calls = positions or_short_circuit "call i1 @q()" in
+  (match (or_guards, or_calls) with
+  | [ guard ], [ call ] when guard < call -> ()
+  | _ -> failwith "eval-order: or rhs not once after guard");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
