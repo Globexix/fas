@@ -3161,7 +3161,7 @@ let () =
        fn main() i64 { return f() }\n"
   in
   let capture_load = positions return_before_defer "load i64" in
-  let cleanup_store = positions return_before_defer "store i64 2" in
+  let cleanup_store = positions return_before_defer "store i64 2, ptr" in
   (match (capture_load, cleanup_store) with
   | [ load ], [ store ] when load < store -> ()
   | _ -> failwith "eval-order: defer ran before return capture");
@@ -3173,8 +3173,8 @@ let () =
        return x }\n\
        fn main() i64 { return f() }\n"
   in
-  let second_defer = positions defer_reverse_order "store i64 2" in
-  let first_defer = positions defer_reverse_order "store i64 1" in
+  let second_defer = positions defer_reverse_order "store i64 2, ptr" in
+  let first_defer = positions defer_reverse_order "store i64 1, ptr" in
   (match (second_defer, first_defer) with
   | [ second ], [ first ] when second < first -> ()
   | _ -> failwith "eval-order: defers not reverse order");
