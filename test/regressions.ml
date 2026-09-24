@@ -3117,7 +3117,7 @@ let () =
   let dest_calls = positions compound_assign_dest_once "call i64 @i()" in
   let rhs_calls = positions compound_assign_dest_once "call i64 @v()" in
   (match (dest_calls, rhs_calls) with
-  | [ dest ], rhs :: _ when dest < rhs -> ()
+  | [ dest ], [ rhs ] when dest < rhs -> ()
   | _ ->
       failwith
         "eval-order: compound assignment did not evaluate its destination exactly once \
