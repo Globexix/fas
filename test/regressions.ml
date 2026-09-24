@@ -3259,6 +3259,13 @@ let () =
   (match (defer_mutation, defer_reads) with
   | [ mutation ], read :: _ when mutation < read -> ()
   | _ -> failwith "eval-order: defer read stale values");
+  semantic_error "break-outside-loop" "break outside loop"
+    "fn main() i64 { n i64 = 0\n\
+    \ switch n {\n\
+    \  case 0: { break }\n\
+    \  default: { n = 9 }\n\
+    \ }\n\
+    \ return n }\n";
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
