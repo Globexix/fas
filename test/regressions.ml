@@ -2958,20 +2958,27 @@ let () =
   in
   if not (contains ruled_shift_bitand "ret i64 4\n") then
     failwith "ruled-precedence: shift no longer binds tighter than bitwise and";
-  let ruled_bitand_chain =
+  let ruled_bitand_bitxor =
     llvm_of
       "fn w[N const usize]() usize { return N }\n\
-       fn main() usize { return w[8 & 3 & 1]() }\n"
+       fn main() usize { return w[2 & 3 ^ 1]() }\n"
   in
-  if not (contains ruled_bitand_chain "ret i64 0\n") then
-    failwith "ruled-precedence: bitwise and chain lost left associativity";
+  if not (contains ruled_bitand_bitxor "ret i64 3\n") then
+    failwith "ruled-precedence: bitwise and/xor group boundary moved";
   let ruled_bitxor_bitor =
     llvm_of
       "fn w[N const usize]() usize { return N }\n\
-       fn main() usize { return w[1 ^ 2 | 4]() }\n"
+       fn main() usize { return w[1 ^ 3 | 1]() }\n"
   in
-  if not (contains ruled_bitxor_bitor "ret i64 7\n") then
+  if not (contains ruled_bitxor_bitor "ret i64 3\n") then
     failwith "ruled-precedence: xor/or group boundary moved";
+  let ruled_shift_assoc =
+    llvm_of
+      "fn w[N const usize]() usize { return N }\n\
+       fn main() usize { return w[16 >> 2 >> 1]() }\n"
+  in
+  if not (contains ruled_shift_assoc "ret i64 2\n") then
+    failwith "ruled-precedence: shift chain lost left associativity";
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
