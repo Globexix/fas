@@ -462,7 +462,8 @@ let () =
     "const Bytes vec[4,u8] = splat(1)\n\
      const Wide vec[2,u16] = zext[vec[2,u16]](Bytes)\n\
      fn main() i32 { return 0 }\n";
-  semantic_error "constant-vector-division-by-zero" "division by zero"
+  semantic_error "constant-vector-division-by-zero"
+    "division by zero in constant expression"
     "const Values vec[4,u8] = splat(8)\n\
      const Zero vec[4,u8] = splat(0)\n\
      const Invalid vec[4,u8] = Values / Zero\n\
@@ -4872,7 +4873,8 @@ let () =
     \ return Item() }\n\
      }\n\
      fn main() i32 { return choose[1]() }\n";
-  semantic_error "unselected-specialization-const-target" "not assignable"
+  semantic_error "unselected-specialization-const-target"
+    "constant `Item` is not assignable"
     "const Item i32 = 2\n\
      fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { Item = 3\n\
@@ -4914,7 +4916,8 @@ let () =
     \ if N == 1 { return 7 } else { return plain(N, true) }\n\
      }\n\
      fn main() i32 { return choose[1]() }\n";
-  semantic_error "unselected-specialization-builtin-type" "must be an integer"
+  semantic_error "unselected-specialization-builtin-type"
+    "builtin argument must be an integer"
     "fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { return popcount(true) }\n\
      }\n\
@@ -4931,7 +4934,8 @@ let () =
     \ if N == 1 { return 7 } else { return zext[void](N) }\n\
      }\n\
      fn main() i32 { return choose[1]() }\n";
-  semantic_error "unselected-specialization-nongeneric-application" "is not generic"
+  semantic_error "unselected-specialization-nongeneric-application"
+    "function `plain` is not generic"
     "fn plain(value i32) i32 { return value }\n\
      fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { return plain[N](1) }\n\
@@ -4958,7 +4962,8 @@ let () =
     \ if N == 1 { return 7 } else { return plain[i32](true) }\n\
      }\n\
      fn main() i32 { return choose[1]() }\n";
-  semantic_error "unselected-specialization-const-argument-range" "out of range"
+  semantic_error "unselected-specialization-const-argument-range"
+    "integer literal is out of range for u8"
     "fn plain[N const u8]() i32 { return 1 }\n\
      fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { return plain[256]() }\n\
