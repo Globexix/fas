@@ -3312,6 +3312,12 @@ let () =
   (match unterminated_messages with
   | [ "unterminated block" ] -> ()
   | _ -> failwith "unterminated-block: wrong message");
+  let case_messages =
+    parse_messages "fn main() i64 { n i64 = 0\n switch n { foo }\n return 0 }\n"
+  in
+  (match case_messages with
+  | [ "expected case, default, or `}`" ] -> ()
+  | _ -> failwith "switch-case-parse: wrong message");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
