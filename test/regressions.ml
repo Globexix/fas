@@ -3025,6 +3025,39 @@ let () =
     "fn f[T, T]() usize { return 0 }\nfn main() usize { return f[i64]() }\n";
   semantic_error "generic-unknown-type-argument-rejected" "unknown type `Nope`"
     "fn f[T]() usize { return 0 }\nfn main() usize { return f[Nope]() }\n";
+  ignore
+    (llvm_of "fn f(x u8) usize { return zext[usize](x) }\nfn main() i32 { return 0 }\n");
+  ignore
+    (llvm_of "fn f(x i8) isize { return sext[isize](x) }\nfn main() i32 { return 0 }\n");
+  ignore
+    (llvm_of "fn f(x usize) u8 { return trunc[u8](x) }\nfn main() i32 { return 0 }\n");
+  let zext_const_value =
+    llvm_of
+      "fn w[N const usize]() usize { return N }\n\
+       const B u8 = 255\n\
+       fn main() usize { return w[zext[usize](B)]() }\n"
+  in
+  if not (contains zext_const_value "ret i64 255\n") then
+    failwith "target-width-conversion: zext const value mismatch";
+  let sext_const_value =
+    llvm_of
+      "fn w[N const isize]() isize { return N }\n\
+       const B i8 = -1\n\
+       fn main() isize { return w[sext[isize](B)]() }\n"
+  in
+  if not (contains sext_const_value "ret i64 -1\n") then
+    failwith "target-width-conversion: sext const value mismatch";
+  let trunc_const_value =
+    llvm_of
+      "fn w[N const usize]() usize { return N }\n\
+       const B usize = 300\n\
+       fn main() usize { return w[zext[usize](trunc[u8](B))]() }\n"
+  in
+  if not (contains trunc_const_value "ret i64 44\n") then
+    failwith "target-width-conversion: trunc low-bit value mismatch";
+  semantic_error "target-width-equal-cast-rejected"
+    "illegal cast for source and destination widths"
+    "fn f(x usize) u64 { return zext[u64](x) }\nfn main() i32 { return 0 }\n";
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
