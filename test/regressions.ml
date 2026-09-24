@@ -355,7 +355,8 @@ let () =
   semantic_error "integer-vector-bitcast-width"
     "illegal cast for source and destination widths"
     "fn f(value u64) vec[4,u32] { return bitcast[vec[4,u32]](value) }\n";
-  semantic_error "integer-vector-bitcast-implicit" "type mismatch"
+  semantic_error "integer-vector-bitcast-implicit"
+    "type mismatch: expected vec[4, u32], got vec[4, i32]"
     "fn f(value vec[4,i32]) vec[4,u32] { return value }\n";
   semantic_error "integer-vector-bitcast-array"
     "illegal cast for source and destination widths"
@@ -414,7 +415,7 @@ let () =
   semantic_error "constant-bool-shift"
     "shift value must be an integer or integer vector"
     "const Invalid bool = true << false\nfn main() i32 { return 0 }\n";
-  semantic_error "constant-dead-ternary-type" "type mismatch"
+  semantic_error "constant-dead-ternary-type" "type mismatch: expected i32, got bool"
     "const Invalid i32 = true ? 1 : false\nfn main() i32 { return Invalid }\n";
   ignore (llvm_of "const Safe i32 = true ? 7 : 1 / 0\nfn main() i32 { return Safe }\n");
   let vector_constants =
@@ -450,7 +451,8 @@ let () =
       "<i1 1, i1 1, i1 1, i1 1>";
       "<i8 1, i8 1, i8 1, i8 1>";
     ];
-  semantic_error "named-vector-constant-keeps-type" "type mismatch"
+  semantic_error "named-vector-constant-keeps-type"
+    "type mismatch: expected vec[4, u16], got vec[4, u8]"
     "const Bytes vec[4,u8] = splat(1)\n\
      fn take(value vec[4,u16]) void { return }\n\
      fn main() void { take(Bytes)\n\
@@ -475,7 +477,8 @@ let () =
     (llvm_of
        "const Safe vec[4,u8] = true ? splat(7) : splat(1) / splat(0)\n\
         fn main() u8 { return Safe[0] }\n");
-  semantic_error "constant-vector-dead-ternary-type" "type mismatch"
+  semantic_error "constant-vector-dead-ternary-type"
+    "type mismatch: expected u8, got bool"
     "const Invalid vec[4,u8] = true ? splat(7) : splat(true)\n\
      fn main() i32 { return 0 }\n";
   semantic_error "runtime-logical-integer-left" "logical operands must be bool"
@@ -618,7 +621,7 @@ let () =
   semantic_error "shift-compound-scalar-value-vector-count"
     "shift count must be a scalar integer for a scalar value"
     "fn f(x u32, count vec[4,u32]) u32 { x <<= count\n return x }\n";
-  semantic_error "shift-no-splat-lift" "type mismatch"
+  semantic_error "shift-no-splat-lift" "type mismatch: expected vec[4, u32], got i32"
     "fn f(n u32) vec[4,u32] { return 1 << n }\n";
   semantic_error "len-returns-usize" "type mismatch: expected u64, got usize"
     "fn size(values arr[3,u8]) u64 { return len(values) }\n";
@@ -4746,7 +4749,8 @@ let () =
     || contains const_generic_function_type_llvm "@vector_identity("
     || contains const_generic_function_type_llvm "@aggregate_metrics("
   then failwith "const-generic-function-type-template: template reached LLVM output";
-  semantic_error "const-generic-function-type-mismatch" "type mismatch"
+  semantic_error "const-generic-function-type-mismatch"
+    "type mismatch: expected arr[4, u8], got arr[3, u8]"
     "fn identity[N const usize](value arr[N, u8]) arr[N, u8] { return value }\n\
      fn main(value arr[3, u8]) arr[4, u8] { return identity[4](value) }\n";
   semantic_error "const-generic-function-negative-length" "negative aggregate length"
@@ -4960,7 +4964,9 @@ let () =
     \ if N == 1 { return 7 } else { return plain[256]() }\n\
      }\n\
      fn main() i32 { return choose[1]() }\n";
-  semantic_error "unselected-specialization-named-const-argument-type" "type mismatch"
+  semantic_error "unselected-specialization-named-const-argument-type"
+    "type mismatch: expected u8, got i32note: while instantiating `choose[1]` at \
+     regression.fas:6:30"
     "const Wide i32 = 7\n\
      fn plain[N const u8]() i32 { return 1 }\n\
      fn choose[N const i32]() i32 {\n\
