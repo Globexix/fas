@@ -2755,7 +2755,7 @@ let () =
        fn sz[T]() usize { return sizeof[T] }\n\
        fn main() usize { return sz[Box[u8]]() }\n"
   in
-  if not (contains nested_type_argument "ret i64 1") then
+  if not (contains nested_type_argument "ret i64 1\n") then
     failwith
       "nested-type-argument: sizeof over nested generic type argument was not evaluated";
   let sizeof_const_argument =
@@ -2763,14 +2763,14 @@ let () =
       "fn ret[N const usize]() usize { return N }\n\
        fn main() usize { return ret[sizeof[u8]]() }\n"
   in
-  if not (contains sizeof_const_argument "ret i64 1") then
+  if not (contains sizeof_const_argument "ret i64 1\n") then
     failwith "sizeof-const-argument: nested sizeof query was not evaluated";
   let alignof_const_argument =
     llvm_of
       "fn ret[N const usize]() usize { return N }\n\
        fn main() usize { return ret[1 + alignof[u16]]() }\n"
   in
-  if not (contains alignof_const_argument "ret i64 3") then
+  if not (contains alignof_const_argument "ret i64 3\n") then
     failwith "alignof-const-argument: nested alignof expression was not evaluated";
   let nested_sizeof_const_argument =
     llvm_of
@@ -2778,7 +2778,7 @@ let () =
        fn ret[N const usize]() usize { return N }\n\
        fn main() usize { return ret[sizeof[Box[i64]]]() }\n"
   in
-  if not (contains nested_sizeof_const_argument "ret i64 8") then
+  if not (contains nested_sizeof_const_argument "ret i64 8\n") then
     failwith
       "nested-sizeof-const-argument: sizeof over nested generic type was not evaluated";
   let arithmetic_sizeof_const_argument =
@@ -2786,7 +2786,7 @@ let () =
       "fn ret[N const usize]() usize { return N }\n\
        fn main() usize { return ret[sizeof[arr[3, u8]] - 2]() }\n"
   in
-  if not (contains arithmetic_sizeof_const_argument "ret i64 1") then
+  if not (contains arithmetic_sizeof_const_argument "ret i64 1\n") then
     failwith
       "arithmetic-sizeof-const-argument: nested query arithmetic was not evaluated";
   semantic_error "const-argument-call-rejected" "invalid constant builtin call"
@@ -3161,14 +3161,14 @@ let () =
       if
         List.length
           (List.filter
-             (fun (func : Hir.func) -> contains func.name "N=usize:3")
+             (fun (func : Hir.func) -> String.ends_with ~suffix:"N=usize:3" func.name)
              hir.Hir.funcs)
         <> 1
       then failwith "cross-file-generic-reuse: duplicate add[3] specialization";
       if
         List.length
           (List.filter
-             (fun (func : Hir.func) -> contains func.name "N=usize:4")
+             (fun (func : Hir.func) -> String.ends_with ~suffix:"N=usize:4" func.name)
              hir.Hir.funcs)
         <> 1
       then failwith "cross-file-generic-reuse: missing add[4] specialization";
