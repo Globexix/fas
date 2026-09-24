@@ -3346,6 +3346,10 @@ let () =
   (match block_comment_messages with
   | [ "unterminated block comment" ] -> ()
   | _ -> failwith "block-comment: wrong message");
+  let string_literal_messages = parse_messages "fn main() i64 { return 0 }\n\"abc\n" in
+  (match string_literal_messages with
+  | [ "unterminated string literal" ] -> ()
+  | _ -> failwith "string-literal: wrong message");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
