@@ -2979,6 +2979,38 @@ let () =
   in
   if not (contains ruled_shift_assoc "ret i64 2\n") then
     failwith "ruled-precedence: shift chain lost left associativity";
+  let literal_hex =
+    llvm_of
+      "fn w[N const usize]() usize { return N }\nfn main() usize { return w[0xff]() }\n"
+  in
+  if not (contains literal_hex "ret i64 255\n") then
+    failwith "literal-bases: hex literal did not evaluate to 255";
+  let literal_binary =
+    llvm_of
+      "fn w[N const usize]() usize { return N }\n\
+       fn main() usize { return w[0b1010]() }\n"
+  in
+  if not (contains literal_binary "ret i64 10\n") then
+    failwith "literal-bases: binary literal did not evaluate to 10";
+  let literal_octal =
+    llvm_of
+      "fn w[N const usize]() usize { return N }\nfn main() usize { return w[0o17]() }\n"
+  in
+  if not (contains literal_octal "ret i64 15\n") then
+    failwith "literal-bases: octal literal did not evaluate to 15";
+  let literal_negative_hex =
+    llvm_of
+      "fn w[N const i64]() i64 { return N }\nfn main() i64 { return w[-0x10]() }\n"
+  in
+  if not (contains literal_negative_hex "ret i64 -16\n") then
+    failwith "literal-bases: negative hex literal did not evaluate to -16";
+  let literal_underscores =
+    llvm_of
+      "fn w[N const usize]() usize { return N }\n\
+       fn main() usize { return w[0x1_00]() }\n"
+  in
+  if not (contains literal_underscores "ret i64 256\n") then
+    failwith "literal-bases: underscore-separated literal did not evaluate to 256";
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
