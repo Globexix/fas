@@ -3199,6 +3199,40 @@ let () =
       "bool-bitops: true ^ false did not evaluate to true (xor must agree with !=)";
   if contains bool_bitxor_true "ret i64 0\n" then
     failwith "bool-bitops: const generic branch was not pruned";
+  let bool_bitand_both_false =
+    llvm_of
+      "const C bool = false & false\n\
+       fn r[B const bool]() usize { if B { return 1 }\n\
+      \ return 0 }\n\
+       fn main() usize { return r[C]() }\n"
+  in
+  if not (contains bool_bitand_both_false "ret i64 0\n") then
+    failwith "bool-bitops: false & false did not evaluate to false";
+  if contains bool_bitand_both_false "ret i64 1\n" then
+    failwith "bool-bitops: const generic branch was not pruned";
+  let bool_bitor_both_true =
+    llvm_of
+      "const C bool = true | true\n\
+       fn r[B const bool]() usize { if B { return 1 }\n\
+      \ return 0 }\n\
+       fn main() usize { return r[C]() }\n"
+  in
+  if not (contains bool_bitor_both_true "ret i64 1\n") then
+    failwith "bool-bitops: true | true did not evaluate to true";
+  if contains bool_bitor_both_true "ret i64 0\n" then
+    failwith "bool-bitops: const generic branch was not pruned";
+  let bool_bitxor_both_false =
+    llvm_of
+      "const C bool = false ^ false\n\
+       fn r[B const bool]() usize { if B { return 1 }\n\
+      \ return 0 }\n\
+       fn main() usize { return r[C]() }\n"
+  in
+  if not (contains bool_bitxor_both_false "ret i64 0\n") then
+    failwith
+      "bool-bitops: false ^ false did not evaluate to false (xor must agree with !=)";
+  if contains bool_bitxor_both_false "ret i64 1\n" then
+    failwith "bool-bitops: const generic branch was not pruned";
   let bool_bitops_runtime =
     llvm_of
       "fn f(a bool, b bool) bool { return a & b }\n\
