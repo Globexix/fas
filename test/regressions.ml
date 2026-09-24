@@ -2800,6 +2800,51 @@ let () =
     "fn sz[T]() usize { return sizeof[T] }\n\
      fn pick[T, N const usize](v T) T { return v }\n\
      fn main() i64 { return pick[i64, sz[u8]()](7) }\n";
+  let while_parameter_shadow =
+    llvm_of
+      "const N usize = 99\n\
+       fn count[N const usize]() usize { i usize = 0\n\
+      \ while i < N { i = i + 1 }\n\
+      \ return i }\n\
+       fn main() usize { return count[3]() }\n"
+  in
+  if not (contains while_parameter_shadow "icmp ult i64 %v1, 3\n") then
+    failwith "while-const-argument: while condition did not use the const parameter";
+  if contains while_parameter_shadow "99" then
+    failwith "while-const-argument: while condition resolved the shadowing global";
+  let defer_parameter_shadow =
+    llvm_of
+      "const N usize = 99\n\
+       fn f[N const usize]() usize { defer { x usize = N\n\
+      \ x = x + 1 }\n\
+      \ return N }\n\
+       fn main() usize { return f[2]() }\n"
+  in
+  if not (contains defer_parameter_shadow "store i64 2, ptr") then
+    failwith "defer-const-argument: defer body did not use the const parameter";
+  if contains defer_parameter_shadow "99" then
+    failwith "defer-const-argument: defer body resolved the shadowing global";
+  let statement_positions =
+    llvm_of
+      "const N usize = 99\n\
+       fn walk[N const usize](p usize) usize { i usize = 0\n\
+      \ for j usize = 0; j < N; j += 1 { i = i + N }\n\
+      \ while i < N * 4 { i = i + 1 }\n\
+      \ switch N { case 1: { i = i + N } case 2: { i = i + N } default: { i = 0 } }\n\
+      \ if N > 1 { i = i + N }\n\
+      \ defer { i = i + N }\n\
+      \ i = i + N\n\
+      \ return i }\n\
+       fn main() usize { return walk[2](0) }\n"
+  in
+  if not (contains statement_positions "switch i64 2, label") then
+    failwith "statement-positions: switch scrutinee did not use the const parameter";
+  if not (contains statement_positions "icmp ult i64 %v3, 2\n") then
+    failwith "statement-positions: for bound did not use the const parameter";
+  if not (contains statement_positions "N=usize:2\"") then
+    failwith "statement-positions: specialization key lost const argument identity";
+  if contains statement_positions "99" then
+    failwith "statement-positions: a statement position resolved the shadowing global";
   let unused_generic_function =
     expect_ok
       (Sema.check
