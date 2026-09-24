@@ -610,7 +610,7 @@ let () =
       "fn id[N const usize](value usize) usize { return value + N }\n\
        fn main() usize { return id[3](4) }\n"
   in
-  if not (contains usize_specialization "N=usize:3") then
+  if not (contains usize_specialization "N=usize:3\"") then
     failwith "usize-specialization: specialization key lost usize identity";
   let target_width_type_hir =
     expect_ok
@@ -2058,7 +2058,7 @@ let () =
   let signed_rem_const =
     llvm_of "const X i64 = -9223372036854775808 % -1\nfn main() i64 { return X }\n"
   in
-  if not (contains signed_rem_const "ret i64 0") then
+  if not (contains signed_rem_const "ret i64 0\n") then
     failwith "signed-rem-constant-overflow: expected zero remainder";
 
   semantic_error "fas-026-const-array-write" "cannot modify constant"
@@ -2113,7 +2113,7 @@ let () =
   in
   if not (contains byte_literal_semantics "[3 x i8] c\"a\\00b\"") then
     failwith "fas-030-string-literals: ordinary embedded NUL was not preserved";
-  if not (contains byte_literal_semantics "ret i64 6") then
+  if not (contains byte_literal_semantics "ret i64 6\n") then
     failwith "fas-030-string-literals: literal length did not count decoded bytes";
   semantic_error "fas-030-string-literal-fixed-array"
     "type mismatch: expected arr[3, u8], got ptr[const u8]"
@@ -2127,19 +2127,19 @@ let () =
   let raw_literal_length =
     llvm_of "fn main() i64 { return bitcast[i64](len(\"abc\")) }\n"
   in
-  if not (contains raw_literal_length "ret i64 3") then
+  if not (contains raw_literal_length "ret i64 3\n") then
     failwith "fas-031-len: raw literal length is incorrect";
   let c_literal_length =
     llvm_of "fn main() i64 { return bitcast[i64](len(c\"abc\")) }\n"
   in
-  if not (contains c_literal_length "ret i64 3") then
+  if not (contains c_literal_length "ret i64 3\n") then
     failwith "fas-031-len: C literal payload length is incorrect";
   let literal_const_specialization =
     llvm_of
       "fn literal_size[N const usize]() usize { return N }\n\
        fn main() usize { return literal_size[len(\"abc\")]() }\n"
   in
-  if not (contains literal_const_specialization "N=usize:3") then
+  if not (contains literal_const_specialization "N=usize:3\"") then
     failwith "fas-031-len: literal length was not accepted as a const argument";
   let array_length =
     llvm_of
@@ -2342,7 +2342,7 @@ let () =
        fn f[N const i64]() i64 { return N }\n\
        fn main() i64 { return f[5]() }\n"
   in
-  if not (contains shadowed_template "ret i64 5") then
+  if not (contains shadowed_template "ret i64 5\n") then
     failwith "fas-015: global const shadowed template const parameter";
 
   let nested_shadowed_template =
@@ -2352,7 +2352,7 @@ let () =
        fn outer[N const i64]() i64 { return inner[N]() }\n\
        fn main() i64 { return outer[5]() }\n"
   in
-  if not (contains nested_shadowed_template "ret i64 5") then
+  if not (contains nested_shadowed_template "ret i64 5\n") then
     failwith "fas-015: nested specialization used global const over template parameter";
 
   let signed_narrow_specialization =
@@ -2486,9 +2486,9 @@ let () =
        0b00001111111111111111111111111111111111111111111111111111111111111111 }\n\
        fn signed_minimum() i64 { return -00009223372036854775808 }\n"
   in
-  if List.length (positions leading_zero_literals "ret i64 1") <> 5 then
+  if List.length (positions leading_zero_literals "ret i64 1\n") <> 5 then
     failwith "leading-zero-literals: nonzero values were not normalized";
-  if not (contains leading_zero_literals "ret i64 0") then
+  if not (contains leading_zero_literals "ret i64 0\n") then
     failwith "leading-zero-literals: zero-only spelling was rejected";
   if List.length (positions leading_zero_literals "ret i64 -1") <> 4 then
     failwith "leading-zero-literals: padded maximum values were rejected";
@@ -3518,7 +3518,7 @@ let () =
        fn size[T, N const usize]() usize { return N }\n\
        fn main() usize { return size[Sized[i64], sizeof[Sized[i64]]]() }\n"
   in
-  if not (contains mixed_layout_argument "ret i64 8") then
+  if not (contains mixed_layout_argument "ret i64 8\n") then
     failwith
       "mixed-generic-layout-argument: layout was not available to const evaluation";
   let interleaved_generic =
@@ -4120,7 +4120,7 @@ let () =
        fn width[N const usize]() usize { return N }\n\
        fn main() usize { return width[len(DATA)]() }\n"
   in
-  if not (contains const_array_len_generic_llvm "ret i64 3") then
+  if not (contains const_array_len_generic_llvm "ret i64 3\n") then
     failwith "const-generic-array-len: array length was not used as a const argument";
   ignore
     (llvm_of
