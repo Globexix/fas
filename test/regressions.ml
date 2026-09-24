@@ -3206,11 +3206,11 @@ let () =
        fn h(a bool, b bool) bool { return a ^ b }\n\
        fn main() i32 { return 0 }\n"
   in
-  if not (contains bool_bitops_runtime "and i1 %v2, %v3\n") then
+  if not (contains bool_bitops_runtime " %v4 = and i1 %v2, %v3\n") then
     failwith "bool-bitops: runtime bitwise-and did not lower to one-bit and";
-  if not (contains bool_bitops_runtime "or i1 %v2, %v3\n") then
+  if not (contains bool_bitops_runtime " %v4 = or i1 %v2, %v3\n") then
     failwith "bool-bitops: runtime bitwise-or did not lower to one-bit or";
-  if not (contains bool_bitops_runtime "xor i1 %v2, %v3\n") then
+  if not (contains bool_bitops_runtime " %v4 = xor i1 %v2, %v3\n") then
     failwith "bool-bitops: runtime bitwise-xor did not lower to one-bit xor";
   semantic_error "bool-mask-bitop-rejected"
     "arithmetic requires integer or vector operands"
