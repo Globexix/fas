@@ -3011,6 +3011,20 @@ let () =
   in
   if not (contains literal_underscores "ret i64 256\n") then
     failwith "literal-bases: underscore-separated literal did not evaluate to 256";
+  semantic_error "generic-args-missing-rejected"
+    "generic function `f` requires arguments"
+    "fn f[N const usize]() usize { return N }\nfn main() usize { return f() }\n";
+  semantic_error "generic-args-extra-rejected" "wrong number of const arguments to `f`"
+    "fn f[N const usize]() usize { return N }\nfn main() usize { return f[1, 2]() }\n";
+  semantic_error "generic-kind-type-for-const-rejected" "expected a const argument"
+    "fn f[N const usize]() usize { return N }\nfn main() usize { return f[i64]() }\n";
+  semantic_error "generic-kind-const-for-type-rejected" "expected a type argument"
+    "fn f[T]() usize { return 0 }\nfn main() usize { return f[1]() }\n";
+  semantic_error "generic-duplicate-parameter-rejected"
+    "duplicate generic parameter `T`"
+    "fn f[T, T]() usize { return 0 }\nfn main() usize { return f[i64]() }\n";
+  semantic_error "generic-unknown-type-argument-rejected" "unknown type `Nope`"
+    "fn f[T]() usize { return 0 }\nfn main() usize { return f[Nope]() }\n";
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
