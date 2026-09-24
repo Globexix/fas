@@ -1241,11 +1241,13 @@ let () =
   in
   if contains raw_no_zero "memset" || contains raw_no_zero "zeroinitializer" then
     failwith "raw declaration emitted implicit initialization";
-  parse_error_message "raw-not-a-value-return" "not a value"
-    "fn f() i64 { return raw }\n";
-  parse_error_message "raw-not-a-value-call" "not a value"
+  parse_error_message "raw-not-a-value-return"
+    "`raw` is a declaration marker, not a value" "fn f() i64 { return raw }\n";
+  parse_error_message "raw-not-a-value-call"
+    "`raw` is a declaration marker, not a value"
     "fn g(x i64) i64 { return x }\nfn f() i64 { return g(raw) }\n";
-  parse_error_message "raw-not-a-value-assign" "not a value"
+  parse_error_message "raw-not-a-value-assign"
+    "`raw` is a declaration marker, not a value"
     "fn f() i64 { x i64 = 1\n x = raw\n return x }\n";
   parse_error "raw-init-trailing" "fn f() i64 { x i64 = raw + 1\n return x }\n";
   semantic_error "lexical-scope-same-block" "duplicate local `value`"
