@@ -3165,6 +3165,19 @@ let () =
   (match (capture_load, cleanup_store) with
   | [ load ], [ store ] when load < store -> ()
   | _ -> failwith "eval-order: defer ran before return capture");
+  let defer_reverse_order =
+    llvm_of
+      "fn f() i64 { x i64 = 0\n\
+       defer { x = 1 }\n\
+       defer { x = 2 }\n\
+       return x }\n\
+       fn main() i64 { return f() }\n"
+  in
+  let second_defer = positions defer_reverse_order "store i64 2" in
+  let first_defer = positions defer_reverse_order "store i64 1" in
+  (match (second_defer, first_defer) with
+  | [ second ], [ first ] when second < first -> ()
+  | _ -> failwith "eval-order: defers not reverse order");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
