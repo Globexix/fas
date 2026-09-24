@@ -609,6 +609,66 @@ let () =
   in
   if not (contains usize_specialization "N=usize:3") then
     failwith "usize-specialization: specialization key lost usize identity";
+  let target_width_type_hir =
+    expect_ok
+      (Parser.parse
+         (source
+            "fn f[T](v T) T { return v }\n\
+             fn main() usize { a usize = f[usize](1)\n\
+            \ b u64 = f[u64](2)\n\
+            \ return a }\n"))
+    |> Sema.check |> expect_ok
+  in
+  let target_width_specs =
+    List.filter
+      (fun (func : Hir.func) -> contains func.name "$spec$")
+      target_width_type_hir.Hir.funcs
+  in
+  if List.length target_width_specs <> 2 then
+    failwith "target-width-instantiation: usize/u64 instantiations were merged";
+  if
+    not
+      (List.exists
+         (fun (func : Hir.func) -> String.ends_with ~suffix:"usize" func.name)
+         target_width_specs)
+  then failwith "target-width-instantiation: specialization key lost usize identity";
+  if
+    not
+      (List.exists
+         (fun (func : Hir.func) -> String.ends_with ~suffix:"u64" func.name)
+         target_width_specs)
+  then failwith "target-width-instantiation: specialization key lost u64 identity";
+  ignore (Lower.lower target_width_type_hir |> expect_ok);
+  let signed_target_width_hir =
+    expect_ok
+      (Parser.parse
+         (source
+            "fn f[T](v T) T { return v }\n\
+             fn main() isize { a isize = f[isize](1)\n\
+            \ b i64 = f[i64](2)\n\
+            \ return a }\n"))
+    |> Sema.check |> expect_ok
+  in
+  let signed_target_width_specs =
+    List.filter
+      (fun (func : Hir.func) -> contains func.name "$spec$")
+      signed_target_width_hir.Hir.funcs
+  in
+  if List.length signed_target_width_specs <> 2 then
+    failwith "target-width-instantiation: isize/i64 instantiations were merged";
+  if
+    not
+      (List.exists
+         (fun (func : Hir.func) -> String.ends_with ~suffix:"isize" func.name)
+         signed_target_width_specs)
+  then failwith "target-width-instantiation: specialization key lost isize identity";
+  if
+    not
+      (List.exists
+         (fun (func : Hir.func) -> String.ends_with ~suffix:"i64" func.name)
+         signed_target_width_specs)
+  then failwith "target-width-instantiation: specialization key lost i64 identity";
+  ignore (Lower.lower signed_target_width_hir |> expect_ok);
   let uninitialized_field_write =
     llvm_of "struct S { x i64 }\nfn main() i64 { p S\n p.x = 1\n return 0 }\n"
   in
