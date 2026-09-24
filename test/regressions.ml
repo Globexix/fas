@@ -3102,6 +3102,26 @@ let () =
     not
       (contains call_argument_order "\n  %v0 = call i64 @g()\n  %v1 = call i64 @h()\n")
   then failwith "eval-order: call arguments did not evaluate left to right";
+  let compound_assign_dest_once =
+    llvm_of
+      "fn i() usize { return 0 }\n\
+       fn v() i64 { return 5 }\n\
+       fn main() i64 { a arr[4, i64]\n\
+      \ a[0] = 0\n\
+      \ a[1] = 0\n\
+      \ a[2] = 0\n\
+      \ a[3] = 0\n\
+      \ a[i()] += v()\n\
+      \ return a[0] }\n"
+  in
+  let dest_calls = positions compound_assign_dest_once "call i64 @i()" in
+  let rhs_calls = positions compound_assign_dest_once "call i64 @v()" in
+  (match (dest_calls, rhs_calls) with
+  | [ dest ], rhs :: _ when dest < rhs -> ()
+  | _ ->
+      failwith
+        "eval-order: compound assignment did not evaluate its destination exactly once \
+         before the rhs");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
