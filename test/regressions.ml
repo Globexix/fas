@@ -3215,6 +3215,18 @@ let () =
      fn main() i32 { return 0 }\n";
   semantic_error "int-bool-bitop-rejected" "binary operands must have the same type"
     "fn f(x u8, b bool) bool { return x & b }\nfn main() i32 { return 0 }\n";
+  ignore
+    (llvm_of "fn f(a vec[256, u8]) u8 { return a[0] }\nfn main() i32 { return 0 }\n");
+  ignore
+    (llvm_of "fn f(a vec[32, u64]) u64 { return a[0] }\nfn main() i32 { return 0 }\n");
+  ignore
+    (llvm_of "fn f(a vec[256, bool]) bool { return a[0] }\nfn main() i32 { return 0 }\n");
+  semantic_error "vector-lane-cap-rejected"
+    "vector lane count exceeds the portable cap of 256"
+    "fn f(a vec[257, u8]) u8 { return a[0] }\nfn main() i32 { return 0 }\n";
+  semantic_error "vector-size-cap-rejected"
+    "vector size exceeds the portable cap of 2048 bits"
+    "fn f(a vec[33, u64]) u64 { return a[0] }\nfn main() i32 { return 0 }\n";
   let unused_generic_function =
     expect_ok
       (Sema.check

@@ -19,6 +19,14 @@ let src_int = function
   | Usize -> Usize
   | Isize -> Isize
 
+let vec_cap_error length (element : Hir.ty) =
+  if length > 256 then Some "vector lane count exceeds the portable cap of 256"
+  else
+    match Hir.layout [] (Hir.Vec (length, element)) with
+    | Ok (size, _) when size * 8 > 2048 ->
+        Some "vector size exceeds the portable cap of 2048 bits"
+    | _ -> None
+
 let rec source_ty named_types = function
   | Ast.Bool -> Ok Hir.Bool
   | Ast.Void -> Ok Hir.Void
@@ -31,8 +39,15 @@ let rec source_ty named_types = function
       Ok (Hir.ConstPtr ty)
   | Ast.Array (length, ty) ->
       source_aggregate named_types (fun n element -> Hir.Array (n, element)) length ty
-  | Ast.Vec (length, ty) ->
-      source_aggregate named_types (fun n element -> Hir.Vec (n, element)) length ty
+  | Ast.Vec (length, ty) -> (
+      match
+        source_aggregate named_types (fun n element -> Hir.Vec (n, element)) length ty
+      with
+      | Ok (Hir.Vec (n, element)) -> (
+          match vec_cap_error n element with
+          | Some message -> Error message
+          | None -> Ok (Hir.Vec (n, element)))
+      | result -> result)
   | Ast.Named_type name -> (
       match List.assoc_opt name named_types with
       | Some Struct_name -> Ok (Hir.Struct name)
@@ -94,7 +109,10 @@ let rec source_ty_with_values named_types values span = function
       try
         let length = int_of_string length in
         if length < 0 then error span "negative aggregate length"
-        else Ok (Hir.Vec (length, ty))
+        else
+          match vec_cap_error length ty with
+          | Some message -> error span message
+          | None -> Ok (Hir.Vec (length, ty))
       with Failure _ -> error span "aggregate length is not a machine integer")
   | ty -> source_ty_diag named_types span ty
 
