@@ -3350,6 +3350,12 @@ let () =
   (match string_literal_messages with
   | [ "unterminated string literal" ] -> ()
   | _ -> failwith "string-literal: wrong message");
+  let integer_literal_messages =
+    parse_messages "fn main() i64 { x i64 = 0x\n return 0 }\n"
+  in
+  (match integer_literal_messages with
+  | [ "invalid integer literal" ] -> ()
+  | _ -> failwith "integer-literal: wrong message");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
