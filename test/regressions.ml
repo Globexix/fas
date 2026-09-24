@@ -3062,6 +3062,60 @@ let () =
       [ forward_constant_use; forward_constant_declarations ];
       [ forward_constant_declarations; forward_constant_use ];
     ];
+  let cross_file_generic_decls =
+    ("decls.fas", "fn add[N const usize](value usize) usize { return value + N }\n")
+  in
+  let cross_file_generic_use_a =
+    ("use_a.fas", "fn main() usize { return add[3](1) + add[3](2) }\n")
+  in
+  let cross_file_generic_use_b =
+    ("use_b.fas", "fn other() usize { return add[4](3) + add[3](4) }\n")
+  in
+  List.iter
+    (fun files ->
+      let hir = expect_ok (check_files files) in
+      let specialized =
+        List.filter (fun (func : Hir.func) -> contains func.name "$spec$") hir.Hir.funcs
+      in
+      if List.length specialized <> 2 then
+        failwith
+          "cross-file-generic-reuse: canonical specializations were not reused across \
+           files";
+      if
+        List.length
+          (List.filter
+             (fun (func : Hir.func) -> contains func.name "N=usize:3")
+             hir.Hir.funcs)
+        <> 1
+      then failwith "cross-file-generic-reuse: duplicate add[3] specialization";
+      if
+        List.length
+          (List.filter
+             (fun (func : Hir.func) -> contains func.name "N=usize:4")
+             hir.Hir.funcs)
+        <> 1
+      then failwith "cross-file-generic-reuse: missing add[4] specialization";
+      ignore (Lower.lower hir |> expect_ok))
+    [
+      [ cross_file_generic_decls; cross_file_generic_use_a; cross_file_generic_use_b ];
+      [ cross_file_generic_decls; cross_file_generic_use_b; cross_file_generic_use_a ];
+      [ cross_file_generic_use_a; cross_file_generic_decls; cross_file_generic_use_b ];
+      [ cross_file_generic_use_a; cross_file_generic_use_b; cross_file_generic_decls ];
+      [ cross_file_generic_use_b; cross_file_generic_decls; cross_file_generic_use_a ];
+      [ cross_file_generic_use_b; cross_file_generic_use_a; cross_file_generic_decls ];
+    ];
+  (match
+     check_files
+       [
+         ("dup_a.fas", "fn add[N const usize](value usize) usize { return value + N }\n");
+         ("dup_b.fas", "fn add[N const usize](value usize) usize { return value + N }\n");
+       ]
+   with
+  | Ok _ -> failwith "cross-file-duplicate-template: duplicate template accepted"
+  | Error diagnostics ->
+      let rendered = Diag.render_all ~source:None diagnostics in
+      if not (contains rendered "duplicate function `add`") then
+        failwith ("cross-file-duplicate-template: unexpected diagnostic: " ^ rendered));
   ignore
     (llvm_of
        "const NARROW u8 = trunc[u8](WIDE)\n\
