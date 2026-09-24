@@ -22,8 +22,18 @@ let src_int = function
 let vec_cap_error length (element : Hir.ty) =
   if length > 256 then Some "vector lane count exceeds the portable cap of 256"
   else
-    match Hir.layout [] (Hir.Vec (length, element)) with
-    | Ok (size, _) when size * 8 > 2048 ->
+    let lane_bits =
+      match element with
+      | Hir.Bool -> Some 1
+      | Hir.Int (Hir.U8 | Hir.I8) -> Some 8
+      | Hir.Int (Hir.U16 | Hir.I16) -> Some 16
+      | Hir.Int (Hir.U32 | Hir.I32) -> Some 32
+      | Hir.Int (Hir.U64 | Hir.I64 | Hir.Usize | Hir.Isize) -> Some 64
+      | Hir.Ptr _ | Hir.ConstPtr _ -> Some 64
+      | _ -> None
+    in
+    match lane_bits with
+    | Some bits when length * bits > 2048 ->
         Some "vector size exceeds the portable cap of 2048 bits"
     | _ -> None
 

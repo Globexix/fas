@@ -3331,6 +3331,22 @@ let () =
   semantic_error "vector-size-cap-const-rejected"
     "vector size exceeds the portable cap of 2048 bits"
     "const X vec[33, u64] = splat(0)\nfn main() i64 { return 0 }\n";
+  let vec32_usize_legal =
+    llvm_of "fn f(a vec[32, usize]) usize { return a[0] }\nfn main() i32 { return 0 }\n"
+  in
+  if not (contains vec32_usize_legal "extractelement <32 x i64>") then
+    failwith "vector-caps: vec[32, usize] (2048 bits at max width) was not admitted";
+  let vec32_isize_legal =
+    llvm_of "fn f(a vec[32, isize]) isize { return a[0] }\nfn main() i32 { return 0 }\n"
+  in
+  if not (contains vec32_isize_legal "extractelement <32 x i64>") then
+    failwith "vector-caps: vec[32, isize] (2048 bits at max width) was not admitted";
+  semantic_error "vector-size-cap-usize-rejected"
+    "vector size exceeds the portable cap of 2048 bits"
+    "fn f(a vec[33, usize]) usize { return a[0] }\nfn main() i32 { return 0 }\n";
+  semantic_error "vector-size-cap-isize-rejected"
+    "vector size exceeds the portable cap of 2048 bits"
+    "fn f(a vec[33, isize]) isize { return a[0] }\nfn main() i32 { return 0 }\n";
   let unused_generic_function =
     expect_ok
       (Sema.check
