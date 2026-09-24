@@ -3318,6 +3318,12 @@ let () =
   (match case_messages with
   | [ "expected case, default, or `}`" ] -> ()
   | _ -> failwith "switch-case-parse: wrong message");
+  let separator_messages =
+    parse_messages "fn main() i64 { x i64 = 1 y i64 = 2\n return x }\n"
+  in
+  (match separator_messages with
+  | [ "expected end of statement (newline or `;`)" ] -> ()
+  | _ -> failwith "statement-separator-parse: wrong message");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
