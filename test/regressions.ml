@@ -1,4 +1,5 @@
 let source text = Source.create ~file:"regression.fas" ~text
+let checks_run = ref 0
 
 let contains text needle =
   let rec search offset =
@@ -23,6 +24,7 @@ let expect_ok = function
 let parse_file file text = expect_ok (Parser.parse (Source.create ~file ~text))
 
 let check_files files =
+  incr checks_run;
   let items =
     files
     |> List.map (fun (file, text) -> (parse_file file text).Ast.items)
@@ -31,6 +33,7 @@ let check_files files =
   Sema.check { Ast.items }
 
 let semantic_diagnostics text =
+  incr checks_run;
   let program = expect_ok (Parser.parse (source text)) in
   match Sema.check program with
   | Ok _ -> failwith "expected semantic rejection"
@@ -40,6 +43,7 @@ let semantic_messages text =
   List.map (fun (diagnostic : Diag.t) -> diagnostic.message) (semantic_diagnostics text)
 
 let semantic_error name fragment text =
+  incr checks_run;
   let program = expect_ok (Parser.parse (source text)) in
   match Sema.check program with
   | Ok _ -> failwith (name ^ ": expected semantic rejection")
@@ -49,11 +53,13 @@ let semantic_error name fragment text =
         failwith (name ^ ": unexpected diagnostic: " ^ rendered)
 
 let parse_error name text =
+  incr checks_run;
   match Parser.parse (source text) with
   | Ok _ -> failwith (name ^ ": expected parse rejection")
   | Error _ -> ()
 
 let parse_error_message name fragment text =
+  incr checks_run;
   match Parser.parse (source text) with
   | Ok _ -> failwith (name ^ ": expected parse rejection")
   | Error diagnostics ->
@@ -74,6 +80,7 @@ let cli_run args =
   | Error message -> failwith message
 
 let lower_of text =
+  incr checks_run;
   let program = expect_ok (Parser.parse (source text)) in
   let hir = expect_ok (Sema.check program) in
   expect_ok (Lower.lower hir)
@@ -4935,4 +4942,4 @@ let () =
         failwith ("generic-cast-path: missing `" ^ marker ^ "`"))
     [ "bitcast <1 x i1>"; "zext i8" ];
 
-  print_endline "regression tests: 354 passed"
+  Printf.printf "regression checks: %d passed\n" !checks_run
