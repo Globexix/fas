@@ -3153,6 +3153,18 @@ let () =
   (match (dest_calls, rhs_calls) with
   | [ dest ], [ rhs ] when dest < rhs -> ()
   | _ -> failwith "eval-order: assign dest not once before rhs");
+  let return_before_defer =
+    llvm_of
+      "fn f() i64 { x i64 = 1\n\
+       defer { x = 2 }\n\
+       return x }\n\
+       fn main() i64 { return f() }\n"
+  in
+  let capture_load = positions return_before_defer "load i64" in
+  let cleanup_store = positions return_before_defer "store i64 2" in
+  (match (capture_load, cleanup_store) with
+  | [ load ], [ store ] when load < store -> ()
+  | _ -> failwith "eval-order: defer ran before return capture");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
