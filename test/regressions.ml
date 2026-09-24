@@ -221,8 +221,8 @@ let () =
       "define internal i32 @unsigned_value";
       "zext i8 255 to i32";
       "define internal i8 @byte_value";
-      "ret i8 255";
-      "ret i32 1";
+      "ret i8 255\n";
+      "ret i32 1\n";
     ];
   semantic_error "constant-zext-must-widen" "illegal cast"
     "const X u8 = zext[u8](256)\nfn main() u8 { return X }\n";
@@ -1328,7 +1328,7 @@ let () =
       \ values[Index] = 9\n\
       \ return values[Index] }\n"
   in
-  if not (contains static_global_index "ret i32 %") then
+  if not (contains static_global_index "ret i32 %v") then
     failwith "static-global-index: constant index lost its initialization proof";
   let dynamic_shadowed_index =
     llvm_of
@@ -2148,8 +2148,10 @@ let () =
        const N usize = len(\"abc\")\n\
        fn main() i64 { return bitcast[i64](len(K)) + bitcast[i64](N) }\n"
   in
-  if (not (contains array_length "ret i64")) || not (contains array_length "i64 3") then
-    failwith "fas-031-len: fixed array length is incorrect";
+  if
+    (not (contains array_length "ret i64 %v"))
+    || not (contains array_length "add i64 3, 3\n")
+  then failwith "fas-031-len: fixed array length is incorrect";
   semantic_error "fas-031-len-pointer" "len requires a fixed array or string literal"
     "fn main() i64 { p ptr[const u8] = \"abc\"\n return zext[i64](len(p)) }\n";
   let const_array_value =
