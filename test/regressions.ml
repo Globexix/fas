@@ -1550,9 +1550,14 @@ let () =
       "call [2 x i64] @pass_array([2 x i64]";
       "call <3 x i32> @pass_vector(<3 x i32>";
     ];
-  semantic_error "const-specialization-arity" "wrong number of arguments"
-    "fn id[N const usize](x u64) u64 { return x + bitcast[u64](N) }\n\
-     fn main() u64 { return id[3](2, 4) }\n";
+  let arity_messages =
+    semantic_messages
+      "fn id[N const usize](x u64) u64 { return x + bitcast[u64](N) }\n\
+       fn main() u64 { return id[3](2, 4) }\n"
+  in
+  (match arity_messages with
+  | [ "wrong number of arguments" ] -> ()
+  | _ -> failwith "const-specialization-arity: wrong message");
   semantic_error "fas-008-i64-positive-overflow"
     "integer literal is out of range for i64"
     "const X i64 = 9223372036854775808\nfn f() i64 { return X }\n";
