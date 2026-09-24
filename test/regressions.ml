@@ -3336,6 +3336,10 @@ let () =
   (match literal_comma_messages with
   | [ "expected comma between literal elements" ] -> ()
   | _ -> failwith "literal-comma: wrong message");
+  let ellipsis_messages = parse_messages "fn f(...) i64 { return 0 }\n" in
+  (match ellipsis_messages with
+  | [ "`...` is legal only in extern \"C\"" ] -> ()
+  | _ -> failwith "ellipsis-extern-only: wrong message");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
