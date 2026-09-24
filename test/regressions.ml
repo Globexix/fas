@@ -3136,6 +3136,23 @@ let () =
       failwith
         "eval-order: short-circuit rhs was not evaluated exactly once after the guard \
          branch");
+  let assign_dest_once =
+    llvm_of
+      "fn i() usize { return 0 }\n\
+       fn v() i64 { return 5 }\n\
+       fn main() i64 { a arr[4, i64]\n\
+      \ a[0] = 0\n\
+      \ a[1] = 0\n\
+      \ a[2] = 0\n\
+      \ a[3] = 0\n\
+      \ a[i()] = v()\n\
+      \ return a[0] }\n"
+  in
+  let dest_calls = positions assign_dest_once "call i64 @i()" in
+  let rhs_calls = positions assign_dest_once "call i64 @v()" in
+  (match (dest_calls, rhs_calls) with
+  | [ dest ], [ rhs ] when dest < rhs -> ()
+  | _ -> failwith "eval-order: assign dest not once before rhs");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
