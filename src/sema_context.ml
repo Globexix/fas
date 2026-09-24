@@ -328,6 +328,7 @@ let has_const_params generic_params =
     (function Ast.Const_param _ -> true | Ast.Type_param _ -> false)
     generic_params
 
+let ty_name = Hir.ty_name
 let equal = Hir.ty_equal
 let lookup name table = List.find_opt (fun (n, _, _) -> n = name) table
 let lookup_sig name c = List.assoc_opt name c.signatures
