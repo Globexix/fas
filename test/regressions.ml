@@ -3091,6 +3091,17 @@ let () =
   in
   if not (contains sext_unsigned_value "ret i64 -1\n") then
     failwith "target-width-conversion: sext of unsigned source must sign-fill (-1)";
+  let call_argument_order =
+    llvm_of
+      "fn g() i64 { return 1 }\n\
+       fn h() i64 { return 2 }\n\
+       fn f(a i64, b i64) i64 { return a + b }\n\
+       fn main() i64 { return f(g(), h()) }\n"
+  in
+  if
+    not
+      (contains call_argument_order "\n  %v0 = call i64 @g()\n  %v1 = call i64 @h()\n")
+  then failwith "eval-order: call arguments did not evaluate left to right";
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
