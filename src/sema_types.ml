@@ -145,8 +145,11 @@ let binary_result_type ~mismatch span operation left right =
           match left with
           | Hir.Vec (lanes, Hir.Int _) -> Ok (Hir.Vec (lanes, Hir.Bool))
           | _ -> error span "ordered comparison requires integer operands")
-    | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
-    | Ast.Bit_xor ->
+    | Ast.Bit_and | Ast.Bit_or | Ast.Bit_xor ->
+        if Sema_numeric.is_numeric left then Ok left
+        else if left = Hir.Bool then Ok Hir.Bool
+        else error span "arithmetic requires integer or vector operands"
+    | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem ->
         if Sema_numeric.is_numeric left then Ok left
         else error span "arithmetic requires integer or vector operands"
     | Ast.And | Ast.Or ->
