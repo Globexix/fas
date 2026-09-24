@@ -2971,6 +2971,74 @@ let () =
   in
   if not (contains ruled_bitxor_bitor "ret i64 7\n") then
     failwith "ruled-precedence: xor/or group boundary moved";
+  let agreement_bitand_eq =
+    llvm_of
+      "const C bool = 4 & 2 == 2\n\
+       fn r[B const bool]() usize { if B { return 1 }\n\
+      \ return 0 }\n\
+       fn main() usize { return r[C]() }\n"
+  in
+  if not (contains agreement_bitand_eq "ret i64 0\n") then
+    failwith
+      "ruled-agreement: bitwise-and mixed form disagreed with its parenthesized twin";
+  if contains agreement_bitand_eq "ret i64 1\n" then
+    failwith "ruled-agreement: const generic branch was not pruned";
+  let agreement_bitor_eq =
+    llvm_of
+      "const C bool = 1 | 0 == 0\n\
+       fn r[B const bool]() usize { if B { return 1 }\n\
+      \ return 0 }\n\
+       fn main() usize { return r[C]() }\n"
+  in
+  if not (contains agreement_bitor_eq "ret i64 0\n") then
+    failwith
+      "ruled-agreement: bitwise-or mixed form disagreed with its parenthesized twin";
+  if contains agreement_bitor_eq "ret i64 1\n" then
+    failwith "ruled-agreement: const generic branch was not pruned";
+  let agreement_bitxor_eq =
+    llvm_of
+      "const C bool = 2 ^ 3 == 2\n\
+       fn r[B const bool]() usize { if B { return 1 }\n\
+      \ return 0 }\n\
+       fn main() usize { return r[C]() }\n"
+  in
+  if not (contains agreement_bitxor_eq "ret i64 0\n") then
+    failwith
+      "ruled-agreement: bitwise-xor mixed form disagreed with its parenthesized twin";
+  if contains agreement_bitxor_eq "ret i64 1\n" then
+    failwith "ruled-agreement: const generic branch was not pruned";
+  let agreement_bitand_zero =
+    llvm_of
+      "const C bool = 6 & 3 == 0\n\
+       fn r[B const bool]() usize { if B { return 1 }\n\
+      \ return 0 }\n\
+       fn main() usize { return r[C]() }\n"
+  in
+  if not (contains agreement_bitand_zero "ret i64 0\n") then
+    failwith
+      "ruled-agreement: bitwise-and equality form disagreed with its parenthesized twin";
+  if contains agreement_bitand_zero "ret i64 1\n" then
+    failwith "ruled-agreement: const generic branch was not pruned";
+  let agreement_bitand_rel =
+    llvm_of
+      "const C bool = 5 & 3 < 4\n\
+       fn r[B const bool]() usize { if B { return 1 }\n\
+      \ return 0 }\n\
+       fn main() usize { return r[C]() }\n"
+  in
+  if not (contains agreement_bitand_rel "ret i64 1\n") then
+    failwith
+      "ruled-agreement: bitwise-and relational form disagreed with its parenthesized \
+       twin";
+  if contains agreement_bitand_rel "ret i64 0\n" then
+    failwith "ruled-agreement: const generic branch was not pruned";
+  let agreement_runtime_shape =
+    llvm_of "fn g(x u64) bool { return x & 3 == 1 }\nfn main() i32 { return 0 }\n"
+  in
+  if not (contains agreement_runtime_shape "and i64 %v1, 3\n") then
+    failwith "ruled-agreement: runtime bitwise operands did not group first";
+  if not (contains agreement_runtime_shape "icmp eq i64 %v2, 1\n") then
+    failwith "ruled-agreement: runtime comparison did not apply to the bitwise result";
   let unused_generic_function =
     expect_ok
       (Sema.check
