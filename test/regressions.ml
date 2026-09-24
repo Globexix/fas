@@ -2934,6 +2934,43 @@ let () =
       "expr-stmt-call-const-argument: nested call did not use the const parameter";
   if contains expr_statement_call "99" then
     failwith "expr-stmt-call-const-argument: nested call resolved the shadowing global";
+  let mixed_bitwise_compare =
+    llvm_of
+      "fn f(x u64, m u64, e u64) bool { return x & m == e }\n\
+       fn main() i32 { return 0 }\n"
+  in
+  if not (contains mixed_bitwise_compare "and i64 %v3, %v4\n") then
+    failwith "ruled-precedence: bitwise operands did not group first";
+  if not (contains mixed_bitwise_compare "icmp eq i64 %v5, %v6\n") then
+    failwith "ruled-precedence: comparison did not apply to the bitwise result";
+  let ruled_additive_shift =
+    llvm_of
+      "fn w[N const usize]() usize { return N }\n\
+       fn main() usize { return w[1 + 2 << 3]() }\n"
+  in
+  if not (contains ruled_additive_shift "ret i64 24\n") then
+    failwith "ruled-precedence: additive no longer binds tighter than shift";
+  let ruled_shift_bitand =
+    llvm_of
+      "fn w[N const usize]() usize { return N }\n\
+       fn main() usize { return w[1 << 2 & 4]() }\n"
+  in
+  if not (contains ruled_shift_bitand "ret i64 4\n") then
+    failwith "ruled-precedence: shift no longer binds tighter than bitwise and";
+  let ruled_bitand_chain =
+    llvm_of
+      "fn w[N const usize]() usize { return N }\n\
+       fn main() usize { return w[8 & 3 & 1]() }\n"
+  in
+  if not (contains ruled_bitand_chain "ret i64 0\n") then
+    failwith "ruled-precedence: bitwise and chain lost left associativity";
+  let ruled_bitxor_bitor =
+    llvm_of
+      "fn w[N const usize]() usize { return N }\n\
+       fn main() usize { return w[1 ^ 2 | 4]() }\n"
+  in
+  if not (contains ruled_bitxor_bitor "ret i64 7\n") then
+    failwith "ruled-precedence: xor/or group boundary moved";
   let unused_generic_function =
     expect_ok
       (Sema.check

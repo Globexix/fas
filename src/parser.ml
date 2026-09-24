@@ -946,14 +946,14 @@ module P = struct
     go first
 
   and or_ p = binary p and_ [ (Token.Oror, Ast.Or) ]
-  and and_ p = binary p bitor [ (Token.Andand, Ast.And) ]
+  and and_ p = binary p equality [ (Token.Andand, Ast.And) ]
   and bitor p = binary p bitxor [ (Token.Pipe, Ast.Bit_or) ]
   and bitxor p = binary p bitand [ (Token.Caret, Ast.Bit_xor) ]
-  and bitand p = binary p equality [ (Token.Amp, Ast.Bit_and) ]
+  and bitand p = binary p shift [ (Token.Amp, Ast.Bit_and) ]
   and equality p = binary p relational [ (Token.Eqeq, Ast.Eq); (Token.Neq, Ast.Ne) ]
 
   and relational p =
-    binary p shift
+    binary p bitor
       [ (Token.Lt, Ast.Lt); (Token.Le, Ast.Le); (Token.Gt, Ast.Gt); (Token.Ge, Ast.Ge) ]
 
   and shift p = binary p additive [ (Token.Ltlt, Ast.Shl); (Token.Gtgt, Ast.Shr) ]
