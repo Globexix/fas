@@ -4965,8 +4965,7 @@ let () =
      }\n\
      fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-named-const-argument-type"
-    "type mismatch: expected u8, got i32note: while instantiating `choose[1]` at \
-     regression.fas:6:30"
+    "type mismatch: expected u8, got i32"
     "const Wide i32 = 7\n\
      fn plain[N const u8]() i32 { return 1 }\n\
      fn choose[N const i32]() i32 {\n\
