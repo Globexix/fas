@@ -3362,6 +3362,12 @@ let () =
   (match unterminated_escape_messages with
   | [ "unterminated escape" ] -> ()
   | _ -> failwith "string-escape: wrong message");
+  let unknown_escape_messages =
+    parse_messages "fn main() i64 { return 0 }\n\"\\q\"\n"
+  in
+  (match unknown_escape_messages with
+  | [ "unknown string escape" ] -> ()
+  | _ -> failwith "unknown-escape: wrong message");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
