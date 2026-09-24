@@ -3324,6 +3324,10 @@ let () =
   (match separator_messages with
   | [ "expected end of statement (newline or `;`)" ] -> ()
   | _ -> failwith "statement-separator-parse: wrong message");
+  let extern_abi_messages = parse_messages "extern \"c\" fn f(x i64) i64\n" in
+  (match extern_abi_messages with
+  | [ "only extern \"C\" is supported" ] -> ()
+  | _ -> failwith "extern-abi: wrong message");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
