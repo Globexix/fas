@@ -3340,6 +3340,12 @@ let () =
   (match ellipsis_messages with
   | [ "`...` is legal only in extern \"C\"" ] -> ()
   | _ -> failwith "ellipsis-extern-only: wrong message");
+  let block_comment_messages =
+    parse_messages "fn main() i64 { return 0 }\n/* unclosed\n"
+  in
+  (match block_comment_messages with
+  | [ "unterminated block comment" ] -> ()
+  | _ -> failwith "block-comment: wrong message");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
