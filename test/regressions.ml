@@ -3332,6 +3332,10 @@ let () =
   (match variadic_messages with
   | [ "a variadic declaration needs a fixed parameter" ] -> ()
   | _ -> failwith "variadic-fixed-param: wrong message");
+  let literal_comma_messages = parse_messages "const a arr[2, i64] = { 1 2 }\n" in
+  (match literal_comma_messages with
+  | [ "expected comma between literal elements" ] -> ()
+  | _ -> failwith "literal-comma: wrong message");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
