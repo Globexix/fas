@@ -3315,6 +3315,17 @@ let () =
     "constant initializer type mismatch" "const NARROW u8 = WIDE\nconst WIDE u16 = 7\n";
   semantic_error "forward-constant-cycle" "cyclic constant dependency"
     "const LEFT usize = RIGHT\nconst RIGHT usize = LEFT\n";
+  let forward_array_scalar =
+    llvm_of
+      "const A arr[2, i64] = {B, 0}\nconst B i64 = 1\nfn main() i64 { return A[0] }\n"
+  in
+  if not (contains forward_array_scalar "[2 x i64] [i64 1, i64 0]") then
+    failwith "forward-array-scalar: order-independent scalar did not resolve into array";
+  semantic_error "forward-array-dependency-rejected"
+    "expression is not compile-time constant"
+    "const A arr[2, i64] = {H[0], 0}\n\
+     const H arr[2, i64] = {1, 2}\n\
+     fn main() i64 { return A[0] }\n";
   ignore
     (llvm_of
        "const LEFT bool = false && RIGHT\n\
