@@ -3178,6 +3178,19 @@ let () =
   (match (second_defer, first_defer) with
   | [ second ], [ first ] when second < first -> ()
   | _ -> failwith "eval-order: defers not reverse order");
+  let lane_update_dest =
+    llvm_of
+      "fn i() usize { return 0 }\n\
+       fn v() i64 { return 5 }\n\
+       fn main() i64 { x vec[2, i64] = splat(1)\n\
+      \ x[i()] = v()\n\
+      \ return 0 }\n"
+  in
+  let lane_dest_calls = positions lane_update_dest "call i64 @i()" in
+  let lane_rhs_calls = positions lane_update_dest "call i64 @v()" in
+  (match (lane_dest_calls, lane_rhs_calls) with
+  | [ dest ], [ rhs ] when dest < rhs -> ()
+  | _ -> failwith "eval-order: lane update dest not once before rhs");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
