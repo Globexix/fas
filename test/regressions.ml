@@ -2905,6 +2905,32 @@ let () =
     failwith "statement-positions: specialization key lost const argument identity";
   if contains statement_positions "99" then
     failwith "statement-positions: a statement position resolved the shadowing global";
+  let expr_statement_shadow =
+    llvm_of
+      "const N usize = 99\n\
+       fn f[N const usize]() usize { N + 1\n\
+      \ return N }\n\
+       fn main() usize { return f[2]() }\n"
+  in
+  if not (contains expr_statement_shadow "add i64 2, 1\n") then
+    failwith "expr-stmt-const-argument: expr statement did not use the const parameter";
+  if not (contains expr_statement_shadow "N=usize:2\"") then
+    failwith "expr-stmt-const-argument: specialization key lost const argument identity";
+  if contains expr_statement_shadow "99" then
+    failwith "expr-stmt-const-argument: expr statement resolved the shadowing global";
+  let expr_statement_call =
+    llvm_of
+      "const N usize = 99\n\
+       fn g[M const usize]() usize { return M }\n\
+       fn f[N const usize]() usize { g[N]()\n\
+      \ return N }\n\
+       fn main() usize { return f[2]() }\n"
+  in
+  if not (contains expr_statement_call "M=usize:2\"") then
+    failwith
+      "expr-stmt-call-const-argument: nested call did not use the const parameter";
+  if contains expr_statement_call "99" then
+    failwith "expr-stmt-call-const-argument: nested call resolved the shadowing global";
   let unused_generic_function =
     expect_ok
       (Sema.check
