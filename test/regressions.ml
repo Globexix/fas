@@ -3222,6 +3222,19 @@ let () =
     failwith "control: switch case fell through";
   if contains switch_no_fallthrough "store i64 3, ptr %v0, align 8\n  store i64 0" then
     failwith "control: switch case fell through";
+  let condition_before_branch =
+    llvm_of
+      "fn c() bool { return true }\n\
+       fn main() i64 { x i64 = 0\n\
+      \ if c() { x = 1 }\n\
+      \ return x }\n"
+  in
+  let cond_calls = positions condition_before_branch "call i1 @c()" in
+  let cond_branches = positions condition_before_branch "br i1" in
+  let body_stores = positions condition_before_branch "store i64 1, ptr" in
+  (match (cond_calls, cond_branches, body_stores) with
+  | [ call ], [ branch ], [ store ] when call < branch && branch < store -> ()
+  | _ -> failwith "eval-order: condition or body misordered");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
