@@ -2153,6 +2153,16 @@ let () =
     "fn F() i64 { return 1 }\nfn use() i64 { return F }\n";
   semantic_error "type-used-as-value" "type, not a value"
     "opaque F\nfn use() i64 { return F }\n";
+  semantic_error "const-env-duplicate-const" "duplicate const `A`"
+    "const A arr[2, i64] = {1, 2}\nconst A i64 = 1\n";
+  semantic_error "const-env-array-length-mismatch" "const array length mismatch"
+    "const A arr[2, i64] = {1, 2, 3}\n";
+  semantic_error "const-env-array-element-type-mismatch"
+    "const array element type mismatch" "const A arr[2, i64] = {1, true}\n";
+  semantic_error "const-env-array-needs-brace-list"
+    "const array needs a brace-list initializer" "const A arr[2, i64] = 5\n";
+  semantic_error "const-env-brace-list-requires-array"
+    "brace-list requires an array type" "struct S { x i64 y i64 }\nconst C S = {1, 2}\n";
 
   semantic_error "fas-021-local-aggregate-limit"
     "aggregate element count exceeds the configured limit"
