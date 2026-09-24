@@ -3288,6 +3288,12 @@ let () =
   (match (defer_store, fallthrough_exit) with
   | [ store ], [ exit ] when store < exit -> ()
   | _ -> failwith "control: void fallthrough skipped defer");
+  let mask_negation_admit =
+    llvm_of
+      "fn not2(a vec[2, bool]) vec[2, bool] { return !a }\nfn main() i32 { return 0 }\n"
+  in
+  if not (contains mask_negation_admit "define internal <2 x i1> @not2(<2 x i1>") then
+    failwith "control: mask negation not admitted";
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
