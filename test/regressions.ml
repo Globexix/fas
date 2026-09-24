@@ -58,6 +58,13 @@ let parse_error name text =
   | Ok _ -> failwith (name ^ ": expected parse rejection")
   | Error _ -> ()
 
+let parse_messages text =
+  incr checks_run;
+  match Parser.parse (source text) with
+  | Ok _ -> failwith "expected parse rejection"
+  | Error diagnostics ->
+      List.map (fun (diagnostic : Diag.t) -> diagnostic.message) diagnostics
+
 let parse_error_message name fragment text =
   incr checks_run;
   match Parser.parse (source text) with
@@ -3301,6 +3308,10 @@ let () =
   (match bitnot_messages with
   | [ "integer unary operator requires an integer" ] -> ()
   | _ -> failwith "mask-bitnot-integer-only: wrong message");
+  let unterminated_messages = parse_messages "fn main() i64 {\n" in
+  (match unterminated_messages with
+  | [ "unterminated block" ] -> ()
+  | _ -> failwith "unterminated-block: wrong message");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
