@@ -1537,7 +1537,7 @@ let () =
   semantic_error "fas-020-hex-narrow-overflow" "integer literal is out of range for i32"
     "fn f() i32 { x i32 = 0xffffffffffffffff\n return x }\n";
   let u64_max = llvm_of "fn f() u64 { return 18446744073709551615 }\n" in
-  if not (contains u64_max "ret i64 -1") then
+  if not (contains u64_max "ret i64 -1\n") then
     failwith "fas-020: valid u64 maximum literal was rejected";
   let signed_const_eval =
     llvm_of
@@ -2491,9 +2491,9 @@ let () =
     failwith "leading-zero-literals: nonzero values were not normalized";
   if not (contains leading_zero_literals "ret i64 0\n") then
     failwith "leading-zero-literals: zero-only spelling was rejected";
-  if List.length (positions leading_zero_literals "ret i64 -1") <> 4 then
+  if List.length (positions leading_zero_literals "ret i64 -1\n") <> 4 then
     failwith "leading-zero-literals: padded maximum values were rejected";
-  if not (contains leading_zero_literals "ret i64 -9223372036854775808") then
+  if not (contains leading_zero_literals "ret i64 -9223372036854775808\n") then
     failwith "leading-zero-literals: padded signed minimum was rejected";
   List.iter
     (fun (name, literal) ->
@@ -4165,8 +4165,8 @@ let () =
        fn main() i32 { return choose[1]() + choose[0]() }\n"
   in
   if
-    (not (contains const_dependent_if "ret i32 7"))
-    || not (contains const_dependent_if "ret i32 3")
+    (not (contains const_dependent_if "ret i32 7\n"))
+    || not (contains const_dependent_if "ret i32 3\n")
   then failwith "const-dependent-if: specialization branches were not selected";
   if contains const_dependent_if "br i1" then
     failwith "const-dependent-if: selected specializations retained runtime branches";
