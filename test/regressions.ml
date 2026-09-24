@@ -3596,6 +3596,10 @@ let () =
     "fn identity[T](value T) T { return value }\nfn main() i64 { return identity(1) }\n";
   semantic_error "generic-function-unknown-type-argument" "unknown type `Missing`"
     "fn ignore[T]() i64 { return 7 }\nfn main() i64 { return ignore[Missing]() }\n";
+  semantic_error "generic-name-as-value" "`f` is a function, not a value"
+    "fn f[T]() usize { return 0 }\nfn main() usize { return f }\n";
+  semantic_error "generic-specialization-as-value" "function `f` is not a place"
+    "fn f[T]() usize { return 0 }\nfn main() usize { return f[i64] }\n";
   ignore
     (expect_ok
        (Sema.check
