@@ -3204,6 +3204,22 @@ let () =
   (match (compound_dest_calls, compound_rhs_calls) with
   | [ dest ], [ rhs ] when dest < rhs -> ()
   | _ -> failwith "eval-order: lane compound dest not once before rhs");
+  let switch_no_fallthrough =
+    llvm_of
+      "fn main() i64 { n i64 = 1\n\
+      \ switch n {\n\
+      \  case 1: { n = 2 }\n\
+      \  case 2: { n = 3 }\n\
+      \  default: { n = 0 }\n\
+      \ }\n\
+      \ return n }\n"
+  in
+  if
+    not
+      (contains switch_no_fallthrough "store i64 2, ptr %v0, align 8\n  br label %b1\n")
+  then failwith "control: switch case skipped its exit branch";
+  if contains switch_no_fallthrough "store i64 2, ptr %v0, align 8\n  store i64 3" then
+    failwith "control: switch case fell through";
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
