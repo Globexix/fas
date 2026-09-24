@@ -231,25 +231,35 @@ let () =
       "ret i8 255\n";
       "ret i32 1\n";
     ];
-  semantic_error "constant-zext-must-widen" "illegal cast"
+  semantic_error "constant-zext-must-widen"
+    "illegal cast for source and destination widths"
     "const X u8 = zext[u8](256)\nfn main() u8 { return X }\n";
-  semantic_error "constant-zext-equal-width" "illegal cast"
+  semantic_error "constant-zext-equal-width"
+    "illegal cast for source and destination widths"
     "const A u8 = 1\nconst X u8 = zext[u8](A)\nfn main() u8 { return X }\n";
-  semantic_error "constant-sext-equal-width" "illegal cast"
+  semantic_error "constant-sext-equal-width"
+    "illegal cast for source and destination widths"
     "const A i32 = 1\nconst X i32 = sext[i32](A)\nfn main() i32 { return X }\n";
-  semantic_error "constant-trunc-equal-width" "illegal cast"
+  semantic_error "constant-trunc-equal-width"
+    "illegal cast for source and destination widths"
     "const A i32 = 1\nconst X i32 = trunc[i32](A)\nfn main() i32 { return X }\n";
-  semantic_error "runtime-zext-equal-width" "illegal cast"
+  semantic_error "runtime-zext-equal-width"
+    "illegal cast for source and destination widths"
     "fn f(value u8) u8 { return zext[u8](value) }\n";
-  semantic_error "runtime-sext-equal-width" "illegal cast"
+  semantic_error "runtime-sext-equal-width"
+    "illegal cast for source and destination widths"
     "fn f(value i32) i32 { return sext[i32](value) }\n";
-  semantic_error "runtime-trunc-equal-width" "illegal cast"
+  semantic_error "runtime-trunc-equal-width"
+    "illegal cast for source and destination widths"
     "fn f(value i32) i32 { return trunc[i32](value) }\n";
-  semantic_error "constant-trunc-bool-source" "illegal cast"
+  semantic_error "constant-trunc-bool-source"
+    "illegal cast for source and destination widths"
     "const X u8 = trunc[u8](true)\nfn main() u8 { return X }\n";
-  semantic_error "runtime-trunc-bool-source" "illegal cast"
+  semantic_error "runtime-trunc-bool-source"
+    "illegal cast for source and destination widths"
     "fn f(value bool) u8 { return trunc[u8](value) }\n";
-  semantic_error "constant-vector-bitcast-width" "illegal cast"
+  semantic_error "constant-vector-bitcast-width"
+    "illegal cast for source and destination widths"
     "const A i32 = 1\n\
      const X vec[2,i32] = bitcast[vec[2,i32]](A)\n\
      fn main() i32 { return 0 }\n";
@@ -342,16 +352,20 @@ let () =
       if contains integer_vector_bitcasts forbidden then
         failwith ("integer-vector-bitcast: unexpected `" ^ forbidden ^ "` lowering"))
     [ "extractelement"; "insertelement"; "shufflevector" ];
-  semantic_error "integer-vector-bitcast-width" "illegal cast"
+  semantic_error "integer-vector-bitcast-width"
+    "illegal cast for source and destination widths"
     "fn f(value u64) vec[4,u32] { return bitcast[vec[4,u32]](value) }\n";
   semantic_error "integer-vector-bitcast-implicit" "type mismatch"
     "fn f(value vec[4,i32]) vec[4,u32] { return value }\n";
-  semantic_error "integer-vector-bitcast-array" "illegal cast"
+  semantic_error "integer-vector-bitcast-array"
+    "illegal cast for source and destination widths"
     "fn f(value arr[2,u32]) vec[2,u32] { return bitcast[vec[2,u32]](value) }\n";
-  semantic_error "integer-vector-bitcast-struct" "illegal cast"
+  semantic_error "integer-vector-bitcast-struct"
+    "illegal cast for source and destination widths"
     "struct Pair { left u32 right u32 }\n\
     \ fn f(value Pair) vec[2,u32] { return bitcast[vec[2,u32]](value) }\n";
-  semantic_error "integer-vector-bitcast-pointer" "illegal cast"
+  semantic_error "integer-vector-bitcast-pointer"
+    "illegal cast for source and destination widths"
     "fn f(value ptr[u8]) vec[1,u64] { return bitcast[vec[1,u64]](value) }\n";
   let integer_vector_conversions =
     llvm_of
@@ -379,15 +393,20 @@ let () =
       if not (contains integer_vector_conversions marker) then
         failwith ("integer-vector-conversions: missing `" ^ marker ^ "`"))
     [ "zext <4 x i8>"; "sext <4 x i8>"; "trunc <4 x i16>"; "trunc <4 x i8>" ];
-  semantic_error "integer-vector-zext-lane-count" "illegal cast"
+  semantic_error "integer-vector-zext-lane-count"
+    "illegal cast for source and destination widths"
     "fn f(value vec[4,u8]) vec[2,u16] { return zext[vec[2,u16]](value) }\n";
-  semantic_error "integer-vector-zext-must-widen" "illegal cast"
+  semantic_error "integer-vector-zext-must-widen"
+    "illegal cast for source and destination widths"
     "fn f(value vec[4,u16]) vec[4,u8] { return zext[vec[4,u8]](value) }\n";
-  semantic_error "integer-vector-trunc-must-narrow" "illegal cast"
+  semantic_error "integer-vector-trunc-must-narrow"
+    "illegal cast for source and destination widths"
     "fn f(value vec[4,u8]) vec[4,u16] { return trunc[vec[4,u16]](value) }\n";
-  semantic_error "integer-vector-bitcast-opaque" "illegal cast"
+  semantic_error "integer-vector-bitcast-opaque"
+    "illegal cast for source and destination widths"
     "opaque Handle\nfn f(value i64) void { bitcast[Handle](value)\n return }\n";
-  semantic_error "integer-vector-bitcast-void" "illegal cast"
+  semantic_error "integer-vector-bitcast-void"
+    "illegal cast for source and destination widths"
     "fn f(value i64) void { bitcast[void](value)\n return }\n";
   semantic_error "constant-bool-arithmetic"
     "arithmetic requires integer or vector operands"
@@ -436,7 +455,8 @@ let () =
      fn take(value vec[4,u16]) void { return }\n\
      fn main() void { take(Bytes)\n\
     \ return }\n";
-  semantic_error "constant-vector-conversion-lanes" "illegal cast"
+  semantic_error "constant-vector-conversion-lanes"
+    "illegal cast for source and destination widths"
     "const Bytes vec[4,u8] = splat(1)\n\
      const Wide vec[2,u16] = zext[vec[2,u16]](Bytes)\n\
      fn main() i32 { return 0 }\n";
@@ -1719,15 +1739,20 @@ let () =
   semantic_error "integer-implicit-to-pointer"
     "type mismatch: expected ptr[u8], got usize"
     "fn use(value usize) void { pointer ptr[u8] = value }\n";
-  semantic_error "pointer-bitcast-discards-const" "illegal cast"
+  semantic_error "pointer-bitcast-discards-const"
+    "illegal cast for source and destination widths"
     "fn use(value ptr[const u8]) ptr[u8] { return bitcast[ptr[u8]](value) }\n";
-  semantic_error "pointer-bitcast-u32-width" "illegal cast"
+  semantic_error "pointer-bitcast-u32-width"
+    "illegal cast for source and destination widths"
     "fn use(value ptr[u8]) u32 { return bitcast[u32](value) }\n";
-  semantic_error "pointer-bitcast-i32-width" "illegal cast"
+  semantic_error "pointer-bitcast-i32-width"
+    "illegal cast for source and destination widths"
     "fn use(value i32) ptr[u8] { return bitcast[ptr[u8]](value) }\n";
-  semantic_error "const-pointer-bitcast-u32-width" "illegal cast"
+  semantic_error "const-pointer-bitcast-u32-width"
+    "illegal cast for source and destination widths"
     "fn use(value ptr[const u8]) u32 { return bitcast[u32](value) }\n";
-  semantic_error "integer-bitcast-const-pointer-u32-width" "illegal cast"
+  semantic_error "integer-bitcast-const-pointer-u32-width"
+    "illegal cast for source and destination widths"
     "fn use(value u32) ptr[const u8] { return bitcast[ptr[const u8]](value) }\n";
   let before_messages =
     semantic_messages
@@ -4890,7 +4915,8 @@ let () =
     \ if N == 1 { return 7 } else { return popcount(true) }\n\
      }\n\
      fn main() i32 { return choose[1]() }\n";
-  semantic_error "unselected-specialization-illegal-cast" "illegal cast"
+  semantic_error "unselected-specialization-illegal-cast"
+    "illegal cast for source and destination widths"
     "fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { return zext[u8](256) }\n\
      }\n\
@@ -5697,44 +5723,59 @@ let () =
       "zext i1";
       "sext i1";
     ];
-  semantic_error "vector-zext-equal-width" "illegal cast"
+  semantic_error "vector-zext-equal-width"
+    "illegal cast for source and destination widths"
     "fn f(value vec[4,u8]) vec[4,u8] { return zext[vec[4,u8]](value) }\n";
-  semantic_error "vector-sext-equal-width" "illegal cast"
+  semantic_error "vector-sext-equal-width"
+    "illegal cast for source and destination widths"
     "fn f(value vec[4,i32]) vec[4,i32] { return sext[vec[4,i32]](value) }\n";
-  semantic_error "vector-trunc-equal-width" "illegal cast"
+  semantic_error "vector-trunc-equal-width"
+    "illegal cast for source and destination widths"
     "fn f(value vec[4,u32]) vec[4,u32] { return trunc[vec[4,u32]](value) }\n";
-  semantic_error "vector-zext-bool-equal-width" "illegal cast"
+  semantic_error "vector-zext-bool-equal-width"
+    "illegal cast for source and destination widths"
     "fn f(value vec[4,bool]) vec[4,bool] { return zext[vec[4,bool]](value) }\n";
-  semantic_error "vector-sext-lane-count" "illegal cast"
+  semantic_error "vector-sext-lane-count"
+    "illegal cast for source and destination widths"
     "fn f(value vec[4,i8]) vec[2,i16] { return sext[vec[2,i16]](value) }\n";
-  semantic_error "vector-trunc-lane-count" "illegal cast"
+  semantic_error "vector-trunc-lane-count"
+    "illegal cast for source and destination widths"
     "fn f(value vec[4,u16]) vec[2,u8] { return trunc[vec[2,u8]](value) }\n";
-  semantic_error "scalar-zext-bool-destination" "illegal cast"
+  semantic_error "scalar-zext-bool-destination"
+    "illegal cast for source and destination widths"
     "fn f(value u8) bool { return zext[bool](value) }\n";
-  semantic_error "scalar-sext-bool-destination" "illegal cast"
+  semantic_error "scalar-sext-bool-destination"
+    "illegal cast for source and destination widths"
     "fn f(value u8) bool { return sext[bool](value) }\n";
-  semantic_error "bitcast-bool-padding-source" "illegal cast"
+  semantic_error "bitcast-bool-padding-source"
+    "illegal cast for source and destination widths"
     "fn f(value vec[3,bool]) u8 { return bitcast[u8](value) }\n";
-  semantic_error "bitcast-bool-padding-destination" "illegal cast"
+  semantic_error "bitcast-bool-padding-destination"
+    "illegal cast for source and destination widths"
     "fn f(value u8) vec[3,bool] { return bitcast[vec[3,bool]](value) }\n";
-  semantic_error "bitcast-unequal-scalar-widths" "illegal cast"
+  semantic_error "bitcast-unequal-scalar-widths"
+    "illegal cast for source and destination widths"
     "fn f(value u64) u32 { return bitcast[u32](value) }\n";
-  semantic_error "bitcast-array-destination" "illegal cast"
+  semantic_error "bitcast-array-destination"
+    "illegal cast for source and destination widths"
     "fn f(value vec[2,u32]) arr[2,u32] { return bitcast[arr[2,u32]](value) }\n";
-  semantic_error "bitcast-struct-destination" "illegal cast"
+  semantic_error "bitcast-struct-destination"
+    "illegal cast for source and destination widths"
     "struct Pair { left u32 right u32 }\n\
     \ fn f(value vec[2,u32]) Pair { return bitcast[Pair](value) }\n";
-  semantic_error "cast-pointer-zext" "illegal cast"
+  semantic_error "cast-pointer-zext" "illegal cast for source and destination widths"
     "fn f(value ptr[u8]) u64 { return zext[u64](value) }\n";
-  semantic_error "cast-pointer-sext" "illegal cast"
+  semantic_error "cast-pointer-sext" "illegal cast for source and destination widths"
     "fn f(value ptr[u8]) u64 { return sext[u64](value) }\n";
-  semantic_error "cast-pointer-trunc" "illegal cast"
+  semantic_error "cast-pointer-trunc" "illegal cast for source and destination widths"
     "fn f(value ptr[u8]) u32 { return trunc[u32](value) }\n";
-  semantic_error "cast-pointer-bitcast-bool" "illegal cast"
+  semantic_error "cast-pointer-bitcast-bool"
+    "illegal cast for source and destination widths"
     "fn f(value ptr[u8]) bool { return bitcast[bool](value) }\n";
-  semantic_error "cast-vector-bitcast-pointer" "illegal cast"
+  semantic_error "cast-vector-bitcast-pointer"
+    "illegal cast for source and destination widths"
     "fn f(value vec[1,u64]) ptr[u8] { return bitcast[ptr[u8]](value) }\n";
-  semantic_error "cast-aggregate-zext" "illegal cast"
+  semantic_error "cast-aggregate-zext" "illegal cast for source and destination widths"
     "struct Pair { left u32 right u32 }\n\
     \ fn f() u64 {\n\
     \ value Pair = (Pair){1, 2}\n\
