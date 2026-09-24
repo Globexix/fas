@@ -3268,6 +3268,19 @@ let () =
     \ return n }\n";
   semantic_error "continue-outside-loop" "continue outside loop"
     "fn main() i64 { continue }\n";
+  let void_fallthrough_defer =
+    llvm_of
+      "fn f() void { x i64 = 0\n\
+      \ defer { x = 1 }\n\
+      \ }\n\
+       fn main() i32 { f()\n\
+      \ return 0 }\n"
+  in
+  let defer_store = positions void_fallthrough_defer "store i64 1, ptr" in
+  let fallthrough_exit = positions void_fallthrough_defer "ret void" in
+  (match (defer_store, fallthrough_exit) with
+  | [ store ], [ exit ] when store < exit -> ()
+  | _ -> failwith "control: void fallthrough skipped defer");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
