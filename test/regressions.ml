@@ -3356,6 +3356,12 @@ let () =
   (match integer_literal_messages with
   | [ "invalid integer literal" ] -> ()
   | _ -> failwith "integer-literal: wrong message");
+  let unterminated_escape_messages =
+    parse_messages "fn main() i64 { return 0 }\n\"abc\\"
+  in
+  (match unterminated_escape_messages with
+  | [ "unterminated escape" ] -> ()
+  | _ -> failwith "string-escape: wrong message");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
