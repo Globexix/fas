@@ -3122,6 +3122,20 @@ let () =
       failwith
         "eval-order: compound assignment did not evaluate its destination exactly once \
          before the rhs");
+  let short_circuit_guard =
+    llvm_of
+      "fn q() bool { return true }\n\
+       fn k(a bool) bool { return a && q() }\n\
+       fn main() i32 { return 0 }\n"
+  in
+  let guard_branches = positions short_circuit_guard "br i1" in
+  let guarded_calls = positions short_circuit_guard "call i1 @q()" in
+  (match (guard_branches, guarded_calls) with
+  | br :: _, [ call ] when br < call -> ()
+  | _ ->
+      failwith
+        "eval-order: short-circuit rhs was not evaluated exactly once after the guard \
+         branch");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
