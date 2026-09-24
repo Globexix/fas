@@ -3246,6 +3246,19 @@ let () =
   (match (or_guards, or_calls) with
   | [ guard ], [ call ] when guard < call -> ()
   | _ -> failwith "eval-order: or rhs not once after guard");
+  let defer_reads_current =
+    llvm_of
+      "fn f() i64 { x i64 = 1\n\
+      \ defer { x = x + 1 }\n\
+      \ x = 2\n\
+      \ return x }\n\
+       fn main() i64 { return f() }\n"
+  in
+  let defer_mutation = positions defer_reads_current "store i64 2, ptr" in
+  let defer_reads = positions defer_reads_current "load i64" in
+  (match (defer_mutation, defer_reads) with
+  | [ mutation ], read :: _ when mutation < read -> ()
+  | _ -> failwith "eval-order: defer read stale values");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
