@@ -3404,6 +3404,14 @@ let () =
   (match unknown_escape_messages with
   | [ "unknown string escape" ] -> ()
   | _ -> failwith "unknown-escape: wrong message");
+  let min_sext_i8 =
+    llvm_of
+      "fn w[N const isize]() isize { return N }\n\
+       const B i8 = -128\n\
+       fn main() isize { return w[sext[isize](B)]() }\n"
+  in
+  if not (contains min_sext_i8 "ret i64 -128\n") then
+    failwith "value: i8 min sext drifted";
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
