@@ -3075,6 +3075,22 @@ let () =
   semantic_error "target-width-sext-shrink-rejected"
     "illegal cast for source and destination widths"
     "fn f(x i64) i8 { return sext[i8](x) }\nfn main() i32 { return 0 }\n";
+  let zext_signed_value =
+    llvm_of
+      "fn w[N const usize]() usize { return N }\n\
+       const B i8 = -1\n\
+       fn main() usize { return w[zext[usize](B)]() }\n"
+  in
+  if not (contains zext_signed_value "ret i64 255\n") then
+    failwith "target-width-conversion: zext of signed source must zero-fill (255)";
+  let sext_unsigned_value =
+    llvm_of
+      "fn w[N const isize]() isize { return N }\n\
+       const D u8 = 255\n\
+       fn main() isize { return w[sext[isize](D)]() }\n"
+  in
+  if not (contains sext_unsigned_value "ret i64 -1\n") then
+    failwith "target-width-conversion: sext of unsigned source must sign-fill (-1)";
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
