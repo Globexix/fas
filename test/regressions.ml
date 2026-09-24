@@ -3266,6 +3266,8 @@ let () =
     \  default: { n = 9 }\n\
     \ }\n\
     \ return n }\n";
+  semantic_error "continue-outside-loop" "continue outside loop"
+    "fn main() i64 { continue }\n";
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
