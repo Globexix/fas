@@ -2770,7 +2770,7 @@ let () =
   ] ->
       ()
   | _ -> failwith "generic-argument-syntax: argument forms were not preserved");
-  parse_error_message "type-generic-missing-const-type" "expected a type"
+  parse_error_message "type-generic-missing-const-type" "expected a type, found `]`"
     "fn bad[T const](value T) T { return value }\n";
   let generic_function_source =
     "fn use() i64 { return identity[i64](identity[i64](7)) }\n\
