@@ -3328,6 +3328,10 @@ let () =
   (match extern_abi_messages with
   | [ "only extern \"C\" is supported" ] -> ()
   | _ -> failwith "extern-abi: wrong message");
+  let variadic_messages = parse_messages "extern \"C\" { fn f(...) i64 }\n" in
+  (match variadic_messages with
+  | [ "a variadic declaration needs a fixed parameter" ] -> ()
+  | _ -> failwith "variadic-fixed-param: wrong message");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
