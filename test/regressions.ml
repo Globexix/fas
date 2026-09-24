@@ -3063,6 +3063,18 @@ let () =
   semantic_error "target-width-equal-cast-rejected"
     "illegal cast for source and destination widths"
     "fn f(x usize) u64 { return zext[u64](x) }\nfn main() i32 { return 0 }\n";
+  semantic_error "target-width-trunc-widen-rejected"
+    "illegal cast for source and destination widths"
+    "fn f(x u8) i64 { return trunc[i64](x) }\nfn main() i32 { return 0 }\n";
+  semantic_error "target-width-zext-shrink-rejected"
+    "illegal cast for source and destination widths"
+    "fn f(x i64) i8 { return zext[i8](x) }\nfn main() i32 { return 0 }\n";
+  semantic_error "target-width-sext-equal-rejected"
+    "illegal cast for source and destination widths"
+    "fn f(x i32) i32 { return sext[i32](x) }\nfn main() i32 { return 0 }\n";
+  semantic_error "target-width-sext-shrink-rejected"
+    "illegal cast for source and destination widths"
+    "fn f(x i64) i8 { return sext[i8](x) }\nfn main() i32 { return 0 }\n";
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
