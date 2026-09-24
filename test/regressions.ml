@@ -3259,15 +3259,22 @@ let () =
   (match (defer_mutation, defer_reads) with
   | [ mutation ], read :: _ when mutation < read -> ()
   | _ -> failwith "eval-order: defer read stale values");
-  semantic_error "break-outside-loop" "break outside loop"
-    "fn main() i64 { n i64 = 0\n\
-    \ switch n {\n\
-    \  case 0: { break }\n\
-    \  default: { n = 9 }\n\
-    \ }\n\
-    \ return n }\n";
-  semantic_error "continue-outside-loop" "continue outside loop"
-    "fn main() i64 { continue }\n";
+  let break_messages =
+    semantic_messages
+      "fn main() i64 { n i64 = 0\n\
+      \ switch n {\n\
+      \  case 0: { break }\n\
+      \  default: { n = 9 }\n\
+      \ }\n\
+      \ return n }\n"
+  in
+  (match break_messages with
+  | [ "break outside loop" ] -> ()
+  | _ -> failwith "break-outside-loop: wrong message");
+  let continue_messages = semantic_messages "fn main() i64 { continue }\n" in
+  (match continue_messages with
+  | [ "continue outside loop" ] -> ()
+  | _ -> failwith "continue-outside-loop: wrong message");
   let void_fallthrough_defer =
     llvm_of
       "fn f() void { x i64 = 0\n\
