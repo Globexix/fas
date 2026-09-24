@@ -3347,6 +3347,19 @@ let () =
   semantic_error "vector-size-cap-isize-rejected"
     "vector size exceeds the portable cap of 2048 bits"
     "fn f(a vec[33, isize]) isize { return a[0] }\nfn main() i32 { return 0 }\n";
+  semantic_error "dead-branch-literal-range-rejected"
+    "integer literal is out of range for u8"
+    "fn main() u8 { if false { return 256 }\n return 0 }\n";
+  semantic_error "pruned-specialization-literal-range-rejected"
+    "integer literal is out of range for u8"
+    "fn r[B const bool]() u8 { if B { return 256 }\n\
+    \ return 0 }\n\
+     fn main() u8 { return r[false]() }\n";
+  semantic_error "dead-branch-type-error-rejected"
+    "type mismatch: expected u8, got bool"
+    "fn main() u8 { if false { return true }\n return 0 }\n";
+  semantic_error "dead-branch-unknown-name-rejected" "unknown name `nope`"
+    "fn main() u8 { if false { return nope }\n return 0 }\n";
   let unused_generic_function =
     expect_ok
       (Sema.check
