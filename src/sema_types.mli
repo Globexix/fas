@@ -4,6 +4,7 @@ type const_values = (string * Hir.ty * int64) list
 
 val source_ty : named_types -> Ast.ty -> (Hir.ty, string) result
 val source_ty_diag : named_types -> Span.t -> Ast.ty -> (Hir.ty, Diag.t list) result
+val vec_cap_error : int -> Hir.ty -> string option
 
 val resolve_aggregate_length :
   const_values -> Span.t -> string -> (string, Diag.t list) result

@@ -27,8 +27,16 @@ let rec source_ty_in_context c span = function
       Ok (Hir.ConstPtr ty)
   | Ast.Array (length, ty) ->
       source_aggregate_in_context c span (fun n t -> Hir.Array (n, t)) length ty
-  | Ast.Vec (length, ty) ->
-      source_aggregate_in_context c span (fun n t -> Hir.Vec (n, t)) length ty
+  | Ast.Vec (length, ty) -> (
+      let* result =
+        source_aggregate_in_context c span (fun n t -> Hir.Vec (n, t)) length ty
+      in
+      match result with
+      | Hir.Vec (n, element) -> (
+          match Sema_types.vec_cap_error n element with
+          | Some message -> error span message
+          | None -> Ok result)
+      | _ -> Ok result)
   | ty -> source_ty_diag c.named_types span ty
 
 and source_aggregate_in_context c span make length element =

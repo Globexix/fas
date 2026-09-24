@@ -777,9 +777,9 @@ let () =
       "const N u8 = 255\n\
        fn f() i64 { a arr[256,i64]\n\
       \ a[N] = 7\n\
-      \ v vec[256,i64] = splat(1)\n\
+      \ v vec[256, u8] = splat(1)\n\
       \ v[N] = 8\n\
-      \ return a[N] + v[N] }\n"
+      \ return a[N] + zext[i64](v[N]) }\n"
   in
   if not (contains unsigned_narrow_index "zext i8 255 to i64") then
     failwith "aggregate-index-u8: narrow unsigned index was not zero-extended";
@@ -2239,6 +2239,9 @@ let () =
 
   semantic_error "fas-021-local-aggregate-limit"
     "aggregate element count exceeds the configured limit"
+    "fn main() i32 { a arr[1000001,u8]\n return 0 }\n";
+  semantic_error "vector-shape-cap-precedes-aggregate-limit"
+    "vector lane count exceeds the portable cap of 256"
     "fn main() i32 { v vec[1000001,u8]\n return 0 }\n";
   semantic_error "fas-021-nested-aggregate-limit"
     "aggregate element count exceeds the configured limit"
@@ -3240,6 +3243,14 @@ let () =
   semantic_error "literal-range-runtime-u8-rejected"
     "integer literal is out of range for u8"
     "fn f() u8 { return 256 }\nfn main() i32 { return 0 }\n";
+  semantic_error "vector-lane-cap-local-rejected"
+    "vector lane count exceeds the portable cap of 256"
+    "fn f() i64 { v vec[257, u8] = splat(1)\n\
+    \ return 0 }\n\
+     fn main() i64 { return f() }\n";
+  semantic_error "vector-size-cap-const-rejected"
+    "vector size exceeds the portable cap of 2048 bits"
+    "const X vec[33, u64] = splat(0)\nfn main() i64 { return 0 }\n";
   let unused_generic_function =
     expect_ok
       (Sema.check
