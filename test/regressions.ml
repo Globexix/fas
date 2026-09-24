@@ -3412,6 +3412,14 @@ let () =
   in
   if not (contains min_sext_i8 "ret i64 -128\n") then
     failwith "value: i8 min sext drifted";
+  let min_sext_i16 =
+    llvm_of
+      "fn w[N const isize]() isize { return N }\n\
+       const B i16 = -32768\n\
+       fn main() isize { return w[sext[isize](B)]() }\n"
+  in
+  if not (contains min_sext_i16 "ret i64 -32768\n") then
+    failwith "value: i16 min sext drifted";
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
