@@ -3220,6 +3220,8 @@ let () =
   then failwith "control: switch case skipped its exit branch";
   if contains switch_no_fallthrough "store i64 2, ptr %v0, align 8\n  store i64 3" then
     failwith "control: switch case fell through";
+  if contains switch_no_fallthrough "store i64 3, ptr %v0, align 8\n  store i64 0" then
+    failwith "control: switch case fell through";
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
