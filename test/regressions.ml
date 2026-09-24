@@ -3294,6 +3294,13 @@ let () =
   in
   if not (contains mask_negation_admit "define internal <2 x i1> @not2(<2 x i1>") then
     failwith "control: mask negation not admitted";
+  let bitnot_messages =
+    semantic_messages
+      "fn not2(a vec[2, bool]) vec[2, bool] { return ~a }\nfn main() i32 { return 0 }\n"
+  in
+  (match bitnot_messages with
+  | [ "integer unary operator requires an integer" ] -> ()
+  | _ -> failwith "mask-bitnot-integer-only: wrong message");
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
