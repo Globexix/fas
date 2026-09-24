@@ -108,6 +108,7 @@ let lower_struct_error name fragment (struct_def : Hir.struct_def) =
         failwith (name ^ ": unexpected diagnostic: " ^ rendered)
 
 let lower_function_error name fragment params body =
+  incr checks_run;
   match
     Lower.lower
       {
