@@ -2716,6 +2716,83 @@ let () =
   then
     failwith
       "generic-function-struct-use: specialized body did not materialize its struct";
+  let nested_generic_argument_hir =
+    expect_ok
+      (Parser.parse
+         (source
+            "fn pick[T, N const usize](v T) T { return v }\n\
+             fn main() i64 { return pick[i64, 2](pick[i64, 1](7)) }\n"))
+    |> Sema.check |> expect_ok
+  in
+  if
+    List.length
+      (List.filter
+         (fun (func : Hir.func) -> contains func.name "$spec$")
+         nested_generic_argument_hir.Hir.funcs)
+    <> 2
+  then failwith "nested-generic-argument: mixed nested call specializations incorrect";
+  ignore (Lower.lower nested_generic_argument_hir |> expect_ok);
+  let nested_conversion_argument_hir =
+    expect_ok
+      (Parser.parse
+         (source
+            "fn pick[T, N const usize](v T) T { return v }\n\
+             fn main() i64 { return pick[i64, 2](zext[i64](pick[u8, 1](3))) }\n"))
+    |> Sema.check |> expect_ok
+  in
+  if
+    List.length
+      (List.filter
+         (fun (func : Hir.func) -> contains func.name "$spec$")
+         nested_conversion_argument_hir.Hir.funcs)
+    <> 2
+  then
+    failwith "nested-generic-argument: nested conversion call specializations incorrect";
+  ignore (Lower.lower nested_conversion_argument_hir |> expect_ok);
+  let nested_type_argument =
+    llvm_of
+      "struct Box[T] { value T }\n\
+       fn sz[T]() usize { return sizeof[T] }\n\
+       fn main() usize { return sz[Box[u8]]() }\n"
+  in
+  if not (contains nested_type_argument "ret i64 1") then
+    failwith
+      "nested-type-argument: sizeof over nested generic type argument was not evaluated";
+  let sizeof_const_argument =
+    llvm_of
+      "fn ret[N const usize]() usize { return N }\n\
+       fn main() usize { return ret[sizeof[u8]]() }\n"
+  in
+  if not (contains sizeof_const_argument "ret i64 1") then
+    failwith "sizeof-const-argument: nested sizeof query was not evaluated";
+  let alignof_const_argument =
+    llvm_of
+      "fn ret[N const usize]() usize { return N }\n\
+       fn main() usize { return ret[1 + alignof[u16]]() }\n"
+  in
+  if not (contains alignof_const_argument "ret i64 3") then
+    failwith "alignof-const-argument: nested alignof expression was not evaluated";
+  let nested_sizeof_const_argument =
+    llvm_of
+      "struct Box[T] { value T }\n\
+       fn ret[N const usize]() usize { return N }\n\
+       fn main() usize { return ret[sizeof[Box[i64]]]() }\n"
+  in
+  if not (contains nested_sizeof_const_argument "ret i64 8") then
+    failwith
+      "nested-sizeof-const-argument: sizeof over nested generic type was not evaluated";
+  let arithmetic_sizeof_const_argument =
+    llvm_of
+      "fn ret[N const usize]() usize { return N }\n\
+       fn main() usize { return ret[sizeof[arr[3, u8]] - 2]() }\n"
+  in
+  if not (contains arithmetic_sizeof_const_argument "ret i64 1") then
+    failwith
+      "arithmetic-sizeof-const-argument: nested query arithmetic was not evaluated";
+  semantic_error "const-argument-call-rejected" "invalid constant builtin call"
+    "fn sz[T]() usize { return sizeof[T] }\n\
+     fn pick[T, N const usize](v T) T { return v }\n\
+     fn main() i64 { return pick[i64, sz[u8]()](7) }\n";
   let unused_generic_function =
     expect_ok
       (Sema.check
