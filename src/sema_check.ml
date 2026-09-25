@@ -742,6 +742,9 @@ and check_call c _expected fn args s =
         | Some Names.Add_sat -> Some Hir.Add_sat
         | Some Names.Sub_sat -> Some Hir.Sub_sat
         | Some Names.Mul_hi -> Some Hir.Mul_hi
+        | Some Names.Any -> Some Hir.Any
+        | Some Names.All -> Some Hir.All
+        | Some Names.Select -> Some Hir.Select
         | Some Names.Len | None -> None
       in
       let check_builtin b =
@@ -779,6 +782,37 @@ and check_call c _expected fn args s =
               else if Hir.expr_ty b2 <> Hir.expr_ty a then
                 error s "builtin arguments must have the same type"
               else Ok (Hir.Call (Hir.Builtin b, [ a; b2 ], Hir.expr_ty a, s))
+        | Hir.Any | Hir.All -> (
+            if List.length args <> 1 then
+              error s (Printf.sprintf "builtin `%s` expects one argument" name)
+            else
+              let* a = check_expr c None (List.hd args) in
+              match Hir.expr_ty a with
+              | Hir.Vec (_, Hir.Bool) ->
+                  Ok (Hir.Call (Hir.Builtin b, [ a ], Hir.Bool, s))
+              | _ -> error s "builtin argument must be a bool vector")
+        | Hir.Select -> (
+            if List.length args <> 3 then
+              error s (Printf.sprintf "builtin `%s` expects three arguments" name)
+            else
+              let* m = check_expr c None (List.nth args 0) in
+              let* y = check_expr c None (List.nth args 1) in
+              let* z = check_expr c None (List.nth args 2) in
+              let mask_lanes =
+                match Hir.expr_ty m with Hir.Vec (n, Hir.Bool) -> Some n | _ -> None
+              in
+              match mask_lanes with
+              | None -> error s "select mask must be a bool vector"
+              | Some n -> (
+                  if Hir.expr_ty y <> Hir.expr_ty z then
+                    error s "builtin arguments must have the same type"
+                  else
+                    match Hir.expr_ty y with
+                    | Hir.Vec (n2, (Hir.Int _ | Hir.Bool)) when n2 = n ->
+                        Ok (Hir.Call (Hir.Builtin b, [ m; y; z ], Hir.expr_ty y, s))
+                    | _ ->
+                        error s "select values must be vectors with the mask lane count"
+                  ))
         | _ -> (
             if List.length args <> 2 then
               error s (Printf.sprintf "builtin `%s` expects two arguments" name)

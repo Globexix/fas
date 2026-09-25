@@ -2415,11 +2415,14 @@ let () =
   then
     failwith "signed-narrow-specialization: negative i8 constant was not sign-extended";
 
-  semantic_error "bool-vec-arith-rejected"
-    "arithmetic requires integer or vector operands"
-    "fn f() i64 { b vec[4,bool] = splat(true)\n\
-    \               d vec[4,bool] = b & b\n\
-    \               return 0 }\n";
+  (let ir =
+     llvm_of
+       "fn f() i64 { b vec[4,bool] = splat(true)\n\
+        \032             d vec[4,bool] = b & b\n\
+        \032             return 0 }\n"
+   in
+   if not (contains ir "and <4 x i1>") then
+     failwith "bool-vec-arith: splat bitand drifted");
 
   List.iter
     (fun name ->
@@ -3669,10 +3672,13 @@ let () =
     failwith "bool-bitops: runtime bitwise-or did not lower to one-bit or";
   if not (contains bool_bitops_runtime " %v4 = xor i1 %v2, %v3\n") then
     failwith "bool-bitops: runtime bitwise-xor did not lower to one-bit xor";
-  semantic_error "bool-mask-bitop-rejected"
-    "arithmetic requires integer or vector operands"
-    "fn f(a vec[2, bool], b vec[2, bool]) vec[2, bool] { return a & b }\n\
-     fn main() i32 { return 0 }\n";
+  (let ir =
+     llvm_of
+       "fn f(a vec[2, bool], b vec[2, bool]) vec[2, bool] { return a & b }\n\
+        fn main() i32 { return 0 }\n"
+   in
+   if not (contains ir "and <2 x i1>") then
+     failwith "bool-mask-bitop: vec bitand did not lower");
   semantic_error "int-bool-bitop-rejected" "binary operands must have the same type"
     "fn f(x u8, b bool) bool { return x & b }\nfn main() i32 { return 0 }\n";
   ignore
@@ -5884,6 +5890,83 @@ let () =
   if contains bitcount_runtime "poison" || contains bitcount_runtime "undef" then
     failwith "bit-count: undefined value in computed results";
   List.iter
+    (fun (name, expr, needle) ->
+      let ir =
+        llvm_of
+          (Printf.sprintf
+             "const K1 i64 = 8589934593\n\
+              const K2 i64 = 8589934594\n\
+              const A vec[2,i32] = bitcast[vec[2,i32]](K1)\n\
+              const B vec[2,i32] = bitcast[vec[2,i32]](K2)\n\
+              const M vec[2,bool] = A == B\n\
+              const N vec[2,bool] = !M\n\
+              const R vec[2,bool] = %s\n\
+              fn f() vec[2,bool] { return R }\n"
+             expr)
+      in
+      if not (contains ir needle) then failwith ("mask: " ^ name ^ " drifted"))
+    [
+      ("const-not", "!M", "ret <2 x i1> <i1 1, i1 0>\n");
+      ("const-and", "M & N", "ret <2 x i1> <i1 0, i1 0>\n");
+      ("const-or", "M | (A == A)", "ret <2 x i1> <i1 1, i1 1>\n");
+      ("const-xor", "M ^ (A == A)", "ret <2 x i1> <i1 1, i1 0>\n");
+    ];
+  List.iter
+    (fun (name, expr, needle) ->
+      let ir =
+        llvm_of
+          (Printf.sprintf
+             "const K1 i64 = 8589934593\n\
+              const K2 i64 = 8589934594\n\
+              const A vec[2,i32] = bitcast[vec[2,i32]](K1)\n\
+              const B vec[2,i32] = bitcast[vec[2,i32]](K2)\n\
+              const M vec[2,bool] = A == B\n\
+              const R %s = %s\n\
+              fn f() %s { return R }\n"
+             (if name = "const-any" || name = "const-all" then "bool" else "vec[2,i32]")
+             expr
+             (if name = "const-any" || name = "const-all" then "bool" else "vec[2,i32]"))
+      in
+      if not (contains ir needle) then failwith ("mask: " ^ name ^ " drifted"))
+    [
+      ("const-any", "any(M)", "ret i1 true\n");
+      ("const-all", "all(M)", "ret i1 false\n");
+      ("const-select", "select(M, A, B)", "ret <2 x i32> <i32 2, i32 2>\n");
+    ];
+  let mask_runtime =
+    llvm_of
+      "fn f(m vec[2,bool], n vec[2,bool]) vec[2,bool] {\n\
+       \032 a vec[2,bool] = m & n\n\
+       \032 b vec[2,bool] = m | n\n\
+       \032 c vec[2,bool] = m ^ n\n\
+       \032 d vec[2,bool] = !a\n\
+       \032 return d\n\
+       }\n\
+       fn g(m vec[2,bool]) bool { return any(m) }\n\
+       fn h(m vec[2,bool]) bool { return all(m) }\n\
+       fn i(m vec[2,bool], a vec[2,i32], b vec[2,i32]) vec[2,i32] { return select(m, \
+       a, b) }\n\
+       fn e(m vec[2,bool], a vec[2,i32], b vec[2,i32], c vec[2,i32]) vec[2,i32] {\n\
+       \032 return select(m, a / b, c)\n\
+       }\n\
+       fn main() i32 { return 0 }\n"
+  in
+  List.iter
+    (fun needle ->
+      if not (contains mask_runtime needle) then failwith ("mask: missing " ^ needle))
+    [
+      "and <2 x i1>";
+      "or <2 x i1>";
+      "xor <2 x i1>";
+      "select <2 x i1>";
+      "extractelement <2 x i1>";
+      "or i1";
+      "and i1";
+      "sdiv <2 x i32>";
+    ];
+  if contains mask_runtime "poison" || contains mask_runtime "undef" then
+    failwith "mask: undefined value in computed results";
+  List.iter
     (fun (name, text, expected) ->
       match semantic_messages text with
       | [ message ] when message = expected -> ()
@@ -5960,6 +6043,45 @@ let () =
       ( "bitcount-const-ctz",
         "const X bool = ctz(true)\nfn main() i32 { return 0 }\n",
         "builtin argument must be an integer or an integer vector" );
+      ( "mask-compound-bool",
+        "fn f() bool {\n  a bool = true\n  a &= false\n  return a\n}\n",
+        "compound assignment requires an integer or vector" );
+      ( "mask-compound-vec",
+        "fn f(m vec[2,bool], n vec[2,bool]) vec[2,bool] {\n\
+         \032 a vec[2,bool] = m\n\
+         \032 a &= n\n\
+         \032 return a\n\
+         }\n",
+        "compound assignment requires an integer or vector" );
+      ( "mask-truthiness",
+        "fn f(m vec[2,bool]) i32 {\n  if m { return 1 }\n  return 0\n}\n",
+        "if condition must be bool" );
+      ( "select-scalar-mask",
+        "fn f(a vec[2,i32], b vec[2,i32]) vec[2,i32] { return select(true, a, b) }\n",
+        "select mask must be a bool vector" );
+      ( "select-mismatch",
+        "fn f(m vec[2,bool], a vec[2,i32], b vec[2,i64]) vec[2,i32] { return select(m, \
+         a, b) }\n",
+        "builtin arguments must have the same type" );
+      ( "select-lanes",
+        "fn f(m vec[2,bool], a vec[4,i32], b vec[4,i32]) vec[4,i32] { return select(m, \
+         a, b) }\n",
+        "select values must be vectors with the mask lane count" );
+      ( "select-scalar-values",
+        "fn f(m vec[2,bool], a i32, b i32) i32 { return select(m, a, b) }\n",
+        "select values must be vectors with the mask lane count" );
+      ( "any-int-vec",
+        "fn f(a vec[2,i32]) bool { return any(a) }\n",
+        "builtin argument must be a bool vector" );
+      ( "any-scalar",
+        "fn f(a i32) bool { return any(a) }\n",
+        "builtin argument must be a bool vector" );
+      ( "select-arity",
+        "fn f(m vec[2,bool], a vec[2,i32]) vec[2,i32] { return select(m, a) }\n",
+        "builtin `select` expects three arguments" );
+      ( "any-arity",
+        "fn f(m vec[2,bool]) bool { return any(m, m) }\n",
+        "builtin `any` expects one argument" );
     ];
   List.iter
     (fun (name, ir) ->

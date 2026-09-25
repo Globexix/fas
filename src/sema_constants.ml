@@ -437,6 +437,18 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
       match lookup name arrays with
       | Some (_, Hir.Array (n, _), _) -> Ok (Hir.Int Hir.Usize, Int64.of_int n)
       | _ -> error s "len requires a fixed array or string literal")
+  | Ast.Call (Ast.Ident (name, _), [ arg ], _s) when name = "any" || name = "all" -> (
+      match
+        vector_const_expr ~structs ~named_types ~arrays ?resolve consts None arg
+      with
+      | Ok (Hir.Vec (_, Hir.Bool), values) ->
+          let result =
+            if name = "any" then List.exists (fun v -> v <> 0L) values
+            else List.for_all (fun v -> v <> 0L) values
+          in
+          Ok (Hir.Bool, if result then 1L else 0L)
+      | Ok _ -> error (Ast.expr_span arg) "builtin argument must be a bool vector"
+      | Error e -> Error e)
   | Ast.Call (Ast.Ident (name, _), args, s) -> (
       let* vals =
         Result_list.map
@@ -729,6 +741,30 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
             | _ -> value
         in
         Ok (ty, List.map (fun value -> lane_mask element (apply value)) values)
+  | Ast.Call (Ast.Ident (name, _), [ m; y; z ], span) when name = "select" ->
+      let* mask_ty, mask_values = evaluate None m in
+      let* yes_ty, yes_values = evaluate expected y in
+      let* no_ty, no_values = evaluate (Some yes_ty) z in
+      let* lanes =
+        match mask_ty with
+        | Hir.Vec (n, Hir.Bool) -> Ok n
+        | _ -> error span "select mask must be a bool vector"
+      in
+      let* () =
+        if yes_ty = no_ty then Ok ()
+        else error span "builtin arguments must have the same type"
+      in
+      let* element =
+        match yes_ty with
+        | Hir.Vec (n, ((Hir.Int _ | Hir.Bool) as e)) when n = lanes -> Ok e
+        | _ -> error span "select values must be vectors with the mask lane count"
+      in
+      Ok
+        ( yes_ty,
+          List.map2
+            (fun mv (yv, nv) -> lane_mask element (if mv <> 0L then yv else nv))
+            mask_values
+            (List.combine yes_values no_values) )
   | Ast.Call (Ast.Ident (name, _), [ left; right ], span)
     when List.mem name [ "add_sat"; "sub_sat"; "mul_hi" ] ->
       let* left_ty, left_values, right_ty, right_values =
@@ -854,6 +890,8 @@ let resolve_scalar_declarations ~structs ~named_types ~resolve_type ~strict item
   let requires_non_scalar = function
     | [ diagnostic ] ->
         diagnostic.Diag.message = "constant expression requires a known scalar constant"
+        || diagnostic.Diag.message
+           = "constant expression requires a known vector constant"
     | _ -> false
   in
   let rec resolve ~check_only name span =

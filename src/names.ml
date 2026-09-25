@@ -20,6 +20,9 @@ type value_operation =
   | Add_sat
   | Sub_sat
   | Mul_hi
+  | Any
+  | All
+  | Select
 
 type type_constructor = Legacy_ptr | Array | Vector
 type literal = True | False | Null
@@ -76,9 +79,9 @@ let operations =
     ("popcount", Value Popcount);
     ("clz", Value Clz);
     ("ctz", Value Ctz);
-    ("select", Reserved);
-    ("any", Reserved);
-    ("all", Reserved);
+    ("select", Value Select);
+    ("any", Value Any);
+    ("all", Value All);
     ("add_sat", Value Add_sat);
     ("sub_sat", Value Sub_sat);
     ("mul_hi", Value Mul_hi);

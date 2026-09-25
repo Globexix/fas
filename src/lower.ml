@@ -684,7 +684,7 @@ and lower_builtin s b args t span =
             | Add_sat, false -> Ok "llvm.sadd.sat."
             | Sub_sat, true -> Ok "llvm.usub.sat."
             | Sub_sat, false -> Ok "llvm.ssub.sat."
-            | (Rotl | Rotr | Popcount | Ctz | Clz | Mul_hi), _ ->
+            | (Rotl | Rotr | Popcount | Ctz | Clz | Mul_hi | Any | All | Select), _ ->
                 error span "internal error: invalid saturating builtin")
       in
       let id = fresh s in
@@ -752,6 +752,32 @@ and lower_builtin s b args t span =
           let id = fresh s in
           emit s (Ir.Cast (id, "trunc", wide, Ir.Local (high, wide), rt));
           Ok (Ir.Local (id, rt)))
+  | Select, [ m; y; z ] ->
+      let id = fresh s in
+      emit s (Ir.Select (id, m, y, z));
+      Ok (Ir.Local (id, rt))
+  | (Any | All), [ mv ] -> (
+      let lanes =
+        match Hir.expr_ty (List.hd args) with Hir.Vec (n, _) -> n | _ -> 1
+      in
+      let op = if b = Any then Ir.Or else Ir.And in
+      let rec chain i acc =
+        if i = lanes then Ok acc
+        else
+          let lid = fresh s in
+          emit s (Ir.Extract (lid, value_ty mv, mv, Ir.Const (Ir.I64, Int64.of_int i)));
+          let lv = Ir.Local (lid, Ir.I1) in
+          match acc with
+          | None -> chain (i + 1) (Some lv)
+          | Some a ->
+              let bid = fresh s in
+              emit s (Ir.Bin (bid, op, Ir.I1, a, lv));
+              chain (i + 1) (Some (Ir.Local (bid, Ir.I1)))
+      in
+      let* result = chain 0 None in
+      match result with
+      | Some v -> Ok v
+      | None -> error span "internal error: mask reduction requires a vector")
   | _ -> error span "internal error: invalid builtin arity"
 
 and lower_short s op a b =
