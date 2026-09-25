@@ -21,7 +21,9 @@ for needle in \
   'xor <4 x i1>' \
   'zext <4 x i32>' \
   'udiv <4 x i32>' \
-  'sdiv <4 x i32>'; do
+  'sdiv <4 x i32>' \
+  'urem <4 x i32>' \
+  'srem <4 x i32>'; do
   if ! grep -F "$needle" "$CONST_TMP/defined.ll" >/dev/null; then
     echo "defined construction: missing family op $needle" >&2
     exit 1

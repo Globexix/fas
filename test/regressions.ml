@@ -5654,12 +5654,16 @@ let () =
       \  c vec[4, i32] = splat(-6)\n\
       \  d vec[4, i32] = splat(2)\n\
       \  e vec[4, i32] = c / d\n\
+      \  f vec[4, u32] = splat(7) % splat(4)\n\
+      \  g vec[4, i32] = splat(-7) % splat(4)\n\
       \  if n[0] { return 1 }\n\
       \  if !m[1] { return 2 }\n\
       \  if q[2] != 3 { return 3 }\n\
       \  if z[3] != 2 { return 4 }\n\
       \  if s[0] != 24 { return 5 }\n\
       \  if e[0] != -3 { return 6 }\n\
+      \  if f[0] != 3 { return 7 }\n\
+      \  if g[0] != -3 { return 8 }\n\
        return 0\n\
        }\n"
   in
@@ -5674,6 +5678,8 @@ let () =
       "zext <4 x i32>";
       "udiv <4 x i32>";
       "sdiv <4 x i32>";
+      "urem <4 x i32>";
+      "srem <4 x i32>";
       "insertelement <4 x i32> zeroinitializer, i32 6, i32 0\n";
       "insertelement <4 x i1> zeroinitializer, i1 true, i32 0\n";
       "insertelement <4 x i32> zeroinitializer, i32 2147483648, i32 0\n";

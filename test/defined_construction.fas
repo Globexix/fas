@@ -9,11 +9,15 @@ fn main() i64 {
   c vec[4, i32] = splat(-6)
   d vec[4, i32] = splat(2)
   e vec[4, i32] = c / d
+  f vec[4, u32] = splat(7) % splat(4)
+  g vec[4, i32] = splat(-7) % splat(4)
   if n[0] { return 1 }
   if !m[1] { return 2 }
   if q[2] != 3 { return 3 }
   if z[3] != 2 { return 4 }
   if s[0] != 24 { return 5 }
   if e[0] != -3 { return 6 }
+  if f[0] != 3 { return 7 }
+  if g[0] != -3 { return 8 }
   return 0
 }
