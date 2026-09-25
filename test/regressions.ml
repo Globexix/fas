@@ -5887,7 +5887,7 @@ let () =
     (fun (name, text, expected) ->
       match semantic_messages text with
       | [ message ] when message = expected -> ()
-      | _ -> failwith ("sat reject: " ^ name))
+      | _ -> failwith ("builtin reject: " ^ name))
     [
       ( "arity",
         "fn f(a u8) u8 { return add_sat(a) }\n",
@@ -5950,6 +5950,15 @@ let () =
         "builtin argument must be an integer or an integer vector" );
       ( "bitcount-const-bool",
         "const X bool = clz(true)\nfn main() i32 { return 0 }\n",
+        "builtin argument must be an integer or an integer vector" );
+      ( "bitcount-const-popcount",
+        "const X bool = popcount(false)\nfn main() i32 { return 0 }\n",
+        "builtin argument must be an integer or an integer vector" );
+      ( "bitcount-const-ctz-zero",
+        "const X bool = ctz(false)\nfn main() i32 { return 0 }\n",
+        "builtin argument must be an integer or an integer vector" );
+      ( "bitcount-const-ctz",
+        "const X bool = ctz(true)\nfn main() i32 { return 0 }\n",
         "builtin argument must be an integer or an integer vector" );
     ];
   List.iter
