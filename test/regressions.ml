@@ -6497,6 +6497,21 @@ let () =
         "illegal cast for source and destination widths" );
     ];
   List.iter
+    (fun (name, expr, rty, needle) ->
+      let ir =
+        llvm_of
+          (Printf.sprintf "const T %s = %s\nfn f() %s { return T }\n" rty expr rty)
+      in
+      if not (contains ir needle) then failwith ("div-edges: " ^ name ^ " drifted"))
+    [
+      ("trunc-negative-dividend", "-7 / 3", "i32", "ret i32 4294967294\n");
+      ("trunc-negative-divisor", "7 / -3", "i32", "ret i32 4294967294\n");
+      ("rem-sign-negative", "-7 % 3", "i32", "ret i32 4294967295\n");
+      ("rem-sign-positive", "7 % -3", "i32", "ret i32 1\n");
+      ("rem-min-minus-one", "-9223372036854775808 % -1", "i64", "ret i64 0\n");
+      ("trunc-negative-i64", "-7 / 3", "i64", "ret i64 -2\n");
+    ];
+  List.iter
     (fun (name, ir) ->
       if contains ir " nuw " || contains ir " nsw " || contains ir " exact " then
         failwith (name ^ ": unexpected shift flags"))

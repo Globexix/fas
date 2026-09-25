@@ -1,0 +1,74 @@
+extern "C" {
+  fn observe(value i32) i32
+}
+
+fn pair(lo i64, hi i64) vec[2,i64] {
+  v vec[2,i64] = splat(0)
+  v[0] = lo
+  v[1] = hi
+  return v
+}
+
+fn main(argc i32, argv ptr[u8]) i32 {
+  if argc == 2 {
+    q i32 = observe(1) / observe(0)
+    observe(99)
+    return 0
+  }
+  if argc == 3 {
+    mn i32 = -2147483648
+    q i32 = mn / observe(-1)
+    return 0
+  }
+  if argc == 4 {
+    q i32 = 8 % observe(0)
+    return 0
+  }
+  if argc == 5 {
+    for i i32 = 0; i < 3; i += 1 {
+      observe(10 + i)
+      q i32 = 8 / observe(i - 1)
+      if q == 12345 { return 9 }
+    }
+    return 0
+  }
+  if argc == 6 {
+    while false {
+      q i32 = 8 / observe(0)
+    }
+    if argc == 12345 {
+      q i32 = 8 / observe(0)
+    }
+    flag bool = argc > 100
+    if flag {
+      q i32 = 8 / observe(0)
+    }
+    lazy bool = flag && (8 / observe(0) == 0)
+    if lazy { return 1 }
+    if -7 / 3 != -2 { return 2 }
+    if 7 / -3 != -2 { return 3 }
+    if -7 % 3 != -1 { return 4 }
+    if 7 % -3 != 1 { return 5 }
+    mn i64 = -9223372036854775808
+    d i64 = -1
+    if mn % d != 0 { return 6 }
+    observe(6)
+    return 0
+  }
+  if argc == 7 {
+    observe(7)
+    bad vec[2,i64] = pair(1, 2) / pair(0, 1)
+    if bad[0] == 12345 { return 9 }
+    observe(99)
+    return 0
+  }
+  if argc == 8 {
+    observe(8)
+    v vec[2,i64] = pair(-9223372036854775808, 4) / pair(1, -1)
+    if v[0] != -9223372036854775808 { return 1 }
+    if v[1] != -4 { return 2 }
+    observe(88)
+    return 0
+  }
+  return 0
+}
