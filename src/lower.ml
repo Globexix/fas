@@ -685,7 +685,7 @@ and lower_builtin s b args t span =
             | Sub_sat, true -> Ok "llvm.usub.sat."
             | Sub_sat, false -> Ok "llvm.ssub.sat."
             | ( ( Rotl | Rotr | Popcount | Ctz | Clz | Mul_hi | Any | All | Select
-                | Shuffle ),
+                | Shuffle | Permute ),
                 _ ) ->
                 error span "internal error: invalid saturating builtin")
       in
@@ -766,6 +766,35 @@ and lower_builtin s b args t span =
           emit s (Ir.Shufflevector (id, rt, a, b, mask));
           Ok (Ir.Local (id, rt))
       | _ -> error span "internal error: shuffle selectors must be constant")
+  | Permute, [ v; idx ] ->
+      let n = match Hir.expr_ty (List.hd args) with Hir.Vec (n, _) -> n | _ -> 1 in
+      let iw = match value_ty idx with Ir.Vector (_, w) -> w | _ -> Ir.I32 in
+      let elem_ty = match rt with Ir.Vector (_, e) -> e | _ -> Ir.I1 in
+      let m = match rt with Ir.Vector (m, _) -> m | _ -> 1 in
+      let rec chain j acc =
+        if j = m then Ok acc
+        else
+          let slot = Ir.Const (Ir.I64, Int64.of_int j) in
+          let iid = fresh s in
+          emit s (Ir.Extract (iid, value_ty idx, idx, slot));
+          let il = Ir.Local (iid, iw) in
+          let vid = fresh s in
+          emit s (Ir.Cmp (vid, Ir.Ult, iw, il, Ir.Const (iw, Int64.of_int n)));
+          let vl = Ir.Local (vid, Ir.I1) in
+          let sid = fresh s in
+          emit s (Ir.Select (sid, vl, il, Ir.Const (iw, 0L)));
+          let sl = Ir.Local (sid, iw) in
+          let eid = fresh s in
+          emit s (Ir.Extract (eid, value_ty v, v, sl));
+          let el = Ir.Local (eid, elem_ty) in
+          let pid = fresh s in
+          emit s (Ir.Select (pid, vl, el, Ir.Zero elem_ty));
+          let pl = Ir.Local (pid, elem_ty) in
+          let nid = fresh s in
+          emit s (Ir.Insert (nid, rt, acc, slot, pl));
+          chain (j + 1) (Ir.Local (nid, rt))
+      in
+      chain 0 (Ir.Zero rt)
   | (Any | All), [ mv ] -> (
       let lanes =
         match Hir.expr_ty (List.hd args) with Hir.Vec (n, _) -> n | _ -> 1

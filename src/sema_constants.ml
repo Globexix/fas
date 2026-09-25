@@ -741,6 +741,29 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
             | _ -> value
         in
         Ok (ty, List.map (fun value -> lane_mask element (apply value)) values)
+  | Ast.Call (Ast.Ident (name, _), [ a; idx ], span) when name = "permute" ->
+      let* at, avalues = evaluate expected a in
+      let* n, element =
+        match at with
+        | Hir.Vec (n, ((Hir.Int _ | Hir.Bool) as e)) -> Ok (n, e)
+        | _ -> error span "permute value must be a vector"
+      in
+      let* idx_ty, idx_values = evaluate None idx in
+      let* () =
+        match idx_ty with
+        | Hir.Vec (_, Hir.Int (Hir.U8 | Hir.U16 | Hir.U32 | Hir.U64 | Hir.Usize)) ->
+            Ok ()
+        | _ -> error span "permute indices must be an unsigned integer vector"
+      in
+      let source = Array.of_list avalues in
+      Ok
+        ( Hir.Vec (List.length idx_values, element),
+          List.map
+            (fun v ->
+              if Int64.unsigned_compare v (Int64.of_int n) < 0 then
+                lane_mask element source.(Int64.to_int v)
+              else 0L)
+            idx_values )
   | Ast.Call (Ast.Ident (name, _), [ a; b; sel ], span) when name = "shuffle" ->
       let* at, avalues = evaluate expected a in
       let* bt, bvalues = evaluate (Some at) b in

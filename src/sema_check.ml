@@ -746,6 +746,7 @@ and check_call c _expected fn args s =
         | Some Names.All -> Some Hir.All
         | Some Names.Select -> Some Hir.Select
         | Some Names.Shuffle -> Some Hir.Shuffle
+        | Some Names.Permute -> Some Hir.Permute
         | Some Names.Len | None -> None
       in
       let check_builtin b =
@@ -862,6 +863,35 @@ and check_call c _expected fn args s =
                 | _ ->
                     error s
                       "shuffle indices must be a compile-time constant integer vector")
+        | Hir.Permute ->
+            if List.length args <> 2 then
+              error s (Printf.sprintf "builtin `%s` expects two arguments" name)
+            else
+              let* a = check_expr c None (List.hd args) in
+              let* b2 = check_expr c None (List.hd (List.tl args)) in
+              let ok_value =
+                match Hir.expr_ty a with
+                | Hir.Vec (_, (Hir.Int _ | Hir.Bool)) -> true
+                | _ -> false
+              in
+              let ok_indices =
+                match Hir.expr_ty b2 with
+                | Hir.Vec (_, Hir.Int (Hir.U8 | Hir.U16 | Hir.U32 | Hir.U64 | Hir.Usize))
+                  ->
+                    true
+                | _ -> false
+              in
+              if not ok_value then error s "permute value must be a vector"
+              else if not ok_indices then
+                error s "permute indices must be an unsigned integer vector"
+              else
+                let elem =
+                  match Hir.expr_ty a with Hir.Vec (_, e) -> e | _ -> Hir.Bool
+                in
+                let m = match Hir.expr_ty b2 with Hir.Vec (m, _) -> m | _ -> 1 in
+                let result_ty = Hir.Vec (m, elem) in
+                let* _ = Sema_limits.validate_object c.limits c.structs s result_ty in
+                Ok (Hir.Call (Hir.Builtin b, [ a; b2 ], result_ty, s))
         | _ -> (
             if List.length args <> 2 then
               error s (Printf.sprintf "builtin `%s` expects two arguments" name)

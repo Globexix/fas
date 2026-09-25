@@ -32,6 +32,7 @@ type builtin =
   | All
   | Select
   | Shuffle
+  | Permute
 
 type call_target = User of string | Builtin of builtin
 

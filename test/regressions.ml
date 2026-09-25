@@ -6022,6 +6022,55 @@ let () =
   if contains shuffle_runtime "poison" || contains shuffle_runtime "undef" then
     failwith "shuffle: undefined value in computed results";
   List.iter
+    (fun (name, setup, expr, rty, needle) ->
+      let ir =
+        llvm_of
+          (Printf.sprintf "%sconst R %s = %s\nfn f() %s { return R }\n" setup rty expr
+             rty)
+      in
+      if not (contains ir needle) then failwith ("permute: " ^ name ^ " drifted"))
+    [
+      ( "const-zero-on-invalid",
+        "const KA u32 = 67305985\n\
+         const A vec[4,u8] = bitcast[vec[4,u8]](KA)\n\
+         const KI u32 = 117572096\n\
+         const I vec[4,u8] = bitcast[vec[4,u8]](KI)\n",
+        "permute(A, I)",
+        "vec[4,u8]",
+        "ret <4 x i8> <i8 1, i8 3, i8 3, i8 0>\n" );
+      ( "const-no-truncation",
+        "const KA u16 = 513\n\
+         const A vec[2,u8] = bitcast[vec[2,u8]](KA)\n\
+         const KI u32 = 65793\n\
+         const I vec[2,u16] = bitcast[vec[2,u16]](KI)\n",
+        "permute(A, I)",
+        "vec[2,u8]",
+        "ret <2 x i8> <i8 0, i8 2>\n" );
+      ( "const-more-lanes",
+        "const KA u16 = 513\n\
+         const A vec[2,u8] = bitcast[vec[2,u8]](KA)\n\
+         const KI u32 = 83952896\n\
+         const I vec[4,u8] = bitcast[vec[4,u8]](KI)\n",
+        "permute(A, I)",
+        "vec[4,u8]",
+        "ret <4 x i8> <i8 1, i8 0, i8 2, i8 0>\n" );
+    ];
+  let permute_runtime =
+    llvm_of
+      "fn f(a vec[4,u8], i vec[4,u8]) vec[4,u8] { return permute(a, i) }\n\
+       fn g(a vec[4,u8], i vec[4,u64]) vec[4,u8] { return permute(a, i) }\n\
+       fn main() i32 { return 0 }\n"
+  in
+  List.iter
+    (fun needle ->
+      if not (contains permute_runtime needle) then
+        failwith ("permute: missing " ^ needle))
+    [
+      "icmp ult i8"; "icmp ult i64"; "extractelement <4 x i8>"; "insertelement <4 x i8>";
+    ];
+  if contains permute_runtime "poison" || contains permute_runtime "undef" then
+    failwith "permute: undefined value in computed results";
+  List.iter
     (fun (name, text, expected) ->
       match semantic_messages text with
       | [ message ] when message = expected -> ()
@@ -6161,6 +6210,15 @@ let () =
          const I vec[4,u8] = bitcast[vec[4,u8]](K)\n\
          fn f(a vec[4,u8], b vec[2,u8]) vec[4,u8] { return shuffle(a, b, I) }\n",
         "builtin arguments must have the same type" );
+      ( "permute-arity",
+        "fn f(a vec[4,u8]) vec[4,u8] { return permute(a) }\n",
+        "builtin `permute` expects two arguments" );
+      ( "permute-signed-indices",
+        "fn f(a vec[4,u8], i vec[4,i32]) vec[4,u8] { return permute(a, i) }\n",
+        "permute indices must be an unsigned integer vector" );
+      ( "permute-non-vector-value",
+        "fn f(a u8, i vec[4,u8]) u8 { return permute(a, i) }\n",
+        "permute value must be a vector" );
     ];
   List.iter
     (fun (name, ir) ->
