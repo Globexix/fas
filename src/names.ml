@@ -25,6 +25,12 @@ type value_operation =
   | Select
   | Shuffle
   | Permute
+  | Reduce_sum
+  | Reduce_min
+  | Reduce_max
+  | Reduce_and
+  | Reduce_or
+  | Reduce_xor
 
 type type_constructor = Legacy_ptr | Array | Vector
 type literal = True | False | Null
@@ -87,12 +93,12 @@ let operations =
     ("add_sat", Value Add_sat);
     ("sub_sat", Value Sub_sat);
     ("mul_hi", Value Mul_hi);
-    ("reduce_sum", Reserved);
-    ("reduce_min", Reserved);
-    ("reduce_max", Reserved);
-    ("reduce_and", Reserved);
-    ("reduce_or", Reserved);
-    ("reduce_xor", Reserved);
+    ("reduce_sum", Value Reduce_sum);
+    ("reduce_min", Value Reduce_min);
+    ("reduce_max", Value Reduce_max);
+    ("reduce_and", Value Reduce_and);
+    ("reduce_or", Value Reduce_or);
+    ("reduce_xor", Value Reduce_xor);
     ("shuffle", Value Shuffle);
     ("permute", Value Permute);
     ("compress", Reserved);

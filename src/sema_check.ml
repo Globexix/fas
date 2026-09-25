@@ -747,6 +747,12 @@ and check_call c _expected fn args s =
         | Some Names.Select -> Some Hir.Select
         | Some Names.Shuffle -> Some Hir.Shuffle
         | Some Names.Permute -> Some Hir.Permute
+        | Some Names.Reduce_sum -> Some Hir.Reduce_sum
+        | Some Names.Reduce_min -> Some Hir.Reduce_min
+        | Some Names.Reduce_max -> Some Hir.Reduce_max
+        | Some Names.Reduce_and -> Some Hir.Reduce_and
+        | Some Names.Reduce_or -> Some Hir.Reduce_or
+        | Some Names.Reduce_xor -> Some Hir.Reduce_xor
         | Some Names.Len | None -> None
       in
       let check_builtin b =
@@ -793,6 +799,16 @@ and check_call c _expected fn args s =
               | Hir.Vec (_, Hir.Bool) ->
                   Ok (Hir.Call (Hir.Builtin b, [ a ], Hir.Bool, s))
               | _ -> error s "builtin argument must be a bool vector")
+        | Hir.Reduce_sum | Hir.Reduce_min | Hir.Reduce_max | Hir.Reduce_and
+        | Hir.Reduce_or | Hir.Reduce_xor -> (
+            if List.length args <> 1 then
+              error s (Printf.sprintf "builtin `%s` expects one argument" name)
+            else
+              let* a = check_expr c None (List.hd args) in
+              match Hir.expr_ty a with
+              | Hir.Vec (_, (Hir.Int _ as e)) ->
+                  Ok (Hir.Call (Hir.Builtin b, [ a ], e, s))
+              | _ -> error s "reduction argument must be an integer vector")
         | Hir.Select -> (
             if List.length args <> 3 then
               error s (Printf.sprintf "builtin `%s` expects three arguments" name)

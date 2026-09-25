@@ -462,6 +462,45 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
           Ok (Hir.Bool, if result then 1L else 0L)
       | Ok _ -> error (Ast.expr_span arg) "builtin argument must be a bool vector"
       | Error e -> Error e)
+  | Ast.Call (Ast.Ident (name, _), [ arg ], _s)
+    when name = "reduce_sum" || name = "reduce_min" || name = "reduce_max"
+         || name = "reduce_and" || name = "reduce_or" || name = "reduce_xor" -> (
+      match
+        vector_const_expr ~structs ~named_types ~arrays ?resolve consts None arg
+      with
+      | Ok (Hir.Vec (_, Hir.Int kind), (_ :: _ as values)) ->
+          let ty = Hir.Int kind in
+          let signed =
+            match kind with
+            | Hir.I8 | Hir.I16 | Hir.I32 | Hir.I64 | Hir.Isize -> true
+            | _ -> false
+          in
+          let result =
+            match name with
+            | "reduce_sum" ->
+                List.fold_left (fun acc v -> mask_value ty (Int64.add acc v)) 0L values
+            | "reduce_and" ->
+                List.fold_left Int64.logand (mask_value ty (-1L)) values
+                |> mask_value ty
+            | "reduce_or" -> List.fold_left Int64.logor 0L values |> mask_value ty
+            | "reduce_xor" -> List.fold_left Int64.logxor 0L values |> mask_value ty
+            | "reduce_min" | "reduce_max" ->
+                let better a b =
+                  let c =
+                    if signed then
+                      Int64.compare (sign_extend_value ty a) (sign_extend_value ty b)
+                    else Int64.unsigned_compare a b
+                  in
+                  if name = "reduce_min" then c <= 0 else c >= 0
+                in
+                List.fold_left
+                  (fun acc v -> if better acc v then acc else v)
+                  (List.hd values) values
+            | _ -> 0L
+          in
+          Ok (ty, result)
+      | Ok _ -> error (Ast.expr_span arg) "reduction argument must be an integer vector"
+      | Error e -> Error e)
   | Ast.Call (Ast.Ident (name, _), args, s) -> (
       let* vals =
         Result_list.map

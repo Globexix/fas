@@ -33,6 +33,12 @@ type builtin =
   | Select
   | Shuffle
   | Permute
+  | Reduce_sum
+  | Reduce_min
+  | Reduce_max
+  | Reduce_and
+  | Reduce_or
+  | Reduce_xor
 
 type call_target = User of string | Builtin of builtin
 

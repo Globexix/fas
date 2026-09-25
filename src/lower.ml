@@ -685,7 +685,8 @@ and lower_builtin s b args t span =
             | Sub_sat, true -> Ok "llvm.usub.sat."
             | Sub_sat, false -> Ok "llvm.ssub.sat."
             | ( ( Rotl | Rotr | Popcount | Ctz | Clz | Mul_hi | Any | All | Select
-                | Shuffle | Permute ),
+                | Shuffle | Permute | Reduce_sum | Reduce_min | Reduce_max | Reduce_and
+                | Reduce_or | Reduce_xor ),
                 _ ) ->
                 error span "internal error: invalid saturating builtin")
       in
@@ -795,6 +796,53 @@ and lower_builtin s b args t span =
           chain (j + 1) (Ir.Local (nid, rt))
       in
       chain 0 (Ir.Zero rt)
+  | (Reduce_sum | Reduce_min | Reduce_max | Reduce_and | Reduce_or | Reduce_xor), [ v ]
+    ->
+      let vty = Hir.expr_ty (List.hd args) in
+      let lanes = match vty with Hir.Vec (n, _) -> n | _ -> 1 in
+      let signed =
+        match vty with
+        | Hir.Vec (_, Hir.Int (Hir.I8 | I16 | I32 | I64 | Isize)) -> true
+        | _ -> false
+      in
+      let bin op a b =
+        let bid = fresh s in
+        emit s (Ir.Bin (bid, op, rt, a, b));
+        Ok (Ir.Local (bid, rt))
+      in
+      let pick cmp a b =
+        let cid = fresh s in
+        emit s (Ir.Cmp (cid, cmp, rt, a, b));
+        let sid = fresh s in
+        emit s (Ir.Select (sid, Ir.Local (cid, Ir.I1), a, b));
+        Ok (Ir.Local (sid, rt))
+      in
+      let rec chain i acc =
+        match acc with
+        | None ->
+            let eid = fresh s in
+            emit s (Ir.Extract (eid, value_ty v, v, Ir.Const (Ir.I64, Int64.of_int i)));
+            chain (i + 1) (Some (Ir.Local (eid, rt)))
+        | Some a ->
+            if i = lanes then Ok a
+            else
+              let eid = fresh s in
+              emit s
+                (Ir.Extract (eid, value_ty v, v, Ir.Const (Ir.I64, Int64.of_int i)));
+              let el = Ir.Local (eid, rt) in
+              let* next =
+                match b with
+                | Reduce_sum -> bin Ir.Add a el
+                | Reduce_and -> bin Ir.And a el
+                | Reduce_or -> bin Ir.Or a el
+                | Reduce_xor -> bin Ir.Xor a el
+                | Reduce_min -> pick (if signed then Ir.Slt else Ir.Ult) a el
+                | Reduce_max -> pick (if signed then Ir.Sgt else Ir.Ugt) a el
+                | _ -> error span "internal error: invalid reduction builtin"
+              in
+              chain (i + 1) (Some next)
+      in
+      chain 0 None
   | (Any | All), [ mv ] -> (
       let lanes =
         match Hir.expr_ty (List.hd args) with Hir.Vec (n, _) -> n | _ -> 1

@@ -6077,6 +6077,99 @@ let () =
   if contains permute_runtime "poison" || contains permute_runtime "undef" then
     failwith "permute: undefined value in computed results";
   List.iter
+    (fun (name, setup, expr, rty, needle) ->
+      let ir =
+        llvm_of
+          (Printf.sprintf "%sconst R %s = %s\nfn f() %s { return R }\n" setup rty expr
+             rty)
+      in
+      if not (contains ir needle) then failwith ("reduce: " ^ name ^ " drifted"))
+    [
+      ( "sum-u8",
+        "const K u32 = 2348321930\nconst A vec[4,u8] = bitcast[vec[4,u8]](K)\n",
+        "reduce_sum(A)",
+        "u8",
+        "ret i8 153\n" );
+      ( "and-u8",
+        "const K u32 = 2348321930\nconst A vec[4,u8] = bitcast[vec[4,u8]](K)\n",
+        "reduce_and(A)",
+        "u8",
+        "ret i8 136\n" );
+      ( "or-u8",
+        "const K u32 = 2348321930\nconst A vec[4,u8] = bitcast[vec[4,u8]](K)\n",
+        "reduce_or(A)",
+        "u8",
+        "ret i8 255\n" );
+      ( "xor-u8",
+        "const K u32 = 2348321930\nconst A vec[4,u8] = bitcast[vec[4,u8]](K)\n",
+        "reduce_xor(A)",
+        "u8",
+        "ret i8 117\n" );
+      ( "min-u8",
+        "const K u32 = 2348321930\nconst A vec[4,u8] = bitcast[vec[4,u8]](K)\n",
+        "reduce_min(A)",
+        "u8",
+        "ret i8 138\n" );
+      ( "max-u8",
+        "const K u32 = 2348321930\nconst A vec[4,u8] = bitcast[vec[4,u8]](K)\n",
+        "reduce_max(A)",
+        "u8",
+        "ret i8 248\n" );
+      ( "min-i8-signed",
+        "const K u32 = 133250186\nconst A vec[4,i8] = bitcast[vec[4,i8]](K)\n",
+        "reduce_min(A)",
+        "i8",
+        "ret i8 138\n" );
+      ( "max-i8-signed",
+        "const K u32 = 133250186\nconst A vec[4,i8] = bitcast[vec[4,i8]](K)\n",
+        "reduce_max(A)",
+        "i8",
+        "ret i8 60\n" );
+      ( "sum-i8-wrap",
+        "const K u32 = 133250186\nconst A vec[4,i8] = bitcast[vec[4,i8]](K)\n",
+        "reduce_sum(A)",
+        "i8",
+        "ret i8 190\n" );
+      ( "one-lane",
+        "const K i32 = -5\nconst A vec[1,i32] = bitcast[vec[1,i32]](K)\n",
+        "reduce_sum(A)",
+        "i32",
+        "ret i32 4294967291\n" );
+      ( "min-u32-high",
+        "const K u64 = 9223372034707292160\n\
+         const A vec[2,u32] = bitcast[vec[2,u32]](K)\n",
+        "reduce_min(A)",
+        "u32",
+        "ret i32 2147483647\n" );
+      ( "max-u32-high",
+        "const K u64 = 9223372034707292160\n\
+         const A vec[2,u32] = bitcast[vec[2,u32]](K)\n",
+        "reduce_max(A)",
+        "u32",
+        "ret i32 2147483648\n" );
+    ];
+  let reduce_runtime =
+    llvm_of
+      "fn f(a vec[4,u8]) u8 { return reduce_sum(a) }\n\
+       fn g(a vec[2,i32]) i32 { return reduce_min(a) }\n\
+       fn h(a vec[2,i32]) i32 { return reduce_max(a) }\n\
+       fn i(a vec[2,u64]) u64 { return reduce_and(a) }\n\
+       fn main() i32 { return 0 }\n"
+  in
+  List.iter
+    (fun needle ->
+      if not (contains reduce_runtime needle) then failwith ("reduce: missing " ^ needle))
+    [
+      "extractelement <4 x i8>";
+      "add i8";
+      "icmp slt i32";
+      "icmp sgt i32";
+      "and i64";
+      "select i1";
+    ];
+  if contains reduce_runtime "poison" || contains reduce_runtime "undef" then
+    failwith "reduce: undefined value in computed results";
+  List.iter
     (fun (name, text, expected) ->
       match semantic_messages text with
       | [ message ] when message = expected -> ()
@@ -6235,6 +6328,28 @@ let () =
       ( "permute-non-vector-value",
         "fn f(a u8, i vec[4,u8]) u8 { return permute(a, i) }\n",
         "permute value must be a vector" );
+      ( "reduce-arity-two",
+        "fn f(a vec[2,u8], b vec[2,u8]) u8 { return reduce_sum(a, b) }\n",
+        "builtin `reduce_sum` expects one argument" );
+      ( "reduce-arity-zero",
+        "fn f() u8 { return reduce_sum() }\n",
+        "builtin `reduce_sum` expects one argument" );
+      ( "reduce-scalar-arg",
+        "fn f(a u8) u8 { return reduce_sum(a) }\n",
+        "reduction argument must be an integer vector" );
+      ( "reduce-bool-vec-arg",
+        "fn f(a vec[2,bool]) bool { return reduce_min(a) }\n",
+        "reduction argument must be an integer vector" );
+      ( "reduce-fold-scalar",
+        "const K u8 = 5\nconst R u8 = reduce_max(K)\nfn f() u8 { return R }\n",
+        "constant expression requires a known vector constant" );
+      ( "reduce-fold-bool",
+        "const K u32 = 67305985\n\
+         const A vec[4,u8] = bitcast[vec[4,u8]](K)\n\
+         const M vec[4,bool] = A == A\n\
+         const R u8 = reduce_sum(M)\n\
+         fn f() u8 { return R }\n",
+        "reduction argument must be an integer vector" );
     ];
   List.iter
     (fun (name, ir) ->
