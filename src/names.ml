@@ -31,6 +31,8 @@ type value_operation =
   | Reduce_and
   | Reduce_or
   | Reduce_xor
+  | Compress
+  | Expand
 
 type type_constructor = Legacy_ptr | Array | Vector
 type literal = True | False | Null
@@ -101,8 +103,8 @@ let operations =
     ("reduce_xor", Value Reduce_xor);
     ("shuffle", Value Shuffle);
     ("permute", Value Permute);
-    ("compress", Reserved);
-    ("expand", Reserved);
+    ("compress", Value Compress);
+    ("expand", Value Expand);
     ("masked_load", Reserved);
     ("masked_store", Reserved);
     ("gather", Reserved);

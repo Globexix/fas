@@ -686,7 +686,7 @@ and lower_builtin s b args t span =
             | Sub_sat, false -> Ok "llvm.ssub.sat."
             | ( ( Rotl | Rotr | Popcount | Ctz | Clz | Mul_hi | Any | All | Select
                 | Shuffle | Permute | Reduce_sum | Reduce_min | Reduce_max | Reduce_and
-                | Reduce_or | Reduce_xor ),
+                | Reduce_or | Reduce_xor | Compress | Expand ),
                 _ ) ->
                 error span "internal error: invalid saturating builtin")
       in
@@ -843,6 +843,61 @@ and lower_builtin s b args t span =
               chain (i + 1) (Some next)
       in
       chain 0 None
+  | Compress, [ v; mk ] ->
+      let n = match Hir.expr_ty (List.hd args) with Hir.Vec (n, _) -> n | _ -> 1 in
+      let elem_ty = match rt with Ir.Vector (_, e) -> e | _ -> Ir.I1 in
+      let rec chain i acc count =
+        if i = n then Ok acc
+        else
+          let slot = Ir.Const (Ir.I64, Int64.of_int i) in
+          let mid = fresh s in
+          emit s (Ir.Extract (mid, value_ty mk, mk, slot));
+          let ml = Ir.Local (mid, Ir.I1) in
+          let vid = fresh s in
+          emit s (Ir.Extract (vid, value_ty v, v, slot));
+          let vl = Ir.Local (vid, elem_ty) in
+          let cid = fresh s in
+          emit s (Ir.Select (cid, ml, count, Ir.Const (Ir.I64, 0L)));
+          let cl = Ir.Local (cid, Ir.I64) in
+          let iid = fresh s in
+          emit s (Ir.Insert (iid, rt, acc, cl, vl));
+          let il = Ir.Local (iid, rt) in
+          let aid = fresh s in
+          emit s (Ir.Select (aid, ml, il, acc));
+          let n1 = fresh s in
+          emit s (Ir.Bin (n1, Ir.Add, Ir.I64, count, Ir.Const (Ir.I64, 1L)));
+          let nid = fresh s in
+          emit s (Ir.Select (nid, ml, Ir.Local (n1, Ir.I64), count));
+          chain (i + 1) (Ir.Local (aid, rt)) (Ir.Local (nid, Ir.I64))
+      in
+      chain 0 (Ir.Zero rt) (Ir.Const (Ir.I64, 0L))
+  | Expand, [ v; mk ] ->
+      let n = match Hir.expr_ty (List.hd args) with Hir.Vec (n, _) -> n | _ -> 1 in
+      let elem_ty = match rt with Ir.Vector (_, e) -> e | _ -> Ir.I1 in
+      let rec chain d acc count =
+        if d = n then Ok acc
+        else
+          let mid = fresh s in
+          emit s (Ir.Extract (mid, value_ty mk, mk, Ir.Const (Ir.I64, Int64.of_int d)));
+          let ml = Ir.Local (mid, Ir.I1) in
+          let cid = fresh s in
+          emit s (Ir.Select (cid, ml, count, Ir.Const (Ir.I64, 0L)));
+          let cl = Ir.Local (cid, Ir.I64) in
+          let vid = fresh s in
+          emit s (Ir.Extract (vid, value_ty v, v, cl));
+          let vl = Ir.Local (vid, elem_ty) in
+          let iid = fresh s in
+          emit s (Ir.Insert (iid, rt, acc, Ir.Const (Ir.I64, Int64.of_int d), vl));
+          let il = Ir.Local (iid, rt) in
+          let aid = fresh s in
+          emit s (Ir.Select (aid, ml, il, acc));
+          let n1 = fresh s in
+          emit s (Ir.Bin (n1, Ir.Add, Ir.I64, count, Ir.Const (Ir.I64, 1L)));
+          let nid = fresh s in
+          emit s (Ir.Select (nid, ml, Ir.Local (n1, Ir.I64), count));
+          chain (d + 1) (Ir.Local (aid, rt)) (Ir.Local (nid, Ir.I64))
+      in
+      chain 0 (Ir.Zero rt) (Ir.Const (Ir.I64, 0L))
   | (Any | All), [ mv ] -> (
       let lanes =
         match Hir.expr_ty (List.hd args) with Hir.Vec (n, _) -> n | _ -> 1

@@ -753,6 +753,8 @@ and check_call c _expected fn args s =
         | Some Names.Reduce_and -> Some Hir.Reduce_and
         | Some Names.Reduce_or -> Some Hir.Reduce_or
         | Some Names.Reduce_xor -> Some Hir.Reduce_xor
+        | Some Names.Compress -> Some Hir.Compress
+        | Some Names.Expand -> Some Hir.Expand
         | Some Names.Len | None -> None
       in
       let check_builtin b =
@@ -809,6 +811,23 @@ and check_call c _expected fn args s =
               | Hir.Vec (_, (Hir.Int _ as e)) ->
                   Ok (Hir.Call (Hir.Builtin b, [ a ], e, s))
               | _ -> error s "reduction argument must be an integer vector")
+        | Hir.Compress | Hir.Expand -> (
+            if List.length args <> 2 then
+              error s (Printf.sprintf "builtin `%s` expects two arguments" name)
+            else
+              let* v = check_expr c None (List.nth args 0) in
+              let* m = check_expr c None (List.nth args 1) in
+              match (Hir.expr_ty v, Hir.expr_ty m) with
+              | Hir.Vec (n, ((Hir.Int _ | Hir.Bool) as e)), Hir.Vec (mcount, Hir.Bool)
+                ->
+                  if n <> mcount then
+                    error s
+                      (Printf.sprintf "%s values and mask must have the same lane count"
+                         name)
+                  else Ok (Hir.Call (Hir.Builtin b, [ v; m ], Hir.Vec (n, e), s))
+              | Hir.Vec (_, _), _ ->
+                  error s (Printf.sprintf "%s mask must be a bool vector" name)
+              | _ -> error s (Printf.sprintf "%s values must be a vector" name))
         | Hir.Select -> (
             if List.length args <> 3 then
               error s (Printf.sprintf "builtin `%s` expects three arguments" name)

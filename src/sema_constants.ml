@@ -843,6 +843,37 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
       Ok
         ( Hir.Vec (List.length sel_values, element),
           List.map (fun v -> lane_mask element source.(Int64.to_int v)) sel_values )
+  | Ast.Call (Ast.Ident (name, _), [ varg; marg ], span)
+    when name = "compress" || name = "expand" -> (
+      let* vals_ty, values = evaluate expected varg in
+      let* masks_ty, masks = evaluate None marg in
+      let out () =
+        if name = "compress" then
+          let chosen =
+            List.combine values masks
+            |> List.filter_map (fun (v, mk) -> if mk <> 0L then Some v else None)
+          in
+          chosen @ List.init (List.length values - List.length chosen) (fun _ -> 0L)
+        else
+          let vals = Array.of_list values in
+          let _, rev_out =
+            List.fold_left
+              (fun (cursor, acc) mk ->
+                if mk <> 0L then (cursor + 1, vals.(cursor) :: acc)
+                else (cursor, 0L :: acc))
+              (0, []) masks
+          in
+          List.rev rev_out
+      in
+      match (vals_ty, masks_ty) with
+      | Hir.Vec (n, ((Hir.Int _ | Hir.Bool) as elem)), Hir.Vec (mcount, Hir.Bool)
+        when n = mcount ->
+          Ok (Hir.Vec (n, elem), out ())
+      | Hir.Vec _, Hir.Vec (_, Hir.Bool) ->
+          error span
+            (Printf.sprintf "%s values and mask must have the same lane count" name)
+      | Hir.Vec _, _ -> error span (Printf.sprintf "%s mask must be a bool vector" name)
+      | _ -> error span (Printf.sprintf "%s values must be a vector" name))
   | Ast.Call (Ast.Ident (name, _), [ m; y; z ], span) when name = "select" ->
       let* mask_ty, mask_values = evaluate None m in
       let* yes_ty, yes_values = evaluate expected y in

@@ -39,6 +39,8 @@ type builtin =
   | Reduce_and
   | Reduce_or
   | Reduce_xor
+  | Compress
+  | Expand
 
 type call_target = User of string | Builtin of builtin
 

@@ -6170,6 +6170,88 @@ let () =
   if contains reduce_runtime "poison" || contains reduce_runtime "undef" then
     failwith "reduce: undefined value in computed results";
   List.iter
+    (fun (name, setup, expr, rty, needle) ->
+      let ir =
+        llvm_of
+          (Printf.sprintf "%sconst R %s = %s\nfn f() %s { return R }\n" setup rty expr
+             rty)
+      in
+      if not (contains ir needle) then failwith ("compaction: " ^ name ^ " drifted"))
+    [
+      ( "compress-int",
+        "const KV u32 = 67305985\n\
+         const V vec[4,u8] = bitcast[vec[4,u8]](KV)\n\
+         const KW u32 = 134416641\n\
+         const W vec[4,u8] = bitcast[vec[4,u8]](KW)\n\
+         const M vec[4,bool] = V == W\n",
+        "compress(V, M)",
+        "vec[4,u8]",
+        "ret <4 x i8> <i8 1, i8 3, i8 0, i8 0>\n" );
+      ( "expand-int",
+        "const KV u32 = 67305985\n\
+         const V vec[4,u8] = bitcast[vec[4,u8]](KV)\n\
+         const KW u32 = 134416641\n\
+         const W vec[4,u8] = bitcast[vec[4,u8]](KW)\n\
+         const M vec[4,bool] = V == W\n",
+        "expand(V, M)",
+        "vec[4,u8]",
+        "ret <4 x i8> <i8 1, i8 0, i8 2, i8 0>\n" );
+      ( "compress-all-false",
+        "const KV u32 = 67305985\n\
+         const V vec[4,u8] = bitcast[vec[4,u8]](KV)\n\
+         const KA u32 = 134678021\n\
+         const A vec[4,u8] = bitcast[vec[4,u8]](KA)\n\
+         const M vec[4,bool] = V == A\n",
+        "compress(V, M)",
+        "vec[4,u8]",
+        "ret <4 x i8> <i8 0, i8 0, i8 0, i8 0>\n" );
+      ( "compress-all-true",
+        "const KV u32 = 67305985\n\
+         const V vec[4,u8] = bitcast[vec[4,u8]](KV)\n\
+         const M vec[4,bool] = V == V\n",
+        "compress(V, M)",
+        "vec[4,u8]",
+        "ret <4 x i8> <i8 1, i8 2, i8 3, i8 4>\n" );
+      ( "compress-bool-lanes",
+        "const KV u32 = 67305985\n\
+         const V vec[4,u8] = bitcast[vec[4,u8]](KV)\n\
+         const KW4 u32 = 100991489\n\
+         const W4 vec[4,u8] = bitcast[vec[4,u8]](KW4)\n\
+         const KW5 u32 = 134416641\n\
+         const W5 vec[4,u8] = bitcast[vec[4,u8]](KW5)\n\
+         const M5 vec[4,bool] = V == W4\n\
+         const M4 vec[4,bool] = V == W5\n",
+        "compress(M5, M4)",
+        "vec[4,bool]",
+        "ret <4 x i1> <i1 1, i1 0, i1 0, i1 0>\n" );
+      ( "expand-bool-lanes",
+        "const KV u32 = 67305985\n\
+         const V vec[4,u8] = bitcast[vec[4,u8]](KV)\n\
+         const KW4 u32 = 100991489\n\
+         const W4 vec[4,u8] = bitcast[vec[4,u8]](KW4)\n\
+         const KW5 u32 = 134416641\n\
+         const W5 vec[4,u8] = bitcast[vec[4,u8]](KW5)\n\
+         const M5 vec[4,bool] = V == W4\n\
+         const M4 vec[4,bool] = V == W5\n",
+        "expand(M5, M4)",
+        "vec[4,bool]",
+        "ret <4 x i1> <i1 1, i1 0, i1 1, i1 0>\n" );
+    ];
+  let compaction_runtime =
+    llvm_of
+      "fn f(a vec[4,u8], m vec[4,bool]) vec[4,u8] { return compress(a, m) }\n\
+       fn g(a vec[4,bool], m vec[4,bool]) vec[4,bool] { return expand(a, m) }\n\
+       fn h(a vec[3,i32], m vec[3,bool]) vec[3,i32] { return compress(a, m) }\n\
+       fn main() i32 { return 0 }\n"
+  in
+  List.iter
+    (fun needle ->
+      if not (contains compaction_runtime needle) then
+        failwith ("compaction: missing " ^ needle))
+    [ "insertelement <4 x i8>"; "select i1"; "extractelement <4 x i8>" ];
+  if contains compaction_runtime "poison" || contains compaction_runtime "undef" then
+    failwith "compaction: undefined value in computed results";
+  List.iter
     (fun (name, text, expected) ->
       match semantic_messages text with
       | [ message ] when message = expected -> ()
@@ -6350,6 +6432,24 @@ let () =
          const R u8 = reduce_sum(M)\n\
          fn f() u8 { return R }\n",
         "reduction argument must be an integer vector" );
+      ( "compress-arity",
+        "fn f(a vec[4,u8], m vec[4,bool]) vec[4,u8] { return compress(a) }\n",
+        "builtin `compress` expects two arguments" );
+      ( "expand-arity",
+        "fn f(a vec[4,u8]) vec[4,u8] { return expand(a) }\n",
+        "builtin `expand` expects two arguments" );
+      ( "compress-non-vector-values",
+        "fn f(a u8, m vec[4,bool]) u8 { return compress(a, m) }\n",
+        "compress values must be a vector" );
+      ( "compress-mask-not-bool-vec",
+        "fn f(a vec[4,u8], m vec[4,u8]) vec[4,u8] { return compress(a, m) }\n",
+        "compress mask must be a bool vector" );
+      ( "compress-lane-count",
+        "fn f(a vec[4,u8], m vec[3,bool]) vec[4,u8] { return compress(a, m) }\n",
+        "compress values and mask must have the same lane count" );
+      ( "expand-lane-count",
+        "fn f(a vec[4,u8], m vec[5,bool]) vec[4,u8] { return expand(a, m) }\n",
+        "expand values and mask must have the same lane count" );
     ];
   List.iter
     (fun (name, ir) ->

@@ -51,6 +51,23 @@ widened = [a[i] if i < 4 else 0 for i in wide]
 check("bitcast[u32](permute(av, IW))", pack(widened), "permute-no-truncation")
 k_iv = sum((v & 0xFF) << (8 * i) for i, v in enumerate(dynamic))
 k_iw = sum((v & 0xFFFF) << (16 * i) for i, v in enumerate(wide))
+cv = [1, 2, 9, 4]
+mask = [1 if a[i] == cv[i] else 0 for i in range(4)]
+assert 0 < sum(mask) < 4
+comp = [a[i] for i in range(4) if mask[i]] + [0] * (4 - sum(mask))
+expd = []
+j = 0
+for i in range(4):
+    if mask[i]:
+        expd.append(a[j])
+        j += 1
+    else:
+        expd.append(0)
+assert comp != expd and comp != a
+lines.append("  mv vec[4,bool] = av == CV")
+check("bitcast[u32](compress(av, mv))", pack(comp), "compress-runtime-mask")
+check("bitcast[u32](expand(av, mv))", pack(expd), "expand-runtime-mask")
+k_cv = sum((v & 0xFF) << (8 * i) for i, v in enumerate(cv))
 lines.append("  return 0")
 lines.append("}")
 head = (
@@ -60,6 +77,8 @@ head = (
     "const IV vec[4,u8] = bitcast[vec[4,u8]](KV)\n"
     f"const KW u64 = {k_iw}\n"
     "const IW vec[4,u16] = bitcast[vec[4,u16]](KW)\n"
+    f"const KC u32 = {k_cv}\n"
+    "const CV vec[4,u8] = bitcast[vec[4,u8]](KC)\n"
     "fn main() i32 {\n"
 )
 with open(f"{out}/route.fas", "w") as handle:
@@ -69,6 +88,9 @@ with open(f"{out}/oracle.txt", "w") as handle:
         handle.write(repr(entry) + "\n")
 
 expected_sum = pack(permuted) + pack(widened)
+exp_comp = [a[i] for i in range(4) if [1, 1, 0, 1][i]] + [0]
+exp_expd = [a[0], a[1], 0, a[2]]
+expected_sum2 = pack(exp_comp) + pack(exp_expd)
 with open(f"{out}/dyn.fas", "w") as handle:
     handle.write(
         "fn go(IV vec[4,u8], IW vec[4,u16], av vec[4,u8]) u32 {\n"
@@ -92,8 +114,20 @@ with open(f"{out}/dyn.fas", "w") as handle:
         "  IW[1] = 1\n"
         "  IW[2] = 0\n"
         "  IW[3] = 65535\n"
+        "  DM vec[4,bool] = splat(false)\n"
+        "  DM[0] = true\n"
+        "  DM[1] = true\n"
+        "  DM[3] = true\n"
         f"  if go(IV, IW, av) != {expected_sum} {{ return 1 }}\n"
+        "  if go2(DM, av) != "
+        + str(expected_sum2)
+        + " { return 2 }\n"
         "  return 0\n"
+        "}\n"
+        "fn go2(DM vec[4,bool], av vec[4,u8]) u32 {\n"
+        "  r vec[4,u8] = compress(av, DM)\n"
+        "  w vec[4,u8] = expand(av, DM)\n"
+        "  return bitcast[u32](r) + bitcast[u32](w)\n"
         "}\n"
     )
 EOF
