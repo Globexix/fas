@@ -158,6 +158,32 @@ for shape in (2, 3, 4):
     for j in range(shape):
         check(f"tmpP{seq}[{j}]", permuted[j], f"permute-{shape}-{j}")
 
+CONV = list(WIDTHS.items()) + [("usize", (64, False)), ("isize", (64, True))]
+for src_ty, (sw, ssigned) in CONV:
+    seq += 1
+    if ssigned:
+        vals = [0, raw(1 << (sw - 1), sw)]
+    else:
+        vals = [0, raw((1 << sw) - 1, sw)]
+    name = f"cv{seq}"
+    vec(name, vals, src_ty, sw, ssigned)
+    for dst_ty, (dw, dsigned) in CONV:
+        for i, v in enumerate(vals):
+            if dw > sw:
+                zexp = v
+                sexp = (v | (((1 << dw) - 1) ^ ((1 << sw) - 1))) if (v >> (sw - 1)) & 1 else v
+                check(f"zext[{dst_ty}]({name}[{i}])", lit(zexp, dw, dsigned), f"zext-{src_ty}-{dst_ty}")
+                check(f"sext[{dst_ty}]({name}[{i}])", lit(sexp, dw, dsigned), f"sext-{src_ty}-{dst_ty}")
+            elif dw < sw:
+                texp = v & ((1 << dw) - 1)
+                check(f"trunc[{dst_ty}]({name}[{i}])", lit(texp, dw, dsigned), f"trunc-{src_ty}-{dst_ty}")
+check("zext[usize](true)", 1, "zext-bool-usize")
+check("sext[isize](true)", -1, "sext-bool-isize")
+lines.append("  bt u8 = 3")
+lines.append("  bf u8 = 2")
+check("trunc[bool](bt)", "true", "trunc-bool-keep-bit")
+check("trunc[bool](bf)", "false", "trunc-bool-drop-bit")
+
 lines.append("  return 0")
 lines.append("}")
 with open(f"{out}/matrix.fas", "w") as handle:

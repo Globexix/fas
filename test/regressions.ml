@@ -6486,6 +6486,15 @@ let () =
       ( "vec-lane-const-oob",
         "const K usize = 9\nfn f(a vec[4,u8]) u8 { return a[K] }\n",
         "array index is out of bounds" );
+      ( "zext-equal-width",
+        "fn f(a u32) u32 { return zext[u32](a) }\n",
+        "illegal cast for source and destination widths" );
+      ( "trunc-widening",
+        "fn f(a u8) u32 { return trunc[u32](a) }\n",
+        "illegal cast for source and destination widths" );
+      ( "zext-to-bool",
+        "fn f(a u8) bool { return zext[bool](a) }\n",
+        "illegal cast for source and destination widths" );
     ];
   List.iter
     (fun (name, ir) ->
