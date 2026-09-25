@@ -5946,26 +5946,35 @@ let () =
        fn h(m vec[2,bool]) bool { return all(m) }\n\
        fn i(m vec[2,bool], a vec[2,i32], b vec[2,i32]) vec[2,i32] { return select(m, \
        a, b) }\n\
-       fn e(m vec[2,bool], a vec[2,i32], b vec[2,i32], c vec[2,i32]) vec[2,i32] {\n\
+       fn main() i32 { return 0 }\n"
+  in
+  List.iter
+    (fun needle ->
+      if not (contains mask_runtime needle) then failwith ("mask: missing " ^ needle))
+    [ "and <2 x i1>"; "or <2 x i1>"; "xor <2 x i1>"; "select <2 x i1>" ];
+  if contains mask_runtime "poison" || contains mask_runtime "undef" then
+    failwith "mask: undefined value in computed results";
+  let mask_reductions =
+    llvm_of
+      "fn g(m vec[2,bool]) bool { return any(m) }\n\
+       fn h(m vec[2,bool]) bool { return all(m) }\n\
+       fn main() i32 { return 0 }\n"
+  in
+  List.iter
+    (fun needle ->
+      if not (contains mask_reductions needle) then failwith ("mask: missing " ^ needle))
+    [ "extractelement <2 x i1>"; "or i1"; "and i1" ];
+  let mask_eager =
+    llvm_of
+      "fn e(m vec[2,bool], a vec[2,i32], b vec[2,i32], c vec[2,i32]) vec[2,i32] {\n\
        \032 return select(m, a / b, c)\n\
        }\n\
        fn main() i32 { return 0 }\n"
   in
   List.iter
     (fun needle ->
-      if not (contains mask_runtime needle) then failwith ("mask: missing " ^ needle))
-    [
-      "and <2 x i1>";
-      "or <2 x i1>";
-      "xor <2 x i1>";
-      "select <2 x i1>";
-      "extractelement <2 x i1>";
-      "or i1";
-      "and i1";
-      "sdiv <2 x i32>";
-    ];
-  if contains mask_runtime "poison" || contains mask_runtime "undef" then
-    failwith "mask: undefined value in computed results";
+      if not (contains mask_eager needle) then failwith ("mask: missing " ^ needle))
+    [ "sdiv <2 x i32>"; "select <2 x i1>" ];
   List.iter
     (fun (name, text, expected) ->
       match semantic_messages text with
