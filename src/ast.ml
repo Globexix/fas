@@ -1,6 +1,8 @@
 type ty =
   | Bool
   | Int of int_kind
+  | Addr
+  | Handle of ty
   | Ptr of ty
   | Ptr_const of ty
   | Array of string * ty
@@ -27,6 +29,7 @@ and expr =
   | Field of expr * string * Span.t
   | Deref of expr * Span.t
   | Addr_of of expr * Span.t
+  | Handle_from_addr of ty * expr * Span.t
   | Ptr_add of bool * expr * expr * Span.t
   | Sizeof of ty * Span.t
   | Alignof of ty * Span.t
@@ -130,6 +133,7 @@ let expr_span = function
   | Field (_, _, s)
   | Deref (_, s)
   | Addr_of (_, s)
+  | Handle_from_addr (_, _, s)
   | Ptr_add (_, _, _, s)
   | Sizeof (_, s)
   | Alignof (_, s)
@@ -170,6 +174,8 @@ let rec type_name = function
   | Int Isize -> "isize"
   | Ptr t -> "ptr[" ^ type_name t ^ "]"
   | Ptr_const t -> "ptr[const " ^ type_name t ^ "]"
+  | Addr -> "addr"
+  | Handle t -> "handle[" ^ type_name t ^ "]"
   | Array (n, t) -> "arr[" ^ n ^ ", " ^ type_name t ^ "]"
   | Vec (n, t) -> "vec[" ^ n ^ ", " ^ type_name t ^ "]"
   | Named_type s -> s
@@ -228,6 +234,8 @@ and expr_name = function
   | Field (a, n, _) -> expr_name a ^ "." ^ n
   | Deref (e, _) -> expr_name e ^ ".*"
   | Addr_of (e, _) -> "&" ^ expr_name e
+  | Handle_from_addr (t, e, _) ->
+      "handle_from_addr[" ^ type_name t ^ "](" ^ expr_name e ^ ")"
   | Ptr_add (bytes, p, o, _) ->
       (if bytes then "ptr_add_bytes" else "ptr_add")
       ^ "(" ^ expr_name p ^ ", " ^ expr_name o ^ ")"
@@ -333,6 +341,11 @@ let render_bounded ~budget program =
           text "]"
       | Ptr_const inner ->
           text "ptr[const ";
+          emit_ty inner;
+          text "]"
+      | Addr -> text "addr"
+      | Handle inner ->
+          text "handle[";
           emit_ty inner;
           text "]"
       | Array (n, inner) ->
@@ -447,6 +460,12 @@ let render_bounded ~budget program =
           | Addr_of (x, _) ->
               text "&";
               emit_expr x
+          | Handle_from_addr (t, x, _) ->
+              text "handle_from_addr[";
+              emit_ty t;
+              text "]( ";
+              emit_expr x;
+              text ")"
           | Ptr_add (bytes, p, o, _) ->
               text (if bytes then "ptr_add_bytes(" else "ptr_add(");
               emit_expr p;
@@ -689,8 +708,8 @@ let fold_expanded_nodes ~limit program =
   let rec go_ty at ty =
     if !failed = None then
       match ty with
-      | Bool | Int _ | Void | Named_type _ -> count at
-      | Ptr inner | Ptr_const inner ->
+      | Bool | Int _ | Void | Named_type _ | Addr -> count at
+      | Ptr inner | Ptr_const inner | Handle inner ->
           count at;
           go_ty at inner
       | Array (_, inner) | Vec (_, inner) ->
@@ -731,6 +750,9 @@ let fold_expanded_nodes ~limit program =
           go_expr i
       | Field (a, _, _) -> go_expr a
       | Deref (x, _) | Addr_of (x, _) -> go_expr x
+      | Handle_from_addr (t, x, _) ->
+          go_ty at t;
+          go_expr x
       | Ptr_add (_, p, o, _) ->
           go_expr p;
           go_expr o

@@ -3,6 +3,8 @@ type int_kind = U8 | U16 | U32 | I8 | I16 | I32 | I64 | U64 | Usize | Isize
 type ty =
   | Bool
   | Int of int_kind
+  | Addr
+  | Handle of string
   | Ptr of ty
   | ConstPtr of ty
   | Array of int * ty
@@ -41,6 +43,10 @@ type builtin =
   | Reduce_xor
   | Compress
   | Expand
+  | Addr_bits
+  | Addr_from_bits
+  | Handle_addr
+  | Handle_from_addr of string
 
 type call_target = User of string | Builtin of builtin
 
@@ -114,6 +120,8 @@ let rec ty_equal a b =
   | Int a, Int b -> a = b
   | Ptr a, Ptr b -> ty_equal a b
   | ConstPtr a, ConstPtr b -> ty_equal a b
+  | Addr, Addr -> true
+  | Handle a, Handle b -> a = b
   | Array (na, a), Array (nb, b) | Vec (na, a), Vec (nb, b) -> na = nb && ty_equal a b
   | Struct a, Struct b | Opaque a, Opaque b -> a = b
   | _ -> false
@@ -133,6 +141,8 @@ let rec ty_name = function
   | Int Isize -> "isize"
   | Ptr t -> "ptr[" ^ ty_name t ^ "]"
   | ConstPtr t -> "ptr[const " ^ ty_name t ^ "]"
+  | Addr -> "addr"
+  | Handle name -> "handle[" ^ name ^ "]"
   | Array (n, t) -> Printf.sprintf "arr[%d, %s]" n (ty_name t)
   | Vec (n, t) -> Printf.sprintf "vec[%d, %s]" n (ty_name t)
   | Struct n | Opaque n -> n
@@ -288,14 +298,14 @@ let int_layout target k = Target_layout.integer target (int_bytes ~target k * 8)
 let scalar_bits target = function
   | Bool -> Ok 1
   | Int k -> Ok (int_bytes ~target k * 8)
-  | Ptr _ | ConstPtr _ -> Ok (target.Target_layout.pointer_size * 8)
+  | Ptr _ | ConstPtr _ | Addr | Handle _ -> Ok (target.Target_layout.pointer_size * 8)
   | _ -> Error "vector element type must be a scalar"
 
 let layout ?(target = Target_layout.current) structs ty =
   let rec go visiting = function
     | Bool -> Target_layout.integer target 1
     | Int k -> int_layout target k
-    | Ptr _ | ConstPtr _ -> Target_layout.pointer target
+    | Ptr _ | ConstPtr _ | Addr | Handle _ -> Target_layout.pointer target
     | Array (n, t) ->
         let* s, a = go visiting t in
         let* size = Target_layout.multiply_size n s in
@@ -362,7 +372,7 @@ let compute_struct_cached cache name =
   and field_layout visiting = function
     | Bool -> Target_layout.integer target 1
     | Int k -> int_layout target k
-    | Ptr _ | ConstPtr _ -> Target_layout.pointer target
+    | Ptr _ | ConstPtr _ | Addr | Handle _ -> Target_layout.pointer target
     | Void -> Error "void has no object layout"
     | Opaque n -> Error (Printf.sprintf "opaque type `%s` has no layout" n)
     | Struct n ->

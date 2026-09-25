@@ -1417,6 +1417,51 @@ let () =
   semantic_error "switch-bool-exhaustive-still-needs-return"
     "may reach the end without returning"
     "fn f(x bool) i32 { switch x { case true: return 1; case false: return 2 } }\n";
+  semantic_error "addr-handle-nonopaque-target"
+    "handle type argument must be an opaque type"
+    "struct S { x u8 }\n\
+     fn f(p addr) addr { return handle_addr(handle_from_addr[S](p)) }\n";
+  semantic_error "addr-handle-nonopaque-wrapper"
+    "handle type argument must be an opaque type"
+    "opaque O\nfn f(p addr) addr { return handle_from_addr[handle[O]](p) }\n";
+  semantic_error "addr-handle-wrong-arg" "handle_from_addr argument must be an addr"
+    "opaque O\n\
+     fn f(n usize) usize { return addr_bits(handle_addr(handle_from_addr[O](n))) }\n";
+  semantic_error "addr-bits-wrong-arg" "addr_bits argument must be an addr"
+    "fn f(n u32) usize { return addr_bits(n) }\n";
+  semantic_error "addr-from-bits-wrong-arg" "addr_from_bits argument must be a usize"
+    "fn f(n u32) addr { return addr_from_bits(n) }\n";
+  semantic_error "handle-addr-wrong-arg" "handle_addr argument must be a handle"
+    "fn f(p addr) addr { return handle_addr(p) }\n";
+  semantic_error "handle-from-addr-bare"
+    "builtin `handle_from_addr` expects a type argument"
+    "fn f(p addr) addr { return handle_from_addr(p) }\n";
+  semantic_error "addr-const-context" "expression is not compile-time constant"
+    "opaque O\nconst X addr = handle_from_addr[O](addr_from_bits(0))\n";
+  semantic_error "addr-vec-element"
+    "vector element type must be a scalar (bool, integer, or pointer)"
+    "fn f(v vec[2,addr]) usize { return 0 }\n";
+  semantic_error "addr-equality-reject"
+    "equality requires scalar or integer/bool-vector operands"
+    "fn f(a addr, b addr) bool { return a == b }\n";
+  semantic_error "addr-null-reject" "null requires a pointer context"
+    "fn f() addr { return null }\n";
+  semantic_error "addr-deref-reject" "cannot dereference a non-pointer"
+    "fn f(p addr) u8 { return p.* }\n";
+  semantic_error "addr-index-reject" "cannot index this type"
+    "fn f(p addr) u8 { return p[0] }\n";
+  semantic_error "addr-bitcast-from-reject"
+    "illegal cast for source and destination widths"
+    "fn f(p addr) usize { return bitcast[usize](p) }\n";
+  semantic_error "addr-bitcast-to-reject"
+    "illegal cast for source and destination widths"
+    "fn f(n usize) addr { return bitcast[addr](n) }\n";
+  semantic_error "handle-field-reject" "field access requires a struct"
+    "opaque O\nfn f(h handle[O]) usize { return h.x }\n";
+  semantic_error "handle-deref-reject" "cannot dereference a non-pointer"
+    "opaque O\nfn f(h handle[O]) u8 { return h.* }\n";
+  semantic_error "handle-index-reject" "cannot index this type"
+    "opaque O\nfn f(h handle[O]) u8 { return h[0] }\n";
   semantic_error "comparison-chaining-reject" "binary operands must have the same type"
     "fn f(a i32, b i32, c i32) bool { return a < b < c }\n";
   semantic_error "conditional-defer-divergence" "may reach the end without returning"

@@ -76,9 +76,10 @@ let rec count_expanded_type_nodes ty cap total =
   else
     let total = total + 1 in
     match ty with
-    | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Named_type _ -> total
+    | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Named_type _ | Ast.Addr -> total
     | Ast.Ptr element
     | Ast.Ptr_const element
+    | Ast.Handle element
     | Ast.Array (_, element)
     | Ast.Vec (_, element) ->
         count_expanded_type_nodes element cap total
@@ -121,6 +122,9 @@ let rec count_expanded_expr_type_nodes expr cap total =
           (count_expanded_expr_type_nodes callee cap total)
           arguments
     | Ast.Cast (_, ty, value, _) ->
+        count_expanded_expr_type_nodes value cap
+          (count_expanded_type_nodes ty cap total)
+    | Ast.Handle_from_addr (ty, value, _) ->
         count_expanded_expr_type_nodes value cap
           (count_expanded_type_nodes ty cap total)
     | Ast.Sizeof (ty, _) | Ast.Alignof (ty, _) | Ast.Offsetof (ty, _, _) ->

@@ -114,11 +114,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   let rec type_mentions names = function
     | Ast.Array (length, ty) | Ast.Vec (length, ty) ->
         List.mem length names || type_mentions names ty
-    | Ast.Ptr ty | Ast.Ptr_const ty -> type_mentions names ty
+    | Ast.Ptr ty | Ast.Ptr_const ty | Ast.Handle ty -> type_mentions names ty
     | Ast.Applied_type (_, arguments, _) ->
         List.exists (generic_argument_mentions names) arguments
     | Ast.Named_type name -> List.mem name names
-    | Ast.Bool | Ast.Void | Ast.Int _ -> false
+    | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Addr -> false
   and generic_argument_mentions names = function
     | Ast.Type_arg ty -> type_mentions names ty
     | Ast.Const_arg expression -> expression_mentions names expression
@@ -142,6 +142,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         || List.exists (generic_argument_mentions names) arguments
     | Ast.Cast (_, ty, expression, _) ->
         type_mentions names ty || expression_mentions names expression
+    | Ast.Handle_from_addr (ty, expression, _) ->
+        type_mentions names ty || expression_mentions names expression
     | Ast.Sizeof (ty, _) | Ast.Alignof (ty, _) | Ast.Offsetof (ty, _, _) ->
         type_mentions names ty
     | Ast.Field (expression, _, _) -> expression_mentions names expression
@@ -154,8 +156,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ -> false
   in
   let rec validate_type_names value_names type_names span = function
-    | Ast.Ptr ty | Ast.Ptr_const ty ->
+    | Ast.Ptr ty | Ast.Ptr_const ty | Ast.Handle ty ->
         validate_type_names value_names type_names span ty
+    | Ast.Addr -> Ok ()
     | Ast.Array (length, ty) | Ast.Vec (length, ty) ->
         let* () =
           match parse_integer length with
@@ -279,6 +282,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           (validate_generic_argument_names value_names type_names application_span)
           arguments
     | Ast.Cast (_, ty, expression, span) ->
+        let* () = validate_type_names value_names type_names span ty in
+        validate_expression_names value_names type_names expression
+    | Ast.Handle_from_addr (ty, expression, span) ->
         let* () = validate_type_names value_names type_names span ty in
         validate_expression_names value_names type_names expression
     | Ast.Sizeof (ty, span) | Ast.Alignof (ty, span) | Ast.Offsetof (ty, _, span) ->
@@ -490,6 +496,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Call (callee, arguments, _) ->
         has_generic_arguments callee || List.exists has_generic_arguments arguments
     | Ast.Cast (_, _, expression, _) -> has_generic_arguments expression
+    | Ast.Handle_from_addr (_, expression, _) -> has_generic_arguments expression
     | Ast.Ternary (condition, yes, no, _) ->
         has_generic_arguments condition
         || has_generic_arguments yes || has_generic_arguments no
@@ -504,6 +511,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         Option.value ~default:ty (List.assoc_opt name substitutions)
     | Ast.Ptr ty -> Ast.Ptr (substitute_validation_type substitutions ty)
     | Ast.Ptr_const ty -> Ast.Ptr_const (substitute_validation_type substitutions ty)
+    | Ast.Addr -> Ast.Addr
+    | Ast.Handle ty -> Ast.Handle (substitute_validation_type substitutions ty)
     | Ast.Array (length, ty) ->
         Ast.Array (length, substitute_validation_type substitutions ty)
     | Ast.Vec (length, ty) ->
@@ -712,6 +721,18 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               if valid then Ok () else error span "illegal cast target type"
           in
           validate_non_dependent_expression c dependent None value
+      | Ast.Handle_from_addr (destination, value, span) ->
+          let* () =
+            if type_mentions dependent destination then Ok ()
+            else
+              let* resolved =
+                source_ty_with_values eval_named_types eval_consts span destination
+              in
+              match resolved with
+              | Hir.Opaque _ -> Ok ()
+              | _ -> error span "handle type argument must be an opaque type"
+          in
+          validate_non_dependent_expression c dependent None value
       | Ast.Field (value, _, _) ->
           validate_non_dependent_expression c dependent None value
       | Ast.Ternary (condition, yes, no, _) ->
@@ -902,15 +923,20 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   in
   let rec has_unresolved_application = function
     | Ast.Applied_type _ -> true
-    | Ast.Ptr ty | Ast.Ptr_const ty | Ast.Array (_, ty) | Ast.Vec (_, ty) ->
+    | Ast.Ptr ty | Ast.Ptr_const ty | Ast.Handle ty | Ast.Array (_, ty) | Ast.Vec (_, ty)
+      ->
         has_unresolved_application ty
-    | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Named_type _ -> false
+    | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Named_type _ | Ast.Addr -> false
   in
   let rec resolve_ty ?(values = []) ?(defer_const_structs = false) substitutions depth
       span = function
     | Ast.Bool -> Ok Ast.Bool
     | Ast.Void -> Ok Ast.Void
     | Ast.Int kind -> Ok (Ast.Int kind)
+    | Ast.Addr -> Ok Ast.Addr
+    | Ast.Handle ty ->
+        let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
+        Ok (Ast.Handle ty)
     | Ast.Ptr ty ->
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Ptr ty)
@@ -1350,6 +1376,12 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           resolve_expr ~values ~defer_const_structs substitutions depth expression
         in
         Ok (Ast.Cast (kind, ty, expression, span))
+    | Ast.Handle_from_addr (ty, expression, span) ->
+        let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
+        let* expression =
+          resolve_expr ~values ~defer_const_structs substitutions depth expression
+        in
+        Ok (Ast.Handle_from_addr (ty, expression, span))
     | Ast.Index (base, index, span) ->
         let* base =
           resolve_expr ~values ~defer_const_structs substitutions depth base

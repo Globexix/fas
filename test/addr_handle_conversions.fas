@@ -1,0 +1,68 @@
+extern "C" {
+  fn observe_addr(p addr) usize
+}
+
+opaque O
+
+fn round_addr(n usize) usize {
+  return addr_bits(addr_from_bits(n))
+}
+
+fn round_handle(n usize) usize {
+  return addr_bits(handle_addr(handle_from_addr[O](addr_from_bits(n))))
+}
+
+fn keep_addr(p addr) addr {
+  return p
+}
+
+fn keep_handle(h handle[O]) handle[O] {
+  return h
+}
+
+fn via_c(p addr) usize {
+  return observe_addr(p)
+}
+
+fn main(argc i32, argv ptr[u8]) i32 {
+  if round_addr(0) != 0 {
+    return 10
+  }
+  if round_addr(1) != 1 {
+    return 11
+  }
+  if round_addr(2) != 2 {
+    return 12
+  }
+  if round_addr(4095) != 4095 {
+    return 13
+  }
+  if round_addr(9223372036854775807) != 9223372036854775807 {
+    return 14
+  }
+  if round_addr(18446744073709551615) != 18446744073709551615 {
+    return 15
+  }
+  if round_handle(0) != 0 {
+    return 16
+  }
+  if round_handle(1) != 1 {
+    return 17
+  }
+  if round_handle(18446744073709551615) != 18446744073709551615 {
+    return 18
+  }
+  if addr_bits(keep_addr(addr_from_bits(12345))) != 12345 {
+    return 19
+  }
+  if addr_bits(handle_addr(keep_handle(handle_from_addr[O](addr_from_bits(6789))))) != 6789 {
+    return 20
+  }
+  if via_c(addr_from_bits(42)) != 42 {
+    return 21
+  }
+  if via_c(addr_from_bits(0)) != 0 {
+    return 22
+  }
+  return 0
+}

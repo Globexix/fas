@@ -7,7 +7,7 @@ let rec object_type (structs : Hir.struct_def list) = function
   | Hir.Void -> Error "void is not an object type"
   | Hir.Opaque name ->
       Error ("opaque type `" ^ name ^ "` may only be used behind a pointer")
-  | Hir.Ptr _ | Hir.ConstPtr _ | Hir.Bool | Hir.Int _ -> Ok ()
+  | Hir.Ptr _ | Hir.ConstPtr _ | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ -> Ok ()
   | Hir.Array (length, element) ->
       if length < 0 then Error "negative array length" else object_type structs element
   | Hir.Vec (length, element) when length > 0 -> (

@@ -438,6 +438,21 @@ and check_expr (c : context) expected = function
         then error s "division by zero is not a defined runtime operation"
         else Ok (Hir.Binary (op, a, b, result_ty, s))
   | Ast.Call (fn, args, s) -> check_call c None fn args s
+  | Ast.Handle_from_addr (t, e, s) -> (
+      let* resolved = source_ty_diag c.named_types s t in
+      match resolved with
+      | Hir.Opaque opaque_name -> (
+          let* a = check_expr c None e in
+          match Hir.expr_ty a with
+          | Hir.Addr ->
+              Ok
+                (Hir.Call
+                   ( Hir.Builtin (Hir.Handle_from_addr opaque_name),
+                     [ a ],
+                     Hir.Handle opaque_name,
+                     s ))
+          | _ -> error s "handle_from_addr argument must be an addr")
+      | _ -> error s "handle type argument must be an opaque type")
   | Ast.Generic_args (_fn, _, s) ->
       error s "generic specialization is not available in this context"
   | Ast.Cast (k, t, e, s) ->
@@ -605,8 +620,45 @@ and generic_const_argument span = function
       Ok (Ast.Index (Ast.Ident (name, span), index, span))
   | Ast.Type_arg _ -> error span "expected a const argument"
 
+and check_handle_from_addr c name opaque_name args s =
+  if List.length args <> 1 then
+    error s (Printf.sprintf "builtin `%s` expects one argument" name)
+  else
+    let* a = check_expr c (Some Hir.Addr) (List.hd args) in
+    match Hir.expr_ty a with
+    | Hir.Addr ->
+        Ok
+          (Hir.Call
+             ( Hir.Builtin (Hir.Handle_from_addr opaque_name),
+               [ a ],
+               Hir.Handle opaque_name,
+               s ))
+    | _ -> error s "handle_from_addr argument must be an addr"
+
 and check_call c _expected fn args s =
   match fn with
+  | Ast.Generic_args (Ast.Ident (name, _), generic_args, application_span)
+    when name = "handle_from_addr" -> (
+      match generic_args with
+      | [ Ast.Type_arg type_arg ] ->
+          let* resolved = source_ty_diag c.named_types application_span type_arg in
+          let* opaque_name =
+            match resolved with
+            | Hir.Opaque n -> Ok n
+            | _ -> error application_span "handle type argument must be an opaque type"
+          in
+          check_handle_from_addr c name opaque_name args s
+      | [ Ast.Name_arg (type_name, name_span) ] ->
+          let* resolved =
+            source_ty_diag c.named_types name_span (Ast.Named_type type_name)
+          in
+          let* opaque_name =
+            match resolved with
+            | Hir.Opaque n -> Ok n
+            | _ -> error name_span "handle type argument must be an opaque type"
+          in
+          check_handle_from_addr c name opaque_name args s
+      | _ -> error s (Printf.sprintf "builtin `%s` expects a type argument" name))
   | Ast.Generic_args (Ast.Ident (name, _), generic_args, application_span) -> (
       match lookup_local name c with
       | Some _ -> error s (Printf.sprintf "`%s` is a value, not a function" name)
@@ -755,6 +807,10 @@ and check_call c _expected fn args s =
         | Some Names.Reduce_xor -> Some Hir.Reduce_xor
         | Some Names.Compress -> Some Hir.Compress
         | Some Names.Expand -> Some Hir.Expand
+        | Some Names.Addr_bits -> Some Hir.Addr_bits
+        | Some Names.Addr_from_bits -> Some Hir.Addr_from_bits
+        | Some Names.Handle_addr -> Some Hir.Handle_addr
+        | Some Names.Handle_from_addr -> Some (Hir.Handle_from_addr "")
         | Some Names.Len | None -> None
       in
       let check_builtin b =
@@ -921,6 +977,46 @@ and check_call c _expected fn args s =
                 let result_ty = Hir.Vec (m, elem) in
                 let* _ = Sema_limits.validate_object c.limits c.structs s result_ty in
                 Ok (Hir.Call (Hir.Builtin b, [ a; b2 ], result_ty, s))
+        | Hir.Addr_bits -> (
+            if List.length args <> 1 then
+              error s (Printf.sprintf "builtin `%s` expects one argument" name)
+            else
+              let* a = check_expr c None (List.hd args) in
+              match Hir.expr_ty a with
+              | Hir.Addr -> Ok (Hir.Call (Hir.Builtin b, [ a ], Hir.Int Hir.Usize, s))
+              | _ -> error s "addr_bits argument must be an addr")
+        | Hir.Addr_from_bits -> (
+            if List.length args <> 1 then
+              error s (Printf.sprintf "builtin `%s` expects one argument" name)
+            else
+              let* a = check_expr c (Some (Hir.Int Hir.Usize)) (List.hd args) in
+              match Hir.expr_ty a with
+              | Hir.Int Hir.Usize -> Ok (Hir.Call (Hir.Builtin b, [ a ], Hir.Addr, s))
+              | _ -> error s "addr_from_bits argument must be a usize")
+        | Hir.Handle_addr -> (
+            if List.length args <> 1 then
+              error s (Printf.sprintf "builtin `%s` expects one argument" name)
+            else
+              let* a = check_expr c None (List.hd args) in
+              match Hir.expr_ty a with
+              | Hir.Handle _ -> Ok (Hir.Call (Hir.Builtin b, [ a ], Hir.Addr, s))
+              | _ -> error s "handle_addr argument must be a handle")
+        | Hir.Handle_from_addr "" ->
+            error s (Printf.sprintf "builtin `%s` expects a type argument" name)
+        | Hir.Handle_from_addr opaque_name -> (
+            if List.length args <> 1 then
+              error s (Printf.sprintf "builtin `%s` expects one argument" name)
+            else
+              let* a = check_expr c None (List.hd args) in
+              match Hir.expr_ty a with
+              | Hir.Addr ->
+                  Ok
+                    (Hir.Call
+                       ( Hir.Builtin (Hir.Handle_from_addr opaque_name),
+                         [ a ],
+                         Hir.Handle opaque_name,
+                         s ))
+              | _ -> error s "handle_from_addr argument must be an addr")
         | _ -> (
             if List.length args <> 2 then
               error s (Printf.sprintf "builtin `%s` expects two arguments" name)

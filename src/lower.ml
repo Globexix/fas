@@ -71,6 +71,7 @@ let rec ty = function
       | Ok 64 -> I64
       | Ok bits -> invalid_arg (Printf.sprintf "unsupported pointer width: %d" bits)
       | Error message -> invalid_arg message)
+  | Hir.Addr | Hir.Handle _ -> Ir.Ptr Ir.I8
   | Hir.Ptr t | Hir.ConstPtr t -> Ir.Ptr (ty t)
   | Hir.Vec (n, t) -> Ir.Vector (n, ty t)
   | Hir.Array (n, t) -> Ir.Array (n, ty t)
@@ -633,6 +634,15 @@ and lower_builtin s b args t span =
   let* vs = exprs s args in
   let rt = ty t in
   match (b, vs) with
+  | Addr_bits, [ x ] ->
+      let id = fresh s in
+      emit s (Ir.Cast (id, "ptrtoint", Ir.value_ty x, x, rt));
+      Ok (Ir.Local (id, rt))
+  | Addr_from_bits, [ x ] ->
+      let id = fresh s in
+      emit s (Ir.Cast (id, "inttoptr", Ir.value_ty x, x, Ir.Ptr Ir.I8));
+      Ok (Ir.Local (id, Ir.Ptr Ir.I8))
+  | (Handle_addr | Handle_from_addr _), [ x ] -> Ok x
   | (Rotl | Rotr), [ x; n ] ->
       let* n = shift_amount s span rt n in
       let* suffix = intrinsic_suffix span rt in
@@ -699,7 +709,8 @@ and lower_builtin s b args t span =
             | Sub_sat, false -> Ok "llvm.ssub.sat."
             | ( ( Rotl | Rotr | Popcount | Ctz | Clz | Mul_hi | Any | All | Select
                 | Shuffle | Permute | Reduce_sum | Reduce_min | Reduce_max | Reduce_and
-                | Reduce_or | Reduce_xor | Compress | Expand ),
+                | Reduce_or | Reduce_xor | Compress | Expand | Addr_bits
+                | Addr_from_bits | Handle_addr | Handle_from_addr _ ),
                 _ ) ->
                 error span "internal error: invalid saturating builtin")
       in

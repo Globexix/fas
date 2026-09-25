@@ -292,6 +292,15 @@ module P = struct
         let* t = ty p in
         let* () = expected p Token.Rbracket in
         Ok (if const then Ast.Ptr_const t else Ast.Ptr t)
+    | Token.Ident name when Names.type_constructor name = Some Names.Address ->
+        ignore (bump p);
+        Ok Ast.Addr
+    | Token.Ident name when Names.type_constructor name = Some Names.Handle ->
+        ignore (bump p);
+        let* () = expected p Token.Lbracket in
+        let* t = ty p in
+        let* () = expected p Token.Rbracket in
+        Ok (Ast.Handle t)
     | Token.Ident name when Names.type_constructor name = Some Names.Array ->
         ignore (bump p);
         let* () = expected p Token.Lbracket in
@@ -1115,6 +1124,15 @@ module P = struct
               let* e = expr p in
               let* () = expected p Token.Rparen in
               Ok (Ast.Cast (kind, t, e, sp))
+          | None, Token.Lbracket
+            when Names.value_operation n = Some Names.Handle_from_addr ->
+              ignore (bump p);
+              let* t = ty p in
+              let* () = expected p Token.Rbracket in
+              let* () = expected p Token.Lparen in
+              let* e = expr p in
+              let* () = expected p Token.Rparen in
+              Ok (Ast.Handle_from_addr (t, e, sp))
           | Some ((Names.Sizeof | Names.Alignof | Names.Offsetof) as operation), _ ->
               let* () = expected p Token.Lbracket in
               let* t = ty p in

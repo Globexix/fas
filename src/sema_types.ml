@@ -29,7 +29,7 @@ let vec_cap_error length (element : Hir.ty) =
       | Hir.Int (Hir.U16 | Hir.I16) -> Some 16
       | Hir.Int (Hir.U32 | Hir.I32) -> Some 32
       | Hir.Int (Hir.U64 | Hir.I64 | Hir.Usize | Hir.Isize) -> Some 64
-      | Hir.Ptr _ | Hir.ConstPtr _ -> Some 64
+      | Hir.Ptr _ | Hir.ConstPtr _ | Hir.Addr | Hir.Handle _ -> Some 64
       | _ -> None
     in
     match lane_bits with
@@ -47,6 +47,12 @@ let rec source_ty named_types = function
   | Ast.Ptr_const ty ->
       let* ty = source_ty named_types ty in
       Ok (Hir.ConstPtr ty)
+  | Ast.Addr -> Ok Hir.Addr
+  | Ast.Handle ty -> (
+      let* ty = source_ty named_types ty in
+      match ty with
+      | Hir.Opaque name -> Ok (Hir.Handle name)
+      | _ -> Error "handle type argument must be an opaque type")
   | Ast.Array (length, ty) ->
       source_aggregate named_types (fun n element -> Hir.Array (n, element)) length ty
   | Ast.Vec (length, ty) -> (

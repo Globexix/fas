@@ -33,8 +33,12 @@ type value_operation =
   | Reduce_xor
   | Compress
   | Expand
+  | Addr_bits
+  | Addr_from_bits
+  | Handle_addr
+  | Handle_from_addr
 
-type type_constructor = Legacy_ptr | Array | Vector
+type type_constructor = Legacy_ptr | Array | Vector | Address | Handle
 type literal = True | False | Null
 
 let scalar_type_names =
@@ -61,6 +65,8 @@ let parser_type_name name =
 
 let type_constructor = function
   | "ptr" -> Some Legacy_ptr
+  | "addr" -> Some Address
+  | "handle" -> Some Handle
   | "arr" -> Some Array
   | "vec" -> Some Vector
   | _ -> None
@@ -114,10 +120,10 @@ let operations =
     ("copy", Reserved);
     ("volatile_load", Reserved);
     ("volatile_store", Reserved);
-    ("addr_bits", Reserved);
-    ("addr_from_bits", Reserved);
-    ("handle_addr", Reserved);
-    ("handle_from_addr", Reserved);
+    ("addr_bits", Value Addr_bits);
+    ("addr_from_bits", Value Addr_from_bits);
+    ("handle_addr", Value Handle_addr);
+    ("handle_from_addr", Value Handle_from_addr);
   ]
 
 let operation_names = List.map fst operations
