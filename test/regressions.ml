@@ -5895,6 +5895,15 @@ let () =
       ( "mul-mismatch",
         "fn f(a u8, b u16) u16 { return mul_hi(a, b) }\n",
         "builtin arguments must have the same type" );
+      ( "ptr-add-sat",
+        "fn f(p ptr[u8]) u8 { return add_sat(p, p) }\n",
+        "builtin arguments must be integers or integer vectors" );
+      ( "ptr-mul-hi",
+        "fn f(p ptr[u8]) u8 { return mul_hi(p, p) }\n",
+        "builtin arguments must be integers or integer vectors" );
+      ( "bool-vec-mul-hi",
+        "fn f(a vec[2,bool]) vec[2,bool] { return mul_hi(a, a) }\n",
+        "builtin arguments must be integers or integer vectors" );
     ];
   List.iter
     (fun (name, ir) ->

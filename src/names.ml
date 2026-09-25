@@ -82,7 +82,6 @@ let operations =
     ("add_sat", Value Add_sat);
     ("sub_sat", Value Sub_sat);
     ("mul_hi", Value Mul_hi);
-    ("mul_hi", Reserved);
     ("reduce_sum", Reserved);
     ("reduce_min", Reserved);
     ("reduce_max", Reserved);
