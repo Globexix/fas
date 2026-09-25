@@ -2899,6 +2899,112 @@ let () =
   run_scratch_budget_tests ();
   run_vector_size_tests ();
   run_layout_accounting_parity_tests ();
+  let run_cross_budget_tests () =
+    let one_diag name outcome =
+      match outcome with
+      | Error [ diagnostic ] -> diagnostic.Diag.message
+      | Error diagnostics ->
+          failwith
+            (name ^ ": actual queue: "
+            ^ String.concat " | " (List.map (fun d -> d.Diag.message) diagnostics))
+      | Ok _ -> failwith (name ^ ": accepted")
+    in
+    let fails_alone name budget_needle limits text =
+      match Sema.check ~limits (expect_ok (Parser.parse (source text))) with
+      | Error diagnostics ->
+          let rendered = Diag.render_all ~source:None diagnostics in
+          if not (contains rendered budget_needle) then
+            failwith (name ^ ": single budget " ^ budget_needle ^ " did not fire")
+      | Ok _ -> failwith (name ^ ": single budget " ^ budget_needle ^ " accepted")
+    in
+    let pair name (limits_a, needle_a) (limits_b, needle_b) limits_both winner text =
+      fails_alone name needle_a limits_a text;
+      fails_alone name needle_b limits_b text;
+      let run () =
+        one_diag name
+          (Sema.check ~limits:limits_both (expect_ok (Parser.parse (source text))))
+      in
+      let message = run () in
+      let again = run () in
+      let third = run () in
+      if again <> message || third <> message then
+        failwith (name ^ ": nondeterministic budget winner");
+      if message <> winner then failwith (name ^ ": winner drifted: " ^ message)
+    in
+    pair "aggregate-vs-object"
+      ({ Limits.default with max_aggregate_elements = 50 }, "max_aggregate_elements")
+      ({ Limits.default with max_object_size = 8 }, "max_object_size")
+      { Limits.default with max_aggregate_elements = 50; max_object_size = 8 }
+      "object size exceeds budget max_object_size of 8 (profile 0.15)"
+      "struct S { big arr[100,u8] }\nfn f() void { s S\n return }\n";
+    pair "strings-vs-aggregate"
+      ( { Limits.default with max_interned_string_bytes = 4 },
+        "max_interned_string_bytes" )
+      ({ Limits.default with max_aggregate_elements = 50 }, "max_aggregate_elements")
+      { Limits.default with max_interned_string_bytes = 4; max_aggregate_elements = 50 }
+      "aggregate element count exceeds the configured limit: budget \
+       max_aggregate_elements of 50 (profile 0.15)"
+      "struct S { big arr[100,u8] }\n\
+       fn f() void { s S\n\
+       q ptr[const u8] = \"hello world\"\n\
+      \ return }\n";
+    pair "typenodes-vs-specializations"
+      ({ Limits.default with max_type_nodes = 4 }, "max_type_nodes")
+      ({ Limits.default with max_specializations = 0 }, "max_specializations")
+      { Limits.default with max_type_nodes = 4; max_specializations = 0 }
+      "function specialization count limit exceeded: budget max_specializations of 0 \
+       (profile 0.15)"
+      "fn two[T](x0 T, x1 T) i64 { return 0 }\n\
+       fn use0(a ptr[u8]) i64 { return two[ptr[u8]](a, a) }\n";
+    let sd_text = "const A arr[4,u8] = { 1, 2, 3, 4 }\nfn f() void { return }\n" in
+    let sd_program = expect_ok (Parser.parse (source sd_text)) in
+    (match
+       Ir.check_static_data_bytes
+         ~limits:{ Limits.default with max_static_data_bytes = 3 }
+         (expect_ok (Lower.lower (expect_ok (Sema.check sd_program))))
+     with
+    | Ok () ->
+        failwith "staticdata-vs-object: single budget max_static_data_bytes accepted"
+    | Error _ -> ());
+    (match
+       Sema.check
+         ~limits:{ Limits.default with max_object_size = 2 }
+         (expect_ok (Parser.parse (source sd_text)))
+     with
+    | Ok _ -> failwith "staticdata-vs-object: single budget max_object_size accepted"
+    | Error _ -> ());
+    let sd_message =
+      one_diag "staticdata-vs-object"
+        (Sema.check
+           ~limits:
+             { Limits.default with max_static_data_bytes = 3; max_object_size = 2 }
+           (expect_ok (Parser.parse (source sd_text))))
+    in
+    if sd_message <> "object size exceeds budget max_object_size of 2 (profile 0.15)"
+    then failwith ("staticdata-vs-object: winner drifted: " ^ sd_message);
+    pair "specializations-vs-aggregate"
+      ({ Limits.default with max_specializations = 0 }, "max_specializations")
+      ({ Limits.default with max_aggregate_elements = 50 }, "max_aggregate_elements")
+      { Limits.default with max_specializations = 0; max_aggregate_elements = 50 }
+      "struct specialization count limit exceeded: budget max_specializations of 0 \
+       (profile 0.15)"
+      "struct Box[T] { a T, b T }\n\
+       struct S { big arr[100,u8] }\n\
+       fn use0(x Box[ptr[u8]]) i64 { return 0 }\n\
+       fn f() void { s S\n\
+      \ return }\n";
+    pair "strings-vs-typenodes"
+      ( { Limits.default with max_interned_string_bytes = 4 },
+        "max_interned_string_bytes" )
+      ({ Limits.default with max_type_nodes = 4 }, "max_type_nodes")
+      { Limits.default with max_interned_string_bytes = 4; max_type_nodes = 4 }
+      "cumulative expanded type nodes exceed budget max_type_nodes of 4 (profile 0.15) \
+       at function specialization `two$spec$7_ptr2_u8`"
+      "fn two[T](x0 T, x1 T) i64 { return 0 }\n\
+       fn use0(a ptr[u8], s ptr[const u8]) i64 { q ptr[const u8] = \"hello world\"\n\
+       return two[ptr[u8]](a, a) }\n"
+  in
   run_top_level_order_tests ();
+  run_cross_budget_tests ();
   run_phase_invariant_tests ();
   print_endline "frontend unit tests: ok"
