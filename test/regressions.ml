@@ -5723,6 +5723,31 @@ let () =
       ("u64-sub-under", "u64", "0", "1", "sub_sat", "ret i64 0\n");
       ("isize-sub", "isize", "-2", "1", "sub_sat", "ret i64 -3\n");
       ("i8-sub-degenerate", "i8", "0", "-128", "sub_sat", "ret i8 127\n");
+      ("umulh-u8-high", "u8", "255", "255", "mul_hi", "ret i8 254\n");
+      ("umulh-u8-mid", "u8", "2", "3", "mul_hi", "ret i8 0\n");
+      ("smulh-i8-high", "i8", "-128", "-128", "mul_hi", "ret i8 64\n");
+      ("smulh-i8-negative", "i8", "-128", "127", "mul_hi", "ret i8 192\n");
+      ("smulh-i8-one", "i8", "-1", "-1", "mul_hi", "ret i8 0\n");
+      ( "umulh-u64-max",
+        "u64",
+        "18446744073709551615",
+        "18446744073709551615",
+        "mul_hi",
+        "ret i64 -2\n" );
+      ( "smulh-i64-min",
+        "i64",
+        "-9223372036854775808",
+        "-9223372036854775808",
+        "mul_hi",
+        "ret i64 4611686018427387904\n" );
+      ("umulh-usize", "usize", "4294967296", "4294967296", "mul_hi", "ret i64 1\n");
+      ("smulh-isize", "isize", "-4294967296", "3", "mul_hi", "ret i64 -1\n");
+      ( "umulh-u32-max",
+        "u32",
+        "4294967295",
+        "4294967295",
+        "mul_hi",
+        "ret i32 4294967294\n" );
     ];
   let sat_vec_add =
     llvm_of
@@ -5748,6 +5773,17 @@ let () =
   in
   if not (contains sat_vec_sub "ret i32 16711780\n") then
     failwith "sat: vec sub lanes drifted";
+  let mul_vec =
+    llvm_of
+      "fn w[N const u32]() u32 { return N }\n\
+       const A u32 = 197375\n\
+       const B u32 = 157549567\n\
+       const AV vec[4,u8] = bitcast[vec[4,u8]](A)\n\
+       const BV vec[4,u8] = bitcast[vec[4,u8]](B)\n\
+       const X vec[4,u8] = mul_hi(AV, BV)\n\
+       fn main() u32 { return w[bitcast[u32](X)]() }\n"
+  in
+  if not (contains mul_vec "ret i32 65790\n") then failwith "mul_hi: vec lanes drifted";
   let sat_runtime =
     llvm_of
       "fn f(a vec[4,u8], b vec[4,u8]) vec[4,u8] { return add_sat(a, b) }\n\
@@ -5775,6 +5811,43 @@ let () =
     ];
   if contains sat_runtime "poison" || contains sat_runtime "undef" then
     failwith "sat: undefined value in computed results";
+  let mul_runtime =
+    llvm_of
+      "fn f(a vec[4,u8], b vec[4,u8]) vec[4,u8] { return mul_hi(a, b) }\n\
+       fn g(a i32, b i32) i32 { return mul_hi(a, b) }\n\
+       fn h(a u32, b u32) u32 { return mul_hi(a, b) }\n\
+       fn i(a vec[3,i32], b vec[3,i32]) vec[3,i32] { return mul_hi(a, b) }\n\
+       fn m(a u64, b u64) u64 { return mul_hi(a, b) }\n\
+       fn n(a i64, b i64) i64 { return mul_hi(a, b) }\n\
+       fn main() i32 { return 0 }\n"
+  in
+  List.iter
+    (fun needle ->
+      if not (contains mul_runtime needle) then failwith ("mul_hi: missing " ^ needle))
+    [
+      "zext <4 x i8> %";
+      "mul <4 x i16> %";
+      "lshr <4 x i16> %";
+      "<i16 8, i16 8, i16 8, i16 8>";
+      "sext i32 %";
+      "mul i64 %";
+      "ashr i64 %";
+      "trunc i64 %";
+      "zext i32 %";
+      "lshr i64 %";
+      "sext <3 x i32> %";
+      "mul <3 x i64> %";
+      "ashr <3 x i64> %";
+      "trunc <3 x i64> %";
+      "zext i64 %";
+      "sext i64 %";
+      "mul i128 %";
+      "lshr i128 %";
+      "ashr i128 %";
+      "trunc i128 %";
+    ];
+  if contains mul_runtime "poison" || contains mul_runtime "undef" then
+    failwith "mul_hi: undefined value in computed results";
   List.iter
     (fun (name, text, expected) ->
       match semantic_messages text with
@@ -5813,6 +5886,15 @@ let () =
       ( "vec-const-bool",
         "const M vec[2,bool] = splat(true)\nconst X vec[2,bool] = add_sat(M, M)\n",
         "builtin arguments must be integers or integer vectors" );
+      ( "mul-arity",
+        "fn f(a u8) u8 { return mul_hi(a) }\n",
+        "builtin `mul_hi` expects two arguments" );
+      ( "mul-kind",
+        "fn f(m vec[2,bool]) vec[2,bool] { return mul_hi(m, m) }\n",
+        "builtin arguments must be integers or integer vectors" );
+      ( "mul-mismatch",
+        "fn f(a u8, b u16) u16 { return mul_hi(a, b) }\n",
+        "builtin arguments must have the same type" );
     ];
   List.iter
     (fun (name, ir) ->

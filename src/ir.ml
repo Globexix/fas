@@ -4,6 +4,7 @@ type ty =
   | I16
   | I32
   | I64
+  | I128
   | Ptr of ty
   | Vector of int * ty
   | Struct of string
@@ -110,6 +111,7 @@ let rec ty_name = function
   | I16 -> "i16"
   | I32 -> "i32"
   | I64 -> "i64"
+  | I128 -> "i128"
   | Ptr _ -> "ptr"
   | Vector (n, t) -> Printf.sprintf "<%d x %s>" n (ty_name t)
   | Struct n -> struct_name n
@@ -145,6 +147,7 @@ let integer_width = function
   | I16 -> Some 16
   | I32 -> Some 32
   | I64 -> Some 64
+  | I128 -> Some 128
   | Ptr _ | Vector _ | Struct _ | Array _ | Void -> None
 
 let integer_shape = function
@@ -168,13 +171,13 @@ let rec valid_value_type = function
   | Void -> false
   | Vector (lanes, elem) -> lanes > 0 && (is_integer elem || is_pointer elem)
   | Array (length, elem) -> length >= 0 && valid_value_type elem
-  | I1 | I8 | I16 | I32 | I64 | Ptr _ | Struct _ -> true
+  | I1 | I8 | I16 | I32 | I64 | I128 | Ptr _ | Struct _ -> true
 
 let integer_constant_fits ty value =
   match integer_width ty with
   | None -> false
   | Some 1 -> value = 0L || value = 1L
-  | Some 64 -> true
+  | Some 64 | Some 128 -> true
   | Some width ->
       let minimum = Int64.neg (Int64.shift_left 1L (width - 1)) in
       let maximum = Int64.pred (Int64.shift_left 1L width) in
@@ -230,7 +233,7 @@ let validate_function struct_names globals (func : func) =
   let rec references_defined_type = function
     | Struct name -> Hashtbl.mem struct_names name
     | Array (_, elem) | Vector (_, elem) -> references_defined_type elem
-    | Ptr _ | I1 | I8 | I16 | I32 | I64 | Void -> true
+    | Ptr _ | I1 | I8 | I16 | I32 | I64 | I128 | Void -> true
   in
   let valid_module_value_type ty = valid_value_type ty && references_defined_type ty in
   let block_ids = Hashtbl.create (List.length func.blocks) in
@@ -474,8 +477,9 @@ let validate_function struct_names globals (func : func) =
         let* () =
           match (result, ty) with
           | None, Void
-          | Some _, (I1 | I8 | I16 | I32 | I64 | Ptr _ | Vector _ | Struct _ | Array _)
-            ->
+          | ( Some _,
+              (I1 | I8 | I16 | I32 | I64 | I128 | Ptr _ | Vector _ | Struct _ | Array _)
+            ) ->
               Ok ()
           | None, _ -> fail "block %d discards a non-void call result" block_id
           | Some _, Void -> fail "block %d assigns a void call result" block_id
@@ -754,7 +758,7 @@ let validate module_ =
   let rec references_defined_type = function
     | Struct name -> Hashtbl.mem struct_names name
     | Array (_, elem) | Vector (_, elem) -> references_defined_type elem
-    | Ptr _ | I1 | I8 | I16 | I32 | I64 | Void -> true
+    | Ptr _ | I1 | I8 | I16 | I32 | I64 | I128 | Void -> true
   in
   let validate_struct (struct_def : struct_def) =
     let rec validate_fields = function
@@ -787,7 +791,7 @@ let validate module_ =
         let rec validate_type = function
           | Struct referenced -> validate_struct_cycles referenced
           | Array (_, elem) | Vector (_, elem) -> validate_type elem
-          | Ptr _ | I1 | I8 | I16 | I32 | I64 | Void -> Ok ()
+          | Ptr _ | I1 | I8 | I16 | I32 | I64 | I128 | Void -> Ok ()
         in
         let rec validate_fields = function
           | [] -> Ok ()
@@ -987,6 +991,7 @@ let emit_ty sink t =
     | I16 -> sink.text "i16"
     | I32 -> sink.text "i32"
     | I64 -> sink.text "i64"
+    | I128 -> sink.text "i128"
     | Ptr _ -> sink.text "ptr"
     | Vector (n, t) ->
         sink.text "<";
@@ -1596,6 +1601,7 @@ let rec static_type_bytes structs visiting ty =
   | I16 -> Ok 2
   | I32 -> Ok 4
   | I64 -> Ok 8
+  | I128 -> Ok 16
   | Void -> Ok 0
   | Ptr _ -> Ok Target_layout.current.pointer_size
   | Struct name ->
@@ -1638,6 +1644,7 @@ let rec static_type_bytes structs visiting ty =
           | I16 -> Ok 16
           | I32 -> Ok 32
           | I64 -> Ok 64
+          | I128 -> Ok 128
           | Ptr _ -> Ok (Target_layout.current.pointer_size * 8)
           | _ -> Error ()
         in

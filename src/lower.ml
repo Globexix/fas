@@ -684,7 +684,7 @@ and lower_builtin s b args t span =
             | Add_sat, false -> Ok "llvm.sadd.sat."
             | Sub_sat, true -> Ok "llvm.usub.sat."
             | Sub_sat, false -> Ok "llvm.ssub.sat."
-            | (Rotl | Rotr | Popcount | Ctz | Clz), _ ->
+            | (Rotl | Rotr | Popcount | Ctz | Clz | Mul_hi), _ ->
                 error span "internal error: invalid saturating builtin")
       in
       let id = fresh s in
@@ -696,6 +696,62 @@ and lower_builtin s b args t span =
              base ^ suffix,
              [ (rt, Ir.No_extension, x); (rt, Ir.No_extension, y) ] ));
       Ok (Ir.Local (id, rt))
+  | Mul_hi, [ x; y ] -> (
+      let rec elem_of = function
+        | Hir.Int k -> Some k
+        | Hir.Vec (_, element) -> elem_of element
+        | _ -> None
+      in
+      match elem_of t with
+      | None ->
+          error span "internal error: multiply-high builtin requires integer operands"
+      | Some k ->
+          let unsigned =
+            match k with
+            | Hir.U8 | U16 | U32 | U64 | Usize -> true
+            | Hir.I8 | I16 | I32 | I64 | Isize -> false
+          in
+          let elem_ty, lanes =
+            match rt with Ir.Vector (n, e) -> (e, n) | e -> (e, 1)
+          in
+          let* elem_bits = width span elem_ty in
+          let* wide_elem =
+            match elem_bits with
+            | 8 -> Ok Ir.I16
+            | 16 -> Ok Ir.I32
+            | 32 -> Ok Ir.I64
+            | 64 -> Ok Ir.I128
+            | _ -> error span "internal error: multiply-high operand width"
+          in
+          let wide =
+            match rt with
+            | Ir.Vector (n, _) -> Ir.Vector (n, wide_elem)
+            | _ -> wide_elem
+          in
+          let cast_kind = if unsigned then "zext" else "sext" in
+          let ex = fresh s in
+          emit s (Ir.Cast (ex, cast_kind, rt, x, wide));
+          let ey = fresh s in
+          emit s (Ir.Cast (ey, cast_kind, rt, y, wide));
+          let product = fresh s in
+          emit s
+            (Ir.Bin (product, Ir.Mul, wide, Ir.Local (ex, wide), Ir.Local (ey, wide)));
+          let amount =
+            if lanes > 1 then
+              Ir.Const_vector (wide, List.init lanes (fun _ -> Int64.of_int elem_bits))
+            else Ir.Const (wide, Int64.of_int elem_bits)
+          in
+          let high = fresh s in
+          emit s
+            (Ir.Bin
+               ( high,
+                 (if unsigned then Ir.Lshr else Ir.Ashr),
+                 wide,
+                 Ir.Local (product, wide),
+                 amount ));
+          let id = fresh s in
+          emit s (Ir.Cast (id, "trunc", wide, Ir.Local (high, wide), rt));
+          Ok (Ir.Local (id, rt)))
   | _ -> error span "internal error: invalid builtin arity"
 
 and lower_short s op a b =

@@ -33,7 +33,15 @@ def bounds(bits, signed):
 def emit(op, bits, signed, a, b, tag, ty=None):
     lo, hi = bounds(bits, signed)
     assert lo <= a <= hi and lo <= b <= hi
-    result = a + b if op == "add" else a - b
+    if op == "add":
+        result = a + b
+        builtin = "add_sat"
+    elif op == "sub":
+        result = a - b
+        builtin = "sub_sat"
+    else:
+        result = (a * b) >> bits
+        builtin = "mul_hi"
     expected = clamp(result, lo, hi)
     assert lo <= expected <= hi
     if ty is None:
@@ -42,7 +50,6 @@ def emit(op, bits, signed, a, b, tag, ty=None):
     checks.append((tag, op, bits, signed, a, b, expected))
     lines.append(f"  a{idx} {ty} = {a}")
     lines.append(f"  b{idx} {ty} = {b}")
-    builtin = "add_sat" if op == "add" else "sub_sat"
     lines.append(f"  if {builtin}(a{idx}, b{idx}) != {expected} {{ return {idx} }}")
 
 
@@ -76,7 +83,7 @@ for bits in (8, 16, 32, 64):
         for _ in range(6):
             pairs.append((rng.randint(lo, hi), rng.randint(lo, hi)))
         for a, b in pairs:
-            for op in ("add", "sub"):
+            for op in ("add", "sub", "mulhi"):
                 emit(op, bits, signed, a, b, f"{bits}-{'s' if signed else 'u'}")
 
 for signed, ty in ((False, "usize"), (True, "isize")):
@@ -88,14 +95,19 @@ for signed, ty in ((False, "usize"), (True, "isize")):
     for _ in range(4):
         pairs.append((rng.randint(lo, hi), rng.randint(lo, hi)))
     for a, b in pairs:
-        for op in ("add", "sub"):
+        for op in ("add", "sub", "mulhi"):
             emit(op, 64, signed, a, b, f"tsize-{'s' if signed else 'u'}", ty=ty)
 
 
 def emit_vec(op, bits, signed, xs, ys, tag):
     lo, hi = bounds(bits, signed)
-    builtin = "add_sat" if op == "add" else "sub_sat"
-    expected = [clamp(x + y if op == "add" else x - y, lo, hi) for x, y in zip(xs, ys)]
+    builtin = {"add": "add_sat", "sub": "sub_sat", "mulhi": "mul_hi"}[op]
+    if op == "add":
+        expected = [clamp(x + y, lo, hi) for x, y in zip(xs, ys)]
+    elif op == "sub":
+        expected = [clamp(x - y, lo, hi) for x, y in zip(xs, ys)]
+    else:
+        expected = [clamp((x * y) >> bits, lo, hi) for x, y in zip(xs, ys)]
     ty = ("i" if signed else "u") + str(bits)
     idx = len(checks)
     checks.append((tag, op, bits, signed, xs, ys, expected))
@@ -117,6 +129,10 @@ emit_vec("add", 32, True, [-2147483648, -1, 2147483647, 0], [-1, 1, 1, 0], "vec-
 emit_vec("sub", 32, True, [-2147483648, 2147483647, 0, -5], [1, -1, 0, 10], "vec-i32")
 emit_vec("add", 64, True, [-9223372036854775808, 9223372036854775807, 4, -4], [-1, 1, 5, -5], "vec-i64")
 emit_vec("sub", 64, True, [-9223372036854775808, 9223372036854775807, 4, -4], [1, -1, -5, 5], "vec-i64")
+emit_vec("mulhi", 8, False, [255, 2, 3, 0], [255, 3, 100, 9], "vec-u8")
+emit_vec("mulhi", 32, True, [-2147483648, -1, 2147483647, 1000], [-2147483648, -1, 2147483647, -1000], "vec-i32")
+emit_vec("mulhi", 64, True, [-9223372036854775808, 9223372036854775807, 4294967296, -3], [-1, 2, 4294967296, 7], "vec-i64")
+emit_vec("mulhi", 64, False, [18446744073709551615, 4294967296, 3, 0], [18446744073709551615, 4294967296, 7, 9], "vec-u64")
 
 lines.append("  return 0")
 lines.append("}")
@@ -128,7 +144,7 @@ with open(f"{out}/oracle.txt", "w") as handle:
 EOF
 
 "$OCAML_FAS" --emit-llvm "$SAT_TMP/sat.fas" >"$SAT_TMP/sat.ll"
-for needle in 'llvm.uadd.sat' 'llvm.sadd.sat' 'llvm.usub.sat' 'llvm.ssub.sat'; do
+for needle in 'llvm.uadd.sat' 'llvm.sadd.sat' 'llvm.usub.sat' 'llvm.ssub.sat' 'mul i128' 'mul <4 x i16>'; do
   if ! grep -q "$needle" "$SAT_TMP/sat.ll"; then
     printf 'saturating arithmetic: missing %s in runtime IR\n' "$needle" >&2
     exit 1

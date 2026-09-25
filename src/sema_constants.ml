@@ -102,6 +102,49 @@ let sat_apply name kind x y =
         then min_s
         else Int64.sub xs ys
 
+let mulhi_apply kind x y =
+  let bits = int_bits kind in
+  if bits < 64 then
+    let signed = not (is_unsigned (Hir.Int kind)) in
+    let xs = if signed then sign_extend_value (Hir.Int kind) x else x in
+    let ys = if signed then sign_extend_value (Hir.Int kind) y else y in
+    let product = Int64.mul xs ys in
+    if signed then Int64.shift_right product bits
+    else Int64.shift_right_logical product bits
+  else if is_unsigned (Hir.Int kind) then
+    let al = Int64.logand x 0xFFFFFFFFL in
+    let ah = Int64.shift_right_logical x 32 in
+    let bl = Int64.logand y 0xFFFFFFFFL in
+    let bh = Int64.shift_right_logical y 32 in
+    let ll = Int64.mul al bl in
+    let lh = Int64.mul al bh in
+    let hl = Int64.mul ah bl in
+    let hh = Int64.mul ah bh in
+    let mid =
+      Int64.add
+        (Int64.add (Int64.shift_right_logical ll 32) (Int64.logand lh 0xFFFFFFFFL))
+        (Int64.logand hl 0xFFFFFFFFL)
+    in
+    Int64.add hh
+      (Int64.add
+         (Int64.shift_right_logical lh 32)
+         (Int64.add
+            (Int64.shift_right_logical hl 32)
+            (Int64.shift_right_logical mid 32)))
+  else
+    let x0 = Int64.logand x 0xFFFFFFFFL in
+    let x1 = Int64.shift_right x 32 in
+    let y0 = Int64.logand y 0xFFFFFFFFL in
+    let y1 = Int64.shift_right y 32 in
+    let z0 = Int64.mul x0 y0 in
+    let t = Int64.add (Int64.mul x1 y0) (Int64.shift_right_logical z0 32) in
+    let z1 = Int64.add (Int64.logand t 0xFFFFFFFFL) (Int64.mul x0 y1) in
+    Int64.add (Int64.mul x1 y1)
+      (Int64.add (Int64.shift_right t 32) (Int64.shift_right z1 32))
+
+let sat_or_mulhi name kind x y =
+  if name = "mul_hi" then mulhi_apply kind x y else sat_apply name kind x y
+
 let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve consts
     expected ?(check_only = false) ?(validate_dead = true) = function
   | Ast.Int_lit (raw, s) ->
@@ -439,9 +482,9 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
             let b = match t with Hir.Int q -> int_bits q | _ -> 64 in
             Ok (t, Int64.of_int (leading64 x - (64 - b)))
           else error s "builtin argument must be an integer"
-      | ("add_sat" | "sub_sat"), [ (t, x); (t2, y) ] -> (
+      | ("add_sat" | "sub_sat" | "mul_hi"), [ (t, x); (t2, y) ] -> (
           match t with
-          | Hir.Int kind when t = t2 -> Ok (t, mask_value t (sat_apply name kind x y))
+          | Hir.Int kind when t = t2 -> Ok (t, mask_value t (sat_or_mulhi name kind x y))
           | Hir.Int _ -> error s "builtin arguments must have the same type"
           | _ -> error s "builtin arguments must be integers or integer vectors")
       | _ -> error s "invalid constant builtin call")
@@ -667,7 +710,7 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
         in
         Ok (ty, List.map (fun value -> lane_mask element (apply value)) values)
   | Ast.Call (Ast.Ident (name, _), [ left; right ], span)
-    when List.mem name [ "add_sat"; "sub_sat" ] ->
+    when List.mem name [ "add_sat"; "sub_sat"; "mul_hi" ] ->
       let* left_ty, left_values, right_ty, right_values =
         match (unresolved_shape_of left, unresolved_shape_of right) with
         | Some _, None ->
@@ -691,7 +734,7 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
       Ok
         ( left_ty,
           List.map2
-            (fun a b -> lane_mask (Hir.Int kind) (sat_apply name kind a b))
+            (fun a b -> lane_mask (Hir.Int kind) (sat_or_mulhi name kind a b))
             left_values right_values )
   | Ast.Ternary (condition, yes, no, span) ->
       let* condition_ty, condition_value =
