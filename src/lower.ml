@@ -215,7 +215,7 @@ let value_const s t value =
       let inserted = fresh s in
       emit s
         (Ir.Insert
-           (inserted, t, Ir.Undef t, Ir.Const (Ir.I32, 0L), Ir.Const (elem, value)));
+           (inserted, t, Ir.Zero t, Ir.Const (Ir.I32, 0L), Ir.Const (elem, value)));
       let shuffled = fresh s in
       emit s (Ir.Shuffle_zero (shuffled, t, Ir.Local (inserted, t)));
       Ir.Local (shuffled, t)
@@ -572,7 +572,7 @@ let rec expr s = function
       let* x = expr s e in
       let vt = ty t in
       let i1 = fresh s in
-      emit s (Ir.Insert (i1, vt, Ir.Undef vt, Ir.Const (Ir.I32, 0L), x));
+      emit s (Ir.Insert (i1, vt, Ir.Zero vt, Ir.Const (Ir.I32, 0L), x));
       let i2 = fresh s in
       emit s (Ir.Shuffle_zero (i2, vt, Ir.Local (i1, vt)));
       Ok (Ir.Local (i2, vt))

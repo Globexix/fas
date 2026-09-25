@@ -5641,6 +5641,45 @@ let () =
   in
   if contains shift_vector_broadcast "poison" || contains shift_vector_broadcast "undef"
   then failwith "shift-vector-broadcast: undefined operand in count broadcast";
+  let defined_construction =
+    llvm_of
+      "fn main() i64 {\n\
+      \  a vec[4, u32] = splat(6)\n\
+      \  b vec[4, u32] = splat(2)\n\
+      \  s vec[4, u32] = a << b\n\
+      \  m vec[4, bool] = s == splat(24)\n\
+      \  n vec[4, bool] = !m\n\
+      \  q vec[4, u32] = a / b\n\
+      \  z vec[4, u64] = zext[vec[4,u64]](b)\n\
+      \  c vec[4, i32] = splat(-6)\n\
+      \  d vec[4, i32] = splat(2)\n\
+      \  e vec[4, i32] = c / d\n\
+      \  if n[0] { return 1 }\n\
+      \  if !m[1] { return 2 }\n\
+      \  if q[2] != 3 { return 3 }\n\
+      \  if z[3] != 2 { return 4 }\n\
+      \  if s[0] != 24 { return 5 }\n\
+      \  if e[0] != -3 { return 6 }\n\
+       return 0\n\
+       }\n"
+  in
+  List.iter
+    (fun needle ->
+      if not (contains defined_construction needle) then
+        failwith ("defined-construction: missing " ^ needle))
+    [
+      "shl <4 x i32>";
+      "icmp eq <4 x i32>";
+      "xor <4 x i1>";
+      "zext <4 x i32>";
+      "udiv <4 x i32>";
+      "sdiv <4 x i32>";
+      "insertelement <4 x i32> zeroinitializer, i32 6, i32 0\n";
+      "insertelement <4 x i1> zeroinitializer, i1 true, i32 0\n";
+      "insertelement <4 x i32> zeroinitializer, i32 2147483648, i32 0\n";
+    ];
+  if contains defined_construction "poison" || contains defined_construction "undef"
+  then failwith "defined-construction: undefined seed in computed values";
   List.iter
     (fun (name, ir) ->
       if contains ir " nuw " || contains ir " nsw " || contains ir " exact " then
