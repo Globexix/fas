@@ -1538,7 +1538,10 @@ let intrinsic_decls funcs =
 let lower (p : Hir.program) =
   let* () =
     match Target_layout.pointer_integer_bits Target_layout.current with
-    | Ok _ -> Ok ()
+    | Ok 32 | Ok 64 -> Ok ()
+    | Ok bits ->
+        error Span.synthetic
+          (Printf.sprintf "internal error: unsupported pointer width: %d" bits)
     | Error message -> error Span.synthetic ("internal error: " ^ message)
   in
   let no_layout t m =
