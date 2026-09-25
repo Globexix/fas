@@ -5849,6 +5849,41 @@ let () =
   if contains mul_runtime "poison" || contains mul_runtime "undef" then
     failwith "mul_hi: undefined value in computed results";
   List.iter
+    (fun (name, op, needle) ->
+      let ir =
+        llvm_of
+          (Printf.sprintf
+             "fn w[N const u32]() u32 { return N }\n\
+              const A u32 = 197375\n\
+              const AV vec[4,u8] = bitcast[vec[4,u8]](A)\n\
+              const X vec[4,u8] = %s(AV)\n\
+              fn main() u32 { return w[bitcast[u32](X)]() }\n"
+             op)
+      in
+      if not (contains ir needle) then failwith ("bit-count: " ^ name ^ " drifted"))
+    [
+      ("vec-popcount", "popcount", "ret i32 131336\n");
+      ("vec-clz", "clz", "ret i32 134612480\n");
+      ("vec-ctz", "ctz", "ret i32 134217984\n");
+    ];
+  let bitcount_runtime =
+    llvm_of
+      "fn f(a vec[4,u8]) vec[4,u8] { return popcount(a) }\n\
+       fn g(a vec[2,i32]) vec[2,i32] { return clz(a) }\n\
+       fn h(a vec[3,i64]) vec[3,i64] { return ctz(a) }\n\
+       fn i(a u32) u32 { return popcount(a) }\n\
+       fn main() i32 { return 0 }\n"
+  in
+  List.iter
+    (fun needle ->
+      if not (contains bitcount_runtime needle) then
+        failwith ("bit-count: missing " ^ needle))
+    [
+      "@llvm.ctpop.v4i8("; "@llvm.ctlz.v2i32("; "@llvm.cttz.v3i64("; "@llvm.ctpop.i32(";
+    ];
+  if contains bitcount_runtime "poison" || contains bitcount_runtime "undef" then
+    failwith "bit-count: undefined value in computed results";
+  List.iter
     (fun (name, text, expected) ->
       match semantic_messages text with
       | [ message ] when message = expected -> ()
@@ -5904,6 +5939,18 @@ let () =
       ( "bool-vec-mul-hi",
         "fn f(a vec[2,bool]) vec[2,bool] { return mul_hi(a, a) }\n",
         "builtin arguments must be integers or integer vectors" );
+      ( "bitcount-bool-vec",
+        "fn f(m vec[2,bool]) vec[2,bool] { return popcount(m) }\n",
+        "builtin argument must be an integer or an integer vector" );
+      ( "bitcount-ptr",
+        "fn f(p ptr[u8]) u8 { return clz(p) }\n",
+        "builtin argument must be an integer or an integer vector" );
+      ( "bitcount-bool-scalar",
+        "fn f() bool { return popcount(true) }\n",
+        "builtin argument must be an integer or an integer vector" );
+      ( "bitcount-const-bool",
+        "const X bool = clz(true)\nfn main() i32 { return 0 }\n",
+        "builtin argument must be an integer or an integer vector" );
     ];
   List.iter
     (fun (name, ir) ->

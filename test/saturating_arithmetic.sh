@@ -53,6 +53,25 @@ def emit(op, bits, signed, a, b, tag, ty=None):
     lines.append(f"  if {builtin}(a{idx}, b{idx}) != {expected} {{ return {idx} }}")
 
 
+def emit_unary(op, bits, signed, a, tag, ty=None):
+    lo, hi = bounds(bits, signed)
+    assert lo <= a <= hi
+    pattern = a & ((1 << bits) - 1)
+    if op == "popcount":
+        expected = bin(pattern).count("1")
+    elif op == "clz":
+        expected = bits - pattern.bit_length()
+    else:
+        expected = (pattern & -pattern).bit_length() - 1 if pattern else bits
+    assert 0 <= expected <= bits
+    if ty is None:
+        ty = ("i" if signed else "u") + str(bits)
+    idx = len(checks)
+    checks.append((tag, op, bits, signed, a, expected))
+    lines.append(f"  a{idx} {ty} = {a}")
+    lines.append(f"  if {op}(a{idx}) != {expected} {{ return {idx} }}")
+
+
 for bits in (8, 16, 32, 64):
     for signed in (False, True):
         lo, hi = bounds(bits, signed)
@@ -85,6 +104,8 @@ for bits in (8, 16, 32, 64):
         for a, b in pairs:
             for op in ("add", "sub", "mulhi"):
                 emit(op, bits, signed, a, b, f"{bits}-{'s' if signed else 'u'}")
+            for op in ("popcount", "clz", "ctz"):
+                emit_unary(op, bits, signed, a, f"{bits}-{'s' if signed else 'u'}")
 
 for signed, ty in ((False, "usize"), (True, "isize")):
     lo, hi = bounds(64, signed)
@@ -97,8 +118,31 @@ for signed, ty in ((False, "usize"), (True, "isize")):
     for a, b in pairs:
         for op in ("add", "sub", "mulhi"):
             emit(op, 64, signed, a, b, f"tsize-{'s' if signed else 'u'}", ty=ty)
+        for op in ("popcount", "clz", "ctz"):
+            emit_unary(op, 64, signed, a, f"tsize-{'s' if signed else 'u'}", ty=ty)
 
 
+def emit_vec_unary(op, bits, signed, xs, tag):
+    lo, hi = bounds(bits, signed)
+    expected = []
+    for x in xs:
+        assert lo <= x <= hi
+        pattern = x & ((1 << bits) - 1)
+        if op == "popcount":
+            expected.append(bin(pattern).count("1"))
+        elif op == "clz":
+            expected.append(bits - pattern.bit_length())
+        else:
+            expected.append((pattern & -pattern).bit_length() - 1 if pattern else bits)
+    ty = ("i" if signed else "u") + str(bits)
+    idx = len(checks)
+    checks.append((tag, op, bits, signed, xs, expected))
+    lines.append(f"  va{idx} vec[4, {ty}] = splat(0)")
+    for lane in range(4):
+        lines.append(f"  va{idx}[{lane}] = {xs[lane]}")
+    lines.append(f"  vr{idx} vec[4, {ty}] = {op}(va{idx})")
+    for lane in range(4):
+        lines.append(f"  if vr{idx}[{lane}] != {expected[lane]} {{ return {idx} }}")
 def emit_vec(op, bits, signed, xs, ys, tag):
     lo, hi = bounds(bits, signed)
     builtin = {"add": "add_sat", "sub": "sub_sat", "mulhi": "mul_hi"}[op]
@@ -133,6 +177,9 @@ emit_vec("mulhi", 8, False, [255, 2, 3, 0], [255, 3, 100, 9], "vec-u8")
 emit_vec("mulhi", 32, True, [-2147483648, -1, 2147483647, 1000], [-2147483648, -1, 2147483647, -1000], "vec-i32")
 emit_vec("mulhi", 64, True, [-9223372036854775808, 9223372036854775807, 4294967296, -3], [-1, 2, 4294967296, 7], "vec-i64")
 emit_vec("mulhi", 64, False, [18446744073709551615, 4294967296, 3, 0], [18446744073709551615, 4294967296, 7, 9], "vec-u64")
+emit_vec_unary("popcount", 8, False, [255, 2, 3, 0], "vec-u8")
+emit_vec_unary("clz", 8, False, [255, 2, 3, 0], "vec-u8")
+emit_vec_unary("ctz", 32, True, [-2147483648, 0, 1, 6], "vec-i32")
 
 lines.append("  return 0")
 lines.append("}")
@@ -144,7 +191,7 @@ with open(f"{out}/oracle.txt", "w") as handle:
 EOF
 
 "$OCAML_FAS" --emit-llvm "$SAT_TMP/sat.fas" >"$SAT_TMP/sat.ll"
-for needle in 'llvm.uadd.sat' 'llvm.sadd.sat' 'llvm.usub.sat' 'llvm.ssub.sat' 'mul i128' 'mul <4 x i16>'; do
+for needle in 'llvm.uadd.sat' 'llvm.sadd.sat' 'llvm.usub.sat' 'llvm.ssub.sat' 'mul i128' 'mul <4 x i16>' 'llvm.ctpop.i8' 'llvm.ctlz.i32' 'llvm.cttz.i64' 'llvm.ctpop.v4i8'; do
   if ! grep -q "$needle" "$SAT_TMP/sat.ll"; then
     printf 'saturating arithmetic: missing %s in runtime IR\n' "$needle" >&2
     exit 1

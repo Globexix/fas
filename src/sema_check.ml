@@ -751,9 +751,16 @@ and check_call c _expected fn args s =
               error s (Printf.sprintf "builtin `%s` expects one argument" name)
             else
               let* a = check_expr c None (List.hd args) in
-              if is_int (Hir.expr_ty a) then
+              let valid_operand =
+                is_int (Hir.expr_ty a)
+                ||
+                match Hir.expr_ty a with
+                | Hir.Vec (_, Hir.Int _) -> true
+                | _ -> false
+              in
+              if valid_operand then
                 Ok (Hir.Call (Hir.Builtin b, [ a ], Hir.expr_ty a, s))
-              else error s "builtin argument must be an integer"
+              else error s "builtin argument must be an integer or an integer vector"
         | Hir.Add_sat | Hir.Sub_sat | Hir.Mul_hi ->
             if List.length args <> 2 then
               error s (Printf.sprintf "builtin `%s` expects two arguments" name)

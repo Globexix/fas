@@ -468,20 +468,20 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
           Ok (t, mask_value t v)
       | "popcount", [ (t, x) ] ->
           if is_int t then Ok (t, Int64.of_int (popcount64 x))
-          else error s "builtin argument must be an integer"
+          else error s "builtin argument must be an integer or an integer vector"
       | ("ctz" | "clz"), [ (t, 0L) ] ->
           if is_int t then
             let bits = match t with Hir.Int q -> int_bits q | _ -> 64 in
             Ok (t, Int64.of_int bits)
-          else error s "builtin argument must be an integer"
+          else error s "builtin argument must be an integer or an integer vector"
       | "ctz", [ (t, x) ] ->
           if is_int t then Ok (t, Int64.of_int (trailing64 x))
-          else error s "builtin argument must be an integer"
+          else error s "builtin argument must be an integer or an integer vector"
       | "clz", [ (t, x) ] ->
           if is_int t then
             let b = match t with Hir.Int q -> int_bits q | _ -> 64 in
             Ok (t, Int64.of_int (leading64 x - (64 - b)))
-          else error s "builtin argument must be an integer"
+          else error s "builtin argument must be an integer or an integer vector"
       | ("add_sat" | "sub_sat" | "mul_hi"), [ (t, x); (t2, y) ] -> (
           match t with
           | Hir.Int kind when t = t2 -> Ok (t, mask_value t (sat_or_mulhi name kind x y))
@@ -679,6 +679,26 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
               List.map2
                 (fun left right -> lane_mask result_element (apply left right))
                 left_values right_values ))
+  | Ast.Call (Ast.Ident (name, _), [ value ], span)
+    when List.mem name [ "popcount"; "clz"; "ctz" ] ->
+      let* ty, values = evaluate expected value in
+      let* kind =
+        match lane_type ty with
+        | Some (Hir.Int k) -> Ok k
+        | _ -> error span "builtin argument must be an integer or an integer vector"
+      in
+      let apply value =
+        match name with
+        | "popcount" -> Int64.of_int (popcount64 value)
+        | "ctz" ->
+            if value = 0L then Int64.of_int (int_bits kind)
+            else Int64.of_int (trailing64 value)
+        | _ ->
+            let bits = int_bits kind in
+            if value = 0L then Int64.of_int bits
+            else Int64.of_int (leading64 value - (64 - bits))
+      in
+      Ok (ty, List.map (fun value -> lane_mask (Hir.Int kind) (apply value)) values)
   | Ast.Call (Ast.Ident (name, _), [ value; count ], span)
     when List.mem name [ "rotl"; "rotr" ] ->
       let* ty, values = evaluate expected value in
