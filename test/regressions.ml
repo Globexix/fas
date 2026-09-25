@@ -6251,6 +6251,27 @@ let () =
     [ "insertelement <4 x i8>"; "select i1"; "extractelement <4 x i8>" ];
   if contains compaction_runtime "poison" || contains compaction_runtime "undef" then
     failwith "compaction: undefined value in computed results";
+  let lane_trap_runtime =
+    llvm_of
+      "fn f(a vec[4,u8], i usize) u8 { return a[i] }\n\
+       fn g(a vec[4,u8], i usize) void { a[i] = 9 }\n\
+       fn h(a vec[4,i32], i i64) void { a[i] += 1 }\n\
+       fn main() i32 { return 0 }\n"
+  in
+  List.iter
+    (fun needle ->
+      if not (contains lane_trap_runtime needle) then
+        failwith ("lane trap: missing " ^ needle))
+    [
+      "icmp uge i64";
+      "icmp slt i64";
+      "icmp sge i64";
+      "llvm.trap";
+      "extractelement <4 x i8>";
+      "insertelement <4 x i8>";
+    ];
+  if contains lane_trap_runtime "poison" || contains lane_trap_runtime "undef" then
+    failwith "lane trap: undefined value in computed results";
   List.iter
     (fun (name, text, expected) ->
       match semantic_messages text with
@@ -6450,6 +6471,21 @@ let () =
       ( "expand-lane-count",
         "fn f(a vec[4,u8], m vec[5,bool]) vec[4,u8] { return expand(a, m) }\n",
         "expand values and mask must have the same lane count" );
+      ( "vec-lane-read-oob",
+        "fn f(a vec[4,u8]) u8 { return a[7] }\n",
+        "array index is out of bounds" );
+      ( "vec-lane-write-oob",
+        "fn f(a vec[4,u8]) void { a[7] = 1 }\n",
+        "array index is out of bounds" );
+      ( "vec-lane-compound-oob",
+        "fn f(a vec[4,u8]) void { a[7] += 1 }\n",
+        "array index is out of bounds" );
+      ( "vec-lane-negative",
+        "fn f(a vec[4,u8]) u8 { return a[-1] }\n",
+        "array index is out of bounds" );
+      ( "vec-lane-const-oob",
+        "const K usize = 9\nfn f(a vec[4,u8]) u8 { return a[K] }\n",
+        "array index is out of bounds" );
     ];
   List.iter
     (fun (name, ir) ->

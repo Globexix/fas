@@ -65,6 +65,11 @@ for i in range(4):
         expd.append(0)
 assert comp != expd and comp != a
 lines.append("  mv vec[4,bool] = av == CV")
+lines.append("  lw vec[4,u8] = splat(0)")
+lines.append("  lw[IV[1]] = 7")
+lines.append("  lw[IV[1]] += 1")
+check("bitcast[u32](lw)", pack([0, 8, 0, 0]), "lane-write-compound-dynamic")
+check("av[IV[3]]", a[3], "lane-read-dynamic")
 check("bitcast[u32](compress(av, mv))", pack(comp), "compress-runtime-mask")
 check("bitcast[u32](expand(av, mv))", pack(expd), "expand-runtime-mask")
 k_cv = sum((v & 0xFF) << (8 * i) for i, v in enumerate(cv))
@@ -177,5 +182,43 @@ if [ "$status" -ne 0 ]; then
   printf 'lane routing: dynamic permute returned %s\n' "$status" >&2
   exit 1
 fi
+
+for kind in read write compound; do
+  case "$kind" in
+    read) body='  r u8 = av[i]
+  return zext[u32](r)' ;;
+    write) body='  av[i] = 7
+  return bitcast[u32](av)' ;;
+    compound) body='  av[i] += 1
+  return bitcast[u32](av)' ;;
+  esac
+  cat >"$ROUTE_TMP/trap-$kind.fas" << EOF
+fn go(av vec[4,u8], i usize) u32 {
+$body
+}
+fn main() i32 {
+  av vec[4,u8] = splat(0)
+  r u32 = go(av, 7)
+  return 0
+}
+EOF
+  "$OCAML_FAS" --emit-llvm "$ROUTE_TMP/trap-$kind.fas" >"$ROUTE_TMP/trap-$kind.ll"
+  if ! grep -q 'llvm.trap' "$ROUTE_TMP/trap-$kind.ll"; then
+    printf 'lane routing: %s trap missing in IR\n' "$kind" >&2
+    exit 1
+  fi
+  "$LLVM_OPT" -passes=verify "$ROUTE_TMP/trap-$kind.ll" -disable-output
+  "$LLVM_OPT" '-passes=default<O2>' "$ROUTE_TMP/trap-$kind.ll" -S -o "$ROUTE_TMP/trap-$kind.O2.ll"
+  "$LLVM_LLC" -O2 -filetype=obj "$ROUTE_TMP/trap-$kind.O2.ll" -o "$ROUTE_TMP/trap-$kind.o"
+  "$CC" "$ROUTE_TMP/trap-$kind.o" -o "$ROUTE_TMP/trap-$kind"
+  set +e
+  "$ROUTE_TMP/trap-$kind"
+  status=$?
+  set -e
+  if [ "$status" -eq 0 ]; then
+    printf 'lane routing: %s accepted an invalid lane index\n' "$kind" >&2
+    exit 1
+  fi
+done
 
 printf 'lane routing: ok\n'

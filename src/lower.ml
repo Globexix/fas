@@ -278,6 +278,18 @@ let signed_type = function
       true
   | _ -> false
 
+let lane_guard s index_expr iv lanes =
+  let ity = value_ty iv in
+  let limit = value_const s ity (Int64.of_int lanes) in
+  let condition =
+    if signed_type (Hir.expr_ty index_expr) then
+      let below = compare s Ir.Slt ity iv (value_const s ity 0L) in
+      let above = compare s Ir.Sge ity iv limit in
+      either_condition s below above
+    else compare s Ir.Uge ity iv limit
+  in
+  guard_condition s condition
+
 let division_guard s span source_ty binop ir_ty lhs rhs =
   let zero_condition = compare s Ir.Eq ir_ty rhs (value_const s ir_ty 0L) in
   let* condition =
@@ -546,10 +558,11 @@ let rec expr s = function
       Ok (Ir.Local (id, Ir.Ptr base))
   | Hir.Index (a, i, t, _) -> (
       match Hir.expr_ty a with
-      | Hir.Vec _ ->
+      | Hir.Vec (lanes, _) ->
           let* av = expr s a in
           let* iv = expr s i in
           let* iv = normalize_index s i iv in
+          lane_guard s i iv lanes;
           let id = fresh s in
           emit s (Ir.Extract (id, value_ty av, av, iv));
           Ok (Ir.Local (id, ty t))
@@ -1193,7 +1206,9 @@ and vector_lane s aggregate index =
   let* pointer = address s aggregate in
   let vector_ty = ty source_ty in
   let* iv = expr s index in
+  let lanes = match source_ty with Hir.Vec (n, _) -> n | _ -> 1 in
   let* iv = normalize_index s index iv in
+  lane_guard s index iv lanes;
   Ok (pointer, source_ty, vector_ty, iv)
 
 and lower_if s c a b =
