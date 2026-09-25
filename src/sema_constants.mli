@@ -10,6 +10,8 @@ val const_expr :
   Ast.expr ->
   (Hir.ty * int64, Diag.t list) result
 
+val shuffle_indices_in_range : Hir.ty -> int -> int64 list -> bool
+
 val vector_const_expr :
   ?structs:Hir.struct_def list ->
   ?named_types:Sema_types.named_types ->

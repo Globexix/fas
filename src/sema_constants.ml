@@ -9,6 +9,19 @@ let ( let* ) result continuation =
   | Ok value -> continuation value
 
 let lookup name table = List.find_opt (fun (entry, _, _) -> entry = name) table
+
+let shuffle_indices_in_range lane_ty n values =
+  let signed =
+    match lane_ty with
+    | Hir.Int (Hir.I8 | Hir.I16 | Hir.I32 | Hir.I64 | Hir.Isize) -> true
+    | _ -> false
+  in
+  List.for_all
+    (fun v ->
+      let v = if signed then sign_extend_value lane_ty v else v in
+      Int64.compare v 0L >= 0 && Int64.compare v (Int64.of_int (2 * n)) < 0)
+    values
+
 let ty_name = Hir.ty_name
 
 type unresolved_shape = Unresolved_int | Unresolved_vector | Unresolved_null
@@ -777,19 +790,14 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
         | _ -> error span "shuffle operands must be vectors"
       in
       let* sel_ty, sel_values = evaluate None sel in
-      let* () =
+      let* sel_elem =
         match sel_ty with
-        | Hir.Vec (_, Hir.Int _) -> Ok ()
+        | Hir.Vec (_, (Hir.Int _ as e)) -> Ok e
         | _ ->
             error span "shuffle indices must be a compile-time constant integer vector"
       in
       let* () =
-        if
-          List.for_all
-            (fun v ->
-              Int64.compare v 0L >= 0 && Int64.compare v (Int64.of_int (2 * n)) < 0)
-            sel_values
-        then Ok ()
+        if shuffle_indices_in_range sel_elem n sel_values then Ok ()
         else error span "shuffle index out of range"
       in
       let source = Array.of_list (avalues @ bvalues) in

@@ -838,15 +838,9 @@ and check_call c _expected fn args s =
                   vector_const_expr ~structs:c.structs ~named_types:c.named_types
                     ~arrays:c.arrays visible_consts None (List.nth args 2)
                 with
-                | Ok ((Hir.Vec (m, Hir.Int _) as sty), values) ->
+                | Ok ((Hir.Vec (m, (Hir.Int _ as sel_elem)) as sty), values) ->
                     let n = match at with Hir.Vec (n, _) -> n | _ -> 0 in
-                    let in_range =
-                      List.for_all
-                        (fun v ->
-                          Int64.compare v 0L >= 0
-                          && Int64.compare v (Int64.of_int (2 * n)) < 0)
-                        values
-                    in
+                    let in_range = shuffle_indices_in_range sel_elem n values in
                     if not in_range then error s "shuffle index out of range"
                     else
                       let elem = match at with Hir.Vec (_, e) -> e | _ -> Hir.Bool in

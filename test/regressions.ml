@@ -5988,6 +5988,8 @@ let () =
               const I vec[4,u8] = bitcast[vec[4,u8]](K)\n\
               const K2 u16 = 3\n\
               const I2 vec[2,u8] = bitcast[vec[2,u8]](K2)\n\
+              const KS u16 = 773\n\
+              const IS vec[2,i8] = bitcast[vec[2,i8]](KS)\n\
               const R %s = %s\n\
               fn f() %s { return R }\n"
              rty expr rty)
@@ -5999,6 +6001,10 @@ let () =
         "vec[4,u8]",
         "ret <4 x i8> <i8 1, i8 3, i8 3, i8 8>\n" );
       ("const-fewer", "shuffle(A, B, I2)", "vec[2,u8]", "ret <2 x i8> <i8 4, i8 1>\n");
+      ( "const-signed-positive",
+        "shuffle(A, B, IS)",
+        "vec[2,u8]",
+        "ret <2 x i8> <i8 6, i8 4>\n" );
     ];
   let shuffle_runtime =
     llvm_of
@@ -6201,6 +6207,16 @@ let () =
         "const K u32 = 255\n\
          const I vec[4,u8] = bitcast[vec[4,u8]](K)\n\
          fn f(a vec[4,u8], b vec[4,u8]) vec[4,u8] { return shuffle(a, b, I) }\n",
+        "shuffle index out of range" );
+      ( "shuffle-neg-selector",
+        "const K u8 = 199\n\
+         const I vec[1,i8] = bitcast[vec[1,i8]](K)\n\
+         fn f(a vec[100,u8], b vec[100,u8]) vec[100,u8] { return shuffle(a, b, I) }\n",
+        "shuffle index out of range" );
+      ( "shuffle-signbit-selector",
+        "const K u64 = 9223372036854775808\n\
+         const I vec[1,u64] = bitcast[vec[1,u64]](K)\n\
+         fn f(a vec[1,u8], b vec[1,u8]) vec[1,u8] { return shuffle(a, b, I) }\n",
         "shuffle index out of range" );
       ( "shuffle-non-vector-operands",
         "fn f(a u8, b u8, i vec[4,u8]) u8 { return shuffle(a, b, i) }\n",
