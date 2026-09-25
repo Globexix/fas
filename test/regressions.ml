@@ -5687,6 +5687,124 @@ let () =
   if contains defined_construction "poison" || contains defined_construction "undef"
   then failwith "defined-construction: undefined seed in computed values";
   List.iter
+    (fun (name, ty, a, b, op, needle) ->
+      let ir =
+        llvm_of
+          (Printf.sprintf
+             "fn w[N const %s]() %s { return N }\n\
+              const A %s = %s\n\
+              const B %s = %s\n\
+              fn main() %s { return w[%s(A, B)]() }\n"
+             ty ty ty a ty b ty op)
+      in
+      if not (contains ir needle) then failwith ("sat: " ^ name ^ " drifted"))
+    [
+      ("u8-add-high", "u8", "200", "100", "add_sat", "ret i8 255\n");
+      ("u8-add-mid", "u8", "1", "2", "add_sat", "ret i8 3\n");
+      ("u8-sub-low", "u8", "5", "10", "sub_sat", "ret i8 0\n");
+      ("i8-add-high", "i8", "100", "100", "add_sat", "ret i8 127\n");
+      ("i8-add-low", "i8", "-100", "-100", "add_sat", "ret i8 128\n");
+      ("i8-sub-high", "i8", "127", "-1", "sub_sat", "ret i8 127\n");
+      ("i8-sub-low", "i8", "-128", "1", "sub_sat", "ret i8 128\n");
+      ( "i64-add-min",
+        "i64",
+        "-9223372036854775808",
+        "-1",
+        "add_sat",
+        "ret i64 -9223372036854775808\n" );
+      ( "i64-add-max",
+        "i64",
+        "9223372036854775807",
+        "1",
+        "add_sat",
+        "ret i64 9223372036854775807\n" );
+      ("usize-add", "usize", "1", "2", "add_sat", "ret i64 3\n");
+      ("u64-add-wrap", "u64", "18446744073709551615", "1", "add_sat", "ret i64 -1\n");
+      ("u64-sub-under", "u64", "0", "1", "sub_sat", "ret i64 0\n");
+    ];
+  let sat_vec_add =
+    llvm_of
+      "fn w[N const u32]() u32 { return N }\n\
+       const A u32 = 16712136\n\
+       const B u32 = 83886692\n\
+       const AV vec[4,u8] = bitcast[vec[4,u8]](A)\n\
+       const BV vec[4,u8] = bitcast[vec[4,u8]](B)\n\
+       const X vec[4,u8] = add_sat(AV, BV)\n\
+       fn main() u32 { return w[bitcast[u32](X)]() }\n"
+  in
+  if not (contains sat_vec_add "ret i32 100598783\n") then
+    failwith "sat: vec add lanes drifted";
+  let sat_vec_sub =
+    llvm_of
+      "fn w[N const u32]() u32 { return N }\n\
+       const A u32 = 16712136\n\
+       const B u32 = 83886692\n\
+       const AV vec[4,u8] = bitcast[vec[4,u8]](A)\n\
+       const BV vec[4,u8] = bitcast[vec[4,u8]](B)\n\
+       const Y vec[4,u8] = sub_sat(AV, BV)\n\
+       fn main() u32 { return w[bitcast[u32](Y)]() }\n"
+  in
+  if not (contains sat_vec_sub "ret i32 16711780\n") then
+    failwith "sat: vec sub lanes drifted";
+  let sat_runtime =
+    llvm_of
+      "fn f(a vec[4,u8], b vec[4,u8]) vec[4,u8] { return add_sat(a, b) }\n\
+       fn g(a i32, b i32) i32 { return sub_sat(a, b) }\n\
+       fn h(a u32, b u32) u32 { return sub_sat(a, b) }\n\
+       fn i(a i8, b i8) i8 { return add_sat(a, b) }\n\
+       fn main() i32 { return 0 }\n"
+  in
+  List.iter
+    (fun needle ->
+      if not (contains sat_runtime needle) then failwith ("sat: missing " ^ needle))
+    [
+      "@llvm.uadd.sat.v4i8(";
+      "@llvm.ssub.sat.i32(";
+      "@llvm.usub.sat.i32(";
+      "@llvm.sadd.sat.i8(";
+    ];
+  if contains sat_runtime "poison" || contains sat_runtime "undef" then
+    failwith "sat: undefined value in computed results";
+  List.iter
+    (fun (name, text, expected) ->
+      match semantic_messages text with
+      | [ message ] when message = expected -> ()
+      | _ -> failwith ("sat reject: " ^ name))
+    [
+      ( "arity",
+        "fn f(a u8) u8 { return add_sat(a) }\n",
+        "builtin `add_sat` expects two arguments" );
+      ( "bool-scalar",
+        "fn f() bool { return add_sat(true, false) }\n",
+        "builtin arguments must be integers or integer vectors" );
+      ( "bool-vec",
+        "fn f(m vec[2,bool]) vec[2,bool] { return add_sat(m, m) }\n",
+        "builtin arguments must be integers or integer vectors" );
+      ( "mixed-widths",
+        "fn f(a u8, b u16) u16 { return add_sat(a, b) }\n",
+        "builtin arguments must have the same type" );
+      ( "mixed-shape",
+        "fn f(a u8, v vec[2,u8]) vec[2,u8] { return add_sat(a, v) }\n",
+        "builtin arguments must have the same type" );
+      ( "const-mixed",
+        "const A u8 = 1\nconst B u16 = 2\nconst X u16 = add_sat(A, B)\n",
+        "builtin arguments must have the same type" );
+      ( "const-mixed-lanes",
+        "const AV vec[2,u8] = splat(1)\n\
+         const BV vec[4,u8] = splat(2)\n\
+         const X vec[2,u8] = add_sat(AV, BV)\n",
+        "builtin arguments must have the same type" );
+      ( "vec-const-scalar",
+        "const AV vec[4,u8] = splat(1)\nconst X vec[4,u8] = add_sat(AV, 2)\n",
+        "expression is not a compile-time vector constant" );
+      ( "const-bool",
+        "const X bool = add_sat(true, false)\n",
+        "builtin arguments must be integers or integer vectors" );
+      ( "vec-const-bool",
+        "const M vec[2,bool] = splat(true)\nconst X vec[2,bool] = add_sat(M, M)\n",
+        "builtin arguments must be integers or integer vectors" );
+    ];
+  List.iter
     (fun (name, ir) ->
       if contains ir " nuw " || contains ir " nsw " || contains ir " exact " then
         failwith (name ^ ": unexpected shift flags"))

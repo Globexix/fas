@@ -739,6 +739,8 @@ and check_call c _expected fn args s =
         | Some Names.Popcount -> Some Popcount
         | Some Names.Ctz -> Some Ctz
         | Some Names.Clz -> Some Clz
+        | Some Names.Add_sat -> Some Hir.Add_sat
+        | Some Names.Sub_sat -> Some Hir.Sub_sat
         | Some Names.Len | None -> None
       in
       let check_builtin b =
@@ -751,6 +753,24 @@ and check_call c _expected fn args s =
               if is_int (Hir.expr_ty a) then
                 Ok (Hir.Call (Hir.Builtin b, [ a ], Hir.expr_ty a, s))
               else error s "builtin argument must be an integer"
+        | Hir.Add_sat | Hir.Sub_sat ->
+            if List.length args <> 2 then
+              error s (Printf.sprintf "builtin `%s` expects two arguments" name)
+            else
+              let* a = check_expr c None (List.hd args) in
+              let* b2 = check_expr c None (List.hd (List.tl args)) in
+              let valid_operand =
+                is_int (Hir.expr_ty a)
+                ||
+                match Hir.expr_ty a with
+                | Hir.Vec (_, Hir.Int _) -> true
+                | _ -> false
+              in
+              if not valid_operand then
+                error s "builtin arguments must be integers or integer vectors"
+              else if Hir.expr_ty b2 <> Hir.expr_ty a then
+                error s "builtin arguments must have the same type"
+              else Ok (Hir.Call (Hir.Builtin b, [ a; b2 ], Hir.expr_ty a, s))
         | _ -> (
             if List.length args <> 2 then
               error s (Printf.sprintf "builtin `%s` expects two arguments" name)

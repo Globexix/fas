@@ -10,7 +10,7 @@ type parser_operation =
   | Legacy_ptr_add
   | Legacy_ptr_add_bytes
 
-type value_operation = Len | Rotl | Rotr | Popcount | Ctz | Clz
+type value_operation = Len | Rotl | Rotr | Popcount | Ctz | Clz | Add_sat | Sub_sat
 type type_constructor = Legacy_ptr | Array | Vector
 type literal = True | False | Null
 
@@ -69,8 +69,8 @@ let operations =
     ("select", Reserved);
     ("any", Reserved);
     ("all", Reserved);
-    ("add_sat", Reserved);
-    ("sub_sat", Reserved);
+    ("add_sat", Value Add_sat);
+    ("sub_sat", Value Sub_sat);
     ("mul_hi", Reserved);
     ("reduce_sum", Reserved);
     ("reduce_min", Reserved);

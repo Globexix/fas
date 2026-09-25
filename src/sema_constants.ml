@@ -63,6 +63,45 @@ let operand_type_hint operation expected left right =
   | Ast.And | Ast.Or -> None
   | Ast.Shl | Ast.Shr -> None
 
+let sat_apply name kind x y =
+  let bits = int_bits kind in
+  if is_unsigned (Hir.Int kind) then
+    let max_w =
+      if bits >= 64 then Int64.minus_one else Int64.sub (Int64.shift_left 1L bits) 1L
+    in
+    match name with
+    | "add_sat" ->
+        let sum = Int64.add x y in
+        if Int64.unsigned_compare sum x < 0 || Int64.unsigned_compare sum max_w > 0 then
+          max_w
+        else sum
+    | _ ->
+        let difference = Int64.sub x y in
+        if Int64.unsigned_compare y x > 0 then 0L else difference
+  else
+    let max_s =
+      if bits >= 64 then Int64.max_int
+      else Int64.sub (Int64.shift_left 1L (bits - 1)) 1L
+    in
+    let min_s =
+      if bits >= 64 then Int64.min_int else Int64.neg (Int64.shift_left 1L (bits - 1))
+    in
+    let xs = sign_extend_value (Hir.Int kind) x in
+    let ys = sign_extend_value (Hir.Int kind) y in
+    match name with
+    | "add_sat" ->
+        if Int64.compare ys 0L > 0 && Int64.compare xs (Int64.sub max_s ys) > 0 then
+          max_s
+        else if Int64.compare ys 0L < 0 && Int64.compare xs (Int64.sub min_s ys) < 0
+        then min_s
+        else Int64.add xs ys
+    | _ ->
+        if Int64.compare ys 0L < 0 && Int64.compare xs (Int64.add max_s ys) > 0 then
+          max_s
+        else if Int64.compare ys 0L > 0 && Int64.compare xs (Int64.add min_s ys) < 0
+        then min_s
+        else Int64.sub xs ys
+
 let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve consts
     expected ?(check_only = false) ?(validate_dead = true) = function
   | Ast.Int_lit (raw, s) ->
@@ -400,6 +439,11 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
             let b = match t with Hir.Int q -> int_bits q | _ -> 64 in
             Ok (t, Int64.of_int (leading64 x - (64 - b)))
           else error s "builtin argument must be an integer"
+      | ("add_sat" | "sub_sat"), [ (t, x); (t2, y) ] -> (
+          match t with
+          | Hir.Int kind when t = t2 -> Ok (t, mask_value t (sat_apply name kind x y))
+          | Hir.Int _ -> error s "builtin arguments must have the same type"
+          | _ -> error s "builtin arguments must be integers or integer vectors")
       | _ -> error s "invalid constant builtin call")
   | Ast.Sizeof (t, s) ->
       let* t = source_ty_with_values named_types consts s t in
@@ -622,6 +666,33 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
             | _ -> value
         in
         Ok (ty, List.map (fun value -> lane_mask element (apply value)) values)
+  | Ast.Call (Ast.Ident (name, _), [ left; right ], span)
+    when List.mem name [ "add_sat"; "sub_sat" ] ->
+      let* left_ty, left_values, right_ty, right_values =
+        match (unresolved_shape_of left, unresolved_shape_of right) with
+        | Some _, None ->
+            let* right_ty, right_values = evaluate expected right in
+            let* left_ty, left_values = evaluate (Some right_ty) left in
+            Ok (left_ty, left_values, right_ty, right_values)
+        | _ ->
+            let* left_ty, left_values = evaluate expected left in
+            let* right_ty, right_values = evaluate (Some left_ty) right in
+            Ok (left_ty, left_values, right_ty, right_values)
+      in
+      let* () =
+        if left_ty = right_ty then Ok ()
+        else error span "builtin arguments must have the same type"
+      in
+      let* kind =
+        match lane_type left_ty with
+        | Some (Hir.Int k) -> Ok k
+        | _ -> error span "builtin arguments must be integers or integer vectors"
+      in
+      Ok
+        ( left_ty,
+          List.map2
+            (fun a b -> lane_mask (Hir.Int kind) (sat_apply name kind a b))
+            left_values right_values )
   | Ast.Ternary (condition, yes, no, span) ->
       let* condition_ty, condition_value =
         const_expr ~structs ~named_types ~arrays ?resolve consts None ~check_only

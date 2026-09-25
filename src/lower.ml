@@ -662,6 +662,40 @@ and lower_builtin s b args t span =
                (rt, Ir.No_extension, x); (Ir.I1, Ir.No_extension, Ir.Const (Ir.I1, 0L));
              ] ));
       Ok (Ir.Local (id, rt))
+  | (Add_sat | Sub_sat), [ x; y ] ->
+      let* suffix = intrinsic_suffix span rt in
+      let* base =
+        let rec kind_of = function
+          | Hir.Int k -> Some k
+          | Hir.Vec (_, element) -> kind_of element
+          | _ -> None
+        in
+        match kind_of t with
+        | None ->
+            error span "internal error: saturating builtin requires integer operands"
+        | Some k -> (
+            let unsigned =
+              match k with
+              | Hir.U8 | U16 | U32 | U64 | Usize -> true
+              | Hir.I8 | I16 | I32 | I64 | Isize -> false
+            in
+            match (b, unsigned) with
+            | Add_sat, true -> Ok "llvm.uadd.sat."
+            | Add_sat, false -> Ok "llvm.sadd.sat."
+            | Sub_sat, true -> Ok "llvm.usub.sat."
+            | Sub_sat, false -> Ok "llvm.ssub.sat."
+            | (Rotl | Rotr | Popcount | Ctz | Clz), _ ->
+                error span "internal error: invalid saturating builtin")
+      in
+      let id = fresh s in
+      emit s
+        (Ir.Call
+           ( Some id,
+             Ir.No_extension,
+             rt,
+             base ^ suffix,
+             [ (rt, Ir.No_extension, x); (rt, Ir.No_extension, y) ] ));
+      Ok (Ir.Local (id, rt))
   | _ -> error span "internal error: invalid builtin arity"
 
 and lower_short s op a b =
