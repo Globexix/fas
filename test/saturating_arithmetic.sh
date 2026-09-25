@@ -30,13 +30,14 @@ def bounds(bits, signed):
     return 0, (1 << bits) - 1
 
 
-def emit(op, bits, signed, a, b, tag):
+def emit(op, bits, signed, a, b, tag, ty=None):
     lo, hi = bounds(bits, signed)
     assert lo <= a <= hi and lo <= b <= hi
     result = a + b if op == "add" else a - b
     expected = clamp(result, lo, hi)
     assert lo <= expected <= hi
-    ty = ("i" if signed else "u") + str(bits)
+    if ty is None:
+        ty = ("i" if signed else "u") + str(bits)
     idx = len(checks)
     checks.append((tag, op, bits, signed, a, b, expected))
     lines.append(f"  a{idx} {ty} = {a}")
@@ -77,6 +78,18 @@ for bits in (8, 16, 32, 64):
         for a, b in pairs:
             for op in ("add", "sub"):
                 emit(op, bits, signed, a, b, f"{bits}-{'s' if signed else 'u'}")
+
+for signed, ty in ((False, "usize"), (True, "isize")):
+    lo, hi = bounds(64, signed)
+    if signed:
+        pairs = [(lo, lo), (lo, -1), (hi, hi), (hi, 1), (-1, hi), (0, lo)]
+    else:
+        pairs = [(lo, lo), (lo, hi), (hi, lo), (hi, hi), (hi, 1), (1, hi)]
+    for _ in range(4):
+        pairs.append((rng.randint(lo, hi), rng.randint(lo, hi)))
+    for a, b in pairs:
+        for op in ("add", "sub"):
+            emit(op, 64, signed, a, b, f"tsize-{'s' if signed else 'u'}", ty=ty)
 
 
 def emit_vec(op, bits, signed, xs, ys, tag):
@@ -136,8 +149,10 @@ for level in 0 2 3; do
     "$([ "$level" = 0 ] && printf '%s' "$SAT_TMP/sat.ll" || printf '%s' "$SAT_TMP/sat.O$level.ll")" \
     -o "$SAT_TMP/sat.O$level.o"
   "$CC" "$SAT_TMP/sat.O$level.o" -o "$SAT_TMP/sat.O$level"
+  set +e
   "$SAT_TMP/sat.O$level"
   status=$?
+  set -e
   if [ "$status" -ne 0 ]; then
     printf 'saturating arithmetic: O%d returned %s\n' "$level" "$status" >&2
     exit 1

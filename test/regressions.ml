@@ -5721,6 +5721,8 @@ let () =
       ("usize-add", "usize", "1", "2", "add_sat", "ret i64 3\n");
       ("u64-add-wrap", "u64", "18446744073709551615", "1", "add_sat", "ret i64 -1\n");
       ("u64-sub-under", "u64", "0", "1", "sub_sat", "ret i64 0\n");
+      ("isize-sub", "isize", "-2", "1", "sub_sat", "ret i64 -3\n");
+      ("i8-sub-degenerate", "i8", "0", "-128", "sub_sat", "ret i8 127\n");
     ];
   let sat_vec_add =
     llvm_of
@@ -5752,6 +5754,10 @@ let () =
        fn g(a i32, b i32) i32 { return sub_sat(a, b) }\n\
        fn h(a u32, b u32) u32 { return sub_sat(a, b) }\n\
        fn i(a i8, b i8) i8 { return add_sat(a, b) }\n\
+       fn p(a isize, b isize) isize { return add_sat(a, b) }\n\
+       fn q(a usize, b usize) usize { return sub_sat(a, b) }\n\
+       fn r(a vec[3,u8], b vec[3,u8]) vec[3,u8] { return add_sat(a, b) }\n\
+       fn s(a vec[1,i32], b vec[1,i32]) vec[1,i32] { return sub_sat(a, b) }\n\
        fn main() i32 { return 0 }\n"
   in
   List.iter
@@ -5762,6 +5768,10 @@ let () =
       "@llvm.ssub.sat.i32(";
       "@llvm.usub.sat.i32(";
       "@llvm.sadd.sat.i8(";
+      "@llvm.sadd.sat.i64(";
+      "@llvm.usub.sat.i64(";
+      "@llvm.uadd.sat.v3i8(";
+      "@llvm.ssub.sat.v1i32(";
     ];
   if contains sat_runtime "poison" || contains sat_runtime "undef" then
     failwith "sat: undefined value in computed results";
