@@ -3428,6 +3428,30 @@ let () =
   in
   if not (contains min_zext_i8_fill "ret i64 128\n") then
     failwith "value: i8 min zext fill drifted";
+  let neg_hex_literal =
+    llvm_of
+      "fn w[N const isize]() isize { return N }\n\
+       const B i8 = -0x80\n\
+       fn main() isize { return w[sext[isize](B)]() }\n"
+  in
+  if not (contains neg_hex_literal "ret i64 -128\n") then
+    failwith "value: negative hex literal drifted";
+  let neg_binary_literal =
+    llvm_of
+      "fn w[N const isize]() isize { return N }\n\
+       const B i8 = -0b10000000\n\
+       fn main() isize { return w[sext[isize](B)]() }\n"
+  in
+  if not (contains neg_binary_literal "ret i64 -128\n") then
+    failwith "value: negative binary literal drifted";
+  let neg_octal_literal =
+    llvm_of
+      "fn w[N const isize]() isize { return N }\n\
+       const B i8 = -0o200\n\
+       fn main() isize { return w[sext[isize](B)]() }\n"
+  in
+  if not (contains neg_octal_literal "ret i64 -128\n") then
+    failwith "value: negative octal literal drifted";
   let agreement_bitand_eq =
     llvm_of
       "const C bool = 4 & 2 == 2\n\
