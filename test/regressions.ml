@@ -1417,6 +1417,8 @@ let () =
   semantic_error "switch-bool-exhaustive-still-needs-return"
     "may reach the end without returning"
     "fn f(x bool) i32 { switch x { case true: return 1; case false: return 2 } }\n";
+  semantic_error "comparison-chaining-reject" "binary operands must have the same type"
+    "fn f(a i32, b i32, c i32) bool { return a < b < c }\n";
   semantic_error "conditional-defer-divergence" "may reach the end without returning"
     "fn finish(choice bool) i32 { defer { if choice { while true { } } } }\n";
   semantic_error "unreached-defer-does-not-consume-break"
@@ -6519,6 +6521,9 @@ let () =
       ("rem-sign-positive", "7 % -3", "i32", "ret i32 1\n");
       ("rem-min-minus-one", "-9223372036854775808 % -1", "i64", "ret i64 0\n");
       ("trunc-negative-i64", "-7 / 3", "i64", "ret i64 -2\n");
+      ("cond-right-assoc", "false ? 2 : true ? 3 : 4", "i32", "ret i32 3\n");
+      ("arith-left-assoc", "8 - 3 - 2", "i32", "ret i32 3\n");
+      ("bitwise-above-comparison", "(6 & 3) == 2", "bool", "ret i1 true\n");
     ];
   List.iter
     (fun (name, ir) ->
