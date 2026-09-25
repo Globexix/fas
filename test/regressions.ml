@@ -1408,6 +1408,15 @@ let () =
      default:\n\
      continue\n\
      } } }\n";
+  semantic_error "switch-duplicate-case" "duplicate case label `1`"
+    "fn f(x i32) i32 { switch x { case 1: return 1; case 1: return 2 } }\n";
+  semantic_error "switch-nonconst-case" "case label must be a compile-time constant"
+    "fn f(x i32, y i32) i32 { switch x { case y: return 1 } return 0 }\n";
+  semantic_error "switch-vec-scrutinee" "switch scrutinee must be an integer or bool"
+    "fn f(v vec[2,i32]) i32 { switch v { case 1: return 1 } return 0 }\n";
+  semantic_error "switch-bool-exhaustive-still-needs-return"
+    "may reach the end without returning"
+    "fn f(x bool) i32 { switch x { case true: return 1; case false: return 2 } }\n";
   semantic_error "conditional-defer-divergence" "may reach the end without returning"
     "fn finish(choice bool) i32 { defer { if choice { while true { } } } }\n";
   semantic_error "unreached-defer-does-not-consume-break"
