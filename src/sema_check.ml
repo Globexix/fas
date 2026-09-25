@@ -745,6 +745,7 @@ and check_call c _expected fn args s =
         | Some Names.Any -> Some Hir.Any
         | Some Names.All -> Some Hir.All
         | Some Names.Select -> Some Hir.Select
+        | Some Names.Shuffle -> Some Hir.Shuffle
         | Some Names.Len | None -> None
       in
       let check_builtin b =
@@ -813,6 +814,54 @@ and check_call c _expected fn args s =
                     | _ ->
                         error s "select values must be vectors with the mask lane count"
                   ))
+        | Hir.Shuffle -> (
+            if List.length args <> 3 then
+              error s (Printf.sprintf "builtin `%s` expects three arguments" name)
+            else
+              let* a = check_expr c None (List.nth args 0) in
+              let* b2 = check_expr c None (List.nth args 1) in
+              let at = Hir.expr_ty a in
+              let ok_vec =
+                match at with Hir.Vec (_, (Hir.Int _ | Hir.Bool)) -> true | _ -> false
+              in
+              if not ok_vec then error s "shuffle operands must be vectors"
+              else if Hir.expr_ty b2 <> at then
+                error s "builtin arguments must have the same type"
+              else
+                let visible_consts =
+                  List.filter
+                    (fun (name, _, _) -> Option.is_none (lookup_local name c))
+                    c.consts
+                in
+                match
+                  vector_const_expr ~structs:c.structs ~named_types:c.named_types
+                    ~arrays:c.arrays visible_consts None (List.nth args 2)
+                with
+                | Ok ((Hir.Vec (m, Hir.Int _) as sty), values) ->
+                    let n = match at with Hir.Vec (n, _) -> n | _ -> 0 in
+                    let in_range =
+                      List.for_all
+                        (fun v ->
+                          Int64.compare v 0L >= 0
+                          && Int64.compare v (Int64.of_int (2 * n)) < 0)
+                        values
+                    in
+                    if not in_range then error s "shuffle index out of range"
+                    else
+                      let elem = match at with Hir.Vec (_, e) -> e | _ -> Hir.Bool in
+                      let result_ty = Hir.Vec (m, elem) in
+                      let* _ =
+                        Sema_limits.validate_object c.limits c.structs s result_ty
+                      in
+                      Ok
+                        (Hir.Call
+                           ( Hir.Builtin b,
+                             [ a; b2; Hir.EVector (values, sty, s) ],
+                             result_ty,
+                             s ))
+                | _ ->
+                    error s
+                      "shuffle indices must be a compile-time constant integer vector")
         | _ -> (
             if List.length args <> 2 then
               error s (Printf.sprintf "builtin `%s` expects two arguments" name)

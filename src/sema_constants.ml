@@ -741,6 +741,38 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
             | _ -> value
         in
         Ok (ty, List.map (fun value -> lane_mask element (apply value)) values)
+  | Ast.Call (Ast.Ident (name, _), [ a; b; sel ], span) when name = "shuffle" ->
+      let* at, avalues = evaluate expected a in
+      let* bt, bvalues = evaluate (Some at) b in
+      let* () =
+        if at = bt then Ok ()
+        else error span "builtin arguments must have the same type"
+      in
+      let* n, element =
+        match at with
+        | Hir.Vec (n, ((Hir.Int _ | Hir.Bool) as e)) -> Ok (n, e)
+        | _ -> error span "shuffle operands must be vectors"
+      in
+      let* sel_ty, sel_values = evaluate None sel in
+      let* () =
+        match sel_ty with
+        | Hir.Vec (_, Hir.Int _) -> Ok ()
+        | _ ->
+            error span "shuffle indices must be a compile-time constant integer vector"
+      in
+      let* () =
+        if
+          List.for_all
+            (fun v ->
+              Int64.compare v 0L >= 0 && Int64.compare v (Int64.of_int (2 * n)) < 0)
+            sel_values
+        then Ok ()
+        else error span "shuffle index out of range"
+      in
+      let source = Array.of_list (avalues @ bvalues) in
+      Ok
+        ( Hir.Vec (List.length sel_values, element),
+          List.map (fun v -> lane_mask element source.(Int64.to_int v)) sel_values )
   | Ast.Call (Ast.Ident (name, _), [ m; y; z ], span) when name = "select" ->
       let* mask_ty, mask_values = evaluate None m in
       let* yes_ty, yes_values = evaluate expected y in

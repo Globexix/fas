@@ -23,6 +23,7 @@ type value_operation =
   | Any
   | All
   | Select
+  | Shuffle
 
 type type_constructor = Legacy_ptr | Array | Vector
 type literal = True | False | Null
@@ -91,7 +92,7 @@ let operations =
     ("reduce_and", Reserved);
     ("reduce_or", Reserved);
     ("reduce_xor", Reserved);
-    ("shuffle", Reserved);
+    ("shuffle", Value Shuffle);
     ("permute", Reserved);
     ("compress", Reserved);
     ("expand", Reserved);

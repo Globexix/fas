@@ -54,6 +54,7 @@ type instr =
   | Extract of int * ty * value * value
   | Insert of int * ty * value * value * value
   | Shuffle_zero of int * ty * value
+  | Shufflevector of int * ty * value * value * value
   | String_ptr of int * int * int
   | Global_ptr of int * string * ty
   | Trap
@@ -207,6 +208,7 @@ let instruction_result = function
   | Insert (id, ty, _, _, _)
   | Shuffle_zero (id, ty, _) ->
       Some (id, ty)
+  | Shufflevector (id, ty, _, _, _) -> Some (id, ty)
   | Alloca (id, ty, _) | Gep (id, ty, _, _) -> Some (id, Ptr ty)
   | Extract (id, Vector (_, elem), _, _) -> Some (id, elem)
   | Extract (id, ty, _, _) -> Some (id, ty)
@@ -524,6 +526,13 @@ let validate_function struct_names globals (func : func) =
         match vector_ty with
         | Vector _ -> operand block_id vector_ty vector
         | _ -> fail "block %d shuffles a non-vector type" block_id)
+    | Shufflevector (_, vector_ty, a, b, mask) -> (
+        match (vector_ty, value_ty a, value_ty b) with
+        | Vector (m, _), (Vector _ as ta), (Vector _ as tb) ->
+            let* () = operand block_id ta a in
+            let* () = operand block_id tb b in
+            operand block_id (Vector (m, I32)) mask
+        | _ -> fail "block %d shuffles a non-vector type" block_id)
     | String_ptr (_, index, length) -> (
         let name = ".str." ^ string_of_int index in
         match Hashtbl.find_opt globals name with
@@ -685,6 +694,7 @@ let validate_function struct_names globals (func : func) =
       | Extract (_, _, vector, index) -> [ vector; index ]
       | Insert (_, _, vector, index, value) -> [ vector; index; value ]
       | Shuffle_zero (_, _, vector) -> [ vector ]
+      | Shufflevector (_, _, a, b, mask) -> [ a; b; mask ]
       | Alloca _ | Phi _ | String_ptr _ | Global_ptr _ | Trap -> []
     in
     let rec validate_phi_uses block_id = function
@@ -1230,6 +1240,22 @@ let emit_instr sink = function
       sink.text " zeroinitializer, <";
       sink.text (string_of_int n);
       sink.text " x i32> zeroinitializer"
+  | Shufflevector (i, _vt, a, b, mask) ->
+      let ta = value_ty a in
+      sink.text "  %v";
+      sink.text (string_of_int i);
+      sink.text " = shufflevector ";
+      emit_ty sink ta;
+      sink.text " ";
+      emit_value sink a;
+      sink.text ", ";
+      emit_ty sink ta;
+      sink.text " ";
+      emit_value sink b;
+      sink.text ", ";
+      emit_ty sink (value_ty mask);
+      sink.text " ";
+      emit_value sink mask
   | String_ptr (i, index, n) ->
       sink.text "  %v";
       sink.text (string_of_int i);

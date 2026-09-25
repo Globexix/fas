@@ -5976,6 +5976,52 @@ let () =
       if not (contains mask_eager needle) then failwith ("mask: missing " ^ needle))
     [ "sdiv <2 x i32>"; "select <2 x i1>" ];
   List.iter
+    (fun (name, expr, rty, needle) ->
+      let ir =
+        llvm_of
+          (Printf.sprintf
+             "const KA u32 = 67305985\n\
+              const KB u32 = 134678021\n\
+              const A vec[4,u8] = bitcast[vec[4,u8]](KA)\n\
+              const B vec[4,u8] = bitcast[vec[4,u8]](KB)\n\
+              const K u32 = 117572096\n\
+              const I vec[4,u8] = bitcast[vec[4,u8]](K)\n\
+              const K2 u16 = 3\n\
+              const I2 vec[2,u8] = bitcast[vec[2,u8]](K2)\n\
+              const R %s = %s\n\
+              fn f() %s { return R }\n"
+             rty expr rty)
+      in
+      if not (contains ir needle) then failwith ("shuffle: " ^ name ^ " drifted"))
+    [
+      ( "const-same",
+        "shuffle(A, B, I)",
+        "vec[4,u8]",
+        "ret <4 x i8> <i8 1, i8 3, i8 3, i8 8>\n" );
+      ("const-fewer", "shuffle(A, B, I2)", "vec[2,u8]", "ret <2 x i8> <i8 4, i8 1>\n");
+    ];
+  let shuffle_runtime =
+    llvm_of
+      "const K u32 = 117572096\n\
+       const I vec[4,u8] = bitcast[vec[4,u8]](K)\n\
+       const K2 u16 = 3\n\
+       const I2 vec[2,u8] = bitcast[vec[2,u8]](K2)\n\
+       fn f(a vec[4,u8], b vec[4,u8]) vec[4,u8] { return shuffle(a, b, I) }\n\
+       fn g(a vec[4,u8], b vec[4,u8]) vec[2,u8] { return shuffle(a, b, I2) }\n\
+       fn main() i32 { return 0 }\n"
+  in
+  List.iter
+    (fun needle ->
+      if not (contains shuffle_runtime needle) then
+        failwith ("shuffle: missing " ^ needle))
+    [
+      "shufflevector <4 x i8>";
+      "<4 x i32> <i32 0, i32 2, i32 2, i32 7>";
+      "<2 x i32> <i32 3, i32 0>";
+    ];
+  if contains shuffle_runtime "poison" || contains shuffle_runtime "undef" then
+    failwith "shuffle: undefined value in computed results";
+  List.iter
     (fun (name, text, expected) ->
       match semantic_messages text with
       | [ message ] when message = expected -> ()
@@ -6091,6 +6137,30 @@ let () =
       ( "any-arity",
         "fn f(m vec[2,bool]) bool { return any(m, m) }\n",
         "builtin `any` expects one argument" );
+      ( "shuffle-arity",
+        "fn f(a vec[4,u8], b vec[4,u8]) vec[4,u8] { return shuffle(a, b) }\n",
+        "builtin `shuffle` expects three arguments" );
+      ( "shuffle-nonconst-indices",
+        "fn f(a vec[4,u8], b vec[4,u8], i vec[4,u8]) vec[4,u8] { return shuffle(a, b, \
+         i) }\n",
+        "shuffle indices must be a compile-time constant integer vector" );
+      ( "shuffle-bool-indices",
+        "const I vec[4,bool] = splat(true)\n\
+         fn f(a vec[4,u8], b vec[4,u8]) vec[4,u8] { return shuffle(a, b, I) }\n",
+        "shuffle indices must be a compile-time constant integer vector" );
+      ( "shuffle-index-range",
+        "const K u32 = 255\n\
+         const I vec[4,u8] = bitcast[vec[4,u8]](K)\n\
+         fn f(a vec[4,u8], b vec[4,u8]) vec[4,u8] { return shuffle(a, b, I) }\n",
+        "shuffle index out of range" );
+      ( "shuffle-non-vector-operands",
+        "fn f(a u8, b u8, i vec[4,u8]) u8 { return shuffle(a, b, i) }\n",
+        "shuffle operands must be vectors" );
+      ( "shuffle-operand-mismatch",
+        "const K u32 = 117572096\n\
+         const I vec[4,u8] = bitcast[vec[4,u8]](K)\n\
+         fn f(a vec[4,u8], b vec[2,u8]) vec[4,u8] { return shuffle(a, b, I) }\n",
+        "builtin arguments must have the same type" );
     ];
   List.iter
     (fun (name, ir) ->
