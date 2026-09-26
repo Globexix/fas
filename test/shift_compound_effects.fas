@@ -6,21 +6,21 @@ extern "C" {
 
 const ITEMS arr[2,u32] = { 8, 12 }
 
-fn bump_other(p ptr[vec[4,u32]], n u32) u32 {
-  p[0][0] = 99
+fn bump_other(p addr, n u32) u32 {
+  p[u32, 0] = 99
   note(1)
   return n
 }
 
-fn bump_self(p ptr[vec[4,u32]], n u32) u32 {
-  p[0][1] = 777
+fn bump_self(p addr, n u32) u32 {
+  p[u32, 1] = 777
   note(2)
   return n
 }
 
-fn bump_whole(p ptr[vec[4,u32]], n u32) u32 {
-  p[0][0] = 99
-  p[0][3] = 77
+fn bump_whole(p addr, n u32) u32 {
+  p[u32, 0] = 99
+  p[u32, 3] = 77
   note(3)
   return n
 }

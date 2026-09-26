@@ -44,8 +44,8 @@ fn i32_size() usize { return sizeof[i32] }
 fn i32_align() usize { return alignof[i32] }
 fn i64_size() usize { return sizeof[i64] }
 fn i64_align() usize { return alignof[i64] }
-fn pointer_size() usize { return sizeof[ptr[u8]] }
-fn pointer_align() usize { return alignof[ptr[u8]] }
+fn pointer_size() usize { return sizeof[addr] }
+fn pointer_align() usize { return alignof[addr] }
 fn v3i1_size() usize { return sizeof[vec[3,bool]] }
 fn v3i1_align() usize { return alignof[vec[3,bool]] }
 fn v9i1_size() usize { return sizeof[vec[9,bool]] }

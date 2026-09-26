@@ -367,7 +367,7 @@ let () =
     \ fn f(value Pair) vec[2,u32] { return bitcast[vec[2,u32]](value) }\n";
   semantic_error "integer-vector-bitcast-pointer"
     "illegal cast for source and destination widths"
-    "fn f(value ptr[u8]) vec[1,u64] { return bitcast[vec[1,u64]](value) }\n";
+    "fn f(value addr) vec[1,u64] { return bitcast[vec[1,u64]](value) }\n";
   let integer_vector_conversions =
     llvm_of
       "fn widen_unsigned(value vec[4,u8]) vec[4,u16] {\n\
@@ -723,7 +723,7 @@ let () =
     failwith "place-init: array field indexing read the whole aggregate";
   let uninitialized_array_address =
     llvm_of
-      "fn take(p ptr[i64]) void { return }\n\
+      "fn take(p addr) void { return }\n\
        fn main() i64 { a arr[2, i64]\n\
        take(&a[0])\n\
        return 0 }\n"
@@ -732,45 +732,42 @@ let () =
     failwith "place-init: address of an uninitialized array element failed";
   let uninitialized_address =
     llvm_of
-      "fn take(p ptr[i64]) void { return }\n\
-       fn main() i64 { x i64\n\
-      \ take(&x)\n\
-      \ return 0 }\n"
+      "fn take(p addr) void { return }\nfn main() i64 { x i64\n take(&x)\n return 0 }\n"
   in
   if not (contains uninitialized_address "call void @take(ptr") then
     failwith "place-init: taking the address of an uninitialized local failed";
   semantic_error "place-init-pointer-intermediate" "use of uninitialized local `p`"
-    "fn main() i64 { p ptr[i64]\n p.* = 1\n return 0 }\n";
+    "fn main() i64 { p addr\n p[i64] = 1\n return 0 }\n";
   semantic_error "place-init-pointer-index-write" "use of uninitialized local `p`"
-    "fn main() i64 { p ptr[i64]\n p[0] = 1\n return 0 }\n";
+    "fn main() i64 { p addr\n p[i64] = 1\n return 0 }\n";
   semantic_error "place-init-pointer-index-read" "use of uninitialized local `p`"
-    "fn main() i64 { p ptr[i64]\n x i64 = p[0]\n return x }\n";
+    "fn main() i64 { p addr\n x i64 = p[i64]\n return x }\n";
   semantic_error "place-init-pointer-index-address" "use of uninitialized local `p`"
-    "fn take(p ptr[i64]) void { return }\n\
-     fn main() i64 { p ptr[i64]\n\
-     take(&p[0])\n\
+    "fn take(p addr) void { return }\n\
+     fn main() i64 { p addr\n\
+     take(&p[i64])\n\
      return 0 }\n";
   semantic_error "place-init-pointer-index-compound" "use of uninitialized local `p`"
-    "fn main() i64 { p ptr[i64]\n p[0] += 1\n return 0 }\n";
+    "fn main() i64 { p addr\n p[i64] += 1\n return 0 }\n";
   semantic_error "place-init-pointer-field-write" "use of uninitialized local `s`"
-    "struct S { p ptr[i64] }\nfn main() i64 { s S\n s.p[0] = 1\n return 0 }\n";
+    "struct S { p addr }\nfn main() i64 { s S\n s.p[i64] = 1\n return 0 }\n";
   semantic_error "place-init-pointer-field-read" "use of uninitialized local `s`"
-    "struct S { p ptr[i64] }\nfn main() i64 { s S\n x i64 = s.p[0]\n return x }\n";
+    "struct S { p addr }\nfn main() i64 { s S\n x i64 = s.p[i64]\n return x }\n";
   semantic_error "place-init-pointer-field-address" "use of uninitialized local `s`"
-    "struct S { p ptr[i64] }\n\
-     fn take(p ptr[i64]) void { return }\n\
+    "struct S { p addr }\n\
+     fn take(p addr) void { return }\n\
      fn main() i64 { s S\n\
-    \ take(&s.p[0])\n\
+    \ take(&s.p[i64])\n\
     \ return 0 }\n";
   semantic_error "place-init-pointer-array-element" "use of uninitialized local `a`"
-    "fn main() i64 { a arr[2,ptr[i64]]\n a[0][0] = 1\n return 0 }\n";
+    "fn main() i64 { a arr[2,addr]\n a[0][i64] = 1\n return 0 }\n";
   ignore
     (lower_of
-       "struct S { p ptr[i64] }\n\
+       "struct S { p addr }\n\
         fn main() i64 { x i64\n\
        \ s S\n\
        \ s.p = &x\n\
-       \ s.p[0] = 1\n\
+       \ s.p[i64] = 1\n\
        \ return x }\n");
   semantic_error "place-init-whole-vector" "use of uninitialized local `v`"
     "fn f() i64 { v vec[2,i64]\n x vec[2,i64] = v\n return 0 }\n";
@@ -793,13 +790,13 @@ let () =
     "array index is out of bounds"
     "const N i8 = -1\nfn f() i64 { a arr[300,i64]\nreturn a[N] }\n";
   semantic_error "vector-lane-address-rejected" "cannot take address of a vector lane"
-    "fn take(p ptr[i64]) void { return }\n\
+    "fn take(p addr) void { return }\n\
      fn f() i64 { v vec[2,i64] = splat(1)\n\
      take(&v[0])\n\
      return 0 }\n";
   ignore
     (lower_of
-       "fn take(p ptr[vec[2,i64]]) void { return }\n\
+       "fn take(p addr) void { return }\n\
         fn f() i64 { v vec[2,i64] = splat(1)\n\
        \ take(&v)\n\
        \ return 0 }\n");
@@ -816,9 +813,9 @@ let () =
     failwith "aggregate-index-u8: narrow unsigned index was not zero-extended";
   let index_evaluation_order =
     llvm_of
-      "fn base() ptr[i64] { return null }\n\
+      "fn base() addr { return addr_from_bits(0) }\n\
        fn index() i64 { return 0 }\n\
-       fn f() i64 { base()[index()] = 1\n\
+       fn f() i64 { base()[i64, index()] = 1\n\
       \ return 0 }\n"
   in
   let base_calls = positions index_evaluation_order "call ptr @base" in
@@ -828,7 +825,7 @@ let () =
   | _ -> failwith "aggregate-index-order: index was evaluated before its base");
   let vector_assign_alias =
     llvm_of
-      "fn mutate(p ptr[vec[2,i64]]) i64 { p.* = splat(9)\n\
+      "fn mutate(p addr) i64 { p[vec[2,i64]] = splat(9)\n\
       \ return 7 }\n\
        fn f() i64 { v vec[2,i64] = splat(1)\n\
       \ v[0] = mutate(&v)\n\
@@ -841,7 +838,7 @@ let () =
   | _ -> failwith "vector-lane-assignment: rhs was evaluated after stale vector load");
   let vector_compound_alias =
     llvm_of
-      "fn mutate(p ptr[vec[2,i64]]) i64 { p.* = splat(9)\n\
+      "fn mutate(p addr) i64 { p[vec[2,i64]] = splat(9)\n\
       \ return 7 }\n\
        fn f() i64 { v vec[2,i64] = splat(1)\n\
       \ v[0] += mutate(&v)\n\
@@ -855,13 +852,13 @@ let () =
   semantic_error "place-init-short-circuit-escape" "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\n\
      fn f() i64 { s S\n\
-    \ true || (&s != null)\n\
+    \ true || (&s != addr_from_bits(0))\n\
     \ t S = s\n\
     \ return 0 }\n";
   ignore
     (lower_of
        "struct S { x i64 y i64 }\n\
-        fn take(p ptr[S]) void { return }\n\
+        fn take(p addr) void { return }\n\
         fn f() i64 { s S\n\
        \ take(&s)\n\
        \ true || false\n\
@@ -870,12 +867,12 @@ let () =
   semantic_error "place-init-ternary-escape" "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\n\
      fn f(p bool) i64 { s S\n\
-    \ q ptr[S] = p ? &s : null\n\
+    \ q addr = p ? &s : addr_from_bits(0)\n\
      t S = s\n\
     \ return 0 }\n";
   semantic_error "place-init-ternary-cross-arm" "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\n\
-     fn choose(p ptr[S], x S) S { return x }\n\
+     fn choose(p addr, x S) S { return x }\n\
      fn f(p bool) i64 { s S\n\
     \ t S = p ? choose(&s, s) : s\n\
     \ return 0 }\n";
@@ -1007,17 +1004,14 @@ let () =
        \ s.a[1] = 2\n\
        \ return s.a[i] }\n");
   semantic_error "aggregate-dynamic-pointer-element" "use of uninitialized local `a`"
-    "fn f(i i64) i64 { x i64\na arr[2,ptr[i64]]\na[0] = &x\na[i][0] = 1\nreturn x }\n";
+    "fn f(i i64) i64 { x i64\na arr[2,addr]\na[0] = &x\na[i][0] = 1\nreturn x }\n";
   ignore
     (llvm_of
-       "fn take(p ptr[i64]) void { return }\n\
-        fn f() i64 { x i64\n\
-       \ take(&x)\n\
-       \ return x }\n");
+       "fn take(p addr) void { return }\nfn f() i64 { x i64\n take(&x)\n return x }\n");
   ignore
     (lower_of
        "struct S { x i64 y i64 }\n\
-        fn take(p ptr[i64]) void { return }\n\
+        fn take(p addr) void { return }\n\
         fn f() i64 { s S\n\
        \ take(&s.x)\n\
        \ t S = s\n\
@@ -1038,19 +1032,19 @@ let () =
   ignore
     (lower_of
        "struct S { x i64 y i64 }\n\
-        fn take(p ptr[S]) void { return }\n\
+        fn take(p addr) void { return }\n\
         fn f(p bool) i64 { s S\n\
        \ if p { take(&s) } else { s.x = 1 }\n\
         return s.x }\n");
   semantic_error "aggregate-branch-raw-missing-field" "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\n\
-     fn take(p ptr[S]) void { return }\n\
+     fn take(p addr) void { return }\n\
      fn f(p bool) i64 { s S\n\
     \ if p { take(&s) } else { s.x = 1 }\n\
      return s.y }\n";
   semantic_error "aggregate-branch-raw-whole" "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\n\
-     fn take(p ptr[S]) void { return }\n\
+     fn take(p addr) void { return }\n\
      fn f(p bool) i64 { s S\n\
     \ if p { take(&s) } else { s.x = 1 }\n\
      t S = s\n\
@@ -1218,7 +1212,7 @@ let () =
   semantic_error "defer-continue" "continue is not allowed inside defer"
     "fn f() void { while true { defer { continue } break } }\n";
   ignore (lower_of "fn f() u32 { x arr[4,u32] = raw\n x[0] = 1\n return x[3] }\n");
-  ignore (lower_of "fn f() i64 { p ptr[i64] = raw\n p[0] = 1\n return p[0] }\n");
+  ignore (lower_of "fn f() i64 { p addr = raw\n p[i64] = 1\n return p[i64] }\n");
   ignore
     (lower_of "fn f() u32 { x arr[4,u32] = raw\n t arr[4,u32] = x\n return t[0] }\n");
   ignore
@@ -1303,10 +1297,10 @@ let () =
     "fn f() i64 { for index i64 = 0; index < 1; index += 1 { }\n return index }\n";
   ignore
     (lower_of
-       "fn delayed(out ptr[i64], value i64) void {\n\
-       \ defer { out.* += value }\n\
+       "fn delayed(out addr, value i64) void {\n\
+       \ defer { out[i64] += value }\n\
        \ { value i64 = 100\n\
-       \ out.* += value - 100 }\n\
+       \ out[i64] += value - 100 }\n\
        \ }\n");
   let lexical_const_shadow =
     llvm_of "const value i64 = 1\nfn f() i64 { value i64 = 2\n return value }\n"
@@ -1477,8 +1471,6 @@ let () =
     [ "%struct.S"; "store i32" ];
   semantic_error "addr-null-reject" "null requires a pointer context"
     "fn f() addr { return null }\n";
-  semantic_error "addr-deref-reject" "cannot dereference a non-pointer"
-    "fn f(p addr) u8 { return p.* }\n";
   semantic_error "addr-index-reject" "raw selection requires a type argument"
     "fn f(p addr) u8 { return p[0] }\n";
   semantic_error "addr-bitcast-from-reject"
@@ -1489,8 +1481,6 @@ let () =
     "fn f(n usize) addr { return bitcast[addr](n) }\n";
   semantic_error "handle-field-reject" "field access requires a struct"
     "opaque O\nfn f(h handle[O]) usize { return h.x }\n";
-  semantic_error "handle-deref-reject" "cannot dereference a non-pointer"
-    "opaque O\nfn f(h handle[O]) u8 { return h.* }\n";
   semantic_error "handle-index-reject" "cannot select through a handle"
     "opaque O\nfn f(h handle[O]) u8 { return h[0] }\n";
   semantic_error "comparison-chaining-reject" "binary operands must have the same type"
@@ -1704,13 +1694,14 @@ let () =
   let neutral_named_type =
     expect_ok
       (Parser.parse
-         (source "fn use(value ptr[Handle]) i64 { return 0 }\nopaque Handle\n"))
+         (source "fn use(value handle[Handle]) i64 { return 0 }\nopaque Handle\n"))
   in
   (match neutral_named_type.Ast.items with
-  | Ast.Func { params = [ { ty = Ast.Ptr (Ast.Named_type "Handle"); _ } ]; _ } :: _ ->
+  | Ast.Func { params = [ { ty = Ast.Handle (Ast.Named_type "Handle"); _ } ]; _ } :: _
+    ->
       ()
   | _ -> failwith "named-type-neutral-ast: parser classified a declaration name");
-  ignore (lower_of "fn use(value ptr[Handle]) i64 { return 0 }\nopaque Handle\n");
+  ignore (lower_of "fn use(value handle[Handle]) i64 { return 0 }\nopaque Handle\n");
   let forward_struct =
     llvm_of
       "fn make() i64 { value Pair = (Pair){7, 9}\n\
@@ -1721,24 +1712,24 @@ let () =
     failwith "forward-struct: declaration was not resolved before function checking";
   let use_file =
     ( "use.fas",
-      "fn read(object ptr[Handle]) i64 { value Pair = (Pair){11}\n return value.x }\n"
-    )
+      "fn read(object handle[Handle]) i64 { value Pair = (Pair){11}\n\
+      \ return value.x }\n" )
   in
   let declarations_file = ("types.fas", "opaque Handle\nstruct Pair { x i64 }\n") in
   List.iter
     (fun files -> ignore (expect_ok (check_files files) |> Lower.lower |> expect_ok))
     [ [ use_file; declarations_file ]; [ declarations_file; use_file ] ];
   semantic_error "unknown-named-type" "unknown type `Missing`"
-    "fn use(value ptr[Missing]) i64 { return 0 }\n";
+    "fn use(value handle[Missing]) i64 { return 0 }\n";
   semantic_error "opaque-struct-literal" "opaque type `Handle` is not a struct"
     "opaque Handle\nfn use() i64 { (Handle){}\n return 0 }\n";
   ignore
     (lower_of
-       "fn preserve(value ptr[Handle]) ptr[Handle] { local ptr[Handle] = value\n\
+       "fn preserve(value handle[Handle]) handle[Handle] { local handle[Handle] = value\n\
        \ return local }\n\
-        fn read_only(value ptr[Handle]) ptr[const Handle] { return value }\n\
-        fn pointer_size() usize { return sizeof[ptr[Handle]] }\n\
-        fn pointer_align() usize { return alignof[ptr[const Handle]] }\n\
+        fn read_only(value handle[Handle]) addr { return handle_addr(value) }\n\
+        fn pointer_size() usize { return sizeof[handle[Handle]] }\n\
+        fn pointer_align() usize { return alignof[addr] }\n\
         opaque Handle\n");
   semantic_error "opaque-local-by-value"
     "opaque type `Handle` may only be used behind a pointer"
@@ -1760,98 +1751,41 @@ let () =
     "opaque Handle\nfn use() usize { return sizeof[Handle] }\n";
   semantic_error "opaque-alignof" "opaque type `Handle` has no layout"
     "opaque Handle\nfn use() usize { return alignof[Handle] }\n";
-  semantic_error "opaque-dereference" "cannot dereference an opaque pointer"
-    "opaque Handle\nfn use(value ptr[Handle]) void { value.* }\n";
-  semantic_error "opaque-index" "opaque pointers cannot be indexed"
-    "opaque Handle\nfn use(value ptr[Handle]) i32 { value[0]\n return 0 }\n";
-  semantic_error "opaque-field-access" "cannot dereference an opaque pointer"
-    "opaque Handle\nfn use(value ptr[Handle]) i32 { value.*.field\n return 0 }\n";
   semantic_error "opaque-implicit-erasure"
-    "type mismatch: expected ptr[u8], got ptr[Handle]"
-    "opaque Handle\nfn use(value ptr[Handle]) ptr[u8] { return value }\n";
-  semantic_error "opaque-distinct-assignment"
-    "type mismatch: expected ptr[Second], got ptr[First]"
-    "opaque First\n\
-     opaque Second\n\
-     fn use(value ptr[First]) void { other ptr[Second] = value }\n";
-  semantic_error "opaque-distinct-comparison" "binary operands must have the same type"
-    "opaque First\n\
-     opaque Second\n\
-     fn use(left ptr[First], right ptr[Second]) bool { return left == right }\n";
+    "type mismatch: expected addr, got handle[Handle]"
+    "opaque Handle\nfn use(value handle[Handle]) addr { return value }\n";
   ignore
     (lower_of
-       "fn accept(value ptr[const u64]) void { return }\n\
-        fn return_read_only(value ptr[u64]) ptr[const u64] { return value }\n\
-        fn choose(flag bool, mutable ptr[u64], read_only ptr[const u64]) ptr[const \
-        u64] {\n\
+       "fn accept(value addr) void { return }\n\
+        fn return_read_only(value addr) addr { return value }\n\
+        fn choose(flag bool, mutable addr, read_only addr) addr {\n\
        \ return flag ? mutable : read_only\n\
         }\n\
-        fn use(value ptr[u64]) bool {\n\
-       \ read_only ptr[const u64] = value\n\
+        fn use(value addr) bool {\n\
+       \ read_only addr = value\n\
        \ accept(value)\n\
        \ read_only = value\n\
        \ return value == read_only\n\
         }\n");
-  semantic_error "pointer-const-to-mutable-assignment"
-    "type mismatch: expected ptr[u64], got ptr[const u64]"
-    "fn use(value ptr[const u64]) void { mutable ptr[u64] = value }\n";
-  semantic_error "pointer-const-to-mutable-argument"
-    "type mismatch: expected ptr[u64], got ptr[const u64]"
-    "fn take(value ptr[u64]) void { return }\n\
-     fn use(value ptr[const u64]) void { take(value) }\n";
-  semantic_error "pointer-const-to-mutable-return"
-    "type mismatch: expected ptr[u64], got ptr[const u64]"
-    "fn use(value ptr[const u64]) ptr[u64] { return value }\n";
-  semantic_error "pointer-const-to-mutable-ternary"
-    "type mismatch: expected ptr[u64], got ptr[const u64]"
-    "fn use(flag bool, mutable ptr[u64], read_only ptr[const u64]) ptr[u64] {\n\
-    \ return flag ? mutable : read_only\n\
-     }\n";
-  semantic_error "pointer-different-integer-element"
-    "type mismatch: expected ptr[u8], got ptr[u64]"
-    "fn use(value ptr[u64]) void { other ptr[u8] = value }\n";
-  semantic_error "pointer-different-struct-element"
-    "type mismatch: expected ptr[Second], got ptr[First]"
-    "struct First { value u64 }\n\
-     struct Second { value u64 }\n\
-     fn use(value ptr[First]) ptr[Second] { return value }\n";
-  semantic_error "pointer-different-opaque-element"
-    "type mismatch: expected ptr[Second], got ptr[First]"
-    "opaque First\n\
-     opaque Second\n\
-     fn take(value ptr[Second]) void { return }\n\
-     fn use(value ptr[First]) void { take(value) }\n";
-  semantic_error "pointer-different-element-comparison"
-    "binary operands must have the same type"
-    "fn use(left ptr[u8], right ptr[u64]) bool { return left == right }\n";
-  semantic_error "pointer-different-element-ternary" "ternary arms have different types"
-    "fn use(flag bool, left ptr[u8], right ptr[u64]) ptr[u8] {\n\
-    \ return flag ? left : right\n\
-     }\n";
-  semantic_error "pointer-nested-constness"
-    "type mismatch: expected ptr[ptr[const u8]], got ptr[ptr[u8]]"
-    "fn use(value ptr[ptr[u8]]) void { nested ptr[ptr[const u8]] = value }\n";
-  semantic_error "pointer-implicit-to-integer"
-    "type mismatch: expected usize, got ptr[u8]"
-    "fn use(value ptr[u8]) void { bits usize = value }\n";
-  semantic_error "integer-implicit-to-pointer"
-    "type mismatch: expected ptr[u8], got usize"
-    "fn use(value usize) void { pointer ptr[u8] = value }\n";
+  semantic_error "pointer-implicit-to-integer" "type mismatch: expected usize, got addr"
+    "fn use(value addr) void { bits usize = value }\n";
+  semantic_error "integer-implicit-to-pointer" "type mismatch: expected addr, got usize"
+    "fn use(value usize) void { pointer addr = value }\n";
   semantic_error "pointer-bitcast-discards-const"
     "illegal cast for source and destination widths"
-    "fn use(value ptr[const u8]) ptr[u8] { return bitcast[ptr[u8]](value) }\n";
+    "fn use(value addr) addr { return bitcast[addr](value) }\n";
   semantic_error "pointer-bitcast-u32-width"
     "illegal cast for source and destination widths"
-    "fn use(value ptr[u8]) u32 { return bitcast[u32](value) }\n";
+    "fn use(value addr) u32 { return bitcast[u32](value) }\n";
   semantic_error "pointer-bitcast-i32-width"
     "illegal cast for source and destination widths"
-    "fn use(value i32) ptr[u8] { return bitcast[ptr[u8]](value) }\n";
+    "fn use(value i32) addr { return bitcast[addr](value) }\n";
   semantic_error "const-pointer-bitcast-u32-width"
     "illegal cast for source and destination widths"
-    "fn use(value ptr[const u8]) u32 { return bitcast[u32](value) }\n";
+    "fn use(value addr) u32 { return bitcast[u32](value) }\n";
   semantic_error "integer-bitcast-const-pointer-u32-width"
     "illegal cast for source and destination widths"
-    "fn use(value u32) ptr[const u8] { return bitcast[ptr[const u8]](value) }\n";
+    "fn use(value u32) addr { return bitcast[addr](value) }\n";
   let before_messages =
     semantic_messages
       "struct Stable { x i64 }\nfn use(value Missing) i64 { return 0 }\n"
@@ -1887,22 +1821,16 @@ let () =
     \  c ? a() : b()\n\
     \  return 0\n\
      }\n";
-  parse_error "fas-006-noalias-parameter" "fn f(x noalias ptr[u8]) i32 { return 0 }\n";
-  parse_error "fas-007-aligned-parameter"
-    "fn f(x aligned[16] ptr[u8]) i32 { return 0 }\n";
-  semantic_error "fas-028-implicit-pointer-erasure"
-    "type mismatch: expected ptr[u8], got ptr[i64]"
-    "fn take(p ptr[u8]) i32 { return 0 }\n\
-     fn main() i32 { x i64 = 1\n\
-    \ return take(&x) }\n";
+  parse_error "fas-006-noalias-parameter" "fn f(x noalias addr) i32 { return 0 }\n";
+  parse_error "fas-007-aligned-parameter" "fn f(x aligned[16] addr) i32 { return 0 }\n";
   let explicit_pointer_cast =
     llvm_of
-      "fn take(p ptr[u8]) i32 { return 0 }\n\
+      "fn take(p addr) i32 { return 0 }\n\
        fn main() i32 { x i64 = 1\n\
-      \ return take(bitcast[ptr[u8]](&x)) }\n"
+      \ return take(addr_from_bits(addr_bits(&x))) }\n"
   in
   if not (contains explicit_pointer_cast "call i32 @take(ptr") then
-    failwith "fas-028: explicit pointer bitcast was rejected";
+    failwith "fas-028: explicit pointer conversion was rejected";
   List.iter
     (fun (name, source) ->
       parse_error_message
@@ -2097,7 +2025,7 @@ let () =
     ~finally:(fun () -> Sys.remove budget_source_path)
     (fun () ->
       let channel = open_out_bin budget_source_path in
-      output_string channel "fn main() i32 {\n  s ptr[const u8] = \"";
+      output_string channel "fn main() i32 {\n  s addr = \"";
       output_string channel (String.make 3_999_999 'A');
       output_string channel "\"\n  return 0\n}\n";
       close_out channel;
@@ -2153,14 +2081,6 @@ let () =
     \     }\n\
     \     return y\n\
     \   }\n";
-  semantic_error "fas-004-index-void-pointer" "void pointers cannot be indexed"
-    "fn f(p ptr[void]) i32 { p[0]\n return 0}";
-  semantic_error "fas-004-deref-void-pointer" "cannot dereference a void pointer"
-    "fn f(p ptr[void]) i32 { p.*\nreturn 0 }";
-  semantic_error "fas-004-assign-index-void-pointer" "void pointers cannot be indexed"
-    "fn sink() void { }\nfn f(p ptr[void]) i32 { p[0] = sink()\n return 0}";
-  semantic_error "fas-004-assign-deref-void-pointer" "cannot dereference a void pointer"
-    "fn sink() void { }\nfn f(p ptr[void]) i32 { p.* = sink()\nreturn 0 }";
 
   let guarded_div = llvm_of "fn div(x i64, y i64) i64 { return x / y }\n" in
   if
@@ -2194,27 +2114,11 @@ let () =
 
   semantic_error "fas-026-const-array-write" "cannot modify constant"
     "const K arr[2, i64] = {1, 2}\nfn main() i32 { K[0] = 9\n return 0 }\n";
-  semantic_error "fas-026-const-array-address" "cannot modify read-only pointer"
-    "const K arr[2, i64] = {1, 2}\n\
-     fn main() i32 { p ptr[const i64] = &K[0]\n\
-    \ p[0] = 9\n\
-    \ return 0 }\n";
   semantic_error "fas-029-string-literal-index" "cannot modify read-only pointer"
-    "fn main() i32 { \"x\"[0] = 9\n return 0 }\n";
-  semantic_error "fas-029-string-literal-deref" "cannot modify read-only pointer"
-    "fn main() i32 { p ptr[const u8] = \"x\"\n p.* = 9\n return 0 }\n";
-  semantic_error "fas-029-string-literal-mutable-storage"
-    "type mismatch: expected ptr[u8], got ptr[const u8]"
-    "fn main() i32 { p ptr[u8] = \"x\"\n return 0 }\n";
-  semantic_error "fas-029-read-only-address-propagation"
-    "type mismatch: expected ptr[i64], got ptr[const i64]"
-    "fn main() i32 { x i64 = 1\n\
-    \ p ptr[const i64] = &x\n\
-    \ q ptr[i64] = &p.*\n\
-    \ return 0 }\n";
+    "fn main() i32 { \"x\"[u8] = 9\n return 0 }\n";
   let string_literals =
     llvm_of
-      "extern \"C\" { fn take(p ptr[const u8]) void }\n\
+      "extern \"C\" { fn take(p addr) void }\n\
        fn main() i32 { take(\"x\")\n\
       \ take(c\"x\")\n\
       \ take(\"\")\n\
@@ -2231,7 +2135,7 @@ let () =
   then failwith "fas-030-string-literals: incorrect empty literal storage";
   let string_pointer =
     llvm_of
-      "fn read(p ptr[const u8]) i32 { return zext[i32](p[0]) }\n\
+      "fn read(p addr) i32 { return zext[i32](p[u8]) }\n\
        fn main() i32 { return read(\"x\") }\n"
   in
   if not (contains string_pointer "call i32 @read(ptr") then
@@ -2239,7 +2143,7 @@ let () =
   let byte_literal_semantics =
     llvm_of
       "const ByteCount usize = len(\"a\\0b\") + len(\"\\n\") + len(\"é\")\n\
-       fn bytes() ptr[const u8] { return \"a\\0b\" }\n\
+       fn bytes() addr { return \"a\\0b\" }\n\
        fn main() usize { return ByteCount }\n"
   in
   if not (contains byte_literal_semantics "[3 x i8] c\"a\\00b\"") then
@@ -2247,7 +2151,7 @@ let () =
   if not (contains byte_literal_semantics "ret i64 6\n") then
     failwith "fas-030-string-literals: literal length did not count decoded bytes";
   semantic_error "fas-030-string-literal-fixed-array"
-    "type mismatch: expected arr[3, u8], got ptr[const u8]"
+    "type mismatch: expected arr[3, u8], got addr"
     "fn main() i32 { bytes arr[3,u8] = \"abc\"\n return 0 }\n";
   semantic_error "fas-030-c-string-literal-nul"
     "C string literal cannot contain embedded NUL"
@@ -2283,7 +2187,7 @@ let () =
     || not (contains array_length "add i64 3, 3\n")
   then failwith "fas-031-len: fixed array length is incorrect";
   semantic_error "fas-031-len-pointer" "len requires a fixed array or string literal"
-    "fn main() i64 { p ptr[const u8] = \"abc\"\n return zext[i64](len(p)) }\n";
+    "fn main() i64 { p addr = \"abc\"\n return zext[i64](len(p)) }\n";
   let const_array_value =
     llvm_of
       "const G arr[2, i64] = {7, 8}\n\
@@ -2455,10 +2359,10 @@ let () =
       \                    x bool = b[0]\n\
       \                    return 0 }\n"
   in
-  let _ =
-    lower_of
-      "fn f() i64 { v vec[2,ptr[u8]] = splat(null)\n                    return 0 }\n"
-  in
+  semantic_error "vec-element-address"
+    "vector element type must be a scalar (bool, integer, or pointer)"
+    "fn f() i64 { v vec[2,addr] = splat(addr_from_bits(0))\n\
+    \                    return 0 }\n";
   let _ =
     lower_of
       "fn f(n i32) i32 {\n\
@@ -2777,7 +2681,7 @@ let () =
 
   semantic_error "const-param-pointer-rejected"
     "const parameter type must be a scalar integer or bool"
-    "fn id[N const ptr[u8]](x u64) u64 { return x }\n";
+    "fn id[N const addr](x u64) u64 { return x }\n";
 
   semantic_error "const-param-duplicate" "duplicate generic parameter `N`"
     "fn id[N const usize, N const usize](x u64) u64 { return x + N }\n";
@@ -2836,7 +2740,7 @@ let () =
   then failwith "type-generic-declarations: AST rendering lost generic parameters";
   let applied_type_syntax =
     expect_ok
-      (Parser.parse (source "fn use(value Mixed[T, ptr[u8], 3]) i64 { return 0 }\n"))
+      (Parser.parse (source "fn use(value Mixed[T, addr, 3]) i64 { return 0 }\n"))
   in
   (match applied_type_syntax.Ast.items with
   | [
@@ -2850,7 +2754,7 @@ let () =
                  ( "Mixed",
                    [
                      Ast.Name_arg ("T", _);
-                     Ast.Type_arg (Ast.Ptr (Ast.Int Ast.U8));
+                     Ast.Type_arg Ast.Addr;
                      Ast.Const_arg (Ast.Int_lit ("3", _));
                    ],
                    _ );
@@ -3846,28 +3750,27 @@ let () =
   then failwith "generic-function-template: unused template was emitted";
   let type_generic_failure =
     "fn bad[T](value T) T { return value + value }\n\
-     fn main(value ptr[u8]) ptr[u8] { return bad[ptr[u8]](value) }\n"
+     fn main(value addr) addr { return bad[addr](value) }\n"
   in
   (match semantic_diagnostics type_generic_failure with
   | [ diagnostic ] ->
-      if diagnostic.message <> "arithmetic requires integer or vector operands" then
-        failwith "generic-instantiation-type: root message changed";
+      if diagnostic.message <> "address arithmetic requires a scalar integer offset"
+      then failwith "generic-instantiation-type: root message changed";
       if
         diagnostic.primary.Span.file <> "regression.fas"
         || diagnostic.primary.Span.line <> 1
         || diagnostic.primary.Span.column <> 37
       then failwith "generic-instantiation-type: root span changed";
       if
-        diagnostic.notes
-        <> [ "while instantiating `bad[ptr[u8]]` at regression.fas:2:44" ]
+        diagnostic.notes <> [ "while instantiating `bad[addr]` at regression.fas:2:38" ]
       then
         failwith
           ("generic-instantiation-type: unexpected trace: "
           ^ String.concat " | " diagnostic.notes)
   | _ -> failwith "generic-instantiation-type: expected one diagnostic");
   let const_generic_failure =
-    "fn bad[N const u64](value ptr[u8]) ptr[u8] { return value + value }\n\
-     fn main(value ptr[u8]) ptr[u8] {\n\
+    "fn bad[N const u64](value addr) addr { return value + value }\n\
+     fn main(value addr) addr {\n\
      return bad[18446744073709551615](value)\n\
      }\n"
   in
@@ -3883,8 +3786,8 @@ let () =
   | _ -> failwith "generic-instantiation-const: expected one diagnostic");
   let mixed_generic_failure =
     "fn bad[T, N const u64](value T) T { return value + value }\n\
-     fn main(value ptr[u8]) ptr[u8] {\n\
-     return bad[ptr[u8], 18446744073709551615](value)\n\
+     fn main(value addr) addr {\n\
+     return bad[addr, 18446744073709551615](value)\n\
      }\n"
   in
   (match semantic_diagnostics mixed_generic_failure with
@@ -3892,7 +3795,7 @@ let () =
       if
         diagnostic.notes
         <> [
-             "while instantiating `bad[ptr[u8], 18446744073709551615]` at \
+             "while instantiating `bad[addr, 18446744073709551615]` at \
               regression.fas:3:11";
            ]
       then
@@ -3904,18 +3807,15 @@ let () =
     "fn bad[A, N const u8, B, M const i8](left A, right B) A {\n\
      return left + left\n\
      }\n\
-     fn main(value ptr[u8], other ptr[u16]) ptr[u8] {\n\
-     return bad[ptr[u8], 2, ptr[u16], -3](value, other)\n\
+     fn main(value addr, other addr) addr {\n\
+     return bad[addr, 2, addr, -3](value, other)\n\
      }\n"
   in
   (match semantic_diagnostics interleaved_generic_failure with
   | [ diagnostic ] ->
       if
         diagnostic.notes
-        <> [
-             "while instantiating `bad[ptr[u8], 2, ptr[u16], -3]` at \
-              regression.fas:5:11";
-           ]
+        <> [ "while instantiating `bad[addr, 2, addr, -3]` at regression.fas:5:11" ]
       then
         failwith
           ("generic-instantiation-order: unexpected trace: "
@@ -3924,15 +3824,15 @@ let () =
   let nested_generic_failure =
     "fn inner[T](value T) T { return value + value }\n\
      fn outer[T](value T) T { return inner[T](value) }\n\
-     fn main(value ptr[u8]) ptr[u8] { return outer[ptr[u8]](value) }\n"
+     fn main(value addr) addr { return outer[addr](value) }\n"
   in
   (match semantic_diagnostics nested_generic_failure with
   | [ diagnostic ] ->
       if
         diagnostic.notes
         <> [
-             "while instantiating `outer[ptr[u8]]` at regression.fas:3:46";
-             "while instantiating `inner[ptr[u8]]` at regression.fas:2:38";
+             "while instantiating `outer[addr]` at regression.fas:3:40";
+             "while instantiating `inner[addr]` at regression.fas:2:38";
            ]
       then
         failwith
@@ -3940,16 +3840,16 @@ let () =
           ^ String.concat " | " diagnostic.notes)
   | _ -> failwith "generic-instantiation-nested: expected one diagnostic");
   let nested_const_generic_failure =
-    "fn inner[N const usize](value ptr[u8]) ptr[u8] { return value + value }\n\
+    "fn inner[N const usize](value addr) addr { return value + value }\n\
      fn outer[T](value T) T { return inner[4](value) }\n\
-     fn main(value ptr[u8]) ptr[u8] { return outer[ptr[u8]](value) }\n"
+     fn main(value addr) addr { return outer[addr](value) }\n"
   in
   (match semantic_diagnostics nested_const_generic_failure with
   | [ diagnostic ] ->
       if
         diagnostic.notes
         <> [
-             "while instantiating `outer[ptr[u8]]` at regression.fas:3:46";
+             "while instantiating `outer[addr]` at regression.fas:3:40";
              "while instantiating `inner[4]` at regression.fas:2:38";
            ]
       then
@@ -4044,16 +3944,15 @@ let () =
       failwith "generic-instantiation-specialized-type-message: expected one diagnostic");
   let repeated_generic_failure =
     "fn bad[T](value T) T { return value + value }\n\
-     fn main(value ptr[u8]) ptr[u8] {\n\
-     first ptr[u8] = bad[ptr[u8]](value)\n\
-     return bad[ptr[u8]](first)\n\
+     fn main(value addr) addr {\n\
+     first addr = bad[addr](value)\n\
+     return bad[addr](first)\n\
      }\n"
   in
   (match semantic_diagnostics repeated_generic_failure with
   | [ diagnostic ] ->
       if
-        diagnostic.notes
-        <> [ "while instantiating `bad[ptr[u8]]` at regression.fas:3:20" ]
+        diagnostic.notes <> [ "while instantiating `bad[addr]` at regression.fas:3:17" ]
       then
         failwith
           ("generic-instantiation-cache: unexpected trace: "
@@ -4067,7 +3966,7 @@ let () =
      first T = left[T](value)\n\
      return right[T](first)\n\
      }\n\
-     fn main(value ptr[u8]) ptr[u8] { return root[ptr[u8]](value) }\n"
+     fn main(value addr) addr { return root[addr](value) }\n"
   in
   (match semantic_diagnostics diamond_cache_failure with
   | [ diagnostic ] ->
@@ -4075,9 +3974,9 @@ let () =
       if
         diagnostic.notes
         <> [
-             "while instantiating `root[ptr[u8]]` at regression.fas:8:45";
-             "while instantiating `left[ptr[u8]]` at regression.fas:5:15";
-             "while instantiating `leaf[ptr[u8]]` at regression.fas:2:36";
+             "while instantiating `root[addr]` at regression.fas:8:39";
+             "while instantiating `left[addr]` at regression.fas:5:15";
+             "while instantiating `leaf[addr]` at regression.fas:2:36";
            ]
       then
         failwith
@@ -4386,7 +4285,7 @@ let () =
   semantic_error "mixed-generic-instantiated-body-error" "arithmetic requires"
     "fn bad[T, N const usize](value T) T { seen usize = N\n\
      return value + value }\n\
-     fn main(value ptr[u8]) ptr[u8] { return bad[ptr[u8], 1](value) }\n";
+     fn main(value addr) addr { return bad[addr, 1](value) }\n";
   let direct_recursive_limits = { Limits.default with max_specialization_depth = 1 } in
   let direct_recursive_specialization =
     expect_ok
@@ -4439,7 +4338,7 @@ let () =
        (expect_ok
           (Parser.parse
              (source
-                "fn grow[T]() i64 { return grow[ptr[T]]() }\n\
+                "fn grow[T]() i64 { return grow[arr[2, T]]() }\n\
                  fn main() i64 { return grow[u8]() }\n")))
    with
   | Ok _ -> failwith "generic-function-depth-limit: expected rejection"
@@ -4496,14 +4395,14 @@ let () =
       then failwith "generic-function-count-limit: unexpected diagnostic");
 
   let generic_struct_source =
-    "struct Box[T] { value T pointer ptr[T] }\n\
+    "struct Box[T] { value T pointer addr }\n\
      struct Pair[A, B] { first A second B }\n\
      struct Wrapper[T] { boxed Box[T] }\n\
      fn main() usize {\n\
-    \ box Box[i64] = (Box[i64]){7, null}\n\
+    \ box Box[i64] = (Box[i64]){7, addr_from_bits(0)}\n\
     \ pair64 Pair[i64, u8] = (Pair[i64, u8]){9, 1}\n\
     \ pair32 Pair[u32, u8] = (Pair[u32, u8]){9, 1}\n\
-    \ wrapped Wrapper[u8] = (Wrapper[u8]){(Box[u8]){1, null}}\n\
+    \ wrapped Wrapper[u8] = (Wrapper[u8]){(Box[u8]){1, addr_from_bits(0)}}\n\
     \ return sizeof[Box[i64]] + sizeof[Pair[i64, u8]]\n\
      }\n"
   in
@@ -4525,11 +4424,10 @@ let () =
       (List.exists
          (fun (definition : Hir.struct_def) ->
            match definition.fields with
-           | [ { ty = Hir.Int Hir.I64; _ }; { ty = Hir.Ptr (Hir.Int Hir.I64); _ } ] ->
-               true
+           | [ { ty = Hir.Int Hir.I64; _ }; { ty = Hir.Addr; _ } ] -> true
            | _ -> false)
          box_specializations)
-  then failwith "generic-struct-substitution: nested pointer substitution failed";
+  then failwith "generic-struct-substitution: field substitution failed";
   let pair_sizes =
     generic_struct_hir.Hir.structs
     |> List.filter (specialization_named "Pair")
@@ -4838,11 +4736,10 @@ let () =
      fn vector_identity[T, N const usize](value vec[N, T]) vec[N, T] {\n\
     \ return value\n\
      }\n\
-     fn aggregate_metrics[T, N const usize](value ptr[arr[N, T]]) usize {\n\
-    \ same ptr[arr[N, T]] = bitcast[ptr[arr[N, T]]](value)\n\
+     fn aggregate_metrics[T, N const usize](value arr[N, T]) usize {\n\
     \ return sizeof[arr[N, T]] + alignof[arr[N, T]] + sizeof[vec[N, T]]\n\
      }\n\
-     fn main(value arr[3, u8], pointer ptr[arr[4, u16]], lanes vec[4, u16]) usize {\n\
+     fn main(value arr[3, u8], pointer arr[4, u16], lanes vec[4, u16]) usize {\n\
     \ first arr[3, u8] = array_outer[u8, THREE](value)\n\
     \ second arr[3, u8] = array_outer[u8, 3](first)\n\
     \ third arr[3, u8] = byte_identity[THREE](second)\n\
@@ -4881,11 +4778,11 @@ let () =
            contains func.name "aggregate_metrics$spec$"
            &&
            match func.params with
-           | [ { ty = Hir.Ptr (Hir.Array (4, Hir.Int Hir.U16)); _ } ] -> true
+           | [ { ty = Hir.Array (4, Hir.Int Hir.U16); _ } ] -> true
            | _ -> false)
          function_specializations)
   then
-    failwith "const-generic-function-type-nesting: pointer length was not substituted";
+    failwith "const-generic-function-type-nesting: aggregate length was not substituted";
   let const_generic_function_type_llvm =
     Ir.render (expect_ok (Lower.lower const_generic_function_type_hir))
   in
@@ -4907,8 +4804,8 @@ let () =
      fn main(value arr[1, u8]) arr[1, u8] { return identity[-1](value) }\n";
   semantic_error "const-generic-function-machine-length"
     "aggregate length is not a machine integer"
-    "fn identity[N const u64](value ptr[arr[N, u8]]) ptr[arr[N, u8]] { return value }\n\
-     fn main(value ptr[arr[1, u8]]) ptr[arr[1, u8]] { return \
+    "fn identity[N const u64](value arr[N, u8]) arr[N, u8] { return value }\n\
+     fn main(value arr[1, u8]) arr[1, u8] { return \
      identity[18446744073709551615](value) }\n";
   let const_array_len_generic_llvm =
     llvm_of
@@ -5241,7 +5138,7 @@ let () =
           (expect_ok
              (Parser.parse
                 (source
-                   "struct Node[T] { next ptr[Node[T]] value T }\n\
+                   "struct Node[T] { next addr value T }\n\
                     fn main(value Node[u8]) i64 { return 0 }\n")))));
   (match
      Sema.check ~limits:recursive_struct_limits
@@ -5588,7 +5485,7 @@ let () =
   semantic_error "if-condition-bool-only" "if condition must be bool"
     "fn f(value i64) i64 { if value { return 1 } return 0 }\n";
   semantic_error "while-condition-bool-only" "while condition must be bool"
-    "fn f(value ptr[i64]) void { while value { break } }\n";
+    "fn f(value addr) void { while value { break } }\n";
   semantic_error "for-condition-bool-only" "for condition must be bool"
     "fn f() void { for ; 1; (1) { break } }\n";
   semantic_error "ternary-condition-bool-only" "ternary condition must be bool"
@@ -5602,9 +5499,9 @@ let () =
        \ if value != 0 { return (value != 0) ? 1 : 0 }\n\
        \ return 0\n\
        \ }\n\
-        fn pointer(value ptr[i64]) bool {\n\
-       \ while value != null { break }\n\
-       \ return value != null\n\
+        fn pointer(value addr) bool {\n\
+       \ while value != addr_from_bits(0) { break }\n\
+       \ return value != addr_from_bits(0)\n\
        \ }\n\
         fn counted(value i64) i64 {\n\
        \ for ; value != 0; (value) { break }\n\
@@ -5688,8 +5585,8 @@ let () =
     "type mismatch: expected u64, got u32" "fn f(x u32) u64 { return 1 + x }\n";
   ignore
     (llvm_of
-       "fn f(p ptr[u8]) bool { return p == null }\n\
-        fn g(p ptr[u8]) bool { return null == p }\n");
+       "fn f(p addr) bool { return p == addr_from_bits(0) }\n\
+        fn g(p addr) bool { return addr_from_bits(0) == p }\n");
   let shift_unsigned_right = llvm_of "fn f(x u64, n u32) u64 { return x >> n }\n" in
   if not (contains shift_unsigned_right "lshr i64") then
     failwith "shift-unsigned-right: missing lshr";
@@ -6407,10 +6304,10 @@ let () =
         "fn f(a u8, b u16) u16 { return mul_hi(a, b) }\n",
         "builtin arguments must have the same type" );
       ( "ptr-add-sat",
-        "fn f(p ptr[u8]) u8 { return add_sat(p, p) }\n",
+        "fn f(p addr) u8 { return add_sat(p, p) }\n",
         "builtin arguments must be integers or integer vectors" );
       ( "ptr-mul-hi",
-        "fn f(p ptr[u8]) u8 { return mul_hi(p, p) }\n",
+        "fn f(p addr) u8 { return mul_hi(p, p) }\n",
         "builtin arguments must be integers or integer vectors" );
       ( "bool-vec-mul-hi",
         "fn f(a vec[2,bool]) vec[2,bool] { return mul_hi(a, a) }\n",
@@ -6419,7 +6316,7 @@ let () =
         "fn f(m vec[2,bool]) vec[2,bool] { return popcount(m) }\n",
         "builtin argument must be an integer or an integer vector" );
       ( "bitcount-ptr",
-        "fn f(p ptr[u8]) u8 { return clz(p) }\n",
+        "fn f(p addr) u8 { return clz(p) }\n",
         "builtin argument must be an integer or an integer vector" );
       ( "bitcount-bool-scalar",
         "fn f() bool { return popcount(true) }\n",
@@ -6789,17 +6686,17 @@ let () =
     "struct Pair { left u32 right u32 }\n\
     \ fn f(value vec[2,u32]) Pair { return bitcast[Pair](value) }\n";
   semantic_error "cast-pointer-zext" "illegal cast for source and destination widths"
-    "fn f(value ptr[u8]) u64 { return zext[u64](value) }\n";
+    "fn f(value addr) u64 { return zext[u64](value) }\n";
   semantic_error "cast-pointer-sext" "illegal cast for source and destination widths"
-    "fn f(value ptr[u8]) u64 { return sext[u64](value) }\n";
+    "fn f(value addr) u64 { return sext[u64](value) }\n";
   semantic_error "cast-pointer-trunc" "illegal cast for source and destination widths"
-    "fn f(value ptr[u8]) u32 { return trunc[u32](value) }\n";
+    "fn f(value addr) u32 { return trunc[u32](value) }\n";
   semantic_error "cast-pointer-bitcast-bool"
     "illegal cast for source and destination widths"
-    "fn f(value ptr[u8]) bool { return bitcast[bool](value) }\n";
+    "fn f(value addr) bool { return bitcast[bool](value) }\n";
   semantic_error "cast-vector-bitcast-pointer"
     "illegal cast for source and destination widths"
-    "fn f(value vec[1,u64]) ptr[u8] { return bitcast[ptr[u8]](value) }\n";
+    "fn f(value vec[1,u64]) addr { return bitcast[addr](value) }\n";
   semantic_error "cast-aggregate-zext" "illegal cast for source and destination widths"
     "struct Pair { left u32 right u32 }\n\
     \ fn f() u64 {\n\

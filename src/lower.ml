@@ -584,7 +584,11 @@ let rec expr s = function
       let id = fresh s in
       emit s (Ir.Load (id, ty t, p, alignment));
       Ok (Ir.Local (id, ty t))
-  | Hir.Address (e, _, _) -> address s e
+  | Hir.Address (e, _, _) ->
+      let* p = address s e in
+      let id = fresh s in
+      emit s (Ir.Cast (id, "bitcast", Ir.value_ty p, p, Ir.Ptr Ir.I8));
+      Ok (Ir.Local (id, Ir.Ptr Ir.I8))
   | Hir.Ptr_add (bytes, p, o, _, _) ->
       let* pv = expr s p in
       let* ov = expr s o in

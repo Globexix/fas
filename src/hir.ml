@@ -170,7 +170,7 @@ let expr_ty = function
   | Local (local, _) -> local.ty
   | EBool _ -> Bool
   | Null (t, _) -> t
-  | EString _ -> ConstPtr (Int U8)
+  | EString _ -> Addr
   | Sizeof _ | Alignof _ | Offsetof _ -> Int Usize
 
 let expr_span = function

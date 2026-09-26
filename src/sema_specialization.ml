@@ -128,8 +128,6 @@ let rec diagnostic_type_of_ast specializations = function
   | Ast.Bool -> Diagnostic_bool
   | Ast.Void -> Diagnostic_void
   | Ast.Int kind -> Diagnostic_int kind
-  | Ast.Ptr ty -> Diagnostic_ptr (diagnostic_type_of_ast specializations ty)
-  | Ast.Ptr_const ty -> Diagnostic_const_ptr (diagnostic_type_of_ast specializations ty)
   | Ast.Addr -> Diagnostic_addr
   | Ast.Handle ty -> Diagnostic_handle (diagnostic_type_of_ast specializations ty)
   | Ast.Array (length, ty) ->
@@ -359,12 +357,6 @@ let rec specialization_type_key = function
   | Ast.Bool -> "bool"
   | Ast.Void -> "void"
   | Ast.Int kind -> Ast.type_name (Ast.Int kind)
-  | Ast.Ptr ty ->
-      let key = specialization_type_key ty in
-      "ptr" ^ string_of_int (String.length key) ^ "_" ^ key
-  | Ast.Ptr_const ty ->
-      let key = specialization_type_key ty in
-      "cptr" ^ string_of_int (String.length key) ^ "_" ^ key
   | Ast.Addr -> "addr"
   | Ast.Handle ty ->
       let key = specialization_type_key ty in

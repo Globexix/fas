@@ -14,7 +14,7 @@ fn pair_vec(lo u32, hi u32) vec[2, u32] {
   return v
 }
 
-fn main(argc i32, argv ptr[u8]) i32 {
+fn main(argc i32, argv addr) i32 {
   base addr = buffer()
 
   p0 addr = base + 0

@@ -19,12 +19,6 @@ let rec source_ty_in_context c span = function
           error span (Printf.sprintf "`%s` is a function, not a type" name)
       | Some { declaration_kind = Top_type; _ } | None ->
           source_ty_diag c.named_types span (Ast.Named_type name))
-  | Ast.Ptr ty ->
-      let* ty = source_ty_in_context c span ty in
-      Ok (Hir.Ptr ty)
-  | Ast.Ptr_const ty ->
-      let* ty = source_ty_in_context c span ty in
-      Ok (Hir.ConstPtr ty)
   | Ast.Array (length, ty) ->
       source_aggregate_in_context c span (fun n t -> Hir.Array (n, t)) length ty
   | Ast.Vec (length, ty) -> (
@@ -108,12 +102,13 @@ let rec rooted_in_string_literal = function
   | _ -> false
 
 let rec rooted_in_readonly_pointer = function
-  | Hir.Deref (a, _, _) | Hir.Index (a, _, _, _) | Hir.Field (a, _, _, _, _) -> (
-      match Hir.expr_ty a with
-      | Hir.ConstPtr _ -> true
-      | _ -> rooted_in_readonly_pointer a)
+  | Hir.Raw_select (a, _, _, _)
+  | Hir.Deref (a, _, _)
+  | Hir.Index (a, _, _, _)
+  | Hir.Field (a, _, _, _, _) ->
+      rooted_in_string_literal a || rooted_in_readonly_pointer a
   | Hir.Address (a, _, _) | Hir.Ptr_add (_, a, _, _, _) | Hir.Cast (_, a, _, _) ->
-      rooted_in_readonly_pointer a
+      rooted_in_string_literal a || rooted_in_constant a || rooted_in_readonly_pointer a
   | Hir.Ternary (_, a, b, _, _) ->
       rooted_in_readonly_pointer a || rooted_in_readonly_pointer b
   | _ -> false
@@ -313,6 +308,11 @@ let rec check_place (c : context) expr =
                 }
       | (Hir.Ptr _ | Hir.ConstPtr _), _ -> error s "array index takes one expression"
       | Hir.Addr, [ type_payload ] ->
+          let* () =
+            match (base.root, base.path) with
+            | Some binding, Some path -> require_place_state binding path c s
+            | _ -> Ok ()
+          in
           let* t = select_type_arg c.named_types s type_payload in
           let* () =
             match t with
@@ -323,10 +323,15 @@ let rec check_place (c : context) expr =
           Ok
             {
               expr = Hir.Raw_select (base.expr, offset, t, s);
-              root = None;
-              path = None;
+              root = base.root;
+              path = base.path;
             }
       | Hir.Addr, [ type_payload; index_payload ] ->
+          let* () =
+            match (base.root, base.path) with
+            | Some binding, Some path -> require_place_state binding path c s
+            | _ -> Ok ()
+          in
           let* t = select_type_arg c.named_types s type_payload in
           let* () =
             match t with
@@ -337,8 +342,8 @@ let rec check_place (c : context) expr =
           Ok
             {
               expr = Hir.Raw_select (base.expr, offset, t, s);
-              root = None;
-              path = None;
+              root = base.root;
+              path = base.path;
             }
       | Hir.Addr, _ -> error s "raw selection takes a type and an optional index"
       | Hir.Handle _, _ -> error s "cannot select through a handle"
@@ -362,8 +367,8 @@ let rec check_place (c : context) expr =
                             s ),
                         f.ty,
                         s );
-                  root = None;
-                  path = None;
+                  root = base.root;
+                  path = base.path;
                 }
           | None -> error s (Printf.sprintf "unknown field `%s`" n))
       | Hir.Raw_select (_, _, _, _) -> error s "field access requires a struct"
@@ -384,16 +389,6 @@ let rec check_place (c : context) expr =
                     }
               | None -> error s (Printf.sprintf "unknown field `%s`" n))
           | _ -> error s "field access requires a struct"))
-  | Ast.Deref (e, s) -> (
-      let* x = check_expr c None e in
-      match Hir.expr_ty x with
-      | Hir.Ptr (Hir.Opaque _) | Hir.ConstPtr (Hir.Opaque _) ->
-          error s "cannot dereference an opaque pointer"
-      | Hir.Ptr Hir.Void | Hir.ConstPtr Hir.Void ->
-          error s "cannot dereference a void pointer"
-      | Hir.Ptr t | Hir.ConstPtr t ->
-          Ok { expr = Hir.Deref (x, t, s); root = None; path = None }
-      | _ -> error s "cannot dereference a non-pointer")
   | e ->
       let* checked = check_expr c None e in
       Ok { expr = checked; root = None; path = None }
@@ -639,15 +634,6 @@ and check_expr (c : context) expected = function
         | _ -> Ok ()
       in
       Ok place.expr
-  | Ast.Deref (e, s) -> (
-      let* x = check_expr c None e in
-      match Hir.expr_ty x with
-      | Hir.Ptr (Hir.Opaque _) | Hir.ConstPtr (Hir.Opaque _) ->
-          error s "cannot dereference an opaque pointer"
-      | Hir.Ptr Hir.Void | Hir.ConstPtr Hir.Void ->
-          error s "cannot dereference a void pointer"
-      | Hir.Ptr t | Hir.ConstPtr t -> Ok (Hir.Deref (x, t, s))
-      | _ -> error s "cannot dereference a non-pointer")
   | Ast.Addr_of (e, s) -> (
       let* place = check_place c e in
       (match place.root with Some binding -> set_state c binding [] Raw | None -> ());
@@ -657,28 +643,8 @@ and check_expr (c : context) expected = function
           error s "cannot take address of a vector lane"
       | Hir.Local _ | Hir.Deref _ | Hir.Index _ | Hir.Field _ | Hir.Const_array _
       | Hir.Raw_select _ ->
-          let ty =
-            if
-              rooted_in_constant place.expr
-              || rooted_in_string_literal place.expr
-              || rooted_in_readonly_pointer place.expr
-            then Hir.ConstPtr (Hir.expr_ty place.expr)
-            else Hir.Ptr (Hir.expr_ty place.expr)
-          in
-          Ok (Hir.Address (place.expr, ty, s))
+          Ok (Hir.Address (place.expr, Hir.Addr, s))
       | _ -> error s "cannot take the address of this expression")
-  | Ast.Ptr_add (bytes, p, o, s) -> (
-      let* tp = check_expr c None p in
-      let* toff = check_expr c None o in
-      if not (is_int (Hir.expr_ty toff)) then
-        error s "pointer offset must be an integer"
-      else
-        match Hir.expr_ty tp with
-        | Hir.Ptr (Hir.Opaque _) | Hir.ConstPtr (Hir.Opaque _) ->
-            error s "pointer arithmetic on an opaque pointer is not allowed"
-        | Hir.Ptr t -> Ok (Hir.Ptr_add (bytes, tp, toff, Hir.Ptr t, s))
-        | Hir.ConstPtr t -> Ok (Hir.Ptr_add (bytes, tp, toff, Hir.ConstPtr t, s))
-        | _ -> error s "pointer addition requires a pointer")
   | Ast.Sizeof (t, s) ->
       let* t = source_ty_in_context c s t in
       let* size, _ = layout_diag s c.structs t in
@@ -1281,18 +1247,6 @@ let check_target (c : context) = function
           | Some { declaration_kind = Top_function; _ } ->
               error span (Printf.sprintf "function `%s` is not assignable" n)
           | None -> error span (Printf.sprintf "unknown assignment target `%s`" n)))
-  | Ast.Target_deref e -> (
-      let* x = check_expr c None e in
-      if rooted_in_constant x then error (Ast.expr_span e) "cannot modify constant"
-      else
-        match Hir.expr_ty x with
-        | Hir.Ptr (Hir.Opaque _) | Hir.ConstPtr (Hir.Opaque _) ->
-            error (Ast.expr_span e) "cannot dereference opaque pointer"
-        | Hir.Ptr Hir.Void | Hir.ConstPtr Hir.Void ->
-            error (Ast.expr_span e) "cannot dereference a void pointer"
-        | Hir.Ptr _ -> Ok { target = Hir.ADeref x; root = None; path = None }
-        | Hir.ConstPtr _ -> error (Ast.expr_span e) "cannot modify read-only pointer"
-        | _ -> error (Ast.expr_span e) "deref assignment requires pointer")
   | Ast.Target_select (a, args) -> (
       let* place = check_place c (Ast.Select (a, args, Ast.expr_span a)) in
       let x = place.expr in
@@ -1300,7 +1254,10 @@ let check_target (c : context) = function
       | Hir.Raw_select (_, _, (Hir.Struct _ | Hir.Array _), _) ->
           error (Ast.expr_span a) "raw selection cannot store an aggregate value"
       | Hir.Raw_select (base, off, t, _) ->
-          if rooted_in_constant x then error (Ast.expr_span a) "cannot modify constant"
+          if rooted_in_readonly_pointer x then
+            error (Ast.expr_span a) "cannot modify read-only pointer"
+          else if rooted_in_constant x then
+            error (Ast.expr_span a) "cannot modify constant"
           else Ok { target = Hir.ARaw (base, off, t); root = None; path = None }
       | Hir.Index (base, index, _, _) -> (
           if rooted_in_constant x then error (Ast.expr_span a) "cannot modify constant"
@@ -1328,7 +1285,10 @@ let check_target (c : context) = function
       | Hir.Raw_select (_, _, (Hir.Struct _ | Hir.Array _), _) ->
           error (Ast.expr_span a) "raw selection cannot store an aggregate value"
       | Hir.Raw_select (base, off, t, _) ->
-          if rooted_in_constant x then error (Ast.expr_span a) "cannot modify constant"
+          if rooted_in_readonly_pointer x then
+            error (Ast.expr_span a) "cannot modify read-only pointer"
+          else if rooted_in_constant x then
+            error (Ast.expr_span a) "cannot modify constant"
           else Ok { target = Hir.ARaw (base, off, t); root = None; path = None }
       | Hir.Field (base, _, _, _, _) -> (
           if rooted_in_constant x then error (Ast.expr_span a) "cannot modify constant"

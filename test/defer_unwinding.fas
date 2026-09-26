@@ -1,19 +1,19 @@
-fn append(out ptr[u64], digit u64) void {
-  out.* = out.* * 10 + digit
+fn append(out addr, digit u64) void {
+  out[u64] = out[u64] * 10 + digit
 }
 
-fn fallthrough(out ptr[u64]) void {
+fn fallthrough(out addr) void {
   defer { append(out, 1) }
   defer { append(out, 2) }
 }
 
-fn return_order(out ptr[u64]) i32 {
+fn return_order(out addr) i32 {
   defer { append(out, 3) }
   defer { append(out, 4) }
   return 17
 }
 
-fn nested_return(out ptr[u64]) i32 {
+fn nested_return(out addr) i32 {
   defer { append(out, 5) }
   {
     defer { append(out, 6) }
@@ -21,14 +21,14 @@ fn nested_return(out ptr[u64]) i32 {
   }
 }
 
-fn break_unwind(out ptr[u64]) void {
+fn break_unwind(out addr) void {
   while true {
     defer { append(out, 7) }
     break
   }
 }
 
-fn continue_unwind(out ptr[u64]) void {
+fn continue_unwind(out addr) void {
   index u64 = 0
   while index < 2 {
     defer { append(out, 8) }
@@ -37,7 +37,7 @@ fn continue_unwind(out ptr[u64]) void {
   }
 }
 
-fn conditional_unwind(out ptr[u64], choice bool) void {
+fn conditional_unwind(out addr, choice bool) void {
   if choice {
     defer { append(out, 9) }
   } else {
@@ -45,19 +45,19 @@ fn conditional_unwind(out ptr[u64], choice bool) void {
   }
 }
 
-fn switch_unwind(out ptr[u64], choice u64) void {
+fn switch_unwind(out addr, choice u64) void {
   switch choice {
     case 1: { defer { append(out, 2) } }
     default: { defer { append(out, 3) } }
   }
 }
 
-fn after_guard(out ptr[u64], stop bool) void {
+fn after_guard(out addr, stop bool) void {
   if stop { return }
   defer { append(out, 4) }
 }
 
-fn preserve_return(out ptr[u64]) u64 {
+fn preserve_return(out addr) u64 {
   value u64 = 5
   defer {
     append(out, 6)

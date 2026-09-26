@@ -287,12 +287,12 @@ module P = struct
         ignore (bump p);
         Ok Ast.Void
     | Token.Ident name when Names.type_constructor name = Some Names.Legacy_ptr ->
+        let s = span p in
         ignore (bump p);
-        let* () = expected p Token.Lbracket in
-        let const = eat p Token.Kw_const in
-        let* t = ty p in
-        let* () = expected p Token.Rbracket in
-        Ok (if const then Ast.Ptr_const t else Ast.Ptr t)
+        Error
+          [
+            Diag.error s "typed pointers are no longer supported; use addr or handle[T]";
+          ]
     | Token.Ident name when Names.type_constructor name = Some Names.Address ->
         ignore (bump p);
         Ok Ast.Addr
@@ -828,7 +828,6 @@ module P = struct
   and target e =
     match e with
     | Ast.Ident (n, span) -> Ok (Ast.Target_ident (n, span))
-    | Ast.Deref (x, _) -> Ok (Ast.Target_deref x)
     | Ast.Select (a, args, _) -> Ok (Ast.Target_select (a, args))
     | Ast.Field (a, n, _) -> Ok (Ast.Target_field (a, n))
     | _ -> Error [ Diag.error (Ast.expr_span e) "invalid assignment target" ]
@@ -1063,7 +1062,12 @@ module P = struct
       | Token.Dot ->
           let s = span p in
           ignore (bump p);
-          if eat p Token.Star then go (Ast.Deref (e, s))
+          if eat p Token.Star then
+            Error
+              [
+                Diag.error s
+                  "pointer dereference is no longer supported; use raw selection";
+              ]
           else
             let* n = ident p in
             go (Ast.Field (e, n, s))
@@ -1182,12 +1186,12 @@ module P = struct
               Ok (Ast.Splat (e, sp))
           | ( Some ((Names.Legacy_ptr_add | Names.Legacy_ptr_add_bytes) as operation),
               Token.Lparen ) ->
-              ignore (bump p);
-              let* a = expr p in
-              let* () = expected p Token.Comma in
-              let* b = expr p in
-              let* () = expected p Token.Rparen in
-              Ok (Ast.Ptr_add (operation = Names.Legacy_ptr_add_bytes, a, b, sp))
+              let message =
+                if operation = Names.Legacy_ptr_add_bytes then
+                  "ptr_add_bytes is no longer supported; use address arithmetic"
+                else "ptr_add is no longer supported; use address arithmetic"
+              in
+              Error [ Diag.error sp message ]
           | _ -> Ok (Ast.Ident (n, sp)))
     | Token.Kw_raw ->
         Error [ Diag.error (span p) "`raw` is a declaration marker, not a value" ]

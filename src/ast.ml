@@ -3,8 +3,6 @@ type ty =
   | Int of int_kind
   | Addr
   | Handle of ty
-  | Ptr of ty
-  | Ptr_const of ty
   | Array of string * ty
   | Vec of string * ty
   | Named_type of string
@@ -27,10 +25,8 @@ and expr =
   | Cast of cast_kind * ty * expr * Span.t
   | Select of expr * generic_arg list * Span.t
   | Field of expr * string * Span.t
-  | Deref of expr * Span.t
   | Addr_of of expr * Span.t
   | Handle_from_addr of ty * expr * Span.t
-  | Ptr_add of bool * expr * expr * Span.t
   | Sizeof of ty * Span.t
   | Alignof of ty * Span.t
   | Offsetof of ty * string * Span.t
@@ -80,7 +76,6 @@ and stmt =
 
 and assign_target =
   | Target_ident of string * Span.t
-  | Target_deref of expr
   | Target_select of expr * generic_arg list
   | Target_field of expr * string
 
@@ -131,10 +126,8 @@ let expr_span = function
   | Cast (_, _, _, s)
   | Select (_, _, s)
   | Field (_, _, s)
-  | Deref (_, s)
   | Addr_of (_, s)
   | Handle_from_addr (_, _, s)
-  | Ptr_add (_, _, _, s)
   | Sizeof (_, s)
   | Alignof (_, s)
   | Offsetof (_, _, s)
@@ -172,8 +165,6 @@ let rec type_name = function
   | Int I64 -> "i64"
   | Int Usize -> "usize"
   | Int Isize -> "isize"
-  | Ptr t -> "ptr[" ^ type_name t ^ "]"
-  | Ptr_const t -> "ptr[const " ^ type_name t ^ "]"
   | Addr -> "addr"
   | Handle t -> "handle[" ^ type_name t ^ "]"
   | Array (n, t) -> "arr[" ^ n ^ ", " ^ type_name t ^ "]"
@@ -233,13 +224,9 @@ and expr_name = function
   | Select (a, args, _) ->
       expr_name a ^ "[" ^ String.concat ", " (List.map generic_arg_name args) ^ "]"
   | Field (a, n, _) -> expr_name a ^ "." ^ n
-  | Deref (e, _) -> expr_name e ^ ".*"
   | Addr_of (e, _) -> "&" ^ expr_name e
   | Handle_from_addr (t, e, _) ->
       "handle_from_addr[" ^ type_name t ^ "](" ^ expr_name e ^ ")"
-  | Ptr_add (bytes, p, o, _) ->
-      (if bytes then "ptr_add_bytes" else "ptr_add")
-      ^ "(" ^ expr_name p ^ ", " ^ expr_name o ^ ")"
   | Sizeof (t, _) -> "sizeof[" ^ type_name t ^ "]"
   | Alignof (t, _) -> "alignof[" ^ type_name t ^ "]"
   | Offsetof (t, f, _) -> "offsetof[" ^ type_name t ^ ", " ^ f ^ "]"
@@ -336,14 +323,6 @@ let render_bounded ~budget program =
       | Int I64 -> text "i64"
       | Int Usize -> text "usize"
       | Int Isize -> text "isize"
-      | Ptr inner ->
-          text "ptr[";
-          emit_ty inner;
-          text "]"
-      | Ptr_const inner ->
-          text "ptr[const ";
-          emit_ty inner;
-          text "]"
       | Addr -> text "addr"
       | Handle inner ->
           text "handle[";
@@ -462,9 +441,6 @@ let render_bounded ~budget program =
               emit_expr a;
               text ".";
               add_name name
-          | Deref (x, _) ->
-              emit_expr x;
-              text ".*"
           | Addr_of (x, _) ->
               text "&";
               emit_expr x
@@ -473,12 +449,6 @@ let render_bounded ~budget program =
               emit_ty t;
               text "]( ";
               emit_expr x;
-              text ")"
-          | Ptr_add (bytes, p, o, _) ->
-              text (if bytes then "ptr_add_bytes(" else "ptr_add(");
-              emit_expr p;
-              text ", ";
-              emit_expr o;
               text ")"
           | Sizeof (ty, _) ->
               text "sizeof[";
@@ -717,7 +687,7 @@ let fold_expanded_nodes ~limit program =
     if !failed = None then
       match ty with
       | Bool | Int _ | Void | Named_type _ | Addr -> count at
-      | Ptr inner | Ptr_const inner | Handle inner ->
+      | Handle inner ->
           count at;
           go_ty at inner
       | Array (_, inner) | Vec (_, inner) ->
@@ -757,13 +727,10 @@ let fold_expanded_nodes ~limit program =
           go_expr a;
           List.iter (go_generic_arg at) args
       | Field (a, _, _) -> go_expr a
-      | Deref (x, _) | Addr_of (x, _) -> go_expr x
+      | Addr_of (x, _) -> go_expr x
       | Handle_from_addr (t, x, _) ->
           go_ty at t;
           go_expr x
-      | Ptr_add (_, p, o, _) ->
-          go_expr p;
-          go_expr o
       | Sizeof (ty, _) | Alignof (ty, _) -> go_ty at ty
       | Offsetof (ty, _, _) -> go_ty at ty
       | Splat (x, _) -> go_expr x
@@ -777,9 +744,6 @@ let fold_expanded_nodes ~limit program =
           List.iter go_expr xs)
   and go_target = function
     | Target_ident (_, span) -> count span
-    | Target_deref x ->
-        count (expr_span x);
-        go_expr x
     | Target_select (a, args) ->
         let at = expr_span a in
         count at;

@@ -7,7 +7,7 @@ fn helper() void {
   observe(10)
 }
 
-fn main(argc i32, argv ptr[u8]) i32 {
+fn main(argc i32, argv addr) i32 {
   if argc == 2 {
     switch observe(1) {
       case 1: observe(11)

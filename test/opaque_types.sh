@@ -14,10 +14,8 @@ trap 'rm -rf "$OPAQUE_TMP"' EXIT HUP INT TERM
 
 for signature in \
   'define internal ptr @preserve(ptr' \
-  'define internal ptr @make_read_only(ptr' \
-  'define internal ptr @erase(ptr' \
-  'define internal ptr @reinterpret(ptr' \
-  'define internal ptr @reinterpret_read_only(ptr' \
+  'define internal ptr @make_addr(ptr' \
+  'define internal ptr @recover(ptr' \
   'define internal i64 @pointer_layout()'; do
   if ! grep -Fq "$signature" "$OPAQUE_TMP/opaque.ll"; then
     echo "opaque types: missing lowered signature: $signature" >&2

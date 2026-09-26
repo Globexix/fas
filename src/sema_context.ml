@@ -77,11 +77,7 @@ let rec count_expanded_type_nodes ty cap total =
     let total = total + 1 in
     match ty with
     | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Named_type _ | Ast.Addr -> total
-    | Ast.Ptr element
-    | Ast.Ptr_const element
-    | Ast.Handle element
-    | Ast.Array (_, element)
-    | Ast.Vec (_, element) ->
+    | Ast.Handle element | Ast.Array (_, element) | Ast.Vec (_, element) ->
         count_expanded_type_nodes element cap total
     | Ast.Applied_type (_, arguments, _) ->
         List.fold_left
@@ -101,12 +97,11 @@ let rec count_expanded_expr_type_nodes expr cap total =
     | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Ident _ ->
         total
     | Ast.Unary (_, value, _)
-    | Ast.Deref (value, _)
     | Ast.Addr_of (value, _)
     | Ast.Splat (value, _)
     | Ast.Field (value, _, _) ->
         count_expanded_expr_type_nodes value cap total
-    | Ast.Binary (_, left, right, _) | Ast.Ptr_add (_, left, right, _) ->
+    | Ast.Binary (_, left, right, _) ->
         count_expanded_expr_type_nodes right cap
           (count_expanded_expr_type_nodes left cap total)
     | Ast.Select (base, args, _) ->
@@ -224,7 +219,7 @@ and count_expanded_target_type_nodes target cap total =
   else
     match target with
     | Ast.Target_ident _ -> total
-    | Ast.Target_deref expression | Ast.Target_field (expression, _) ->
+    | Ast.Target_field (expression, _) ->
         count_expanded_expr_type_nodes expression cap total
     | Ast.Target_select (base, args) ->
         List.fold_left

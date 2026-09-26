@@ -13,9 +13,14 @@ trap 'rm -rf "$ALIGNMENT_TMP"' EXIT HUP INT TERM
 "$LLVM_OPT" -passes=verify "$ALIGNMENT_TMP/alignment.ll" -disable-output
 
 sed -n '/define internal <8 x i64> @read_lanes/,/^}/p' \
-  "$ALIGNMENT_TMP/alignment.ll" | grep -E 'load <8 x i64>, ptr .*, align 64' >/dev/null
+  "$ALIGNMENT_TMP/alignment.ll" | grep -E 'load i64, ptr .*, align 1' >/dev/null
 sed -n '/define internal void @write_lanes/,/^}/p' \
-  "$ALIGNMENT_TMP/alignment.ll" | grep -E 'store <8 x i64> .*, ptr .*, align 64' >/dev/null
+  "$ALIGNMENT_TMP/alignment.ll" | grep -E 'store i64 .*, ptr .*, align 1' >/dev/null
+if sed -n '/define internal <8 x i64> @read_lanes/,/^}/p' \
+  "$ALIGNMENT_TMP/alignment.ll" | grep -Eq 'align (32|64)'; then
+  echo "typed pointer alignment: raw access over-claimed alignment" >&2
+  exit 1
+fi
 
 for level in 0 2; do
   "$LLVM_OPT" -S "-passes=default<O$level>" "$ALIGNMENT_TMP/alignment.ll" \

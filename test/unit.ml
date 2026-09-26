@@ -345,7 +345,8 @@ let () =
   | Error diagnostics -> assert (diagnostics <> []));
   let opaque =
     expect_ok
-      (Parser.parse (source "opaque Ctx\nfn bad(p ptr[Ctx]) i64 { return p.* }\n"))
+      (Parser.parse
+         (source "opaque Ctx\nfn bad(p handle[Ctx]) i64 { return p[u64] }\n"))
   in
   (match Sema.check opaque with
   | Ok _ -> assert false
@@ -841,8 +842,7 @@ let () =
   | Ok (out, _) -> assert (out = "process-ok")
   | Error _ -> assert false);
   let builtin =
-    expect_ok
-      (Parser.parse (source "fn f(p ptr[u8]) ptr[u8] { return ptr_add(p, 1) }\n"))
+    expect_ok (Parser.parse (source "fn f(p addr) usize { return addr_bits(p) }\n"))
   in
   assert (List.length builtin.Ast.items = 1);
   let asm =
@@ -886,10 +886,7 @@ let () =
     let parsed =
       expect_ok
         (Parser.parse
-           (source
-              "fn main() i64 { s ptr[const u8] = \"a\\n\\t\\\\\\\"z\\0\"\n\
-              \ return 0\n\
-              \ }\n"))
+           (source "fn main() i64 { s addr = \"a\\n\\t\\\\\\\"z\\0\"\n return 0\n }\n"))
     in
     let hir = expect_ok (Sema.check parsed) in
     expect_ok (Lower.lower hir)
@@ -1081,13 +1078,13 @@ let () =
              struct Pair @align(8) { a u8 b i64 }\n\
              opaque Ctx\n\
              const K arr[3,u32] = { 1, 2, 3 }\n\
-             const S ptr[const u8] = \"x\\n\\t\\\\\\\"y\\0z\"\n\
+             const S addr = \"x\\n\\t\\\\\\\"y\\0z\"\n\
              fn generic[N const u64](v vec[N,u8]) u64 { return zext[u64](N) }\n\
-             fn f(p ptr[Box[u8]], w ptr[const u8]) void { defer { w.* = 0 }\n\
-            \ if p.value != 1 { return } else { x u64 = K[0] }\n\
+             fn f(p addr, w addr) void { defer { w[u64] = 0 }\n\
+            \ if p[u64] != 1 { return } else { x u64 = K[0] }\n\
             \ while x != 0 { x = x - 1 }\n\
             \ switch x { case 1: { return } default: { return } }\n\
-            \ p.value = 1 + zext[u8](true ? 2 : 3) }\n"))
+            \ p[u64] = 1 + zext[u64](true ? 2 : 3) }\n"))
   in
   let rich_text = Ast.render_program rich_program in
   (match Ast.render_bounded ~budget:(String.length rich_text) rich_program with
@@ -1125,7 +1122,7 @@ let () =
     expect_ok
       (Parser.parse
          (ast_source
-            (Printf.sprintf "fn f() void { s ptr[const u8] = \"%s\"\n return }\n"
+            (Printf.sprintf "fn f() void { s addr = \"%s\"\n return }\n"
                (String.make 1_000_000 'z'))))
   in
   let literal_span =
@@ -1149,8 +1146,7 @@ let () =
   | Ok _ -> assert false);
   let escaped_program =
     expect_ok
-      (Parser.parse
-         (ast_source "fn f() void { s ptr[const u8] = \"\\n\\n\\n\"\n return }\n"))
+      (Parser.parse (ast_source "fn f() void { s addr = \"\\n\\n\\n\"\n return }\n"))
   in
   let escaped_span =
     match escaped_program.Ast.items with
@@ -1182,7 +1178,7 @@ let () =
     expect_ok
       (Parser.parse
          (ast_source
-            (Printf.sprintf "fn f() void { s ptr[const u8] = \"%s\"\n return }\n"
+            (Printf.sprintf "fn f() void { s addr = \"%s\"\n return }\n"
                (String.make 1024 '\n'))))
   in
   let escape_single_span =
@@ -1310,10 +1306,9 @@ let () =
     | _ -> failwith (name ^ ": expected a single budget diagnostic")
   in
   let string_literal_program =
-    expect_ok
-      (Parser.parse (source "fn f() void { s ptr[const u8] = \"abc\"\n return }\n"))
+    expect_ok (Parser.parse (source "fn f() void { s addr = \"abc\"\n return }\n"))
   in
-  expect_budget_error "string single" ~line:1 ~column:33
+  expect_budget_error "string single" ~line:1 ~column:24
     ~message:
       "string literal bytes exceed budget max_interned_string_bytes of 2 (profile 0.15)"
     ~notes:[]
@@ -1328,10 +1323,9 @@ let () =
   in
   assert (boundary_strings.Hir.strings = [ "abc" ]);
   let c_string_program =
-    expect_ok
-      (Parser.parse (source "fn f() void { s ptr[const u8] = c\"abc\"\n return }\n"))
+    expect_ok (Parser.parse (source "fn f() void { s addr = c\"abc\"\n return }\n"))
   in
-  expect_budget_error "c-string single" ~line:1 ~column:33
+  expect_budget_error "c-string single" ~line:1 ~column:24
     ~message:
       "string literal bytes exceed budget max_interned_string_bytes of 3 (profile 0.15)"
     ~notes:[]
@@ -1348,10 +1342,7 @@ let () =
   let duplicated_strings =
     expect_ok
       (Parser.parse
-         (source
-            "fn f() void { a ptr[const u8] = \"abc\"\n\
-            \ b ptr[const u8] = \"abc\"\n\
-            \ return }\n"))
+         (source "fn f() void { a addr = \"abc\"\n b addr = \"abc\"\n return }\n"))
   in
   let deduplicated =
     expect_ok
@@ -1368,13 +1359,13 @@ let () =
     expect_ok
       (Parser.parse
          (source
-            "fn f() void { a ptr[const u8] = \"ab\"\n\
+            "fn f() void { a addr = \"ab\"\n\
             \ return }\n\
-             fn g() void { b ptr[const u8] = \"ab\"\n\
-            \ c ptr[const u8] = \"cd\"\n\
+             fn g() void { b addr = \"ab\"\n\
+            \ c addr = \"cd\"\n\
             \ return }\n"))
   in
-  expect_budget_error "cross-function cumulative" ~line:4 ~column:20
+  expect_budget_error "cross-function cumulative" ~line:4 ~column:11
     ~message:
       "cumulative interned string bytes exceed budget max_interned_string_bytes of 3 \
        (profile 0.15)"
@@ -1395,12 +1386,12 @@ let () =
     expect_ok
       (Parser.parse
          (source
-            "fn f() void { a ptr[const u8] = \"ab\"\n\
+            "fn f() void { a addr = \"ab\"\n\
             \ return }\n\
-             fn g() void { b ptr[const u8] = \"cde\"\n\
+             fn g() void { b addr = \"cde\"\n\
             \ return }\n"))
   in
-  expect_budget_error "ordering cumulative" ~line:3 ~column:33
+  expect_budget_error "ordering cumulative" ~line:3 ~column:24
     ~message:
       "cumulative interned string bytes exceed budget max_interned_string_bytes of 4 \
        (profile 0.15)"
@@ -1421,9 +1412,9 @@ let () =
     expect_ok
       (Parser.parse
          (source
-            "fn echo[T](v T) ptr[const u8] { return \"abc\" }\n\
-             fn main() void { a ptr[const u8] = echo[u8](1)\n\
-            \ b ptr[const u8] = echo[i64](2)\n\
+            "fn echo[T](v T) addr { return \"abc\" }\n\
+             fn main() void { a addr = echo[u8](1)\n\
+            \ b addr = echo[i64](2)\n\
             \ return }\n"))
   in
   let specialization_shared =
@@ -1444,14 +1435,14 @@ let () =
     expect_ok
       (Parser.parse
          (source
-            "fn big[N const u64](v ptr[u8]) ptr[const u8] { return \"toolongstr\" }\n\
-             fn main(v ptr[u8]) void { d ptr[const u8] = big[1](v)\n\
+            "fn big[N const u64](v addr) addr { return \"toolongstr\" }\n\
+             fn main(v addr) void { d addr = big[1](v)\n\
             \ return }\n"))
   in
-  expect_budget_error "legality single" ~line:1 ~column:55
+  expect_budget_error "legality single" ~line:1 ~column:43
     ~message:
       "string literal bytes exceed budget max_interned_string_bytes of 8 (profile 0.15)"
-    ~notes:[ "while instantiating `big[1]` at test.fas:2:48" ]
+    ~notes:[ "while instantiating `big[1]` at test.fas:2:36" ]
     (Sema.check
        ~limits:{ Limits.default with max_interned_string_bytes = 8 }
        legality_single_strings);
@@ -1459,22 +1450,22 @@ let () =
     expect_ok
       (Parser.parse
          (source
-            "fn pair[N const u64](v ptr[u8]) ptr[const u8] {\n\
-            \ a ptr[const u8] = \"aa\"\n\
-            \ b ptr[const u8] = \"bb\"\n\
+            "fn pair[N const u64](v addr) addr {\n\
+            \ a addr = \"aa\"\n\
+            \ b addr = \"bb\"\n\
             \ return v }\n\
-             fn main(v ptr[u8]) void { d ptr[const u8] = pair[1](v)\n\
+             fn main(v addr) void { d addr = pair[1](v)\n\
             \ return }\n"))
   in
-  expect_budget_error "legality cumulative" ~line:3 ~column:20
+  expect_budget_error "legality cumulative" ~line:3 ~column:11
     ~message:
       "cumulative interned string bytes exceed budget max_interned_string_bytes of 3 \
        (profile 0.15)"
-    ~notes:[ "while instantiating `pair[1]` at test.fas:5:49" ]
+    ~notes:[ "while instantiating `pair[1]` at test.fas:5:37" ]
     (Sema.check
        ~limits:{ Limits.default with max_interned_string_bytes = 3 }
        legality_cumulative_strings);
-  expect_budget_error "fresh state failure repeat" ~line:4 ~column:20
+  expect_budget_error "fresh state failure repeat" ~line:4 ~column:11
     ~message:
       "cumulative interned string bytes exceed budget max_interned_string_bytes of 3 \
        (profile 0.15)"
@@ -1710,10 +1701,10 @@ let () =
   ignore
     (expect_ok
        (Parser.parse ~limits:type_nesting_limits
-          (source "fn f(value ptr[i64]) void { return }\n")));
+          (source "fn f(value addr) void { return }\n")));
   (match
      Parser.parse ~limits:type_nesting_limits
-       (source "fn f(value ptr[ptr[i64]]) void { return }\n")
+       (source "fn f(value arr[2, arr[2, u8]]) void { return }\n")
    with
   | Error diagnostics ->
       assert (
@@ -1758,11 +1749,11 @@ let () =
   | Error _ -> ()
   | Ok _ -> assert false);
   let parity_text =
-    "extern \"C\" { fn printf(fmt ptr[const u8], ...) i32 }\n\
+    "extern \"C\" { fn printf(fmt addr, ...) i32 }\n\
      struct Pair { a i64 b i64 }\n\
      const K arr[2,u32] = { 1, 2 }\n\
-     fn first(p ptr[Pair], x i64) i64 { defer { printf(\"d\") } if p != null { y Pair \
-     = (Pair){x, 2}\n\
+     fn first(p addr, x i64) i64 { defer { printf(\"d\") } if p != addr_from_bits(0) { \
+     y Pair = (Pair){x, 2}\n\
     \ return y.a } return x == 0 ? 3 : 4 }\n\
      fn second() i64 { printf(\"s\")\n\
     \ return zext[i64](K[1]) }\n"
@@ -2250,12 +2241,12 @@ let () =
     in
     let two_use_text =
       "fn two[T](x0 T, x1 T) i64 { return 0 }\n\
-       fn use0(a ptr[u8]) i64 { return two[ptr[u8]](a, a) }\n"
+       fn use0(a addr) i64 { return two[addr](a, a) }\n"
     in
     let two_program = expect_ok (Parser.parse (source two_use_text)) in
     let exact_two =
       expect_ok
-        (Sema.check ~limits:{ Limits.default with max_type_nodes = 5 } two_program)
+        (Sema.check ~limits:{ Limits.default with max_type_nodes = 3 } two_program)
     in
     assert (List.length exact_two.Hir.funcs = 2);
     assert (
@@ -2263,25 +2254,25 @@ let () =
       = Ir.render (expect_ok (Lower.lower (expect_ok (Sema.check two_program)))));
     (match
        Sema.check
-         ~limits:{ Limits.default with max_type_nodes = 4 }
+         ~limits:{ Limits.default with max_type_nodes = 2 }
          (expect_ok (Parser.parse (source two_use_text)))
      with
     | Ok _ -> assert false
     | Error [ diagnostic ] ->
         assert (contains diagnostic.Diag.message "max_type_nodes");
-        assert (contains diagnostic.Diag.message "of 4 (profile 0.15)");
+        assert (contains diagnostic.Diag.message "of 2 (profile 0.15)");
         assert (contains diagnostic.Diag.message "two");
         assert (diagnostic.Diag.primary.Span.file = "test.fas")
     | Error _ -> assert false);
     let two_over_first =
       Sema.check
-        ~limits:{ Limits.default with max_type_nodes = 4 }
+        ~limits:{ Limits.default with max_type_nodes = 2 }
         (expect_ok (Parser.parse (source two_use_text)))
       |> Result.map_error (fun diagnostics -> Diag.render_all ~source:None diagnostics)
     in
     let two_over_second =
       Sema.check
-        ~limits:{ Limits.default with max_type_nodes = 4 }
+        ~limits:{ Limits.default with max_type_nodes = 2 }
         (expect_ok (Parser.parse (source two_use_text)))
       |> Result.map_error (fun diagnostics -> Diag.render_all ~source:None diagnostics)
     in
@@ -2307,41 +2298,40 @@ let () =
          (expect_ok (Parser.parse (source two_use_text))));
     let cumulative_text =
       "fn two[T](x0 T, x1 T) i64 { return 0 }\n\
-       fn use0(a ptr[u8], b ptr[const u8]) i64 { return two[ptr[u8]](a, a) + \
-       two[ptr[const u8]](b, b) }\n"
+       fn use0(a addr, b usize) i64 { return two[addr](a, a) + two[usize](b, b) }\n"
     in
     let cumulative_program = expect_ok (Parser.parse (source cumulative_text)) in
     let exact_cumulative =
       expect_ok
         (Sema.check
-           ~limits:{ Limits.default with max_type_nodes = 10 }
+           ~limits:{ Limits.default with max_type_nodes = 6 }
            cumulative_program)
     in
     assert (List.length exact_cumulative.Hir.funcs = 3);
     expect_type_diag
-      [ "max_type_nodes"; "of 9 (profile 0.15)"; "test.fas" ]
+      [ "max_type_nodes"; "of 5 (profile 0.15)"; "test.fas" ]
       (Sema.check
-         ~limits:{ Limits.default with max_type_nodes = 9 }
+         ~limits:{ Limits.default with max_type_nodes = 5 }
          (expect_ok (Parser.parse (source cumulative_text))));
     let box_text =
-      "struct Box[T] { a T, b T }\nfn use0(x Box[ptr[u8]]) i64 { return 0 }\n"
+      "struct Box[T] { a T, b T }\nfn use0(x Box[addr]) i64 { return 0 }\n"
     in
     let box_program = expect_ok (Parser.parse (source box_text)) in
     let exact_box =
       expect_ok
-        (Sema.check ~limits:{ Limits.default with max_type_nodes = 4 } box_program)
+        (Sema.check ~limits:{ Limits.default with max_type_nodes = 2 } box_program)
     in
     assert (List.length exact_box.Hir.structs = 1);
     (match
        Sema.check
-         ~limits:{ Limits.default with max_type_nodes = 3 }
+         ~limits:{ Limits.default with max_type_nodes = 1 }
          (expect_ok (Parser.parse (source box_text)))
      with
     | Ok _ -> assert false
     | Error [ diagnostic ] ->
         assert (contains diagnostic.Diag.message "struct specialization");
         assert (contains diagnostic.Diag.message "Box");
-        assert (contains diagnostic.Diag.message "of 3 (profile 0.15)");
+        assert (contains diagnostic.Diag.message "of 1 (profile 0.15)");
         assert (diagnostic.Diag.primary.Span.file = "test.fas")
     | Error _ -> assert false);
     let pick_text =
@@ -2404,14 +2394,14 @@ let () =
          0.15)";
       ]
       ~limits:{ Limits.default with max_interned_string_bytes = 2 }
-      "fn f() void { s ptr[const u8] = \"abc\"\n return }\n";
+      "fn f() void { s addr = \"abc\"\n return }\n";
     expect_naming
       [
         "cumulative interned string bytes exceed budget max_interned_string_bytes of 3 \
          (profile 0.15)";
       ]
       ~limits:{ Limits.default with max_interned_string_bytes = 3 }
-      "fn f() void { a ptr[const u8] = \"ab\"\n b ptr[const u8] = \"cd\"\n return }\n";
+      "fn f() void { a addr = \"ab\"\n b addr = \"cd\"\n return }\n";
     expect_naming
       [ "object size exceeds budget max_object_size of 15 (profile 0.15)" ]
       ~limits:{ Limits.default with max_object_size = 15 }
@@ -2946,16 +2936,16 @@ let () =
        max_aggregate_elements of 50 (profile 0.15)"
       "struct S { big arr[100,u8] }\n\
        fn f() void { s S\n\
-       q ptr[const u8] = \"hello world\"\n\
+       q addr = \"hello world\"\n\
       \ return }\n";
     pair "typenodes-vs-specializations"
-      ({ Limits.default with max_type_nodes = 4 }, "max_type_nodes")
+      ({ Limits.default with max_type_nodes = 2 }, "max_type_nodes")
       ({ Limits.default with max_specializations = 0 }, "max_specializations")
-      { Limits.default with max_type_nodes = 4; max_specializations = 0 }
+      { Limits.default with max_type_nodes = 2; max_specializations = 0 }
       "function specialization count limit exceeded: budget max_specializations of 0 \
        (profile 0.15)"
       "fn two[T](x0 T, x1 T) i64 { return 0 }\n\
-       fn use0(a ptr[u8]) i64 { return two[ptr[u8]](a, a) }\n";
+       fn use0(a addr) i64 { return two[addr](a, a) }\n";
     let sd_text = "const A arr[4,u8] = { 1, 2, 3, 4 }\nfn f() void { return }\n" in
     let sd_program = expect_ok (Parser.parse (source sd_text)) in
     (match
@@ -2990,19 +2980,19 @@ let () =
        (profile 0.15)"
       "struct Box[T] { a T, b T }\n\
        struct S { big arr[100,u8] }\n\
-       fn use0(x Box[ptr[u8]]) i64 { return 0 }\n\
+       fn use0(x Box[addr]) i64 { return 0 }\n\
        fn f() void { s S\n\
       \ return }\n";
     pair "strings-vs-typenodes"
       ( { Limits.default with max_interned_string_bytes = 4 },
         "max_interned_string_bytes" )
-      ({ Limits.default with max_type_nodes = 4 }, "max_type_nodes")
-      { Limits.default with max_interned_string_bytes = 4; max_type_nodes = 4 }
-      "cumulative expanded type nodes exceed budget max_type_nodes of 4 (profile 0.15) \
-       at function specialization `two$spec$7_ptr2_u8`"
+      ({ Limits.default with max_type_nodes = 2 }, "max_type_nodes")
+      { Limits.default with max_interned_string_bytes = 4; max_type_nodes = 2 }
+      "cumulative expanded type nodes exceed budget max_type_nodes of 2 (profile 0.15) \
+       at function specialization `two$spec$4_addr`"
       "fn two[T](x0 T, x1 T) i64 { return 0 }\n\
-       fn use0(a ptr[u8], s ptr[const u8]) i64 { q ptr[const u8] = \"hello world\"\n\
-       return two[ptr[u8]](a, a) }\n"
+       fn use0(a addr, s addr) i64 { q addr = \"hello world\"\n\
+       return two[addr](a, a) }\n"
   in
   run_top_level_order_tests ();
   run_cross_budget_tests ();

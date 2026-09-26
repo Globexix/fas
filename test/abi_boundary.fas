@@ -20,11 +20,11 @@ extern "C" {
     fn c_i64(x i64) i64
     fn c_usize(x usize) usize
     fn c_isize(x isize) isize
-    fn c_const_ptr(value ptr[const u8]) ptr[const u8]
-    fn c_mut_ptr(value ptr[u8]) ptr[u8]
-    fn c_check_pair(value ptr[const Pair]) u64
-    fn c_write_pair(value ptr[Pair]) void
-    fn c_check_aligned(value ptr[const Aligned]) u64
+    fn c_const_ptr(value addr) addr
+    fn c_mut_ptr(value addr) addr
+    fn c_check_pair(value addr) u64
+    fn c_write_pair(value addr) void
+    fn c_check_aligned(value addr) u64
     fn c_variadic(marker u64, ...) u64
 }
 
@@ -65,8 +65,8 @@ fn main() i32 {
         return 15
     }
     byte u8 = 44
-    if c_const_ptr(&byte)[0] != 44 { return 16 }
-    c_mut_ptr(&byte)[0] = 45
+    if c_const_ptr(&byte)[u8] != 44 { return 16 }
+    c_mut_ptr(&byte)[u8] = 45
     if byte != 45 { return 17 }
     return 0
 }

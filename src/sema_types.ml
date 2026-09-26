@@ -41,12 +41,6 @@ let rec source_ty named_types = function
   | Ast.Bool -> Ok Hir.Bool
   | Ast.Void -> Ok Hir.Void
   | Ast.Int kind -> Ok (Hir.Int (src_int kind))
-  | Ast.Ptr ty ->
-      let* ty = source_ty named_types ty in
-      Ok (Hir.Ptr ty)
-  | Ast.Ptr_const ty ->
-      let* ty = source_ty named_types ty in
-      Ok (Hir.ConstPtr ty)
   | Ast.Addr -> Ok Hir.Addr
   | Ast.Handle ty -> (
       let* ty = source_ty named_types ty in
@@ -105,12 +99,6 @@ let resolve_aggregate_length values span length =
         else Ok (Int64.to_string value)
 
 let rec source_ty_with_values named_types values span = function
-  | Ast.Ptr ty ->
-      let* ty = source_ty_with_values named_types values span ty in
-      Ok (Hir.Ptr ty)
-  | Ast.Ptr_const ty ->
-      let* ty = source_ty_with_values named_types values span ty in
-      Ok (Hir.ConstPtr ty)
   | Ast.Array (length, ty) -> (
       let* length = resolve_aggregate_length values span length in
       let* ty = source_ty_with_values named_types values span ty in

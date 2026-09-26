@@ -407,7 +407,9 @@ let validate_function struct_names globals (func : func) =
               && source_count / source_factor = destination_count / destination_factor
             then Ok ()
             else fail "block %d has unequal-width `bitcast` types" block_id
-        | _ -> fail "block %d has invalid `bitcast` types" block_id)
+        | _ ->
+            if is_pointer source && is_pointer destination then Ok ()
+            else fail "block %d has invalid `bitcast` types" block_id)
     | _ -> fail "block %d has unknown cast opcode `%s`" block_id opcode
   in
   let rec validate_gep_indices block_id = function
