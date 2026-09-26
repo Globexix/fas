@@ -1447,6 +1447,34 @@ let () =
       if not (contains addr_equality_path marker) then
         failwith ("addr-equality-path: missing `" ^ marker ^ "`"))
     [ "ptrtoint ptr"; "icmp eq i64" ];
+  let condition_forms =
+    llvm_of
+      "fn f(x bool, y u32, z u32) void {\n\
+      \  if !(x) { return }\n\
+      \  if !(y < z) { return }\n\
+      \  while !(y == z) { return }\n\
+      \  return\n\
+       }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains condition_forms marker) then
+        failwith ("condition-forms: missing `" ^ marker ^ "`"))
+    [ "icmp ult"; "icmp eq" ];
+  let nested_struct_literal_path =
+    llvm_of
+      "struct S { a u32 }\n\
+       fn is(x u32) bool { return x == 1 }\n\
+       fn f(x u32) void {\n\
+      \  if is((S) { x }.a) { return }\n\
+      \  return\n\
+       }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains nested_struct_literal_path marker) then
+        failwith ("nested-struct-literal-path: missing `" ^ marker ^ "`"))
+    [ "%struct.S"; "store i32" ];
   semantic_error "addr-null-reject" "null requires a pointer context"
     "fn f() addr { return null }\n";
   semantic_error "addr-deref-reject" "cannot dereference a non-pointer"

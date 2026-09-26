@@ -177,6 +177,7 @@ module P = struct
     bodies : raw_body list;
     limits : Limits.t;
     mutable depth : int;
+    mutable nesting : int;
     mutable block_expression_depth : int option;
   }
 
@@ -264,13 +265,13 @@ module P = struct
   let span p = (peek p).Token.span
 
   let within_nesting p s message parse =
-    p.depth <- p.depth + 1;
-    if p.depth > p.limits.Limits.max_nesting then (
-      p.depth <- p.depth - 1;
+    p.nesting <- p.nesting + 1;
+    if p.nesting + p.depth > p.limits.Limits.max_nesting then (
+      p.nesting <- p.nesting - 1;
       Error [ Diag.error s message ])
     else
       let result = parse () in
-      p.depth <- p.depth - 1;
+      p.nesting <- p.nesting - 1;
       result
 
   let rec ty p =
@@ -726,7 +727,7 @@ module P = struct
     let s = span p in
     let* () = expected p Token.Lbrace in
     p.depth <- p.depth + 1;
-    if p.depth > p.limits.Limits.max_nesting then
+    if p.depth + p.nesting > p.limits.Limits.max_nesting then
       Error [ Diag.error s "block nesting exceeds the configured limit" ]
     else (
       skip_newlines p;
@@ -952,7 +953,7 @@ module P = struct
 
   and expr p =
     p.depth <- p.depth + 1;
-    if p.depth > p.limits.Limits.max_nesting then
+    if p.depth + p.nesting > p.limits.Limits.max_nesting then
       Error [ Diag.error (span p) "expression nesting exceeds the configured limit" ]
     else
       let r = ternary p in
@@ -1209,6 +1210,7 @@ let parse ?(limits = Limits.default) source =
               bodies;
               limits;
               depth = 0;
+              nesting = 0;
               block_expression_depth = None;
             }
           in
