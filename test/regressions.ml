@@ -1473,6 +1473,18 @@ let () =
     "fn f() addr { return null }\n";
   semantic_error "addr-index-reject" "raw selection requires a type argument"
     "fn f(p addr) u8 { return p[0] }\n";
+  parse_error_message "removed-typed-pointer"
+    "typed pointers are no longer supported; use addr or handle[T]"
+    "fn f() void { p ptr[u8]\n return }\n";
+  parse_error_message "removed-pointer-dereference"
+    "pointer dereference is no longer supported; use raw selection"
+    "fn f(p addr) addr { return p.* }\n";
+  parse_error_message "removed-ptr-add"
+    "ptr_add is no longer supported; use address arithmetic"
+    "fn f(p addr, n usize) addr { return ptr_add(p, n) }\n";
+  parse_error_message "removed-ptr-add-bytes"
+    "ptr_add_bytes is no longer supported; use address arithmetic"
+    "fn f(p addr, n usize) addr { return ptr_add_bytes(p, n) }\n";
   semantic_error "addr-bitcast-from-reject"
     "illegal cast for source and destination widths"
     "fn f(p addr) usize { return bitcast[usize](p) }\n";

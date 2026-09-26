@@ -2963,13 +2963,18 @@ let () =
      with
     | Ok _ -> failwith "staticdata-vs-object: single budget max_object_size accepted"
     | Error _ -> ());
-    let sd_message =
+    let sd_run () =
       one_diag "staticdata-vs-object"
         (Sema.check
            ~limits:
              { Limits.default with max_static_data_bytes = 3; max_object_size = 2 }
            (expect_ok (Parser.parse (source sd_text))))
     in
+    let sd_message = sd_run () in
+    let sd_again = sd_run () in
+    let sd_third = sd_run () in
+    if sd_again <> sd_message || sd_third <> sd_message then
+      failwith "staticdata-vs-object: nondeterministic budget winner";
     if sd_message <> "object size exceeds budget max_object_size of 2 (profile 0.15)"
     then failwith ("staticdata-vs-object: winner drifted: " ^ sd_message);
     pair "specializations-vs-aggregate"
