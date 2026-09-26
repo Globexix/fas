@@ -106,11 +106,14 @@ let rec count_expanded_expr_type_nodes expr cap total =
     | Ast.Splat (value, _)
     | Ast.Field (value, _, _) ->
         count_expanded_expr_type_nodes value cap total
-    | Ast.Binary (_, left, right, _)
-    | Ast.Index (left, right, _)
-    | Ast.Ptr_add (_, left, right, _) ->
+    | Ast.Binary (_, left, right, _) | Ast.Ptr_add (_, left, right, _) ->
         count_expanded_expr_type_nodes right cap
           (count_expanded_expr_type_nodes left cap total)
+    | Ast.Select (base, args, _) ->
+        List.fold_left
+          (fun total arg -> count_expanded_arg_type_nodes arg cap total)
+          (count_expanded_expr_type_nodes base cap total)
+          args
     | Ast.Call (callee, arguments, _) ->
         List.fold_left
           (fun total argument -> count_expanded_expr_type_nodes argument cap total)
@@ -223,9 +226,11 @@ and count_expanded_target_type_nodes target cap total =
     | Ast.Target_ident _ -> total
     | Ast.Target_deref expression | Ast.Target_field (expression, _) ->
         count_expanded_expr_type_nodes expression cap total
-    | Ast.Target_index (base, index) ->
-        count_expanded_expr_type_nodes index cap
+    | Ast.Target_select (base, args) ->
+        List.fold_left
+          (fun total arg -> count_expanded_arg_type_nodes arg cap total)
           (count_expanded_expr_type_nodes base cap total)
+          args
 
 and count_expanded_generic_param_type_nodes parameter cap total =
   if total >= cap then cap

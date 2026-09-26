@@ -64,9 +64,9 @@ let rec unresolved_vector_elements expression =
 
 let operand_type_hint operation expected left right =
   match operation with
-  | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
-  | Ast.Bit_xor ->
-      expected
+  | Ast.Add | Ast.Sub -> (
+      match expected with Some Hir.Addr -> Some (Hir.Int Hir.Usize) | e -> e)
+  | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or | Ast.Bit_xor -> expected
   | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
       match expected with
       | Some (Hir.Vec (lanes, _))
@@ -272,7 +272,8 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
                 ~validate_dead r
             in
             let* lt, lv =
-              const_expr ~structs ~named_types ~arrays ?resolve consts (Some rt)
+              const_expr ~structs ~named_types ~arrays ?resolve consts
+                (match rt with Hir.Addr -> Some (Hir.Int Hir.Usize) | t -> Some t)
                 ~check_only ~validate_dead l
             in
             Ok ((lt, lv), (rt, rv))
@@ -282,7 +283,8 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
                 ~validate_dead l
             in
             let* rt, rv =
-              const_expr ~structs ~named_types ~arrays ?resolve consts (Some lt)
+              const_expr ~structs ~named_types ~arrays ?resolve consts
+                (match lt with Hir.Addr -> Some (Hir.Int Hir.Usize) | t -> Some t)
                 ~check_only ~validate_dead r
             in
             Ok ((lt, lv), (rt, rv))
@@ -644,11 +646,23 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
         match (unresolved_shape_of left, unresolved_shape_of right) with
         | Some _, None ->
             let* right_ty, right_values = evaluate hint right in
-            let* left_ty, left_values = evaluate (Some right_ty) left in
+            let* left_ty, left_values =
+              evaluate
+                (match right_ty with
+                | Hir.Addr -> Some (Hir.Int Hir.Usize)
+                | t -> Some t)
+                left
+            in
             Ok (left_ty, left_values, right_ty, right_values)
         | _ ->
             let* left_ty, left_values = evaluate hint left in
-            let* right_ty, right_values = evaluate (Some left_ty) right in
+            let* right_ty, right_values =
+              evaluate
+                (match left_ty with
+                | Hir.Addr -> Some (Hir.Int Hir.Usize)
+                | t -> Some t)
+                right
+            in
             Ok (left_ty, left_values, right_ty, right_values)
       in
       let* result_ty =

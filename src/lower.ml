@@ -471,6 +471,41 @@ let rec expr s = function
               Ok (Ir.Local (id, rt))
           | _ -> error span "internal error: logical not has a non-bool type"))
   | Hir.Binary (((Ast.And | Ast.Or) as op), a, b, _, _) -> lower_short s op a b
+  | Hir.Binary (op, a, b, _t, span)
+    when match Hir.expr_ty a with Hir.Addr -> true | _ -> false -> (
+      let* x = expr s a in
+      let* y = expr s b in
+      match op with
+      | Ast.Add ->
+          let id = fresh s in
+          emit s (Ir.Gep (id, Ir.I8, x, [ Ir.Index y ]));
+          Ok (Ir.Local (id, Ir.Ptr Ir.I8))
+      | Ast.Sub ->
+          let neg_id = fresh s in
+          emit s (Ir.Bin (neg_id, Ir.Sub, Ir.I64, Ir.Const (Ir.I64, 0L), y));
+          let id = fresh s in
+          emit s (Ir.Gep (id, Ir.I8, x, [ Ir.Index (Ir.Local (neg_id, Ir.I64)) ]));
+          Ok (Ir.Local (id, Ir.Ptr Ir.I8))
+      | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge ->
+          let x_id = fresh s in
+          emit s (Ir.Cast (x_id, "ptrtoint", Ir.Ptr Ir.I8, x, Ir.I64));
+          let y_id = fresh s in
+          emit s (Ir.Cast (y_id, "ptrtoint", Ir.Ptr Ir.I8, y, Ir.I64));
+          let comparison =
+            match op with
+            | Ast.Eq -> Ir.Eq
+            | Ast.Ne -> Ir.Ne
+            | Ast.Lt -> Ir.Ult
+            | Ast.Le -> Ir.Ule
+            | Ast.Gt -> Ir.Ugt
+            | _ -> Ir.Uge
+          in
+          let id = fresh s in
+          emit s
+            (Ir.Cmp
+               (id, comparison, Ir.I64, Ir.Local (x_id, Ir.I64), Ir.Local (y_id, Ir.I64)));
+          Ok (Ir.Local (id, Ir.I1))
+      | _ -> error span "internal error: invalid address binary operation")
   | Hir.Binary (op, a, b, t, span) ->
       let* x = expr s a in
       let* y = expr s b in
@@ -540,6 +575,9 @@ let rec expr s = function
           let id = fresh s in
           emit s (Ir.Cast (id, k, st, v, dt));
           Ok (Ir.Local (id, dt))
+  | Hir.Raw_select (b, off, t, _) ->
+      let* p = raw_address s b off in
+      raw_load s t p
   | Hir.Deref (e, t, _) ->
       let* p = expr s e in
       let* alignment = align s t in
@@ -1012,6 +1050,7 @@ and address s e =
       emit s (Ir.Global_ptr (id, n, ty t));
       Ok (Ir.Local (id, Ir.Ptr (ty t)))
   | Hir.Deref (p, _, _) -> expr s p
+  | Hir.Raw_select (b, off, _, _) -> raw_address s b off
   | Hir.Index (a, i, _, _) -> index_address s a i
   | Hir.Field (a, _, _, off, _) -> field_address s a off
   | _ -> materialize s e
@@ -1033,6 +1072,156 @@ and index_address s a i =
       emit s (Ir.Gep (id, ty elem, p, [ Ir.Index iv ]));
       Ok (Ir.Local (id, Ir.Ptr (ty elem)))
   | _ -> error (Hir.expr_span a) "cannot take index address"
+
+and raw_address s base off =
+  let* bv = expr s base in
+  let* ov = expr s off in
+  let id = fresh s in
+  emit s (Ir.Gep (id, Ir.I8, bv, [ Ir.Index ov ]));
+  Ok (Ir.Local (id, Ir.Ptr Ir.I8))
+
+and mask_chunk_ty lanes =
+  let bytes = (lanes + 7) / 8 in
+  match bytes with
+  | 1 -> (8, Ir.I8)
+  | 2 -> (16, Ir.I16)
+  | 3 | 4 -> (32, Ir.I32)
+  | 5 | 6 | 7 | 8 -> (64, Ir.I64)
+  | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 -> (128, Ir.I128)
+  | _ -> (128, Ir.I128)
+
+and int_ty_bytes = function
+  | Ir.I1 | Ir.I8 -> 1
+  | Ir.I16 -> 2
+  | Ir.I32 -> 4
+  | Ir.I64 -> 8
+  | Ir.I128 -> 16
+  | _ -> 8
+
+and raw_mask_index_vector lanes total =
+  Ir.Const_vector
+    ( Ir.Vector (total, Ir.I32),
+      List.init total (fun i -> Int64.of_int (if i < lanes then i else 0)) )
+
+and raw_load s t p =
+  match t with
+  | Hir.Int k ->
+      let it = ty (Hir.Int k) in
+      let id = fresh s in
+      emit s (Ir.Load (id, it, p, 1));
+      Ok (Ir.Local (id, it))
+  | Hir.Bool ->
+      let id = fresh s in
+      emit s (Ir.Load (id, Ir.I8, p, 1));
+      let cid = fresh s in
+      emit s (Ir.Cmp (cid, Ir.Ne, Ir.I8, Ir.Local (id, Ir.I8), Ir.Const (Ir.I8, 0L)));
+      Ok (Ir.Local (cid, Ir.I1))
+  | Hir.Addr | Hir.Handle _ ->
+      let pt = Ir.Ptr Ir.I8 in
+      let id = fresh s in
+      emit s (Ir.Load (id, pt, p, 1));
+      Ok (Ir.Local (id, pt))
+  | Hir.Vec (lanes, Hir.Int k) ->
+      let et = ty (Hir.Int k) in
+      let eb = int_ty_bytes et in
+      let vt = Ir.Vector (lanes, et) in
+      let rec go i cur =
+        if i = lanes then Ok cur
+        else
+          let off_id = fresh s in
+          emit s
+            (Ir.Gep
+               ( off_id,
+                 Ir.I8,
+                 p,
+                 [ Ir.Index (Ir.Const (Ir.I64, Int64.of_int (i * eb))) ] ));
+          let lid = fresh s in
+          emit s (Ir.Load (lid, et, Ir.Local (off_id, Ir.Ptr Ir.I8), 1));
+          let iid = fresh s in
+          emit s
+            (Ir.Insert
+               (iid, vt, cur, Ir.Const (Ir.I64, Int64.of_int i), Ir.Local (lid, et)));
+          go (i + 1) (Ir.Local (iid, vt))
+      in
+      go 0 (Ir.Undef vt)
+  | Hir.Vec (lanes, Hir.Bool) ->
+      let chunk_bits, chunk_ty = mask_chunk_ty lanes in
+      let id = fresh s in
+      emit s (Ir.Load (id, chunk_ty, p, 1));
+      let bc = fresh s in
+      emit s
+        (Ir.Cast
+           ( bc,
+             "bitcast",
+             chunk_ty,
+             Ir.Local (id, chunk_ty),
+             Ir.Vector (chunk_bits, Ir.I1) ));
+      let out = fresh s in
+      emit s
+        (Ir.Shufflevector
+           ( out,
+             Ir.Vector (lanes, Ir.I1),
+             Ir.Local (bc, Ir.Vector (chunk_bits, Ir.I1)),
+             Ir.Local (bc, Ir.Vector (chunk_bits, Ir.I1)),
+             raw_mask_index_vector lanes lanes ));
+      Ok (Ir.Local (out, Ir.Vector (lanes, Ir.I1)))
+  | _ -> error Span.synthetic "internal error: aggregate raw load"
+
+and raw_store s t v p =
+  match t with
+  | Hir.Int k ->
+      let it = ty (Hir.Int k) in
+      emit s (Ir.Store (it, v, p, 1));
+      Ok ()
+  | Hir.Bool ->
+      let zid = fresh s in
+      emit s (Ir.Cast (zid, "zext", Ir.I1, v, Ir.I8));
+      emit s (Ir.Store (Ir.I8, Ir.Local (zid, Ir.I8), p, 1));
+      Ok ()
+  | Hir.Addr | Hir.Handle _ ->
+      emit s (Ir.Store (Ir.Ptr Ir.I8, v, p, 1));
+      Ok ()
+  | Hir.Vec (lanes, Hir.Int k) ->
+      let et = ty (Hir.Int k) in
+      let eb = int_ty_bytes et in
+      let vt = Ir.Vector (lanes, et) in
+      let rec go i =
+        if i = lanes then Ok ()
+        else
+          let xid = fresh s in
+          emit s (Ir.Extract (xid, vt, v, Ir.Const (Ir.I64, Int64.of_int i)));
+          let off_id = fresh s in
+          emit s
+            (Ir.Gep
+               ( off_id,
+                 Ir.I8,
+                 p,
+                 [ Ir.Index (Ir.Const (Ir.I64, Int64.of_int (i * eb))) ] ));
+          emit s (Ir.Store (et, Ir.Local (xid, et), Ir.Local (off_id, Ir.Ptr Ir.I8), 1));
+          go (i + 1)
+      in
+      go 0
+  | Hir.Vec (lanes, Hir.Bool) ->
+      let chunk_bits, chunk_ty = mask_chunk_ty lanes in
+      let pid = fresh s in
+      emit s
+        (Ir.Shufflevector
+           ( pid,
+             Ir.Vector (chunk_bits, Ir.I1),
+             v,
+             v,
+             raw_mask_index_vector lanes chunk_bits ));
+      let bid = fresh s in
+      emit s
+        (Ir.Cast
+           ( bid,
+             "bitcast",
+             Ir.Vector (chunk_bits, Ir.I1),
+             Ir.Local (pid, Ir.Vector (chunk_bits, Ir.I1)),
+             chunk_ty ));
+      emit s (Ir.Store (chunk_ty, Ir.Local (bid, chunk_ty), p, 1));
+      Ok ()
+  | _ -> error Span.synthetic "internal error: aggregate raw store"
 
 and field_address s a off =
   let* p =
@@ -1116,6 +1305,10 @@ and stmt s = function
           emit s (Ir.Insert (ins, vt, loaded, iv, x));
           emit s (Ir.Store (vt, Ir.Local (ins, vt), p, alignment));
           Ok ()
+      | Hir.ARaw (b, off, at) ->
+          let* p = raw_address s b off in
+          let* v = expr s e in
+          raw_store s at v p
       | _ ->
           let* p = target_address s target in
           let* v = expr s e in
@@ -1145,6 +1338,26 @@ and stmt s = function
           emit s (Ir.Insert (ins, vt, latest, iv, value));
           emit s (Ir.Store (vt, Ir.Local (ins, vt), p, alignment));
           Ok ()
+      | Hir.ARaw (b, off, at) ->
+          let* p = raw_address s b off in
+          let* old = raw_load s at p in
+          let* rhs = expr s e in
+          let* value =
+            match (at, op) with
+            | Hir.Addr, Ast.Add ->
+                let id = fresh s in
+                emit s (Ir.Gep (id, Ir.I8, old, [ Ir.Index rhs ]));
+                Ok (Ir.Local (id, Ir.Ptr Ir.I8))
+            | Hir.Addr, Ast.Sub ->
+                let neg_id = fresh s in
+                emit s (Ir.Bin (neg_id, Ir.Sub, Ir.I64, Ir.Const (Ir.I64, 0L), rhs));
+                let id = fresh s in
+                emit s
+                  (Ir.Gep (id, Ir.I8, old, [ Ir.Index (Ir.Local (neg_id, Ir.I64)) ]));
+                Ok (Ir.Local (id, Ir.Ptr Ir.I8))
+            | _ -> emit_binary s span t op (ty at) old rhs
+          in
+          raw_store s at value p
       | _ ->
           let* p = target_address s target in
           let it = ty t in
@@ -1209,6 +1422,7 @@ and target_address s = function
       | Some p -> Ok p
       | None -> error Span.synthetic ("unknown local `" ^ local.name ^ "`"))
   | Hir.ADeref e -> expr s e
+  | Hir.ARaw (b, off, _) -> raw_address s b off
   | Hir.AIndex (a, i) -> index_address s a i
   | Hir.AField (a, _, off) -> field_address s a off
 

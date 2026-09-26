@@ -159,9 +159,9 @@ let rec unresolved_vector_elements expression =
 
 let operand_type_hint operation expected left right =
   match operation with
-  | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
-  | Ast.Bit_xor ->
-      expected
+  | Ast.Add | Ast.Sub -> (
+      match expected with Some Hir.Addr -> Some (Hir.Int Hir.Usize) | e -> e)
+  | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or | Ast.Bit_xor -> expected
   | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
       match expected with
       | Some (Hir.Vec (lanes, _))
@@ -178,6 +178,44 @@ let require_place_value c span place =
       | Some binding, Some path -> require_place_state binding path c span
       | _ -> Ok ())
   | _ -> Ok ()
+
+let select_value_arg span payload =
+  match payload with
+  | Ast.Const_arg e -> Ok e
+  | Ast.Name_arg (name, name_span) -> Ok (Ast.Ident (name, name_span))
+  | Ast.Type_arg _ -> error span "index payload must be a value expression"
+
+let select_type_arg named_types span payload =
+  match payload with
+  | Ast.Type_arg t -> source_ty_diag named_types span t
+  | Ast.Name_arg (name, name_span) ->
+      source_ty_diag named_types name_span (Ast.Named_type name)
+  | Ast.Const_arg e -> error (Ast.expr_span e) "raw selection requires a type argument"
+
+let normalize_offset_expr structs span (e : Hir.expr) =
+  match Hir.expr_ty e with
+  | Hir.Int k ->
+      let* usize_size, _ = layout_diag span structs (Hir.Int Hir.Usize) in
+      let target_bits = usize_size * 8 in
+      let bits =
+        match k with
+        | Hir.U8 | Hir.I8 -> 8
+        | Hir.U16 | Hir.I16 -> 16
+        | Hir.U32 | Hir.I32 -> 32
+        | Hir.U64 | Hir.I64 -> 64
+        | Hir.Usize | Hir.Isize -> target_bits
+      in
+      let signed =
+        match k with
+        | Hir.I8 | Hir.I16 | Hir.I32 | Hir.I64 | Hir.Isize -> true
+        | _ -> false
+      in
+      if bits = target_bits then Ok e
+      else if bits < target_bits then
+        Ok
+          (Hir.Cast ((if signed then Ast.Sext else Ast.Zext), e, Hir.Int Hir.Usize, span))
+      else Ok (Hir.Cast (Ast.Trunc, e, Hir.Int Hir.Usize, span))
+  | _ -> error span "offset must be an integer"
 
 let rec check_place (c : context) expr =
   let visible_consts =
@@ -211,14 +249,18 @@ let rec check_place (c : context) expr =
               | Some { declaration_kind = Top_function; _ } ->
                   error s (Printf.sprintf "function `%s` is not a place" n)
               | None -> error s (Printf.sprintf "unknown name `%s`" n))))
-  | Ast.Index (a, i, s) -> (
+  | Ast.Select (a, args, s) -> (
       let* base = check_place c a in
-      let* checked_index = check_expr c None i in
-      if not (is_int (Hir.expr_ty checked_index)) then
-        error s "array index must be an integer"
-      else
-        match Hir.expr_ty base.expr with
-        | Hir.Array (length, e) | Hir.Vec (length, e) -> (
+      match (Hir.expr_ty base.expr, args) with
+      | Hir.Vec _, [ _ ]
+        when match base.expr with Hir.Raw_select _ -> true | _ -> false ->
+          error s "raw vector lane selection is not yet supported"
+      | (Hir.Array (length, e) | Hir.Vec (length, e)), [ payload ] -> (
+          let* i = select_value_arg s payload in
+          let* checked_index = check_expr c None i in
+          if not (is_int (Hir.expr_ty checked_index)) then
+            error s "array index must be an integer"
+          else
             match static_index i with
             | Known (ty, value)
               when let value = sign_extend_value ty value in
@@ -250,7 +292,13 @@ let rec check_place (c : context) expr =
                       | Some (Dynamic_prefix path) -> Some (Dynamic_prefix path)
                       | None -> None);
                   })
-        | Hir.Ptr e | Hir.ConstPtr e ->
+      | (Hir.Array _ | Hir.Vec _), _ -> error s "array index takes one expression"
+      | Hir.Ptr e, [ payload ] | Hir.ConstPtr e, [ payload ] ->
+          let* i = select_value_arg s payload in
+          let* checked_index = check_expr c None i in
+          if not (is_int (Hir.expr_ty checked_index)) then
+            error s "array index must be an integer"
+          else
             let* () = require_place_value c (Hir.expr_span base.expr) base in
             if match e with Hir.Opaque _ -> true | _ -> false then
               error s "opaque pointers cannot be indexed"
@@ -263,25 +311,79 @@ let rec check_place (c : context) expr =
                   root = None;
                   path = None;
                 }
-        | _ -> error s "cannot index this type")
+      | (Hir.Ptr _ | Hir.ConstPtr _), _ -> error s "array index takes one expression"
+      | Hir.Addr, [ type_payload ] ->
+          let* t = select_type_arg c.named_types s type_payload in
+          let* () =
+            match t with
+            | Hir.Void -> error s "raw selection requires a concrete type"
+            | _ -> Ok ()
+          in
+          let* offset = raw_offset_expr c s t None in
+          Ok
+            {
+              expr = Hir.Raw_select (base.expr, offset, t, s);
+              root = None;
+              path = None;
+            }
+      | Hir.Addr, [ type_payload; index_payload ] ->
+          let* t = select_type_arg c.named_types s type_payload in
+          let* () =
+            match t with
+            | Hir.Void -> error s "raw selection requires a concrete type"
+            | _ -> Ok ()
+          in
+          let* offset = raw_offset_expr c s t (Some index_payload) in
+          Ok
+            {
+              expr = Hir.Raw_select (base.expr, offset, t, s);
+              root = None;
+              path = None;
+            }
+      | Hir.Addr, _ -> error s "raw selection takes a type and an optional index"
+      | Hir.Handle _, _ -> error s "cannot select through a handle"
+      | _ -> error s "cannot index this type")
   | Ast.Field (a, n, s) -> (
       let* base = check_place c a in
-      match Hir.expr_ty base.expr with
-      | Hir.Struct sn -> (
+      match base.expr with
+      | Hir.Raw_select (baddr, off, Hir.Struct sn, _) -> (
           match field_info c.structs sn n with
           | Some f ->
               Ok
                 {
-                  expr = Hir.Field (base.expr, n, f.ty, f.offset, s);
-                  root = base.root;
-                  path =
-                    (match base.path with
-                    | Some (Exact path) -> Some (Exact (path @ [ Field n ]))
-                    | Some (Dynamic_prefix path) -> Some (Dynamic_prefix path)
-                    | None -> None);
+                  expr =
+                    Hir.Raw_select
+                      ( baddr,
+                        Hir.Binary
+                          ( Ast.Add,
+                            off,
+                            Hir.EInt (Int64.of_int f.offset, Hir.Int Hir.Usize, s),
+                            Hir.Int Hir.Usize,
+                            s ),
+                        f.ty,
+                        s );
+                  root = None;
+                  path = None;
                 }
           | None -> error s (Printf.sprintf "unknown field `%s`" n))
-      | _ -> error s "field access requires a struct")
+      | Hir.Raw_select (_, _, _, _) -> error s "field access requires a struct"
+      | _ -> (
+          match Hir.expr_ty base.expr with
+          | Hir.Struct sn -> (
+              match field_info c.structs sn n with
+              | Some f ->
+                  Ok
+                    {
+                      expr = Hir.Field (base.expr, n, f.ty, f.offset, s);
+                      root = base.root;
+                      path =
+                        (match base.path with
+                        | Some (Exact path) -> Some (Exact (path @ [ Field n ]))
+                        | Some (Dynamic_prefix path) -> Some (Dynamic_prefix path)
+                        | None -> None);
+                    }
+              | None -> error s (Printf.sprintf "unknown field `%s`" n))
+          | _ -> error s "field access requires a struct"))
   | Ast.Deref (e, s) -> (
       let* x = check_expr c None e in
       match Hir.expr_ty x with
@@ -295,6 +397,25 @@ let rec check_place (c : context) expr =
   | e ->
       let* checked = check_expr c None e in
       Ok { expr = checked; root = None; path = None }
+
+and raw_offset_expr c s access_ty index_payload =
+  match index_payload with
+  | None -> Ok (Hir.EInt (0L, Hir.Int Hir.Usize, s))
+  | Some payload ->
+      let* i = select_value_arg s payload in
+      let* idx = check_expr c None i in
+      if not (is_int (Hir.expr_ty idx)) then
+        error s "raw selection index must be a scalar integer"
+      else
+        let* norm = normalize_offset_expr c.structs s idx in
+        let* size, _ = layout_diag s c.structs access_ty in
+        Ok
+          (Hir.Binary
+             ( Ast.Mul,
+               norm,
+               Hir.EInt (Int64.of_int size, Hir.Int Hir.Usize, s),
+               Hir.Int Hir.Usize,
+               s ))
 
 and check_expr (c : context) expected = function
   | Ast.Int_lit (raw, s) ->
@@ -370,7 +491,7 @@ and check_expr (c : context) expected = function
             || match result_ty with Hir.Vec (_, Hir.Bool) -> true | _ -> false
           then Ok (Hir.Unary (op, te, result_ty, s))
           else error s "logical not requires bool or a bool vector")
-  | Ast.Binary (op, l, r, s) ->
+  | Ast.Binary (op, l, r, s) -> (
       if op = Ast.And || op = Ast.Or then (
         let* a = check_expr c None l in
         let after_left = Sema_flow.snapshot c.flow in
@@ -418,25 +539,49 @@ and check_expr (c : context) expected = function
           match (unresolved_shape_of l, unresolved_shape_of r) with
           | Some _, None ->
               let* b = check_expr c (operand_type_hint op expected l r) r in
-              let* a = check_expr c (Some (Hir.expr_ty b)) l in
+              let* a =
+                check_expr c
+                  (match Hir.expr_ty b with
+                  | Hir.Addr -> Some (Hir.Int Hir.Usize)
+                  | t -> Some t)
+                  l
+              in
               Ok (a, b)
           | _ ->
               let* a = check_expr c (operand_type_hint op expected l r) l in
-              let* b = check_expr c (Some (Hir.expr_ty a)) r in
+              let* b =
+                check_expr c
+                  (match Hir.expr_ty a with
+                  | Hir.Addr -> Some (Hir.Int Hir.Usize)
+                  | t -> Some t)
+                  r
+              in
               Ok (a, b)
         in
         let at = Hir.expr_ty a in
         let bt = Hir.expr_ty b in
-        let* result_ty =
-          binary_result_type ~mismatch:"binary operands must have the same type" s op at
-            bt
-        in
-        if
-          (op = Ast.Div || op = Ast.Rem)
-          && (not (Sema_flow.checking_dead c.flow))
-          && match b with Hir.EInt (v, _, _) -> v = 0L | _ -> false
-        then error s "division by zero is not a defined runtime operation"
-        else Ok (Hir.Binary (op, a, b, result_ty, s))
+        match (op, at, bt) with
+        | (Ast.Add | Ast.Sub), Hir.Addr, Hir.Int _ ->
+            let* off = normalize_offset_expr c.structs s b in
+            Ok (Hir.Binary (op, a, off, Hir.Addr, s))
+        | Ast.Add, Hir.Int _, Hir.Addr ->
+            let* off = normalize_offset_expr c.structs s a in
+            Ok (Hir.Binary (Ast.Add, b, off, Hir.Addr, s))
+        | (Ast.Add | Ast.Sub), Hir.Addr, Hir.Addr ->
+            error s "address arithmetic requires a scalar integer offset"
+        | (Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge), Hir.Addr, Hir.Addr ->
+            Ok (Hir.Binary (op, a, b, Hir.Bool, s))
+        | _ ->
+            let* result_ty =
+              binary_result_type ~mismatch:"binary operands must have the same type" s
+                op at bt
+            in
+            if
+              (op = Ast.Div || op = Ast.Rem)
+              && (not (Sema_flow.checking_dead c.flow))
+              && match b with Hir.EInt (v, _, _) -> v = 0L | _ -> false
+            then error s "division by zero is not a defined runtime operation"
+            else Ok (Hir.Binary (op, a, b, result_ty, s)))
   | Ast.Call (fn, args, s) -> check_call c None fn args s
   | Ast.Handle_from_addr (t, e, s) -> (
       let* resolved = source_ty_diag c.named_types s t in
@@ -472,8 +617,14 @@ and check_expr (c : context) expected = function
       let from = Hir.expr_ty x in
       if cast_legal k from t then Ok (Hir.Cast (k, x, t, s))
       else error s "illegal cast for source and destination widths"
-  | Ast.Index (a, i, s) ->
-      let* place = check_place c (Ast.Index (a, i, s)) in
+  | Ast.Select (a, args, s) ->
+      let* place = check_place c (Ast.Select (a, args, s)) in
+      let* () =
+        match place.expr with
+        | Hir.Raw_select (_, _, (Hir.Struct _ | Hir.Array _), _) ->
+            error s "raw selection cannot load an aggregate value"
+        | _ -> Ok ()
+      in
       let* () =
         match (place.root, place.path) with
         | Some binding, Some path -> require_place_state binding path c s
@@ -504,7 +655,8 @@ and check_expr (c : context) expected = function
       | Hir.Index (base, _, _, _)
         when match Hir.expr_ty base with Hir.Vec _ -> true | _ -> false ->
           error s "cannot take address of a vector lane"
-      | Hir.Local _ | Hir.Deref _ | Hir.Index _ | Hir.Field _ | Hir.Const_array _ ->
+      | Hir.Local _ | Hir.Deref _ | Hir.Index _ | Hir.Field _ | Hir.Const_array _
+      | Hir.Raw_select _ ->
           let ty =
             if
               rooted_in_constant place.expr
@@ -617,7 +769,7 @@ and generic_const_argument span = function
   | Ast.Name_arg (name, span) -> Ok (Ast.Ident (name, span))
   | Ast.Type_arg (Ast.Applied_type (name, [ argument ], _)) ->
       let* index = generic_const_argument span argument in
-      Ok (Ast.Index (Ast.Ident (name, span), index, span))
+      Ok (Ast.Select (Ast.Ident (name, span), [ Ast.Const_arg index ], span))
   | Ast.Type_arg _ -> error span "expected a const argument"
 
 and check_handle_from_addr c name opaque_name args s =
@@ -1141,10 +1293,15 @@ let check_target (c : context) = function
         | Hir.Ptr _ -> Ok { target = Hir.ADeref x; root = None; path = None }
         | Hir.ConstPtr _ -> error (Ast.expr_span e) "cannot modify read-only pointer"
         | _ -> error (Ast.expr_span e) "deref assignment requires pointer")
-  | Ast.Target_index (a, i) -> (
-      let* place = check_place c (Ast.Index (a, i, Ast.expr_span a)) in
+  | Ast.Target_select (a, args) -> (
+      let* place = check_place c (Ast.Select (a, args, Ast.expr_span a)) in
       let x = place.expr in
       match x with
+      | Hir.Raw_select (_, _, (Hir.Struct _ | Hir.Array _), _) ->
+          error (Ast.expr_span a) "raw selection cannot store an aggregate value"
+      | Hir.Raw_select (base, off, t, _) ->
+          if rooted_in_constant x then error (Ast.expr_span a) "cannot modify constant"
+          else Ok { target = Hir.ARaw (base, off, t); root = None; path = None }
       | Hir.Index (base, index, _, _) -> (
           if rooted_in_constant x then error (Ast.expr_span a) "cannot modify constant"
           else
@@ -1168,6 +1325,11 @@ let check_target (c : context) = function
       let* place = check_place c (Ast.Field (a, n, Ast.expr_span a)) in
       let x = place.expr in
       match x with
+      | Hir.Raw_select (_, _, (Hir.Struct _ | Hir.Array _), _) ->
+          error (Ast.expr_span a) "raw selection cannot store an aggregate value"
+      | Hir.Raw_select (base, off, t, _) ->
+          if rooted_in_constant x then error (Ast.expr_span a) "cannot modify constant"
+          else Ok { target = Hir.ARaw (base, off, t); root = None; path = None }
       | Hir.Field (base, _, _, _, _) -> (
           if rooted_in_constant x then error (Ast.expr_span a) "cannot modify constant"
           else if rooted_in_readonly_pointer x then
@@ -1190,6 +1352,7 @@ let check_target (c : context) = function
 
 let target_ty c = function
   | Hir.ALocal binding -> Some binding.ty
+  | Hir.ARaw (_, _, t) -> Some t
   | Hir.ADeref expression -> (
       match Hir.expr_ty expression with
       | Hir.Ptr t | Hir.ConstPtr t -> Some t
@@ -1282,7 +1445,15 @@ and check_stmt (c : context) = function
         | _ -> Ok ()
       in
       let is_shift = op = Ast.Shl || op = Ast.Shr in
-      let* v = check_expr c (if is_shift then None else Some et) e in
+      let is_addr_step =
+        et = Hir.Addr && (op = Ast.Add || op = Ast.Sub) && not is_shift
+      in
+      let* () =
+        if et = Hir.Addr && not is_addr_step then
+          error span "compound assignment requires an integer or vector"
+        else Ok ()
+      in
+      let* v = check_expr c (if is_shift || is_addr_step then None else Some et) e in
       let* () =
         if is_shift then
           let* () =
@@ -1300,9 +1471,14 @@ and check_stmt (c : context) = function
           | (Hir.Int _ | Hir.Vec _), Hir.Vec _ ->
               error span "shift count must be a scalar integer for a scalar value"
           | _ -> error span "shift count must be an integer"
+        else if is_addr_step then
+          match Hir.expr_ty v with
+          | Hir.Int _ -> Ok ()
+          | _ -> error span "address arithmetic requires a scalar integer offset"
         else ensure_expected (Hir.expr_ty v) et span
       in
-      if not (is_numeric et) then
+      let* v = if is_addr_step then normalize_offset_expr c.structs span v else Ok v in
+      if (not (is_numeric et)) && not is_addr_step then
         error span "compound assignment requires an integer or vector"
       else (
         (match (checked_target.root, checked_target.path) with

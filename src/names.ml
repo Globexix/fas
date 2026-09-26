@@ -61,7 +61,8 @@ let primitive_type_names = scalar_type_names @ [ "addr"; "handle"; "arr"; "vec" 
 let literal_names = [ "true"; "false"; "null" ]
 
 let parser_type_name name =
-  List.mem name scalar_type_names || List.mem name [ "ptr"; "arr"; "vec" ]
+  List.mem name scalar_type_names
+  || List.mem name [ "ptr"; "addr"; "handle"; "arr"; "vec" ]
 
 let type_constructor = function
   | "ptr" -> Some Legacy_ptr

@@ -1441,14 +1441,17 @@ let () =
   semantic_error "addr-vec-element"
     "vector element type must be a scalar (bool, integer, or pointer)"
     "fn f(v vec[2,addr]) usize { return 0 }\n";
-  semantic_error "addr-equality-reject"
-    "equality requires scalar or integer/bool-vector operands"
-    "fn f(a addr, b addr) bool { return a == b }\n";
+  let addr_equality_path = llvm_of "fn f(a addr, b addr) bool { return a == b }\n" in
+  List.iter
+    (fun marker ->
+      if not (contains addr_equality_path marker) then
+        failwith ("addr-equality-path: missing `" ^ marker ^ "`"))
+    [ "ptrtoint ptr"; "icmp eq i64" ];
   semantic_error "addr-null-reject" "null requires a pointer context"
     "fn f() addr { return null }\n";
   semantic_error "addr-deref-reject" "cannot dereference a non-pointer"
     "fn f(p addr) u8 { return p.* }\n";
-  semantic_error "addr-index-reject" "cannot index this type"
+  semantic_error "addr-index-reject" "raw selection requires a type argument"
     "fn f(p addr) u8 { return p[0] }\n";
   semantic_error "addr-bitcast-from-reject"
     "illegal cast for source and destination widths"
@@ -1460,7 +1463,7 @@ let () =
     "opaque O\nfn f(h handle[O]) usize { return h.x }\n";
   semantic_error "handle-deref-reject" "cannot dereference a non-pointer"
     "opaque O\nfn f(h handle[O]) u8 { return h.* }\n";
-  semantic_error "handle-index-reject" "cannot index this type"
+  semantic_error "handle-index-reject" "cannot select through a handle"
     "opaque O\nfn f(h handle[O]) u8 { return h[0] }\n";
   semantic_error "comparison-chaining-reject" "binary operands must have the same type"
     "fn f(a i32, b i32, c i32) bool { return a < b < c }\n";
@@ -6844,5 +6847,78 @@ let () =
       if not (contains generic_cast_path marker) then
         failwith ("generic-cast-path: missing `" ^ marker ^ "`"))
     [ "bitcast <1 x i1>"; "zext i8" ];
+  semantic_error "raw-select-addr-add-both"
+    "address arithmetic requires a scalar integer offset"
+    "fn f(a addr, b addr) addr { return a + b }\n";
+  semantic_error "raw-select-addr-sub-both"
+    "address arithmetic requires a scalar integer offset"
+    "fn f(a addr, b addr) addr { return a - b }\n";
+  semantic_error "raw-select-int-addr-sub" "binary operands must have the same type"
+    "fn f(n usize, p addr) usize { return n - p }\n";
+  semantic_error "raw-select-handle-select" "cannot select through a handle"
+    "opaque O\nfn f(h handle[O]) u8 { return h[u8] }\n";
+  semantic_error "raw-select-aggregate-load"
+    "raw selection cannot load an aggregate value"
+    "struct S { a u8 }\nfn f(p addr) S { return p[S] }\n";
+  semantic_error "raw-select-aggregate-store"
+    "raw selection cannot store an aggregate value"
+    "struct S { a u8 }\nfn f(p addr, s S) void { p[S] = s }\n";
+  semantic_error "raw-select-lane" "raw vector lane selection is not yet supported"
+    "fn f(p addr) u32 { return p[vec[2,u32]][0] }\n";
+  semantic_error "raw-select-lane-store"
+    "raw vector lane selection is not yet supported"
+    "fn f(p addr) void { p[vec[2,u32]][0] = 1 }\n";
+  semantic_error "raw-select-index-nonint"
+    "raw selection index must be a scalar integer"
+    "fn f(p addr, b bool) u32 { return p[u32, b] }\n";
+  semantic_error "raw-select-three-payloads"
+    "raw selection takes a type and an optional index"
+    "fn f(p addr, i usize) u32 { return p[u32, i, 3] }\n";
+  semantic_error "raw-select-value-payload" "unknown type `x`"
+    "fn f(p addr, x u32) u32 { return p[x] }\n";
+  semantic_error "raw-select-const-payload" "raw selection requires a type argument"
+    "fn f(p addr) u32 { return p[3] }\n";
+  semantic_error "raw-select-void" "raw selection requires a concrete type"
+    "fn f(p addr) void { p[void] = p[void] }\n";
+  semantic_error "raw-select-compound-mul-addr"
+    "compound assignment requires an integer or vector"
+    "fn f(p addr) void { p[addr] *= 2 }\n";
+  semantic_error "raw-select-compound-addr-bad"
+    "address arithmetic requires a scalar integer offset"
+    "fn f(p addr, b bool) void { p[addr] += b }\n";
+  semantic_error "raw-select-field-nonstruct" "field access requires a struct"
+    "fn f(p addr) u32 { return p[u32].x }\n";
+  semantic_error "raw-select-unknown-field" "unknown field `x`"
+    "struct S { a u8 }\nfn f(p addr) u8 { return p[S].x }\n";
+  let raw_load_shape = llvm_of "fn f(p addr) u32 { return p[u32] }\n" in
+  List.iter
+    (fun marker ->
+      if not (contains raw_load_shape marker) then
+        failwith ("raw-load-shape: missing `" ^ marker ^ "`"))
+    [ "load i32, ptr %"; ", align 1" ];
+  let raw_bool_shape = llvm_of "fn f(p addr) bool { return p[bool] }\n" in
+  List.iter
+    (fun marker ->
+      if not (contains raw_bool_shape marker) then
+        failwith ("raw-bool-shape: missing `" ^ marker ^ "`"))
+    [ "load i8, ptr %"; "icmp ne i8" ];
+  let raw_mask_shape = llvm_of "fn f(p addr) vec[3,bool] { return p[vec[3,bool]] }\n" in
+  List.iter
+    (fun marker ->
+      if not (contains raw_mask_shape marker) then
+        failwith ("raw-mask-shape: missing `" ^ marker ^ "`"))
+    [ "load i8, ptr %"; "bitcast i8"; "shufflevector" ];
+  let raw_addr_shape = llvm_of "fn f(p addr, n usize) addr { return p + n }\n" in
+  List.iter
+    (fun marker ->
+      if not (contains raw_addr_shape marker) then
+        failwith ("raw-addr-shape: missing `" ^ marker ^ "`"))
+    [ "getelementptr i8, ptr" ];
+  let raw_normalize_shape = llvm_of "fn f(p addr, n u16) addr { return p - n }\n" in
+  List.iter
+    (fun marker ->
+      if not (contains raw_normalize_shape marker) then
+        failwith ("raw-normalize-shape: missing `" ^ marker ^ "`"))
+    [ "zext i16"; "sub i64 0" ];
 
   Printf.printf "regression checks: %d passed\n" !checks_run

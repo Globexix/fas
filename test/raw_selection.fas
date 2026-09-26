@@ -1,0 +1,159 @@
+extern "C" {
+  fn buffer() addr
+}
+
+struct Pair {
+  a u32,
+  b u64
+}
+
+fn pair_vec(lo u32, hi u32) vec[2, u32] {
+  v vec[2, u32] = splat(0)
+  v[0] = lo
+  v[1] = hi
+  return v
+}
+
+fn main(argc i32, argv ptr[u8]) i32 {
+  base addr = buffer()
+
+  p0 addr = base + 0
+  p0[u32] = 305419896
+  if p0[u32] != 305419896 {
+    return 10
+  }
+  if base[u32, 0] != 305419896 {
+    return 11
+  }
+
+  base[u32, 4] = 2271560481
+  if p0[u32, 4] != 2271560481 {
+    return 12
+  }
+
+  p32 addr = base + 32
+  p32[u8] = 7
+  back addr = p32 + 4
+  back[u8] = 9
+  if p32[u8] != 7 {
+    return 13
+  }
+  if (back - 4)[u8] != 7 {
+    return 14
+  }
+
+  p48 addr = base + 48
+  p48[u32] = 10
+  p48[u32] += 5
+  if p48[u32] != 15 {
+    return 15
+  }
+  p48[u32] -= 3
+  if p48[u32] != 12 {
+    return 16
+  }
+
+  p64 addr = base + 64
+  p64[bool] = true
+  if p64[u8] != 1 {
+    return 17
+  }
+  if !p64[bool] {
+    return 18
+  }
+  p64[bool] = false
+  if p64[u8] != 0 {
+    return 19
+  }
+  p65 addr = base + 65
+  p65[u8] = 7
+  if !p65[bool] {
+    return 20
+  }
+
+  p80 addr = base + 80
+  w vec[3, u32] = splat(0)
+  w[0] = 1
+  w[2] = 1
+  m vec[3, bool] = w == splat(1)
+  p80[vec[3, bool]] = m
+  if (p80[u8] & 7) != 5 {
+    return 21
+  }
+  got vec[3, bool] = p80[vec[3, bool]]
+  if !got[0] {
+    return 22
+  }
+  if got[1] {
+    return 23
+  }
+  if !got[2] {
+    return 24
+  }
+
+  p96 addr = base + 96
+  v vec[2, u32] = pair_vec(305419896, 2271560481)
+  p96[vec[2, u32]] = v
+  if p96[u32] != 305419896 {
+    return 25
+  }
+  if p96[u32, 1] != 2271560481 {
+    return 26
+  }
+
+  p112 addr = base + 112
+  p112[Pair].a = 255
+  p112[Pair].b = 1000
+  if p112[Pair].a != 255 {
+    return 27
+  }
+  if p112[Pair].b != 1000 {
+    return 28
+  }
+  b_addr addr = p112 + offsetof[Pair, b]
+  if b_addr[u64] != 1000 {
+    return 29
+  }
+
+  lt bool = base < p112
+  if !lt {
+    return 30
+  }
+  if p112 < base {
+    return 31
+  }
+  eq bool = base == base
+  if !eq {
+    return 32
+  }
+  if base == p112 {
+    return 33
+  }
+
+  p144 addr = base + 144
+  p144[addr] = base
+  if p144[addr] != base {
+    return 34
+  }
+  if p144[addr] != p0 {
+    return 35
+  }
+
+  p160 addr = base + 160
+  p160[i64] = -2
+  if p160[i64] != -2 {
+    return 36
+  }
+  if p160[u64] != 18446744073709551614 {
+    return 37
+  }
+
+  p176 addr = base + 176
+  p176[usize] = 4000
+  p176[usize] /= 4
+  if p176[usize] != 1000 {
+    return 38
+  }
+
+  return 0
+}

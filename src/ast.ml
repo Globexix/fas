@@ -25,7 +25,7 @@ and expr =
   | Call of expr * expr list * Span.t
   | Generic_args of expr * generic_arg list * Span.t
   | Cast of cast_kind * ty * expr * Span.t
-  | Index of expr * expr * Span.t
+  | Select of expr * generic_arg list * Span.t
   | Field of expr * string * Span.t
   | Deref of expr * Span.t
   | Addr_of of expr * Span.t
@@ -81,7 +81,7 @@ and stmt =
 and assign_target =
   | Target_ident of string * Span.t
   | Target_deref of expr
-  | Target_index of expr * expr
+  | Target_select of expr * generic_arg list
   | Target_field of expr * string
 
 and field = { name : string; ty : ty; span : Span.t }
@@ -129,7 +129,7 @@ let expr_span = function
   | Call (_, _, s)
   | Generic_args (_, _, s)
   | Cast (_, _, _, s)
-  | Index (_, _, s)
+  | Select (_, _, s)
   | Field (_, _, s)
   | Deref (_, s)
   | Addr_of (_, s)
@@ -230,7 +230,8 @@ and expr_name = function
         | Trunc -> "trunc"
         | Bitcast -> "bitcast")
       ^ "[" ^ type_name t ^ "](" ^ expr_name e ^ ")"
-  | Index (a, i, _) -> expr_name a ^ "[" ^ expr_name i ^ "]"
+  | Select (a, args, _) ->
+      expr_name a ^ "[" ^ String.concat ", " (List.map generic_arg_name args) ^ "]"
   | Field (a, n, _) -> expr_name a ^ "." ^ n
   | Deref (e, _) -> expr_name e ^ ".*"
   | Addr_of (e, _) -> "&" ^ expr_name e
@@ -445,10 +446,17 @@ let render_bounded ~budget program =
               text "](";
               emit_expr x;
               text ")"
-          | Index (a, i, _) ->
+          | Select (a, args, _) ->
               emit_expr a;
               text "[";
-              emit_expr i;
+              List.iteri
+                (fun i arg ->
+                  if i > 0 then text ", ";
+                  match arg with
+                  | Type_arg ty -> emit_ty ty
+                  | Const_arg e -> emit_expr e
+                  | Name_arg (name, span) -> at span (fun () -> add_name name))
+                args;
               text "]"
           | Field (a, name, _) ->
               emit_expr a;
@@ -745,9 +753,9 @@ let fold_expanded_nodes ~limit program =
       | Cast (_, ty, x, _) ->
           go_ty at ty;
           go_expr x
-      | Index (a, i, _) ->
+      | Select (a, args, _) ->
           go_expr a;
-          go_expr i
+          List.iter (go_generic_arg at) args
       | Field (a, _, _) -> go_expr a
       | Deref (x, _) | Addr_of (x, _) -> go_expr x
       | Handle_from_addr (t, x, _) ->
@@ -772,10 +780,11 @@ let fold_expanded_nodes ~limit program =
     | Target_deref x ->
         count (expr_span x);
         go_expr x
-    | Target_index (a, i) ->
-        count (expr_span a);
+    | Target_select (a, args) ->
+        let at = expr_span a in
+        count at;
         go_expr a;
-        go_expr i
+        List.iter (go_generic_arg at) args
     | Target_field (a, _) ->
         count (expr_span a);
         go_expr a

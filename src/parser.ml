@@ -340,6 +340,35 @@ module P = struct
         else Ok (Ast.Named_type s)
     | t -> Error [ Diag.error (span p) ("expected a type, found " ^ Token.show t) ]
 
+  and select_payloads p =
+    let rec go acc =
+      let* arg = select_payload p in
+      if eat p Token.Comma then go (arg :: acc)
+      else
+        let* () = expected p Token.Rbracket in
+        Ok (List.rev (arg :: acc))
+    in
+    go []
+
+  and select_payload p =
+    match ((peek p).kind, (peek_n p 1).kind) with
+    | Token.Ident ("true" | "false"), _ ->
+        let* e = expr p in
+        Ok (Ast.Const_arg e)
+    | Token.Ident ("sizeof" | "alignof" | "offsetof"), Token.Lbracket ->
+        let* e = expr p in
+        Ok (Ast.Const_arg e)
+    | Token.Ident name, _ when Names.parser_type_name name ->
+        let* t = ty p in
+        Ok (Ast.Type_arg t)
+    | Token.Ident name, (Token.Comma | Token.Rbracket) ->
+        let s = span p in
+        ignore (bump p);
+        Ok (Ast.Name_arg (name, s))
+    | _ ->
+        let* e = expr p in
+        Ok (Ast.Const_arg e)
+
   and generic_args p =
     let* () = expected p Token.Lbracket in
     let rec go acc =
@@ -799,7 +828,7 @@ module P = struct
     match e with
     | Ast.Ident (n, span) -> Ok (Ast.Target_ident (n, span))
     | Ast.Deref (x, _) -> Ok (Ast.Target_deref x)
-    | Ast.Index (a, i, _) -> Ok (Ast.Target_index (a, i))
+    | Ast.Select (a, args, _) -> Ok (Ast.Target_select (a, args))
     | Ast.Field (a, n, _) -> Ok (Ast.Target_field (a, n))
     | _ -> Error [ Diag.error (Ast.expr_span e) "invalid assignment target" ]
 
@@ -1028,9 +1057,8 @@ module P = struct
       | Token.Lbracket ->
           let s = span p in
           ignore (bump p);
-          let* x = expr p in
-          let* () = expected p Token.Rbracket in
-          go (Ast.Index (e, x, s))
+          let* args = select_payloads p in
+          go (Ast.Select (e, args, s))
       | Token.Dot ->
           let s = span p in
           ignore (bump p);

@@ -64,6 +64,7 @@ type expr =
   | Index of expr * expr * ty * Span.t
   | Field of expr * string * ty * int * Span.t
   | Deref of expr * ty * Span.t
+  | Raw_select of expr * expr * ty * Span.t
   | Address of expr * ty * Span.t
   | Ptr_add of bool * expr * expr * ty * Span.t
   | Sizeof of ty * int * Span.t
@@ -77,6 +78,7 @@ type expr =
 type assign_target =
   | ALocal of local
   | ADeref of expr
+  | ARaw of expr * expr * ty
   | AIndex of expr * expr
   | AField of expr * string * int
 
@@ -157,6 +159,7 @@ let expr_ty = function
   | Index (_, _, t, _)
   | Field (_, _, t, _, _)
   | Deref (_, t, _)
+  | Raw_select (_, _, t, _)
   | Address (_, t, _)
   | Ptr_add (_, _, _, t, _)
   | Splat (_, t, _)
@@ -184,6 +187,7 @@ let expr_span = function
   | Index (_, _, _, s)
   | Field (_, _, _, _, s)
   | Deref (_, _, s)
+  | Raw_select (_, _, _, s)
   | Address (_, _, s)
   | Ptr_add (_, _, _, _, s)
   | Sizeof (_, _, s)
