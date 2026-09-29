@@ -1,0 +1,6 @@
+extern "C" {
+    fn c_reenter(user addr, x u32) u32
+    fn callback(user addr, x u32) u32 { return user[u32] + x }
+    fn reentrant_callback(user addr, x u32) u32 { return c_reenter(user, x) }
+    fn fas_resume(user addr, x u32) u32 { return user[u32] + x * 2 }
+}

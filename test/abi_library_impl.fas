@@ -1,0 +1,1 @@
+fn library_inner() u64 { return 81985529216486895 }
