@@ -41,6 +41,13 @@ extern "C" {
     p[vec[3, u32]] = (vec[3, u32]){ 305419896, 2271560481, 2309737967 }
   }
 
+  fn fas_guard_load(p addr) i32 {
+    expected vec[3, u32] = (vec[3, u32]){ 305419896, 2271560481, 2309737967 }
+    actual vec[3, u32] = p[vec[3, u32]]
+    if any(actual != expected) { return 1 }
+    return 0
+  }
+
   fn fas_guard_bool_store(p addr) void {
     p[vec[17, bool]] = (vec[17, bool]){ true, false, true, false, false, true, false, true, true, false, true, false, true, false, true, false, true }
   }
