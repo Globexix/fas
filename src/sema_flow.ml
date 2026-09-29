@@ -305,6 +305,10 @@ let state_at_path flow binding path =
   in
   walk binding.ty (state_of flow binding) path
 
+let copy_state flow destination destination_path source source_path =
+  let source_state = state_at_path flow source source_path in
+  set_state flow destination destination_path source_state
+
 let require_place_state binding path flow span =
   match path with
   | Exact path -> require_state binding path flow span

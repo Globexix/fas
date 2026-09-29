@@ -804,6 +804,8 @@ and check_call c _expected fn args s =
           in
           check_handle_from_addr c name opaque_name args s
       | _ -> error s (Printf.sprintf "builtin `%s` expects a type argument" name))
+  | Ast.Generic_args (Ast.Ident ("copy", _), _, _) ->
+      error s "copy is statement-only and takes no type arguments"
   | Ast.Generic_args (Ast.Ident ("volatile_load", _), generic_args, application_span) ->
       let* access_ty =
         volatile_access_type c "volatile_load" application_span generic_args
@@ -932,6 +934,7 @@ and check_call c _expected fn args s =
       error s "builtin `volatile_load` expects one type argument"
   | Ast.Ident ("volatile_store", _) ->
       error s "builtin `volatile_store` expects one type argument"
+  | Ast.Ident ("copy", _) -> error s "copy is statement-only"
   | Ast.Ident (name, _) when Names.value_operation name = Some Names.Len ->
       if List.length args <> 1 then error s "builtin `len` expects one argument"
       else
@@ -1399,6 +1402,83 @@ let target_ty c = function
             (field_info c.structs struct_name name)
       | _ -> None)
 
+let rec existing_place = function
+  | Hir.Local _ | Hir.Const_array _ | Hir.Raw_select _ -> true
+  | Hir.Index (base, _, _, _) -> (
+      match Hir.expr_ty base with Hir.Array _ -> existing_place base | _ -> false)
+  | Hir.Field (base, _, _, _, _) -> existing_place base
+  | _ -> false
+
+let rec contains_raw_place = function
+  | Hir.Raw_select _ -> true
+  | Hir.Index (base, _, _, _) | Hir.Field (base, _, _, _, _) -> contains_raw_place base
+  | _ -> false
+
+let known_local_path place =
+  if contains_raw_place place.expr then None
+  else
+    match (place.root, place.path) with
+    | Some binding, Some (Exact path) -> Some (binding, path)
+    | _ -> None
+
+let local_path place =
+  if contains_raw_place place.expr then None
+  else
+    match (place.root, place.path) with
+    | Some binding, Some path -> Some (binding, path)
+    | _ -> None
+
+let copy_is_aggregate = function Hir.Array _ | Hir.Struct _ -> true | _ -> false
+
+let check_copy c args span =
+  if List.length args <> 2 then error span "builtin `copy` expects two arguments"
+  else
+    let destination_arg = List.nth args 0 and source_arg = List.nth args 1 in
+    let* destination = check_place c destination_arg in
+    let* source = check_place c source_arg in
+    let* () =
+      if existing_place destination.expr && existing_place source.expr then Ok ()
+      else error span "copy operands must be existing places"
+    in
+    let destination_ty = Hir.expr_ty destination.expr
+    and source_ty = Hir.expr_ty source.expr in
+    let* () =
+      if copy_is_aggregate destination_ty && copy_is_aggregate source_ty then Ok ()
+      else error span "copy requires array or struct places"
+    in
+    let* () =
+      if Hir.ty_equal destination_ty source_ty then Ok ()
+      else error span "copy operands must have identical types"
+    in
+    let* () =
+      match view_access_of_expr c destination.expr with
+      | Readonly_access -> error span "cannot modify read-only pointer"
+      | Constant_access -> error span "cannot modify constant"
+      | Mutable_access -> Ok ()
+    in
+    let* () =
+      match local_path source with
+      | Some (binding, path) -> require_place_state binding path c span
+      | None -> Ok ()
+    in
+    let scratch_free =
+      match (local_path destination, local_path source) with
+      | Some (destination_root, _), Some (source_root, _) ->
+          destination_root.id <> source_root.id
+      | _ -> false
+    in
+    (match (known_local_path destination, known_local_path source) with
+    | Some (destination_root, destination_path), Some (source_root, source_path) ->
+        copy_state c.flow destination_root destination_path source_root source_path
+    | Some (destination_root, destination_path), None ->
+        set_state c destination_root destination_path Unknown
+    | None, _ -> (
+        match local_path destination with
+        | Some (destination_root, Dynamic_prefix _) ->
+            set_state c destination_root [] Unknown
+        | _ -> ()));
+    Ok (Hir.Copy (destination.expr, source.expr, destination_ty, scratch_free, span))
+
 let rec stmt_terminates = function
   | Ast.Return _ | Ast.Break _ | Ast.Continue _ -> true
   | Ast.Block (body, _) -> block_terminates body
@@ -1547,6 +1627,11 @@ and check_stmt (c : context) = function
         | Some binding, Some (Dynamic_prefix _) -> set_state c binding [] Unknown
         | _ -> ());
         Ok (Hir.Compound_assign (target, op, v, et, span)))
+  | Ast.Expr_stmt (Ast.Call (Ast.Ident ("copy", _), args, call_span), _) ->
+      check_copy c args call_span
+  | Ast.Expr_stmt
+      (Ast.Call (Ast.Generic_args (Ast.Ident ("copy", _), _, _), _, call_span), _) ->
+      error call_span "copy takes no type arguments"
   | Ast.Return (e, span) ->
       let* () = Sema_flow.validate_return c.flow span in
       let* x =

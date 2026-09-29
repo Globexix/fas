@@ -1235,6 +1235,56 @@ and field_address s a off =
   emit s (Ir.Gep (id, Ir.I8, p, [ Ir.Index (Ir.Const (Ir.I64, Int64.of_int off)) ]));
   Ok (Ir.Local (id, Ir.Pointer Ir.I8))
 
+let copy_offset s pointer offset =
+  let id = fresh s in
+  emit s
+    (Ir.Gep (id, Ir.I8, pointer, [ Ir.Index (Ir.Const (Ir.I64, Int64.of_int offset)) ]));
+  Ok (Ir.Local (id, Ir.Pointer Ir.I8))
+
+let rec copy_place s span ty destination source =
+  match ty with
+  | Hir.Struct name -> (
+      match
+        List.find_opt
+          (fun (definition : Hir.struct_def) -> definition.name = name)
+          s.structs
+      with
+      | None ->
+          error span (Printf.sprintf "internal error: unknown struct `%s` in copy" name)
+      | Some definition ->
+          let rec fields = function
+            | [] -> Ok ()
+            | (field : Hir.field) :: rest ->
+                let* destination_field = copy_offset s destination field.offset in
+                let* source_field = copy_offset s source field.offset in
+                let* () = copy_place s span field.ty destination_field source_field in
+                fields rest
+          in
+          fields definition.fields)
+  | Hir.Array (length, element_ty) ->
+      let* stride, _ =
+        match Hir.layout s.structs element_ty with
+        | Ok layout -> Ok layout
+        | Error message ->
+            error span
+              (Printf.sprintf "internal error: invalid array element in copy: %s"
+                 message)
+      in
+      let rec elements index =
+        if index = length then Ok ()
+        else
+          let offset = index * stride in
+          let* destination_element = copy_offset s destination offset in
+          let* source_element = copy_offset s source offset in
+          let* () = copy_place s span element_ty destination_element source_element in
+          elements (index + 1)
+      in
+      elements 0
+  | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ | Hir.Vec _ ->
+      let* value = raw_load s ty source in
+      raw_store s ty value destination
+  | _ -> error span "internal error: invalid leaf type in aggregate copy"
+
 let rec emit_defer_body s body =
   List.fold_left
     (fun r st ->
@@ -1296,6 +1346,26 @@ and stmt s = function
         bind_local s local pointer;
         Ok ())
       else error span "internal error: view address has the wrong type"
+  | Hir.Copy (destination, source, copy_ty, scratch_free, span) ->
+      let* destination_pointer = address s destination in
+      let* source_pointer = address s source in
+      if scratch_free then copy_place s span copy_ty destination_pointer source_pointer
+      else
+        let* size, _ =
+          match Hir.layout s.structs copy_ty with
+          | Ok layout -> Ok layout
+          | Error message ->
+              error span
+                (Printf.sprintf "internal error: invalid copy layout: %s" message)
+        in
+        if size = 0 then Ok ()
+        else
+          let* alignment = align s copy_ty in
+          let scratch_id = fresh s in
+          emit_entry s (Ir.Alloca (scratch_id, ty copy_ty, alignment));
+          let scratch = Ir.Local (scratch_id, Ir.Pointer (ty copy_ty)) in
+          let* () = copy_place s span copy_ty scratch source_pointer in
+          copy_place s span copy_ty destination_pointer scratch
   | Hir.Volatile_store (access_ty, pointer_expr, value_expr, span) -> (
       let* pointer = expr s pointer_expr in
       let* value = expr s value_expr in

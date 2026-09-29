@@ -1,0 +1,66 @@
+struct Cell { x u32 y u32 }
+struct Nested { cells arr[2,Cell] tail u64 }
+struct Flag { value bool tag u32 }
+struct Empty { }
+
+const Values arr[2,u32] = {31, 37}
+
+extern "C" {
+  fn fas_copy_nested(dst addr, src addr) void {
+    copy(dst[Nested], src[Nested])
+    return
+  }
+
+  fn fas_copy_flag(dst addr, src addr) void {
+    copy(dst[Flag], src[Flag])
+    return
+  }
+
+  fn fas_copy_self(value addr) void {
+    copy(value[arr[8,u32]], value[arr[8,u32]])
+    return
+  }
+
+  fn fas_copy_right(dst addr, src addr) void {
+    copy(dst[arr[8,u32]], src[arr[8,u32]])
+    return
+  }
+
+  fn fas_copy_left(dst addr, src addr) void {
+    copy(dst[arr[8,u32]], src[arr[8,u32]])
+    return
+  }
+
+  fn fas_copy_loop(dst addr, src addr, count u32) void {
+    i u32 = 0
+    while i < count {
+      copy(dst[arr[8,u32]], src[arr[8,u32]])
+      i += 1
+    }
+    return
+  }
+
+  fn fas_copy_order(dst addr, src addr) void {
+    copy(dst[arr[2,u32], fas_record(0)], src[arr[2,u32], fas_record(1)])
+    return
+  }
+
+  fn fas_copy_empty_order(dst addr, src addr) void {
+    copy(dst[Empty, fas_record(2)], src[Empty, fas_record(3)])
+    return
+  }
+
+  fn fas_copy_constant(dst addr) void {
+    copy(dst[arr[2,u32]], Values)
+    return
+  }
+
+  fn fas_copy_views(dst addr, src addr) void {
+    view destination = dst[Nested]
+    view source = src[Nested]
+    copy(destination, source)
+    return
+  }
+
+  fn fas_record(value i32) i32
+}

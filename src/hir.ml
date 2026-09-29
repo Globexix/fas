@@ -81,6 +81,7 @@ type assign_target =
 type stmt =
   | Let of local * expr option * Span.t
   | View of local * expr * Span.t
+  | Copy of expr * expr * ty * bool * Span.t
   | Volatile_store of ty * expr * expr * Span.t
   | Assign of assign_target * expr * Span.t
   | Compound_assign of assign_target * Ast.binop * expr * ty * Span.t
@@ -258,7 +259,9 @@ let rec stmt_flow = function
       in
       sequence_flow prefix (loop_flow unconditional iteration)
   | Defer (body, _) -> cleanup_flow (block_flow body) flowing
-  | Let _ | View _ | Volatile_store _ | Assign _ | Compound_assign _ | Expr _ -> flowing
+  | Let _ | View _ | Copy _ | Volatile_store _ | Assign _ | Compound_assign _ | Expr _
+    ->
+      flowing
 
 and block_flow = function
   | [] -> flowing

@@ -237,6 +237,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         Result_list.iter
           (validate_generic_argument_names value_names type_names span)
           arguments
+    | Ast.Generic_args (Ast.Ident ("copy", _), _, span) ->
+        error span "copy takes no type arguments"
     | Ast.Generic_args (Ast.Ident (name, span), arguments, application_span) ->
         let* () =
           match nearest_kind value_names type_names name with
@@ -1176,6 +1178,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         in
         let* arguments = Result_list.map resolve_argument arguments in
         Ok (Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span))
+    | Ast.Generic_args (Ast.Ident ("copy", _), _, span) ->
+        error span "copy takes no type arguments"
     | Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span) -> (
         match List.assoc_opt name function_templates with
         | None ->

@@ -22,6 +22,7 @@ val bind_view :
 val push : t -> unit
 val pop : t -> unit
 val set_state : t -> binding -> selector list -> init_state -> unit
+val copy_state : t -> binding -> selector list -> binding -> selector list -> unit
 
 val require_state :
   binding -> selector list -> t -> Span.t -> (unit, Diag.t list) result

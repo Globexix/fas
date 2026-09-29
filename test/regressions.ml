@@ -7199,4 +7199,125 @@ let () =
     "division by zero is not a defined runtime operation"
     "fn f() bool { return false || (1 / 0 == 0) }\n";
 
+  semantic_accept "copy-local-struct-array-facts"
+    "struct Leaf { value i32 }\n\
+     struct Outer { entries arr[2,Leaf] }\n\
+     fn f() i32 { source Outer\n\
+     source.entries[0].value = 11\n\
+     source.entries[1].value = 12\n\
+     destination Outer\n\
+     copy(destination, source)\n\
+     copy(destination, destination)\n\
+     return destination.entries[1].value }\n";
+  semantic_accept "copy-field-element-place"
+    "struct Cell { value i64 }\n\
+     struct Box { items arr[2,Cell] }\n\
+     fn f() i64 { source Box\n\
+     source.items[0].value = 19\n\
+     destination Box\n\
+     copy(destination.items[0], source.items[0])\n\
+     return destination.items[0].value }\n";
+  semantic_accept "copy-view-places"
+    "struct S { value i64 }\n\
+     fn f() i64 { source S\n\
+     source.value = 23\n\
+     destination S\n\
+     view source_view = source\n\
+     view destination_view = destination\n\
+     copy(destination_view, source_view)\n\
+     return destination.value }\n";
+  semantic_accept "copy-raw-struct-and-array-places"
+    "struct S { value i64 }\n\
+     fn f(destination addr, source addr) void {\n\
+     copy(destination[S], source[S])\n\
+     copy(destination[arr[2,u32]], source[arr[2,u32]])\n\
+     return }\n";
+  semantic_accept "copy-constant-array-source"
+    "const Values arr[2,u32] = {7, 9}\n\
+     fn f() u32 { destination arr[2,u32]\n\
+     copy(destination, Values)\n\
+     return destination[1] }\n";
+  semantic_accept "copy-unknown-raw-source-marks-destination-unknown"
+    "struct S { x i64 y i64 }\n\
+     fn f(source addr) i64 { destination S\n\
+     copy(destination, source[S])\n\
+     return destination.y }\n";
+  semantic_accept "copy-transfers-unknown-local-facts"
+    "struct S { x i64 y i64 }\n\
+     fn forget(p addr) void { return }\n\
+     fn f() i64 { source S\n\
+     source.x = 1\n\
+     forget(&source)\n\
+     destination S\n\
+     copy(destination, source)\n\
+     return destination.y }\n";
+  semantic_error "copy-expression-is-statement-only" "copy is statement-only"
+    "fn f() i32 { return copy(1, 2) }\n";
+  semantic_error "copy-generic-form-rejected" "copy takes no type arguments"
+    "fn f(destination addr, source addr) void {\n\
+     copy[arr[2,u8]](destination, source)\n\
+     return }\n";
+  semantic_error "copy-non-aggregate-operands" "copy requires array or struct places"
+    "fn f() void { destination i32 = 1\n\
+     source i32 = 2\n\
+     copy(destination, source)\n\
+     return }\n";
+  semantic_error "copy-vector-operands" "copy requires array or struct places"
+    "fn f() void { destination vec[2,u32] = splat(1)\n\
+     source vec[2,u32] = splat(2)\n\
+     copy(destination, source)\n\
+     return }\n";
+  semantic_error "copy-mismatched-aggregate-types"
+    "copy operands must have identical types"
+    "fn f() void { destination arr[2,u32]\n\
+     source arr[3,u32]\n\
+     copy(destination, source)\n\
+     return }\n";
+  semantic_error "copy-rvalue-destination" "copy operands must be existing places"
+    "struct S { value i64 }\nfn f() void { source S\ncopy((S){1}, source)\nreturn }\n";
+  semantic_error "copy-rvalue-source" "copy operands must be existing places"
+    "struct S { value i64 }\n\
+     fn f() void { destination S\n\
+     copy(destination, (S){1})\n\
+     return }\n";
+  semantic_error "copy-constant-destination" "cannot modify constant"
+    "const Values arr[2,u32] = {7, 9}\n\
+     fn f() void { source arr[2,u32]\n\
+     copy(Values, source)\n\
+     return }\n";
+  semantic_error "copy-readonly-destination" "cannot modify read-only pointer"
+    "fn f(source addr) void {\ncopy(c\"ab\"[arr[2,u8]], source[arr[2,u8]])\nreturn }\n";
+  semantic_error "copy-uninitialized-source" "use of uninitialized local `source`"
+    "struct S { value i64 }\n\
+     fn f() void { destination S\n\
+     source S\n\
+     copy(destination, source)\n\
+     return }\n";
+
+  let copy_direct_locals =
+    lower_of
+      "fn f() i64 { source arr[2,i64]\n\
+       source[0] = 3\n\
+       source[1] = 5\n\
+       destination arr[2,i64]\n\
+       copy(destination, source)\n\
+       return destination[1] }\n"
+  in
+  let copy_direct_fn =
+    List.find (fun (func : Ir.func) -> func.name = "f") copy_direct_locals.Ir.funcs
+  in
+  let copy_array_allocas =
+    List.concat_map
+      (fun (block : Ir.block) ->
+        List.filter_map
+          (function
+            | Ir.Alloca (_, Ir.Array (2, Ir.I64), _) -> Some block.id | _ -> None)
+          block.instrs)
+      copy_direct_fn.blocks
+  in
+  if
+    List.length copy_array_allocas <> 2
+    || not (List.for_all (( = ) 0) copy_array_allocas)
+  then failwith "copy-distinct-locals: expected two local allocas and no scratch";
+
   Printf.printf "regression checks: %d passed\n" !checks_run
