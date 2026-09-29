@@ -326,10 +326,11 @@ let report_kept config paths opt llc cc =
          (pass_report config.Cli.optimization)
          (llc_opt config.Cli.optimization)))
 
-let executable_command config cc asm_path =
+let executable_command config cc asm_path c_objects =
   let argv =
     Array.of_list
-      (cc :: asm_path :: (config.Cli.link_inputs @ [ "-o"; config.Cli.output ]))
+      (cc :: asm_path
+      :: (c_objects @ config.Cli.link_inputs @ [ "-o"; config.Cli.output ]))
   in
   if config.Cli.debug || config.Cli.keep then
     prerr_endline ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
@@ -358,7 +359,7 @@ let build_assembly config ir llc opt_path asm_path =
   write_file asm_path assembly;
   Ok assembly
 
-let emit_tools_unprotected config program ir =
+let emit_tools_unprotected config program ir c_objects =
   let* () = ir_budget program (Ir.check_static_data_bytes ~limits ir) in
   let* () = ir_budget program (Ir.check_raw_asm_bytes ~limits ir) in
   let* ll_text = render_ir ir in
@@ -393,21 +394,66 @@ let emit_tools_unprotected config program ir =
           Ok ""
       | Cli.Obj when Ir.raw_assembly ir = "" ->
           let* () =
-            run_llc config llc ~filetype:"obj" ~input:opt_path ~output:config.output
+            if c_objects = [] then
+              run_llc config llc ~filetype:"obj" ~input:opt_path ~output:config.output
+            else
+              let fas_object = Filename.temp_file "fas-object-" ".o" in
+              let cleanup_object () = if not config.Cli.keep then remove fas_object in
+              Fun.protect ~finally:cleanup_object (fun () ->
+                  if config.Cli.keep then
+                    prerr_endline ("fas: kept Fas object: " ^ fas_object);
+                  let* () =
+                    run_llc config llc ~filetype:"obj" ~input:opt_path
+                      ~output:fas_object
+                  in
+                  let argv =
+                    Array.of_list
+                      ((cc :: "-r" :: fas_object :: c_objects) @ [ "-o"; config.output ])
+                  in
+                  if config.Cli.debug || config.Cli.keep then
+                    prerr_endline
+                      ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
+                  run_tool cc argv)
           in
           Ok ""
       | Cli.Obj ->
           let* _ = build_assembly config ir llc opt_path asm_path in
-          let* () = run_tool cc [| cc; "-c"; asm_path; "-o"; config.output |] in
+          let fas_object =
+            if c_objects = [] then config.output
+            else Filename.temp_file "fas-object-" ".o"
+          in
+          let cleanup_object () =
+            if c_objects <> [] && not config.Cli.keep then remove fas_object
+          in
+          let* () =
+            Fun.protect ~finally:cleanup_object (fun () ->
+                if config.Cli.keep && c_objects <> [] then
+                  prerr_endline ("fas: kept Fas object: " ^ fas_object);
+                let argv = [| cc; "-c"; asm_path; "-o"; fas_object |] in
+                if config.Cli.debug || config.Cli.keep then
+                  prerr_endline
+                    ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
+                let* () = run_tool cc argv in
+                if c_objects = [] then Ok ()
+                else
+                  let argv =
+                    Array.of_list
+                      ((cc :: "-r" :: fas_object :: c_objects) @ [ "-o"; config.output ])
+                  in
+                  if config.Cli.debug || config.Cli.keep then
+                    prerr_endline
+                      ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
+                  run_tool cc argv)
+          in
           Ok ""
       | Cli.Executable ->
           let* _ = build_assembly config ir llc opt_path asm_path in
-          let* () = run_tool cc (executable_command config cc asm_path) in
+          let* () = run_tool cc (executable_command config cc asm_path c_objects) in
           Ok ""
       | Cli.Ir | Cli.Llvm -> invalid_arg "Driver.emit_tools: non-tool emission")
 
-let emit_tools config program ir =
-  try emit_tools_unprotected config program ir with
+let emit_tools config program ir c_objects =
+  try emit_tools_unprotected config program ir c_objects with
   | Sys_error message ->
       Error [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ]
   | Unix.Unix_error (code, operation, argument) ->
@@ -441,9 +487,57 @@ let apply_no_inline config ir =
 type imported_c_unit = {
   source : string;
   unit_path : string;
+  use_span : Span.t;
+  has_fragments : bool;
   static_functions : C_import.static_function list;
   c_names : string list;
 }
+
+let compile_c_units config cc units adapters artifacts =
+  let rec compile acc = function
+    | [] -> Ok (List.rev acc)
+    | unit :: rest -> (
+        let has_adapters =
+          List.exists (fun adapter -> adapter.C_import.file = unit.source) adapters
+        in
+        if (not unit.has_fragments) && not has_adapters then compile acc rest
+        else
+          let object_path = Filename.temp_file "fas-c-object-" ".o" in
+          let argv =
+            [|
+              cc;
+              "--target=x86_64-unknown-linux-gnu";
+              "-fPIC";
+              llc_opt config.Cli.optimization;
+              "-c";
+              unit.unit_path;
+              "-o";
+              object_path;
+            |]
+          in
+          if config.Cli.debug || config.Cli.keep then
+            prerr_endline ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
+          match Process.run argv with
+          | Ok _ ->
+              artifacts := object_path :: !artifacts;
+              if config.Cli.keep then
+                prerr_endline ("fas: kept C object: " ^ object_path);
+              compile (object_path :: acc) rest
+          | Error failure ->
+              remove object_path;
+              let message =
+                Option.value ~default:(String.trim failure.stderr)
+                  (C_import.first_error failure.stderr)
+              in
+              Error
+                [
+                  Diag.error
+                    (C_import.mapped_error_span unit.source unit.use_span failure.stderr)
+                    (if message = "" then "Clang C compilation failed"
+                     else "Clang C compilation failed: " ^ message);
+                ])
+  in
+  compile [] units
 
 let add_static_adapters units ir =
   let called = Hashtbl.create 32 in
@@ -558,6 +652,14 @@ let run_unprotected config =
                     {
                       source;
                       unit_path = List.hd artifacts;
+                      use_span = (List.hd headers).C_import.span;
+                      has_fragments =
+                        List.exists
+                          (fun header ->
+                            match header.C_import.spelling with
+                            | Ast.C_fragment _ -> true
+                            | Ast.C_quoted _ | Ast.C_system _ -> false)
+                          headers;
                       static_functions = mapped.static_functions;
                       c_names =
                         List.filter_map
@@ -624,6 +726,9 @@ let run_unprotected config =
           in
           let* () = ir_budget program (Ir.check_lowered_nodes ~limits ir) in
           let* () = ir_budget program (Ir.check_stack_scratch_bytes ~limits ir) in
+          let* c_objects =
+            compile_c_units config cc (List.rev !c_units) adapters c_artifacts
+          in
           match config.emit with
           | Cli.Ir -> (
               match Ir.render_debug_bounded ~limits ir with
@@ -643,7 +748,8 @@ let run_unprotected config =
                   write_file path text;
                   let* () = verify_llvm opt path in
                   emit_text config text)
-          | Cli.Asm | Cli.Obj | Cli.Executable -> emit_tools config program ir))
+          | Cli.Asm | Cli.Obj | Cli.Executable -> emit_tools config program ir c_objects
+          ))
 
 let run_unstaged config =
   try run_unprotected config with

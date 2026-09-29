@@ -43,6 +43,42 @@ let first_error output =
   String.split_on_char '\n' output
   |> List.find_opt (fun line -> Option.is_some (find_text line "error:" 0))
 
+let error_location line =
+  match find_text line "error:" 0 with
+  | None -> None
+  | Some error_at -> (
+      let prefix = String.trim (String.sub line 0 error_at) in
+      let prefix =
+        if String.ends_with ~suffix:":" prefix then
+          String.sub prefix 0 (String.length prefix - 1)
+        else prefix
+      in
+      match String.rindex_opt prefix ':' with
+      | None -> None
+      | Some column_end -> (
+          let before_column = String.sub prefix 0 column_end in
+          match String.rindex_opt before_column ':' with
+          | None -> None
+          | Some line_end ->
+              let file = String.sub before_column 0 line_end in
+              let line =
+                String.sub before_column (line_end + 1)
+                  (String.length before_column - line_end - 1)
+              and column =
+                String.sub prefix (column_end + 1)
+                  (String.length prefix - column_end - 1)
+              in
+              Option.bind (int_of_string_opt line) (fun line ->
+                  Option.map
+                    (fun column -> (file, line, column))
+                    (int_of_string_opt column))))
+
+let mapped_error_span source fallback output =
+  Option.bind (first_error output) error_location |> function
+  | Some (file, line, column) when file = source ->
+      Span.make ~file ~start_offset:0 ~end_offset:0 ~line ~column
+  | _ -> fallback
+
 let unit_line unit_path output =
   match find_text output (unit_path ^ ":") 0 with
   | None -> None
@@ -135,7 +171,11 @@ let import ~cc ~debug ~keep ?(retain = false) source headers =
             Option.value ~default:(String.trim failure.stderr)
               (first_error failure.stderr)
           in
-          let span = error_span headers (unit_line unit_path failure.stderr) in
+          let span =
+            mapped_error_span source
+              (error_span headers (unit_line unit_path failure.stderr))
+              failure.stderr
+          in
           Error
             [
               Diag.error span
