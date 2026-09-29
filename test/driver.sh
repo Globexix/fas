@@ -109,6 +109,10 @@ grep -F "call i32 @helper" "$WORK/raw.ll" >/dev/null || fail "-O2 changed unopti
 "$OCAML_FAS" --emit-ir "$WORK/good.fas" >"$WORK/custom.ir" 2>"$WORK/stderr"
 [ ! -s "$WORK/stderr" ] || fail "custom IR emission wrote diagnostics"
 grep -F "Module {" "$WORK/custom.ir" >/dev/null || fail "custom IR emission omitted module"
+"$OCAML_FAS" --emit-llvm -debug "$WORK/good.fas" >"$WORK/debug.ll" 2>"$WORK/stderr"
+if grep -E 'llvm\.dbg|!DI[A-Za-z]+' "$WORK/debug.ll" >/dev/null; then
+  fail "debug mode emitted DWARF metadata"
+fi
 
 "$OCAML_FAS" -S "$WORK/good.fas" -o "$WORK/good.s" >"$WORK/stdout" 2>"$WORK/stderr"
 [ -s "$WORK/good.s" ] || fail "-S did not produce assembly"

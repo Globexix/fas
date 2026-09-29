@@ -2889,6 +2889,15 @@ let () =
       if not (contains released_unreserved_names marker) then
         failwith ("released-unreserved-name: missing `" ^ marker ^ "`"))
     [ "call i32 @sqrt"; "call i32 @fma"; "%struct.Members = type" ];
+  semantic_error "float-type-unavailable" "unknown type `f32`"
+    "fn main() f32 { return 1 }\n";
+  parse_error_message "floating-literal-unavailable" "expected identifier, found `5`"
+    "fn main() i32 { return 1.5 }\n";
+  parse_error_message "character-literal-unavailable" "unexpected character"
+    "fn main() i32 { return 'a' }\n";
+  semantic_error "integer-sqrt-excluded" "unknown function `sqrt`"
+    "fn main() i32 { return sqrt(4) }\n";
+  parse_error "labeled-break-rejected" "fn f() void { while true { break outer } }\n";
 
   let hygienic_parameter_names =
     llvm_of
