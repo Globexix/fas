@@ -7,6 +7,8 @@ LLVM_LLC=${LLVM_LLC:-llc-22}
 CC=${CC:-clang-22}
 OCAML_FAS=${OCAML_FAS:-$ROOT/_build/default/bin/main.exe}
 START_TIME=$(date +%s)
+GATE_TMP=$(mktemp -d)
+trap 'rm -rf "$GATE_TMP"' EXIT HUP INT TERM
 
 cd "$ROOT"
 for tool in "$LLVM_OPT" "$LLVM_LLC" "$CC"; do
@@ -35,10 +37,9 @@ else
   dune runtest --force
 fi
 
-"$OCAML_FAS" --emit-llvm test/ir_simple.fas >test/.stage3.ll
-"$LLVM_OPT" -passes=verify test/.stage3.ll -disable-output
-"$LLVM_LLC" test/.stage3.ll -o test/.stage3.s
-rm -f test/.stage3.ll test/.stage3.s
+"$OCAML_FAS" --emit-llvm test/ir_simple.fas >"$GATE_TMP/stage3.ll"
+"$LLVM_OPT" -passes=verify "$GATE_TMP/stage3.ll" -disable-output
+"$LLVM_LLC" "$GATE_TMP/stage3.ll" -o "$GATE_TMP/stage3.s"
 
 COMPONENTS=0
 for component in "$ROOT"/test/*.sh; do
