@@ -60,7 +60,7 @@ and binop =
 and cast_kind = Zext | Sext | Trunc | Bitcast
 
 and stmt =
-  | Let of { name : string; ty : ty; init : expr option; raw : bool; span : Span.t }
+  | Let of { name : string; ty : ty; init : expr option; span : Span.t }
   | View of { name : string; place : expr; span : Span.t }
   | Assign of assign_target * expr * Span.t
   | Compound_assign of assign_target * binop * expr * Span.t
@@ -489,18 +489,16 @@ let render_bounded ~budget program =
     and emit_stmt indent s =
       at (stmt_span s) (fun () ->
           match s with
-          | Let { name; ty; init; raw; _ } -> (
+          | Let { name; ty; init; _ } -> (
               text indent;
               add_name name;
               text " ";
               emit_ty ty;
-              if raw then text " = raw"
-              else
-                match init with
-                | None -> ()
-                | Some e ->
-                    text " = ";
-                    emit_expr e)
+              match init with
+              | None -> ()
+              | Some e ->
+                  text " = ";
+                  emit_expr e)
           | View { name; place; _ } ->
               text indent;
               text "view ";

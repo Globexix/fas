@@ -920,12 +920,13 @@ let () =
        \ true || false\n\
        \ t S = s\n\
        \ return 0 }\n");
-  semantic_error "place-init-ternary-escape" "use of uninitialized local `s`"
-    "struct S { x i64 y i64 }\n\
-     fn f(p bool) i64 { s S\n\
-    \ q addr = p ? &s : addr_from_bits(0)\n\
-     t S = s\n\
-    \ return 0 }\n";
+  ignore
+    (lower_of
+       "struct S { x i64 y i64 }\n\
+        fn f(p bool) i64 { s S\n\
+       \ q addr = p ? &s : addr_from_bits(0)\n\
+        t S = s\n\
+       \ return 0 }\n");
   semantic_error "place-init-ternary-cross-arm" "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\n\
      fn choose(p addr, x S) S { return x }\n\
@@ -1009,8 +1010,9 @@ let () =
        \ return t[0] }\n");
   semantic_error "aggregate-direct-return" "use of uninitialized local `s`"
     "struct S { x i64 }\nfn f() S { s S\nreturn s }\n";
-  semantic_error "aggregate-branch-no-else" "use of uninitialized local `s`"
-    "struct S { x i64 }\nfn f(p bool) i64 { s S\nif p { s.x = 1 }\nreturn s.x }\n";
+  ignore
+    (lower_of
+       "struct S { x i64 }\nfn f(p bool) i64 { s S\nif p { s.x = 1 }\nreturn s.x }\n");
   ignore
     (lower_of
        "struct S { x i64 y i64 }\n\
@@ -1028,28 +1030,50 @@ let () =
        \ default: { s.x = 2 }\n\
        \ }\n\
        \ return s.x }\n");
-  semantic_error "aggregate-switch-partial-merge" "use of uninitialized local `s`"
-    "struct S { x i64 y i64 }\n\
-     fn f(n i64) i64 { s S\n\
-    \ switch n {\n\
-    \ case 0: { s.x = 1 }\n\
-    \ default: { s.y = 2 }\n\
-    \ }\n\
-    \ return s.x }\n";
+  ignore
+    (lower_of
+       "struct S { x i64 y i64 }\n\
+        fn f(n i64) i64 { s S\n\
+       \ switch n {\n\
+       \ case 0: { s.x = 1 }\n\
+       \ default: { s.y = 2 }\n\
+       \ }\n\
+       \ return s.x }\n");
   ignore
     (lower_of
        "fn f(i i64) i64 { a arr[2,arr[2,i64]]\n\
        \ a[0][0] = 1\n\
        \ a[0][1] = 2\n\
        \ return a[0][i] }\n");
-  semantic_error "aggregate-nested-dynamic-prefix" "use of uninitialized local `a`"
-    "fn f(i i64) i64 { a arr[2,arr[2,i64]]\na[0][0] = 1\nreturn a[0][i] }\n";
+  ignore
+    (lower_of "fn f(i i64) i64 { a arr[2,arr[2,i64]]\na[0][0] = 1\nreturn a[0][i] }\n");
   ignore
     (lower_of "fn f(i i64) i64 { v vec[2,i64]\n v[0] = 1\n v[1] = 2\n return v[i] }\n");
   semantic_error "aggregate-dynamic-index" "use of uninitialized local `a`"
     "fn f() i64 { a arr[2,i64]\n i i64 = 0\n return a[i] }\n";
-  semantic_error "aggregate-dynamic-write-read" "use of uninitialized local `a`"
-    "fn f(i i64) i64 { a arr[2,i64]\na[i] = 1\nreturn a[i] }\n";
+  semantic_error "aggregate-dynamic-write-keeps-other-element-uninitialized"
+    "use of uninitialized local `a`"
+    "fn f() i64 { a arr[2,i64]\n a[0] = 1\n return a[1] }\n";
+  semantic_error "aggregate-loop-read-before-write" "use of uninitialized local `a`"
+    "fn f() i64 { a arr[2,i64]\n return a[0] }\n";
+  ignore (lower_of "fn f(i i64) i64 { a arr[2,i64]\na[i] = 1\nreturn a[i] }\n");
+  ignore
+    (lower_of
+       "fn f() u32 { a arr[4,u32]\n\
+        for i u32 = 0; i < 4; i += 1 { a[i] = i }\n\
+        return a[2] }\n");
+  ignore
+    (lower_of
+       "struct S { a arr[4,u32] }\n\
+        fn f() u32 { s S\n\
+        for i u32 = 0; i < 4; i += 1 { s.a[i] = i }\n\
+        return s.a[2] }\n");
+  ignore
+    (lower_of
+       "fn take(p addr) void { return }\n\
+        fn f() u32 { a arr[2,u32]\n\
+       \ take(&a)\n\
+       \ return a[1] }\n");
   ignore
     (lower_of "fn f(i i64) i64 { a arr[2,i64]\n a[0] = 1\n a[1] = 2\n return a[i] }\n");
   ignore
@@ -1059,8 +1083,13 @@ let () =
        \ s.a[0] = 1\n\
        \ s.a[1] = 2\n\
        \ return s.a[i] }\n");
-  semantic_error "aggregate-dynamic-pointer-element" "use of uninitialized local `a`"
-    "fn f(i i64) i64 { x i64\na arr[2,addr]\na[0] = &x\na[i][0] = 1\nreturn x }\n";
+  ignore
+    (lower_of
+       "fn f(i i64) i64 { x i64\n\
+        a arr[2,addr]\n\
+        a[0] = &x\n\
+        a[i][i64,0] = 1\n\
+        return x }\n");
   ignore
     (llvm_of
        "fn take(p addr) void { return }\nfn f() i64 { x i64\n take(&x)\n return x }\n");
@@ -1072,19 +1101,24 @@ let () =
        \ take(&s.x)\n\
        \ t S = s\n\
        \ return 0 }\n");
-  semantic_error "aggregate-branch-partial" "use of uninitialized local `s`"
-    "struct S { x i64 y i64 }\n\
-     fn f(p bool) i64 { s S\n\
-     if p { s.x = 1 } else { s.y = 2 }\n\
-    \ return s.x }\n";
+  ignore
+    (lower_of
+       "struct S { x i64 y i64 }\n\
+        fn f(p bool) i64 { s S\n\
+        if p { s.x = 1 } else { s.y = 2 }\n\
+       \ return s.x }\n");
   ignore
     (lower_of
        "struct S { x i64 y i64 }\n\
         fn f(p bool) i64 { s S\n\
         if p { s.x = 1 } else { return 0 }\n\
        \ return s.x }\n");
-  semantic_error "aggregate-loop-only" "use of uninitialized local `s`"
-    "struct S { x i64 }\nfn f(p bool) i64 { s S\n while p { s.x = 1 }\n return s.x }\n";
+  ignore
+    (lower_of
+       "struct S { x i64 }\n\
+        fn f(p bool) i64 { s S\n\
+       \ while p { s.x = 1 }\n\
+       \ return s.x }\n");
   ignore
     (lower_of
        "struct S { x i64 y i64 }\n\
@@ -1092,19 +1126,21 @@ let () =
         fn f(p bool) i64 { s S\n\
        \ if p { take(&s) } else { s.x = 1 }\n\
         return s.x }\n");
-  semantic_error "aggregate-branch-raw-missing-field" "use of uninitialized local `s`"
-    "struct S { x i64 y i64 }\n\
-     fn take(p addr) void { return }\n\
-     fn f(p bool) i64 { s S\n\
-    \ if p { take(&s) } else { s.x = 1 }\n\
-     return s.y }\n";
-  semantic_error "aggregate-branch-raw-whole" "use of uninitialized local `s`"
-    "struct S { x i64 y i64 }\n\
-     fn take(p addr) void { return }\n\
-     fn f(p bool) i64 { s S\n\
-    \ if p { take(&s) } else { s.x = 1 }\n\
-     t S = s\n\
-    \ return 0 }\n";
+  ignore
+    (lower_of
+       "struct S { x i64 y i64 }\n\
+        fn take(p addr) void { return }\n\
+        fn f(p bool) i64 { s S\n\
+       \ if p { take(&s) } else { s.x = 1 }\n\
+        return s.y }\n");
+  ignore
+    (lower_of
+       "struct S { x i64 y i64 }\n\
+        fn take(p addr) void { return }\n\
+        fn f(p bool) i64 { s S\n\
+       \ if p { take(&s) } else { s.x = 1 }\n\
+        t S = s\n\
+       \ return 0 }\n");
   semantic_error "aggregate-compound-read" "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\nfn f() i64 { s S\n s.x += 1\n return 0 }\n";
   semantic_error "place-init-after-return" "use of uninitialized local `x`"
@@ -1185,11 +1221,12 @@ let () =
   semantic_error "for-step-uninitialized" "use of uninitialized local `value`"
     "fn take(value i64) void { return }\n\
     \ fn f() void { for value i64; true; take(value) { continue } }\n";
-  semantic_error "for-step-path-merge" "use of uninitialized local `value`"
-    "fn take(value i64) void { return }\n\
-    \ fn f(condition bool) void { for value i64; true; take(value) {\n\
-    \ if condition { value = 1 } else { continue }\n\
-    \ } }\n";
+  ignore
+    (lower_of
+       "fn take(value i64) void { return }\n\
+        fn f(condition bool) void { for value i64; true; take(value) {\n\
+       \ if condition { value = 1 } else { continue }\n\
+       \ } }\n");
   ignore
     (lower_of
        "fn f() i64 { value i64\n while true { value = 1\n break }\n return value }\n");
@@ -1199,11 +1236,12 @@ let () =
        \ while true { defer { value = 1 }\n\
        \ break }\n\
        \ return value }\n");
-  semantic_error "conditional-loop-initialization" "use of uninitialized local `value`"
-    "fn f(condition bool) i64 { value i64\n\
-    \ while condition { value = 1\n\
-    \ break }\n\
-    \ return value }\n";
+  ignore
+    (lower_of
+       "fn f(condition bool) i64 { value i64\n\
+       \ while condition { value = 1\n\
+       \ break }\n\
+       \ return value }\n");
   ignore
     (lower_of
        "fn f(choice i64) i64 { value i64\n\
@@ -1251,14 +1289,15 @@ let () =
        \ { value i64\n\
        \ defer { observed i64 = value }\n\
        \ continue } } }\n");
-  semantic_error "switch-loop-exit-initialization" "use of uninitialized local `value`"
-    "fn f(choice i64) i64 { value i64\n\
-    \ while true { switch choice {\n\
-    \ case 0: { value = 1\n\
-    \ break }\n\
-    \ default: { break }\n\
-    \ } }\n\
-    \ return value }\n";
+  ignore
+    (lower_of
+       "fn f(choice i64) i64 { value i64\n\
+       \ while true { switch choice {\n\
+       \ case 0: { value = 1\n\
+       \ break }\n\
+       \ default: { break }\n\
+       \ } }\n\
+       \ return value }\n");
   semantic_error "nested-defer" "nested defer is not allowed"
     "fn f() void { defer { defer { } } }\n";
   semantic_error "defer-return" "return is not allowed inside defer"
@@ -1267,39 +1306,51 @@ let () =
     "fn f() void { while true { defer { break } break } }\n";
   semantic_error "defer-continue" "continue is not allowed inside defer"
     "fn f() void { while true { defer { continue } break } }\n";
-  ignore (lower_of "fn f() u32 { x arr[4,u32] = raw\n x[0] = 1\n return x[3] }\n");
-  ignore (lower_of "fn f() i64 { p addr = raw\n p[i64] = 1\n return p[i64] }\n");
-  ignore
-    (lower_of "fn f() u32 { x arr[4,u32] = raw\n t arr[4,u32] = x\n return t[0] }\n");
+  semantic_error "raw-uninitialized-array-read" "use of uninitialized local `x`"
+    "fn f() u32 { x arr[4,u32]\n x[0] = 1\n return x[3] }\n";
+  semantic_error "raw-uninitialized-address-read" "use of uninitialized local `p`"
+    "fn f() i64 { p addr\n p[i64] = 1\n return p[i64] }\n";
+  semantic_error "raw-uninitialized-array-copy" "use of uninitialized local `x`"
+    "fn f() u32 { x arr[4,u32]\n t arr[4,u32] = x\n return t[0] }\n";
   ignore
     (lower_of
-       "fn f() u32 { x arr[4,u32] = raw\n\
+       "fn f() u32 { x arr[4,u32]\n\
        \ for i u32 = 0; i < 4; i += 1 { x[i] = i }\n\
        \ return x[0] }\n");
-  ignore
-    (lower_of
-       "fn f(p bool) u32 { x arr[4,u32] = raw\n if p { x[0] = 1 }\n return x[1] }\n");
-  ignore (lower_of "fn f() u64 { x u64 = raw\n defer { x = 1 }\n return x }\n");
-  ignore
-    (lower_of
-       "struct S { x i64 y i64 }\nfn f() i64 { s S = raw\n s.x = 1\n return s.y }\n");
-  ignore (lower_of "fn f() u32 { v vec[4,u32] = raw\n v[0] = 1\n return v[3] }\n");
-  ignore (lower_of "fn f() i64 { x i64 = raw\n return x }\n");
-  ignore (lower_of "fn f() i64 { x i64 = raw\n x = 5\n return x }\n");
-  let raw_no_zero =
-    llvm_of "fn f() u32 { x arr[4,u32] = raw\n x[0] = 1\n return x[3] }\n"
+  semantic_error "raw-branch-uninitialized-element" "use of uninitialized local `x`"
+    "fn f(p bool) u32 { x arr[4,u32]\n if p { x[0] = 1 }\n return x[1] }\n";
+  semantic_error "raw-defer-read-before-write" "use of uninitialized local `x`"
+    "fn f() u64 { x u64\n defer { x = 1 }\n return x }\n";
+  semantic_error "raw-uninitialized-struct-field" "use of uninitialized local `s`"
+    "struct S { x i64 y i64 }\nfn f() i64 { s S\n s.x = 1\n return s.y }\n";
+  semantic_error "raw-uninitialized-vector-lane" "use of uninitialized local `v`"
+    "fn f() u32 { v vec[4,u32]\n v[0] = 1\n return v[3] }\n";
+  semantic_error "raw-uninitialized-scalar-read" "use of uninitialized local `x`"
+    "fn f() i64 { x i64\n return x }\n";
+  ignore (lower_of "fn f() i64 { x i64\n x = 5\n return x }\n");
+  let uninitialized_no_zero =
+    llvm_of
+      "fn f() u32 { x arr[4,u32]\n\
+      \ for i u32 = 0; i < 4; i += 1 { x[i] = i }\n\
+      \ return x[3] }\n"
   in
-  if contains raw_no_zero "memset" || contains raw_no_zero "zeroinitializer" then
-    failwith "raw declaration emitted implicit initialization";
-  parse_error_message "raw-not-a-value-return"
-    "`raw` is a declaration marker, not a value" "fn f() i64 { return raw }\n";
-  parse_error_message "raw-not-a-value-call"
-    "`raw` is a declaration marker, not a value"
+  if
+    contains uninitialized_no_zero "memset"
+    || contains uninitialized_no_zero "zeroinitializer"
+  then failwith "plain declaration emitted implicit initialization";
+  parse_error_message "raw-declaration-removed"
+    "`= raw` is no longer supported; declare `x T` without an initializer"
+    "fn f() i64 { x i64 = raw\n return 0 }\n";
+  semantic_error "raw-not-a-value-return" "unknown name `raw`"
+    "fn f() i64 { return raw }\n";
+  semantic_error "raw-not-a-value-call" "unknown name `raw`"
     "fn g(x i64) i64 { return x }\nfn f() i64 { return g(raw) }\n";
-  parse_error_message "raw-not-a-value-assign"
-    "`raw` is a declaration marker, not a value"
+  semantic_error "raw-not-a-value-assign" "unknown name `raw`"
     "fn f() i64 { x i64 = 1\n x = raw\n return x }\n";
-  parse_error "raw-init-trailing" "fn f() i64 { x i64 = raw + 1\n return x }\n";
+  parse_error_message "raw-init-trailing"
+    "`= raw` is no longer supported; declare `x T` without an initializer"
+    "fn f() i64 { x i64 = raw + 1\n return x }\n";
+  ignore (lower_of "fn f() i64 { raw i64 = 3\n return raw }\n");
   semantic_error "lexical-scope-same-block" "duplicate local `value`"
     "fn f() i64 { value i64 = 1\n value i64 = 2\n return value }\n";
   semantic_error "lexical-scope-parameter-body" "duplicate local `value`"
@@ -1390,20 +1441,20 @@ let () =
     "const Count usize = 2\n\
      fn use(Count usize) i32 { local arr[Count,i32]\n\
     \ return 0 }\n";
-  semantic_error "static-index-parameter-constant-shadow"
-    "use of uninitialized local `values`"
-    "const Index i32 = 0\n\
-     fn read(Index i32) i32 { values arr[2,i32]\n\
-    \ values[0] = 7\n\
-    \ return values[Index] }\n\
-     fn main() i32 { return read(1) }\n";
-  semantic_error "static-index-nested-parameter-constant-shadow"
-    "use of uninitialized local `values`"
-    "const Index i32 = 0\n\
-     fn read(Index i32) i32 { values arr[2,i32]\n\
-    \ values[0] = 7\n\
-    \ return values[Index + 0] }\n\
-     fn main() i32 { return read(1) }\n";
+  ignore
+    (lower_of
+       "const Index i32 = 0\n\
+        fn read(Index i32) i32 { values arr[2,i32]\n\
+       \ values[0] = 7\n\
+       \ return values[Index] }\n\
+        fn main() i32 { return read(1) }\n");
+  ignore
+    (lower_of
+       "const Index i32 = 0\n\
+        fn read(Index i32) i32 { values arr[2,i32]\n\
+       \ values[0] = 7\n\
+       \ return values[Index + 0] }\n\
+        fn main() i32 { return read(1) }\n");
   let static_global_index =
     llvm_of
       "const Index i32 = 1\n\
@@ -2441,8 +2492,8 @@ let () =
       then failwith "token-limit: unexpected diagnostic"
   | Ok _ -> failwith "token-limit: expected rejection");
 
-  semantic_error "for-step-discard" "use of uninitialized local `y`"
-    "fn f() i64 { y i64\n for i i32 = 0; i < 0; y = 5 { }\n return y }\n";
+  ignore
+    (lower_of "fn f() i64 { y i64\n for i i32 = 0; i < 0; y = 5 { }\n return y }\n");
 
   let vec_comp =
     llvm_of

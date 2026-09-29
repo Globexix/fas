@@ -2,7 +2,7 @@ module State_map = Map.Make (Int)
 
 type binding = Hir.local = { name : string; ty : Hir.ty; id : int }
 type selector = Field of string | Element of int
-type init_state = Uninit | Full | Raw | Partial of (selector * init_state) list
+type init_state = Uninit | Full | Unknown | Partial of (selector * init_state) list
 type place_path = Exact of selector list | Dynamic_prefix of selector list
 type view_access = Mutable_access | Constant_access | Readonly_access
 type deferred_requirement = binding * selector list * Span.t
@@ -133,7 +133,7 @@ let pop flow =
 let state_of flow binding =
   Option.value ~default:Uninit (State_map.find_opt binding.id flow.initialized)
 
-let state_usable = function Full | Raw -> true | Uninit | Partial _ -> false
+let state_usable = function Full | Unknown -> true | Uninit | Partial _ -> false
 
 let child_type flow ty selector =
   match (ty, selector) with
@@ -165,7 +165,7 @@ let is_vacuous_type flow ty =
 
 let rec normalize_state flow ty = function
   | Uninit -> Uninit
-  | (Full | Raw) as state -> state
+  | (Full | Unknown) as state -> state
   | Partial entries ->
       let entries =
         List.filter_map
@@ -177,7 +177,7 @@ let rec normalize_state flow ty = function
                 if state = Uninit then None else Some (selector, state))
           entries
       in
-      let complete, any_raw =
+      let complete, any_unknown =
         match ty with
         | Hir.Struct name -> (
             match
@@ -196,15 +196,15 @@ let rec normalize_state flow ty = function
                       | None -> is_vacuous_type flow field.ty)
                     struct_def.fields
                 in
-                let raw =
+                let unknown =
                   List.exists
                     (fun (field : Hir.field) ->
                       match List.assoc_opt (Field field.name) entries with
-                      | Some Raw -> true
+                      | Some Unknown -> true
                       | _ -> false)
                     struct_def.fields
                 in
-                (all, raw))
+                (all, unknown))
         | Hir.Array (length, element_ty) | Hir.Vec (length, element_ty) ->
             let all =
               length >= 0
@@ -220,15 +220,15 @@ let rec normalize_state flow ty = function
               in
               each 0
             in
-            let raw =
+            let unknown =
               List.exists
-                (fun (_, state) -> match state with Raw -> true | _ -> false)
+                (fun (_, state) -> match state with Unknown -> true | _ -> false)
                 entries
             in
-            (all, raw)
+            (all, unknown)
         | _ -> (false, false)
       in
-      if complete then if any_raw then Raw else Full
+      if complete then if any_unknown then Unknown else Full
       else if entries = [] then Uninit
       else Partial entries
 
@@ -265,7 +265,7 @@ let require_state binding path flow span =
     | [] -> if state_usable state || is_vacuous_type flow ty then Ok () else Error ()
     | selector :: rest -> (
         match state with
-        | Full | Raw -> Ok ()
+        | Full | Unknown -> Ok ()
         | Partial entries -> (
             match child_type flow ty selector with
             | Some child_ty ->
@@ -287,32 +287,52 @@ let require_state binding path flow span =
         Ok ()
     | None -> error span (Printf.sprintf "use of uninitialized local `%s`" binding.name)
 
+let state_at_path flow binding path =
+  let rec walk ty state = function
+    | [] -> state
+    | selector :: rest -> (
+        match state with
+        | Full | Unknown -> state
+        | Partial entries -> (
+            match child_type flow ty selector with
+            | Some child_ty ->
+                let child =
+                  Option.value ~default:Uninit (List.assoc_opt selector entries)
+                in
+                walk child_ty child rest
+            | None -> Uninit)
+        | Uninit -> Uninit)
+  in
+  walk binding.ty (state_of flow binding) path
+
 let require_place_state binding path flow span =
   match path with
-  | Exact path | Dynamic_prefix path -> require_state binding path flow span
+  | Exact path -> require_state binding path flow span
+  | Dynamic_prefix path -> (
+      match state_at_path flow binding path with
+      | Uninit -> require_state binding path flow span
+      | Full | Unknown | Partial _ -> Ok ())
 
 let merge_state flow ty left right =
   let rec merge ty left right =
-    let merge_partial whole entries =
-      Partial
-        (List.filter_map
-           (fun (selector, state) ->
-             match child_type flow ty selector with
-             | Some child_ty -> (
-                 match merge child_ty whole state with
-                 | Uninit -> None
-                 | state -> Some (selector, state))
-             | None -> None)
-           entries)
-    in
     let result =
       match (left, right) with
-      | Uninit, _ | _, Uninit -> Uninit
+      | Uninit, Uninit -> Uninit
+      | Uninit, (Full | Unknown) | (Full | Unknown), Uninit -> Unknown
       | Full, Full -> Full
-      | Raw, Raw -> Raw
-      | Full, Raw | Raw, Full -> Raw
-      | Full, Partial entries | Partial entries, Full -> merge_partial Full entries
-      | Raw, Partial entries | Partial entries, Raw -> merge_partial Raw entries
+      | Unknown, _ | _, Unknown -> Unknown
+      | Full, Partial _ | Partial _, Full -> Unknown
+      | Partial entries, Uninit | Uninit, Partial entries ->
+          Partial
+            (List.filter_map
+               (fun (selector, state) ->
+                 match child_type flow ty selector with
+                 | Some child_ty -> (
+                     match merge child_ty Uninit state with
+                     | Uninit -> None
+                     | state -> Some (selector, state))
+                 | None -> None)
+               entries)
       | Partial left, Partial right ->
           let selectors = List.map fst left @ List.map fst right in
           let selectors =
@@ -346,34 +366,37 @@ let merge_state flow ty left right =
 let merge_maps flow left right =
   State_map.merge
     (fun id left right ->
-      match (left, right) with
-      | Some left, Some right ->
-          let rec find = function
-            | [] -> None
-            | scope :: rest -> (
-                match
-                  Hashtbl.fold
-                    (fun _ binding result ->
-                      match result with
-                      | Some _ -> result
-                      | None -> if binding.id = id then Some binding else None)
-                    scope None
-                with
-                | Some binding -> Some binding
-                | None -> find rest)
+      let rec find = function
+        | [] -> None
+        | scope :: rest -> (
+            match
+              Hashtbl.fold
+                (fun _ binding result ->
+                  match result with
+                  | Some _ -> result
+                  | None -> if binding.id = id then Some binding else None)
+                scope None
+            with
+            | Some binding -> Some binding
+            | None -> find rest)
+      in
+      match find !(flow.locals) with
+      | None -> None
+      | Some binding ->
+          let state =
+            merge_state flow binding.ty
+              (Option.value ~default:Uninit left)
+              (Option.value ~default:Uninit right)
           in
-          Option.map
-            (fun binding -> merge_state flow binding.ty left right)
-            (find !(flow.locals))
-      | _ -> None)
+          if state = Uninit then None else Some state)
     left right
 
 let add_init_state flow ty left right =
   let rec add ty left right =
     match (left, right) with
     | Uninit, state | state, Uninit -> state
+    | Unknown, _ | _, Unknown -> Unknown
     | Full, _ | _, Full -> Full
-    | Raw, _ | _, Raw -> Raw
     | Partial left, Partial right ->
         let selectors = List.map fst left @ List.map fst right in
         let selectors = List.sort_uniq compare selectors in
@@ -495,10 +518,14 @@ let end_loop flow =
   flow.loop_depth <- flow.loop_depth - 1;
   flow.loop_init_flows <- List.tl flow.loop_init_flows
 
-let finish_while flow loop ~condition_is_true =
+let finish_while flow loop ~condition_is_true ~condition_is_false =
+  let iteration_states =
+    (if flow.falls_through then [ flow.initialized ] else []) @ loop.continue_states
+  in
   let exit_states =
     if condition_is_true then loop.break_states
-    else loop.entry_state :: loop.break_states
+    else if condition_is_false then [ loop.entry_state ]
+    else loop.entry_state :: (iteration_states @ loop.break_states)
   in
   flow.initialized <-
     Option.value ~default:loop.entry_state (merge_flow_states flow exit_states);
@@ -513,9 +540,11 @@ let prepare_for_step flow loop ~body_falls_through =
     Option.value ~default:loop.entry_state (merge_flow_states flow step_states);
   flow.falls_through <- step_states <> []
 
-let finish_for flow loop ~unconditional =
+let finish_for flow loop ~unconditional ~condition_is_false =
   let exit_states =
-    if unconditional then loop.break_states else loop.entry_state :: loop.break_states
+    if unconditional then loop.break_states
+    else if condition_is_false then [ loop.entry_state ]
+    else loop.entry_state :: flow.initialized :: loop.break_states
   in
   flow.initialized <-
     Option.value ~default:loop.entry_state (merge_flow_states flow exit_states);

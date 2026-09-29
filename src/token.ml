@@ -20,7 +20,6 @@ type kind =
   | Kw_switch
   | Kw_case
   | Kw_default
-  | Kw_raw
   | Lparen
   | Rparen
   | Lbrace
@@ -92,7 +91,6 @@ let show = function
   | Kw_switch -> "`switch`"
   | Kw_case -> "`case`"
   | Kw_default -> "`default`"
-  | Kw_raw -> "`raw`"
   | Lparen -> "`(`"
   | Rparen -> "`)`"
   | Lbrace -> "`{`"

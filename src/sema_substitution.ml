@@ -797,7 +797,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     let* _ = result in
     Ok ()
   and validate_non_dependent_statement c dependent expected_return = function
-    | Ast.Let { name; ty; init; span; raw; _ } ->
+    | Ast.Let { name; ty; init; span; _ } ->
         if type_mentions dependent ty then Ok (name :: dependent)
         else
           let* ty = source_ty_with_values eval_named_types eval_consts span ty in
@@ -808,7 +808,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 validate_non_dependent_expression c dependent (Some ty) value
           in
           let* binding = add_local name ty c span in
-          if raw || Option.is_some init then mark_init binding c;
+          if Option.is_some init then mark_init binding c;
           Ok (List.filter (fun dependent_name -> dependent_name <> name) dependent)
     | Ast.View { name; place; _ } as statement ->
         if expression_mentions dependent place || has_generic_arguments place then
@@ -1530,7 +1530,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         Ok (Ast.Target_field (base, name))
   and resolve_stmt ?(values = []) ?(shadowed_constants = [])
       ?(defer_const_structs = false) substitutions depth = function
-    | Ast.Let { name; ty; init; raw; span } ->
+    | Ast.Let { name; ty; init; span } ->
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         let* init =
           match init with
@@ -1541,7 +1541,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               in
               Ok (Some expression)
         in
-        Ok (Ast.Let { name; ty; init; raw; span })
+        Ok (Ast.Let { name; ty; init; span })
     | Ast.View { name; place; span } ->
         let* place =
           resolve_expr ~values ~defer_const_structs substitutions depth place

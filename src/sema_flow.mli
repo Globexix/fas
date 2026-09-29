@@ -1,6 +1,6 @@
 type binding = Hir.local = { name : string; ty : Hir.ty; id : int }
 type selector = Field of string | Element of int
-type init_state = Uninit | Full | Raw | Partial of (selector * init_state) list
+type init_state = Uninit | Full | Unknown | Partial of (selector * init_state) list
 type place_path = Exact of selector list | Dynamic_prefix of selector list
 type view_access = Mutable_access | Constant_access | Readonly_access
 type snapshot
@@ -43,9 +43,12 @@ val finish_statement : t -> before:snapshot -> terminates:bool -> unit
 val validate_return : t -> Span.t -> (unit, Diag.t list) result
 val begin_loop : t -> loop
 val end_loop : t -> unit
-val finish_while : t -> loop -> condition_is_true:bool -> unit
+
+val finish_while :
+  t -> loop -> condition_is_true:bool -> condition_is_false:bool -> unit
+
 val prepare_for_step : t -> loop -> body_falls_through:bool -> unit
-val finish_for : t -> loop -> unconditional:bool -> unit
+val finish_for : t -> loop -> unconditional:bool -> condition_is_false:bool -> unit
 val record_break : t -> Span.t -> (unit, Diag.t list) result
 val record_continue : t -> Span.t -> (unit, Diag.t list) result
 val begin_defer : t -> Span.t -> (defer_capture, Diag.t list) result

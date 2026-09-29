@@ -517,7 +517,8 @@ and check_expr (c : context) expected = function
         in
         let* b = with_dead_check c dead (fun () -> check_expr c None r) in
         let after_right = Sema_flow.snapshot c.flow in
-        Sema_flow.restore c.flow (merge_maps c after_left after_right);
+        Sema_flow.restore c.flow
+          (if dead then after_left else merge_maps c after_left after_right);
         if Hir.expr_ty a = Hir.Bool && Hir.expr_ty b = Hir.Bool then
           Ok (Hir.Binary (op, a, b, Hir.Bool, s))
         else error s "logical operands must be bool")
@@ -642,7 +643,9 @@ and check_expr (c : context) expected = function
       Ok place.expr
   | Ast.Addr_of (e, s) -> (
       let* place = check_place c e in
-      (match place.root with Some binding -> set_state c binding [] Raw | None -> ());
+      (match place.root with
+      | Some binding -> set_state c binding [] Unknown
+      | None -> ());
       match place.expr with
       | Hir.Index (base, _, _, _)
         when match Hir.expr_ty base with Hir.Vec _ -> true | _ -> false ->
@@ -695,7 +698,11 @@ and check_expr (c : context) expected = function
               check_expr c (Some (Hir.expr_ty ta)) b)
         in
         let after_b = Sema_flow.snapshot c.flow in
-        Sema_flow.restore c.flow (merge_maps c after_a after_b);
+        Sema_flow.restore c.flow
+          (match condition with
+          | Some true -> after_a
+          | Some false -> after_b
+          | None -> merge_maps c after_a after_b);
         let at = Hir.expr_ty ta and bt = Hir.expr_ty tb in
         let result_ty =
           if equal at bt then Some at
@@ -1424,7 +1431,7 @@ let rec check_block (c : context) stmts =
   go [] stmts
 
 and check_stmt (c : context) = function
-  | Ast.Let { name; ty; init; raw; span } ->
+  | Ast.Let { name; ty; init; span } ->
       let* () = ensure_new_local name c span in
       let* t = source_ty_in_context c span ty in
       let* _ = Sema_limits.validate_object c.limits c.structs span t in
@@ -1437,7 +1444,6 @@ and check_stmt (c : context) = function
             Ok (Some v)
       in
       let* binding = add_local name t c span in
-      if raw then set_state c binding [] Raw;
       if Option.is_some x then mark_init binding c;
       Ok (Hir.Let (binding, x, span))
   | Ast.View { name; place; span } ->
@@ -1483,8 +1489,7 @@ and check_stmt (c : context) = function
       let* () = ensure_expected (Hir.expr_ty v) expected span in
       (match (checked_target.root, checked_target.path) with
       | Some binding, Some (Exact path) -> set_state c binding path Full
-      | Some binding, Some (Dynamic_prefix path) when checked_target.through_view ->
-          set_state c binding path Raw
+      | Some binding, Some (Dynamic_prefix _) -> set_state c binding [] Unknown
       | _ -> ());
       Ok (Hir.Assign (target, v, span))
   | Ast.Compound_assign (t, op, e, span) ->
@@ -1539,6 +1544,7 @@ and check_stmt (c : context) = function
       else (
         (match (checked_target.root, checked_target.path) with
         | Some binding, Some (Exact path) -> set_state c binding path Full
+        | Some binding, Some (Dynamic_prefix _) -> set_state c binding [] Unknown
         | _ -> ());
         Ok (Hir.Compound_assign (target, op, v, et, span)))
   | Ast.Return (e, span) ->
@@ -1608,13 +1614,21 @@ and check_stmt (c : context) = function
         in
         let ib = Sema_flow.snapshot c.flow in
         let fb = Sema_flow.falls_through c.flow in
-        Sema_flow.restore c.flow
-          (match (fa, fb) with
-          | true, true -> merge_maps c ia ib
-          | true, false -> ia
-          | false, true -> ib
-          | false, false -> before);
-        Sema_flow.set_falls_through c.flow (before_falls && (fa || fb));
+        (match tq with
+        | Hir.EBool (true, _) ->
+            Sema_flow.restore c.flow ia;
+            Sema_flow.set_falls_through c.flow (before_falls && fa)
+        | Hir.EBool (false, _) ->
+            Sema_flow.restore c.flow ib;
+            Sema_flow.set_falls_through c.flow (before_falls && fb)
+        | _ ->
+            Sema_flow.restore c.flow
+              (match (fa, fb) with
+              | true, true -> merge_maps c ia ib
+              | true, false -> ia
+              | false, true -> ib
+              | false, false -> before);
+            Sema_flow.set_falls_through c.flow (before_falls && (fa || fb)));
         Ok (Hir.If (tq, ta, tb, s))
   | Ast.While (q, b, s) ->
       let* tq = check_expr c None q in
@@ -1624,7 +1638,9 @@ and check_stmt (c : context) = function
         let checked = check_block c b in
         Sema_flow.end_loop c.flow;
         let* tb = checked in
-        Sema_flow.finish_while c.flow loop ~condition_is_true:(Hir.condition_is_true tq);
+        Sema_flow.finish_while c.flow loop ~condition_is_true:(Hir.condition_is_true tq)
+          ~condition_is_false:
+            (match tq with Hir.EBool (false, _) -> true | _ -> false);
         Ok (Hir.While (tq, tb, s))
   | Ast.For (i, q, step, b, s) ->
       push c;
@@ -1661,7 +1677,10 @@ and check_stmt (c : context) = function
           | None -> true
           | Some condition -> Hir.condition_is_true condition
         in
-        Sema_flow.finish_for c.flow loop ~unconditional;
+        let condition_is_false =
+          match tq with Some (Hir.EBool (false, _)) -> true | _ -> false
+        in
+        Sema_flow.finish_for c.flow loop ~unconditional ~condition_is_false;
         Sema_flow.end_loop c.flow;
         Ok (Hir.For (ti, tq, ts, tb, s))
       in
@@ -1675,7 +1694,15 @@ and check_stmt (c : context) = function
       else
         let before = Sema_flow.snapshot c.flow
         and seen = ref []
-        and branch_states = ref [] in
+        and branch_states = ref []
+        and selected_case = ref None
+        and selected_default = ref None in
+        let switch_value =
+          match te with
+          | Hir.EInt (value, _, _) -> Some value
+          | Hir.EBool (value, _) -> Some (if value then 1L else 0L)
+          | _ -> None
+        in
         let before_falls = Sema_flow.falls_through c.flow in
         let branch_falls = ref [] in
         let rec ar acc = function
@@ -1703,9 +1730,12 @@ and check_stmt (c : context) = function
                 Sema_flow.restore c.flow before;
                 Sema_flow.set_falls_through c.flow before_falls;
                 let* tb = check_block c b in
-                if Sema_flow.falls_through c.flow then
-                  branch_states := Sema_flow.snapshot c.flow :: !branch_states;
-                branch_falls := Sema_flow.falls_through c.flow :: !branch_falls;
+                let state = Sema_flow.snapshot c.flow
+                and falls_through = Sema_flow.falls_through c.flow in
+                if falls_through then branch_states := state :: !branch_states;
+                branch_falls := falls_through :: !branch_falls;
+                if switch_value = Some kv then
+                  selected_case := Some (state, falls_through);
                 ar ((tk, tb) :: acc) xs)
         in
         let result = ar [] arms in
@@ -1717,9 +1747,11 @@ and check_stmt (c : context) = function
           | None -> Ok None
           | Some x ->
               let* y = check_block c x in
-              if Sema_flow.falls_through c.flow then
-                branch_states := Sema_flow.snapshot c.flow :: !branch_states;
-              branch_falls := Sema_flow.falls_through c.flow :: !branch_falls;
+              let state = Sema_flow.snapshot c.flow
+              and falls_through = Sema_flow.falls_through c.flow in
+              if falls_through then branch_states := state :: !branch_states;
+              branch_falls := falls_through :: !branch_falls;
+              selected_default := Some (state, falls_through);
               Ok (Some y)
         in
         (match d with
@@ -1727,12 +1759,23 @@ and check_stmt (c : context) = function
             branch_states := before :: !branch_states;
             branch_falls := true :: !branch_falls
         | Some _ -> ());
-        Sema_flow.restore c.flow
-          (match !branch_states with
-          | [] -> before
-          | first :: rest -> List.fold_left (merge_maps c) first rest);
-        Sema_flow.set_falls_through c.flow
-          (before_falls && List.exists (fun value -> value) !branch_falls);
+        (match switch_value with
+        | Some _ ->
+            let state, falls_through =
+              match (!selected_case, !selected_default) with
+              | Some selected, _ -> selected
+              | None, Some selected -> selected
+              | None, None -> (before, true)
+            in
+            Sema_flow.restore c.flow state;
+            Sema_flow.set_falls_through c.flow (before_falls && falls_through)
+        | None ->
+            Sema_flow.restore c.flow
+              (match !branch_states with
+              | [] -> before
+              | first :: rest -> List.fold_left (merge_maps c) first rest);
+            Sema_flow.set_falls_through c.flow
+              (before_falls && List.exists (fun value -> value) !branch_falls));
         Ok (Hir.Switch (te, ta, td, s))
   | Ast.Break s ->
       let* () = Sema_flow.record_break c.flow s in
