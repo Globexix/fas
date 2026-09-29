@@ -74,7 +74,7 @@ let collect ~source_obj ~structs ~named_types ~consts ~arrays ~global_names item
   in
   let evaluate span ty expression =
     match value span ty expression with
-    | Error [ { Diag.severity = Diag.Rewrite_global_constant; _ } ] ->
+    | Error [ { Diag.issue = Diag.Not_constant; _ } ] ->
         error (Ast.expr_span expression)
           "global initializer must be a constant expression"
     | result -> result

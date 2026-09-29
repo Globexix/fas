@@ -1,18 +1,20 @@
-type severity = Error | Warning | Rewrite_global_constant
+type severity = Error | Warning
+type issue = General | Not_constant
 
 type t = {
   severity : severity;
+  issue : issue;
   primary : Span.t;
   message : string;
   notes : string list;
   hints : string list;
 }
 
-let error ?(notes = []) ?(hints = []) primary message =
-  { severity = Error; primary; message; notes; hints }
+let error ?(issue = General) ?(notes = []) ?(hints = []) primary message =
+  { severity = Error; issue; primary; message; notes; hints }
 
 let warning ?(notes = []) ?(hints = []) primary message =
-  { severity = Warning; primary; message; notes; hints }
+  { severity = Warning; issue = General; primary; message; notes; hints }
 
 let render_one ~source diagnostic =
   let level = if diagnostic.severity = Warning then "warning" else "error" in

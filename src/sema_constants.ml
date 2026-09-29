@@ -4,8 +4,7 @@ open Sema_types
 let error span message = Error [ Diag.error span message ]
 
 let global_error span message =
-  Error
-    [ { (Diag.error span message) with Diag.severity = Diag.Rewrite_global_constant } ]
+  Error [ Diag.error ~issue:Diag.Not_constant span message ]
 
 let ( let* ) result continuation =
   match result with
