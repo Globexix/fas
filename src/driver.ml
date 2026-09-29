@@ -89,7 +89,7 @@ let add_include_chains chains diagnostics =
       { diagnostic with Diag.notes = diagnostic.notes @ notes })
     diagnostics
 
-let load_program ~limits roots =
+let load_program ~limits root =
   let loaded = Hashtbl.create 16 in
   let chains = Hashtbl.create 16 in
   let total_bytes = ref 0 in
@@ -186,29 +186,23 @@ let load_program ~limits roots =
             if Option.is_some use_span then Error (with_chain diagnostics file_chain)
             else Error diagnostics
   in
-  let roots = List.sort_uniq String.compare (List.map canonical_path roots) in
-  let rec visit_roots = function
-    | [] ->
-        let files =
-          Hashtbl.fold (fun path program acc -> (path, program) :: acc) loaded []
-          |> List.sort (fun (left, _) (right, _) -> String.compare left right)
-        in
-        let items =
-          List.concat_map
-            (fun (_, program) ->
-              List.filter (function Ast.Use _ -> false | _ -> true) program.Ast.items)
-            files
-        in
-        let chains =
-          Hashtbl.fold (fun path chain acc -> (path, chain) :: acc) chains []
-        in
-        Ok ({ Ast.items }, List.map (fun (path, chain) -> (path, chain)) chains)
-    | root :: rest -> (
-        match visit [] root None with
-        | Error diagnostics -> Error diagnostics
-        | Ok () -> visit_roots rest)
-  in
-  visit_roots roots
+  match visit [] root None with
+  | Error diagnostics -> Error diagnostics
+  | Ok () ->
+      let files =
+        Hashtbl.fold (fun path program acc -> (path, program) :: acc) loaded []
+        |> List.sort (fun (left, _) (right, _) -> String.compare left right)
+      in
+      let items =
+        List.concat_map
+          (fun (_, program) ->
+            List.filter (function Ast.Use _ -> false | _ -> true) program.Ast.items)
+          files
+      in
+      let chains =
+        Hashtbl.fold (fun path chain acc -> (path, chain) :: acc) chains []
+      in
+      Ok ({ Ast.items }, List.map (fun (path, chain) -> (path, chain)) chains)
 
 let write_file path text =
   let channel = open_out_bin path in
@@ -414,7 +408,7 @@ let apply_no_inline config ir =
       | Some _ -> Ok { ir with Ir.no_inline_function = Some name })
 
 let run_unprotected config =
-  match load_program ~limits config.Cli.inputs with
+  match load_program ~limits config.Cli.input with
   | Error diagnostics -> Error diagnostics
   | Ok (program, chains) -> (
       let* () = ast_budget (Ast.check_cumulative_asm_bytes ~limits program) in
@@ -462,14 +456,12 @@ let run_unstaged config =
         ]
 
 let same_as_input config =
-  List.exists
-    (fun input -> canonical_path input = canonical_path config.Cli.output)
-    config.Cli.inputs
+  canonical_path config.Cli.input = canonical_path config.Cli.output
 
 let run config =
   if not config.Cli.output_explicit then run_unstaged config
   else if same_as_input config then
-    Error [ Diag.error Span.synthetic "output path must differ from every input file" ]
+    Error [ Diag.error Span.synthetic "output path must differ from the input file" ]
   else
     let directory = Filename.dirname config.Cli.output in
     let staged =

@@ -2770,7 +2770,7 @@ let () =
       remove_use_test_directory use_limit_directory)
     (fun () ->
       let dependency_limit_error limits =
-        match Driver.load_program ~limits [ use_limit_root ] with
+        match Driver.load_program ~limits use_limit_root with
         | Error [ diagnostic ] -> diagnostic.Diag.message
         | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
         | Ok _ -> failwith "dependency-closure-limit: expected rejection"

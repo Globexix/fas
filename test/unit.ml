@@ -1283,12 +1283,18 @@ let () =
     | Ok Cli.Help -> failwith "expected compiler invocation"
     | Error message -> failwith message
   in
-  let cli =
-    expect_cli (Cli.parse [| "fas"; "--emit-ir"; "-o"; "out"; "one.fas"; "two.fas" |])
-  in
+  let cli = expect_cli (Cli.parse [| "fas"; "--emit-ir"; "-o"; "out"; "one.fas" |]) in
   assert (
     cli.Cli.emit = Cli.Ir && cli.output = "out" && cli.output_explicit
-    && cli.inputs = [ "one.fas"; "two.fas" ]);
+    && cli.input = "one.fas");
+  (match Cli.parse [| "fas"; "one.fas"; "two.fas" |] with
+  | Error message
+    when message
+         = "multiple input files are not supported; use \"path.fas\" for dependencies"
+    ->
+      ()
+  | Error message -> failwith ("multiple input files: unexpected message " ^ message)
+  | Ok _ -> failwith "multiple input files: expected rejection");
   let cli_obj = expect_cli (Cli.parse [| "fas"; "-c"; "path/prog.fas" |]) in
   assert (
     cli_obj.Cli.emit = Cli.Obj && cli_obj.output = "prog.o"
@@ -1916,14 +1922,16 @@ let () =
           close_out channel
         in
         let big_body = String.make 2_200_000 'x' in
-        write_budget_file asm_a_path ("asm fn first() void {" ^ big_body ^ "}\n");
+        write_budget_file asm_a_path
+          (Printf.sprintf "use \"%s\"\nasm fn first() void {%s}\n"
+             (Filename.basename asm_b_path)
+             big_body);
         write_budget_file asm_b_path ("asm fn second() void {" ^ big_body ^ "}\n");
         Sys.remove asm_out_path;
         match
           Driver.run
             (expect_cli
-               (Cli.parse
-                  [| "fas"; "--emit-asm"; "-o"; asm_out_path; asm_a_path; asm_b_path |]))
+               (Cli.parse [| "fas"; "--emit-asm"; "-o"; asm_out_path; asm_a_path |]))
         with
         | Ok _ -> assert false
         | Error [ diagnostic ] ->

@@ -1,7 +1,7 @@
 type emit = Ir | Llvm | Asm | Obj | Executable
 
 type t = {
-  inputs : string list;
+  input : string;
   output : string;
   output_explicit : bool;
   emit : emit;

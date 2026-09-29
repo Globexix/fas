@@ -1,3 +1,4 @@
+use "abi_library_impl.fas"
 extern "C" {
     fn fas_library_value() u64 { return library_inner() }
 }

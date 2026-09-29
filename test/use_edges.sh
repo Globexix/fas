@@ -27,6 +27,11 @@ use "deps/left.fas"
 use "deps/right.fas"
 fn main() i32 { return left() + right() - 46 }
 FAS
+cat >"$USE_EDGES_TMP/project/a-main-reversed.fas" <<'FAS'
+use "deps/right.fas"
+use "deps/left.fas"
+fn main() i32 { return left() + right() - 46 }
+FAS
 cat >"$USE_EDGES_TMP/project/deps/left.fas" <<'FAS'
 use "leaf.fas"
 fn left() i32 { return leaf() + 3 }
@@ -38,10 +43,6 @@ FAS
 cat >"$USE_EDGES_TMP/project/deps/leaf.fas" <<'FAS'
 fn leaf() i32 { return 19 }
 FAS
-cat >"$USE_EDGES_TMP/project/extra.fas" <<'FAS'
-fn extra() i32 { return 7 }
-FAS
-
 for level in 0 2; do
   "$OCAML_FAS" -O"$level" --emit-llvm "$USE_EDGES_TMP/project/a-main.fas" \
     >"$USE_EDGES_TMP/project-$level.ll"
@@ -55,11 +56,11 @@ for level in 0 2; do
 done
 
 "$OCAML_FAS" --emit-llvm "$USE_EDGES_TMP/project/a-main.fas" \
-  "$USE_EDGES_TMP/project/extra.fas" >"$USE_EDGES_TMP/roots-forward.ll"
-"$OCAML_FAS" --emit-llvm "$USE_EDGES_TMP/project/extra.fas" \
-  "$USE_EDGES_TMP/project/a-main.fas" >"$USE_EDGES_TMP/roots-reverse.ll"
-cmp "$USE_EDGES_TMP/roots-forward.ll" "$USE_EDGES_TMP/roots-reverse.ll" \
-  >/dev/null || fail "LLVM output changed with CLI root order"
+  >"$USE_EDGES_TMP/use-forward.ll"
+"$OCAML_FAS" --emit-llvm "$USE_EDGES_TMP/project/a-main-reversed.fas" \
+  >"$USE_EDGES_TMP/use-reverse.ll"
+cmp "$USE_EDGES_TMP/use-forward.ll" "$USE_EDGES_TMP/use-reverse.ll" \
+  >/dev/null || fail "LLVM output changed with use declaration order"
 
 cat >"$USE_EDGES_TMP/canonical/root.fas" <<'FAS'
 use "real.fas"

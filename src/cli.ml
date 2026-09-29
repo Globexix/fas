@@ -1,7 +1,7 @@
 type emit = Ir | Llvm | Asm | Obj | Executable
 
 type t = {
-  inputs : string list;
+  input : string;
   output : string;
   output_explicit : bool;
   emit : emit;
@@ -14,7 +14,7 @@ type t = {
 type command = Run of t | Help
 
 let usage =
-  "usage: fas [options] file.fas ...\n\
+  "usage: fas [options] file.fas\n\
   \  -o PATH       output path (default a.out, INPUT.o with -c, INPUT.s with -S)\n\
   \  --emit-ir     print the compiler's custom IR dump\n\
   \  --emit-llvm   print unoptimized LLVM IR after verification\n\
@@ -29,32 +29,30 @@ let usage =
   \  FAS_OPT_PASSES overrides opt's pipeline (default: default<Olevel>)\n\
   \  --help        show this help"
 
-let default_output emit inputs =
+let default_output emit input =
   let source_output extension =
-    match inputs with
-    | input :: _ -> Filename.remove_extension (Filename.basename input) ^ extension
-    | [] -> "a.out" ^ extension
+    Filename.remove_extension (Filename.basename input) ^ extension
   in
   match emit with Asm -> source_output ".s" | Obj -> source_output ".o" | _ -> "a.out"
 
 let parse argv =
   let n = Array.length argv in
-  let rec loop i inputs output emit keep optimization optimization_explicit debug
+  let rec loop i input output emit keep optimization optimization_explicit debug
       no_inline_function =
     if i >= n then
-      if inputs = [] then Error "no input files"
+      if Option.is_none input then Error "no input files"
       else if Option.is_some no_inline_function && not debug then
         Error "-no-inline requires -debug"
       else
-        let inputs = List.rev inputs in
+        let input = Option.get input in
         let output_explicit = Option.is_some output in
         let output =
-          match output with Some path -> path | None -> default_output emit inputs
+          match output with Some path -> path | None -> default_output emit input
         in
         Ok
           (Run
              {
-               inputs;
+               input;
                output;
                output_explicit;
                emit;
@@ -70,26 +68,26 @@ let parse argv =
           if i + 1 >= n then Error "-o requires an output path"
           else if argv.(i + 1) = "-" then Error "-o - is not supported"
           else
-            loop (i + 2) inputs
+            loop (i + 2) input
               (Some argv.(i + 1))
               emit keep optimization optimization_explicit debug no_inline_function
       | "--emit-ir" ->
-          loop (i + 1) inputs output Ir keep optimization optimization_explicit debug
+          loop (i + 1) input output Ir keep optimization optimization_explicit debug
             no_inline_function
       | "--emit-llvm" ->
-          loop (i + 1) inputs output Llvm keep optimization optimization_explicit debug
+          loop (i + 1) input output Llvm keep optimization optimization_explicit debug
             no_inline_function
       | "--emit-asm" | "-S" ->
-          loop (i + 1) inputs output Asm keep optimization optimization_explicit debug
+          loop (i + 1) input output Asm keep optimization optimization_explicit debug
             no_inline_function
       | "--emit-obj" | "-c" ->
-          loop (i + 1) inputs output Obj keep optimization optimization_explicit debug
+          loop (i + 1) input output Obj keep optimization optimization_explicit debug
             no_inline_function
       | "--keep" ->
-          loop (i + 1) inputs output emit true optimization optimization_explicit debug
+          loop (i + 1) input output emit true optimization optimization_explicit debug
             no_inline_function
       | "-debug" ->
-          loop (i + 1) inputs output emit keep
+          loop (i + 1) input output emit keep
             (if optimization_explicit then optimization else 0)
             optimization_explicit true no_inline_function
       | "-no-inline" ->
@@ -101,7 +99,7 @@ let parse argv =
             else if Option.is_some no_inline_function then
               Error "duplicate -no-inline option"
             else
-              loop (i + 2) inputs output emit keep optimization optimization_explicit
+              loop (i + 2) input output emit keep optimization optimization_explicit
                 debug (Some name)
       | flag
         when String.length flag = 3
@@ -109,13 +107,19 @@ let parse argv =
              && flag.[1] = 'O'
              && flag.[2] >= '0'
              && flag.[2] <= '3' ->
-          loop (i + 1) inputs output emit keep
+          loop (i + 1) input output emit keep
             (Char.code flag.[2] - Char.code '0')
             true debug no_inline_function
       | flag when String.length flag > 0 && flag.[0] = '-' ->
           Error ("unknown option: " ^ flag)
-      | file ->
-          loop (i + 1) (file :: inputs) output emit keep optimization
-            optimization_explicit debug no_inline_function
+      | file -> (
+          match input with
+          | None ->
+              loop (i + 1) (Some file) output emit keep optimization
+                optimization_explicit debug no_inline_function
+          | Some _ ->
+              Error
+                "multiple input files are not supported; use \"path.fas\" for \
+                 dependencies")
   in
-  loop 1 [] None Executable false 2 false false None
+  loop 1 None None Executable false 2 false false None
