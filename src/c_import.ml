@@ -831,6 +831,9 @@ let map_declarations ~span declarations =
                 (declaration_spelling node name)
                 "typedef" None (origin node) (quals node) (Some reason) ()
           | None -> ())
+      | Some "FunctionDecl", _
+        when get "isImplicit" node = Some (C_import_json.Bool true) ->
+          ()
       | Some "FunctionDecl", _ ->
           let origin = origin node in
           let is_static = string "storageClass" node = Some "static" in

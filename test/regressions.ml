@@ -8292,6 +8292,23 @@ let () =
 
   let c_matrix = c_import_fixture "matrix.h" in
   let c_matrix_source, c_matrix_imported = c_matrix in
+  let stdio_declarations, _, _ =
+    expect_ok
+      (C_import.import ~cc:"clang-22" ~debug:false ~keep:false c_matrix_source
+         [ C_import.{ spelling = Ast.C_system "stdio.h"; span = Span.synthetic } ])
+  in
+  let stdio_import =
+    C_import.map_declarations ~span:Span.synthetic stdio_declarations
+  in
+  incr checks_run;
+  if
+    List.length
+      (List.filter
+         (function Ast.Func function_ -> function_.name = "printf" | _ -> false)
+         stdio_import.items)
+    <> 1
+    || List.mem_assoc "printf" stdio_import.unsupported
+  then failwith "implicit C builtin declaration conflicted with stdio.h printf";
   let restrict_manifest =
     C_import.manifest_text c_matrix_imported
     |> String.split_on_char '\n'
