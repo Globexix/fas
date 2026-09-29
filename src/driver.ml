@@ -468,6 +468,19 @@ let run_unprotected config =
         C_import.merge_imports (List.rev !imported)
         |> C_import.reconcile_source program.items
       in
+      let* () =
+        if config.Cli.keep && c_imports <> [] then (
+          let base = Filename.basename config.Cli.input in
+          let name =
+            try Filename.chop_extension base with Invalid_argument _ -> base
+          in
+          let path =
+            Filename.concat (Filename.get_temp_dir_name ()) (name ^ ".bindings.txt")
+          in
+          write_file path (C_import.manifest_text imported);
+          prerr_endline ("fas: kept C bindings: " ^ path));
+        Ok ()
+      in
       let program = { Ast.items = program.items @ imported.items } in
       let* () = ast_budget (Ast.check_cumulative_asm_bytes ~limits program) in
       let* () = ast_budget (Ast.check_expanded_nodes ~limits program) in

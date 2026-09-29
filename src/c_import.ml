@@ -813,3 +813,46 @@ let reconcile_source source_items imported =
               (fun item -> not (List.mem (item_name item) !confirmed))
               imported.items;
         }
+
+let manifest_text imported =
+  let rows = Hashtbl.create 256 in
+  List.sort compare imported.manifest
+  |> List.iter (fun line ->
+      match String.index_opt line '\t' with
+      | None -> ()
+      | Some stop ->
+          let name = String.sub line 0 stop in
+          if not (Hashtbl.mem rows name) then Hashtbl.add rows name line);
+  let lines =
+    Hashtbl.fold
+      (fun name line acc ->
+        match String.split_on_char '\t' line with
+        | _ :: signature :: qualifiers :: location :: _ ->
+            let location =
+              match find_text location " unsupported=" 0 with
+              | Some stop -> String.sub location 0 stop
+              | None -> location
+            in
+            let reason =
+              Option.fold ~none:""
+                ~some:(fun value -> " unsupported=" ^ value)
+                (List.assoc_opt name imported.unsupported)
+            in
+            Printf.sprintf "%s\t%s\t%s\t%s%s" name signature qualifiers location reason
+            :: acc
+        | _ -> acc)
+      rows []
+  in
+  let lines =
+    lines
+    @ List.filter_map
+        (fun (name, reason) ->
+          if Hashtbl.mem rows name then None
+          else
+            Some
+              (Printf.sprintf "%s\tunsupported\t\t<unknown>:0 unsupported=%s" name
+                 reason))
+        imported.unsupported
+    |> List.sort compare
+  in
+  if lines = [] then "" else String.concat "\n" lines ^ "\n"

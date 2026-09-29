@@ -204,6 +204,31 @@ grep -F '#include <stddef.h>' "$c_import_unit" >/dev/null \
   || fail "generated C import unit omitted the angle header"
 grep -F "#include \"$USE_EDGES_TMP/paths/library.h\"" "$c_import_unit" >/dev/null \
   || fail "quoted header was not resolved relative to its Fas file"
+cp "$ROOT/test/c_import/matrix.h" "$USE_EDGES_TMP/paths/matrix.h"
+cat >"$USE_EDGES_TMP/paths/manifest.fas" <<'FAS'
+use "C" "matrix.h"
+fn main() i32 { return 0 }
+FAS
+TMPDIR="$USE_EDGES_TMP" "$OCAML_FAS" --keep --emit-ir \
+  "$USE_EDGES_TMP/paths/manifest.fas" >"$USE_EDGES_TMP/manifest-first.ir" \
+  2>"$USE_EDGES_TMP/manifest-first.log"
+bindings=$(sed -n 's/^fas: kept C bindings: //p' "$USE_EDGES_TMP/manifest-first.log")
+[ -s "$bindings" ] || fail "--keep did not write a C bindings manifest"
+cp "$bindings" "$USE_EDGES_TMP/manifest-first.txt"
+grep -F 'fas_record_pointer' "$bindings" | grep -F 'handle[FasRecord]' >/dev/null \
+  || fail "bindings manifest omitted the record handle identity"
+grep -F 'fas_scalar_pointer' "$bindings" | grep -F 'const' >/dev/null \
+  || fail "bindings manifest omitted the const qualifier obligation"
+grep -F "$USE_EDGES_TMP/paths/matrix.h:" "$bindings" >/dev/null \
+  || fail "bindings manifest omitted the declaration origin"
+grep -F 'fas_float_value' "$bindings" | grep -F 'floating-point types are not supported' \
+  >/dev/null || fail "bindings manifest omitted the unsupported reason"
+TMPDIR="$USE_EDGES_TMP" "$OCAML_FAS" --keep --emit-ir \
+  "$USE_EDGES_TMP/paths/manifest.fas" >"$USE_EDGES_TMP/manifest-second.ir" \
+  2>"$USE_EDGES_TMP/manifest-second.log"
+bindings_again=$(sed -n 's/^fas: kept C bindings: //p' "$USE_EDGES_TMP/manifest-second.log")
+cmp -s "$USE_EDGES_TMP/manifest-first.txt" "$bindings_again" \
+  || fail "bindings manifest changed between identical runs"
 cat >"$USE_EDGES_TMP/paths/missing-import.fas" <<'FAS'
 use "C" "absent.h"
 FAS
