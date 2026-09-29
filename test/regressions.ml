@@ -2394,15 +2394,15 @@ let () =
   let byte_literal_semantics =
     llvm_of
       "const ByteCount usize = len(\"a\\0b\") + len(\"\\n\") + len(\"é\")\n\
-       const CByteCount usize = len(c\"a\\0b\")\n\
+       const CByteCount usize = len(c\"fas\")\n\
        fn bytes() addr { return \"a\\0b\" }\n\
-       fn cbytes() addr { return c\"a\\0b\" }\n\
+       fn cbytes() addr { return c\"fas\" }\n\
        fn main() usize { return ByteCount }\n"
   in
   if not (contains byte_literal_semantics "[3 x i8] c\"a\\00b\"") then
     failwith "fas-030-string-literals: ordinary embedded NUL was not preserved";
   if
-    (not (contains byte_literal_semantics "[4 x i8] c\"a\\00b\\00\""))
+    (not (contains byte_literal_semantics "[4 x i8] c\"fas\\00\""))
     || not (contains byte_literal_semantics "ret i64 6\n")
   then failwith "fas-030-string-literals: literal length did not count decoded bytes";
   let hexadecimal_byte_literals =
@@ -2420,6 +2420,24 @@ let () =
   semantic_error "fas-030-string-literal-fixed-array"
     "type mismatch: expected arr[3, u8], got addr"
     "fn main() i32 { bytes arr[3,u8] = \"abc\"\n return 0 }\n";
+  semantic_error "fas-030-c-string-literal-nul"
+    "C string literal cannot contain embedded NUL"
+    "fn main() i32 { c\"a\\0b\"[0]\n return 0 }\n";
+  semantic_error "fas-030-const-c-string-literal-nul"
+    "C string literal cannot contain embedded NUL"
+    "const N usize = len(c\"a\\0b\")\nfn main() usize { return N }\n";
+  semantic_error "fas-030-runtime-len-c-string-literal-nul"
+    "C string literal cannot contain embedded NUL"
+    "fn main() usize { return len(c\"a\\0b\") }\n";
+  semantic_error "fas-030-c-string-literal-hex-nul"
+    "C string literal cannot contain embedded NUL"
+    "fn main() i32 { c\"a\\x00b\"[0]\n return 0 }\n";
+  semantic_error "fas-030-const-c-string-literal-hex-nul"
+    "C string literal cannot contain embedded NUL"
+    "const N usize = len(c\"a\\x00b\")\nfn main() usize { return N }\n";
+  semantic_error "fas-030-runtime-len-c-string-literal-hex-nul"
+    "C string literal cannot contain embedded NUL"
+    "fn main() usize { return len(c\"a\\x00b\") }\n";
   let raw_literal_length =
     llvm_of "fn main() i64 { return bitcast[i64](len(\"abc\")) }\n"
   in
@@ -2431,10 +2449,10 @@ let () =
   if not (contains c_literal_length "ret i64 3\n") then
     failwith "fas-031-len: C literal payload length is incorrect";
   let c_literal_embedded_payload_length =
-    llvm_of "fn main() i64 { return bitcast[i64](len(c\"a\\0b\")) }\n"
+    llvm_of "fn main() i64 { return bitcast[i64](len(c\"abc\")) }\n"
   in
   if not (contains c_literal_embedded_payload_length "ret i64 3\n") then
-    failwith "fas-031-len: ordinary byte payload length included a terminator";
+    failwith "fas-031-len: C literal payload length included a terminator";
   let literal_const_specialization =
     llvm_of
       "fn literal_size[N const usize]() usize { return N }\n\

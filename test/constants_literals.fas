@@ -20,15 +20,11 @@ extern "C" {
   }
 
   fn fas_hex_c_bytes() addr {
-    return c"\x41\x00\x42"
-  }
-
-  fn fas_zero_c_bytes() addr {
-    return c"A\0B"
+    return c"\x41\x42"
   }
 
   fn fas_hex_c_length() usize {
-    return len(c"\x41\x00\x42")
+    return len(c"\x41\x42")
   }
 
   fn fas_hex_case_bytes() addr {

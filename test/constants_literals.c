@@ -8,7 +8,6 @@ extern uint64_t fas_c_payload_length(void);
 extern const unsigned char *fas_hex_ordinary_bytes(void);
 extern uint64_t fas_hex_ordinary_length(void);
 extern const unsigned char *fas_hex_c_bytes(void);
-extern const unsigned char *fas_zero_c_bytes(void);
 extern uint64_t fas_hex_c_length(void);
 extern const unsigned char *fas_hex_case_bytes(void);
 extern const unsigned char *fas_hex_fixed_width_bytes(void);
@@ -20,7 +19,7 @@ int main(void)
     static const unsigned char utf8[] = "\xc3\xa9";
     static const unsigned char c_payload[] = "fas";
     static const unsigned char hex_ordinary[] = {'A', 0, 'B'};
-    static const unsigned char hex_c[] = {'A', 0, 'B', 0};
+    static const unsigned char hex_c[] = {'A', 'B', 0};
     static const unsigned char hex_case[] = {0x4a, 0xab};
     static const unsigned char hex_fixed_width[] = {'A', '4'};
     uint64_t ordinary_expected = sizeof(ordinary) - 1u;
@@ -44,9 +43,9 @@ int main(void)
         fputs("constants and literals: hexadecimal byte string mismatch\n", stderr);
         return 1;
     }
-    if (fas_hex_c_length() != 3u ||
+    if (fas_hex_c_length() != 2u ||
         memcmp(fas_hex_c_bytes(), hex_c, sizeof(hex_c)) != 0 ||
-        memcmp(fas_zero_c_bytes(), hex_c, sizeof(hex_c)) != 0) {
+        fas_hex_c_bytes()[sizeof(hex_c) - 1u] != 0) {
         fputs("constants and literals: hexadecimal C string mismatch\n", stderr);
         return 1;
     }
