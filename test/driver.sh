@@ -149,6 +149,17 @@ grep -F -- "-passes=default<O1>" "$TOOL_LOG" >/dev/null || fail "FAS_OPT_PASSES 
 find "$TMPDIR" -mindepth 1 -delete
 temps_empty
 
+(
+  unset LLVM_OPT LLVM_LLC CC FAS_OPT FAS_LLC FAS_CC
+  FAS_OPT="$WORK/opt-wrap" FAS_LLC="$WORK/llc-wrap" FAS_CC="$WORK/cc-wrap" \
+    "$OCAML_FAS" --keep "$WORK/good.fas" -o "$WORK/legacy-tools"
+) >"$WORK/stdout" 2>"$WORK/stderr"
+grep -F "LLVM_OPT=$WORK/opt-wrap" "$WORK/stderr" >/dev/null || fail "FAS_OPT fallback was ignored"
+grep -F "LLVM_LLC=$WORK/llc-wrap" "$WORK/stderr" >/dev/null || fail "FAS_LLC fallback was ignored"
+grep -F "CC=$WORK/cc-wrap" "$WORK/stderr" >/dev/null || fail "FAS_CC fallback was ignored"
+find "$TMPDIR" -mindepth 1 -delete
+temps_empty
+
 "$OCAML_FAS" --emit-llvm -debug -no-inline helper "$WORK/good.fas" >"$WORK/noinline.ll" 2>"$WORK/stderr"
 grep -F "@helper() noinline {" "$WORK/noinline.ll" >/dev/null || fail "-no-inline missed selected function"
 if grep -F "@main() noinline {" "$WORK/noinline.ll" >/dev/null; then fail "-no-inline marked main"; fi
