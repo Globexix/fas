@@ -24,6 +24,12 @@ FAS
 cat >"$WORK/bad.fas" <<'FAS'
 fn main() i32 { return missing }
 FAS
+cat >"$WORK/part-a.fas" <<'FAS'
+fn helper() i32 { return 7 }
+FAS
+cat >"$WORK/part-b.fas" <<'FAS'
+fn main() i32 { return helper() - 7 }
+FAS
 cat >"$WORK/opt-wrap" <<'SH'
 #!/bin/sh
 printf 'opt %s\n' "$*" >> "$TOOL_LOG"
@@ -82,6 +88,10 @@ for level in 0 1 2 3; do
   [ ! -s "$WORK/stderr" ] || fail "executable wrote stderr at -O$level"
   "$WORK/opt-$level" || fail "executable failed at -O$level"
 done
+"$OCAML_FAS" "$WORK/part-a.fas" "$WORK/part-b.fas" -o "$WORK/multi-input" >"$WORK/stdout" 2>"$WORK/stderr"
+"$WORK/multi-input" || fail "multiple input files did not share a declaration scope"
+"$OCAML_FAS" "$WORK/part-b.fas" "$WORK/part-a.fas" -o "$WORK/multi-input-reversed" >"$WORK/stdout" 2>"$WORK/stderr"
+"$WORK/multi-input-reversed" || fail "multiple input declaration order changed resolution"
 for level in 0 1 2 3; do
   grep -F -- "default<O$level>" "$TOOL_LOG" >/dev/null || fail "-O$level opt pipeline missing"
   grep -F -- "llc -O$level" "$TOOL_LOG" >/dev/null || fail "-O$level llc level missing"
