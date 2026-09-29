@@ -1,0 +1,110 @@
+extern "C" {
+  fn fas_filter_scalar(input addr, output addr, n usize, threshold u32) usize {
+    i usize = 0
+    written usize = 0
+    while i < n {
+      value u32 = input[u32, i]
+      if value > threshold {
+        output[u32, written] = value
+        written += 1
+      }
+      i += 1
+    }
+    return written
+  }
+
+  fn fas_filter_simd(input addr, output addr, n usize, threshold u32) usize {
+    i usize = 0
+    written usize = 0
+    while n - i >= 8 {
+      values vec[8,u32] = (input + i * 4)[vec[8,u32]]
+      keep vec[8,bool] = values > splat(threshold)
+      packed vec[8,u32] = compress(values, keep)
+      count usize = zext[usize](popcount(bitcast[u8](keep)))
+      prefix vec[8,bool] = {count > 0, count > 1, count > 2, count > 3, count > 4, count > 5, count > 6, count > 7}
+      masked_store[u32](output + written * 4, prefix, packed)
+      written += count
+      i += 8
+    }
+    if n - i > 0 {
+      active vec[8,bool] = {n - i > 0, n - i > 1, n - i > 2, n - i > 3, n - i > 4, n - i > 5, n - i > 6, n - i > 7}
+      values vec[8,u32] = masked_load[u32](input + i * 4, active, splat(0))
+      keep vec[8,bool] = (values > splat(threshold)) & active
+      packed vec[8,u32] = compress(values, keep)
+      count usize = zext[usize](popcount(bitcast[u8](keep)))
+      prefix vec[8,bool] = {count > 0, count > 1, count > 2, count > 3, count > 4, count > 5, count > 6, count > 7}
+      masked_store[u32](output + written * 4, prefix, packed)
+      written += count
+    }
+    return written
+  }
+
+  fn fas_records_transform(records addr, n usize) void {
+    i usize = 0
+    while n - i >= 4 {
+      offsets vec[4,usize] = {i * 12 + 8, (i + 1) * 12 + 8, (i + 2) * 12 + 8, (i + 3) * 12 + 8}
+      active vec[4,bool] = splat(true)
+      values vec[4,u32] = gather_bytes[u32](records, offsets, active, splat(0))
+      changed vec[4,u32] = (values ^ splat(0xa5a55a5a)) * splat(3) + splat(7)
+      scatter_bytes[u32](records, offsets, active, changed)
+      i += 4
+    }
+    if n - i > 0 {
+      active vec[4,bool] = {n - i > 0, n - i > 1, n - i > 2, n - i > 3}
+      offsets vec[4,usize] = {i * 12 + 8, (i + 1) * 12 + 8, (i + 2) * 12 + 8, (i + 3) * 12 + 8}
+      values vec[4,u32] = gather_bytes[u32](records, offsets, active, splat(0))
+      changed vec[4,u32] = (values ^ splat(0xa5a55a5a)) * splat(3) + splat(7)
+      scatter_bytes[u32](records, offsets, active, changed)
+    }
+    return
+  }
+
+  fn fas_scale_pixels(input addr, output addr, n usize, factor u8) void {
+    factors vec[16,u8] = splat(factor)
+    bias vec[16,u8] = splat(37)
+    floor vec[16,u8] = splat(19)
+    i usize = 0
+    while n - i >= 16 {
+      values vec[16,u8] = (input + i)[vec[16,u8]]
+      scaled vec[16,u8] = mul_hi(values, factors)
+      raised vec[16,u8] = add_sat(scaled, bias)
+      result vec[16,u8] = sub_sat(raised, floor)
+      (output + i)[vec[16,u8]] = result
+      i += 16
+    }
+    if n - i > 0 {
+      active vec[16,bool] = {n - i > 0, n - i > 1, n - i > 2, n - i > 3, n - i > 4, n - i > 5, n - i > 6, n - i > 7, n - i > 8, n - i > 9, n - i > 10, n - i > 11, n - i > 12, n - i > 13, n - i > 14, n - i > 15}
+      values vec[16,u8] = masked_load[u8](input + i, active, splat(0))
+      scaled vec[16,u8] = mul_hi(values, factors)
+      raised vec[16,u8] = add_sat(scaled, bias)
+      result vec[16,u8] = sub_sat(raised, floor)
+      masked_store[u8](output + i, active, result)
+    }
+    return
+  }
+
+  fn fas_mask_reduce(input addr, n usize, target u16) u64 {
+    ones vec[8,u16] = splat(1)
+    zeros vec[8,u16] = splat(0)
+    i usize = 0
+    count u64 = 0
+    bits u16 = 0
+    while n - i >= 8 {
+      values vec[8,u16] = (input + i * 2)[vec[8,u16]]
+      matches vec[8,bool] = values == splat(target)
+      selected vec[8,u16] = select(matches, values, zeros)
+      count += zext[u64](reduce_sum(select(matches, ones, zeros)))
+      bits ^= reduce_xor(selected)
+      i += 8
+    }
+    if n - i > 0 {
+      active vec[8,bool] = {n - i > 0, n - i > 1, n - i > 2, n - i > 3, n - i > 4, n - i > 5, n - i > 6, n - i > 7}
+      values vec[8,u16] = masked_load[u16](input + i * 2, active, splat(0))
+      matches vec[8,bool] = (values == splat(target)) & active
+      selected vec[8,u16] = select(matches, values, zeros)
+      count += zext[u64](reduce_sum(select(matches, ones, zeros)))
+      bits ^= reduce_xor(selected)
+    }
+    return (count << 32) | zext[u64](bits)
+  }
+}
