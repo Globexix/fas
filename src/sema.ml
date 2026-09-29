@@ -59,12 +59,40 @@ let extern_c_value_type = function
   | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ -> true
   | Hir.Void | Hir.Array _ | Hir.Vec _ | Hir.Struct _ | Hir.Opaque _ -> false
 
+let aggregate_value_type = function Hir.Array _ | Hir.Struct _ -> true | _ -> false
+
+let aggregate_parameter_error span name =
+  error span
+    (Printf.sprintf
+       "aggregate parameter `%s` cannot be passed by value; pass `&x` as `addr` or \
+        `handle[T]`"
+       name)
+
+let aggregate_result_error span =
+  error span
+    "aggregate result cannot be returned by value; pass destination storage as `addr` \
+     or `handle[T]`"
+
+let validate_native_aggregate_signature span params converted ret =
+  let rec validate_params params converted =
+    match (params, converted) with
+    | [], [] -> Ok ()
+    | (param : Ast.param) :: param_rest, (_, ty) :: converted_rest ->
+        if aggregate_value_type ty then aggregate_parameter_error param.span param.name
+        else validate_params param_rest converted_rest
+    | _ -> error span "internal error: parameter list mismatch"
+  in
+  let* () = validate_params params converted in
+  if aggregate_value_type ret then aggregate_result_error span else Ok ()
+
 let validate_extern_c_signature span params converted ret =
   let rec validate_params params converted =
     match (params, converted) with
     | [], [] -> Ok ()
     | (param : Ast.param) :: param_rest, (_, ty) :: converted_rest ->
         if extern_c_value_type ty then validate_params param_rest converted_rest
+        else if aggregate_value_type ty then
+          aggregate_parameter_error param.span param.name
         else
           error param.span
             (Printf.sprintf
@@ -74,6 +102,7 @@ let validate_extern_c_signature span params converted ret =
   in
   let* () = validate_params params converted in
   if ret = Hir.Void || extern_c_value_type ret then Ok ()
+  else if aggregate_value_type ret then aggregate_result_error span
   else
     error span
       (Printf.sprintf "extern \"C\" cannot return `%s` by value; use an output pointer"
@@ -346,7 +375,7 @@ let check ?(limits = Limits.default) program =
                 let* () =
                   if linkage = Ast.External_c then
                     validate_extern_c_signature span params ps rt
-                  else Ok ()
+                  else validate_native_aggregate_signature span params ps rt
                 in
                 sigs := (name, { params = ps; ret = rt; variadic }) :: !sigs;
                 Ok ()
@@ -491,6 +520,7 @@ let check ?(limits = Limits.default) program =
               staged_args = _;
             } ->
             let result =
+              let source_params = params in
               let* ret = source_ty_with_values named_types values span ret in
               let* ret = if ret = Hir.Void then Ok ret else validate_object span ret in
               let* params =
@@ -503,6 +533,9 @@ let check ?(limits = Limits.default) program =
                     let* ty = validate_object parameter.span ty in
                     Ok (parameter.name, ty))
                   params
+              in
+              let* () =
+                validate_native_aggregate_signature span source_params params ret
               in
               check_function_body ~name:sp.name
                 ~diagnostic_name:

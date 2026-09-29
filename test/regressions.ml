@@ -324,12 +324,13 @@ let () =
   let target_width_integers =
     llvm_of
       "struct Pair { left u8 right u64 }\n\
+       const Values arr[3,u8] = {1, 2, 3}\n\
        fn to_u64(value usize) u64 { return bitcast[u64](value) }\n\
        fn to_i64(value isize) i64 { return bitcast[i64](value) }\n\
        fn unsigned_div(left usize, right usize) usize { return left / right }\n\
        fn signed_div(left isize, right isize) isize { return left / right }\n\
-       fn sizes(values arr[3,u8]) usize {\n\
-      \ return sizeof[Pair] + alignof[Pair] + offsetof[Pair,right] + len(values)\n\
+       fn sizes() usize {\n\
+      \ return sizeof[Pair] + alignof[Pair] + offsetof[Pair,right] + len(Values)\n\
        }\n"
   in
   List.iter
@@ -368,12 +369,12 @@ let () =
     "type mismatch: expected vec[4, u32], got vec[4, i32]"
     "fn f(value vec[4,i32]) vec[4,u32] { return value }\n";
   semantic_error "integer-vector-bitcast-array"
-    "illegal cast for source and destination widths"
-    "fn f(value arr[2,u32]) vec[2,u32] { return bitcast[vec[2,u32]](value) }\n";
+    "raw selection cannot load an aggregate value"
+    "fn f(value addr) vec[2,u32] { return bitcast[vec[2,u32]](value[arr[2,u32]]) }\n";
   semantic_error "integer-vector-bitcast-struct"
-    "illegal cast for source and destination widths"
+    "raw selection cannot load an aggregate value"
     "struct Pair { left u32 right u32 }\n\
-    \ fn f(value Pair) vec[2,u32] { return bitcast[vec[2,u32]](value) }\n";
+    \ fn f(value addr) vec[2,u32] { return bitcast[vec[2,u32]](value[Pair]) }\n";
   semantic_error "integer-vector-bitcast-pointer"
     "illegal cast for source and destination widths"
     "fn f(value addr) vec[1,u64] { return bitcast[vec[1,u64]](value) }\n";
@@ -634,7 +635,7 @@ let () =
   semantic_error "shift-no-splat-lift" "type mismatch: expected vec[4, u32], got i32"
     "fn f(n u32) vec[4,u32] { return 1 << n }\n";
   semantic_error "len-returns-usize" "type mismatch: expected u64, got usize"
-    "fn size(values arr[3,u8]) u64 { return len(values) }\n";
+    "const Values arr[3,u8] = {1, 2, 3}\nfn size() u64 { return len(Values) }\n";
   semantic_error "sizeof-returns-usize" "type mismatch: expected u64, got usize"
     "fn size() u64 { return sizeof[u8] }\n";
   ignore
@@ -918,7 +919,8 @@ let () =
     "struct S { x i64 y i64 }\n\
      fn f() i64 { s S\n\
     \ true || (&s != addr_from_bits(0))\n\
-    \ t S = s\n\
+    \ t S\n\
+    \ copy(t, s)\n\
     \ return 0 }\n";
   ignore
     (lower_of
@@ -927,36 +929,44 @@ let () =
         fn f() i64 { s S\n\
        \ take(&s)\n\
        \ true || false\n\
-       \ t S = s\n\
+       \ t S\n\
+       \ copy(t, s)\n\
        \ return 0 }\n");
   ignore
     (lower_of
        "struct S { x i64 y i64 }\n\
         fn f(p bool) i64 { s S\n\
        \ q addr = p ? &s : addr_from_bits(0)\n\
-        t S = s\n\
+        t S\n\
+        copy(t, s)\n\
        \ return 0 }\n");
   semantic_error "place-init-ternary-cross-arm" "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\n\
-     fn choose(p addr, x S) S { return x }\n\
+     fn choose(x i64) i64 { return x }\n\
      fn f(p bool) i64 { s S\n\
-    \ t S = p ? choose(&s, s) : s\n\
-    \ return 0 }\n";
+    \ t i64 = p ? choose(s.x) : s.x\n\
+    \ return t }\n";
   semantic_error "place-init-binding-identity" "use of uninitialized local `x`"
     "fn main() i64 { { x i64 = 1 }\n { x i64\n y i64 = x\n }\n return 0 }\n";
   semantic_error "aggregate-whole-read" "use of uninitialized local `s`"
-    "struct S { x i64 y i64 }\nfn f() i64 { s S\n t S = s\n return 0 }\n";
+    "struct S { x i64 y i64 }\nfn f() i64 { s S\n t S\n copy(t, s)\n return 0 }\n";
   semantic_error "aggregate-partial-field" "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\nfn f() i64 { s S\n s.x = 1\n return s.y }\n";
   semantic_error "aggregate-partial-whole" "use of uninitialized local `s`"
-    "struct S { x i64 y i64 }\nfn f() i64 { s S\n s.x = 1\n t S = s\n return 0 }\n";
+    "struct S { x i64 y i64 }\n\
+     fn f() i64 { s S\n\
+    \ s.x = 1\n\
+    \ t S\n\
+    \ copy(t, s)\n\
+    \ return 0 }\n";
   ignore
     (lower_of
        "struct S { x i64 y i64 }\n\
         fn f() i64 { s S\n\
        \ s.x = 1\n\
        \ s.y = 2\n\
-       \ t S = s\n\
+       \ t S\n\
+       \ copy(t, s)\n\
        \ return s.x }\n");
   semantic_error "aggregate-nested-field" "use of uninitialized local `o`"
     "struct I { x i64 y i64 }\n\
@@ -965,14 +975,15 @@ let () =
     \ o.i.x = 1\n\
     \ return o.i.y }\n";
   semantic_error "aggregate-array-whole" "use of uninitialized local `a`"
-    "fn f() i64 { a arr[2,i64]\n a[0] = 1\n t arr[2,i64] = a\n return 0 }\n";
+    "fn f() i64 { a arr[2,i64]\n a[0] = 1\n t arr[2,i64]\n copy(t, a)\n return 0 }\n";
   ignore
     (lower_of
        "fn f() i64 { a arr[2,i64]\n\
        \ a[0] = 1\n\
        \ x i64 = a[0]\n\
        \ a[1] = 2\n\
-       \ t arr[2,i64] = a\n\
+       \ t arr[2,i64]\n\
+       \ copy(t, a)\n\
        \ return x }\n");
   let array_field_copy =
     llvm_of
@@ -980,45 +991,90 @@ let () =
        fn f() i64 { s S\n\
       \ s.a[0] = 1\n\
       \ s.a[1] = 2\n\
-      \ t arr[2,i64] = s.a\n\
+      \ t arr[2,i64]\n\
+      \ copy(t, s.a)\n\
       \ return t[0] }\n"
   in
-  if not (contains array_field_copy "load [2 x i64], ptr") then
-    failwith "aggregate-array-field-copy: array field was not loaded as a value";
+  if contains array_field_copy "load [2 x i64], ptr" then
+    failwith "aggregate-array-field-copy: aggregate was loaded as a value";
   let nested_array_copy =
     llvm_of
       "fn f() i64 { a arr[2,arr[2,i64]]\n\
       \ a[0][0] = 1\n\
       \ a[0][1] = 2\n\
-      \ t arr[2,i64] = a[0]\n\
+      \ t arr[2,i64]\n\
+      \ copy(t, a[0])\n\
       \ return t[0] }\n"
   in
-  if not (contains nested_array_copy "load [2 x i64], ptr") then
-    failwith "aggregate-nested-array-copy: nested array was not loaded as a value";
+  if contains nested_array_copy "load [2 x i64], ptr" then
+    failwith "aggregate-nested-array-copy: aggregate was loaded as a value";
   semantic_error "aggregate-whole-array-uninitialized" "use of uninitialized local `a`"
     "fn f() i64 { a arr[2,i64]\n return a[0] }\n";
-  ignore (lower_of "struct E { }\nfn f() i64 { e E\n t E = e\n return 0 }\n");
-  ignore (lower_of "fn f() i64 { a arr[0,i64]\n t arr[0,i64] = a\n return 0 }\n");
+  ignore (lower_of "struct E { }\nfn f() i64 { e E\n t E\n copy(t, e)\n return 0 }\n");
+  ignore
+    (lower_of "fn f() i64 { a arr[0,i64]\n t arr[0,i64]\n copy(t, a)\n return 0 }\n");
   ignore
     (lower_of
        "struct E { }\n\
         struct S { e E x i64 }\n\
         fn f() i64 { s S\n\
        \ s.x = 1\n\
-       \ t E = s.e\n\
+       \ t E\n\
+       \ copy(t, s.e)\n\
        \ return s.x }\n");
   ignore
     (lower_of
-       "struct E { }\nstruct S { e E }\nfn f() i64 { s S\n t S = s\n return 0 }\n");
+       "struct E { }\n\
+        struct S { e E }\n\
+        fn f() i64 { s S\n\
+       \ t S\n\
+       \ copy(t, s)\n\
+       \ return 0 }\n");
   ignore
     (lower_of
        "fn f() i64 { a arr[2,i64]\n\
        \ a[0] = 1\n\
        \ a[1] = 2\n\
-       \ t arr[2,i64] = a\n\
+       \ t arr[2,i64]\n\
+       \ copy(t, a)\n\
        \ return t[0] }\n");
-  semantic_error "aggregate-direct-return" "use of uninitialized local `s`"
+  semantic_error "aggregate-direct-return"
+    "aggregate result cannot be returned by value; pass destination storage as `addr` \
+     or `handle[T]`"
     "struct S { x i64 }\nfn f() S { s S\nreturn s }\n";
+  semantic_error "aggregate-parameter"
+    "aggregate parameter `value` cannot be passed by value; pass `&x` as `addr` or \
+     `handle[T]`"
+    "struct S { x i64 }\nfn f(value S) void { return }\n";
+  semantic_error "aggregate-array-parameter"
+    "aggregate parameter `value` cannot be passed by value; pass `&x` as `addr` or \
+     `handle[T]`"
+    "fn f(value arr[4,u32]) void { return }\n";
+  semantic_error "aggregate-result"
+    "aggregate result cannot be returned by value; pass destination storage as `addr` \
+     or `handle[T]`"
+    "struct S { x i64 }\nfn f() S { s S\nreturn s }\n";
+  semantic_error "aggregate-array-result"
+    "aggregate result cannot be returned by value; pass destination storage as `addr` \
+     or `handle[T]`"
+    "fn f() arr[4,u32] { value arr[4,u32]\nreturn value }\n";
+  semantic_error "aggregate-declaration-copy"
+    "aggregate value initialization is not supported; use `copy(dst, src)`"
+    "struct S { x i64 }\nfn f() void { s S = (S){1}\n t S = s\nreturn }\n";
+  semantic_error "aggregate-argument"
+    "aggregate arguments cannot be passed by value; pass `&x` as `addr` or `handle[T]`"
+    "struct S { x i64 }\n\
+     fn take(p addr) void { return }\n\
+     fn f() void { s S = (S){1}\n\
+     take(s)\n\
+     return }\n";
+  semantic_error "aggregate-assignment"
+    "aggregate assignment is not supported; use `copy(dst, src)`"
+    "struct S { x i64 }\n\
+     fn f() void { source S = (S){1}\n\
+     destination S = (S){2}\n\
+     destination = source\n\
+     return }\n";
   ignore
     (lower_of
        "struct S { x i64 }\nfn f(p bool) i64 { s S\nif p { s.x = 1 }\nreturn s.x }\n");
@@ -1108,7 +1164,8 @@ let () =
         fn take(p addr) void { return }\n\
         fn f() i64 { s S\n\
        \ take(&s.x)\n\
-       \ t S = s\n\
+       \ t S\n\
+       \ copy(t, s)\n\
        \ return 0 }\n");
   ignore
     (lower_of
@@ -1148,7 +1205,8 @@ let () =
         fn take(p addr) void { return }\n\
         fn f(p bool) i64 { s S\n\
        \ if p { take(&s) } else { s.x = 1 }\n\
-        t S = s\n\
+        t S\n\
+        copy(t, s)\n\
        \ return 0 }\n");
   semantic_error "aggregate-compound-read" "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\nfn f() i64 { s S\n s.x += 1\n return 0 }\n";
@@ -1320,7 +1378,7 @@ let () =
   semantic_error "raw-uninitialized-address-read" "use of uninitialized local `p`"
     "fn f() i64 { p addr\n p[i64] = 1\n return p[i64] }\n";
   semantic_error "raw-uninitialized-array-copy" "use of uninitialized local `x`"
-    "fn f() u32 { x arr[4,u32]\n t arr[4,u32] = x\n return t[0] }\n";
+    "fn f() u32 { x arr[4,u32]\n t arr[4,u32]\n copy(t, x)\n return t[0] }\n";
   ignore
     (lower_of
        "fn f() u32 { x arr[4,u32]\n\
@@ -1651,16 +1709,24 @@ let () =
   semantic_error "unreached-defer-does-not-consume-break"
     "may reach the end without returning"
     "fn spin() i32 { while true { break\n defer { while true { } } } }\n";
-  semantic_error "extern-c-struct-parameter" "cannot use `S` by value; use a pointer"
+  semantic_error "extern-c-struct-parameter"
+    "aggregate parameter `value` cannot be passed by value; pass `&x` as `addr` or \
+     `handle[T]`"
     "struct S { x i64 }\nextern \"C\" { fn take(value S) void }\n";
+  semantic_error "extern-c-array-parameter"
+    "aggregate parameter `value` cannot be passed by value; pass `&x` as `addr` or \
+     `handle[T]`"
+    "extern \"C\" { fn take(value arr[2,i64]) void }\n";
   semantic_error "extern-c-struct-return"
-    "cannot return `S` by value; use an output pointer"
+    "aggregate result cannot be returned by value; pass destination storage as `addr` \
+     or `handle[T]`"
     "struct S { x i64 }\nextern \"C\" { fn make() S }\n";
   semantic_error "extern-c-vector-parameter"
     "cannot use `vec[4, i32]` by value; use a pointer"
     "extern \"C\" { fn take(value vec[4,i32]) void }\n";
   semantic_error "extern-c-array-return"
-    "cannot return `arr[2, i64]` by value; use an output pointer"
+    "aggregate result cannot be returned by value; pass destination storage as `addr` \
+     or `handle[T]`"
     "extern \"C\" { fn make() arr[2,i64] }\n";
   semantic_error "extern-c-opaque-parameter"
     "opaque type `Handle` may only be used behind a pointer"
@@ -1668,7 +1734,8 @@ let () =
   semantic_error "extern-c-definition-fallthrough" "may reach the end without returning"
     "extern \"C\" { fn value() i64 { } }\n";
   semantic_error "extern-c-definition-struct-parameter"
-    "cannot use `S` by value; use a pointer"
+    "aggregate parameter `value` cannot be passed by value; pass `&x` as `addr` or \
+     `handle[T]`"
     "struct S { x i64 }\nextern \"C\" { fn take(value S) void { return } }\n";
   parse_error_message "extern-c-variadic-definition"
     "extern \"C\" function definitions cannot be variadic"
@@ -1771,15 +1838,17 @@ let () =
     llvm_of
       "struct S @align(16) { x i64 y i64 }\n\
        const A arr[2,i64] = {1, 2}\n\
-       fn pass_struct(value S) S { return value }\n\
-       fn pass_array(value arr[2,i64]) arr[2,i64] { return value }\n\
+       fn check_struct(p addr) bool { return p[S].x == 1 && p[S].y == 2 }\n\
+       fn check_array(p addr) bool { return p[i64,0] == 1 && p[i64,1] == 2 }\n\
        fn pass_vector(value vec[3,i32]) vec[3,i32] { return value }\n\
        fn main() i32 {\n\
        literal S = (S){1, 2}\n\
-       s S = pass_struct(literal)\n\
-       a arr[2,i64] = pass_array(A)\n\
+       if !check_struct(&literal) { return 1 }\n\
+       a arr[2,i64]\n\
+       copy(a, A)\n\
+       if !check_array(&a) { return 1 }\n\
        v vec[3,i32] = pass_vector(splat(3))\n\
-       return zext[i32](s.x == a[0] && v[0] == 3)\n\
+       return zext[i32](v[0] == 3)\n\
        }\n"
   in
   List.iter
@@ -1787,8 +1856,8 @@ let () =
       if not (contains internal_aggregate_abi expected) then
         failwith ("internal-aggregate-abi: missing `" ^ expected ^ "`"))
     [
-      "call %struct.S @pass_struct(%struct.S";
-      "call [2 x i64] @pass_array([2 x i64]";
+      "call i1 @check_struct(ptr";
+      "call i1 @check_array(ptr";
       "call <3 x i32> @pass_vector(<3 x i32>";
     ];
   let arity_messages =
@@ -2353,14 +2422,15 @@ let () =
   let const_array_value =
     llvm_of
       "const G arr[2, i64] = {7, 8}\n\
-       fn take(p arr[2, i64]) i64 { return p[0] + p[1] }\n\
-       fn main() i64 { a arr[2, i64] = G\n\
-      \ return take(G) }\n"
+       fn take(p addr) i64 { return p[i64,0] + p[i64,1] }\n\
+       fn main() i64 { a arr[2, i64]\n\
+      \ copy(a, G)\n\
+      \ return take(&a) }\n"
   in
   if
-    (not (contains const_array_value "load [2 x i64], ptr"))
+    contains const_array_value "load [2 x i64], ptr"
     || contains const_array_value "store [2 x i64] ptr"
-  then failwith "fas-013: const array value was lowered as a pointer";
+  then failwith "fas-013: const array was lowered as an implicit aggregate value";
 
   let wide_shift =
     llvm_of
@@ -2967,10 +3037,10 @@ let () =
                     fn main() i64 { return first[i64, u8](7, 1) }\n")))));
   let nested_generic_function_source =
     "struct Box[T] { value T }\n\
-     fn inner[T](value T) Box[T] { result Box[T] = (Box[T]){value}\n\
-     return result }\n\
-     fn outer[T](value T) Box[T] { return inner[T](value) }\n\
-     fn use() Box[u8] { return outer[u8](3) }\n"
+     fn inner[T](value T) T { result Box[T] = (Box[T]){value}\n\
+     return result.value }\n\
+     fn outer[T](value T) T { return inner[T](value) }\n\
+     fn use() u8 { return outer[u8](3) }\n"
   in
   let nested_generic_function_hir =
     expect_ok (Parser.parse (source nested_generic_function_source))
@@ -4067,37 +4137,28 @@ let () =
   let nested_struct_argument_failure =
     "struct Box[T] { value T }\n\
      fn bad[T](value T) T { return value + value }\n\
-     fn main(value Box[Box[u8]]) Box[Box[u8]] {\n\
-     return bad[Box[Box[u8]]](value)\n\
+     fn main() i64 { value Box[Box[u8]] = (Box[Box[u8]]){(Box[u8]){1}}\n\
+     bad[Box[Box[u8]]](value)\n\
+     return 0\n\
      }\n"
   in
-  (match semantic_diagnostics nested_struct_argument_failure with
-  | [ diagnostic ] ->
-      let rendered = Diag.render_all ~source:None [ diagnostic ] in
-      if
-        diagnostic.notes
-        <> [ "while instantiating `bad[Box[Box[u8]]]` at regression.fas:4:11" ]
-      then
-        failwith
-          ("generic-instantiation-nested-struct: unexpected trace: "
-          ^ String.concat " | " diagnostic.notes);
-      if contains rendered "$spec$" then
-        failwith "generic-instantiation-nested-struct: internal name leaked"
-  | _ -> failwith "generic-instantiation-nested-struct: expected one diagnostic");
+  semantic_error "generic-instantiation-nested-struct"
+    "aggregate parameter `value` cannot be passed by value; pass `&x` as `addr` or \
+     `handle[T]`"
+    nested_struct_argument_failure;
   let specialized_type_message_failure =
     "struct Box[T] { value T }\n\
      fn bad[T](value T) i64 {\n\
-     local Box[u8] = value\n\
+     local i64 = value\n\
      return 0\n\
      }\n\
-     fn main(value Box[Box[u8]]) i64 {\n\
-     return bad[Box[Box[u8]]](value)\n\
-     }\n"
+     fn main() i64 { value u8 = 1\n\
+    \ return bad[u8](value) }\n"
   in
   (match semantic_diagnostics specialized_type_message_failure with
   | [ diagnostic ] ->
       let rendered = Diag.render_all ~source:None [ diagnostic ] in
-      if diagnostic.message <> "type mismatch: expected Box[u8], got Box[Box[u8]]" then
+      if diagnostic.message <> "type mismatch: expected i64, got u8" then
         failwith
           ("generic-instantiation-specialized-type-message: unexpected message: "
          ^ diagnostic.message);
@@ -4327,11 +4388,11 @@ let () =
      struct Box[T] { value T }\n\
      fn stamp[T, N const usize](value T) T { seen usize = N\n\
      return value }\n\
-     fn wrap[T, N const usize](value T) Box[T] { seen usize = N\n\
+     fn wrap[T, N const usize](value T) T { seen usize = N\n\
      result Box[T] = (Box[T]){stamp[T, N](value)}\n\
-     return result }\n\
-     fn main() Box[i64] { first Box[i64] = wrap[i64, THREE](7)\n\
-     return wrap[i64, THREE](first.value) }\n"
+     return result.value }\n\
+     fn main() i64 { first i64 = wrap[i64, THREE](7)\n\
+     return wrap[i64, THREE](first) }\n"
   in
   let mixed_generic_hir =
     expect_ok (Parser.parse (source mixed_generic_source)) |> Sema.check |> expect_ok
@@ -4528,10 +4589,11 @@ let () =
          (expect_ok
             (Parser.parse
                (source
-                  "fn identity[T](value T) T { return value }\n\
-                   fn main(left arr[1, u8], right arr[01, u8]) arr[1, u8] {\n\
-                   first arr[1, u8] = identity[arr[01, u8]](right)\n\
-                   return identity[arr[1, u8]](first) }\n"))))
+                  "fn identity[T](pointer addr) addr { return pointer }\n\
+                   fn main() usize { right arr[01, u8] = {1}\n\
+                   first addr = identity[arr[01, u8]](&right)\n\
+                   second addr = identity[arr[1, u8]](first)\n\
+                   return sizeof[arr[1, u8]] }\n"))))
   in
   if
     List.length
@@ -4734,16 +4796,13 @@ let () =
   let issue33_llvm =
     llvm_of
       "struct Bytes[N const usize] { data arr[N, u8] }\n\
-       fn identity(value Bytes[3]) Bytes[3] { return value }\n\
-       fn main() usize { return sizeof[Bytes[3]] }\n"
+       fn main() usize { value Bytes[3]\n\
+      \ return sizeof[Bytes[3]] }\n"
   in
   if not (contains issue33_llvm "%\"struct.Bytes$spec$c7:usize:3\" = type { [3 x i8] }")
   then failwith "const-generic-struct-llvm-name: specialization name was not quoted";
-  if
-    not
-      (contains issue33_llvm
-         "define internal %\"struct.Bytes$spec$c7:usize:3\" @identity")
-  then failwith "const-generic-struct-llvm-use: specialization type was not quoted";
+  if not (contains issue33_llvm "alloca %\"struct.Bytes$spec$c7:usize:3\"") then
+    failwith "const-generic-struct-llvm-use: local specialization type was not quoted";
   semantic_error "const-generic-struct-arity"
     "wrong number of generic arguments to `Buffer`"
     "struct Buffer[T, N const usize] { data arr[N, T] }\n\
@@ -4765,11 +4824,13 @@ let () =
      const BOX_BYTES usize = sizeof[Box[u16]]\n\
      struct Buffer[T, N const usize] { data arr[N, T] }\n\
      struct Holder { value Buffer[u8, THREE] }\n\
-     fn fixed[T](value Buffer[T, THREE]) Buffer[T, THREE] { return value }\n\
-     fn main(three Buffer[u8, THREE], boxed Buffer[u8, BOX_BYTES],\n\
-     unit Buffer[u8, sizeof[Unit]]) usize {\n\
-    \ fixed[u8](three)\n\
-    \ return sizeof[Holder] + sizeof[Buffer[u8, BOX_BYTES]] + sizeof[Buffer[u8, \
+     fn fixed[T](pointer addr) void { result T\n\
+     return }\n\
+     fn main() usize { three Buffer[u8, THREE]\n\
+     boxed Buffer[u8, BOX_BYTES]\n\
+     unit Buffer[u8, sizeof[Unit]]\n\
+     fixed[Buffer[u8, THREE]](&three)\n\
+     return sizeof[Holder] + sizeof[Buffer[u8, BOX_BYTES]] + sizeof[Buffer[u8, \
      sizeof[Unit]]]\n\
      }\n"
   in
@@ -4811,14 +4872,15 @@ let () =
     "const THREE usize = 3\n\
      const FOUR usize = 4\n\
      struct Buffer[T, N const usize] { data arr[N, T] }\n\
-     fn identity[T](value T) T { return value }\n\
-     fn forward[T](value T) T { return identity[T](value) }\n\
-     fn main(three Buffer[u8, THREE], four Buffer[u8, FOUR]) usize {\n\
-    \ a Buffer[u8, THREE] = identity[Buffer[u8, THREE]](three)\n\
-    \ b Buffer[u8, FOUR] = identity[Buffer[u8, FOUR]](four)\n\
-    \ forward[Buffer[u8, THREE]](a)\n\
-    \ forward[Buffer[u8, FOUR]](b)\n\
-    \ return sizeof[Buffer[u8, THREE]] + sizeof[Buffer[u8, FOUR]]\n\
+     fn identity[T](pointer addr) addr { return pointer }\n\
+     fn forward[T](pointer addr) addr { return identity[T](pointer) }\n\
+     fn main() usize { three Buffer[u8, THREE]\n\
+     four Buffer[u8, FOUR]\n\
+     a addr = identity[Buffer[u8, THREE]](&three)\n\
+     b addr = identity[Buffer[u8, FOUR]](&four)\n\
+     forward[Buffer[u8, THREE]](a)\n\
+     forward[Buffer[u8, FOUR]](b)\n\
+     return sizeof[Buffer[u8, THREE]] + sizeof[Buffer[u8, FOUR]]\n\
      }\n"
   in
   let const_generic_struct_type_argument_hir =
@@ -4852,11 +4914,13 @@ let () =
   let deferred_nested_struct_source =
     "struct Inner[N const usize] { data arr[N, u8] }\n\
      struct Outer[T] { value T }\n\
-     fn pass[T, N const usize](value Outer[Inner[N]]) Outer[Inner[N]] {\n\
-     return value\n\
+     fn pass[T, N const usize](pointer addr) void {\n\
+     value Outer[Inner[N]]\n\
+     return\n\
      }\n\
-     fn main(value Outer[Inner[1]]) Outer[Inner[1]] {\n\
-     return pass[u8, 1](value)\n\
+     fn main() void { value Outer[Inner[1]]\n\
+     pass[u8, 1](&value)\n\
+     return\n\
      }\n"
   in
   let deferred_nested_struct_hir =
@@ -4887,28 +4951,24 @@ let () =
 
   let const_generic_function_type_source =
     "const THREE usize = 3\n\
-     fn array_identity[T, N const usize](value arr[N, T]) arr[N, T] {\n\
-    \ result arr[N, T] = value\n\
-    \ return result\n\
+     fn array_identity[T, N const usize](pointer addr) addr { return pointer }\n\
+     fn array_outer[T, N const usize](pointer addr) addr {\n\
+     return array_identity[T, N](pointer)\n\
      }\n\
-     fn array_outer[T, N const usize](value arr[N, T]) arr[N, T] {\n\
-    \ return array_identity[T, N](value)\n\
-     }\n\
-     fn byte_identity[N const usize](value arr[N, u8]) arr[N, u8] {\n\
-    \ return value\n\
-     }\n\
+     fn byte_identity[N const usize](pointer addr) addr { return pointer }\n\
      fn vector_identity[T, N const usize](value vec[N, T]) vec[N, T] {\n\
-    \ return value\n\
+     return value\n\
      }\n\
-     fn aggregate_metrics[T, N const usize](value arr[N, T]) usize {\n\
-    \ return sizeof[arr[N, T]] + alignof[arr[N, T]] + sizeof[vec[N, T]]\n\
+     fn aggregate_metrics[T, N const usize]() usize {\n\
+     return sizeof[arr[N, T]] + alignof[arr[N, T]] + sizeof[vec[N, T]]\n\
      }\n\
-     fn main(value arr[3, u8], pointer arr[4, u16], lanes vec[4, u16]) usize {\n\
-    \ first arr[3, u8] = array_outer[u8, THREE](value)\n\
-    \ second arr[3, u8] = array_outer[u8, 3](first)\n\
-    \ third arr[3, u8] = byte_identity[THREE](second)\n\
-    \ same_lanes vec[4, u16] = vector_identity[u16, 4](lanes)\n\
-    \ return len(third) + sizeof[vec[4, u16]] + aggregate_metrics[u16, 4](pointer)\n\
+     fn main() usize { value arr[3, u8] = {1, 2, 3}\n\
+     pointer addr = array_outer[u8, THREE](&value)\n\
+     forwarded addr = array_outer[u8, 3](pointer)\n\
+     bytes addr = byte_identity[THREE](&value)\n\
+     lanes vec[4, u16] = splat(2)\n\
+     same_lanes vec[4, u16] = vector_identity[u16, 4](lanes)\n\
+     return len(value) + sizeof[vec[4, u16]] + aggregate_metrics[u16, 4]()\n\
      }\n"
   in
   let const_generic_function_type_hir =
@@ -4929,9 +4989,7 @@ let () =
            contains func.name "array_identity$spec$"
            &&
            match (func.params, func.ret) with
-           | [ { ty = Hir.Array (3, Hir.Int Hir.U8); _ } ], Hir.Array (3, Hir.Int Hir.U8)
-             ->
-               true
+           | [ { ty = Hir.Addr; _ } ], Hir.Addr -> true
            | _ -> false)
          function_specializations)
   then failwith "const-generic-function-type-signature: length was not substituted";
@@ -4940,10 +4998,7 @@ let () =
       (List.exists
          (fun (func : Hir.func) ->
            contains func.name "aggregate_metrics$spec$"
-           &&
-           match func.params with
-           | [ { ty = Hir.Array (4, Hir.Int Hir.U16); _ } ] -> true
-           | _ -> false)
+           && func.params = [] && func.ret = Hir.Int Hir.Usize)
          function_specializations)
   then
     failwith "const-generic-function-type-nesting: aggregate length was not substituted";
@@ -4960,17 +5015,22 @@ let () =
     || contains const_generic_function_type_llvm "@aggregate_metrics("
   then failwith "const-generic-function-type-template: template reached LLVM output";
   semantic_error "const-generic-function-type-mismatch"
-    "type mismatch: expected arr[4, u8], got arr[3, u8]"
+    "aggregate arguments cannot be passed by value; pass `&x` as `addr` or `handle[T]`"
     "fn identity[N const usize](value arr[N, u8]) arr[N, u8] { return value }\n\
-     fn main(value arr[3, u8]) arr[4, u8] { return identity[4](value) }\n";
+     fn main() i64 { value arr[3,u8] = {1, 2, 3}\n\
+    \ identity[4](value)\n\
+    \ return 0 }\n";
   semantic_error "const-generic-function-negative-length" "negative aggregate length"
     "fn identity[N const isize](value arr[N, u8]) arr[N, u8] { return value }\n\
-     fn main(value arr[1, u8]) arr[1, u8] { return identity[-1](value) }\n";
+     fn main() i64 { value arr[1,u8] = {1}\n\
+    \ identity[-1](value)\n\
+    \ return 0 }\n";
   semantic_error "const-generic-function-machine-length"
     "aggregate length is not a machine integer"
     "fn identity[N const u64](value arr[N, u8]) arr[N, u8] { return value }\n\
-     fn main(value arr[1, u8]) arr[1, u8] { return \
-     identity[18446744073709551615](value) }\n";
+     fn main() i64 { value arr[1,u8] = {1}\n\
+    \ identity[18446744073709551615](value)\n\
+    \ return 0 }\n";
   let const_array_len_generic_llvm =
     llvm_of
       "const DATA arr[3, u8] = { 10, 20, 30 }\n\
@@ -5237,19 +5297,24 @@ let () =
      struct Unit { value u64 }\n\
      struct Buffer[T, N const usize] { data arr[N, T] }\n\
      struct Wrapped[T, N const usize] { value Buffer[T, N] }\n\
-     fn pass[T, N const usize](value Buffer[T, N]) Buffer[T, N] {\n\
-    \ result Buffer[T, N] = value\n\
-    \ return result\n\
+     fn pass[T, N const usize](pointer addr) void {\n\
+     value Buffer[T, N]\n\
+     return\n\
      }\n\
-     fn wrap[T, N const usize](value Buffer[T, N]) Wrapped[T, N] {\n\
-    \ result Wrapped[T, N] = (Wrapped[T, N]){pass[T, N](value)}\n\
-    \ return result\n\
+     fn wrap[T, N const usize](pointer addr) void {\n\
+     value Buffer[T, N]\n\
+     pass[T, N](&value)\n\
+     wrapped Wrapped[T, N]\n\
+     return\n\
      }\n\
-     fn sized(value Buffer[u8, 8]) Buffer[u8, 8] {\n\
-    \ return pass[u8, sizeof[Unit]](value)\n\
+     fn sized(pointer addr) void {\n\
+     pass[u8, sizeof[Unit]](pointer)\n\
+     return\n\
      }\n\
-     fn main(value Buffer[u8, 3]) Wrapped[u8, 3] {\n\
-    \ return wrap[u8, THREE](value)\n\
+     fn main() void { value Buffer[u8, 3]\n\
+     wrap[u8, THREE](&value)\n\
+     sized(&value)\n\
+     return\n\
      }\n"
   in
   let const_generic_struct_function_hir =
@@ -5283,7 +5348,7 @@ let () =
     not
       (List.for_all
          (fun (func : Hir.func) ->
-           match func.params with [ { ty = Hir.Struct _; _ } ] -> true | _ -> false)
+           match func.params with [ { ty = Hir.Addr; _ } ] -> true | _ -> false)
          struct_function_specializations)
   then
     failwith
@@ -5304,7 +5369,8 @@ let () =
              (Parser.parse
                 (source
                    "struct Node[T] { next addr value T }\n\
-                    fn main(value Node[u8]) i64 { return 0 }\n")))));
+                    fn main() i64 { value Node[u8]\n\
+                   \ return 0 }\n")))));
   (match
      Sema.check ~limits:recursive_struct_limits
        (expect_ok
@@ -5312,7 +5378,8 @@ let () =
              (source
                 "struct Inner[T] { value T }\n\
                  struct Outer[T] { inner Inner[T] }\n\
-                 fn main(value Outer[u8]) i64 { return 0 }\n")))
+                 fn main() i64 { value Outer[u8]\n\
+                \ return 0 }\n")))
    with
   | Ok _ -> failwith "generic-struct-depth-limit: expected rejection"
   | Error diagnostics ->
@@ -5330,7 +5397,9 @@ let () =
              (Parser.parse
                 (source
                    "struct Box[T] { value T }\n\
-                    fn main(left Box[u8], right Box[u8]) i64 { return 0 }\n")))));
+                    fn main() i64 { left Box[u8]\n\
+                   \ right Box[u8]\n\
+                   \ return 0 }\n")))));
   (match
      Sema.check ~limits:one_struct_limit
        (expect_ok
@@ -5338,7 +5407,8 @@ let () =
              (source
                 "struct Box[T] { value T }\n\
                  fn id[N const usize]() usize { return N }\n\
-                 fn main(value Box[u8]) usize { return id[1]() }\n")))
+                 fn main() usize { value Box[u8]\n\
+                \ return id[1]() }\n")))
    with
   | Ok _ -> failwith "shared-specialization-limit: expected rejection"
   | Error diagnostics ->
@@ -6843,11 +6913,11 @@ let () =
     "fn f(value u64) u32 { return bitcast[u32](value) }\n";
   semantic_error "bitcast-array-destination"
     "illegal cast for source and destination widths"
-    "fn f(value vec[2,u32]) arr[2,u32] { return bitcast[arr[2,u32]](value) }\n";
+    "fn f(value vec[2,u32]) vec[2,u32] { return bitcast[arr[2,u32]](value) }\n";
   semantic_error "bitcast-struct-destination"
     "illegal cast for source and destination widths"
     "struct Pair { left u32 right u32 }\n\
-    \ fn f(value vec[2,u32]) Pair { return bitcast[Pair](value) }\n";
+    \ fn f(value vec[2,u32]) vec[2,u32] { return bitcast[Pair](value) }\n";
   semantic_error "cast-pointer-zext" "illegal cast for source and destination widths"
     "fn f(value addr) u64 { return zext[u64](value) }\n";
   semantic_error "cast-pointer-sext" "illegal cast for source and destination widths"
@@ -6947,10 +7017,10 @@ let () =
     "opaque O\nfn f(h handle[O]) u8 { return h[u8] }\n";
   semantic_error "raw-select-aggregate-load"
     "raw selection cannot load an aggregate value"
-    "struct S { a u8 }\nfn f(p addr) S { return p[S] }\n";
+    "struct S { a u8 }\nfn f(p addr) void { value S = p[S]\nreturn }\n";
   semantic_error "raw-select-aggregate-store"
     "raw selection cannot store an aggregate value"
-    "struct S { a u8 }\nfn f(p addr, s S) void { p[S] = s }\n";
+    "struct S { a u8 }\nfn f(p addr) void { s S = (S){1}\np[S] = s\nreturn }\n";
   semantic_error "raw-select-lane" "raw vector lane selection is not yet supported"
     "fn f(p addr) u32 { return p[vec[2,u32]][0] }\n";
   semantic_error "raw-select-lane-store"
@@ -7054,8 +7124,9 @@ let () =
     "fn f(p addr) u32 { return volatile_load[arr[2,u32]](p) }\n";
   semantic_error "volatile-vector" "scalar integer, bool, addr, or handle[T]"
     "fn f(p addr) vec[2,u32] { return volatile_load[vec[2,u32]](p) }\n";
-  semantic_error "volatile-struct" "scalar integer, bool, addr, or handle[T]"
-    "struct S { value u32 }\nfn f(p addr) S { return volatile_load[S](p) }\n";
+  semantic_error "volatile-struct"
+    "volatile access type must be a scalar integer, bool, addr, or handle[T]"
+    "struct S { value u32 }\nfn f(p addr) void { volatile_load[S](p)\nreturn }\n";
   semantic_error "volatile-store-expression" "volatile_store is statement-only"
     "fn f(p addr) u32 { return volatile_store[u32](p, 1) }\n";
   semantic_error "volatile-load-type-argument" "expects one type argument"
@@ -7069,7 +7140,8 @@ let () =
     "struct S { x i64 y i64 }\n\
      fn f(p bool) i64 { s S\n\
      q addr = p ? &s : addr_from_bits(0)\n\
-     t S = s\n\
+     t S\n\
+     copy(t, s)\n\
      return 0 }\n";
   semantic_accept "aggregate-branch-no-else-unknown"
     "struct S { x i64 }\nfn f(p bool) i64 { s S\nif p { s.x = 1 }\nreturn s.x }\n";
@@ -7108,7 +7180,8 @@ let () =
      fn take(p addr) void { return }\n\
      fn f(p bool) i64 { s S\n\
      if p { take(&s) } else { s.x = 1 }\n\
-     t S = s\n\
+     t S\n\
+     copy(t, s)\n\
      return 0 }\n";
   semantic_accept "for-step-path-merge-unknown"
     "fn take(value i64) void { return }\n\
@@ -7357,12 +7430,11 @@ let () =
      return }\n";
   semantic_error "construction-brace-needs-destination"
     "aggregate construction needs a destination"
-    "fn consume(value arr[1,i32]) i32 { return value[0] }\n\
-     fn f() i32 { return consume({43}) }\n";
+    "fn consume(pointer addr) i32 { return 0 }\nfn f() i32 { return consume({43}) }\n";
   semantic_error "construction-aggregate-expression-needs-destination"
     "aggregate construction needs a destination"
     "struct S { value i32 }\n\
-     fn consume(value S) i32 { return value.value }\n\
+     fn consume(pointer addr) i32 { return 0 }\n\
      fn f() i32 { return consume((S){47}) }\n";
   semantic_error "construction-new-name-not-in-scope" "unknown name `value`"
     "fn f() i32 { value arr[1,i32] = {value[0]}\nreturn 0 }\n";

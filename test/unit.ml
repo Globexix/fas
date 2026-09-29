@@ -152,7 +152,9 @@ let () =
     expect_ok
       (Parser.parse
          (source
-            "struct Box[T] { value T }\nfn f(value Box[arr[16,u8]]) void { return }\n"))
+            "struct Box[T] { value T }\n\
+             fn f() void { value Box[arr[16,u8]]\n\
+            \ return }\n"))
   in
   ignore
     (expect_ok
@@ -226,7 +228,9 @@ let () =
     expect_ok
       (Parser.parse
          (source
-            "struct Box[T] { value T }\nfn f(value Box[vec[16,u8]]) void { return }\n"))
+            "struct Box[T] { value T }\n\
+             fn f() void { value Box[vec[16,u8]]\n\
+            \ return }\n"))
   in
   (match
      Sema.check
@@ -268,7 +272,8 @@ let () =
       (Parser.parse
          (source
             "struct Pair[T] { left T right T }\n\
-             fn f(value Pair[arr[3,u8]]) void { return }\n"))
+             fn f() void { value Pair[arr[3,u8]]\n\
+            \ return }\n"))
   in
   ignore
     (expect_ok
@@ -291,7 +296,8 @@ let () =
       (Parser.parse
          (source
             "struct Wrapped { values arr[2,vec[3,u8]] }\n\
-             fn f(value Wrapped) void { return }\n"))
+             fn f() void { value Wrapped\n\
+            \ return }\n"))
   in
   ignore
     (expect_ok
@@ -2312,7 +2318,7 @@ let () =
          ~limits:{ Limits.default with max_type_nodes = 5 }
          (expect_ok (Parser.parse (source cumulative_text))));
     let box_text =
-      "struct Box[T] { a T, b T }\nfn use0(x Box[addr]) i64 { return 0 }\n"
+      "struct Box[T] { a T, b T }\nfn use0() i64 { x Box[addr]\n return 0 }\n"
     in
     let box_program = expect_ok (Parser.parse (source box_text)) in
     let exact_box =
@@ -2348,30 +2354,35 @@ let () =
          ~limits:{ Limits.default with max_type_nodes = 2 }
          (expect_ok (Parser.parse (source pick_text))));
     let widen_text =
-      "fn widen[T](x0 T, x1 T, x2 T, x3 T) i64 { return 0 }\n\
-       fn use0(a arr[2,arr[2,u8]]) i64 { return widen[arr[2,arr[2,u8]]](a, a, a, a) }\n\
-       fn use1(b arr[3,arr[2,u8]]) i64 { return widen[arr[3,arr[2,u8]]](b, b, b, b) }\n"
+      "fn widen[T](x0 addr, x1 addr, x2 addr, x3 addr) i64 {\n\
+       a T\n\
+      \ b T\n\
+      \ c T\n\
+      \ d T\n\
+      \ return 0 }\n\
+       fn use0(a addr) i64 { return widen[arr[2,arr[2,u8]]](a, a, a, a) }\n\
+       fn use1(b addr) i64 { return widen[arr[3,arr[2,u8]]](b, b, b, b) }\n"
     in
     let widen_program = expect_ok (Parser.parse (source widen_text)) in
     let exact_widen =
       expect_ok
-        (Sema.check ~limits:{ Limits.default with max_type_nodes = 26 } widen_program)
+        (Sema.check ~limits:{ Limits.default with max_type_nodes = 34 } widen_program)
     in
     assert (List.length exact_widen.Hir.funcs = 4);
     expect_type_diag
-      [ "max_type_nodes"; "of 25 (profile 0.15)"; "widen" ]
+      [ "max_type_nodes"; "of 33 (profile 0.15)"; "widen" ]
       (Sema.check
-         ~limits:{ Limits.default with max_type_nodes = 25 }
+         ~limits:{ Limits.default with max_type_nodes = 33 }
          (expect_ok (Parser.parse (source widen_text))));
     let widen_over_first =
       Sema.check
-        ~limits:{ Limits.default with max_type_nodes = 25 }
+        ~limits:{ Limits.default with max_type_nodes = 33 }
         (expect_ok (Parser.parse (source widen_text)))
       |> Result.map_error (fun diagnostics -> Diag.render_all ~source:None diagnostics)
     in
     let widen_over_second =
       Sema.check
-        ~limits:{ Limits.default with max_type_nodes = 25 }
+        ~limits:{ Limits.default with max_type_nodes = 33 }
         (expect_ok (Parser.parse (source widen_text)))
       |> Result.map_error (fun diagnostics -> Diag.render_all ~source:None diagnostics)
     in
@@ -2450,7 +2461,8 @@ let () =
       ~limits:{ Limits.default with max_specialization_depth = 1 }
       "struct Inner[T] { value T }\n\
        struct Outer[T] { inner Inner[T] }\n\
-       fn main(value Outer[u8]) i64 { return 0 }\n"
+       fn main() i64 { value Outer[u8]\n\
+      \ return 0 }\n"
   in
   let run_specialization_span_tests () =
     let program =
@@ -2983,7 +2995,8 @@ let () =
        (profile 0.15)"
       "struct Box[T] { a T, b T }\n\
        struct S { big arr[100,u8] }\n\
-       fn use0(x Box[addr]) i64 { return 0 }\n\
+       fn use0() i64 { x Box[addr]\n\
+      \ return 0 }\n\
        fn f() void { s S\n\
       \ return }\n";
     pair "strings-vs-typenodes"

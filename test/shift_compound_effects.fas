@@ -26,7 +26,8 @@ fn bump_whole(p addr, n u32) u32 {
 }
 
 fn main() i32 {
-  items arr[2,u32] = ITEMS
+  items arr[2,u32]
+  copy(items, ITEMS)
   items[next_index()] >>= next_count()
   if items[0] != 4 { return 1 }
   if items[1] != 12 { return 2 }

@@ -75,6 +75,7 @@ let intern_string c span s =
         Ok id
 
 let with_dead_check c dead check = Sema_flow.with_dead_check c.flow dead check
+let aggregate_value_type = function Hir.Array _ | Hir.Struct _ -> true | _ -> false
 
 let rec rooted_in_constant = function
   | Hir.Const_array _ | Hir.EVector _ -> true
@@ -771,7 +772,13 @@ and check_initializer c expected expression =
               | `Value value -> Hir.expr_ty value
               | `Aggregate (ty, _, _) -> ty
             in
-            ensure_expected actual entry_ty (Ast.expr_span entry)
+            if
+              (match initialized with `Value _ -> true | `Aggregate _ -> false)
+              && aggregate_value_type entry_ty && aggregate_value_type actual
+            then
+              error (Ast.expr_span entry)
+                "aggregate value initialization is not supported; use `copy(dst, src)`"
+            else ensure_expected actual entry_ty (Ast.expr_span entry)
           in
           let child =
             match initialized with
@@ -1329,14 +1336,19 @@ and check_actuals c policy span formals actuals =
                   if is_scalar (Hir.expr_ty value) then Ok (variadic_promote value)
                   else
                     error (Ast.expr_span expression)
-                      "unsupported variadic aggregate argument")
+                      "aggregate arguments cannot be passed by value; pass `&x` as \
+                       `addr` or `handle[T]`")
                 rest
         in
         Ok (List.rev_append checked trailing)
     | (_, expected) :: formal_rest, expression :: actual_rest ->
         let* value = check_expr c (Some expected) expression in
         let* () =
-          ensure_expected (Hir.expr_ty value) expected (Ast.expr_span expression)
+          if aggregate_value_type (Hir.expr_ty value) then
+            error (Ast.expr_span expression)
+              "aggregate arguments cannot be passed by value; pass `&x` as `addr` or \
+               `handle[T]`"
+          else ensure_expected (Hir.expr_ty value) expected (Ast.expr_span expression)
         in
         loop (value :: checked) formal_rest actual_rest
     | _ -> error span "wrong number of arguments"
@@ -1584,7 +1596,14 @@ and check_stmt (c : context) = function
                 | `Value value -> Hir.expr_ty value
                 | `Aggregate (ty, _, _) -> ty
               in
-              ensure_expected actual t (Ast.expr_span e)
+              if
+                (match initialized with `Value _ -> true | `Aggregate _ -> false)
+                && aggregate_value_type t && aggregate_value_type actual
+              then
+                error (Ast.expr_span e)
+                  "aggregate value initialization is not supported; use `copy(dst, \
+                   src)`"
+              else ensure_expected actual t (Ast.expr_span e)
             in
             Ok (Some initialized)
       in
@@ -1637,7 +1656,11 @@ and check_stmt (c : context) = function
         | None -> error span "invalid assignment target"
       in
       let* v = check_expr c (Some expected) e in
-      let* () = ensure_expected (Hir.expr_ty v) expected span in
+      let* () =
+        if aggregate_value_type expected && aggregate_value_type (Hir.expr_ty v) then
+          error span "aggregate assignment is not supported; use `copy(dst, src)`"
+        else ensure_expected (Hir.expr_ty v) expected span
+      in
       (match (checked_target.root, checked_target.path) with
       | Some binding, Some (Exact path) -> set_state c binding path Full
       | Some binding, Some (Dynamic_prefix _) -> set_state c binding [] Unknown
@@ -1745,7 +1768,9 @@ and check_stmt (c : context) = function
         Ok (Hir.Volatile_store (access_ty, pointer, value, span))
   | Ast.Expr_stmt (e, s) ->
       let* x = check_expr c None e in
-      Ok (Hir.Expr (x, s))
+      if aggregate_value_type (Hir.expr_ty x) then
+        error s "aggregate values cannot be used by value; use `copy(dst, src)`"
+      else Ok (Hir.Expr (x, s))
   | Ast.Block (xs, s) ->
       let* x = check_block c xs in
       Ok (Hir.Block (x, s))
