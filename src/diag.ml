@@ -1,4 +1,4 @@
-type severity = Error | Warning
+type severity = Error | Warning | Rewrite_global_constant
 
 type t = {
   severity : severity;
@@ -15,9 +15,7 @@ let warning ?(notes = []) ?(hints = []) primary message =
   { severity = Warning; primary; message; notes; hints }
 
 let render_one ~source diagnostic =
-  let level =
-    match diagnostic.severity with Error -> "error" | Warning -> "warning"
-  in
+  let level = if diagnostic.severity = Warning then "warning" else "error" in
   let location = Span.to_string diagnostic.primary in
   let excerpt =
     match source with

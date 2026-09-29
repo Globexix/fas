@@ -3,6 +3,10 @@ open Sema_types
 
 let error span message = Error [ Diag.error span message ]
 
+let global_error span message =
+  Error
+    [ { (Diag.error span message) with Diag.severity = Diag.Rewrite_global_constant } ]
+
 let ( let* ) result continuation =
   match result with
   | Error diagnostics -> Error diagnostics
@@ -186,7 +190,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?(globals 
       | None -> (
           match resolve with
           | Some resolve -> resolve ~check_only n s
-          | None -> error s "constant expression requires a known constant"))
+          | None -> global_error s "constant expression requires a known constant"))
   | Ast.Unary (Ast.Neg, Ast.Int_lit (raw, is), s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error is m ]) in
       let t = Option.value ~default:(Hir.Int Hir.I32) expected in
@@ -563,7 +567,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?(globals 
           | Hir.Int kind when t = t2 -> Ok (t, mask_value t (sat_or_mulhi name kind x y))
           | Hir.Int _ -> error s "builtin arguments must have the same type"
           | _ -> error s "builtin arguments must be integers or integer vectors")
-      | _ -> error s "invalid constant builtin call")
+      | _ -> global_error s "invalid constant builtin call")
   | Ast.Sizeof (t, s) ->
       let* t = source_ty_with_values named_types consts s t in
       let* n, _ = layout_diag s structs t in
@@ -580,7 +584,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?(globals 
           | Some f -> Ok (Hir.Int Hir.Usize, Int64.of_int f.offset)
           | None -> error s "unknown field in offsetof")
       | _ -> error s "offsetof requires a struct")
-  | expr -> error (Ast.expr_span expr) "expression is not compile-time constant"
+  | expr -> global_error (Ast.expr_span expr) "expression is not compile-time constant"
 
 and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?(globals = [])
     ?resolve consts expected ?(check_only = false) expression =
@@ -1084,7 +1088,7 @@ let resolve_scalar_declarations ?(globals = []) ~structs ~named_types ~resolve_t
     | Some (ty, value) -> Ok (ty, value)
     | None -> (
         match Hashtbl.find_opt declaration_table name with
-        | None -> error span "constant expression requires a known constant"
+        | None -> global_error span "constant expression requires a known constant"
         | Some (source_type, initial_value, declaration_span) -> (
             let* ty = resolve_type declaration_span source_type in
             if not (scalar_constant_type ty) then

@@ -1,4 +1,4 @@
-type severity = Error | Warning
+type severity = Error | Warning | Rewrite_global_constant
 
 type t = {
   severity : severity;

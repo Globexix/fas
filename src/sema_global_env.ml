@@ -74,10 +74,7 @@ let collect ~source_obj ~structs ~named_types ~consts ~arrays ~global_names item
   in
   let evaluate span ty expression =
     match value span ty expression with
-    | Error [ diagnostic ]
-      when diagnostic.Diag.message = "expression is not compile-time constant"
-           || diagnostic.Diag.message = "constant expression requires a known constant"
-           || diagnostic.Diag.message = "invalid constant builtin call" ->
+    | Error [ { Diag.severity = Diag.Rewrite_global_constant; _ } ] ->
         error (Ast.expr_span expression)
           "global initializer must be a constant expression"
     | result -> result
