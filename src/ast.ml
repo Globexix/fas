@@ -91,7 +91,8 @@ and generic_param =
 and body = Declaration | Statements of stmt list | Asm of string
 and linkage = Internal | External_c
 and global_linkage = Internal_global | Export_c | Import_c | Import_const_c
-and c_header = C_quoted of string | C_system of string
+and c_fragment = { tag : string; text : string }
+and c_header = C_quoted of string | C_system of string | C_fragment of c_fragment
 
 and item =
   | Use of { path : string; c_header : c_header option; span : Span.t }
@@ -589,7 +590,11 @@ let render_program program =
         | Some (C_system header) ->
             text "use \"C\" <";
             text header;
-            text ">")
+            text ">"
+        | Some (C_fragment fragment) ->
+            text
+              (Printf.sprintf "use \"C\" <<%s\n%s\n%s" fragment.tag fragment.text
+                 fragment.tag))
     | Const { name; ty; value; _ } ->
         text "const ";
         add_name name;

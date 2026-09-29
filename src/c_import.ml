@@ -8,6 +8,8 @@ let include_line source = function
       in
       Printf.sprintf "#include %S\n" path
   | { spelling = Ast.C_system path; _ } -> "#include <" ^ path ^ ">\n"
+  | { spelling = Ast.C_fragment fragment; span } ->
+      Printf.sprintf "#line %d %S\n%s\n" (span.Span.line + 1) source fragment.text
 
 let find_text text needle start =
   let limit = String.length text - String.length needle in

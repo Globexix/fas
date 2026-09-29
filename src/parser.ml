@@ -38,7 +38,76 @@ let extract_asm source limits =
   let text = Source.text source and n = Source.length source in
   let buffer = Bytes.of_string text in
   let bodies = ref [] in
+  let c_containers = ref [] in
   let total_body_bytes = ref 0 in
+  let at_line_start i =
+    i = 0
+    ||
+    let start =
+      1 + Option.value ~default:(-1) (String.rindex_from_opt text (i - 1) '\n')
+    in
+    String.for_all
+      (function ' ' | '\t' | '\r' -> true | _ -> false)
+      (String.sub text start (i - start))
+  in
+  let line_end i = Option.value ~default:n (String.index_from_opt text i '\n') in
+  let rec skip_while stop predicate i =
+    if i < stop && predicate text.[i] then skip_while stop predicate (i + 1) else i
+  in
+  let container_prefix i =
+    let end_pos = line_end i in
+    let stop =
+      if end_pos > i && text.[end_pos - 1] = '\r' then end_pos - 1 else end_pos
+    in
+    let j = skip_while stop (fun c -> c = ' ' || c = '\t') (i + 3) in
+    if j + 3 > stop || String.sub text j 3 <> "\"C\"" then None
+    else
+      let j = skip_while stop (fun c -> c = ' ' || c = '\t') (j + 3) in
+      if j + 2 > stop || String.sub text j 2 <> "<<" then None
+      else
+        let tag_start = j + 2 in
+        let tag_stop = skip_while stop (fun c -> c <> ' ' && c <> '\t') tag_start in
+        let tag = String.sub text tag_start (tag_stop - tag_start) in
+        let valid =
+          tag <> ""
+          && ident_char tag.[0]
+          && (not (tag.[0] >= '0' && tag.[0] <= '9'))
+          && String.for_all ident_char tag
+        in
+        if not valid then Some (Error "C container tag must be an ASCII identifier")
+        else if tag_stop <> stop then Some (Error "trailing text after C container tag")
+        else Some (Ok tag)
+  in
+  let find_terminator tag start =
+    let rec scan line_start =
+      let stop = line_end line_start in
+      let line = String.sub text line_start (stop - line_start) in
+      if line = tag || line = tag ^ "\r" then Some (line_start, min n (stop + 1))
+      else if stop = n then None
+      else scan (stop + 1)
+    in
+    scan start
+  in
+  let container_error i message =
+    Error
+      [ Diag.error (Source.span source ~start_offset:i ~end_offset:(i + 3)) message ]
+  in
+  let extract_container i tag =
+    let payload_start = min n (line_end i + 1) in
+    match find_terminator tag payload_start with
+    | None -> container_error i ("C container is missing terminator `" ^ tag ^ "`")
+    | Some (terminator_start, after_terminator) ->
+        c_containers :=
+          ( i,
+            Ast.
+              {
+                tag;
+                text = String.sub text payload_start (terminator_start - payload_start);
+              } )
+          :: !c_containers;
+        blank_range buffer text payload_start after_terminator;
+        Ok after_terminator
+  in
   let rec find_body_open i quote line_comment block_comment =
     if i >= n then None
     else if line_comment then
@@ -91,7 +160,7 @@ let extract_asm source limits =
     scan (open_pos + 1) 1 None false false
   in
   let rec scan i =
-    if i >= n then Ok (Bytes.to_string buffer, List.rev !bodies)
+    if i >= n then Ok (Bytes.to_string buffer, List.rev !bodies, List.rev !c_containers)
     else if text.[i] = '"' || text.[i] = '\'' then
       let quote = text.[i] in
       let rec skip j =
@@ -110,6 +179,11 @@ let extract_asm source limits =
         else min n (j + 2)
       in
       scan (skip (i + 2))
+    else if text.[i] = 'u' && word_at text i "use" && at_line_start i then
+      match container_prefix i with
+      | None -> scan (i + 1)
+      | Some (Error message) -> container_error i message
+      | Some (Ok tag) -> Result.bind (extract_container i tag) scan
     else if word_at text i "asm" then
       let fn_pos = skip_space_comments text (i + 3) in
       if word_at text fn_pos "fn" then
@@ -175,6 +249,7 @@ module P = struct
     tokens : Token.t array;
     mutable pos : int;
     bodies : raw_body list;
+    c_containers : (int * Ast.c_fragment) list;
     limits : Limits.t;
     mutable depth : int;
     mutable nesting : int;
@@ -455,7 +530,13 @@ module P = struct
     | Token.String header ->
         ignore (bump p);
         Ok (Ast.C_quoted header)
-    | Token.Newline | Token.Eof | Token.Ltlt ->
+    | Token.Ltlt -> (
+        ignore (bump p);
+        let* tag = ident p in
+        match List.assoc_opt use_span.Span.start_offset p.c_containers with
+        | Some fragment when fragment.Ast.tag = tag -> Ok (Ast.C_fragment fragment)
+        | _ -> Error [ Diag.error use_span "C container extraction failed" ])
+    | Token.Newline | Token.Eof ->
         Error [ Diag.error use_span "use \"C\" is not implemented until v0.2" ]
     | Token.Lt ->
         ignore (bump p);
@@ -811,6 +892,8 @@ module P = struct
 
   and stmt p =
     match (peek p).kind with
+    | Token.Kw_use when List.mem_assoc (span p).Span.start_offset p.c_containers ->
+        Error [ Diag.error (span p) "C container must be at top level" ]
     | Token.Ident "view" -> view_statement p true
     | Token.Kw_return ->
         let s = span p in
@@ -1283,7 +1366,7 @@ end
 let parse ?(limits = Limits.default) source =
   match extract_asm source limits with
   | Error e -> Error e
-  | Ok (clean, bodies) -> (
+  | Ok (clean, bodies, c_containers) -> (
       let cleaned = Source.create ~file:(Source.file source) ~text:clean in
       match Lexer.lex ~limits cleaned with
       | Error e -> Error e
@@ -1293,6 +1376,7 @@ let parse ?(limits = Limits.default) source =
               P.tokens = Array.of_list tokens;
               pos = 0;
               bodies;
+              c_containers;
               limits;
               depth = 0;
               nesting = 0;

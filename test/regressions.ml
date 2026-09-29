@@ -2877,11 +2877,35 @@ let () =
   (match (parse_file "angle-use.fas" "use \"C\" <system.h>\n").Ast.items with
   | [ Ast.Use { path = "C"; c_header = Some (Ast.C_system "system.h"); _ } ] -> ()
   | _ -> failwith "use-c-angle: parser did not preserve the system header");
-  (match parse_messages "use \"C\" <<END\nint raw_fragment;\nEND\n" with
-  | [ message ] when message = "use \"C\" is not implemented until v0.2" -> ()
-  | messages ->
-      failwith
-        ("use-c-raw-rejection: unexpected diagnostics " ^ String.concat "; " messages));
+  let raw_container =
+    parse_file "raw-container.fas"
+      "  use \"C\" <<END\n/* } { */\nconst char *s = \"# Fas text\";\nEND\n"
+  in
+  (match raw_container.Ast.items with
+  | [ Ast.Use { c_header = Some (Ast.C_fragment fragment); span; _ } ]
+    when fragment.tag = "END"
+         && fragment.text = "/* } { */\nconst char *s = \"# Fas text\";\n"
+         && span.Span.line = 1 ->
+      ()
+  | _ -> failwith "use-c-container: raw text or source line was not preserved");
+  let raw_crlf =
+    parse_file "raw-container-crlf.fas" "use \"C\" <<E\r\nint raw_fragment;\r\nE"
+  in
+  (match raw_crlf.Ast.items with
+  | [ Ast.Use { c_header = Some (Ast.C_fragment fragment); span; _ } ]
+    when fragment.text = "int raw_fragment;\r\n" && span.Span.line = 1 ->
+      ()
+  | _ -> failwith "use-c-container-crlf: CRLF or EOF terminator was not accepted");
+  parse_message "use-c-container-missing-terminator"
+    "C container is missing terminator `END`" "use \"C\" <<END\nint value;\n";
+  parse_message "use-c-container-invalid-tag"
+    "C container tag must be an ASCII identifier" "use \"C\" <<9END\n9END\n";
+  parse_message "use-c-container-trailing-opener-text"
+    "trailing text after C container tag" "use \"C\" <<END trailing\nEND\n";
+  parse_message "use-c-container-nested" "C container must be at top level"
+    "fn main() i32 {\nuse \"C\" <<END\nint value;\nEND\nreturn 0 }\n";
+  parse_message "use-c-container-terminator-trailing-space"
+    "C container is missing terminator `END`" "use \"C\" <<END\nint value;\nEND \n";
   (match parse_messages "fn use() i32 { return 0 }\n" with
   | [ message ] when message = "expected identifier, found `use`" -> ()
   | messages ->
