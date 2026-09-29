@@ -313,7 +313,13 @@ let report_kept config paths opt llc cc =
 let run_llc config llc ~filetype ~input ~output =
   run_tool llc
     [|
-      llc; llc_opt config.Cli.optimization; "-filetype=" ^ filetype; input; "-o"; output;
+      llc;
+      llc_opt config.Cli.optimization;
+      "-relocation-model=pic";
+      "-filetype=" ^ filetype;
+      input;
+      "-o";
+      output;
     |]
 
 let build_assembly config ir llc opt_path asm_path =
@@ -371,7 +377,7 @@ let emit_tools_unprotected config program ir =
           Ok ""
       | Cli.Executable ->
           let* _ = build_assembly config ir llc opt_path asm_path in
-          let* () = run_tool cc [| cc; asm_path; "-o"; config.output; "-no-pie" |] in
+          let* () = run_tool cc [| cc; asm_path; "-o"; config.output |] in
           Ok ""
       | Cli.Ir | Cli.Llvm -> invalid_arg "Driver.emit_tools: non-tool emission")
 

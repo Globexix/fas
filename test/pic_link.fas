@@ -1,0 +1,13 @@
+const VALUES arr[4,u32] = {2, 5, 11, 13}
+
+extern "C" {
+    fn pic_adjust(delta u32) u32
+    fn pic_string_ok(value addr) i32
+
+    fn fas_pic_probe(index usize) u32 {
+        if pic_string_ok(c"fas-pic") != 1 {
+            return 0
+        }
+        return pic_adjust(VALUES[index])
+    }
+}

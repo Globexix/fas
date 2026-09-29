@@ -1,0 +1,6 @@
+asm fn fas_pic_add(delta u32) u32 {
+    movq pic_global@GOTPCREL(%rip), %rax
+    addl %edi, (%rax)
+    movl (%rax), %eax
+    ret
+}

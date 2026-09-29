@@ -128,8 +128,9 @@ grep -Fx 'multiple input files are not supported; use "path.fas" for dependencie
   "$WORK/stderr" >/dev/null || fail "multiple input diagnostic changed"
 for level in 0 1 2 3; do
   grep -F -- "default<O$level>" "$TOOL_LOG" >/dev/null || fail "-O$level opt pipeline missing"
-  grep -F -- "llc -O$level" "$TOOL_LOG" >/dev/null || fail "-O$level llc level missing"
+  grep -F -- "llc -O$level -relocation-model=pic" "$TOOL_LOG" >/dev/null || fail "-O$level llc PIC model missing"
 done
+if grep -F -- "-no-pie" "$TOOL_LOG" >/dev/null; then fail "executable link disabled PIE"; fi
 grep -F -- "-passes=verify" "$TOOL_LOG" >/dev/null || fail "LLVM verification missing"
 [ "$(grep -c -- "-passes=verify" "$TOOL_LOG")" -ge 8 ] || fail "LLVM was not verified before and after optimization"
 grep -F -- "-verify-each" "$TOOL_LOG" >/dev/null || fail "pass-by-pass verification missing"
@@ -170,12 +171,14 @@ cp "$WORK/good.fas" "$WORK/auto.fas"
 [ -s "$WORK/auto.o" ] || fail "default object output path was not used"
 [ ! -s "$WORK/stdout" ] && [ ! -s "$WORK/stderr" ] || fail "default object wrote diagnostics"
 
+: >"$TOOL_LOG"
 "$OCAML_FAS" -debug --keep "$WORK/good.fas" -o "$WORK/debug" >"$WORK/stdout" 2>"$WORK/stderr"
 [ ! -s "$WORK/stdout" ] || fail "--keep wrote to stdout"
 grep -F "fas: kept intermediates:" "$WORK/stderr" >/dev/null || fail "--keep omitted paths"
 grep -F "LLVM_OPT=$LLVM_OPT" "$WORK/stderr" >/dev/null || fail "--keep omitted tools"
 grep -F "passes=default<O0>" "$WORK/stderr" >/dev/null || fail "-debug did not default to O0"
 grep -F "llc -O0" "$WORK/stderr" >/dev/null || fail "-debug llc level missing"
+grep -F -- "llc -O0 -relocation-model=pic" "$TOOL_LOG" >/dev/null || fail "-debug llc PIC model missing"
 [ -n "$(find "$TMPDIR" -mindepth 1 -print -quit)" ] || fail "--keep did not retain intermediates"
 "$OCAML_FAS" -debug -O3 --keep "$WORK/good.fas" -o "$WORK/debug-o3" >"$WORK/stdout" 2>"$WORK/stderr"
 grep -F "passes=default<O3>" "$WORK/stderr" >/dev/null || fail "-debug overrode explicit -O3"
