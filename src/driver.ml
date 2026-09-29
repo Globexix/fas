@@ -330,7 +330,8 @@ let executable_command config cc asm_path c_objects =
   let argv =
     Array.of_list
       (cc :: asm_path
-      :: (c_objects @ config.Cli.link_inputs @ [ "-o"; config.Cli.output ]))
+      :: (c_objects @ config.Cli.c_flags @ config.Cli.link_inputs
+        @ [ "-o"; config.Cli.output ]))
   in
   if config.Cli.debug || config.Cli.keep then
     prerr_endline ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
@@ -504,16 +505,15 @@ let compile_c_units config cc units adapters artifacts =
         else
           let object_path = Filename.temp_file "fas-c-object-" ".o" in
           let argv =
-            [|
-              cc;
-              "--target=x86_64-unknown-linux-gnu";
-              "-fPIC";
-              llc_opt config.Cli.optimization;
-              "-c";
-              unit.unit_path;
-              "-o";
-              object_path;
-            |]
+            Array.of_list
+              ([
+                 cc;
+                 "--target=x86_64-unknown-linux-gnu";
+                 "-fPIC";
+                 llc_opt config.Cli.optimization;
+               ]
+              @ config.Cli.c_flags
+              @ [ "-c"; unit.unit_path; "-o"; object_path ])
           in
           if config.Cli.debug || config.Cli.keep then
             prerr_endline ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
@@ -641,7 +641,7 @@ let run_unprotected config =
               | (source, headers) :: rest ->
                   let* declarations, kept, artifacts =
                     C_import.import ~cc ~debug:config.Cli.debug ~keep:config.Cli.keep
-                      ~retain:true source headers
+                      ~retain:true ~c_flags:config.Cli.c_flags source headers
                   in
                   c_artifacts := artifacts @ !c_artifacts;
                   let mapped =

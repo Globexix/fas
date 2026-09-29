@@ -10,6 +10,7 @@ type t = {
   debug : bool;
   no_inline_function : string option;
   link_inputs : string list;
+  c_flags : string list;
 }
 
 type command = Run of t | Help
@@ -25,6 +26,7 @@ let usage =
   \  -O0..-O3      set opt and llc optimization levels (default -O2)\n\
   \  -debug        default to -O0; enables -no-inline; emits no DWARF info\n\
   \  -no-inline NAME  add LLVM noinline to NAME (debug only)\n\
+  \  -I DIR, -isystem DIR, -D NAME[=VALUE] (attached or separate)\n\
   \  LLVM_OPT, LLVM_LLC, CC select tools (defaults: opt-22, llc-22, clang-22)\n\
   \  FAS_OPT, FAS_LLC, FAS_CC are fallback tool aliases\n\
   \  FAS_OPT_PASSES overrides opt's pipeline (default: default<Olevel>)\n\
@@ -39,9 +41,11 @@ let default_output emit input =
 let parse argv =
   let n = Array.length argv in
   let link_inputs_rev = ref [] in
+  let c_flags_rev = ref [] in
   let add_link_inputs values =
     link_inputs_rev := List.rev_append values !link_inputs_rev
   in
+  let add_c_flags values = c_flags_rev := List.rev_append values !c_flags_rev in
   let passthrough_file file =
     List.exists (Filename.check_suffix file) [ ".c"; ".o"; ".a"; ".so" ]
   in
@@ -71,6 +75,7 @@ let parse argv =
                debug;
                no_inline_function;
                link_inputs = List.rev !link_inputs_rev;
+               c_flags = List.rev !c_flags_rev;
              })
     else
       match argv.(i) with
@@ -118,10 +123,29 @@ let parse argv =
             add_link_inputs [ flag; argv.(i + 1) ];
             loop (i + 2) input output emit keep optimization optimization_explicit debug
               no_inline_function)
+      | ("-I" | "-isystem" | "-D") as flag ->
+          if i + 1 >= n || argv.(i + 1) = "" then Error (flag ^ " requires an argument")
+          else (
+            add_c_flags [ flag; argv.(i + 1) ];
+            loop (i + 2) input output emit keep optimization optimization_explicit debug
+              no_inline_function)
       | flag
         when (String.length flag > 2 && String.sub flag 0 2 = "-l")
              || (String.length flag > 2 && String.sub flag 0 2 = "-L") ->
           add_link_inputs [ flag ];
+          loop (i + 1) input output emit keep optimization optimization_explicit debug
+            no_inline_function
+      | flag when String.starts_with ~prefix:"-isystem" flag && String.length flag > 8
+        ->
+          add_c_flags [ flag ];
+          loop (i + 1) input output emit keep optimization optimization_explicit debug
+            no_inline_function
+      | flag when String.starts_with ~prefix:"-I" flag && String.length flag > 2 ->
+          add_c_flags [ flag ];
+          loop (i + 1) input output emit keep optimization optimization_explicit debug
+            no_inline_function
+      | flag when String.starts_with ~prefix:"-D" flag && String.length flag > 2 ->
+          add_c_flags [ flag ];
           loop (i + 1) input output emit keep optimization optimization_explicit debug
             no_inline_function
       | flag

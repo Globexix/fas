@@ -10,6 +10,7 @@ type t = {
   debug : bool;
   no_inline_function : string option;
   link_inputs : string list;
+  c_flags : string list;
 }
 
 type command = Run of t | Help

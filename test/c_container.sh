@@ -62,6 +62,56 @@ for level in 0 2; do
   "$CONTAINER_TMP/object.O$level" || fail "merged object failed at O$level"
 done
 
+mkdir "$CONTAINER_TMP/include" "$CONTAINER_TMP/system"
+cat >"$CONTAINER_TMP/include/fas_config.h" <<'C'
+#if CONTAINER_VALUE != 25
+#error CONTAINER_VALUE was not passed to the header importer
+#endif
+#define FAS_HEADER_VALUE 17
+C
+cat >"$CONTAINER_TMP/system/fas_system.h" <<'C'
+#define FAS_SYSTEM_VALUE 8
+C
+cat >"$CONTAINER_TMP/quoted.h" <<'C'
+int relative_header_value(void);
+C
+cat >"$CONTAINER_TMP/include/quoted.h" <<'C'
+int relative_header_value(double value);
+C
+cat >"$CONTAINER_TMP/preprocessor.fas" <<'FAS'
+use "C" "quoted.h"
+use "C" <<END
+#include <fas_config.h>
+#include <fas_system.h>
+int container_value(void) {
+  return FAS_HEADER_VALUE + FAS_SYSTEM_VALUE + CONTAINER_VALUE;
+}
+int relative_header_value(void) { return 1; }
+END
+extern "C" {
+  fn linked_c_value() i32
+}
+fn main() i32 {
+  return container_value() + linked_c_value() + relative_header_value() - 101
+}
+FAS
+cat >"$CONTAINER_TMP/link-input.c" <<'C'
+#include <fas_config.h>
+#include <fas_system.h>
+int linked_c_value(void) {
+  return FAS_HEADER_VALUE + FAS_SYSTEM_VALUE + CONTAINER_VALUE;
+}
+C
+"$OCAML_FAS" -O2 -debug -I "$CONTAINER_TMP/include" \
+  -isystem"$CONTAINER_TMP/system" -D CONTAINER_VALUE=25 \
+  "$CONTAINER_TMP/preprocessor.fas" "$CONTAINER_TMP/link-input.c" \
+  -o "$CONTAINER_TMP/preprocessor" >"$CONTAINER_TMP/stdout" \
+  2>"$CONTAINER_TMP/stderr"
+"$CONTAINER_TMP/preprocessor" || fail "preprocessor flags did not reach C sources"
+grep -F -- "-I $CONTAINER_TMP/include -isystem$CONTAINER_TMP/system -D CONTAINER_VALUE=25" \
+  "$CONTAINER_TMP/stderr" >/dev/null \
+  || fail "Clang commands omitted ordered preprocessor flags"
+
 cat >"$CONTAINER_TMP/header-only.fas" <<'FAS'
 use "C" <stdint.h>
 fn main() i32 { return 0 }

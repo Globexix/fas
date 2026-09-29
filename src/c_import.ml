@@ -93,7 +93,7 @@ let error_span (headers : header list) line =
   | None -> (List.hd headers).span
   | Some header -> header.span
 
-let import ~cc ~debug ~keep ?(retain = false) source headers =
+let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) source headers =
   let unit_path = Filename.temp_file "fas-c-import-" ".c" in
   let json_path = Filename.temp_file "fas-c-import-" ".json" in
   let fragment_paths = ref [] in
@@ -128,20 +128,20 @@ let import ~cc ~debug ~keep ?(retain = false) source headers =
               output_string channel (include_line source fragment_path header))
             headers);
       let argv =
-        [|
-          cc;
-          "-x";
-          "c";
-          "-fsyntax-only";
-          "-Xclang";
-          "-ast-dump=json";
-          "-Xclang";
-          "-skip-function-bodies";
-          "--target=x86_64-unknown-linux-gnu";
-          "-iquote";
-          Filename.dirname source;
-          unit_path;
-        |]
+        Array.of_list
+          ([
+             cc;
+             "-x";
+             "c";
+             "-fsyntax-only";
+             "-Xclang";
+             "-ast-dump=json";
+             "-Xclang";
+             "-skip-function-bodies";
+             "--target=x86_64-unknown-linux-gnu";
+           ]
+          @ c_flags
+          @ [ "-iquote"; Filename.dirname source; unit_path ])
       in
       if debug || keep then
         prerr_endline

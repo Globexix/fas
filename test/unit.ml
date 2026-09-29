@@ -1295,6 +1295,38 @@ let () =
   assert (
     cli_links.Cli.input = "prog.fas"
     && cli_links.link_inputs = [ "-L"; "lib"; "helper.c"; "-lm"; "obj.o" ]);
+  let cli_c_flags =
+    expect_cli
+      (Cli.parse
+         [|
+           "fas";
+           "-I";
+           "include dir";
+           "-Isecond";
+           "-isystem";
+           "system dir";
+           "-isystemthird";
+           "-D";
+           "FEATURE=7";
+           "-DOTHER=9";
+           "prog.fas";
+           "helper.c";
+         |])
+  in
+  assert (
+    cli_c_flags.Cli.c_flags
+    = [
+        "-I";
+        "include dir";
+        "-Isecond";
+        "-isystem";
+        "system dir";
+        "-isystemthird";
+        "-D";
+        "FEATURE=7";
+        "-DOTHER=9";
+      ]
+    && cli_c_flags.link_inputs = [ "helper.c" ]);
   (match Cli.parse [| "fas"; "--emit-llvm"; "prog.fas"; "helper.c" |] with
   | Error message ->
       assert (message = "C inputs and link flags require an executable output")
@@ -1321,7 +1353,7 @@ let () =
     && cli_named_obj.output = "artifact"
     && cli_named_obj.output_explicit);
   (match Cli.parse [| "fas"; "--help" |] with
-  | Ok Cli.Help -> ()
+  | Ok Cli.Help -> assert (contains Cli.usage "-I DIR, -isystem DIR, -D NAME[=VALUE]")
   | Ok (Cli.Run _) | Error _ -> assert false);
   let input_path = Filename.temp_file "fas-driver-" ".fas" in
   Fun.protect
