@@ -744,6 +744,20 @@ and generic_const_argument span = function
       Ok (Ast.Select (Ast.Ident (name, span), [ Ast.Const_arg index ], span))
   | Ast.Type_arg _ -> error span "expected a const argument"
 
+and volatile_access_type c name span arguments =
+  let* access_ty =
+    match arguments with
+    | [ Ast.Type_arg ty ] -> source_ty_in_context c span ty
+    | [ Ast.Name_arg (name, name_span) ] ->
+        source_ty_in_context c name_span (Ast.Named_type name)
+    | _ -> error span (Printf.sprintf "builtin `%s` expects one type argument" name)
+  in
+  match access_ty with
+  | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ -> Ok access_ty
+  | _ ->
+      error span
+        "volatile access type must be a scalar integer, bool, addr, or handle[T]"
+
 and check_handle_from_addr c name opaque_name args s =
   if List.length args <> 1 then
     error s (Printf.sprintf "builtin `%s` expects one argument" name)
@@ -783,6 +797,23 @@ and check_call c _expected fn args s =
           in
           check_handle_from_addr c name opaque_name args s
       | _ -> error s (Printf.sprintf "builtin `%s` expects a type argument" name))
+  | Ast.Generic_args (Ast.Ident ("volatile_load", _), generic_args, application_span) ->
+      let* access_ty =
+        volatile_access_type c "volatile_load" application_span generic_args
+      in
+      if List.length args <> 1 then
+        error s "builtin `volatile_load` expects one argument"
+      else
+        let pointer_arg = List.hd args in
+        let* pointer = check_expr c (Some Hir.Addr) pointer_arg in
+        let* () =
+          ensure_expected (Hir.expr_ty pointer) Hir.Addr (Ast.expr_span pointer_arg)
+        in
+        Ok
+          (Hir.Call
+             (Hir.Builtin (Hir.Volatile_load access_ty), [ pointer ], access_ty, s))
+  | Ast.Generic_args (Ast.Ident ("volatile_store", _), _, _) ->
+      error s "volatile_store is statement-only"
   | Ast.Generic_args (Ast.Ident (name, _), generic_args, application_span) -> (
       match lookup_local name c with
       | Some _ -> error s (Printf.sprintf "`%s` is a value, not a function" name)
@@ -890,6 +921,10 @@ and check_call c _expected fn args s =
                 let* checked = check_actuals c Reject s ps args in
                 Ok (Hir.Call (Hir.User specialization.name, checked, rt, s))
           | Some _ -> error s "const-generic symbol is not a function"))
+  | Ast.Ident ("volatile_load", _) ->
+      error s "builtin `volatile_load` expects one type argument"
+  | Ast.Ident ("volatile_store", _) ->
+      error s "builtin `volatile_store` expects one type argument"
   | Ast.Ident (name, _) when Names.value_operation name = Some Names.Len ->
       if List.length args <> 1 then error s "builtin `len` expects one argument"
       else
@@ -1523,6 +1558,29 @@ and check_stmt (c : context) = function
         if Sema_flow.falls_through c.flow then validate_exit_defers c 0 else Ok ()
       in
       Ok (Hir.Return (x, span))
+  | Ast.Expr_stmt
+      ( Ast.Call
+          ( Ast.Generic_args
+              (Ast.Ident ("volatile_store", _), generic_args, application_span),
+            args,
+            call_span ),
+        span ) ->
+      let* access_ty =
+        volatile_access_type c "volatile_store" application_span generic_args
+      in
+      if List.length args <> 2 then
+        error call_span "builtin `volatile_store` expects two arguments"
+      else
+        let pointer_arg = List.nth args 0 and value_arg = List.nth args 1 in
+        let* pointer = check_expr c (Some Hir.Addr) pointer_arg in
+        let* () =
+          ensure_expected (Hir.expr_ty pointer) Hir.Addr (Ast.expr_span pointer_arg)
+        in
+        let* value = check_expr c (Some access_ty) value_arg in
+        let* () =
+          ensure_expected (Hir.expr_ty value) access_ty (Ast.expr_span value_arg)
+        in
+        Ok (Hir.Volatile_store (access_ty, pointer, value, span))
   | Ast.Expr_stmt (e, s) ->
       let* x = check_expr c None e in
       Ok (Hir.Expr (x, s))

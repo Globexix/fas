@@ -659,6 +659,25 @@ and lower_builtin s b args t span =
   let* vs = exprs s args in
   let rt = ty t in
   match (b, vs) with
+  | Volatile_load access_ty, [ pointer ] -> (
+      match access_ty with
+      | Hir.Bool ->
+          let loaded = fresh s in
+          emit s (Ir.Load_volatile (loaded, Ir.I8, pointer, 1));
+          let normalized = fresh s in
+          emit s
+            (Ir.Cmp
+               (normalized, Ir.Ne, Ir.I8, Ir.Local (loaded, Ir.I8), Ir.Const (Ir.I8, 0L)));
+          Ok (Ir.Local (normalized, Ir.I1))
+      | Hir.Int _ ->
+          let loaded = fresh s in
+          emit s (Ir.Load_volatile (loaded, ty access_ty, pointer, 1));
+          Ok (Ir.Local (loaded, ty access_ty))
+      | Hir.Addr | Hir.Handle _ ->
+          let loaded = fresh s in
+          emit s (Ir.Load_volatile (loaded, Ir.Pointer Ir.I8, pointer, 1));
+          Ok (Ir.Local (loaded, Ir.Pointer Ir.I8))
+      | _ -> error span "internal error: invalid volatile access type")
   | Addr_bits, [ x ] ->
       let id = fresh s in
       emit s (Ir.Cast (id, "ptrtoint", Ir.value_ty x, x, rt));
@@ -735,7 +754,7 @@ and lower_builtin s b args t span =
             | ( ( Rotl | Rotr | Popcount | Ctz | Clz | Mul_hi | Any | All | Select
                 | Shuffle | Permute | Reduce_sum | Reduce_min | Reduce_max | Reduce_and
                 | Reduce_or | Reduce_xor | Compress | Expand | Addr_bits
-                | Addr_from_bits | Handle_addr | Handle_from_addr _ ),
+                | Addr_from_bits | Handle_addr | Handle_from_addr _ | Volatile_load _ ),
                 _ ) ->
                 error span "internal error: invalid saturating builtin")
       in
@@ -1277,6 +1296,22 @@ and stmt s = function
         bind_local s local pointer;
         Ok ())
       else error span "internal error: view address has the wrong type"
+  | Hir.Volatile_store (access_ty, pointer_expr, value_expr, span) -> (
+      let* pointer = expr s pointer_expr in
+      let* value = expr s value_expr in
+      match access_ty with
+      | Hir.Bool ->
+          let stored = fresh s in
+          emit s (Ir.Cast (stored, "zext", Ir.I1, value, Ir.I8));
+          emit s (Ir.Store_volatile (Ir.I8, Ir.Local (stored, Ir.I8), pointer, 1));
+          Ok ()
+      | Hir.Int _ ->
+          emit s (Ir.Store_volatile (ty access_ty, value, pointer, 1));
+          Ok ()
+      | Hir.Addr | Hir.Handle _ ->
+          emit s (Ir.Store_volatile (Ir.Pointer Ir.I8, value, pointer, 1));
+          Ok ()
+      | _ -> error span "internal error: invalid volatile access type")
   | Hir.Assign (target, e, _) -> (
       match target with
       | Hir.AIndex (a, i) when match Hir.expr_ty a with Hir.Vec _ -> true | _ -> false

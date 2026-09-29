@@ -45,7 +45,9 @@ type instr =
   | Cmp of int * cmp * ty * value * value
   | Alloca of int * ty * int
   | Load of int * ty * value * int
+  | Load_volatile of int * ty * value * int
   | Store of ty * value * value * int
+  | Store_volatile of ty * value * value * int
   | Gep of int * ty * value * gep_index list
   | Cast of int * string * ty * value * ty
   | Call of int option * extension * ty * string * (ty * extension * value) list
@@ -203,6 +205,7 @@ let validate_value_form = function
 let instruction_result = function
   | Bin (id, _, ty, _, _)
   | Load (id, ty, _, _)
+  | Load_volatile (id, ty, _, _)
   | Cast (id, _, _, _, ty)
   | Phi (id, ty, _)
   | Insert (id, ty, _, _, _)
@@ -218,7 +221,7 @@ let instruction_result = function
   | Call (Some id, _, ty, _, _) -> Some (id, ty)
   | String_ptr (id, _, _) -> Some (id, Pointer I8)
   | Global_ptr (id, _, ty) -> Some (id, Pointer ty)
-  | Store _ | Call (None, _, _, _, _) | Trap -> None
+  | Store _ | Store_volatile _ | Call (None, _, _, _, _) | Trap -> None
 
 let terminator_successors = function
   | Ret _ | Unreachable -> []
@@ -456,13 +459,14 @@ let validate_function struct_names globals (func : func) =
         if not (valid_module_value_type ty) then
           fail "block %d allocates an invalid type" block_id
         else validate_alignment block_id alignment
-    | Load (_, ty, pointer, alignment) ->
+    | Load (_, ty, pointer, alignment) | Load_volatile (_, ty, pointer, alignment) ->
         if not (valid_module_value_type ty) then
           fail "block %d loads an invalid type" block_id
         else
           let* () = pointer_operand block_id pointer in
           validate_alignment block_id alignment
-    | Store (ty, value, pointer, alignment) ->
+    | Store (ty, value, pointer, alignment)
+    | Store_volatile (ty, value, pointer, alignment) ->
         if not (valid_module_value_type ty) then
           fail "block %d stores an invalid type" block_id
         else
@@ -684,7 +688,9 @@ let validate_function struct_names globals (func : func) =
     let instruction_uses = function
       | Bin (_, _, _, left, right) | Cmp (_, _, _, left, right) -> [ left; right ]
       | Load (_, _, pointer, _) -> [ pointer ]
+      | Load_volatile (_, _, pointer, _) -> [ pointer ]
       | Store (_, value, pointer, _) -> [ value; pointer ]
+      | Store_volatile (_, value, pointer, _) -> [ value; pointer ]
       | Gep (_, _, pointer, indices) ->
           pointer
           :: List.filter_map
@@ -1114,8 +1120,26 @@ let emit_instr sink = function
       emit_value sink p;
       sink.text ", align ";
       sink.text (string_of_int a)
+  | Load_volatile (i, t, p, a) ->
+      sink.text "  %v";
+      sink.text (string_of_int i);
+      sink.text " = load volatile ";
+      emit_ty sink t;
+      sink.text ", ptr ";
+      emit_value sink p;
+      sink.text ", align ";
+      sink.text (string_of_int a)
   | Store (t, v, p, a) ->
       sink.text "  store ";
+      emit_ty sink t;
+      sink.text " ";
+      emit_value sink v;
+      sink.text ", ptr ";
+      emit_value sink p;
+      sink.text ", align ";
+      sink.text (string_of_int a)
+  | Store_volatile (t, v, p, a) ->
+      sink.text "  store volatile ";
       emit_ty sink t;
       sink.text " ";
       emit_value sink v;

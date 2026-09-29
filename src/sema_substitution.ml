@@ -232,6 +232,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Call (callee, arguments, _) ->
         let* () = validate_expression_names value_names type_names callee in
         Result_list.iter (validate_expression_names value_names type_names) arguments
+    | Ast.Generic_args (Ast.Ident (name, _), arguments, span)
+      when name = "volatile_load" || name = "volatile_store" ->
+        Result_list.iter
+          (validate_generic_argument_names value_names type_names span)
+          arguments
     | Ast.Generic_args (Ast.Ident (name, span), arguments, application_span) ->
         let* () =
           match nearest_kind value_names type_names name with
@@ -1149,6 +1154,28 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             arguments
         in
         Ok (Ast.Call (callee, arguments, span))
+    | Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span)
+      when name = "volatile_load" || name = "volatile_store" ->
+        let resolve_argument = function
+          | Ast.Type_arg ty ->
+              let* ty =
+                resolve_ty ~values ~defer_const_structs substitutions depth span ty
+              in
+              Ok (Ast.Type_arg ty)
+          | Ast.Name_arg (name, name_span) ->
+              let* ty =
+                resolve_ty ~values ~defer_const_structs substitutions depth name_span
+                  (Ast.Named_type name)
+              in
+              Ok (Ast.Type_arg ty)
+          | Ast.Const_arg expression ->
+              let* expression =
+                resolve_expr ~values ~defer_const_structs substitutions depth expression
+              in
+              Ok (Ast.Const_arg expression)
+        in
+        let* arguments = Result_list.map resolve_argument arguments in
+        Ok (Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span))
     | Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span) -> (
         match List.assoc_opt name function_templates with
         | None ->

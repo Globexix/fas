@@ -1,0 +1,28 @@
+extern "C" {
+  fn fas_run() void {
+    p addr = volatile_slot()
+    i u32 = 0
+    while i < 128 {
+      volatile_store[u32](p, i)
+      i += 1
+    }
+
+    dead arr[128, u32]
+    j usize = 0
+    while j < 128 {
+      dead[j] = trunc[u32](j)
+      j += 1
+    }
+  }
+
+  fn fas_read_bool(p addr) bool {
+    return volatile_load[bool](p)
+  }
+
+  fn fas_write_bool(p addr, value bool) void {
+    volatile_store[bool](p, value)
+  }
+
+  fn volatile_slot() addr
+  fn observed_slot() u32
+}

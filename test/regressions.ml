@@ -6942,5 +6942,61 @@ let () =
       if not (contains raw_normalize_shape marker) then
         failwith ("raw-normalize-shape: missing `" ^ marker ^ "`"))
     [ "zext i16"; "sub i64 0" ];
+  let volatile_shapes =
+    llvm_of
+      "opaque Token\n\
+       fn load_bool(p addr) bool { return volatile_load[bool](p) }\n\
+       fn load_integer(p addr) u32 { return volatile_load[u32](p) }\n\
+       fn load_address(p addr) addr { return volatile_load[addr](p) }\n\
+       fn generic_load[T](p addr) T { return volatile_load[T](p) }\n\
+       fn use_generic(p addr) u32 { return generic_load[u32](p) }\n\
+       fn store_handle(p addr, value handle[Token]) void {\n\
+       volatile_store[handle[Token]](p, value)\n\
+       return\n\
+       }\n\
+       fn store_bool(p addr, value bool) void {\n\
+       volatile_store[bool](p, value)\n\
+       return\n\
+       }\n\
+       fn store_only(p addr) void {\n\
+       volatile_store[u32](p, 7)\n\
+       return\n\
+       }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains volatile_shapes marker) then
+        failwith ("volatile-shape: missing `" ^ marker ^ "`"))
+    [
+      "load volatile i8, ptr";
+      "load volatile i32, ptr";
+      "load volatile ptr, ptr";
+      "store volatile i8";
+      "store volatile ptr";
+      "icmp ne i8";
+      "zext i1";
+      ", align 1";
+    ];
+  let volatile_store_only =
+    llvm_of "fn store_only(p addr) void {\nvolatile_store[u32](p, 7)\nreturn\n}\n"
+  in
+  if not (contains volatile_store_only "store volatile i32") then
+    failwith "volatile-store-no-read: missing volatile store";
+  if contains volatile_store_only "load i32" then
+    failwith "volatile-store-no-read: emitted a destination load";
+  semantic_error "volatile-array" "scalar integer, bool, addr, or handle[T]"
+    "fn f(p addr) u32 { return volatile_load[arr[2,u32]](p) }\n";
+  semantic_error "volatile-vector" "scalar integer, bool, addr, or handle[T]"
+    "fn f(p addr) vec[2,u32] { return volatile_load[vec[2,u32]](p) }\n";
+  semantic_error "volatile-struct" "scalar integer, bool, addr, or handle[T]"
+    "struct S { value u32 }\nfn f(p addr) S { return volatile_load[S](p) }\n";
+  semantic_error "volatile-store-expression" "volatile_store is statement-only"
+    "fn f(p addr) u32 { return volatile_store[u32](p, 1) }\n";
+  semantic_error "volatile-load-type-argument" "expects one type argument"
+    "fn f(p addr) u32 { return volatile_load(p) }\n";
+  semantic_error "volatile-store-arity" "expects two arguments"
+    "fn f(p addr) void {\nvolatile_store[u32](p)\nreturn\n}\n";
+  semantic_error "volatile-value-type" "type mismatch: expected u32, got bool"
+    "fn f(p addr) void {\nvolatile_store[u32](p, true)\nreturn\n}\n";
 
   Printf.printf "regression checks: %d passed\n" !checks_run
