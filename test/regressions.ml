@@ -2417,6 +2417,82 @@ let () =
     || (not (contains hexadecimal_byte_literals "[2 x i8] c\"A4\""))
     || not (contains hexadecimal_byte_literals "ret i64 4\n")
   then failwith "hex-byte-escape: decoded bytes or fixed width changed";
+  let char_literal body = "'" ^ body ^ "'" in
+  let slash = "\\" in
+  let escaped_characters =
+    List.map
+      (fun (body, value) -> (char_literal body, value))
+      [
+        (slash ^ "n", 10);
+        (slash ^ "r", 13);
+        (slash ^ "t", 9);
+        (slash ^ slash, 92);
+        (slash ^ "'", 39);
+        (slash ^ "\"", 34);
+        (slash ^ "0", 0);
+        (slash ^ "x41", 65);
+        (slash ^ "xFF", 255);
+      ]
+  in
+  let printable_characters =
+    List.init 95 (fun index -> index + 32)
+    |> List.filter (fun value -> value <> 39 && value <> 92)
+    |> List.map (fun value -> (char_literal (String.make 1 (Char.chr value)), value))
+  in
+  let all_characters = escaped_characters @ printable_characters in
+  let character_bytes =
+    Printf.sprintf
+      "const CharacterBytes arr[%d,u8] = {%s}\n\
+       fn main() u8 { return CharacterBytes[0] }\n"
+      (List.length all_characters)
+      (all_characters |> List.map fst |> String.concat ", ")
+  in
+  semantic_accept "character-literal-all-values" character_bytes;
+  let character_byte_llvm = llvm_of character_bytes in
+  if
+    not
+      (contains character_byte_llvm
+         (Printf.sprintf "[%d x i8] [%s]" (List.length all_characters)
+            (String.concat ", "
+               (List.map
+                  (fun (_, value) -> Printf.sprintf "i8 %d" value)
+                  all_characters))))
+  then failwith "character-literal-values: byte values changed";
+  let character_contexts =
+    "const CharacterConst i32 = 'a'\n\
+     fn compare_byte(value u8) bool { return value == 'a' }\n\
+     fn case_byte(value u8) bool {\n\
+     switch value {\n\
+     case 'a': return true\n\
+     default: return false\n\
+     }\n\
+     }\n\
+     fn main() i32 {\n\
+     a u8 = 'a'\n\
+     b i8 = 'a'\n\
+     c i32 = 'a'\n\
+     d u64 = 'a'\n\
+     e usize = 'a'\n\
+     values arr[1,u8] = {'a'}\n\
+     if compare_byte(values[0]) && case_byte(a) && CharacterConst == c && b == 97 && d \
+     == 97 && e == 97 { return 0 }\n\
+     return 1\n\
+     }\n"
+  in
+  semantic_accept "character-literal-contexts" character_contexts;
+  let negative_character = llvm_of "fn main() i32 { return -'a' }\n" in
+  if not (contains negative_character "ret i32 4294967199\n") then
+    failwith "character-literal-unary-minus: expected -97";
+  semantic_error "character-literal-i8-overflow"
+    "integer literal is out of range for i8"
+    "const Invalid i8 = '\\xFF'\nfn main() i8 { return Invalid }\n";
+  let apostrophe_escape_string =
+    llvm_of
+      "fn read(p addr) u8 { return p[u8,2] }\n\
+       fn main() u8 { return read(\"it\\'s\") }\n"
+  in
+  if not (contains apostrophe_escape_string "[4 x i8] c\"it's\"") then
+    failwith "string-apostrophe-escape: decoded bytes changed";
   semantic_error "fas-030-string-literal-fixed-array"
     "type mismatch: expected arr[3, u8], got addr"
     "fn main() i32 { bytes arr[3,u8] = \"abc\"\n return 0 }\n";
@@ -2970,8 +3046,6 @@ let () =
     failwith "released-unreserved-name: member labels stopped compiling";
   parse_error_message "floating-literal-unavailable" "expected identifier, found `5`"
     "fn main() i32 { return 1.5 }\n";
-  parse_error_message "character-literal-unavailable" "unexpected character"
-    "fn main() i32 { return 'a' }\n";
   parse_error "labeled-break-rejected" "fn f() void { while true { break outer } }\n";
 
   let hygienic_parameter_names =
@@ -3880,6 +3954,35 @@ let () =
   (match string_literal_messages with
   | [ "unterminated string literal" ] -> ()
   | _ -> failwith "string-literal: wrong message");
+  let character_literal_messages =
+    [
+      ("character-empty", "''", "empty character literal");
+      ("character-two-bytes", "'ab'", "character literal must contain exactly one byte");
+      ( "character-four-bytes",
+        "'abcd'",
+        "character literal must contain exactly one byte" );
+      ( "character-non-ascii",
+        "'" ^ "\195\169" ^ "'",
+        "character literal must be printable ASCII; use \\xNN" );
+      ( "character-raw-tab",
+        "'" ^ "\t" ^ "'",
+        "character literal must be printable ASCII; use \\xNN" );
+      ("character-unknown-escape", "'\\q'", "unknown string escape");
+      ( "character-short-hex",
+        "'\\x4'",
+        "hex escape must be followed by exactly two hexadecimal digits" );
+      ("character-unterminated-line", "'a\n", "unterminated character literal");
+      ("character-unterminated-crlf", "'a\r\n", "unterminated character literal");
+      ("character-unterminated-file", "'a", "unterminated character literal");
+    ]
+  in
+  List.iter
+    (fun (name, literal, expected) ->
+      let messages = parse_messages ("fn main() i32 { return 0 }\n" ^ literal) in
+      match messages with
+      | [ message ] when message = expected -> ()
+      | _ -> failwith (name ^ ": wrong message " ^ String.concat "; " messages))
+    character_literal_messages;
   let integer_literal_messages =
     parse_messages "fn main() i64 { x i64 = 0x\n return 0 }\n"
   in

@@ -33,6 +33,38 @@ let lex ?(limits = Limits.default) source =
       (Source.span source ~start_offset:offset ~end_offset:(min n (offset + 1)))
       message
   in
+  let at_line_end offset =
+    offset >= n
+    || text.[offset] = '\n'
+    || (text.[offset] = '\r' && offset + 1 < n && text.[offset + 1] = '\n')
+  in
+  let decode_escape i =
+    if i + 1 >= n then Error [ diagnostic i "unterminated escape" ]
+    else if text.[i + 1] = 'x' then
+      if i + 3 >= n || (not (is_hex text.[i + 2])) || not (is_hex text.[i + 3]) then
+        Error
+          [
+            diagnostic i "hex escape must be followed by exactly two hexadecimal digits";
+          ]
+      else
+        let value = int_of_string ("0x" ^ String.sub text (i + 2) 2) in
+        Ok (i + 4, Char.chr value)
+    else
+      let value =
+        match text.[i + 1] with
+        | 'n' -> Some '\n'
+        | 't' -> Some '\t'
+        | 'r' -> Some '\r'
+        | '\\' -> Some '\\'
+        | '\'' -> Some '\''
+        | '"' -> Some '"'
+        | '0' -> Some '\000'
+        | _ -> None
+      in
+      match value with
+      | None -> Error [ diagnostic i "unknown string escape" ]
+      | Some value -> Ok (i + 2, value)
+  in
   let rec loop offset count tokens =
     if offset >= n then
       let sp = Source.span source ~start_offset:n ~end_offset:n in
@@ -110,6 +142,41 @@ let lex ?(limits = Limits.default) source =
         else
           let sp = Source.span source ~start_offset:offset ~end_offset:stop in
           loop stop (count + 1) ({ Token.kind = Token.Int clean; span = sp } :: tokens)
+      else if c = '\'' then
+        let rec character_end i buffer =
+          if at_line_end i then
+            Error [ diagnostic offset "unterminated character literal" ]
+          else if text.[i] = '\'' then
+            let value = Buffer.contents buffer in
+            if value = "" then Error [ diagnostic offset "empty character literal" ]
+            else if String.length value <> 1 then
+              Error
+                [ diagnostic offset "character literal must contain exactly one byte" ]
+            else
+              let stop = i + 1 in
+              let sp = Source.span source ~start_offset:offset ~end_offset:stop in
+              let integer = string_of_int (Char.code value.[0]) in
+              loop stop (count + 1)
+                ({ Token.kind = Token.Int integer; span = sp } :: tokens)
+          else if text.[i] = '\\' then (
+            if at_line_end (i + 1) then
+              Error [ diagnostic offset "unterminated character literal" ]
+            else
+              match decode_escape i with
+              | Error diagnostics -> Error diagnostics
+              | Ok (next, value) ->
+                  Buffer.add_char buffer value;
+                  character_end next buffer)
+          else if Char.code text.[i] < 32 || Char.code text.[i] > 126 then
+            Error
+              [ diagnostic i "character literal must be printable ASCII; use \\xNN" ]
+          else (
+            Buffer.add_char buffer text.[i];
+            character_end (i + 1) buffer)
+        in
+        match character_end (offset + 1) (Buffer.create 1) with
+        | Error diagnostics -> Error diagnostics
+        | Ok _ as result -> result
       else if c = '"' || (c = 'c' && offset + 1 < n && text.[offset + 1] = '"') then
         let string_start = if c = 'c' then offset + 1 else offset in
         let rec string_end i buffer =
@@ -119,39 +186,11 @@ let lex ?(limits = Limits.default) source =
             | '"' -> Ok (i + 1, Buffer.contents buffer)
             | '\\' when i + 1 >= n -> Error [ diagnostic i "unterminated escape" ]
             | '\\' -> (
-                match text.[i + 1] with
-                | 'x' ->
-                    if
-                      i + 3 >= n
-                      || (not (is_hex text.[i + 2]))
-                      || not (is_hex text.[i + 3])
-                    then
-                      Error
-                        [
-                          diagnostic i
-                            "hex escape must be followed by exactly two hexadecimal \
-                             digits";
-                        ]
-                    else
-                      let value = int_of_string ("0x" ^ String.sub text (i + 2) 2) in
-                      Buffer.add_char buffer (Char.chr value);
-                      string_end (i + 4) buffer
-                | escaped -> (
-                    let value =
-                      match escaped with
-                      | 'n' -> Some '\n'
-                      | 't' -> Some '\t'
-                      | 'r' -> Some '\r'
-                      | '\\' -> Some '\\'
-                      | '"' -> Some '"'
-                      | '0' -> Some '\000'
-                      | _ -> None
-                    in
-                    match value with
-                    | None -> Error [ diagnostic i "unknown string escape" ]
-                    | Some v ->
-                        Buffer.add_char buffer v;
-                        string_end (i + 2) buffer))
+                match decode_escape i with
+                | Error diagnostics -> Error diagnostics
+                | Ok (next, value) ->
+                    Buffer.add_char buffer value;
+                    string_end next buffer)
             | value ->
                 Buffer.add_char buffer value;
                 string_end (i + 1) buffer
