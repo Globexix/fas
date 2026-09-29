@@ -119,21 +119,39 @@ let lex ?(limits = Limits.default) source =
             | '"' -> Ok (i + 1, Buffer.contents buffer)
             | '\\' when i + 1 >= n -> Error [ diagnostic i "unterminated escape" ]
             | '\\' -> (
-                let value =
-                  match text.[i + 1] with
-                  | 'n' -> Some '\n'
-                  | 't' -> Some '\t'
-                  | 'r' -> Some '\r'
-                  | '\\' -> Some '\\'
-                  | '"' -> Some '"'
-                  | '0' -> Some '\000'
-                  | _ -> None
-                in
-                match value with
-                | None -> Error [ diagnostic i "unknown string escape" ]
-                | Some v ->
-                    Buffer.add_char buffer v;
-                    string_end (i + 2) buffer)
+                match text.[i + 1] with
+                | 'x' ->
+                    if
+                      i + 3 >= n
+                      || (not (is_hex text.[i + 2]))
+                      || not (is_hex text.[i + 3])
+                    then
+                      Error
+                        [
+                          diagnostic i
+                            "hex escape must be followed by exactly two hexadecimal \
+                             digits";
+                        ]
+                    else
+                      let value = int_of_string ("0x" ^ String.sub text (i + 2) 2) in
+                      Buffer.add_char buffer (Char.chr value);
+                      string_end (i + 4) buffer
+                | escaped -> (
+                    let value =
+                      match escaped with
+                      | 'n' -> Some '\n'
+                      | 't' -> Some '\t'
+                      | 'r' -> Some '\r'
+                      | '\\' -> Some '\\'
+                      | '"' -> Some '"'
+                      | '0' -> Some '\000'
+                      | _ -> None
+                    in
+                    match value with
+                    | None -> Error [ diagnostic i "unknown string escape" ]
+                    | Some v ->
+                        Buffer.add_char buffer v;
+                        string_end (i + 2) buffer))
             | value ->
                 Buffer.add_char buffer value;
                 string_end (i + 1) buffer

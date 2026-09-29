@@ -455,12 +455,9 @@ and check_expr (c : context) expected expression =
       | Some (Hir.Addr | Hir.Handle _) as ty -> Ok (Hir.Null (Option.get ty, s))
       | _ -> error s "null requires an addr or handle context")
   | Ast.String_lit (cstr, v, s) ->
-      if cstr && String.contains v '\000' then
-        error s "C string literal cannot contain embedded NUL"
-      else
-        let value = if cstr then v ^ "\000" else v in
-        let* id = intern_string c s value in
-        Ok (Hir.EString (id, s))
+      let value = if cstr then v ^ "\000" else v in
+      let* id = intern_string c s value in
+      Ok (Hir.EString (id, s))
   | Ast.Ident (n, s) -> (
       match lookup_local n c with
       | Some b ->
@@ -1111,10 +1108,7 @@ and check_call c _expected fn args s =
         let argument = List.hd args in
         let* n =
           match argument with
-          | Ast.String_lit (cstr, value, _) ->
-              if cstr && String.contains value '\000' then
-                error s "C string literal cannot contain embedded NUL"
-              else Ok (String.length value)
+          | Ast.String_lit (_, value, _) -> Ok (String.length value)
           | _ -> (
               let* value = check_expr c None argument in
               match Hir.expr_ty value with

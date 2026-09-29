@@ -10,4 +10,36 @@ extern "C" {
   fn fas_c_payload_length() usize {
     return len(c"fas")
   }
+
+  fn fas_hex_ordinary_bytes() addr {
+    return "\x41\x00\x42"
+  }
+
+  fn fas_hex_ordinary_length() usize {
+    return len("\x41\x00\x42")
+  }
+
+  fn fas_hex_c_bytes() addr {
+    return c"\x41\x00\x42"
+  }
+
+  fn fas_zero_c_bytes() addr {
+    return c"A\0B"
+  }
+
+  fn fas_hex_c_length() usize {
+    return len(c"\x41\x00\x42")
+  }
+
+  fn fas_hex_case_bytes() addr {
+    return "\x4a\xAb"
+  }
+
+  fn fas_hex_fixed_width_bytes() addr {
+    return "\x414"
+  }
+
+  fn fas_hex_fixed_width_length() usize {
+    return len("\x414")
+  }
 }

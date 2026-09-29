@@ -449,10 +449,8 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
           | _ -> v
       in
       Ok (dt, mask_value dt result)
-  | Ast.Call (Ast.Ident ("len", _), [ Ast.String_lit (cstr, v, _) ], s) ->
-      if cstr && String.contains v '\000' then
-        error s "C string literal cannot contain embedded NUL"
-      else Ok (Hir.Int Hir.Usize, Int64.of_int (String.length v))
+  | Ast.Call (Ast.Ident ("len", _), [ Ast.String_lit (_, v, _) ], _) ->
+      Ok (Hir.Int Hir.Usize, Int64.of_int (String.length v))
   | Ast.Call (Ast.Ident ("len", _), [ Ast.Ident (name, _) ], s) -> (
       match lookup name arrays with
       | Some (_, Hir.Array (n, _), _) -> Ok (Hir.Int Hir.Usize, Int64.of_int n)
