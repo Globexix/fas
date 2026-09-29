@@ -8529,6 +8529,14 @@ let () =
       ("FAS_IMPLICIT_NEAR_MAX", 2147483646L);
       ("FAS_IMPLICIT_INT_MAX", 2147483647L);
     ];
+  let c_records = c_import_fixture "records.h" in
+  c_semantic_accept "c-import-typedef-anonymous-record-handle" c_records
+    "fn probe(value handle[FasAnonymousRecord]) handle[FasAnonymousRecord] {\n\
+    \     return fas_anonymous_record(value) }\n";
+  c_semantic_message "c-import-record-without-typedef"
+    "C declaration `fas_untyped_record` is not supported: struct and union values are \
+     not supported"
+    c_records "fn probe() i32 { return fas_untyped_record }\n";
   c_semantic_accept "c-import-pointer-matrix" c_matrix
     "fn pointers(p addr, bytes addr, record handle[FasRecord], other \
      handle[FasOtherRecord], same handle[FasSameRecord]) void {\n\
@@ -8601,9 +8609,9 @@ let () =
     "fas_nondefault_abi(1)";
   unsupported "fas_static_inline"
     "static inline functions require a C adapter (Phase 17)" "fas_static_inline(1)";
-  c_semantic_message "c-import-unsupported-anonymous-record"
-    "C declaration `FasAnonymous` is not supported: anonymous records are not supported"
-    c_matrix "fn anonymous(value FasAnonymous) void { return }\n";
+  c_semantic_message "c-import-anonymous-record-typedef-by-value"
+    "opaque type `FasAnonymous` may only be used behind a pointer" c_matrix
+    "fn anonymous(value FasAnonymous) void { return }\n";
   c_semantic_message "c-import-reserved-name"
     "C declaration `addr` is not supported: name is reserved in Fas" c_matrix
     "fn probe() i32 { return addr(1) }\n";

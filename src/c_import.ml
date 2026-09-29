@@ -290,6 +290,11 @@ let rec enum_decl_id node =
   | Some "EnumType" -> Option.bind (get "decl" node) (string "id")
   | _ -> List.find_map enum_decl_id (children node)
 
+let rec record_decl_id node =
+  match string "kind" node with
+  | Some "RecordType" -> Option.bind (get "decl" node) (string "id")
+  | _ -> List.find_map record_decl_id (children node)
+
 let record_name node =
   match string "name" node with Some name when name <> "" -> Some name | _ -> None
 
@@ -410,14 +415,21 @@ let item_name = function
 let map_declarations ~span declarations =
   let nodes = C_import_json.array (C_import_json.Arr declarations) in
   let records = Hashtbl.create 64
+  and anonymous_record_ids = Hashtbl.create 32
+  and anonymous_record_aliases = Hashtbl.create 32
   and enums = Hashtbl.create 32
   and enum_id_types = Hashtbl.create 32
   and alias_nodes = Hashtbl.create 64 in
   List.iter
     (fun node ->
       match string "kind" node with
-      | Some "RecordDecl" ->
-          Option.iter (fun name -> Hashtbl.replace records name ()) (record_name node)
+      | Some "RecordDecl" -> (
+          match
+            (Option.bind (get "id" node) C_import_json.string, record_name node)
+          with
+          | Some _, Some name -> Hashtbl.replace records name ()
+          | Some id, None -> Hashtbl.replace anonymous_record_ids id ()
+          | None, _ -> ())
       | Some "EnumDecl" -> (
           Option.iter (fun name -> Hashtbl.replace enums name "int") (record_name node);
           match (string "id" node, enum_integer_type node) with
@@ -427,6 +439,15 @@ let map_declarations ~span declarations =
           Option.iter
             (fun name -> Hashtbl.replace alias_nodes name node)
             (record_name node)
+      | _ -> ())
+    nodes;
+  List.iter
+    (fun node ->
+      match (string "kind" node, record_name node, record_decl_id node) with
+      | Some "TypedefDecl", Some name, Some id when Hashtbl.mem anonymous_record_ids id
+        ->
+          Hashtbl.replace records name ();
+          Hashtbl.replace anonymous_record_aliases name ()
       | _ -> ())
     nodes;
   List.iter
@@ -660,7 +681,12 @@ let map_declarations ~span declarations =
             (children node)
       | Some "TypedefDecl", _ -> (
           match Hashtbl.find_opt aliases name with
-          | Some (Ok (Ast.Named_type target)) when target = name -> ()
+          | Some (Ok (Ast.Named_type target)) when target = name ->
+              if Hashtbl.mem anonymous_record_aliases name then
+                let item = Ast.Opaque { name; span } in
+                add_item name
+                  (declaration_spelling node name)
+                  ("opaque " ^ name) (Some item) (origin node) (quals node) None
           | Some (Ok ty) ->
               add_item name
                 (declaration_spelling node name)
