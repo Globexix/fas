@@ -7120,12 +7120,42 @@ let () =
     failwith "volatile-store-no-read: missing volatile store";
   if contains volatile_store_only "load i32" then
     failwith "volatile-store-no-read: emitted a destination load";
-  semantic_error "volatile-array" "scalar integer, bool, addr, or handle[T]"
+  let volatile_vector_shapes =
+    llvm_of
+      "fn load_int(p addr) vec[3,u32] { return volatile_load[vec[3,u32]](p) }\n\
+       fn store_int(p addr, v vec[3,u32]) void { volatile_store[vec[3,u32]](p, v)\n\
+       return }\n\
+       fn load_bool(p addr) vec[12,bool] { return volatile_load[vec[12,bool]](p) }\n\
+       fn store_bool(p addr, v vec[12,bool]) void { volatile_store[vec[12,bool]](p, v)\n\
+       return }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains volatile_vector_shapes marker) then
+        failwith ("volatile-vector-shape: missing `" ^ marker ^ "`"))
+    [
+      "load volatile i32";
+      "store volatile i32";
+      "load volatile i16";
+      "store volatile i16";
+    ];
+  List.iter
+    (fun (needle, expected) ->
+      if List.length (positions volatile_vector_shapes needle) <> expected then
+        failwith ("volatile-vector-shape: wrong count for `" ^ needle ^ "`"))
+    [
+      ("load volatile i32", 3);
+      ("store volatile i32", 3);
+      ("load volatile i16", 1);
+      ("store volatile i16", 1);
+    ];
+  let volatile_type_error =
+    "volatile access type must be a scalar integer, bool, addr, handle[T], vec[N, \
+     integer], or vec[N, bool]"
+  in
+  semantic_error "volatile-array" volatile_type_error
     "fn f(p addr) u32 { return volatile_load[arr[2,u32]](p) }\n";
-  semantic_error "volatile-vector" "scalar integer, bool, addr, or handle[T]"
-    "fn f(p addr) vec[2,u32] { return volatile_load[vec[2,u32]](p) }\n";
-  semantic_error "volatile-struct"
-    "volatile access type must be a scalar integer, bool, addr, or handle[T]"
+  semantic_error "volatile-struct" volatile_type_error
     "struct S { value u32 }\nfn f(p addr) void { volatile_load[S](p)\nreturn }\n";
   semantic_error "volatile-store-expression" "volatile_store is statement-only"
     "fn f(p addr) u32 { return volatile_store[u32](p, 1) }\n";

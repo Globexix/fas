@@ -646,25 +646,7 @@ and lower_builtin s b args t span =
   let* vs = exprs s args in
   let rt = ty t in
   match (b, vs) with
-  | Volatile_load access_ty, [ pointer ] -> (
-      match access_ty with
-      | Hir.Bool ->
-          let loaded = fresh s in
-          emit s (Ir.Load_volatile (loaded, Ir.I8, pointer, 1));
-          let normalized = fresh s in
-          emit s
-            (Ir.Cmp
-               (normalized, Ir.Ne, Ir.I8, Ir.Local (loaded, Ir.I8), Ir.Const (Ir.I8, 0L)));
-          Ok (Ir.Local (normalized, Ir.I1))
-      | Hir.Int _ ->
-          let loaded = fresh s in
-          emit s (Ir.Load_volatile (loaded, ty access_ty, pointer, 1));
-          Ok (Ir.Local (loaded, ty access_ty))
-      | Hir.Addr | Hir.Handle _ ->
-          let loaded = fresh s in
-          emit s (Ir.Load_volatile (loaded, Ir.Pointer Ir.I8, pointer, 1));
-          Ok (Ir.Local (loaded, Ir.Pointer Ir.I8))
-      | _ -> error span "internal error: invalid volatile access type")
+  | Volatile_load access_ty, [ pointer ] -> volatile_load s span access_ty pointer
   | Addr_bits, [ x ] ->
       let id = fresh s in
       emit s (Ir.Cast (id, "ptrtoint", Ir.value_ty x, x, rt));
@@ -1083,6 +1065,168 @@ and int_ty_bytes = function
   | Ir.I128 -> 16
   | _ -> 8
 
+and volatile_chunk remaining =
+  if remaining >= 16 then (16, Ir.I128)
+  else if remaining >= 8 then (8, Ir.I64)
+  else if remaining >= 4 then (4, Ir.I32)
+  else if remaining >= 2 then (2, Ir.I16)
+  else (1, Ir.I8)
+
+and volatile_offset s pointer offset =
+  if offset = 0 then Ok pointer
+  else
+    let id = fresh s in
+    emit s
+      (Ir.Gep (id, Ir.I8, pointer, [ Ir.Index (Ir.Const (Ir.I64, Int64.of_int offset)) ]));
+    Ok (Ir.Local (id, Ir.Pointer Ir.I8))
+
+and volatile_load s span access_ty pointer =
+  match access_ty with
+  | Hir.Bool ->
+      let loaded = fresh s in
+      emit s (Ir.Load_volatile (loaded, Ir.I8, pointer, 1));
+      let normalized = fresh s in
+      emit s
+        (Ir.Cmp
+           (normalized, Ir.Ne, Ir.I8, Ir.Local (loaded, Ir.I8), Ir.Const (Ir.I8, 0L)));
+      Ok (Ir.Local (normalized, Ir.I1))
+  | Hir.Int _ ->
+      let loaded = fresh s in
+      emit s (Ir.Load_volatile (loaded, ty access_ty, pointer, 1));
+      Ok (Ir.Local (loaded, ty access_ty))
+  | Hir.Addr | Hir.Handle _ ->
+      let loaded = fresh s in
+      emit s (Ir.Load_volatile (loaded, Ir.Pointer Ir.I8, pointer, 1));
+      Ok (Ir.Local (loaded, Ir.Pointer Ir.I8))
+  | Hir.Vec (lanes, Hir.Int kind) ->
+      let elem_ty = ty (Hir.Int kind) in
+      let vector_ty = Ir.Vector (lanes, elem_ty) in
+      let elem_bytes = int_ty_bytes elem_ty in
+      let rec load_lane i current =
+        if i = lanes then Ok current
+        else
+          let* lane_pointer = volatile_offset s pointer (i * elem_bytes) in
+          let loaded = fresh s in
+          emit s (Ir.Load_volatile (loaded, elem_ty, lane_pointer, 1));
+          let inserted = fresh s in
+          emit s
+            (Ir.Insert
+               ( inserted,
+                 vector_ty,
+                 current,
+                 Ir.Const (Ir.I64, Int64.of_int i),
+                 Ir.Local (loaded, elem_ty) ));
+          load_lane (i + 1) (Ir.Local (inserted, vector_ty))
+      in
+      load_lane 0 (Ir.Undef vector_ty)
+  | Hir.Vec (lanes, Hir.Bool) ->
+      let vector_ty = Ir.Vector (lanes, Ir.I1) in
+      let bytes = (lanes + 7) / 8 in
+      let rec load_chunks byte_offset current =
+        if byte_offset = bytes then Ok current
+        else
+          let chunk_bytes, chunk_ty = volatile_chunk (bytes - byte_offset) in
+          let bits = chunk_bytes * 8 in
+          let* chunk_pointer = volatile_offset s pointer byte_offset in
+          let loaded = fresh s in
+          emit s (Ir.Load_volatile (loaded, chunk_ty, chunk_pointer, 1));
+          let unpacked = fresh s in
+          emit s
+            (Ir.Cast
+               ( unpacked,
+                 "bitcast",
+                 chunk_ty,
+                 Ir.Local (loaded, chunk_ty),
+                 Ir.Vector (bits, Ir.I1) ));
+          let first_lane = byte_offset * 8 in
+          let count = min (lanes - first_lane) bits in
+          let rec insert_lane i result =
+            if i = count then Ok result
+            else
+              let lane = first_lane + i in
+              let unpacked_ty = Ir.Vector (bits, Ir.I1) in
+              let extracted = fresh s in
+              emit s
+                (Ir.Extract
+                   ( extracted,
+                     unpacked_ty,
+                     Ir.Local (unpacked, unpacked_ty),
+                     Ir.Const (Ir.I64, Int64.of_int i) ));
+              let inserted = fresh s in
+              emit s
+                (Ir.Insert
+                   ( inserted,
+                     vector_ty,
+                     result,
+                     Ir.Const (Ir.I64, Int64.of_int lane),
+                     Ir.Local (extracted, Ir.I1) ));
+              insert_lane (i + 1) (Ir.Local (inserted, vector_ty))
+          in
+          let* result = insert_lane 0 current in
+          load_chunks (byte_offset + chunk_bytes) result
+      in
+      load_chunks 0 (Ir.Undef vector_ty)
+  | _ -> error span "internal error: invalid volatile access type"
+
+and volatile_store s span access_ty value pointer =
+  match access_ty with
+  | Hir.Bool ->
+      let stored = fresh s in
+      emit s (Ir.Cast (stored, "zext", Ir.I1, value, Ir.I8));
+      emit s (Ir.Store_volatile (Ir.I8, Ir.Local (stored, Ir.I8), pointer, 1));
+      Ok ()
+  | Hir.Int _ ->
+      emit s (Ir.Store_volatile (ty access_ty, value, pointer, 1));
+      Ok ()
+  | Hir.Addr | Hir.Handle _ ->
+      emit s (Ir.Store_volatile (Ir.Pointer Ir.I8, value, pointer, 1));
+      Ok ()
+  | Hir.Vec (lanes, Hir.Int kind) ->
+      let elem_ty = ty (Hir.Int kind) in
+      let elem_bytes = int_ty_bytes elem_ty in
+      let vector_ty = Ir.Vector (lanes, elem_ty) in
+      let rec store_lane i =
+        if i = lanes then Ok ()
+        else
+          let extracted = fresh s in
+          emit s
+            (Ir.Extract (extracted, vector_ty, value, Ir.Const (Ir.I64, Int64.of_int i)));
+          let* lane_pointer = volatile_offset s pointer (i * elem_bytes) in
+          emit s
+            (Ir.Store_volatile (elem_ty, Ir.Local (extracted, elem_ty), lane_pointer, 1));
+          store_lane (i + 1)
+      in
+      store_lane 0
+  | Hir.Vec (lanes, Hir.Bool) ->
+      let bytes = (lanes + 7) / 8 in
+      let rec store_chunks byte_offset =
+        if byte_offset = bytes then Ok ()
+        else
+          let chunk_bytes, chunk_ty = volatile_chunk (bytes - byte_offset) in
+          let bits = chunk_bytes * 8 in
+          let first_lane = byte_offset * 8 in
+          let mask =
+            Ir.Const_vector
+              ( Ir.Vector (bits, Ir.I32),
+                List.init bits (fun i ->
+                    Int64.of_int (if first_lane + i < lanes then first_lane + i else 0))
+              )
+          in
+          let packed = fresh s in
+          let packed_ty = Ir.Vector (bits, Ir.I1) in
+          emit s (Ir.Shufflevector (packed, packed_ty, value, value, mask));
+          let stored = fresh s in
+          emit s
+            (Ir.Cast
+               (stored, "bitcast", packed_ty, Ir.Local (packed, packed_ty), chunk_ty));
+          let* chunk_pointer = volatile_offset s pointer byte_offset in
+          emit s
+            (Ir.Store_volatile (chunk_ty, Ir.Local (stored, chunk_ty), chunk_pointer, 1));
+          store_chunks (byte_offset + chunk_bytes)
+      in
+      store_chunks 0
+  | _ -> error span "internal error: invalid volatile access type"
+
 and raw_mask_index_vector lanes total =
   Ir.Const_vector
     ( Ir.Vector (total, Ir.I32),
@@ -1360,22 +1504,10 @@ and stmt s = function
           let scratch = Ir.Local (scratch_id, Ir.Pointer (ty copy_ty)) in
           let* () = copy_place s span copy_ty scratch source_pointer in
           copy_place s span copy_ty destination_pointer scratch
-  | Hir.Volatile_store (access_ty, pointer_expr, value_expr, span) -> (
+  | Hir.Volatile_store (access_ty, pointer_expr, value_expr, span) ->
       let* pointer = expr s pointer_expr in
       let* value = expr s value_expr in
-      match access_ty with
-      | Hir.Bool ->
-          let stored = fresh s in
-          emit s (Ir.Cast (stored, "zext", Ir.I1, value, Ir.I8));
-          emit s (Ir.Store_volatile (Ir.I8, Ir.Local (stored, Ir.I8), pointer, 1));
-          Ok ()
-      | Hir.Int _ ->
-          emit s (Ir.Store_volatile (ty access_ty, value, pointer, 1));
-          Ok ()
-      | Hir.Addr | Hir.Handle _ ->
-          emit s (Ir.Store_volatile (Ir.Pointer Ir.I8, value, pointer, 1));
-          Ok ()
-      | _ -> error span "internal error: invalid volatile access type")
+      volatile_store s span access_ty value pointer
   | Hir.Assign (target, e, _) -> (
       match target with
       | Hir.AIndex (a, i) when match Hir.expr_ty a with Hir.Vec _ -> true | _ -> false

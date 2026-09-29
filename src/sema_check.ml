@@ -825,10 +825,13 @@ and volatile_access_type c name span arguments =
     | _ -> error span (Printf.sprintf "builtin `%s` expects one type argument" name)
   in
   match access_ty with
-  | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ -> Ok access_ty
+  | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ | Hir.Vec (_, (Hir.Int _ | Hir.Bool))
+    ->
+      Ok access_ty
   | _ ->
       error span
-        "volatile access type must be a scalar integer, bool, addr, or handle[T]"
+        "volatile access type must be a scalar integer, bool, addr, handle[T], vec[N, \
+         integer], or vec[N, bool]"
 
 and check_handle_from_addr c name opaque_name args s =
   if List.length args <> 1 then

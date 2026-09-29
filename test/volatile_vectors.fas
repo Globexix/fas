@@ -1,0 +1,68 @@
+extern "C" {
+  fn volatile_vector_buffer() addr
+}
+
+fn volatile_store_int(p addr, value vec[3, u32]) void {
+  volatile_store[vec[3, u32]](p, value)
+  return
+}
+
+fn volatile_load_int(p addr) vec[3, u32] {
+  return volatile_load[vec[3, u32]](p)
+}
+
+fn volatile_store_bool(p addr, value vec[12, bool]) void {
+  volatile_store[vec[12, bool]](p, value)
+  return
+}
+
+fn volatile_load_bool(p addr) vec[12, bool] {
+  return volatile_load[vec[12, bool]](p)
+}
+
+extern "C" {
+  fn fas_volatile_run() i32 {
+    p addr = volatile_vector_buffer()
+    expected vec[3, u32] = (vec[3, u32]){ 287454020, 1432778632, 2578103244 }
+    volatile_store_int(p, expected)
+    actual vec[3, u32] = volatile_load_int(p)
+    if actual[0] != expected[0] { return 1 }
+    if actual[1] != expected[1] { return 2 }
+    if actual[2] != expected[2] { return 3 }
+
+    flags vec[12, bool] = volatile_load_bool(p + 32)
+    if !flags[0] { return 4 }
+    if flags[1] { return 5 }
+    if !flags[2] { return 6 }
+    if flags[3] { return 7 }
+    if !flags[5] { return 8 }
+    if !flags[7] { return 9 }
+    if flags[8] { return 10 }
+    if !flags[9] { return 11 }
+    if flags[10] { return 12 }
+    if !flags[11] { return 13 }
+
+    stored_flags vec[12, bool] = (vec[12, bool]){ true, false, true, false, false, true, false, true, true, false, false, true }
+    volatile_store_bool(p + 40, stored_flags)
+    return 0
+  }
+
+  fn fas_volatile_loop(p addr, count u32) void {
+    i u32 = 0
+    while i < count {
+      value vec[3, u32] = splat(i)
+      volatile_store[vec[3, u32]](p, value)
+      i += 1
+    }
+  }
+
+  fn fas_volatile_guard(p addr) i32 {
+    value vec[3, u32] = (vec[3, u32]){ 305419896, 2271560481, 2309737967 }
+    volatile_store[vec[3, u32]](p, value)
+    actual vec[3, u32] = volatile_load[vec[3, u32]](p)
+    if actual[0] != value[0] { return 1 }
+    if actual[1] != value[1] { return 2 }
+    if actual[2] != value[2] { return 3 }
+    return 0
+  }
+}
