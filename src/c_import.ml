@@ -1,5 +1,24 @@
 type header = { spelling : Ast.c_header; span : Span.t }
 
+type static_function = {
+  name : string;
+  return_type : string;
+  parameter_types : string list;
+  variadic : bool;
+  void_result : bool;
+  signature : string;
+  span : Span.t;
+}
+
+type adapter = {
+  c_name : string;
+  symbol : string;
+  code : string;
+  file : string;
+  line : int;
+  signature : string;
+}
+
 let include_line source fragment_path = function
   | { spelling = Ast.C_quoted path; _ } ->
       let path =
@@ -33,18 +52,20 @@ let unit_line unit_path output =
       try Some (int_of_string (String.sub output digit (finish - digit)))
       with Failure _ -> None)
 
-let error_span headers line =
+let error_span (headers : header list) line =
   Option.bind line (fun line -> List.nth_opt headers (line - 1)) |> function
   | None -> (List.hd headers).span
   | Some header -> header.span
 
-let import ~cc ~debug ~keep source headers =
+let import ~cc ~debug ~keep ?(retain = false) source headers =
   let unit_path = Filename.temp_file "fas-c-import-" ".c" in
   let json_path = Filename.temp_file "fas-c-import-" ".json" in
   let fragment_paths = ref [] in
+  let completed = ref false in
   let cleanup () =
     let remove path = try Sys.remove path with Sys_error _ -> () in
-    if not keep then List.iter remove (unit_path :: !fragment_paths);
+    if (not keep) && ((not retain) || not !completed) then
+      List.iter remove (unit_path :: !fragment_paths);
     remove json_path
   in
   Fun.protect ~finally:cleanup (fun () ->
@@ -98,9 +119,11 @@ let import ~cc ~debug ~keep source headers =
                 ~finally:(fun () -> close_in_noerr channel)
                 (fun () -> C_import_json.declarations channel)
             in
+            completed := true;
             Ok
               ( declarations,
-                if keep then Some (unit_path :: List.rev !fragment_paths) else None )
+                (if keep then Some (unit_path :: List.rev !fragment_paths) else None),
+                if retain then unit_path :: List.rev !fragment_paths else [] )
           with Failure message ->
             Error
               [
@@ -424,7 +447,53 @@ type mapped = {
   unsupported : (string * string) list;
   identities : (string * string) list;
   manifest : string list;
+  static_functions : static_function list;
 }
+
+let adapter_symbol source name =
+  "__fas_c_adapter_" ^ Digest.to_hex (Digest.string source) ^ "_" ^ name
+
+let make_adapter ~occupied source (static : static_function) =
+  if static.variadic then
+    Error ("static variadic function `" ^ static.name ^ "` needs an adapter")
+  else
+    let base = adapter_symbol source static.name in
+    let rec choose suffix =
+      let symbol = if suffix = 0 then base else base ^ "_" ^ string_of_int suffix in
+      if List.mem symbol occupied then choose (suffix + 1) else symbol
+    in
+    let symbol = choose 0 in
+    let params =
+      List.mapi (fun i ty -> ty ^ " fas_arg" ^ string_of_int i) static.parameter_types
+    in
+    let call_args =
+      List.mapi (fun i _ -> "fas_arg" ^ string_of_int i) static.parameter_types
+    in
+    let params = if params = [] then "void" else String.concat ", " params in
+    let call = static.name ^ "(" ^ String.concat ", " call_args ^ ")" in
+    let body = if static.void_result then call ^ ";" else "return " ^ call ^ ";" in
+    Ok
+      {
+        c_name = static.name;
+        symbol;
+        code =
+          Printf.sprintf "#line %d %S\n%s %s(%s) { %s }\n" static.span.Span.line source
+            static.return_type symbol params body;
+        file = source;
+        line = static.span.Span.line;
+        signature = static.signature;
+      }
+
+let append_adapters path adapters =
+  let channel = open_out_gen [ Open_append; Open_binary ] 0o600 path in
+  Fun.protect
+    ~finally:(fun () -> close_out_noerr channel)
+    (fun () ->
+      List.iter (fun (adapter : adapter) -> output_string channel adapter.code) adapters)
+
+let adapter_manifest (adapter : adapter) =
+  Printf.sprintf "%s\tadapter for %s\t%s\t\t%s:%d" adapter.symbol adapter.c_name
+    adapter.signature adapter.file adapter.line
 
 let item_name = function
   | Ast.Opaque { name; _ }
@@ -539,6 +608,7 @@ let map_declarations ~span declarations =
   let entities = Hashtbl.create 256
   and unsupported = Hashtbl.create 128
   and manifest = Hashtbl.create 256
+  and static_functions = Hashtbl.create 32
   and items = ref [] in
   let add_unsupported name reason = Hashtbl.replace unsupported name reason in
   Hashtbl.iter
@@ -548,7 +618,8 @@ let map_declarations ~span declarations =
         | Ok _ -> add_unsupported name "name is reserved in Fas"
         | Error _ -> ())
     aliases;
-  let add_item name spelling signature item origin obligations reason =
+  let add_item name spelling signature item origin obligations reason
+      ?(entity_scope = "") () =
     let reason =
       if Names.reserved_binding_name name then Some "name is reserved in Fas"
       else reason
@@ -567,10 +638,11 @@ let map_declarations ~span declarations =
     in
     Hashtbl.replace manifest name manifest_line;
     (match reason with Some reason -> add_unsupported name reason | None -> ());
-    let identity =
-      String.concat "\000"
-        [ signature; qualifier_text; Option.value ~default:"" reason ]
+    let identity_parts =
+      [ signature; qualifier_text; Option.value ~default:"" reason ]
+      @ if entity_scope = "" then [] else [ entity_scope ]
     in
+    let identity = String.concat "\000" identity_parts in
     match Hashtbl.find_opt entities name with
     | Some previous when previous = identity -> ()
     | Some _ ->
@@ -623,7 +695,7 @@ let map_declarations ~span declarations =
       | Ok ty ->
           if not (Hashtbl.mem alias_nodes name) then
             let signature = "enum " ^ name ^ " as " ^ Ast.type_name ty in
-            add_item name ("enum " ^ name) signature None (None, None) [] None
+            add_item name ("enum " ^ name) signature None (None, None) [] None ()
       | Error reason -> add_unsupported name reason)
     enums;
   let enum_aliases =
@@ -647,7 +719,7 @@ let map_declarations ~span declarations =
           let item = Ast.Opaque { name; span } in
           add_item name
             (declaration_spelling node name)
-            ("opaque " ^ name) (Some item) (origin node) [] None
+            ("opaque " ^ name) (Some item) (origin node) [] None ()
       | Some "EnumDecl", _ ->
           let previous_value = ref None in
           List.iter
@@ -695,7 +767,7 @@ let map_declarations ~span declarations =
                         add_item constant
                           (declaration_spelling child constant)
                           (Ast.type_name ty ^ " " ^ value)
-                          (Some item) (origin child) (quals child) None
+                          (Some item) (origin child) (quals child) None ()
                     | Ok _, _ ->
                         add_unsupported constant "enum constant type is not an integer"
                     | Error reason, _ -> add_unsupported constant reason)
@@ -708,23 +780,20 @@ let map_declarations ~span declarations =
                 let item = Ast.Opaque { name; span } in
                 add_item name
                   (declaration_spelling node name)
-                  ("opaque " ^ name) (Some item) (origin node) (quals node) None
+                  ("opaque " ^ name) (Some item) (origin node) (quals node) None ()
           | Some (Ok ty) ->
               add_item name
                 (declaration_spelling node name)
                 ("typedef " ^ Ast.type_name ty)
-                None (origin node) (quals node) None
+                None (origin node) (quals node) None ()
           | Some (Error reason) ->
               add_item name
                 (declaration_spelling node name)
-                "typedef" None (origin node) (quals node) (Some reason)
+                "typedef" None (origin node) (quals node) (Some reason) ()
           | None -> ())
       | Some "FunctionDecl", _ ->
           let origin = origin node in
-          let static_inline =
-            string "storageClass" node = Some "static"
-            && get "inline" node = Some (C_import_json.Bool true)
-          in
+          let is_static = string "storageClass" node = Some "static" in
           let parameters =
             children node
             |> List.filter (fun child -> string "kind" child = Some "ParmVarDecl")
@@ -759,10 +828,31 @@ let map_declarations ~span declarations =
             | Error reason -> "unsupported: " ^ reason
           in
           let reason =
-            if static_inline then
-              Some "static inline functions require a C adapter (Phase 17)"
-            else match signature with Ok _ -> None | Error reason -> Some reason
+            match signature with Ok _ -> None | Error reason -> Some reason
           in
+          (match (is_static, signature, c_type_name node) with
+          | true, Ok (_, ret), Some c_signature -> (
+              match String.index_opt c_signature '(' with
+              | Some open_paren ->
+                  let parameter_types =
+                    children node
+                    |> List.filter (fun child ->
+                        string "kind" child = Some "ParmVarDecl")
+                    |> List.filter_map (fun child ->
+                        Option.bind (get "type" child) (string "qualType"))
+                  in
+                  Hashtbl.replace static_functions name
+                    {
+                      name;
+                      return_type = trim (String.sub c_signature 0 open_paren);
+                      parameter_types;
+                      variadic;
+                      void_result = ret = Ast.Void;
+                      signature = signature_name;
+                      span;
+                    }
+              | None -> ())
+          | _ -> ());
           let item =
             match (signature, reason) with
             | Ok (params, ret), None ->
@@ -790,6 +880,8 @@ let map_declarations ~span declarations =
             signature_name item origin
             (quals node @ List.concat_map (fun (_, _, q) -> q) parameters)
             reason
+            ~entity_scope:(if is_static then span.Span.file else "")
+            ()
       | Some "VarDecl", _ ->
           let ty = as_type ~allow_record:false node in
           let storage = string "storageClass" node in
@@ -821,7 +913,7 @@ let map_declarations ~span declarations =
           in
           add_item name
             (declaration_spelling node name)
-            signature item (origin node) (quals node) reason
+            signature item (origin node) (quals node) reason ()
       | _ -> ())
     nodes;
   let items =
@@ -846,6 +938,9 @@ let map_declarations ~span declarations =
     identities;
     manifest =
       Hashtbl.fold (fun _ line acc -> line :: acc) manifest [] |> List.sort compare;
+    static_functions =
+      Hashtbl.fold (fun _ static acc -> static :: acc) static_functions []
+      |> List.sort (fun a b -> String.compare a.name b.name);
   }
 
 let merge_imports mappings =
@@ -888,6 +983,8 @@ let merge_imports mappings =
     unsupported;
     identities = [];
     manifest = List.concat_map (fun mapping -> mapping.manifest) mappings;
+    static_functions =
+      List.concat_map (fun mapping -> mapping.static_functions) mappings;
   }
 
 let canonical_type aliases ty =

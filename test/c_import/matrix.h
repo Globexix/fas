@@ -75,6 +75,11 @@ int __attribute__((address_space(1))) *fas_address_space(
 int addr(int value);
 int fas_nondefault_abi(int value) __attribute__((ms_abi));
 static inline int fas_static_inline(int value) { return value; }
+static inline float fas_static_float(float value) { return value; }
+struct FasRect { int width; };
+static inline int fas_rect_empty(const struct FasRect *rect) {
+  return rect->width == 0;
+}
 
 #define FAS_MACRO_ONLY 7
 void fas_restrict_pointer(int *restrict value);

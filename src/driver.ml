@@ -438,92 +438,212 @@ let apply_no_inline config ir =
             ]
       | Some _ -> Ok { ir with Ir.no_inline_function = Some name })
 
-let run_unprotected config =
-  match load_program ~limits config.Cli.input with
-  | Error diagnostics -> Error diagnostics
-  | Ok (program, chains, c_imports) -> (
-      let _, _, cc = tools () in
-      let imported = ref [] in
-      let* () =
-        let rec import = function
-          | [] -> Ok ()
-          | (source, headers) :: rest ->
-              let* declarations, kept =
-                C_import.import ~cc ~debug:config.Cli.debug ~keep:config.Cli.keep source
-                  headers
-              in
-              let mapped =
-                C_import.map_declarations ~span:(List.hd headers).C_import.span
-                  declarations
-              in
-              imported := mapped :: !imported;
-              Option.iter
-                (function
-                  | unit_path :: fragments ->
-                      prerr_endline ("fas: kept C import unit: " ^ unit_path);
-                      List.iter
-                        (fun path -> prerr_endline ("fas: kept C fragment: " ^ path))
-                        fragments
-                  | [] -> ())
-                kept;
-              import rest
+type imported_c_unit = {
+  source : string;
+  unit_path : string;
+  static_functions : C_import.static_function list;
+  c_names : string list;
+}
+
+let add_static_adapters units ir =
+  let called = Hashtbl.create 32 in
+  let occupied = Hashtbl.create 64 in
+  List.iter
+    (fun unit -> List.iter (fun name -> Hashtbl.replace occupied name ()) unit.c_names)
+    units;
+  List.iter (fun (func : Ir.func) -> Hashtbl.replace occupied func.name ()) ir.Ir.funcs;
+  List.iter
+    (function
+      | Ir.String_global { name; _ }
+      | Ir.Array_global { name; _ }
+      | Ir.Storage_global { name; _ } ->
+          Hashtbl.replace occupied name ())
+    ir.Ir.globals;
+  List.iter
+    (fun (func : Ir.func) ->
+      List.iter
+        (fun (block : Ir.block) ->
+          List.iter
+            (function
+              | Ir.Call (_, _, _, name, _) -> Hashtbl.replace called name () | _ -> ())
+            block.instrs)
+        func.blocks)
+    ir.Ir.funcs;
+  let all_adapters = ref [] in
+  let rec collect = function
+    | [] -> Ok (List.rev !all_adapters)
+    | unit :: rest ->
+        let rec make = function
+          | [] -> collect rest
+          | static :: tail when Hashtbl.mem called static.C_import.name -> (
+              match
+                C_import.make_adapter
+                  ~occupied:
+                    (Hashtbl.fold (fun name _ names -> name :: names) occupied [])
+                  unit.source static
+              with
+              | Ok adapter ->
+                  all_adapters := adapter :: !all_adapters;
+                  Hashtbl.replace occupied adapter.symbol ();
+                  make tail
+              | Error message -> Error [ Diag.error static.span message ])
+          | _ :: tail -> make tail
         in
-        import c_imports
+        make unit.static_functions
+  in
+  let* adapters = collect units in
+  List.iter
+    (fun unit ->
+      let adapters =
+        List.filter (fun adapter -> adapter.C_import.file = unit.source) adapters
       in
-      let* imported =
-        C_import.merge_imports (List.rev !imported)
-        |> C_import.reconcile_source program.items
-      in
-      let* () =
-        if config.Cli.keep && c_imports <> [] then (
-          let base = Filename.basename config.Cli.input in
-          let name =
-            try Filename.chop_extension base with Invalid_argument _ -> base
+      if adapters <> [] then C_import.append_adapters unit.unit_path adapters)
+    units;
+  let redirects = Hashtbl.create (List.length adapters) in
+  List.iter
+    (fun (adapter : C_import.adapter) ->
+      Hashtbl.replace redirects adapter.c_name adapter.symbol)
+    adapters;
+  let redirect name = Option.value ~default:name (Hashtbl.find_opt redirects name) in
+  let funcs =
+    List.map
+      (fun (func : Ir.func) ->
+        let blocks =
+          List.map
+            (fun (block : Ir.block) ->
+              let instrs =
+                List.map
+                  (function
+                    | Ir.Call (result, extension, ty, name, args) ->
+                        Ir.Call (result, extension, ty, redirect name, args)
+                    | instruction -> instruction)
+                  block.instrs
+              in
+              { block with Ir.instrs })
+            func.blocks
+        in
+        { func with Ir.name = redirect func.name; blocks })
+      ir.Ir.funcs
+  in
+  let ir = { ir with Ir.funcs } in
+  match Ir.validate ir with
+  | Ok () -> Ok (ir, adapters)
+  | Error message -> Error [ Diag.error Span.synthetic ("internal error: " ^ message) ]
+
+let run_unprotected config =
+  let c_artifacts = ref [] in
+  Fun.protect
+    ~finally:(fun () -> if not config.Cli.keep then List.iter remove !c_artifacts)
+    (fun () ->
+      match load_program ~limits config.Cli.input with
+      | Error diagnostics -> Error diagnostics
+      | Ok (program, chains, c_imports) -> (
+          let _, _, cc = tools () in
+          let imported = ref [] in
+          let c_units = ref [] in
+          let* () =
+            let rec import = function
+              | [] -> Ok ()
+              | (source, headers) :: rest ->
+                  let* declarations, kept, artifacts =
+                    C_import.import ~cc ~debug:config.Cli.debug ~keep:config.Cli.keep
+                      ~retain:true source headers
+                  in
+                  c_artifacts := artifacts @ !c_artifacts;
+                  let mapped =
+                    C_import.map_declarations ~span:(List.hd headers).C_import.span
+                      declarations
+                  in
+                  c_units :=
+                    {
+                      source;
+                      unit_path = List.hd artifacts;
+                      static_functions = mapped.static_functions;
+                      c_names =
+                        List.filter_map
+                          (fun line ->
+                            Option.map
+                              (fun stop -> String.sub line 0 stop)
+                              (String.index_opt line '\t'))
+                          mapped.manifest;
+                    }
+                    :: !c_units;
+                  imported := mapped :: !imported;
+                  Option.iter
+                    (function
+                      | unit_path :: fragments ->
+                          prerr_endline ("fas: kept C import unit: " ^ unit_path);
+                          List.iter
+                            (fun path ->
+                              prerr_endline ("fas: kept C fragment: " ^ path))
+                            fragments
+                      | [] -> ())
+                    kept;
+                  import rest
+            in
+            import c_imports
           in
-          let path =
-            Filename.temp_file
-              ~temp_dir:(Filename.get_temp_dir_name ())
-              (name ^ ".bindings-") ".txt"
+          let* imported =
+            C_import.merge_imports (List.rev !imported)
+            |> C_import.reconcile_source program.items
           in
-          write_file path (C_import.manifest_text imported);
-          prerr_endline ("fas: kept C bindings: " ^ path));
-        Ok ()
-      in
-      let program = { Ast.items = program.items @ imported.items } in
-      let* () = ast_budget (Ast.check_cumulative_asm_bytes ~limits program) in
-      let* () = ast_budget (Ast.check_expanded_nodes ~limits program) in
-      let* hir =
-        match
-          Sema.check ~limits ~c_aliases:imported.aliases
-            ~c_unsupported:imported.unsupported program
-        with
-        | Ok hir -> Ok hir
-        | Error diagnostics -> Error (add_include_chains chains diagnostics)
-      in
-      let* ir = Lower.lower hir in
-      let* ir = apply_no_inline config ir in
-      let* () = ir_budget program (Ir.check_lowered_nodes ~limits ir) in
-      let* () = ir_budget program (Ir.check_stack_scratch_bytes ~limits ir) in
-      match config.emit with
-      | Cli.Ir -> (
-          match Ir.render_debug_bounded ~limits ir with
-          | Ok text -> emit_text config text
-          | Error message -> Error [ Diag.error Span.synthetic message ])
-      | Cli.Llvm ->
-          let* text = render_ir ir in
-          let opt, _, _ = tools () in
-          let path = Filename.temp_file "fas-verify-" ".ll" in
-          if config.Cli.keep then (
-            prerr_endline ("fas: kept intermediate: " ^ path);
-            prerr_endline
-              (Printf.sprintf "fas: tool LLVM_OPT=%s; opt passes=verify" opt));
-          Fun.protect
-            ~finally:(fun () -> if not config.Cli.keep then remove path)
-            (fun () ->
-              write_file path text;
-              let* () = verify_llvm opt path in
-              emit_text config text)
-      | Cli.Asm | Cli.Obj | Cli.Executable -> emit_tools config program ir)
+          let program = { Ast.items = program.items @ imported.items } in
+          let* () = ast_budget (Ast.check_cumulative_asm_bytes ~limits program) in
+          let* () = ast_budget (Ast.check_expanded_nodes ~limits program) in
+          let* hir =
+            match
+              Sema.check ~limits ~c_aliases:imported.aliases
+                ~c_unsupported:imported.unsupported program
+            with
+            | Ok hir -> Ok hir
+            | Error diagnostics -> Error (add_include_chains chains diagnostics)
+          in
+          let* ir = Lower.lower hir in
+          let* ir = apply_no_inline config ir in
+          let* ir, adapters = add_static_adapters (List.rev !c_units) ir in
+          let imported =
+            {
+              imported with
+              manifest = imported.manifest @ List.map C_import.adapter_manifest adapters;
+            }
+          in
+          let* () =
+            if config.Cli.keep && c_imports <> [] then (
+              let base = Filename.basename config.Cli.input in
+              let name =
+                try Filename.chop_extension base with Invalid_argument _ -> base
+              in
+              let path =
+                Filename.temp_file
+                  ~temp_dir:(Filename.get_temp_dir_name ())
+                  (name ^ ".bindings-") ".txt"
+              in
+              write_file path (C_import.manifest_text imported);
+              prerr_endline ("fas: kept C bindings: " ^ path));
+            Ok ()
+          in
+          let* () = ir_budget program (Ir.check_lowered_nodes ~limits ir) in
+          let* () = ir_budget program (Ir.check_stack_scratch_bytes ~limits ir) in
+          match config.emit with
+          | Cli.Ir -> (
+              match Ir.render_debug_bounded ~limits ir with
+              | Ok text -> emit_text config text
+              | Error message -> Error [ Diag.error Span.synthetic message ])
+          | Cli.Llvm ->
+              let* text = render_ir ir in
+              let opt, _, _ = tools () in
+              let path = Filename.temp_file "fas-verify-" ".ll" in
+              if config.Cli.keep then (
+                prerr_endline ("fas: kept intermediate: " ^ path);
+                prerr_endline
+                  (Printf.sprintf "fas: tool LLVM_OPT=%s; opt passes=verify" opt));
+              Fun.protect
+                ~finally:(fun () -> if not config.Cli.keep then remove path)
+                (fun () ->
+                  write_file path text;
+                  let* () = verify_llvm opt path in
+                  emit_text config text)
+          | Cli.Asm | Cli.Obj | Cli.Executable -> emit_tools config program ir))
 
 let run_unstaged config =
   try run_unprotected config with

@@ -39,7 +39,7 @@ let c_import_fixture file =
     C_import.
       { spelling = Ast.C_quoted (Filename.basename header); span = Span.synthetic }
   in
-  let declarations, _ =
+  let declarations, _, _ =
     expect_ok
       (C_import.import ~cc:"clang-22" ~debug:false ~keep:false source [ request ])
   in
@@ -8323,7 +8323,7 @@ let () =
           })
       [ ("provenance_first.h", 1); ("provenance_second.h", 2) ]
   in
-  let provenance_declarations, _ =
+  let provenance_declarations, _, _ =
     expect_ok
       (C_import.import ~cc:"clang-22" ~debug:false ~keep:false c_matrix_source
          provenance_headers)
@@ -8395,7 +8395,7 @@ let () =
             | _ -> None)
           parsed.items
       in
-      let declarations, kept =
+      let declarations, kept, _ =
         expect_ok
           (C_import.import ~cc:"clang-22" ~debug:false ~keep:true container_source_path
              requests)
@@ -8499,7 +8499,7 @@ let () =
       let relative_header =
         C_import.{ spelling = Ast.C_quoted "../matrix.h"; span = relative_span }
       in
-      let relative_declarations, _ =
+      let relative_declarations, _, _ =
         expect_ok
           (C_import.import ~cc:"clang-22" ~debug:false ~keep:false relative_source
              [ relative_header ])
@@ -8730,8 +8730,66 @@ let () =
     "fas_address_space(null)";
   unsupported "fas_nondefault_abi" "non-default calling conventions are not supported"
     "fas_nondefault_abi(1)";
-  unsupported "fas_static_inline"
-    "static inline functions require a C adapter (Phase 17)" "fas_static_inline(1)";
+  c_semantic_accept "c-import-static-inline" c_matrix
+    "fn static_inline_call() i32 { return fas_static_inline(4) }\n";
+  if
+    not
+      (List.exists
+         (fun (static : C_import.static_function) ->
+           static.name = "fas_static_inline" && not static.variadic)
+         c_matrix_imported.static_functions)
+  then failwith "static inline function was not recorded for adapter generation";
+  c_semantic_accept "c-import-static-inline-handle" c_matrix
+    "fn static_rect_call(rect handle[FasRect]) i32 { return fas_rect_empty(rect) }\n";
+  let rect_adapter =
+    match
+      List.find_opt
+        (fun (static : C_import.static_function) -> static.name = "fas_rect_empty")
+        c_matrix_imported.static_functions
+    with
+    | Some static -> (
+        match C_import.make_adapter ~occupied:[] c_matrix_source static with
+        | Ok adapter -> adapter
+        | Error message -> failwith message)
+    | None -> failwith "static inline handle function was not recorded"
+  in
+  if
+    not
+      (contains rect_adapter.code "const struct FasRect * fas_arg0"
+      && contains rect_adapter.code "return fas_rect_empty(fas_arg0);")
+  then failwith "static inline handle adapter did not preserve its C signature";
+  unsupported "fas_static_float" "floating-point types are not supported"
+    "fas_static_float(1)";
+  let static_collision_header = Filename.temp_file "fas-static-collision-" ".h" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove static_collision_header)
+    (fun () ->
+      let channel = open_out_bin static_collision_header in
+      output_string channel
+        "static int fas_shared_static(int value) { return value; }\n";
+      close_out channel;
+      let import_static source =
+        let span =
+          Span.make ~file:source ~start_offset:0 ~end_offset:0 ~line:1 ~column:1
+        in
+        let declarations, _, _ =
+          expect_ok
+            (C_import.import ~cc:"clang-22" ~debug:false ~keep:false source
+               [ C_import.{ spelling = Ast.C_quoted static_collision_header; span } ])
+        in
+        C_import.map_declarations ~span declarations
+      in
+      let static_left =
+        Filename.concat (Filename.dirname static_collision_header) "left.fas"
+      and static_right =
+        Filename.concat (Filename.dirname static_collision_header) "right.fas"
+      in
+      let collided =
+        C_import.merge_imports [ import_static static_left; import_static static_right ]
+      in
+      c_semantic_message "c-import-static-name-collision"
+        "C declaration `fas_shared_static` is not supported: conflicting C declarations"
+        (static_left, collided) "fn call_static() i32 { return fas_shared_static(1) }\n");
   c_semantic_message "c-import-anonymous-record-typedef-by-value"
     "opaque type `FasAnonymous` may only be used behind a pointer" c_matrix
     "fn anonymous(value FasAnonymous) void { return }\n";
