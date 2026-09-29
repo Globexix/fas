@@ -25,6 +25,8 @@ fas_bool fas_bool_echo(fas_bool value);
 
 enum FasEnum { FAS_ENUM_NEG = -3, FAS_ENUM_LARGE = 0xffffffffU };
 int fas_enum_arg(enum FasEnum value);
+typedef enum { FAS_ANON_ENUM_FALSE = 0, FAS_ANON_ENUM_TRUE = 1 } FasAnonymousEnum;
+FasAnonymousEnum fas_anonymous_enum_echo(FasAnonymousEnum value);
 
 struct FasRecord;
 typedef struct FasRecord FasRecordAlias;

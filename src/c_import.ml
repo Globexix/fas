@@ -224,6 +224,11 @@ let enum_integer_type node =
   |> List.find_map (fun child ->
       if string "kind" child = Some "EnumConstantDecl" then c_type_name child else None)
 
+let rec enum_decl_id node =
+  match string "kind" node with
+  | Some "EnumType" -> Option.bind (get "decl" node) (string "id")
+  | _ -> List.find_map enum_decl_id (children node)
+
 let record_name node =
   match string "name" node with Some name when name <> "" -> Some name | _ -> None
 
@@ -345,14 +350,18 @@ let map_declarations ~span declarations =
   let nodes = C_import_json.array (C_import_json.Arr declarations) in
   let records = Hashtbl.create 64
   and enums = Hashtbl.create 32
+  and enum_id_types = Hashtbl.create 32
   and alias_nodes = Hashtbl.create 64 in
   List.iter
     (fun node ->
       match string "kind" node with
       | Some "RecordDecl" ->
           Option.iter (fun name -> Hashtbl.replace records name ()) (record_name node)
-      | Some "EnumDecl" ->
-          Option.iter (fun name -> Hashtbl.replace enums name "int") (record_name node)
+      | Some "EnumDecl" -> (
+          Option.iter (fun name -> Hashtbl.replace enums name "int") (record_name node);
+          match (string "id" node, enum_integer_type node) with
+          | Some id, Some underlying -> Hashtbl.replace enum_id_types id underlying
+          | _ -> ())
       | Some "TypedefDecl" ->
           Option.iter
             (fun name -> Hashtbl.replace alias_nodes name node)
@@ -365,6 +374,16 @@ let map_declarations ~span declarations =
         match (record_name node, enum_integer_type node) with
         | Some name, Some underlying -> Hashtbl.replace enums name underlying
         | _ -> ())
+    nodes;
+  List.iter
+    (fun node ->
+      match
+        (string "kind" node, record_name node, c_type_name node, enum_decl_id node)
+      with
+      | Some "TypedefDecl", Some name, Some raw, Some id
+        when String.starts_with ~prefix:"enum " raw ->
+          Option.iter (Hashtbl.replace enums name) (Hashtbl.find_opt enum_id_types id)
+      | _ -> ())
     nodes;
   let aliases = Hashtbl.create 64 in
   let rec alias stack name =

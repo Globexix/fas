@@ -8413,6 +8413,9 @@ let () =
      fas_enum_arg(FAS_ENUM_NEG)\n\
      fas_enum_arg(FAS_ENUM_LARGE)\n\
      return FAS_ENUM_NEG }\n";
+  c_semantic_accept "c-import-anonymous-enum-typedef-abi" c_matrix
+    "fn anonymous_enum(value FasAnonymousEnum) FasAnonymousEnum {\n\
+     return fas_anonymous_enum_echo(value) }\n";
   let enum_program =
     match
       c_semantic_result c_matrix "fn enum_values() i64 { return FAS_ENUM_LARGE }\n"

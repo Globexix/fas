@@ -138,9 +138,9 @@ let supported = function
 let string = function Str s -> Some s | _ -> None
 
 let keep_field = function
-  | "kind" | "name" | "type" | "loc" | "value" | "storageClass" | "inline" | "tagUsed"
-  | "fixedUnderlyingType" | "isBitfield" | "isImplicit" | "inner" | "qualType"
-  | "desugaredQualType" | "file" | "line" ->
+  | "kind" | "id" | "decl" | "name" | "type" | "loc" | "value" | "storageClass"
+  | "inline" | "tagUsed" | "fixedUnderlyingType" | "isBitfield" | "isImplicit" | "inner"
+  | "qualType" | "desugaredQualType" | "file" | "line" ->
       true
   | _ -> false
 
@@ -234,9 +234,14 @@ and object_value i =
 let declaration i =
   expect i '{';
   expect i '"';
-  ignore (read_string i);
+  let first_field = read_string i in
   expect i ':';
-  skip_value i;
+  let first_value =
+    if first_field = "id" then Some (json i)
+    else (
+      skip_value i;
+      None)
+  in
   expect i ',';
   expect i '"';
   if read_string i <> "kind" then failwith "Clang declaration kind order changed";
@@ -244,6 +249,11 @@ let declaration i =
   expect i '"';
   let kind = read_string i in
   let keep = supported kind in
+  let acc =
+    if keep then
+      Option.fold ~none:[] ~some:(fun value -> [ (first_field, value) ]) first_value
+    else []
+  in
   let rec rest acc =
     match
       space i;
@@ -260,7 +270,7 @@ let declaration i =
           rest acc)
     | _ -> failwith "invalid Clang declaration"
   in
-  rest []
+  rest acc
 
 let declarations channel =
   let i = { channel; data = Bytes.create 65536; pos = 0; size = 0 } in
