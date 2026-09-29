@@ -1469,8 +1469,40 @@ let () =
       if not (contains nested_struct_literal_path marker) then
         failwith ("nested-struct-literal-path: missing `" ^ marker ^ "`"))
     [ "%struct.S"; "store i32" ];
-  semantic_error "addr-null-reject" "null requires a pointer context"
-    "fn f() addr { return null }\n";
+  let null_contexts =
+    llvm_of
+      "opaque O\n\
+       const null_addr addr = null\n\
+       const null_handle handle[O] = null\n\
+       const addr_is_null bool = null_addr == null\n\
+       const handle_is_null bool = null == null_handle\n\
+       fn return_addr() addr { return null }\n\
+       fn return_handle() handle[O] { return null }\n\
+       fn local_nulls() bool { p addr = null\n\
+      \ h handle[O] = null\n\
+      \ return p == null && h == null }\n\
+       fn call_addr() bool { return addr_equal(null) }\n\
+       fn addr_equal(a addr) bool { return null == a }\n\
+       fn handle_null_left(a handle[O]) bool { return null != a }\n\
+       fn handle_equal(a handle[O], b handle[O]) bool { return a == b }\n\
+       fn addr_constant() bool { return addr_is_null }\n\
+       fn handle_constant() bool { return handle_is_null }\n"
+  in
+  List.iter
+    (fun marker ->
+      if not (contains null_contexts marker) then
+        failwith ("null-contexts: missing `" ^ marker ^ "`"))
+    [ "ret ptr null"; "icmp eq ptr"; "ret i1 true" ];
+  semantic_error "handle-order-reject" "ordered comparison requires integer operands"
+    "opaque O\nfn f(a handle[O], b handle[O]) bool { return a < b }\n";
+  semantic_error "handle-arithmetic-reject"
+    "arithmetic requires integer or vector operands"
+    "opaque O\nfn f(a handle[O], b handle[O]) handle[O] { return a + b }\n";
+  semantic_error "cross-handle-equality-reject"
+    "binary operands must have the same type"
+    "opaque O\nopaque P\nfn f(a handle[O], b handle[P]) bool { return a == b }\n";
+  semantic_error "handle-null-unconstrained" "null requires an addr or handle context"
+    "opaque O\nfn f() bool { return null == null }\n";
   semantic_error "addr-index-reject" "raw selection requires a type argument"
     "fn f(p addr) u8 { return p[0] }\n";
   parse_error_message "removed-typed-pointer"
@@ -5566,7 +5598,7 @@ let () =
         const E vec[4,bool] = C == splat(1)\n\
         fn f() vec[4,bool] { return D }\n\
         fn g() vec[4,bool] { return E }\n");
-  semantic_error "context-null-unconstrained" "null requires a pointer context"
+  semantic_error "context-null-unconstrained" "null requires an addr or handle context"
     "fn f() bool { return null == null }\n";
   semantic_error "context-conflicting-anchors-comparison"
     "binary operands must have the same type"

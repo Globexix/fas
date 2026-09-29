@@ -154,10 +154,11 @@ let binary_result_type ~mismatch span operation left right =
     | Ast.Eq | Ast.Ne -> (
         match left with
         | Hir.Vec (lanes, (Hir.Bool | Hir.Int _)) -> Ok (Hir.Vec (lanes, Hir.Bool))
+        | Hir.Addr | Hir.Handle _ -> Ok Hir.Bool
         | _ when Sema_numeric.is_scalar left -> Ok Hir.Bool
         | _ -> error span "equality requires scalar or integer/bool-vector operands")
     | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
-        if Sema_numeric.is_int left then Ok Hir.Bool
+        if Sema_numeric.is_int left || left = Hir.Addr then Ok Hir.Bool
         else
           match left with
           | Hir.Vec (lanes, Hir.Int _) -> Ok (Hir.Vec (lanes, Hir.Bool))

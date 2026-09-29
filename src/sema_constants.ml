@@ -76,6 +76,13 @@ let operand_type_hint operation expected left right =
   | Ast.And | Ast.Or -> None
   | Ast.Shl | Ast.Shr -> None
 
+let contextual_peer_type operation peer operand =
+  match (peer, unresolved_shape_of operand, operation) with
+  | Hir.Addr, Some Unresolved_null, (Ast.Eq | Ast.Ne) -> Some Hir.Addr
+  | Hir.Addr, _, _ -> Some (Hir.Int Hir.Usize)
+  | Hir.Handle _, Some Unresolved_int, _ -> None
+  | peer, _, _ -> Some peer
+
 let sat_apply name kind x y =
   let bits = int_bits kind in
   if is_unsigned (Hir.Int kind) then
@@ -166,6 +173,10 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
       if not (fits_literal ty v) then
         error s ("integer literal is out of range for " ^ ty_name ty)
       else Ok (ty, mask_value ty v)
+  | Ast.Null s -> (
+      match expected with
+      | Some (Hir.Addr | Hir.Handle _) as ty -> Ok (Option.get ty, 0L)
+      | _ -> error s "null requires an addr or handle context")
   | Ast.Bool_lit (v, _) -> Ok (Hir.Bool, if v then 1L else 0L)
   | Ast.Ident (n, s) -> (
       match lookup n consts with
@@ -273,7 +284,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
             in
             let* lt, lv =
               const_expr ~structs ~named_types ~arrays ?resolve consts
-                (match rt with Hir.Addr -> Some (Hir.Int Hir.Usize) | t -> Some t)
+                (contextual_peer_type op rt l)
                 ~check_only ~validate_dead l
             in
             Ok ((lt, lv), (rt, rv))
@@ -284,7 +295,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
             in
             let* rt, rv =
               const_expr ~structs ~named_types ~arrays ?resolve consts
-                (match lt with Hir.Addr -> Some (Hir.Int Hir.Usize) | t -> Some t)
+                (contextual_peer_type op lt r)
                 ~check_only ~validate_dead r
             in
             Ok ((lt, lv), (rt, rv))
@@ -312,7 +323,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
         then error s "signed division overflow in constant expression"
         else
           let cmp =
-            if is_unsigned lt then Int64.unsigned_compare lv rv
+            if is_unsigned lt || lt = Hir.Addr then Int64.unsigned_compare lv rv
             else Int64.compare signed_lv signed_rv
           in
           let result =
@@ -1015,6 +1026,10 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
         "expression is not a compile-time vector constant"
 
 let resolve_scalar_declarations ~structs ~named_types ~resolve_type ~strict items =
+  let scalar_constant_type = function
+    | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ -> true
+    | _ -> false
+  in
   let declarations =
     List.filter_map
       (function
@@ -1043,7 +1058,7 @@ let resolve_scalar_declarations ~structs ~named_types ~resolve_type ~strict item
         | None -> error span "constant expression requires a known constant"
         | Some (source_type, initial_value, declaration_span) -> (
             let* ty = resolve_type declaration_span source_type in
-            if ty <> Hir.Bool && not (is_int ty) then
+            if not (scalar_constant_type ty) then
               error span "constant expression requires a known scalar constant"
             else if check_only then Ok (ty, 0L)
             else if Hashtbl.mem visiting name then
@@ -1077,7 +1092,7 @@ let resolve_scalar_declarations ~structs ~named_types ~resolve_type ~strict item
     | (name, (source_type, _, span)) :: rest -> (
         match resolve_type span source_type with
         | Error _ -> collect rest
-        | Ok ty when ty <> Hir.Bool && not (is_int ty) -> collect rest
+        | Ok ty when not (scalar_constant_type ty) -> collect rest
         | Ok _ -> (
             match resolve ~check_only:false name span with
             | Ok _ -> collect rest

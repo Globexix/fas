@@ -1,5 +1,9 @@
 extern "C" {
   fn observe_addr(p addr) usize
+  fn c_null_addr() addr
+  fn c_nonnull_addr() addr
+  fn c_null_handle() handle[O]
+  fn c_nonnull_handle() handle[O]
 }
 
 opaque O
@@ -63,6 +67,24 @@ fn main(argc i32, argv addr) i32 {
   }
   if via_c(addr_from_bits(0)) != 0 {
     return 22
+  }
+  if c_null_addr() != null {
+    return 23
+  }
+  if c_nonnull_addr() == null {
+    return 24
+  }
+  if c_nonnull_addr() != c_nonnull_addr() {
+    return 25
+  }
+  if c_null_handle() != null {
+    return 26
+  }
+  if c_nonnull_handle() == null {
+    return 27
+  }
+  if c_nonnull_handle() != c_nonnull_handle() {
+    return 28
   }
   return 0
 }

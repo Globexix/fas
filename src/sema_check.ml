@@ -159,6 +159,13 @@ let operand_type_hint operation expected left right =
   | Ast.And | Ast.Or -> None
   | Ast.Shl | Ast.Shr -> None
 
+let contextual_peer_type operation peer operand =
+  match (peer, unresolved_shape_of operand, operation) with
+  | Hir.Addr, Some Unresolved_null, (Ast.Eq | Ast.Ne) -> Some Hir.Addr
+  | Hir.Addr, _, _ -> Some (Hir.Int Hir.Usize)
+  | Hir.Handle _, Some Unresolved_int, _ -> None
+  | peer, _, _ -> Some peer
+
 let select_value_arg span payload =
   match payload with
   | Ast.Const_arg e -> Ok e
@@ -386,7 +393,10 @@ and check_expr (c : context) expected = function
         error s ("integer literal is out of range for " ^ ty_name ty)
       else Ok (Hir.EInt (mask_value ty v, ty, s))
   | Ast.Bool_lit (v, s) -> Ok (Hir.EBool (v, s))
-  | Ast.Null s -> error s "null requires a pointer context"
+  | Ast.Null s -> (
+      match expected with
+      | Some (Hir.Addr | Hir.Handle _) as ty -> Ok (Hir.Null (Option.get ty, s))
+      | _ -> error s "null requires an addr or handle context")
   | Ast.String_lit (cstr, v, s) ->
       if cstr && String.contains v '\000' then
         error s "C string literal cannot contain embedded NUL"
@@ -407,6 +417,9 @@ and check_expr (c : context) expected = function
               error s (Printf.sprintf "`%s` is a function, not a value" n)
           | Some { declaration_kind = Top_const; _ } | None -> (
               match lookup n c.consts with
+              | Some (_, ((Hir.Addr | Hir.Handle _) as t), 0L) -> Ok (Hir.Null (t, s))
+              | Some (_, (Hir.Addr | Hir.Handle _), _) ->
+                  error s "address and handle constants must be null"
               | Some (_, t, v) -> Ok (Hir.EInt (v, t, s))
               | None -> (
                   match lookup n c.arrays with
@@ -497,23 +510,11 @@ and check_expr (c : context) expected = function
           match (unresolved_shape_of l, unresolved_shape_of r) with
           | Some _, None ->
               let* b = check_expr c (operand_type_hint op expected l r) r in
-              let* a =
-                check_expr c
-                  (match Hir.expr_ty b with
-                  | Hir.Addr -> Some (Hir.Int Hir.Usize)
-                  | t -> Some t)
-                  l
-              in
+              let* a = check_expr c (contextual_peer_type op (Hir.expr_ty b) l) l in
               Ok (a, b)
           | _ ->
               let* a = check_expr c (operand_type_hint op expected l r) l in
-              let* b =
-                check_expr c
-                  (match Hir.expr_ty a with
-                  | Hir.Addr -> Some (Hir.Int Hir.Usize)
-                  | t -> Some t)
-                  r
-              in
+              let* b = check_expr c (contextual_peer_type op (Hir.expr_ty a) r) r in
               Ok (a, b)
         in
         let at = Hir.expr_ty a in
