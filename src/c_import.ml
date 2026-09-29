@@ -224,6 +224,38 @@ let enum_integer_type node =
   |> List.find_map (fun child ->
       if string "kind" child = Some "EnumConstantDecl" then c_type_name child else None)
 
+let add_one_decimal value =
+  let length = String.length value in
+  let negative = length > 0 && value.[0] = '-' in
+  let digits = if negative then String.sub value 1 (length - 1) else value in
+  let change_digit digits decrement =
+    let bytes = Bytes.of_string digits in
+    let index = ref (Bytes.length bytes - 1) in
+    let carry = ref true in
+    while !index >= 0 && !carry do
+      let digit = Char.code (Bytes.get bytes !index) - Char.code '0' in
+      let next = if decrement then digit - 1 else digit + 1 in
+      if next < 0 then Bytes.set bytes !index '9'
+      else if next > 9 then Bytes.set bytes !index '0'
+      else (
+        Bytes.set bytes !index (Char.chr (Char.code '0' + next));
+        carry := false);
+      decr index
+    done;
+    if !carry && not decrement then "1" ^ Bytes.to_string bytes
+    else
+      let result = Bytes.to_string bytes in
+      let first = ref 0 in
+      while !first + 1 < String.length result && result.[!first] = '0' do
+        incr first
+      done;
+      String.sub result !first (String.length result - !first)
+  in
+  if negative then
+    let magnitude = change_digit digits true in
+    if magnitude = "0" then "0" else "-" ^ magnitude
+  else change_digit digits false
+
 let rec enum_decl_id node =
   match string "kind" node with
   | Some "EnumType" -> Option.bind (get "decl" node) (string "id")
@@ -536,6 +568,7 @@ let map_declarations ~span declarations =
           let item = Ast.Opaque { name; span } in
           add_item name ("opaque " ^ name) (Some item) (origin node) [] None
       | Some "EnumDecl", _ ->
+          let previous_value = ref None in
           List.iter
             (fun child ->
               if string "kind" child = Some "EnumConstantDecl" then
@@ -546,7 +579,7 @@ let map_declarations ~span declarations =
                       | Ok ty -> Ok ty
                       | Error reason -> Error reason
                     in
-                    let value =
+                    let explicit_value =
                       let rec find_value = function
                         | [] -> None
                         | node :: rest -> (
@@ -556,6 +589,14 @@ let map_declarations ~span declarations =
                       in
                       find_value (children child)
                     in
+                    let value =
+                      match explicit_value with
+                      | Some value -> Some value
+                      | None ->
+                          Some
+                            (Option.fold ~none:"0" ~some:add_one_decimal !previous_value)
+                    in
+                    previous_value := value;
                     match (underlying, value) with
                     | Ok (Ast.Int _ as ty), Some value ->
                         let expression =

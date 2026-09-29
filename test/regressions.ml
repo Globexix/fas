@@ -8437,6 +8437,37 @@ let () =
                (Hir.ty_name ty) bits)
       | None -> failwith ("C enum constant not imported: " ^ name))
     [ ("FAS_ENUM_NEG", -3L); ("FAS_ENUM_LARGE", 0xffffffffL) ];
+  let implicit_enum = c_import_fixture "enums.h" in
+  let implicit_enum_program =
+    match
+      c_semantic_result implicit_enum
+        "fn enum_values() i32 { return FAS_IMPLICIT_INT_MAX }\n"
+    with
+    | Ok program -> program
+    | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+  in
+  List.iter
+    (fun (name, value) ->
+      match
+        List.find_opt
+          (fun (constant : Hir.const_def) -> constant.name = name)
+          implicit_enum_program.consts
+      with
+      | Some { ty = Hir.Int Hir.I32; bits; _ } when bits = value -> ()
+      | Some { ty; bits; _ } ->
+          failwith
+            (Printf.sprintf "C implicit enum %s: expected i32 %Ld, got %s %Ld" name
+               value (Hir.ty_name ty) bits)
+      | None -> failwith ("C implicit enum constant not imported: " ^ name))
+    [
+      ("FAS_IMPLICIT_FIRST", 0L);
+      ("FAS_IMPLICIT_EXPLICIT", 7L);
+      ("FAS_IMPLICIT_AFTER_EXPLICIT", 8L);
+      ("FAS_IMPLICIT_NEGATIVE", 4294967291L);
+      ("FAS_IMPLICIT_AFTER_NEGATIVE", 4294967292L);
+      ("FAS_IMPLICIT_NEAR_MAX", 2147483646L);
+      ("FAS_IMPLICIT_INT_MAX", 2147483647L);
+    ];
   c_semantic_accept "c-import-pointer-matrix" c_matrix
     "fn pointers(p addr, bytes addr, record handle[FasRecord], other \
      handle[FasOtherRecord], same handle[FasSameRecord]) void {\n\

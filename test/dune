@@ -10,4 +10,4 @@
 (test
  (name regressions)
  (libraries fas_compiler)
- (deps c_import/matrix.h c_import/conflict.h))
+ (deps c_import/matrix.h c_import/conflict.h c_import/enums.h))
