@@ -29,11 +29,14 @@ int fas_enum_arg(enum FasEnum value);
 struct FasRecord;
 typedef struct FasRecord FasRecordAlias;
 struct FasOtherRecord;
+struct FasSameRecord;
+typedef struct FasSameRecord FasSameRecord;
 void *fas_void_pointer(void *value);
 const char *fas_scalar_pointer(const char *value);
 struct FasRecord *fas_record_pointer(struct FasRecord *value);
 FasRecordAlias *fas_record_alias_pointer(FasRecordAlias *value);
 struct FasOtherRecord *fas_other_pointer(struct FasOtherRecord *value);
+struct FasSameRecord *fas_same_record(struct FasSameRecord *value);
 int **fas_pointer_output(int **value);
 int fas_variadic(int fixed, ...);
 

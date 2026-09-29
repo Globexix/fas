@@ -8267,6 +8267,68 @@ let () =
     "fn run() void { var Value i32\nreturn }\n";
 
   let c_matrix = c_import_fixture "matrix.h" in
+  let c_matrix_source, c_matrix_imported = c_matrix in
+  let repeated_import =
+    C_import.merge_imports [ c_matrix_imported; c_matrix_imported ]
+  in
+  let named_item name items =
+    List.filter
+      (function
+        | Ast.Opaque { name = item_name; _ }
+        | Ast.Const { name = item_name; _ }
+        | Ast.Global { name = item_name; _ }
+        | Ast.Func { name = item_name; _ } ->
+            item_name = name
+        | _ -> false)
+      items
+  in
+  incr checks_run;
+  if List.length (named_item "fas_i32_echo" repeated_import.items) <> 1 then
+    failwith "repeated C imports did not merge to one function binding";
+  incr checks_run;
+  if
+    List.length
+      (List.filter (fun (name, _) -> name = "fas_i32") repeated_import.aliases)
+    <> 1
+  then failwith "repeated C imports did not merge to one typedef binding";
+  let matching =
+    parse_file c_matrix_source
+      "use \"C\" \"matrix.h\"\nextern \"C\" { fn fas_i32_echo(value i32) i32 }\n"
+  in
+  let matching_import =
+    expect_ok (C_import.reconcile_source matching.items c_matrix_imported)
+  in
+  incr checks_run;
+  if named_item "fas_i32_echo" matching_import.items <> [] then
+    failwith "matching extern C declaration did not confirm its import";
+  incr checks_run;
+  (match
+     Sema.check ~c_aliases:matching_import.aliases
+       ~c_unsupported:matching_import.unsupported
+       { Ast.items = matching.items @ matching_import.items }
+   with
+  | Ok _ -> ()
+  | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics));
+  let mismatching =
+    parse_file c_matrix_source
+      "use \"C\" \"matrix.h\"\nextern \"C\" { fn fas_i32_echo(value u32) i32 }\n"
+  in
+  incr checks_run;
+  (match C_import.reconcile_source mismatching.items c_matrix_imported with
+  | Error [ diagnostic ]
+    when diagnostic.message
+         = "C declaration `fas_i32_echo` has type `fn(i32)->i32`, but Fas declares \
+            `fn(u32)->i32`" ->
+      ()
+  | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+  | Ok _ -> failwith "mismatching extern C declaration was accepted");
+  let c_conflict = snd (c_import_fixture "conflict.h") in
+  let conflicted = C_import.merge_imports [ c_matrix_imported; c_conflict ] in
+  c_semantic_accept "c-import-unused-cross-file-conflict" (c_matrix_source, conflicted)
+    "fn main() i32 { return 0 }\n";
+  c_semantic_message "c-import-cross-file-conflict"
+    "C declaration `fas_i32_echo` is not supported: conflicting C declarations"
+    (c_matrix_source, conflicted) "fn main() i32 { return fas_i32_echo(7) }\n";
   c_semantic_accept "c-import-unused-unsupported" c_matrix
     "fn main() i32 { return 0 }\n";
   c_semantic_accept "c-import-integer-alias-matrix" c_matrix
@@ -8313,12 +8375,13 @@ let () =
     [ ("FAS_ENUM_NEG", -3L); ("FAS_ENUM_LARGE", 0xffffffffL) ];
   c_semantic_accept "c-import-pointer-matrix" c_matrix
     "fn pointers(p addr, bytes addr, record handle[FasRecord], other \
-     handle[FasOtherRecord]) void {\n\
+     handle[FasOtherRecord], same handle[FasSameRecord]) void {\n\
      fas_void_pointer(p)\n\
      fas_scalar_pointer(bytes)\n\
      fas_record_pointer(record)\n\
      fas_record_alias_pointer(record)\n\
      fas_other_pointer(other)\n\
+     fas_same_record(same)\n\
      fas_pointer_output(p)\n\
      fas_variadic(1, true, 2)\n\
      return }\n";

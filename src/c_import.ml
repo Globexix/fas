@@ -328,8 +328,17 @@ type mapped = {
   items : Ast.item list;
   aliases : (string * Ast.ty) list;
   unsupported : (string * string) list;
+  identities : (string * string) list;
   manifest : string list;
 }
+
+let item_name = function
+  | Ast.Opaque { name; _ }
+  | Ast.Const { name; _ }
+  | Ast.Global { name; _ }
+  | Ast.Func { name; _ } ->
+      name
+  | _ -> ""
 
 let map_declarations ~span declarations =
   let nodes = C_import_json.array (C_import_json.Arr declarations) in
@@ -404,15 +413,10 @@ let map_declarations ~span declarations =
     |> List.sort compare
   in
   let entities = Hashtbl.create 256
-  and unsupported_seen = Hashtbl.create 128
-  and unsupported = ref []
+  and unsupported = Hashtbl.create 128
   and manifest = Hashtbl.create 256
   and items = ref [] in
-  let add_unsupported name reason =
-    if not (Hashtbl.mem unsupported_seen name) then (
-      Hashtbl.add unsupported_seen name ();
-      unsupported := (name, reason) :: !unsupported)
-  in
+  let add_unsupported name reason = Hashtbl.replace unsupported name reason in
   Hashtbl.iter
     (fun name result ->
       if Names.reserved_binding_name name then
@@ -439,11 +443,17 @@ let map_declarations ~span declarations =
     in
     Hashtbl.replace manifest name manifest_line;
     (match reason with Some reason -> add_unsupported name reason | None -> ());
+    let identity =
+      String.concat "\000"
+        [ signature; qualifier_text; Option.value ~default:"" reason ]
+    in
     match Hashtbl.find_opt entities name with
-    | Some previous when previous = signature -> ()
-    | Some _ -> add_unsupported name "conflicting C declarations"
+    | Some previous when previous = identity -> ()
+    | Some _ ->
+        Hashtbl.replace entities name "\000conflict";
+        add_unsupported name "conflicting C declarations"
     | None ->
-        Hashtbl.add entities name signature;
+        Hashtbl.add entities name identity;
         Option.iter (fun item -> items := item :: !items) item
   in
   let origin node =
@@ -455,13 +465,6 @@ let map_declarations ~span declarations =
     match c_type_name node with
     | None -> Error "declaration has no C type"
     | Some raw -> type_result ~aliases ~records ~enums ~allow_record raw
-  in
-  let item_name = function
-    | Ast.Opaque { name; _ } -> name
-    | Ast.Const { name; _ } -> name
-    | Ast.Global { name; _ } -> name
-    | Ast.Func { name; _ } -> name
-    | _ -> ""
   in
   let function_type node =
     match c_type_name node with
@@ -557,6 +560,7 @@ let map_declarations ~span declarations =
             (children node)
       | Some "TypedefDecl", _ -> (
           match Hashtbl.find_opt aliases name with
+          | Some (Ok (Ast.Named_type target)) when target = name -> ()
           | Some (Ok ty) ->
               add_item name
                 ("typedef " ^ Ast.type_name ty)
@@ -668,12 +672,144 @@ let map_declarations ~span declarations =
   let items =
     List.sort
       (fun left right -> String.compare (item_name left) (item_name right))
-      !items
+      (List.filter
+         (fun item -> Hashtbl.find_opt entities (item_name item) <> Some "\000conflict")
+         !items)
+  in
+  let identities =
+    Hashtbl.fold (fun name identity acc -> (name, identity) :: acc) entities []
   in
   {
     items;
-    aliases = List.sort compare (typed_aliases @ enum_aliases);
-    unsupported = List.sort compare !unsupported;
+    aliases =
+      List.filter
+        (fun (name, _) -> Hashtbl.find_opt entities name <> Some "\000conflict")
+        (List.sort compare (typed_aliases @ enum_aliases));
+    unsupported =
+      Hashtbl.fold (fun name reason acc -> (name, reason) :: acc) unsupported []
+      |> List.sort compare;
+    identities;
     manifest =
       Hashtbl.fold (fun _ line acc -> line :: acc) manifest [] |> List.sort compare;
   }
+
+let merge_imports mappings =
+  let identities = Hashtbl.create 256 in
+  List.iter
+    (fun (name, identity) ->
+      match Hashtbl.find_opt identities name with
+      | Some previous when previous <> identity ->
+          Hashtbl.replace identities name "\000conflict"
+      | Some _ -> ()
+      | None -> Hashtbl.add identities name identity)
+    (List.concat_map (fun mapping -> mapping.identities) mappings);
+  let bad name = Hashtbl.find_opt identities name = Some "\000conflict" in
+  let items =
+    List.concat_map (fun mapping -> mapping.items) mappings
+    |> List.filter (fun item -> not (bad (item_name item)))
+    |> List.sort_uniq (fun left right ->
+        String.compare (item_name left) (item_name right))
+  in
+  let aliases =
+    List.concat_map (fun mapping -> mapping.aliases) mappings
+    |> List.sort_uniq compare
+    |> List.filter (fun (name, _) -> not (bad name))
+  in
+  let unsupported =
+    List.concat_map (fun mapping -> mapping.unsupported) mappings
+    |> List.filter (fun (name, _) -> not (bad name))
+    |> fun entries ->
+    entries
+    @ Hashtbl.fold
+        (fun name identity acc ->
+          if identity = "\000conflict" then (name, "conflicting C declarations") :: acc
+          else acc)
+        identities []
+    |> List.sort_uniq compare
+  in
+  {
+    items;
+    aliases;
+    unsupported;
+    identities = [];
+    manifest = List.concat_map (fun mapping -> mapping.manifest) mappings;
+  }
+
+let canonical_type aliases ty =
+  let rec canonical = function
+    | Ast.Named_type name as ty ->
+        Option.value ~default:ty (List.assoc_opt name aliases)
+    | Ast.Handle inner -> Ast.Handle (canonical inner)
+    | Ast.Array (length, inner) -> Ast.Array (length, canonical inner)
+    | Ast.Vec (length, inner) -> Ast.Vec (length, canonical inner)
+    | ty -> ty
+  in
+  canonical ty
+
+let c_signature aliases = function
+  | Ast.Func { params; ret; variadic; _ } ->
+      "fn("
+      ^ String.concat ","
+          (List.map
+             (fun (p : Ast.param) -> Ast.type_name (canonical_type aliases p.ty))
+             params)
+      ^ (if variadic then ",..." else "")
+      ^ ")->"
+      ^ Ast.type_name (canonical_type aliases ret)
+  | Ast.Global { ty; linkage; _ } ->
+      (if linkage = Ast.Import_const_c then "const " else "")
+      ^ Ast.type_name (canonical_type aliases ty)
+  | _ -> "unsupported C declaration"
+
+let source_signature aliases = function
+  | Ast.Func
+      { linkage = Ast.External_c; body = Ast.Declaration; generic_params = []; _ } as
+    item ->
+      Some (c_signature aliases item)
+  | Ast.Global { linkage = Ast.Import_c; init = None; _ } as item ->
+      Some (c_signature aliases item)
+  | _ -> None
+
+let reconcile_source source_items imported =
+  let confirmed = ref [] in
+  let bindings = List.map (fun item -> (item_name item, item)) imported.items in
+  let check item =
+    let name = item_name item in
+    let binding = List.assoc_opt name bindings in
+    if
+      name = ""
+      || binding = None
+         && not
+              (List.mem_assoc name imported.aliases
+              || List.mem_assoc name imported.unsupported)
+    then None
+    else
+      let duplicate () =
+        Diag.error (Ast.item_span item)
+          (Printf.sprintf "duplicate declaration `%s`" name)
+      in
+      match (binding, source_signature imported.aliases item) with
+      | Some foreign, Some native ->
+          let actual = c_signature imported.aliases foreign in
+          if actual = native then (
+            confirmed := name :: !confirmed;
+            None)
+          else
+            Some
+              (Diag.error (Ast.item_span item)
+                 (Printf.sprintf
+                    "C declaration `%s` has type `%s`, but Fas declares `%s`" name
+                    actual native))
+      | _ -> Some (duplicate ())
+  in
+  match List.find_map check source_items with
+  | Some diagnostic -> Error [ diagnostic ]
+  | None ->
+      Ok
+        {
+          imported with
+          items =
+            List.filter
+              (fun item -> not (List.mem (item_name item) !confirmed))
+              imported.items;
+        }
