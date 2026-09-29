@@ -238,450 +238,383 @@ and expr_name = function
   | Struct_lit (t, xs, _) ->
       "(" ^ type_name t ^ "){" ^ String.concat ", " (List.map expr_name xs) ^ "}"
 
-exception Render_exhausted of string * Span.t
-
-type render_failure = Render_failure of string * Span.t
-
 let item_span = function
   | Const { span; _ } | Struct { span; _ } | Opaque { span; _ } | Func { span; _ } ->
       span
 
-let escaped_char_bytes c =
-  match c with
-  | '\b' | '\t' | '\n' | '\r' | '"' | '\\' -> 2
-  | _ when Char.code c < 32 || Char.code c >= 127 -> 4
-  | _ -> 1
-
-let escaped_bytes s =
-  let length = String.length s in
-  let rec go i total =
-    if i = length then total else go (i + 1) (total + escaped_char_bytes s.[i])
-  in
-  go 0 0
-
-let render_bounded ~budget program =
-  if budget < 0 then
-    Error
-      (Render_failure ("rendered AST text budget must not be negative", Span.synthetic))
-  else
-    let buffer = Buffer.create 4096 in
-    let current = ref Span.synthetic in
-    let fail single =
-      let message =
-        if single then
-          Printf.sprintf "rendered AST node exceeds the configured limit of %d bytes"
-            budget
-        else
-          Printf.sprintf
-            "cumulative rendered AST bytes exceed the configured limit of %d bytes"
-            budget
-      in
-      raise (Render_exhausted (message, !current))
-    in
-    let text s =
-      if Buffer.length buffer > budget - String.length s then fail false
-      else Buffer.add_string buffer s
-    in
-    let add_name s =
-      if String.length s > budget then fail true;
-      if Buffer.length buffer > budget - String.length s then fail false;
-      Buffer.add_string buffer s
-    in
-    let add_escaped s =
-      if escaped_bytes s > budget then fail true;
-      let length = String.length s in
-      let rec go i =
-        if i < length then (
-          let stop = min length (i + 256) in
-          text (String.escaped (String.sub s i (stop - i)));
-          go stop)
-      in
-      go 0
-    in
-    let at span emit =
-      let saved = !current in
-      current := span;
-      emit ();
-      current := saved
-    in
-    let emit_comma_list : 'a. ('a -> unit) -> 'a list -> unit =
-     fun emit xs ->
-      List.iteri
-        (fun i x ->
-          if i > 0 then text ", ";
-          emit x)
-        xs
-    in
-    let rec emit_ty ty =
-      match ty with
-      | Bool -> text "bool"
-      | Int U8 -> text "u8"
-      | Int U16 -> text "u16"
-      | Int U32 -> text "u32"
-      | Int U64 -> text "u64"
-      | Int I8 -> text "i8"
-      | Int I16 -> text "i16"
-      | Int I32 -> text "i32"
-      | Int I64 -> text "i64"
-      | Int Usize -> text "usize"
-      | Int Isize -> text "isize"
-      | Addr -> text "addr"
-      | Handle inner ->
-          text "handle[";
-          emit_ty inner;
-          text "]"
-      | Array (n, inner) ->
-          text "arr[";
-          add_name n;
-          text ", ";
-          emit_ty inner;
-          text "]"
-      | Vec (n, inner) ->
-          text "vec[";
-          add_name n;
-          text ", ";
-          emit_ty inner;
-          text "]"
-      | Named_type name -> add_name name
-      | Applied_type (name, args, _) ->
-          add_name name;
-          text "[";
-          emit_comma_list emit_generic_arg args;
-          text "]"
-      | Void -> text "void"
-    and emit_generic_arg = function
-      | Type_arg ty -> emit_ty ty
-      | Const_arg e -> emit_expr e
-      | Name_arg (name, span) -> at span (fun () -> add_name name)
-    and emit_generic_param = function
-      | Type_param { name; span; _ } -> at span (fun () -> add_name name)
-      | Const_param { name; ty; span } ->
-          at span (fun () ->
-              add_name name;
-              text " const ";
-              emit_ty ty)
-    and emit_generic_params = function
-      | [] -> ()
-      | params ->
-          text "[";
-          emit_comma_list emit_generic_param params;
-          text "]"
-    and emit_expr e =
-      at (expr_span e) (fun () ->
-          match e with
-          | Int_lit (s, _) -> add_name s
-          | Bool_lit (true, _) -> text "true"
-          | Bool_lit (false, _) -> text "false"
-          | Null _ -> text "null"
-          | String_lit (c, s, _) ->
-              text (if c then "c\"" else "\"");
-              add_escaped s;
-              text "\""
-          | Ident (name, _) -> add_name name
-          | Unary (op, x, _) ->
-              text (match op with Neg -> "-" | Not -> "!" | Bit_not -> "~");
-              emit_expr x
-          | Binary (op, l, r, _) ->
-              emit_expr l;
-              text " ";
-              text
-                (match op with
-                | Add -> "+"
-                | Sub -> "-"
-                | Mul -> "*"
-                | Div -> "/"
-                | Rem -> "%"
-                | Bit_and -> "&"
-                | Bit_or -> "|"
-                | Bit_xor -> "^"
-                | Eq -> "=="
-                | Ne -> "!="
-                | Lt -> "<"
-                | Le -> "<="
-                | Gt -> ">"
-                | Ge -> ">="
-                | And -> "&&"
-                | Or -> "||"
-                | Shl -> "<<"
-                | Shr -> ">>");
-              text " ";
-              emit_expr r
-          | Call (f, xs, _) ->
-              emit_expr f;
-              text "(";
-              emit_comma_list emit_expr xs;
-              text ")"
-          | Generic_args (f, xs, _) ->
-              emit_expr f;
-              text "[";
-              emit_comma_list emit_generic_arg xs;
-              text "]"
-          | Cast (k, ty, x, _) ->
-              text
-                (match k with
-                | Zext -> "zext["
-                | Sext -> "sext["
-                | Trunc -> "trunc["
-                | Bitcast -> "bitcast[");
-              emit_ty ty;
-              text "](";
-              emit_expr x;
-              text ")"
-          | Select (a, args, _) ->
-              emit_expr a;
-              text "[";
-              List.iteri
-                (fun i arg ->
-                  if i > 0 then text ", ";
-                  match arg with
-                  | Type_arg ty -> emit_ty ty
-                  | Const_arg e -> emit_expr e
-                  | Name_arg (name, span) -> at span (fun () -> add_name name))
-                args;
-              text "]"
-          | Field (a, name, _) ->
-              emit_expr a;
-              text ".";
-              add_name name
-          | Addr_of (x, _) ->
-              text "&";
-              emit_expr x
-          | Handle_from_addr (t, x, _) ->
-              text "handle_from_addr[";
-              emit_ty t;
-              text "]( ";
-              emit_expr x;
-              text ")"
-          | Sizeof (ty, _) ->
-              text "sizeof[";
-              emit_ty ty;
-              text "]"
-          | Alignof (ty, _) ->
-              text "alignof[";
-              emit_ty ty;
-              text "]"
-          | Offsetof (ty, name, _) ->
-              text "offsetof[";
-              emit_ty ty;
-              text ", ";
-              add_name name;
-              text "]"
-          | Splat (x, _) ->
-              text "splat(";
-              emit_expr x;
-              text ")"
-          | Ternary (c, a, b, _) ->
-              emit_expr c;
-              text " ? ";
-              emit_expr a;
-              text " : ";
-              emit_expr b
-          | Array_lit (xs, _) ->
-              text "{";
-              emit_comma_list emit_expr xs;
-              text "}"
-          | Struct_lit (ty, xs, _) ->
-              text "(";
-              emit_ty ty;
-              text "){";
-              emit_comma_list emit_expr xs;
-              text "}")
-    and emit_stmt indent s =
-      at (stmt_span s) (fun () ->
-          match s with
-          | Let { name; ty; init; _ } -> (
-              text indent;
-              add_name name;
-              text " ";
-              emit_ty ty;
-              match init with
-              | None -> ()
-              | Some e ->
-                  text " = ";
-                  emit_expr e)
-          | View { name; place; _ } ->
-              text indent;
-              text "view ";
-              add_name name;
-              text " = ";
-              emit_expr place
-          | Assign (Target_ident (name, span), e, _) ->
-              at span (fun () ->
-                  text indent;
-                  add_name name;
-                  text " = ";
-                  emit_expr e)
-          | Assign (_, e, _) ->
-              text indent;
-              text "<target> = ";
-              emit_expr e
-          | Compound_assign (_, _, e, _) ->
-              text indent;
-              text "<target> compound= ";
-              emit_expr e
-          | Return (None, _) ->
-              text indent;
-              text "return"
-          | Return (Some e, _) ->
-              text indent;
-              text "return ";
-              emit_expr e
-          | Expr_stmt (e, _) ->
-              text indent;
-              emit_expr e
-          | Break _ ->
-              text indent;
-              text "break"
-          | Continue _ ->
-              text indent;
-              text "continue"
-          | Defer (xs, _) ->
-              text indent;
-              text "defer {";
-              emit_lines (indent ^ "  ") xs;
-              text "\n";
-              text indent;
-              text "}"
-          | Block (xs, _) ->
-              text indent;
-              text "{";
-              emit_lines (indent ^ "  ") xs;
-              text "\n";
-              text indent;
-              text "}"
-          | If (c, yes, no, _) -> (
-              text indent;
-              text "if ";
-              emit_expr c;
-              text " {";
-              emit_lines (indent ^ "  ") yes;
-              text "\n";
-              text indent;
-              text "}";
-              match no with
-              | None -> ()
-              | Some xs ->
-                  text "\n";
-                  text indent;
-                  text "else {";
-                  emit_lines (indent ^ "  ") xs;
-                  text "\n";
-                  text indent;
-                  text "}")
-          | While (c, xs, _) ->
-              text indent;
-              text "while ";
-              emit_expr c;
-              text " {";
-              emit_lines (indent ^ "  ") xs;
-              text "\n";
-              text indent;
-              text "}"
-          | For (_, _, _, xs, _) ->
-              text indent;
-              text "for ... {";
-              emit_lines (indent ^ "  ") xs;
-              text "\n";
-              text indent;
-              text "}"
-          | Switch (e, _, _, _) ->
-              text indent;
-              text "switch ";
-              emit_expr e;
-              text " { ... }")
-    and emit_lines indent xs =
-      List.iter
-        (fun s ->
-          text "\n";
-          emit_stmt indent s)
-        xs
-    and emit_body body =
-      match body with
-      | Declaration -> ()
-      | Asm raw ->
-          text " {";
-          add_name raw;
-          text "}"
-      | Statements xs ->
-          text " {\n";
-          List.iteri
-            (fun i s ->
-              if i > 0 then text "\n";
-              emit_stmt "  " s)
-            xs;
-          text "\n}"
-    in
-    let emit_item item =
-      at (item_span item) (fun () ->
-          match item with
-          | Const { name; ty; value; _ } ->
-              text "const ";
-              add_name name;
-              text " ";
-              emit_ty ty;
-              text " = ";
-              emit_expr value
-          | Struct { name; generic_params; fields; align; _ } ->
-              text "struct ";
-              add_name name;
-              emit_generic_params generic_params;
-              (match align with
-              | None -> ()
-              | Some n ->
-                  text " @align(";
-                  text (string_of_int n);
-                  text ")");
-              text " {\n";
-              List.iteri
-                (fun i f ->
-                  if i > 0 then text "\n";
-                  at f.span (fun () ->
-                      text "  ";
-                      add_name f.name;
-                      text " ";
-                      emit_ty f.ty))
-                fields;
-              text "\n}"
-          | Opaque { name; _ } ->
-              text "opaque ";
-              add_name name
-          | Func { name; generic_params; params; ret; body; linkage; _ } ->
-              text (match linkage with Internal -> "fn " | External_c -> "extern fn ");
-              add_name name;
-              emit_generic_params generic_params;
-              text "(";
-              emit_comma_list
-                (fun (p : param) ->
-                  at p.span (fun () ->
-                      add_name p.name;
-                      text " ";
-                      emit_ty p.ty))
-                params;
-              text ") ";
-              emit_ty ret;
-              emit_body body)
-    in
-    try
-      let last_span = ref None in
-      List.iteri
-        (fun i item ->
-          if i > 0 then
-            at (item_span item) (fun () ->
-                text "\n";
-                text "\n");
-          last_span := Some (item_span item);
-          emit_item item)
-        program.items;
-      (match !last_span with
-      | None -> text "\n"
-      | Some span -> at span (fun () -> text "\n"));
-      Ok (Buffer.contents buffer)
-    with Render_exhausted (message, span) -> Error (Render_failure (message, span))
-
 let render_program program =
-  match render_bounded ~budget:max_int program with
-  | Ok text -> text
-  | Error _ -> assert false
+  let buffer = Buffer.create 4096 in
+  let text = Buffer.add_string buffer in
+  let add_name = text in
+  let add_escaped s =
+    let length = String.length s in
+    let rec go i =
+      if i < length then (
+        let stop = min length (i + 256) in
+        text (String.escaped (String.sub s i (stop - i)));
+        go stop)
+    in
+    go 0
+  in
+  let emit_comma_list : 'a. ('a -> unit) -> 'a list -> unit =
+   fun emit xs ->
+    List.iteri
+      (fun i x ->
+        if i > 0 then text ", ";
+        emit x)
+      xs
+  in
+  let rec emit_ty ty =
+    match ty with
+    | Bool -> text "bool"
+    | Int U8 -> text "u8"
+    | Int U16 -> text "u16"
+    | Int U32 -> text "u32"
+    | Int U64 -> text "u64"
+    | Int I8 -> text "i8"
+    | Int I16 -> text "i16"
+    | Int I32 -> text "i32"
+    | Int I64 -> text "i64"
+    | Int Usize -> text "usize"
+    | Int Isize -> text "isize"
+    | Addr -> text "addr"
+    | Handle inner ->
+        text "handle[";
+        emit_ty inner;
+        text "]"
+    | Array (n, inner) ->
+        text "arr[";
+        add_name n;
+        text ", ";
+        emit_ty inner;
+        text "]"
+    | Vec (n, inner) ->
+        text "vec[";
+        add_name n;
+        text ", ";
+        emit_ty inner;
+        text "]"
+    | Named_type name -> add_name name
+    | Applied_type (name, args, _) ->
+        add_name name;
+        text "[";
+        emit_comma_list emit_generic_arg args;
+        text "]"
+    | Void -> text "void"
+  and emit_generic_arg = function
+    | Type_arg ty -> emit_ty ty
+    | Const_arg e -> emit_expr e
+    | Name_arg (name, _) -> add_name name
+  and emit_generic_param = function
+    | Type_param { name; _ } -> add_name name
+    | Const_param { name; ty; _ } ->
+        add_name name;
+        text " const ";
+        emit_ty ty
+  and emit_generic_params = function
+    | [] -> ()
+    | params ->
+        text "[";
+        emit_comma_list emit_generic_param params;
+        text "]"
+  and emit_expr e =
+    match e with
+    | Int_lit (s, _) -> add_name s
+    | Bool_lit (true, _) -> text "true"
+    | Bool_lit (false, _) -> text "false"
+    | Null _ -> text "null"
+    | String_lit (c, s, _) ->
+        text (if c then "c\"" else "\"");
+        add_escaped s;
+        text "\""
+    | Ident (name, _) -> add_name name
+    | Unary (op, x, _) ->
+        text (match op with Neg -> "-" | Not -> "!" | Bit_not -> "~");
+        emit_expr x
+    | Binary (op, l, r, _) ->
+        emit_expr l;
+        text " ";
+        text
+          (match op with
+          | Add -> "+"
+          | Sub -> "-"
+          | Mul -> "*"
+          | Div -> "/"
+          | Rem -> "%"
+          | Bit_and -> "&"
+          | Bit_or -> "|"
+          | Bit_xor -> "^"
+          | Eq -> "=="
+          | Ne -> "!="
+          | Lt -> "<"
+          | Le -> "<="
+          | Gt -> ">"
+          | Ge -> ">="
+          | And -> "&&"
+          | Or -> "||"
+          | Shl -> "<<"
+          | Shr -> ">>");
+        text " ";
+        emit_expr r
+    | Call (f, xs, _) ->
+        emit_expr f;
+        text "(";
+        emit_comma_list emit_expr xs;
+        text ")"
+    | Generic_args (f, xs, _) ->
+        emit_expr f;
+        text "[";
+        emit_comma_list emit_generic_arg xs;
+        text "]"
+    | Cast (k, ty, x, _) ->
+        text
+          (match k with
+          | Zext -> "zext["
+          | Sext -> "sext["
+          | Trunc -> "trunc["
+          | Bitcast -> "bitcast[");
+        emit_ty ty;
+        text "](";
+        emit_expr x;
+        text ")"
+    | Select (a, args, _) ->
+        emit_expr a;
+        text "[";
+        List.iteri
+          (fun i arg ->
+            if i > 0 then text ", ";
+            match arg with
+            | Type_arg ty -> emit_ty ty
+            | Const_arg e -> emit_expr e
+            | Name_arg (name, _) -> add_name name)
+          args;
+        text "]"
+    | Field (a, name, _) ->
+        emit_expr a;
+        text ".";
+        add_name name
+    | Addr_of (x, _) ->
+        text "&";
+        emit_expr x
+    | Handle_from_addr (t, x, _) ->
+        text "handle_from_addr[";
+        emit_ty t;
+        text "]( ";
+        emit_expr x;
+        text ")"
+    | Sizeof (ty, _) ->
+        text "sizeof[";
+        emit_ty ty;
+        text "]"
+    | Alignof (ty, _) ->
+        text "alignof[";
+        emit_ty ty;
+        text "]"
+    | Offsetof (ty, name, _) ->
+        text "offsetof[";
+        emit_ty ty;
+        text ", ";
+        add_name name;
+        text "]"
+    | Splat (x, _) ->
+        text "splat(";
+        emit_expr x;
+        text ")"
+    | Ternary (c, a, b, _) ->
+        emit_expr c;
+        text " ? ";
+        emit_expr a;
+        text " : ";
+        emit_expr b
+    | Array_lit (xs, _) ->
+        text "{";
+        emit_comma_list emit_expr xs;
+        text "}"
+    | Struct_lit (ty, xs, _) ->
+        text "(";
+        emit_ty ty;
+        text "){";
+        emit_comma_list emit_expr xs;
+        text "}"
+  and emit_stmt indent s =
+    match s with
+    | Let { name; ty; init; _ } -> (
+        text indent;
+        add_name name;
+        text " ";
+        emit_ty ty;
+        match init with
+        | None -> ()
+        | Some e ->
+            text " = ";
+            emit_expr e)
+    | View { name; place; _ } ->
+        text indent;
+        text "view ";
+        add_name name;
+        text " = ";
+        emit_expr place
+    | Assign (Target_ident (name, _), e, _) ->
+        text indent;
+        add_name name;
+        text " = ";
+        emit_expr e
+    | Assign (_, e, _) ->
+        text indent;
+        text "<target> = ";
+        emit_expr e
+    | Compound_assign (_, _, e, _) ->
+        text indent;
+        text "<target> compound= ";
+        emit_expr e
+    | Return (None, _) ->
+        text indent;
+        text "return"
+    | Return (Some e, _) ->
+        text indent;
+        text "return ";
+        emit_expr e
+    | Expr_stmt (e, _) ->
+        text indent;
+        emit_expr e
+    | Break _ ->
+        text indent;
+        text "break"
+    | Continue _ ->
+        text indent;
+        text "continue"
+    | Defer (xs, _) ->
+        text indent;
+        text "defer {";
+        emit_lines (indent ^ "  ") xs;
+        text "\n";
+        text indent;
+        text "}"
+    | Block (xs, _) ->
+        text indent;
+        text "{";
+        emit_lines (indent ^ "  ") xs;
+        text "\n";
+        text indent;
+        text "}"
+    | If (c, yes, no, _) -> (
+        text indent;
+        text "if ";
+        emit_expr c;
+        text " {";
+        emit_lines (indent ^ "  ") yes;
+        text "\n";
+        text indent;
+        text "}";
+        match no with
+        | None -> ()
+        | Some xs ->
+            text "\n";
+            text indent;
+            text "else {";
+            emit_lines (indent ^ "  ") xs;
+            text "\n";
+            text indent;
+            text "}")
+    | While (c, xs, _) ->
+        text indent;
+        text "while ";
+        emit_expr c;
+        text " {";
+        emit_lines (indent ^ "  ") xs;
+        text "\n";
+        text indent;
+        text "}"
+    | For (_, _, _, xs, _) ->
+        text indent;
+        text "for ... {";
+        emit_lines (indent ^ "  ") xs;
+        text "\n";
+        text indent;
+        text "}"
+    | Switch (e, _, _, _) ->
+        text indent;
+        text "switch ";
+        emit_expr e;
+        text " { ... }"
+  and emit_lines indent xs =
+    List.iter
+      (fun s ->
+        text "\n";
+        emit_stmt indent s)
+      xs
+  and emit_body body =
+    match body with
+    | Declaration -> ()
+    | Asm raw ->
+        text " {";
+        add_name raw;
+        text "}"
+    | Statements xs ->
+        text " {\n";
+        List.iteri
+          (fun i s ->
+            if i > 0 then text "\n";
+            emit_stmt "  " s)
+          xs;
+        text "\n}"
+  in
+  let emit_item item =
+    match item with
+    | Const { name; ty; value; _ } ->
+        text "const ";
+        add_name name;
+        text " ";
+        emit_ty ty;
+        text " = ";
+        emit_expr value
+    | Struct { name; generic_params; fields; align; _ } ->
+        text "struct ";
+        add_name name;
+        emit_generic_params generic_params;
+        (match align with
+        | None -> ()
+        | Some n ->
+            text " @align(";
+            text (string_of_int n);
+            text ")");
+        text " {\n";
+        List.iteri
+          (fun i f ->
+            if i > 0 then text "\n";
+            text "  ";
+            add_name f.name;
+            text " ";
+            emit_ty f.ty)
+          fields;
+        text "\n}"
+    | Opaque { name; _ } ->
+        text "opaque ";
+        add_name name
+    | Func { name; generic_params; params; ret; body; linkage; _ } ->
+        text (match linkage with Internal -> "fn " | External_c -> "extern fn ");
+        add_name name;
+        emit_generic_params generic_params;
+        text "(";
+        emit_comma_list
+          (fun (p : param) ->
+            add_name p.name;
+            text " ";
+            emit_ty p.ty)
+          params;
+        text ") ";
+        emit_ty ret;
+        emit_body body
+  in
+  List.iteri
+    (fun i item ->
+      if i > 0 then (
+        text "\n";
+        text "\n");
+      emit_item item)
+    program.items;
+  text "\n";
+  Buffer.contents buffer
 
 let fold_expanded_nodes ~limit program =
   let total = ref 0 in
