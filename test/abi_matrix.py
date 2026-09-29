@@ -136,7 +136,7 @@ def generate_fas(include_main=True):
             "    short_value i16 = -1234",
             "    wide u64 = 18446744073709551615",
             "    marker u8 = 19",
-            "    if c_variadic(77, flag, narrow, short_value, wide) != 1 { return 40 }",
+            "    if c_variadic(77, flag, narrow, short_value, wide, &marker, token) != 1 { return 40 }",
             "    return 0",
         ]
     )
@@ -183,8 +183,10 @@ def generate_c(include_main=True):
             "    int narrow = va_arg(args, int);",
             "    int short_value = va_arg(args, int);",
             "    uint64_t wide = va_arg(args, uint64_t);",
+            "    void *address = va_arg(args, void *);",
+            "    Token *handle = va_arg(args, Token *);",
             "    va_end(args);",
-            "    return marker == 77 && flag == 1 && narrow == 200 && short_value == -1234 && wide == UINT64_MAX;",
+            "    return marker == 77 && flag == 1 && narrow == 200 && short_value == -1234 && wide == UINT64_MAX && address != NULL && handle != NULL;",
             "}",
             "extern uint64_t c_variadic(uint64_t marker, ...);",
         ]

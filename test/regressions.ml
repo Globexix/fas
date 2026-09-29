@@ -1068,6 +1068,17 @@ let () =
      fn f() void { s S = (S){1}\n\
      take(s)\n\
      return }\n";
+  semantic_accept "variadic-address-handle-arguments"
+    "opaque Token\n\
+     extern \"C\" { fn consume(marker u64, ...) u64 }\n\
+     fn pass(pointer addr, token handle[Token]) u64 { return consume(1, pointer, \
+     token) }\n";
+  semantic_error "variadic-vector-argument"
+    "aggregate arguments cannot be passed by value; pass `&x` as `addr` or `handle[T]`"
+    "extern \"C\" { fn consume(marker u64, ...) void }\n\
+     fn pass() void { value vec[2,u32] = splat(0)\n\
+     consume(1, value)\n\
+     return }\n";
   semantic_error "aggregate-assignment"
     "aggregate assignment is not supported; use `copy(dst, src)`"
     "struct S { x i64 }\n\

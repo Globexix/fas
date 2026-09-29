@@ -1434,7 +1434,13 @@ and check_actuals c policy span formals actuals =
               Result_list.map
                 (fun expression ->
                   let* value = check_expr c None expression in
-                  if is_scalar (Hir.expr_ty value) then Ok (variadic_promote value)
+                  if
+                    is_scalar (Hir.expr_ty value)
+                    ||
+                    match Hir.expr_ty value with
+                    | Hir.Addr | Hir.Handle _ -> true
+                    | _ -> false
+                  then Ok (variadic_promote value)
                   else
                     error (Ast.expr_span expression)
                       "aggregate arguments cannot be passed by value; pass `&x` as \
