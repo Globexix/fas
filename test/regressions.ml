@@ -4375,6 +4375,35 @@ let () =
       let rendered = Diag.render_all ~source:None diagnostics in
       if not (contains rendered "duplicate function `add`") then
         failwith ("cross-file-duplicate-template: unexpected diagnostic: " ^ rendered));
+  let duplicate_across_files name expected_message first_file second_file first_text
+      second_text =
+    match check_files [ (first_file, first_text); (second_file, second_text) ] with
+    | Error [ diagnostic ] ->
+        if diagnostic.Diag.message <> expected_message then
+          failwith (name ^ ": unexpected duplicate message: " ^ diagnostic.message);
+        if diagnostic.primary.Span.file <> second_file then
+          failwith (name ^ ": primary location does not name the second definition");
+        let first_location = "first definition is at " ^ first_file ^ ":1:" in
+        if not (List.exists (fun note -> contains note first_location) diagnostic.notes)
+        then failwith (name ^ ": first definition location missing from notes")
+    | Error diagnostics ->
+        failwith
+          (name ^ ": expected one duplicate diagnostic, got "
+          ^ Diag.render_all ~source:None diagnostics)
+    | Ok _ -> failwith (name ^ ": duplicate declaration was accepted")
+  in
+  duplicate_across_files "extern-duplicate-matching-signature"
+    "duplicate function `shared`" "extern_first.fas" "extern_second.fas"
+    "extern \"C\" { fn shared(value i32) i32 }\n"
+    "extern \"C\" { fn shared(value i32) i32 }\n";
+  duplicate_across_files "extern-duplicate-mismatching-signature"
+    "duplicate function `shared`" "extern_mismatch_first.fas"
+    "extern_mismatch_second.fas" "extern \"C\" { fn shared(value i32) i32 }\n"
+    "extern \"C\" { fn shared(value i64) i32 }\n";
+  duplicate_across_files "native-extern-collision" "duplicate function `shared`"
+    "native_first.fas" "extern_collision.fas"
+    "fn shared(value i32) i32 { return value }\n"
+    "extern \"C\" { fn shared(value i32) i32 }\n";
   ignore
     (llvm_of
        "const NARROW u8 = trunc[u8](WIDE)\n\

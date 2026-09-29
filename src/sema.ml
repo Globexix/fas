@@ -141,17 +141,24 @@ let check ?(limits = Limits.default) program =
                   }
                 in
                 validate_declarations (next_id + 1)
-                  (String_map.add name kind seen)
+                  (String_map.add name (kind, span) seen)
                   (binding :: bindings) rest
-            | Some previous when previous = kind ->
-                let label =
-                  match kind with
-                  | Top_type -> "type"
-                  | Top_const -> "const"
-                  | Top_function -> "function"
+            | Some (previous, first_span) ->
+                let previous_definition_note =
+                  "first definition is at " ^ Span.to_string first_span
                 in
-                error span (Printf.sprintf "duplicate %s `%s`" label name)
-            | Some _ -> error span (Printf.sprintf "duplicate declaration `%s`" name)))
+                let duplicate message =
+                  Error [ Diag.error ~notes:[ previous_definition_note ] span message ]
+                in
+                if previous = kind then
+                  let label =
+                    match kind with
+                    | Top_type -> "type"
+                    | Top_const -> "const"
+                    | Top_function -> "function"
+                  in
+                  duplicate (Printf.sprintf "duplicate %s `%s`" label name)
+                else duplicate (Printf.sprintf "duplicate declaration `%s`" name)))
   in
   let* top_level_bindings =
     validate_declarations 0 String_map.empty [] program.Ast.items
