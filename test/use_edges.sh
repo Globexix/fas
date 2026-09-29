@@ -205,6 +205,19 @@ grep -F '#include <stddef.h>' "$c_import_unit" >/dev/null \
 grep -F "#include \"$USE_EDGES_TMP/paths/library.h\"" "$c_import_unit" >/dev/null \
   || fail "quoted header was not resolved relative to its Fas file"
 cp "$ROOT/test/c_import/matrix.h" "$USE_EDGES_TMP/paths/matrix.h"
+cat >"$USE_EDGES_TMP/paths/left.fas" <<'FAS'
+use "C" "matrix.h"
+FAS
+cat >"$USE_EDGES_TMP/paths/right.fas" <<'FAS'
+use "C" "matrix.h"
+FAS
+cat >"$USE_EDGES_TMP/paths/repeated-import.fas" <<'FAS'
+use "left.fas"
+use "right.fas"
+fn main() i32 { return fas_i32_echo(7) }
+FAS
+"$OCAML_FAS" --emit-ir "$USE_EDGES_TMP/paths/repeated-import.fas" \
+  >"$USE_EDGES_TMP/repeated-import.ll"
 cat >"$USE_EDGES_TMP/paths/manifest.fas" <<'FAS'
 use "C" "matrix.h"
 fn main() i32 { return 0 }

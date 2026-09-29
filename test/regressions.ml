@@ -8282,6 +8282,46 @@ let () =
         | _ -> false)
       items
   in
+  let nested_dir = Filename.concat (Filename.dirname c_matrix_source) "nested" in
+  Unix.mkdir nested_dir 0o700;
+  Fun.protect
+    ~finally:(fun () -> Unix.rmdir nested_dir)
+    (fun () ->
+      let relative_source = Filename.concat nested_dir "probe.fas" in
+      let relative_span =
+        Span.make ~file:relative_source ~start_offset:0 ~end_offset:0 ~line:3 ~column:1
+      in
+      let relative_header =
+        C_import.{ spelling = Ast.C_quoted "../matrix.h"; span = relative_span }
+      in
+      let relative_declarations, _ =
+        expect_ok
+          (C_import.import ~cc:"clang-22" ~debug:false ~keep:false relative_source
+             [ relative_header ])
+      in
+      let relative_import =
+        C_import.map_declarations ~span:relative_span relative_declarations
+      in
+      incr checks_run;
+      if named_item "fas_i32_echo" relative_import.items = [] then
+        failwith "quoted C header path was not resolved from a nested Fas file";
+      let missing_span =
+        Span.make ~file:relative_source ~start_offset:0 ~end_offset:0 ~line:9 ~column:4
+      in
+      let missing_header =
+        C_import.{ spelling = Ast.C_quoted "../absent.h"; span = missing_span }
+      in
+      incr checks_run;
+      match
+        C_import.import ~cc:"clang-22" ~debug:false ~keep:false relative_source
+          [ missing_header ]
+      with
+      | Error [ diagnostic ]
+        when diagnostic.primary = missing_span
+             && contains diagnostic.message "file not found" ->
+          ()
+      | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+      | Ok _ -> failwith "missing C header was accepted");
   incr checks_run;
   if List.length (named_item "fas_i32_echo" repeated_import.items) <> 1 then
     failwith "repeated C imports did not merge to one function binding";
