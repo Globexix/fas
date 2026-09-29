@@ -52,6 +52,15 @@ let semantic_error name fragment text =
       if not (contains rendered fragment) then
         failwith (name ^ ": unexpected diagnostic: " ^ rendered)
 
+let semantic_accept name text =
+  incr checks_run;
+  let program = expect_ok (Parser.parse (source text)) in
+  match Sema.check program with
+  | Ok _ -> ()
+  | Error diagnostics ->
+      failwith
+        (name ^ ": unexpected rejection: " ^ Diag.render_all ~source:None diagnostics)
+
 let parse_error name text =
   incr checks_run;
   match Parser.parse (source text) with
@@ -7049,5 +7058,145 @@ let () =
     "fn f(p addr) void {\nvolatile_store[u32](p)\nreturn\n}\n";
   semantic_error "volatile-value-type" "type mismatch: expected u32, got bool"
     "fn f(p addr) void {\nvolatile_store[u32](p, true)\nreturn\n}\n";
+
+  semantic_accept "place-init-ternary-escape-unknown"
+    "struct S { x i64 y i64 }\n\
+     fn f(p bool) i64 { s S\n\
+     q addr = p ? &s : addr_from_bits(0)\n\
+     t S = s\n\
+     return 0 }\n";
+  semantic_accept "aggregate-branch-no-else-unknown"
+    "struct S { x i64 }\nfn f(p bool) i64 { s S\nif p { s.x = 1 }\nreturn s.x }\n";
+  semantic_accept "aggregate-switch-partial-merge-unknown"
+    "struct S { x i64 y i64 }\n\
+     fn f(n i64) i64 { s S\n\
+     switch n {\n\
+     case 0: { s.x = 1 }\n\
+     default: { s.y = 2 }\n\
+     }\n\
+     return s.x }\n";
+  semantic_accept "aggregate-nested-dynamic-prefix-unknown"
+    "fn f(i i64) i64 { a arr[2,arr[2,i64]]\n\
+     a[0][0] = 1\n\
+     a[0][1] = 2\n\
+     return a[0][i] }\n";
+  semantic_accept "aggregate-dynamic-write-read-unknown"
+    "fn f(i i64) i64 { a arr[2,i64]\na[i] = 1\nreturn a[i] }\n";
+  semantic_accept "aggregate-dynamic-pointer-element-unknown"
+    "fn f(i i64) i64 { x i64\na arr[2,addr]\na[0] = &x\na[i][i64,0] = 1\nreturn x }\n";
+  semantic_accept "aggregate-branch-partial-unknown"
+    "struct S { x i64 y i64 }\n\
+     fn f(p bool) i64 { s S\n\
+     if p { s.x = 1 } else { s.y = 2 }\n\
+     return s.x }\n";
+  semantic_accept "aggregate-loop-only-unknown"
+    "struct S { x i64 }\nfn f(p bool) i64 { s S\nwhile p { s.x = 1 }\nreturn s.x }\n";
+  semantic_accept "aggregate-branch-raw-missing-field-unknown"
+    "struct S { x i64 y i64 }\n\
+     fn take(p addr) void { return }\n\
+     fn f(p bool) i64 { s S\n\
+     if p { take(&s) } else { s.x = 1 }\n\
+     return s.y }\n";
+  semantic_accept "aggregate-branch-raw-whole-unknown"
+    "struct S { x i64 y i64 }\n\
+     fn take(p addr) void { return }\n\
+     fn f(p bool) i64 { s S\n\
+     if p { take(&s) } else { s.x = 1 }\n\
+     t S = s\n\
+     return 0 }\n";
+  semantic_accept "for-step-path-merge-unknown"
+    "fn take(value i64) void { return }\n\
+     fn f(condition bool) void { for value i64; true; take(value) {\n\
+     if condition { value = 1 } else { continue }\n\
+     } }\n";
+  semantic_accept "conditional-loop-initialization-unknown"
+    "fn f(condition bool) i64 { value i64\n\
+     while condition { value = 1\n\
+     break }\n\
+     return value }\n";
+  semantic_accept "switch-loop-exit-initialization-unknown"
+    "fn f(choice i64) i64 { value i64\n\
+     while true { switch choice {\n\
+     case 0: { value = 1\n\
+     break }\n\
+     default: { break }\n\
+     } }\n\
+     return value }\n";
+  semantic_accept "for-step-discard-unknown"
+    "fn f() i64 { y i64\nfor i i32 = 0; i < 0; y = 5 { }\nreturn y }\n";
+  semantic_accept "static-index-parameter-constant-shadow-unknown"
+    "const Index i32 = 0\n\
+     fn read(Index i32) i32 { values arr[2,i32]\n\
+     values[0] = 7\n\
+     return values[Index] }\n\
+     fn main() i32 { return read(1) }\n";
+  semantic_accept "static-index-nested-parameter-constant-shadow-unknown"
+    "const Index i32 = 0\n\
+     fn read(Index i32) i32 { values arr[2,i32]\n\
+     values[0] = 7\n\
+     return values[Index + 0] }\n\
+     fn main() i32 { return read(1) }\n";
+
+  semantic_error "aggregate-branch-no-else-established-uninitialized"
+    "use of uninitialized local `s`"
+    "struct S { x i64 y i64 }\nfn f(p bool) i64 { s S\nif p { s.x = 1 }\nreturn s.y }\n";
+  semantic_error "aggregate-switch-established-uninitialized"
+    "use of uninitialized local `s`"
+    "struct S { x i64 y i64 }\n\
+     fn f(n i64) i64 { s S\n\
+     switch n { case 0: { s.x = 1 } default: { s.x = 2 } }\n\
+     return s.y }\n";
+  semantic_error "aggregate-loop-established-uninitialized"
+    "use of uninitialized local `s`"
+    "struct S { x i64 y i64 }\n\
+     fn f(p bool) i64 { s S\n\
+     while p { s.x = 1 }\n\
+     return s.y }\n";
+
+  semantic_accept "constant-if-true-flow-pruning"
+    "fn f() i64 { x i64\nif true { x = 1 } else { }\nreturn x }\n";
+  semantic_error "constant-if-true-flow-pruning-rejects-selected-uninit"
+    "use of uninitialized local `x`"
+    "fn f() i64 { x i64\nif true { } else { x = 1 }\nreturn x }\n";
+  semantic_accept "constant-if-false-flow-pruning"
+    "fn f() i64 { x i64\nif false { } else { x = 1 }\nreturn x }\n";
+  semantic_error "constant-if-false-flow-pruning-rejects-selected-uninit"
+    "use of uninitialized local `x`"
+    "fn f() i64 { x i64\nif false { x = 1 } else { }\nreturn x }\n";
+  semantic_accept "constant-while-false-flow-pruning"
+    "fn f() i64 { x i64 = 1\nwhile false { x = 2 }\nreturn x }\n";
+  semantic_error "constant-while-false-flow-pruning-rejects-body-only-init"
+    "use of uninitialized local `x`"
+    "fn f() i64 { x i64\nwhile false { x = 1 }\nreturn x }\n";
+  semantic_accept "constant-for-false-flow-pruning"
+    "fn f() i64 { x i64 = 1\nfor i i32 = 0; false; i += 1 { x = 2 }\nreturn x }\n";
+  semantic_error "constant-for-false-flow-pruning-rejects-body-only-init"
+    "use of uninitialized local `x`"
+    "fn f() i64 { x i64\nfor i i32 = 0; false; i += 1 { x = 1 }\nreturn x }\n";
+  semantic_accept "constant-switch-matching-case-flow-pruning"
+    "fn f() i64 { x i64\nswitch 1 { case 1: { x = 1 } default: { } }\nreturn x }\n";
+  semantic_error "constant-switch-matching-case-flow-pruning-rejects-default"
+    "use of uninitialized local `x`"
+    "fn f() i64 { x i64\nswitch 1 { case 1: { } default: { x = 1 } }\nreturn x }\n";
+  semantic_accept "constant-switch-default-flow-pruning"
+    "fn f() i64 { x i64\nswitch 9 { case 1: { } default: { x = 1 } }\nreturn x }\n";
+  semantic_error "constant-switch-default-flow-pruning-rejects-case"
+    "use of uninitialized local `x`"
+    "fn f() i64 { x i64\nswitch 9 { case 1: { x = 1 } default: { } }\nreturn x }\n";
+  semantic_accept "constant-switch-no-match-flow-pruning-preserves-fact"
+    "fn f() i64 { x i64 = 7\nswitch 9 { case 1: { x = 1 } }\nreturn x }\n";
+  semantic_error "constant-switch-no-match-flow-pruning"
+    "use of uninitialized local `x`"
+    "fn f() i64 { x i64\nswitch 9 { case 1: { x = 1 } }\nreturn x }\n";
+  semantic_accept "constant-and-short-circuit-flow-pruning"
+    "fn f() bool { return false && (1 / 0 == 0) }\n";
+  semantic_error "constant-and-short-circuit-reaches-rhs"
+    "division by zero is not a defined runtime operation"
+    "fn f() bool { return true && (1 / 0 == 0) }\n";
+  semantic_accept "constant-or-short-circuit-flow-pruning"
+    "fn f() bool { return true || (1 / 0 == 0) }\n";
+  semantic_error "constant-or-short-circuit-reaches-rhs"
+    "division by zero is not a defined runtime operation"
+    "fn f() bool { return false || (1 / 0 == 0) }\n";
 
   Printf.printf "regression checks: %d passed\n" !checks_run
