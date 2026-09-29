@@ -2389,12 +2389,106 @@ let lower (p : Hir.program) =
               (Ir.Array_global { name = a.name; elem_ty = Ir.I8; elems = []; align = 1 }))
       p.const_arrays
   in
+  let global_storage (global : Hir.global) =
+    match Hir.layout p.structs global.ty with
+    | Error message ->
+        error Span.synthetic
+          (Printf.sprintf "internal error: global %s has no layout: %s" global.name
+             message)
+    | Ok (size, align) -> (
+        let data = Bytes.make size (Char.chr 0) in
+        let object_size ty = fst (Result.get_ok (Hir.layout p.structs ty)) in
+        let set offset value =
+          if offset < 0 || offset >= size then
+            failwith "initializer exceeds global storage";
+          Bytes.set data offset (Char.chr (value land 255))
+        in
+        let write_integer offset width value =
+          for index = 0 to width - 1 do
+            set (offset + index)
+              (Int64.to_int (Int64.shift_right_logical value (index * 8)))
+          done
+        in
+        let rec write offset ty = function
+          | Hir.Global_int value -> write_integer offset (object_size ty) value
+          | Hir.Global_bool value -> set offset (if value then 1 else 0)
+          | Hir.Global_null -> ()
+          | Hir.Global_vector values when ty = Hir.Vec (List.length values, Hir.Bool) ->
+              List.iteri
+                (fun index value ->
+                  if value <> 0L then
+                    let byte = offset + (index / 8) in
+                    set byte (Char.code (Bytes.get data byte) lor (1 lsl (index mod 8))))
+                values
+          | Hir.Global_vector _
+            when match ty with Hir.Vec (_, Hir.Bool) -> true | _ -> false ->
+              failwith "vector initializer lane mismatch"
+          | Hir.Global_vector values ->
+              let width =
+                match ty with
+                | Hir.Vec (lanes, element) when lanes = List.length values ->
+                    object_size element
+                | _ -> failwith "vector initializer type or lane mismatch"
+              in
+              List.iteri
+                (fun index value ->
+                  write_integer (offset + (index * width)) width value)
+                values
+          | Hir.Global_array values ->
+              let element, width =
+                match ty with
+                | Hir.Array (length, element) when length = List.length values ->
+                    (element, object_size element)
+                | _ -> failwith "array initializer type or length mismatch"
+              in
+              List.iteri
+                (fun index value -> write (offset + (index * width)) element value)
+                values
+          | Hir.Global_struct values -> (
+              match ty with
+              | Hir.Struct name ->
+                  let fields =
+                    (List.find_opt
+                       (fun (definition : Hir.struct_def) -> definition.name = name)
+                       p.structs
+                    |> Option.get)
+                      .fields
+                  in
+                  List.iter2
+                    (fun (field : Hir.field) value ->
+                      write (offset + field.offset) field.ty value)
+                    fields values
+              | _ -> failwith "struct initializer type mismatch")
+        in
+        try
+          let bytes =
+            match global.init_value with
+            | None -> None
+            | Some value ->
+                write 0 global.ty value;
+                Some (Bytes.to_string data)
+          in
+          Ok
+            (Ir.Storage_global
+               {
+                 name = global.name;
+                 storage_ty = ty global.ty;
+                 size;
+                 bytes;
+                 align;
+                 linkage = global.linkage;
+               })
+        with Failure message | Invalid_argument message ->
+          error Span.synthetic
+            (Printf.sprintf "internal error: global %s: %s" global.name message))
+  in
+  let* storage_globals = Result_list.map global_storage p.globals in
   let module_ =
     {
       Ir.target_triple = Target_layout.current.triple;
       data_layout = Target_layout.current.llvm_data_layout;
       structs;
-      globals = strings @ arrays;
+      globals = strings @ arrays @ storage_globals;
       funcs = funcs @ intrinsic_decls funcs;
       no_inline_function = None;
     }

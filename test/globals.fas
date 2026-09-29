@@ -1,0 +1,53 @@
+use "globals_aux.fas"
+
+struct Pair { lo u32
+  hi u32 }
+
+var ZeroScalar u32
+var ZeroArray arr[3,u32]
+var ZeroPair Pair
+var Seed arr[3,u32] = {4, 5, 8}
+var ConstantPair Pair = {7, 11}
+var VolatileSlot u32
+
+extern "C" {
+  var Exported u32 = 3
+  var Imported u32
+  fn bump(p addr) u32
+  fn mutate_exported() void
+  fn fas_zero_check() u32 {
+    return ZeroScalar + ZeroArray[0] + ZeroArray[1] + ZeroPair.lo + ZeroPair.hi
+  }
+  fn fas_address_bump() u32 { return bump(&ZeroScalar) }
+  fn fas_compound_update() u32 {
+    ZeroScalar += 3
+    return ZeroScalar
+  }
+  fn fas_imported_update() u32 {
+    Imported += 7
+    return Imported
+  }
+  fn fas_exported_observe() u32 {
+    before u32 = Exported
+    mutate_exported()
+    return Exported - before
+  }
+  fn fas_array_struct() u32 {
+    copy(ZeroArray, Seed)
+    view last = ZeroArray[2]
+    last += 1
+    ZeroPair.lo = ConstantPair.lo
+    ZeroPair.hi = ConstantPair.hi
+    return ZeroArray[0] + ZeroArray[1] + ZeroArray[2] + ZeroPair.lo + ZeroPair.hi
+  }
+  fn fas_generic_update() u32 { return add_shared[u32](2) }
+  fn fas_volatile_roundtrip() u32 {
+    volatile_store[u32](&VolatileSlot, 27)
+    return volatile_load[u32](&VolatileSlot)
+  }
+}
+
+fn add_shared[T](delta T) T {
+  Shared += delta
+  return Shared
+}

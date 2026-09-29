@@ -2697,6 +2697,28 @@ let () =
       failwith "staticdata-vs-object: nondeterministic budget winner";
     if sd_message <> "object size exceeds budget max_object_size of 2 (profile 0.15)"
     then failwith ("staticdata-vs-object: winner drifted: " ^ sd_message);
+    let global_data_program =
+      expect_ok (Parser.parse (source "var Zero u32\nvar Initialized u32 = 0\n"))
+    in
+    let global_data_ir =
+      expect_ok (Sema.check global_data_program) |> Lower.lower |> expect_ok
+    in
+    assert (
+      Ir.check_static_data_bytes
+        ~limits:{ Limits.default with max_static_data_bytes = 4 }
+        global_data_ir
+      = Ok ());
+    (match
+       Ir.check_static_data_bytes
+         ~limits:{ Limits.default with max_static_data_bytes = 3 }
+         global_data_ir
+     with
+    | Error (Some "Initialized", _) -> ()
+    | Error (offender, _) ->
+        failwith
+          ("initialized global budget reported the wrong object: "
+          ^ Option.value offender ~default:"none")
+    | Ok () -> failwith "initialized global was omitted from static-data budget");
     pair "specializations-vs-aggregate"
       ({ Limits.default with max_specializations = 0 }, "max_specializations")
       ({ Limits.default with max_aggregate_elements = 50 }, "max_aggregate_elements")

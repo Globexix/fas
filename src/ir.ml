@@ -89,6 +89,14 @@ type struct_def = { name : string; fields : ty list; tail_padding : int }
 type global =
   | String_global of { name : string; bytes : string }
   | Array_global of { name : string; elem_ty : ty; elems : int64 list; align : int }
+  | Storage_global of {
+      name : string;
+      storage_ty : ty;
+      size : int;
+      bytes : string option;
+      align : int;
+      linkage : Ast.global_linkage;
+    }
 
 type module_ = {
   target_triple : string;
@@ -830,11 +838,14 @@ let validate module_ =
   let globals = Hashtbl.create (List.length module_.globals) in
   let valid_alignment alignment = alignment > 0 && alignment land (alignment - 1) = 0 in
   let global_name = function
-    | String_global { name; _ } | Array_global { name; _ } -> name
+    | String_global { name; _ } | Array_global { name; _ } | Storage_global { name; _ }
+      ->
+        name
   in
   let global_type = function
     | String_global { bytes; _ } -> Array (String.length bytes, I8)
     | Array_global { elem_ty; elems; _ } -> Array (List.length elems, elem_ty)
+    | Storage_global { storage_ty; _ } -> storage_ty
   in
   let validate_global = function
     | String_global _ -> Ok ()
@@ -845,6 +856,21 @@ let validate module_ =
           Error ("global `" ^ name ^ "` has an element outside its type")
         else if not (valid_alignment align) then
           Error (Printf.sprintf "global `%s` has invalid alignment %d" name align)
+        else Ok ()
+    | Storage_global { name; storage_ty; size; bytes; align; linkage } ->
+        let valid_storage =
+          valid_value_type storage_ty
+          && references_defined_type storage_ty
+          && size >= 0
+          && Option.fold ~none:true ~some:(fun data -> String.length data = size) bytes
+          && valid_alignment align
+          &&
+          match (linkage, bytes) with
+          | Ast.Import_c, None | Ast.Export_c, Some _ | Ast.Internal_global, _ -> true
+          | _ -> false
+        in
+        if not valid_storage then
+          Error (Printf.sprintf "global `%s` has an invalid storage declaration" name)
         else Ok ()
   in
   let rec collect_globals = function
@@ -1451,7 +1477,25 @@ let render_bounded ~budget m =
                 elems;
               add "], align ";
               add (string_of_int align);
-              newline ())
+              newline ()
+          | Storage_global { name; size; bytes; align; linkage; _ } ->
+              let linkage_text =
+                match linkage with
+                | Ast.Internal_global -> "internal global "
+                | Ast.Export_c -> "global "
+                | Ast.Import_c -> "external global "
+              in
+              add (Printf.sprintf "@%s = %s[%d x i8]" name linkage_text size);
+              (match bytes with
+              | None when linkage = Ast.Import_c -> ()
+              | None -> add " zeroinitializer"
+              | Some data when String.for_all (fun byte -> byte = '\000') data ->
+                  add " zeroinitializer"
+              | Some data ->
+                  add " c\"";
+                  add_escaped_bytes data;
+                  add "\"");
+              add (Printf.sprintf ", align %d\n" align))
         m.globals;
       List.iter
         (fun f ->
@@ -1538,6 +1582,8 @@ let render_debug_bounded ~limits m =
                name (ty_name elem_ty)
                (String.concat "; " (List.map Int64.to_string elems))
                align)
+      | Storage_global { name; storage_ty; _ } ->
+          line (Printf.sprintf "    Storage_global %S %s" name (ty_name storage_ty))
     in
     let block (b : block) =
       line (Printf.sprintf "      Block { id = %d; label = %S; instrs = [" b.id b.label);
@@ -1724,9 +1770,14 @@ let check_static_data_bytes ~limits m =
               let length = List.length elems in
               if width <> 0 && length > max_int / width then Error ()
               else Ok (length * width))
+      | Storage_global { bytes; _ } ->
+          Ok (Option.fold ~none:0 ~some:String.length bytes)
     in
     let name_of = function
-      | String_global { name; _ } | Array_global { name; _ } -> name
+      | String_global { name; _ }
+      | Array_global { name; _ }
+      | Storage_global { name; _ } ->
+          name
     in
     let rec go total = function
       | [] -> Ok ()
