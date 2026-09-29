@@ -1,0 +1,215 @@
+struct mc_chacha20_ctx {
+    state arr[16, u32]
+    block arr[64, u8]
+    block_used u8
+    overflow u8
+}
+
+const MC_CHACHA20_OK i32 = 0
+const MC_CHACHA20_ERR_NULL i32 = -1
+const MC_CHACHA20_ERR_COUNTER_OVERFLOW i32 = -2
+
+const MC_CHACHA20_BLOCK_SIZE usize = 64
+
+extern "C" {
+    fn mc_chacha20_wipe(p addr, length usize) void {
+        for i usize = 0; i < length; i += 1 {
+            volatile_store[u8](p + i, 0)
+        }
+    }
+}
+
+fn tch_load32_le(src addr) u32 {
+    return zext[u32](src[u8]) | zext[u32](src[u8, 1]) << 8 | zext[u32](src[u8, 2]) << 16 | zext[u32](src[u8, 3]) << 24
+}
+
+fn tch_store32_le(dst addr, x u32) void {
+    dst[u8] = trunc[u8](x)
+    dst[u8, 1] = trunc[u8](x >> 8)
+    dst[u8, 2] = trunc[u8](x >> 16)
+    dst[u8, 3] = trunc[u8](x >> 24)
+}
+
+fn tch_quarter_round(a addr, b addr, c addr, d addr) void {
+    a[u32] += b[u32]
+    d[u32] ^= a[u32]
+    d[u32] = rotl(d[u32], 16)
+    c[u32] += d[u32]
+    b[u32] ^= c[u32]
+    b[u32] = rotl(b[u32], 12)
+    a[u32] += b[u32]
+    d[u32] ^= a[u32]
+    d[u32] = rotl(d[u32], 8)
+    c[u32] += d[u32]
+    b[u32] ^= c[u32]
+    b[u32] = rotl(b[u32], 7)
+}
+
+fn tch_block_from_state(out addr, state addr) void {
+    x arr[16, u32]
+
+    for i u32 = 0; i < 16; i += 1 {
+        x[i] = state[u32, i]
+    }
+
+    for i u32 = 0; i < 10; i += 1 {
+        tch_quarter_round(&x[0], &x[4], &x[8], &x[12])
+        tch_quarter_round(&x[1], &x[5], &x[9], &x[13])
+        tch_quarter_round(&x[2], &x[6], &x[10], &x[14])
+        tch_quarter_round(&x[3], &x[7], &x[11], &x[15])
+        tch_quarter_round(&x[0], &x[5], &x[10], &x[15])
+        tch_quarter_round(&x[1], &x[6], &x[11], &x[12])
+        tch_quarter_round(&x[2], &x[7], &x[8], &x[13])
+        tch_quarter_round(&x[3], &x[4], &x[9], &x[14])
+    }
+
+    for i u32 = 0; i < 16; i += 1 {
+        tch_store32_le(out + i * 4, x[i] + state[u32, i])
+    }
+
+    mc_chacha20_wipe(&x[0], sizeof[arr[16, u32]])
+}
+
+fn tch_setup_state(state addr, key addr, nonce addr, counter u32) void {
+    state[u32] = 0x61707865
+    state[u32, 1] = 0x3320646e
+    state[u32, 2] = 0x79622d32
+    state[u32, 3] = 0x6b206574
+    state[u32, 4] = tch_load32_le(key)
+    state[u32, 5] = tch_load32_le(key + 4)
+    state[u32, 6] = tch_load32_le(key + 8)
+    state[u32, 7] = tch_load32_le(key + 12)
+    state[u32, 8] = tch_load32_le(key + 16)
+    state[u32, 9] = tch_load32_le(key + 20)
+    state[u32, 10] = tch_load32_le(key + 24)
+    state[u32, 11] = tch_load32_le(key + 28)
+    state[u32, 12] = counter
+    state[u32, 13] = tch_load32_le(nonce)
+    state[u32, 14] = tch_load32_le(nonce + 4)
+    state[u32, 15] = tch_load32_le(nonce + 8)
+}
+
+fn tch_refill(ctx addr) i32 {
+    view c = ctx[mc_chacha20_ctx]
+
+    if c.overflow != 0 {
+        return MC_CHACHA20_ERR_COUNTER_OVERFLOW
+    }
+
+    tch_block_from_state(&c.block[0], &c.state[0])
+    c.block_used = 0
+
+    if c.state[12] == 4294967295 {
+        c.state[12] = 0
+        c.overflow = 1
+    } else {
+        c.state[12] += 1
+    }
+
+    return MC_CHACHA20_OK
+}
+
+extern "C" {
+    fn mc_chacha20_block(out addr, key addr, nonce addr, counter u32) i32 {
+        if out == null || key == null || nonce == null {
+            return MC_CHACHA20_ERR_NULL
+        }
+
+        state arr[16, u32]
+
+        tch_setup_state(&state[0], key, nonce, counter)
+        tch_block_from_state(out, &state[0])
+        mc_chacha20_wipe(&state[0], sizeof[arr[16, u32]])
+        return MC_CHACHA20_OK
+    }
+
+    fn mc_chacha20_init(ctx addr, key addr, nonce addr, counter u32) i32 {
+        if ctx == null || key == null || nonce == null {
+            return MC_CHACHA20_ERR_NULL
+        }
+
+        view c = ctx[mc_chacha20_ctx]
+
+        tch_setup_state(&c.state[0], key, nonce, counter)
+        c.block_used = trunc[u8](MC_CHACHA20_BLOCK_SIZE)
+        c.overflow = 0
+
+        return MC_CHACHA20_OK
+    }
+
+    fn mc_chacha20_update(ctx addr, out addr, in addr, length usize) i32 {
+        if ctx == null { return MC_CHACHA20_ERR_NULL }
+        if length != 0 && (out == null || in == null) {
+            return MC_CHACHA20_ERR_NULL
+        }
+
+        view c = ctx[mc_chacha20_ctx]
+
+        for i usize = 0; i < length; i += 1 {
+            if c.block_used >= trunc[u8](MC_CHACHA20_BLOCK_SIZE) {
+                rc i32 = tch_refill(ctx)
+                if rc != MC_CHACHA20_OK {
+                    return rc
+                }
+            }
+            out[u8, i] = in[u8, i] ^ c.block[c.block_used]
+            c.block[c.block_used] = 0
+            c.block_used += 1
+        }
+
+        return MC_CHACHA20_OK
+    }
+
+    fn mc_chacha20_keystream_update(ctx addr, out addr, length usize) i32 {
+        if ctx == null { return MC_CHACHA20_ERR_NULL }
+        if length != 0 && out == null {
+            return MC_CHACHA20_ERR_NULL
+        }
+
+        view c = ctx[mc_chacha20_ctx]
+
+        for i usize = 0; i < length; i += 1 {
+            if c.block_used >= trunc[u8](MC_CHACHA20_BLOCK_SIZE) {
+                rc i32 = tch_refill(ctx)
+                if rc != MC_CHACHA20_OK {
+                    return rc
+                }
+            }
+            out[u8, i] = c.block[c.block_used]
+            c.block[c.block_used] = 0
+            c.block_used += 1
+        }
+
+        return MC_CHACHA20_OK
+    }
+
+    fn mc_chacha20_wipe_ctx(ctx addr) void {
+        if ctx != null {
+            mc_chacha20_wipe(ctx, sizeof[mc_chacha20_ctx])
+        }
+    }
+
+    fn mc_chacha20_xor(out addr, in addr, length usize, key addr, nonce addr, counter u32) i32 {
+        ctx_local mc_chacha20_ctx
+        rc i32 = mc_chacha20_init(&ctx_local, key, nonce, counter)
+        if rc != MC_CHACHA20_OK {
+            return rc
+        }
+
+        rc = mc_chacha20_update(&ctx_local, out, in, length)
+        mc_chacha20_wipe_ctx(&ctx_local)
+        return rc
+    }
+
+    fn mc_chacha20_keystream(out addr, length usize, key addr, nonce addr, counter u32) i32 {
+        ctx_local mc_chacha20_ctx
+        rc i32 = mc_chacha20_init(&ctx_local, key, nonce, counter)
+        if rc != MC_CHACHA20_OK {
+            return rc
+        }
+
+        rc = mc_chacha20_keystream_update(&ctx_local, out, length)
+        mc_chacha20_wipe_ctx(&ctx_local)
+        return rc
+    }
+}
