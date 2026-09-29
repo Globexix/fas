@@ -8268,6 +8268,27 @@ let () =
 
   let c_matrix = c_import_fixture "matrix.h" in
   let c_matrix_source, c_matrix_imported = c_matrix in
+  List.iter
+    (fun (name, expected) ->
+      incr checks_run;
+      match List.assoc_opt name c_matrix_imported.aliases with
+      | Some actual when actual = expected -> ()
+      | Some actual ->
+          failwith
+            (Printf.sprintf "C typedef %s: expected %s, got %s" name
+               (Ast.type_name expected) (Ast.type_name actual))
+      | None -> failwith ("C typedef was not imported: " ^ name))
+    [
+      ("fas_i8", Ast.Int Ast.I8);
+      ("fas_u8", Ast.Int Ast.U8);
+      ("fas_i16", Ast.Int Ast.I16);
+      ("fas_u16", Ast.Int Ast.U16);
+      ("fas_i32", Ast.Int Ast.I32);
+      ("fas_u32", Ast.Int Ast.U32);
+      ("fas_i64", Ast.Int Ast.I64);
+      ("fas_u64", Ast.Int Ast.U64);
+      ("fas_bool", Ast.Bool);
+    ];
   let repeated_import =
     C_import.merge_imports [ c_matrix_imported; c_matrix_imported ]
   in
