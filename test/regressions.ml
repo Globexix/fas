@@ -7071,13 +7071,15 @@ let () =
     (fun marker ->
       if not (contains raw_addr_shape marker) then
         failwith ("raw-addr-shape: missing `" ^ marker ^ "`"))
-    [ "getelementptr i8, ptr" ];
+    [ "ptrtoint ptr"; "add i64"; "inttoptr i64" ];
+  if contains raw_addr_shape "getelementptr i8, ptr" then
+    failwith "raw-addr-shape: address arithmetic retained a GEP";
   let raw_normalize_shape = llvm_of "fn f(p addr, n u16) addr { return p - n }\n" in
   List.iter
     (fun marker ->
       if not (contains raw_normalize_shape marker) then
         failwith ("raw-normalize-shape: missing `" ^ marker ^ "`"))
-    [ "zext i16"; "sub i64 0" ];
+    [ "zext i16"; "ptrtoint ptr"; "sub i64"; "inttoptr i64" ];
   let volatile_shapes =
     llvm_of
       "opaque Token\n\

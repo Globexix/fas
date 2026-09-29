@@ -1,0 +1,101 @@
+extern "C" {
+  fn fas_save_address(pointer addr) void
+  fn fas_mutate_saved() void
+
+  fn fas_round_trip() u32 {
+    value u32 = 11
+    return addr_from_bits(addr_bits(&value))[u32]
+  }
+
+  fn fas_integer_storage() u32 {
+    value u32 = 13
+    saved usize = addr_bits(&value)
+    pointer addr = addr_from_bits(saved)
+    return pointer[u32]
+  }
+
+  fn fas_byte_split() u32 {
+    value u32 = 17
+    bytes arr[8,u8]
+    bits usize = addr_bits(&value)
+    i usize = 0
+    while i < 8 {
+      bytes[i] = trunc[u8](bits >> (i * 8))
+      i += 1
+    }
+    rebuilt usize = 0
+    i = 0
+    while i < 8 {
+      rebuilt |= zext[usize](bytes[i]) << (i * 8)
+      i += 1
+    }
+    pointer addr = addr_from_bits(rebuilt)
+    return pointer[u32]
+  }
+
+  fn fas_low_tag() u32 {
+    value u32 = 19
+    pointer addr = &value
+    tagged addr = addr_from_bits(addr_bits(pointer) | 1)
+    restored addr = addr_from_bits(addr_bits(tagged) & ~1)
+    return restored[u32]
+  }
+
+  fn fas_excursion() u32 {
+    value u32 = 23
+    pointer addr = &value
+    outside addr = pointer + 4096
+    restored addr = outside - 4096
+    return restored[u32]
+  }
+
+  fn fas_signed_compound() u32 {
+    value u32 = 41
+    pointer addr = &value + 4
+    offset i8 = -4
+    pointer += offset
+    return pointer[u32]
+  }
+
+  fn fas_unsigned_compound() u32 {
+    value u32 = 43
+    pointer addr = &value + 4
+    offset u8 = 4
+    pointer -= offset
+    return pointer[u32]
+  }
+
+  fn fas_reproducer_gep() u32 {
+    a u32 = 1
+    b u32 = 2
+    pa addr = &a
+    pb addr = &b
+    distance usize = addr_bits(pb) - addr_bits(pa)
+    destination addr = pa + distance
+    destination[u32] = 7
+    return b
+  }
+
+  fn fas_reproducer_bits() u32 {
+    a u32 = 1
+    b u32 = 2
+    pa addr = &a
+    pb addr = &b
+    distance usize = addr_bits(pb) - addr_bits(pa)
+    destination addr = addr_from_bits(addr_bits(pa) + distance)
+    destination[u32] = 7
+    return b
+  }
+
+  fn fas_mmap_read(pointer usize) u32 {
+    address addr = addr_from_bits(pointer)
+    return address[u32]
+  }
+
+  fn fas_foreign_write() u32 {
+    value u32 = 31
+    fas_save_address(&value)
+    fas_mutate_saved()
+    return value
+  }
+}

@@ -492,16 +492,8 @@ let rec expr s = function
       let* x = expr s a in
       let* y = expr s b in
       match op with
-      | Ast.Add ->
-          let id = fresh s in
-          emit s (Ir.Gep (id, Ir.I8, x, [ Ir.Index y ]));
-          Ok (Ir.Local (id, Ir.Pointer Ir.I8))
-      | Ast.Sub ->
-          let neg_id = fresh s in
-          emit s (Ir.Bin (neg_id, Ir.Sub, Ir.I64, Ir.Const (Ir.I64, 0L), y));
-          let id = fresh s in
-          emit s (Ir.Gep (id, Ir.I8, x, [ Ir.Index (Ir.Local (neg_id, Ir.I64)) ]));
-          Ok (Ir.Local (id, Ir.Pointer Ir.I8))
+      | Ast.Add -> address_step s Ir.Add x y
+      | Ast.Sub -> address_step s Ir.Sub x y
       | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge ->
           let x_id = fresh s in
           emit s (Ir.Cast (x_id, "ptrtoint", Ir.Pointer Ir.I8, x, Ir.I64));
@@ -639,6 +631,18 @@ let rec expr s = function
       let value_id = fresh s in
       emit s (Ir.Load (value_id, ty t, Ir.Local (ptr_id, Ir.Pointer (ty t)), alignment));
       Ok (Ir.Local (value_id, ty t))
+
+and address_step s operation pointer offset =
+  let pointer_bits = fresh s in
+  emit s (Ir.Cast (pointer_bits, "ptrtoint", Ir.Pointer Ir.I8, pointer, Ir.I64));
+  let result_bits = fresh s in
+  emit s
+    (Ir.Bin (result_bits, operation, Ir.I64, Ir.Local (pointer_bits, Ir.I64), offset));
+  let result = fresh s in
+  emit s
+    (Ir.Cast
+       (result, "inttoptr", Ir.I64, Ir.Local (result_bits, Ir.I64), Ir.Pointer Ir.I8));
+  Ok (Ir.Local (result, Ir.Pointer Ir.I8))
 
 and exprs s xs = Result_list.map (expr s) xs
 
@@ -1512,17 +1516,8 @@ and stmt s = function
           let* rhs = expr s e in
           let* value =
             match (at, op) with
-            | Hir.Addr, Ast.Add ->
-                let id = fresh s in
-                emit s (Ir.Gep (id, Ir.I8, old, [ Ir.Index rhs ]));
-                Ok (Ir.Local (id, Ir.Pointer Ir.I8))
-            | Hir.Addr, Ast.Sub ->
-                let neg_id = fresh s in
-                emit s (Ir.Bin (neg_id, Ir.Sub, Ir.I64, Ir.Const (Ir.I64, 0L), rhs));
-                let id = fresh s in
-                emit s
-                  (Ir.Gep (id, Ir.I8, old, [ Ir.Index (Ir.Local (neg_id, Ir.I64)) ]));
-                Ok (Ir.Local (id, Ir.Pointer Ir.I8))
+            | Hir.Addr, Ast.Add -> address_step s Ir.Add old rhs
+            | Hir.Addr, Ast.Sub -> address_step s Ir.Sub old rhs
             | _ -> emit_binary s span t op (ty at) old rhs
           in
           raw_store s at value p
@@ -1534,7 +1529,12 @@ and stmt s = function
           emit s (Ir.Load (id, it, p, alignment));
           let old = Ir.Local (id, it) in
           let* rhs = expr s e in
-          let* value = emit_binary s span t op it old rhs in
+          let* value =
+            match (t, op) with
+            | Hir.Addr, Ast.Add -> address_step s Ir.Add old rhs
+            | Hir.Addr, Ast.Sub -> address_step s Ir.Sub old rhs
+            | _ -> emit_binary s span t op it old rhs
+          in
           emit s (Ir.Store (it, value, p, alignment));
           Ok ())
   | Hir.Expr (e, _) ->
