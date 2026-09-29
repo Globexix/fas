@@ -746,6 +746,7 @@ module P = struct
 
   and stmt p =
     match (peek p).kind with
+    | Token.Ident "view" -> view_statement p true
     | Token.Kw_return ->
         let s = span p in
         ignore (bump p);
@@ -805,6 +806,15 @@ module P = struct
     | Token.Ident _ when starts_type p -> declaration p
     | _ -> assignment_or_expr p
 
+  and view_statement p consume_end =
+    let s = span p in
+    ignore (bump p);
+    let* name = ident p in
+    let* () = expected p Token.Assign in
+    let* place = expr p in
+    let* () = finish_statement p consume_end in
+    Ok (Ast.View { name; place; span = s })
+
   and declaration_with_end p consume_end =
     let s = span p in
     let* name = ident p in
@@ -855,7 +865,8 @@ module P = struct
   and assignment_or_expr p = assignment_or_expr_with_end p true
 
   and for_clause p =
-    if starts_type p then declaration_with_end p false
+    if at p (Token.Ident "view") then view_statement p false
+    else if starts_type p then declaration_with_end p false
     else assignment_or_expr_with_end p false
 
   and for_stmt p =

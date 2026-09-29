@@ -2,6 +2,7 @@ type binding = Hir.local = { name : string; ty : Hir.ty; id : int }
 type selector = Field of string | Element of int
 type init_state = Uninit | Full | Raw | Partial of (selector * init_state) list
 type place_path = Exact of selector list | Dynamic_prefix of selector list
+type view_access = Mutable_access | Constant_access | Readonly_access
 type snapshot
 type loop
 type defer_capture
@@ -11,6 +12,13 @@ val create : initial_scope:bool -> Hir.struct_def list -> t
 val lookup_local : string -> t -> binding option
 val ensure_new_local : string -> t -> Span.t -> (unit, Diag.t list) result
 val add_local : string -> Hir.ty -> t -> Span.t -> (binding, Diag.t list) result
+val view_origin : t -> binding -> (binding * place_path) option
+val view_access : t -> binding -> view_access
+val is_view : t -> binding -> bool
+
+val bind_view :
+  t -> binding -> binding option -> place_path option -> view_access -> unit
+
 val push : t -> unit
 val pop : t -> unit
 val set_state : t -> binding -> selector list -> init_state -> unit

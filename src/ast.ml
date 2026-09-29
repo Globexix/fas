@@ -61,6 +61,7 @@ and cast_kind = Zext | Sext | Trunc | Bitcast
 
 and stmt =
   | Let of { name : string; ty : ty; init : expr option; raw : bool; span : Span.t }
+  | View of { name : string; place : expr; span : Span.t }
   | Assign of assign_target * expr * Span.t
   | Compound_assign of assign_target * binop * expr * Span.t
   | Return of expr option * Span.t
@@ -139,6 +140,7 @@ let expr_span = function
 
 let stmt_span = function
   | Let { span; _ }
+  | View { span; _ }
   | Assign (_, _, span)
   | Compound_assign (_, _, _, span)
   | Return (_, span)
@@ -499,6 +501,12 @@ let render_bounded ~budget program =
                 | Some e ->
                     text " = ";
                     emit_expr e)
+          | View { name; place; _ } ->
+              text indent;
+              text "view ";
+              add_name name;
+              text " = ";
+              emit_expr place
           | Assign (Target_ident (name, span), e, _) ->
               at span (fun () ->
                   text indent;
@@ -760,6 +768,7 @@ let fold_expanded_nodes ~limit program =
       | Let { ty; init; span; _ } ->
           go_ty span ty;
           Option.iter go_expr init
+      | View { place; _ } -> go_expr place
       | Assign (t, e, _) | Compound_assign (t, _, e, _) ->
           go_target t;
           go_expr e

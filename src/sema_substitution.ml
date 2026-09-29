@@ -335,6 +335,13 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 validate_expression_names value_names type_names expression
           in
           Ok (String_set.add name value_names, String_set.add name scope_names)
+    | Ast.View { name; place; span } ->
+        let* () = validate_binding_name span name in
+        if String_set.mem name scope_names then
+          error span (Printf.sprintf "duplicate local `%s`" name)
+        else
+          let* () = validate_expression_names value_names type_names place in
+          Ok (String_set.add name value_names, String_set.add name scope_names)
     | Ast.Assign (target, expression, _) | Ast.Compound_assign (target, _, expression, _)
       ->
         let* () = validate_target_names value_names type_names target in
@@ -416,6 +423,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   in
   let rec validate_statement_duplicates scope_names = function
     | Ast.Let { name; span; _ } ->
+        if String_set.mem name scope_names then
+          error span (Printf.sprintf "duplicate local `%s`" name)
+        else Ok (String_set.add name scope_names)
+    | Ast.View { name; span; _ } ->
         if String_set.mem name scope_names then
           error span (Printf.sprintf "duplicate local `%s`" name)
         else Ok (String_set.add name scope_names)
@@ -793,6 +804,15 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           in
           let* binding = add_local name ty c span in
           if raw || Option.is_some init then mark_init binding c;
+          Ok (List.filter (fun dependent_name -> dependent_name <> name) dependent)
+    | Ast.View { name; place; _ } as statement ->
+        if expression_mentions dependent place || has_generic_arguments place then
+          Ok (name :: dependent)
+        else
+          let* () =
+            let* _ = check_stmt c statement in
+            Ok ()
+          in
           Ok (List.filter (fun dependent_name -> dependent_name <> name) dependent)
     | (Ast.Assign (target, value, _) | Ast.Compound_assign (target, _, value, _)) as
       statement ->
@@ -1495,6 +1515,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               Ok (Some expression)
         in
         Ok (Ast.Let { name; ty; init; raw; span })
+    | Ast.View { name; place; span } ->
+        let* place =
+          resolve_expr ~values ~defer_const_structs substitutions depth place
+        in
+        Ok (Ast.View { name; place; span })
     | Ast.Assign (target, expression, span) ->
         let* target =
           resolve_target ~values ~defer_const_structs substitutions depth target

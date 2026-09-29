@@ -1,0 +1,63 @@
+extern "C" {
+  fn view_state() addr
+}
+
+struct Inner {
+  value u32
+}
+
+struct State {
+  count u32,
+  inner Inner
+}
+
+fn increment(p addr) void {
+  p[u32] += 1
+}
+
+fn main(argc i32, argv addr) i32 {
+  ctx addr = view_state()
+  view state = ctx[State]
+  state.count += 3
+
+  view count = state.count
+  count += 2
+
+  view inner = state.inner
+  view nested = inner.value
+  nested = 31
+
+  words arr[4, u32]
+  words[0] = 10
+  words[1] = 20
+  words[2] = 30
+  words[3] = 40
+
+  view element = words[2]
+  element = 50
+  element += 2
+
+  i usize = 1
+  view captured = words[i]
+  i = 3
+  captured += 5
+
+  increment(&state.count)
+
+  if state.count != 16 {
+    return 10
+  }
+  if state.inner.value != 31 {
+    return 11
+  }
+  if words[2] != 52 {
+    return 12
+  }
+  if words[1] != 25 {
+    return 13
+  }
+  if words[3] != 40 {
+    return 14
+  }
+  return 0
+}

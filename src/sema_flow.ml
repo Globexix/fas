@@ -4,6 +4,7 @@ type binding = Hir.local = { name : string; ty : Hir.ty; id : int }
 type selector = Field of string | Element of int
 type init_state = Uninit | Full | Raw | Partial of (selector * init_state) list
 type place_path = Exact of selector list | Dynamic_prefix of selector list
+type view_access = Mutable_access | Constant_access | Readonly_access
 type deferred_requirement = binding * selector list * Span.t
 
 type checked_defer = {
@@ -32,6 +33,8 @@ type defer_capture = {
 type t = {
   structs : Hir.struct_def list;
   locals : (string, binding) Hashtbl.t list ref;
+  view_origins : (int, (binding * place_path) option) Hashtbl.t;
+  view_accesses : (int, view_access) Hashtbl.t;
   mutable initialized : init_state State_map.t;
   mutable next_binding_id : int;
   mutable loop_depth : int;
@@ -54,6 +57,8 @@ let create ~initial_scope structs =
   {
     structs;
     locals = ref (if initial_scope then [ Hashtbl.create 8 ] else []);
+    view_origins = Hashtbl.create 16;
+    view_accesses = Hashtbl.create 16;
     initialized = State_map.empty;
     next_binding_id = 0;
     loop_depth = 0;
@@ -99,6 +104,23 @@ let add_local name ty flow span =
   Hashtbl.replace scope name binding;
   if !(flow.locals) = [] then flow.locals := [ scope ];
   Ok binding
+
+let view_origin flow binding =
+  match Hashtbl.find_opt flow.view_origins binding.id with
+  | Some origin -> origin
+  | None -> Some (binding, Exact [])
+
+let view_access flow binding =
+  Option.value ~default:Mutable_access (Hashtbl.find_opt flow.view_accesses binding.id)
+
+let is_view flow binding = Hashtbl.mem flow.view_origins binding.id
+
+let bind_view flow binding root path access =
+  let origin =
+    match (root, path) with Some root, Some path -> Some (root, path) | _ -> None
+  in
+  Hashtbl.replace flow.view_origins binding.id origin;
+  Hashtbl.replace flow.view_accesses binding.id access
 
 let push flow =
   flow.locals := Hashtbl.create 8 :: !(flow.locals);

@@ -796,6 +796,62 @@ let () =
      return 0 }\n";
   ignore
     (lower_of
+       "fn read_value(v u32) u32 { return v }\n\
+        fn f() u32 { x u32\n\
+       \ view v = x\n\
+       \ v = 5\n\
+       \ v += 2\n\
+       \ return read_value(v) }\n");
+  ignore (lower_of "fn f(p addr) u32 { view v = p[u32]\n return v }\n");
+  ignore
+    (lower_of
+       "fn f() u32 { a arr[2,u32]\n a[0] = 1\n view v = a[0]\n v = 3\n return v }\n");
+  ignore
+    (lower_of
+       "fn f() u32 { x vec[2,u32] = splat(0)\n view v = x\n v[0] = 4\n return v[0] }\n");
+  ignore
+    (lower_of
+       "struct Inner { value u32 }\n\
+        fn f() u32 { s Inner\n\
+       \ view outer = s\n\
+       \ view inner = outer.value\n\
+       \ inner = 8\n\
+       \ return s.value }\n");
+  ignore
+    (lower_of
+       "fn f() u32 { x u32 = 2\n\
+       \ view v = x\n\
+       \ { y u32 = 3\n\
+       \ view v = y\n\
+       \ v = 5 }\n\
+       \ return v }\n");
+  ignore
+    (lower_of
+       "fn at[N const u64](p addr) u32 { view v = p[u32, N]\n\
+       \ return v }\n\
+        fn f(p addr) u32 { return at[0](p) }\n");
+  semantic_error "view-uninitialized-read" "use of uninitialized local `x`"
+    "fn f() u32 { x u32\n view v = x\n return v }\n";
+  semantic_error "view-element-facts-share" "use of uninitialized local `a`"
+    "fn f() u32 { a arr[2,u32]\n view v = a[0]\n v = 1\n return a[1] }\n";
+  semantic_error "view-call-rvalue" "view source must be an existing place"
+    "fn make() u32 { return 1 }\nfn f() void { view v = make()\n return }\n";
+  semantic_error "view-arithmetic-rvalue" "view source must be an existing place"
+    "fn f(x u32) void { view v = x + 1\n return }\n";
+  semantic_error "view-literal-rvalue" "view source must be an existing place"
+    "fn f() void { view v = 1\n return }\n";
+  semantic_error "view-simd-lane" "cannot create a view of a SIMD lane"
+    "fn f() void { x vec[2,u32] = splat(0)\nview lane = x[0]\n return }\n";
+  semantic_error "view-shadow-duplicate" "duplicate local `v`"
+    "fn f(x u32) void { view v = x\n view v = x\n return }\n";
+  semantic_error "view-name-reserved"
+    "`view` is reserved and cannot be used as a binding"
+    "fn f(x u32) void { view view = x\n return }\n";
+  parse_error "view-top-level" "view x = 1\n";
+  semantic_error "view-readonly-source" "cannot modify read-only pointer"
+    "fn f() void { view v = c\"read only\"[u8]\n v = 2\n return }\n";
+  ignore
+    (lower_of
        "fn take(p addr) void { return }\n\
         fn f() i64 { v vec[2,i64] = splat(1)\n\
        \ take(&v)\n\

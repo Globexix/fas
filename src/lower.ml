@@ -1271,6 +1271,12 @@ and stmt s = function
           let* v = expr s e in
           emit s (Ir.Store (ty local.ty, v, p, alignment));
           Ok ())
+  | Hir.View (local, place, span) ->
+      let* pointer = address s place in
+      if match value_ty pointer with Ir.Pointer _ -> true | _ -> false then (
+        bind_local s local pointer;
+        Ok ())
+      else error span "internal error: view address has the wrong type"
   | Hir.Assign (target, e, _) -> (
       match target with
       | Hir.AIndex (a, i) when match Hir.expr_ty a with Hir.Vec _ -> true | _ -> false

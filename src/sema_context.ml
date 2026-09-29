@@ -12,6 +12,7 @@ type checked_target = {
   target : Hir.assign_target;
   root : binding option;
   path : place_path option;
+  through_view : bool;
 }
 
 type signature = { params : (string * Hir.ty) list; ret : Hir.ty; variadic : bool }
@@ -158,6 +159,7 @@ and count_expanded_stmt_type_nodes stmt cap total =
         match init with
         | Some expression -> count_expanded_expr_type_nodes expression cap total
         | None -> total)
+    | Ast.View { place; _ } -> count_expanded_expr_type_nodes place cap total
     | Ast.Assign (target, value, _) | Ast.Compound_assign (target, _, value, _) ->
         count_expanded_expr_type_nodes value cap
           (count_expanded_target_type_nodes target cap total)

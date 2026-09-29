@@ -106,6 +106,38 @@ let rec rooted_in_readonly_storage = function
       rooted_in_readonly_storage a || rooted_in_readonly_storage b
   | _ -> false
 
+let rec inherited_view_access c = function
+  | Hir.Local (binding, _) -> view_access c.flow binding
+  | Hir.Index (base, _, _, _)
+  | Hir.Field (base, _, _, _, _)
+  | Hir.Raw_select (base, _, _, _)
+  | Hir.Address (base, _, _)
+  | Hir.Cast (_, base, _, _) ->
+      inherited_view_access c base
+  | Hir.Ternary (_, yes, no, _, _) ->
+      let yes = inherited_view_access c yes and no = inherited_view_access c no in
+      if yes = Constant_access || no = Constant_access then Constant_access
+      else if yes = Readonly_access || no = Readonly_access then Readonly_access
+      else Mutable_access
+  | _ -> Mutable_access
+
+let view_access_of_expr c expression =
+  if rooted_in_constant expression then Constant_access
+  else if rooted_in_readonly_storage expression then Readonly_access
+  else inherited_view_access c expression
+
+let rec expression_uses_view c = function
+  | Hir.Local (binding, _) -> is_view c.flow binding
+  | Hir.Index (base, _, _, _)
+  | Hir.Field (base, _, _, _, _)
+  | Hir.Raw_select (base, _, _, _)
+  | Hir.Address (base, _, _)
+  | Hir.Cast (_, base, _, _) ->
+      expression_uses_view c base
+  | Hir.Ternary (_, yes, no, _, _) ->
+      expression_uses_view c yes || expression_uses_view c no
+  | _ -> false
+
 type unresolved_shape = Unresolved_int | Unresolved_vector | Unresolved_null
 
 let rec unresolved_shape_of expression =
@@ -219,7 +251,13 @@ let rec check_place (c : context) expr =
   match expr with
   | Ast.Ident (n, s) -> (
       match lookup_local n c with
-      | Some b -> Ok { expr = Hir.Local (b, s); root = Some b; path = Some (Exact []) }
+      | Some b ->
+          let root, path =
+            match view_origin c.flow b with
+            | Some (root, path) -> (Some root, Some path)
+            | None -> (None, None)
+          in
+          Ok { expr = Hir.Local (b, s); root; path }
       | None -> (
           match lookup n c.arrays with
           | Some (_, (Hir.Array _ as t), _) ->
@@ -407,7 +445,11 @@ and check_expr (c : context) expected = function
   | Ast.Ident (n, s) -> (
       match lookup_local n c with
       | Some b ->
-          let* () = require_state b [] c s in
+          let* () =
+            match view_origin c.flow b with
+            | Some (root, path) -> require_place_state root path c s
+            | None -> Ok ()
+          in
           Ok (Hir.Local (b, s))
       | None -> (
           match lookup_top_level n c.top_level_bindings with
@@ -1201,7 +1243,17 @@ and check_actuals c policy span formals actuals =
 let check_target (c : context) = function
   | Ast.Target_ident (n, span) -> (
       match lookup_local n c with
-      | Some b -> Ok { target = Hir.ALocal b; root = Some b; path = Some (Exact []) }
+      | Some b -> (
+          match view_access c.flow b with
+          | Readonly_access -> error span "cannot modify read-only pointer"
+          | Constant_access -> error span "cannot modify constant"
+          | Mutable_access ->
+              let root, path =
+                match view_origin c.flow b with
+                | Some (root, path) -> (Some root, Some path)
+                | None -> (None, None)
+              in
+              Ok { target = Hir.ALocal b; root; path; through_view = is_view c.flow b })
       | None -> (
           match lookup_top_level n c.top_level_bindings with
           | Some { declaration_kind = Top_const; _ } ->
@@ -1214,17 +1266,28 @@ let check_target (c : context) = function
   | Ast.Target_select (a, args) -> (
       let* place = check_place c (Ast.Select (a, args, Ast.expr_span a)) in
       let x = place.expr in
+      let access = view_access_of_expr c x in
       match x with
       | Hir.Raw_select (_, _, (Hir.Struct _ | Hir.Array _), _) ->
           error (Ast.expr_span a) "raw selection cannot store an aggregate value"
       | Hir.Raw_select (base, off, t, _) ->
-          if rooted_in_readonly_storage x then
+          if access = Readonly_access then
             error (Ast.expr_span a) "cannot modify read-only pointer"
-          else if rooted_in_constant x then
+          else if access = Constant_access then
             error (Ast.expr_span a) "cannot modify constant"
-          else Ok { target = Hir.ARaw (base, off, t); root = None; path = None }
+          else
+            Ok
+              {
+                target = Hir.ARaw (base, off, t);
+                root = None;
+                path = None;
+                through_view = expression_uses_view c x;
+              }
       | Hir.Index (base, index, _, _) -> (
-          if rooted_in_constant x then error (Ast.expr_span a) "cannot modify constant"
+          if access = Readonly_access then
+            error (Ast.expr_span a) "cannot modify read-only pointer"
+          else if access = Constant_access then
+            error (Ast.expr_span a) "cannot modify constant"
           else
             match Hir.expr_ty base with
             | Hir.Array (_, _) | Hir.Vec _ ->
@@ -1233,24 +1296,34 @@ let check_target (c : context) = function
                     target = Hir.AIndex (base, index);
                     root = place.root;
                     path = place.path;
+                    through_view = expression_uses_view c x;
                   }
             | _ -> error (Ast.expr_span a) "index assignment requires aggregate")
       | _ -> error (Ast.expr_span a) "index assignment requires aggregate")
   | Ast.Target_field (a, n) -> (
       let* place = check_place c (Ast.Field (a, n, Ast.expr_span a)) in
       let x = place.expr in
+      let access = view_access_of_expr c x in
       match x with
       | Hir.Raw_select (_, _, (Hir.Struct _ | Hir.Array _), _) ->
           error (Ast.expr_span a) "raw selection cannot store an aggregate value"
       | Hir.Raw_select (base, off, t, _) ->
-          if rooted_in_readonly_storage x then
+          if access = Readonly_access then
             error (Ast.expr_span a) "cannot modify read-only pointer"
-          else if rooted_in_constant x then
+          else if access = Constant_access then
             error (Ast.expr_span a) "cannot modify constant"
-          else Ok { target = Hir.ARaw (base, off, t); root = None; path = None }
+          else
+            Ok
+              {
+                target = Hir.ARaw (base, off, t);
+                root = None;
+                path = None;
+                through_view = expression_uses_view c x;
+              }
       | Hir.Field (base, _, _, _, _) -> (
-          if rooted_in_constant x then error (Ast.expr_span a) "cannot modify constant"
-          else if rooted_in_readonly_storage x then
+          if access = Constant_access then
+            error (Ast.expr_span a) "cannot modify constant"
+          else if access = Readonly_access then
             error (Ast.expr_span a) "cannot modify read-only pointer"
           else
             match Hir.expr_ty base with
@@ -1262,6 +1335,7 @@ let check_target (c : context) = function
                         target = Hir.AField (base, n, f.offset);
                         root = place.root;
                         path = place.path;
+                        through_view = expression_uses_view c x;
                       }
                 | None ->
                     error (Ast.expr_span a) (Printf.sprintf "unknown field `%s`" n))
@@ -1331,6 +1405,37 @@ and check_stmt (c : context) = function
       if raw then set_state c binding [] Raw;
       if Option.is_some x then mark_init binding c;
       Ok (Hir.Let (binding, x, span))
+  | Ast.View { name; place; span } ->
+      let* () = ensure_new_local name c span in
+      let* place_info = check_place c place in
+      let rec addressable = function
+        | Hir.Local _ | Hir.Const_array _ | Hir.Raw_select _ -> true
+        | Hir.Index (base, _, _, _) -> (
+            match Hir.expr_ty base with
+            | Hir.Array _ -> addressable base
+            | Hir.Vec _ -> false
+            | _ -> false)
+        | Hir.Field (base, _, _, _, _) -> addressable base
+        | _ -> false
+      in
+      let* () =
+        if
+          match place_info.expr with
+          | Hir.Index (base, _, _, _) -> (
+              match Hir.expr_ty base with Hir.Vec _ -> true | _ -> false)
+          | _ -> false
+        then error (Ast.expr_span place) "cannot create a view of a SIMD lane"
+        else if addressable place_info.expr then Ok ()
+        else error (Ast.expr_span place) "view source must be an existing place"
+      in
+      let* binding = add_local name (Hir.expr_ty place_info.expr) c span in
+      let root, path =
+        match place_info.expr with
+        | Hir.Raw_select _ -> (None, None)
+        | _ -> (place_info.root, place_info.path)
+      in
+      bind_view c.flow binding root path (view_access_of_expr c place_info.expr);
+      Ok (Hir.View (binding, place_info.expr, span))
   | Ast.Assign (t, e, span) ->
       let* checked_target = check_target c t in
       let target = checked_target.target in
@@ -1343,6 +1448,8 @@ and check_stmt (c : context) = function
       let* () = ensure_expected (Hir.expr_ty v) expected span in
       (match (checked_target.root, checked_target.path) with
       | Some binding, Some (Exact path) -> set_state c binding path Full
+      | Some binding, Some (Dynamic_prefix path) when checked_target.through_view ->
+          set_state c binding path Raw
       | _ -> ());
       Ok (Hir.Assign (target, v, span))
   | Ast.Compound_assign (t, op, e, span) ->
