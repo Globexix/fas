@@ -718,8 +718,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                   ->
                     true
                 | ( Ast.Bitcast,
-                    ( Hir.Bool | Hir.Int _ | Hir.Ptr _ | Hir.ConstPtr _
-                    | Hir.Vec (_, (Hir.Bool | Hir.Int _)) ) ) ->
+                    (Hir.Bool | Hir.Int _ | Hir.Vec (_, (Hir.Bool | Hir.Int _))) ) ->
                     true
                 | _ -> false
               in

@@ -80,9 +80,7 @@ let rec rooted_in_constant = function
   | Hir.Const_array _ | Hir.EVector _ -> true
   | Hir.Index (a, _, _, _)
   | Hir.Field (a, _, _, _, _)
-  | Hir.Deref (a, _, _)
   | Hir.Address (a, _, _)
-  | Hir.Ptr_add (_, a, _, _, _)
   | Hir.Cast (_, a, _, _) ->
       rooted_in_constant a
   | Hir.Ternary (_, a, b, _, _) -> rooted_in_constant a || rooted_in_constant b
@@ -92,25 +90,20 @@ let rec rooted_in_string_literal = function
   | Hir.EString _ -> true
   | Hir.Index (a, _, _, _)
   | Hir.Field (a, _, _, _, _)
-  | Hir.Deref (a, _, _)
   | Hir.Address (a, _, _)
-  | Hir.Ptr_add (_, a, _, _, _)
   | Hir.Cast (_, a, _, _) ->
       rooted_in_string_literal a
   | Hir.Ternary (_, a, b, _, _) ->
       rooted_in_string_literal a || rooted_in_string_literal b
   | _ -> false
 
-let rec rooted_in_readonly_pointer = function
-  | Hir.Raw_select (a, _, _, _)
-  | Hir.Deref (a, _, _)
-  | Hir.Index (a, _, _, _)
-  | Hir.Field (a, _, _, _, _) ->
-      rooted_in_string_literal a || rooted_in_readonly_pointer a
-  | Hir.Address (a, _, _) | Hir.Ptr_add (_, a, _, _, _) | Hir.Cast (_, a, _, _) ->
-      rooted_in_string_literal a || rooted_in_constant a || rooted_in_readonly_pointer a
+let rec rooted_in_readonly_storage = function
+  | Hir.Raw_select (a, _, _, _) | Hir.Index (a, _, _, _) | Hir.Field (a, _, _, _, _) ->
+      rooted_in_string_literal a || rooted_in_readonly_storage a
+  | Hir.Address (a, _, _) | Hir.Cast (_, a, _, _) ->
+      rooted_in_string_literal a || rooted_in_constant a || rooted_in_readonly_storage a
   | Hir.Ternary (_, a, b, _, _) ->
-      rooted_in_readonly_pointer a || rooted_in_readonly_pointer b
+      rooted_in_readonly_storage a || rooted_in_readonly_storage b
   | _ -> false
 
 type unresolved_shape = Unresolved_int | Unresolved_vector | Unresolved_null
@@ -165,14 +158,6 @@ let operand_type_hint operation expected left right =
       | _ -> None)
   | Ast.And | Ast.Or -> None
   | Ast.Shl | Ast.Shr -> None
-
-let require_place_value c span place =
-  match Hir.expr_ty place.expr with
-  | Hir.Ptr _ | Hir.ConstPtr _ -> (
-      match (place.root, place.path) with
-      | Some binding, Some path -> require_place_state binding path c span
-      | _ -> Ok ())
-  | _ -> Ok ()
 
 let select_value_arg span payload =
   match payload with
@@ -288,25 +273,6 @@ let rec check_place (c : context) expr =
                       | None -> None);
                   })
       | (Hir.Array _ | Hir.Vec _), _ -> error s "array index takes one expression"
-      | Hir.Ptr e, [ payload ] | Hir.ConstPtr e, [ payload ] ->
-          let* i = select_value_arg s payload in
-          let* checked_index = check_expr c None i in
-          if not (is_int (Hir.expr_ty checked_index)) then
-            error s "array index must be an integer"
-          else
-            let* () = require_place_value c (Hir.expr_span base.expr) base in
-            if match e with Hir.Opaque _ -> true | _ -> false then
-              error s "opaque pointers cannot be indexed"
-            else if match e with Hir.Void -> true | _ -> false then
-              error s "void pointers cannot be indexed"
-            else
-              Ok
-                {
-                  expr = Hir.Index (base.expr, checked_index, e, s);
-                  root = None;
-                  path = None;
-                }
-      | (Hir.Ptr _ | Hir.ConstPtr _), _ -> error s "array index takes one expression"
       | Hir.Addr, [ type_payload ] ->
           let* () =
             match (base.root, base.path) with
@@ -420,10 +386,7 @@ and check_expr (c : context) expected = function
         error s ("integer literal is out of range for " ^ ty_name ty)
       else Ok (Hir.EInt (mask_value ty v, ty, s))
   | Ast.Bool_lit (v, s) -> Ok (Hir.EBool (v, s))
-  | Ast.Null s -> (
-      match expected with
-      | Some (Hir.Ptr _ | Hir.ConstPtr _) as t -> Ok (Hir.Null (Option.get t, s))
-      | _ -> error s "null requires a pointer context")
+  | Ast.Null s -> error s "null requires a pointer context"
   | Ast.String_lit (cstr, v, s) ->
       if cstr && String.contains v '\000' then
         error s "C string literal cannot contain embedded NUL"
@@ -641,8 +604,8 @@ and check_expr (c : context) expected = function
       | Hir.Index (base, _, _, _)
         when match Hir.expr_ty base with Hir.Vec _ -> true | _ -> false ->
           error s "cannot take address of a vector lane"
-      | Hir.Local _ | Hir.Deref _ | Hir.Index _ | Hir.Field _ | Hir.Const_array _
-      | Hir.Raw_select _ ->
+      | Hir.Local _ | Hir.Index _ | Hir.Field _ | Hir.Const_array _ | Hir.Raw_select _
+        ->
           Ok (Hir.Address (place.expr, Hir.Addr, s))
       | _ -> error s "cannot take the address of this expression")
   | Ast.Sizeof (t, s) ->
@@ -1254,7 +1217,7 @@ let check_target (c : context) = function
       | Hir.Raw_select (_, _, (Hir.Struct _ | Hir.Array _), _) ->
           error (Ast.expr_span a) "raw selection cannot store an aggregate value"
       | Hir.Raw_select (base, off, t, _) ->
-          if rooted_in_readonly_pointer x then
+          if rooted_in_readonly_storage x then
             error (Ast.expr_span a) "cannot modify read-only pointer"
           else if rooted_in_constant x then
             error (Ast.expr_span a) "cannot modify constant"
@@ -1263,21 +1226,15 @@ let check_target (c : context) = function
           if rooted_in_constant x then error (Ast.expr_span a) "cannot modify constant"
           else
             match Hir.expr_ty base with
-            | Hir.Ptr Hir.Void | Hir.ConstPtr Hir.Void ->
-                error (Ast.expr_span a) "void pointers cannot be indexed"
-            | Hir.Array (_, _) | Hir.Vec (_, _) | Hir.Ptr _ ->
+            | Hir.Array (_, _) | Hir.Vec _ ->
                 Ok
                   {
                     target = Hir.AIndex (base, index);
                     root = place.root;
                     path = place.path;
                   }
-            | Hir.ConstPtr _ ->
-                error (Ast.expr_span a) "cannot modify read-only pointer"
-            | _ ->
-                error (Ast.expr_span a) "index assignment requires aggregate or pointer"
-          )
-      | _ -> error (Ast.expr_span a) "index assignment requires aggregate or pointer")
+            | _ -> error (Ast.expr_span a) "index assignment requires aggregate")
+      | _ -> error (Ast.expr_span a) "index assignment requires aggregate")
   | Ast.Target_field (a, n) -> (
       let* place = check_place c (Ast.Field (a, n, Ast.expr_span a)) in
       let x = place.expr in
@@ -1285,14 +1242,14 @@ let check_target (c : context) = function
       | Hir.Raw_select (_, _, (Hir.Struct _ | Hir.Array _), _) ->
           error (Ast.expr_span a) "raw selection cannot store an aggregate value"
       | Hir.Raw_select (base, off, t, _) ->
-          if rooted_in_readonly_pointer x then
+          if rooted_in_readonly_storage x then
             error (Ast.expr_span a) "cannot modify read-only pointer"
           else if rooted_in_constant x then
             error (Ast.expr_span a) "cannot modify constant"
           else Ok { target = Hir.ARaw (base, off, t); root = None; path = None }
       | Hir.Field (base, _, _, _, _) -> (
           if rooted_in_constant x then error (Ast.expr_span a) "cannot modify constant"
-          else if rooted_in_readonly_pointer x then
+          else if rooted_in_readonly_storage x then
             error (Ast.expr_span a) "cannot modify read-only pointer"
           else
             match Hir.expr_ty base with
@@ -1313,13 +1270,9 @@ let check_target (c : context) = function
 let target_ty c = function
   | Hir.ALocal binding -> Some binding.ty
   | Hir.ARaw (_, _, t) -> Some t
-  | Hir.ADeref expression -> (
-      match Hir.expr_ty expression with
-      | Hir.Ptr t | Hir.ConstPtr t -> Some t
-      | _ -> None)
   | Hir.AIndex (expression, _) -> (
       match Hir.expr_ty expression with
-      | Hir.Array (_, t) | Hir.Vec (_, t) | Hir.Ptr t | Hir.ConstPtr t -> Some t
+      | Hir.Array (_, t) | Hir.Vec (_, t) -> Some t
       | _ -> None)
   | Hir.AField (expression, name, _) -> (
       match Hir.expr_ty expression with

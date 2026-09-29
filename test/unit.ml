@@ -53,13 +53,11 @@ let () =
     | Ok definition -> definition
     | Error message -> failwith message);
   assert (Hashtbl.length layout_cache.definitions = 4);
-  let pointer_declarations =
-    [ ("Pointer", [ ("value", Hir.Ptr (Hir.Int Hir.U8)) ], None) ]
-  in
+  let pointer_declarations = [ ("Address", [ ("value", Hir.Addr) ], None) ] in
   let target32 = { Target_layout.current with pointer_size = 4; pointer_align = 4 } in
   let pointer64 =
     match
-      Hir.compute_struct_cached (Hir.struct_layout_cache pointer_declarations) "Pointer"
+      Hir.compute_struct_cached (Hir.struct_layout_cache pointer_declarations) "Address"
     with
     | Ok definition -> definition
     | Error message -> failwith message
@@ -68,7 +66,7 @@ let () =
     match
       Hir.compute_struct_cached
         (Hir.struct_layout_cache ~target:target32 pointer_declarations)
-        "Pointer"
+        "Address"
     with
     | Ok definition -> definition
     | Error message -> failwith message
@@ -734,7 +732,7 @@ let () =
                  Ir.String_ptr (1, 0, 2);
                  Ir.Global_ptr (2, "numbers", Ir.Array (2, Ir.I8));
                  Ir.Load
-                   (3, Ir.I8, Ir.Global ("numbers", Ir.Ptr (Ir.Array (2, Ir.I8))), 1);
+                   (3, Ir.I8, Ir.Global ("numbers", Ir.Pointer (Ir.Array (2, Ir.I8))), 1);
                ]
              0 (Ir.Ret None);
          ])
@@ -791,7 +789,7 @@ let () =
        [ call_caller (Ir.Global_ptr (0, "numbers", Ir.Array (1, Ir.I8))) ]);
   expect_ir_error "uses unknown global `missing`"
     (ir_module
-       [ call_caller (Ir.Load (0, Ir.I8, Ir.Global ("missing", Ir.Ptr Ir.I8), 1)) ]);
+       [ call_caller (Ir.Load (0, Ir.I8, Ir.Global ("missing", Ir.Pointer Ir.I8), 1)) ]);
   expect_ir_error "global `numbers` claims the wrong type"
     (ir_module ~globals:[ array_global ]
        [ call_caller (Ir.Load (0, Ir.I8, Ir.Global ("numbers", Ir.I8), 1)) ]);
@@ -2767,10 +2765,10 @@ let () =
         (Ir.I16, Hir.Int Hir.U16);
         (Ir.I32, Hir.Int Hir.U32);
         (Ir.I64, Hir.Int Hir.U64);
-        (Ir.Ptr Ir.I8, Hir.Ptr (Hir.Int Hir.U8));
       ]
     in
     List.iter (fun (ir_e, hir_e) -> assert_pair ir_e hir_e) elems;
+    assert_pair (Ir.Pointer Ir.I8) Hir.Addr;
     List.iter
       (fun lanes ->
         List.iter

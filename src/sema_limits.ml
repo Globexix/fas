@@ -7,12 +7,12 @@ let rec object_type (structs : Hir.struct_def list) = function
   | Hir.Void -> Error "void is not an object type"
   | Hir.Opaque name ->
       Error ("opaque type `" ^ name ^ "` may only be used behind a pointer")
-  | Hir.Ptr _ | Hir.ConstPtr _ | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ -> Ok ()
+  | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ -> Ok ()
   | Hir.Array (length, element) ->
       if length < 0 then Error "negative array length" else object_type structs element
   | Hir.Vec (length, element) when length > 0 -> (
       match element with
-      | Hir.Int _ | Hir.Bool | Hir.Ptr _ | Hir.ConstPtr _ -> Ok ()
+      | Hir.Int _ | Hir.Bool -> Ok ()
       | _ -> Error "vector element type must be a scalar (bool, integer, or pointer)")
   | Hir.Vec _ -> Error "vector lane count must be positive"
   | Hir.Struct name ->

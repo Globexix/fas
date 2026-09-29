@@ -7,8 +7,6 @@ type parser_operation =
   | Alignof
   | Offsetof
   | Splat
-  | Legacy_ptr_add
-  | Legacy_ptr_add_bytes
 
 type value_operation =
   | Len
@@ -38,7 +36,7 @@ type value_operation =
   | Handle_addr
   | Handle_from_addr
 
-type type_constructor = Legacy_ptr | Array | Vector | Address | Handle
+type type_constructor = Array | Vector | Address | Handle
 type literal = True | False | Null
 
 let scalar_type_names =
@@ -65,7 +63,6 @@ let parser_type_name name =
   || List.mem name [ "ptr"; "addr"; "handle"; "arr"; "vec" ]
 
 let type_constructor = function
-  | "ptr" -> Some Legacy_ptr
   | "addr" -> Some Address
   | "handle" -> Some Handle
   | "arr" -> Some Array
@@ -138,11 +135,7 @@ let parser_operation name =
   match List.assoc_opt name operations with
   | Some (Parser operation) -> Some operation
   | Some (Value _ | Reserved) -> None
-  | None -> (
-      match name with
-      | "ptr_add" -> Some Legacy_ptr_add
-      | "ptr_add_bytes" -> Some Legacy_ptr_add_bytes
-      | _ -> None)
+  | None -> None
 
 let value_operation name =
   match List.assoc_opt name operations with

@@ -71,8 +71,7 @@ let rec ty = function
       | Ok 64 -> I64
       | Ok bits -> invalid_arg (Printf.sprintf "unsupported pointer width: %d" bits)
       | Error message -> invalid_arg message)
-  | Hir.Addr | Hir.Handle _ -> Ir.Ptr Ir.I8
-  | Hir.Ptr t | Hir.ConstPtr t -> Ir.Ptr (ty t)
+  | Hir.Addr | Hir.Handle _ -> Ir.Pointer Ir.I8
   | Hir.Vec (n, t) -> Ir.Vector (n, ty t)
   | Hir.Array (n, t) -> Ir.Array (n, ty t)
   | Hir.Struct n -> Ir.Struct n
@@ -437,7 +436,7 @@ let rec expr s = function
       else
         let id = fresh s in
         emit s (Ir.String_ptr (id, i, String.length (List.nth s.strings i)));
-        Ok (Ir.Local (id, Ir.Ptr Ir.I8))
+        Ok (Ir.Local (id, Ir.Pointer Ir.I8))
   | Hir.Local (local, sp) -> (
       match Hashtbl.find_opt s.env local.id with
       | None -> error sp ("unknown lowering local `" ^ local.name ^ "`")
@@ -479,18 +478,18 @@ let rec expr s = function
       | Ast.Add ->
           let id = fresh s in
           emit s (Ir.Gep (id, Ir.I8, x, [ Ir.Index y ]));
-          Ok (Ir.Local (id, Ir.Ptr Ir.I8))
+          Ok (Ir.Local (id, Ir.Pointer Ir.I8))
       | Ast.Sub ->
           let neg_id = fresh s in
           emit s (Ir.Bin (neg_id, Ir.Sub, Ir.I64, Ir.Const (Ir.I64, 0L), y));
           let id = fresh s in
           emit s (Ir.Gep (id, Ir.I8, x, [ Ir.Index (Ir.Local (neg_id, Ir.I64)) ]));
-          Ok (Ir.Local (id, Ir.Ptr Ir.I8))
+          Ok (Ir.Local (id, Ir.Pointer Ir.I8))
       | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge ->
           let x_id = fresh s in
-          emit s (Ir.Cast (x_id, "ptrtoint", Ir.Ptr Ir.I8, x, Ir.I64));
+          emit s (Ir.Cast (x_id, "ptrtoint", Ir.Pointer Ir.I8, x, Ir.I64));
           let y_id = fresh s in
-          emit s (Ir.Cast (y_id, "ptrtoint", Ir.Ptr Ir.I8, y, Ir.I64));
+          emit s (Ir.Cast (y_id, "ptrtoint", Ir.Pointer Ir.I8, y, Ir.I64));
           let comparison =
             match op with
             | Ast.Eq -> Ir.Eq
@@ -562,9 +561,9 @@ let rec expr s = function
           match kind with
           | Ast.Bitcast -> (
               match (st, dt) with
-              | Ir.Ptr _, Ir.Ptr _ -> ""
-              | Ir.Ptr _, _ -> "ptrtoint"
-              | _, Ir.Ptr _ -> "inttoptr"
+              | Ir.Pointer _, Ir.Pointer _ -> ""
+              | Ir.Pointer _, _ -> "ptrtoint"
+              | _, Ir.Pointer _ -> "inttoptr"
               | _ -> "bitcast")
           | Ast.Zext -> "zext"
           | Ast.Sext -> "sext"
@@ -578,27 +577,11 @@ let rec expr s = function
   | Hir.Raw_select (b, off, t, _) ->
       let* p = raw_address s b off in
       raw_load s t p
-  | Hir.Deref (e, t, _) ->
-      let* p = expr s e in
-      let* alignment = align s t in
-      let id = fresh s in
-      emit s (Ir.Load (id, ty t, p, alignment));
-      Ok (Ir.Local (id, ty t))
   | Hir.Address (e, _, _) ->
       let* p = address s e in
       let id = fresh s in
-      emit s (Ir.Cast (id, "bitcast", Ir.value_ty p, p, Ir.Ptr Ir.I8));
-      Ok (Ir.Local (id, Ir.Ptr Ir.I8))
-  | Hir.Ptr_add (bytes, p, o, _, _) ->
-      let* pv = expr s p in
-      let* ov = expr s o in
-      let base =
-        if bytes then Ir.I8
-        else match Hir.expr_ty p with Hir.Ptr t | Hir.ConstPtr t -> ty t | _ -> Ir.I8
-      in
-      let id = fresh s in
-      emit s (Ir.Gep (id, base, pv, [ Ir.Index ov ]));
-      Ok (Ir.Local (id, Ir.Ptr base))
+      emit s (Ir.Cast (id, "bitcast", Ir.value_ty p, p, Ir.Pointer Ir.I8));
+      Ok (Ir.Local (id, Ir.Pointer Ir.I8))
   | Hir.Index (a, i, t, _) -> (
       match Hir.expr_ty a with
       | Hir.Vec (lanes, _) ->
@@ -637,7 +620,7 @@ let rec expr s = function
       emit s (Ir.Global_ptr (ptr_id, n, ty t));
       let* alignment = align s t in
       let value_id = fresh s in
-      emit s (Ir.Load (value_id, ty t, Ir.Local (ptr_id, Ir.Ptr (ty t)), alignment));
+      emit s (Ir.Load (value_id, ty t, Ir.Local (ptr_id, Ir.Pointer (ty t)), alignment));
       Ok (Ir.Local (value_id, ty t))
   | Hir.Struct_lit (n, xs, t, sp) -> (
       match find_struct s n with
@@ -646,7 +629,7 @@ let rec expr s = function
           let st = ty t in
           let slot = fresh s in
           emit s (Ir.Alloca (slot, st, d.align));
-          let p = Ir.Local (slot, Ir.Ptr st) in
+          let p = Ir.Local (slot, Ir.Pointer st) in
           let rec fields fs es =
             match (fs, es) with
             | [], [] -> Ok ()
@@ -661,7 +644,7 @@ let rec expr s = function
                 let* v = expr s e in
                 let* alignment = align s f.ty in
                 emit s
-                  (Ir.Store (ty f.ty, v, Ir.Local (id, Ir.Ptr (ty f.ty)), alignment));
+                  (Ir.Store (ty f.ty, v, Ir.Local (id, Ir.Pointer (ty f.ty)), alignment));
                 fields ft et
             | _ -> error sp "struct literal arity mismatch"
           in
@@ -682,8 +665,8 @@ and lower_builtin s b args t span =
       Ok (Ir.Local (id, rt))
   | Addr_from_bits, [ x ] ->
       let id = fresh s in
-      emit s (Ir.Cast (id, "inttoptr", Ir.value_ty x, x, Ir.Ptr Ir.I8));
-      Ok (Ir.Local (id, Ir.Ptr Ir.I8))
+      emit s (Ir.Cast (id, "inttoptr", Ir.value_ty x, x, Ir.Pointer Ir.I8));
+      Ok (Ir.Local (id, Ir.Pointer Ir.I8))
   | (Handle_addr | Handle_from_addr _), [ x ] -> Ok x
   | (Rotl | Rotr), [ x; n ] ->
       let* n = shift_amount s span rt n in
@@ -1039,7 +1022,7 @@ and materialize s e =
   let* alignment = align s ht in
   let id = fresh s in
   emit s (Ir.Alloca (id, ty ht, alignment));
-  let p = Ir.Local (id, Ir.Ptr (ty ht)) in
+  let p = Ir.Local (id, Ir.Pointer (ty ht)) in
   emit s (Ir.Store (ty ht, v, p, alignment));
   Ok p
 
@@ -1052,8 +1035,7 @@ and address s e =
   | Hir.Const_array (n, t, _) ->
       let id = fresh s in
       emit s (Ir.Global_ptr (id, n, ty t));
-      Ok (Ir.Local (id, Ir.Ptr (ty t)))
-  | Hir.Deref (p, _, _) -> expr s p
+      Ok (Ir.Local (id, Ir.Pointer (ty t)))
   | Hir.Raw_select (b, off, _, _) -> raw_address s b off
   | Hir.Index (a, i, _, _) -> index_address s a i
   | Hir.Field (a, _, _, off, _) -> field_address s a off
@@ -1067,14 +1049,7 @@ and index_address s a i =
       let* iv = normalize_index s i iv in
       let id = fresh s in
       emit s (Ir.Gep (id, ty (Hir.expr_ty a), p, [ Ir.Zero; Ir.Index iv ]));
-      Ok (Ir.Local (id, Ir.Ptr Ir.I8))
-  | Hir.Ptr elem | Hir.ConstPtr elem ->
-      let* p = expr s a in
-      let* iv = expr s i in
-      let* iv = normalize_index s i iv in
-      let id = fresh s in
-      emit s (Ir.Gep (id, ty elem, p, [ Ir.Index iv ]));
-      Ok (Ir.Local (id, Ir.Ptr (ty elem)))
+      Ok (Ir.Local (id, Ir.Pointer Ir.I8))
   | _ -> error (Hir.expr_span a) "cannot take index address"
 
 and raw_address s base off =
@@ -1082,7 +1057,7 @@ and raw_address s base off =
   let* ov = expr s off in
   let id = fresh s in
   emit s (Ir.Gep (id, Ir.I8, bv, [ Ir.Index ov ]));
-  Ok (Ir.Local (id, Ir.Ptr Ir.I8))
+  Ok (Ir.Local (id, Ir.Pointer Ir.I8))
 
 and mask_chunk_ty lanes =
   let bytes = (lanes + 7) / 8 in
@@ -1121,7 +1096,7 @@ and raw_load s t p =
       emit s (Ir.Cmp (cid, Ir.Ne, Ir.I8, Ir.Local (id, Ir.I8), Ir.Const (Ir.I8, 0L)));
       Ok (Ir.Local (cid, Ir.I1))
   | Hir.Addr | Hir.Handle _ ->
-      let pt = Ir.Ptr Ir.I8 in
+      let pt = Ir.Pointer Ir.I8 in
       let id = fresh s in
       emit s (Ir.Load (id, pt, p, 1));
       Ok (Ir.Local (id, pt))
@@ -1140,7 +1115,7 @@ and raw_load s t p =
                  p,
                  [ Ir.Index (Ir.Const (Ir.I64, Int64.of_int (i * eb))) ] ));
           let lid = fresh s in
-          emit s (Ir.Load (lid, et, Ir.Local (off_id, Ir.Ptr Ir.I8), 1));
+          emit s (Ir.Load (lid, et, Ir.Local (off_id, Ir.Pointer Ir.I8), 1));
           let iid = fresh s in
           emit s
             (Ir.Insert
@@ -1183,7 +1158,7 @@ and raw_store s t v p =
       emit s (Ir.Store (Ir.I8, Ir.Local (zid, Ir.I8), p, 1));
       Ok ()
   | Hir.Addr | Hir.Handle _ ->
-      emit s (Ir.Store (Ir.Ptr Ir.I8, v, p, 1));
+      emit s (Ir.Store (Ir.Pointer Ir.I8, v, p, 1));
       Ok ()
   | Hir.Vec (lanes, Hir.Int k) ->
       let et = ty (Hir.Int k) in
@@ -1201,7 +1176,8 @@ and raw_store s t v p =
                  Ir.I8,
                  p,
                  [ Ir.Index (Ir.Const (Ir.I64, Int64.of_int (i * eb))) ] ));
-          emit s (Ir.Store (et, Ir.Local (xid, et), Ir.Local (off_id, Ir.Ptr Ir.I8), 1));
+          emit s
+            (Ir.Store (et, Ir.Local (xid, et), Ir.Local (off_id, Ir.Pointer Ir.I8), 1));
           go (i + 1)
       in
       go 0
@@ -1231,14 +1207,14 @@ and field_address s a off =
   let* p =
     if
       match a with
-      | Hir.Local _ | Deref _ | Index _ | Field _ | Const_array _ -> true
+      | Hir.Local _ | Index _ | Field _ | Const_array _ -> true
       | _ -> false
     then address s a
     else materialize s a
   in
   let id = fresh s in
   emit s (Ir.Gep (id, Ir.I8, p, [ Ir.Index (Ir.Const (Ir.I64, Int64.of_int off)) ]));
-  Ok (Ir.Local (id, Ir.Ptr Ir.I8))
+  Ok (Ir.Local (id, Ir.Pointer Ir.I8))
 
 let rec emit_defer_body s body =
   List.fold_left
@@ -1287,7 +1263,7 @@ and stmt s = function
       let* alignment = align s local.ty in
       let id = fresh s in
       emit_entry s (Ir.Alloca (id, ty local.ty, alignment));
-      let p = Ir.Local (id, Ir.Ptr (ty local.ty)) in
+      let p = Ir.Local (id, Ir.Pointer (ty local.ty)) in
       bind_local s local p;
       match init with
       | None -> Ok ()
@@ -1351,14 +1327,14 @@ and stmt s = function
             | Hir.Addr, Ast.Add ->
                 let id = fresh s in
                 emit s (Ir.Gep (id, Ir.I8, old, [ Ir.Index rhs ]));
-                Ok (Ir.Local (id, Ir.Ptr Ir.I8))
+                Ok (Ir.Local (id, Ir.Pointer Ir.I8))
             | Hir.Addr, Ast.Sub ->
                 let neg_id = fresh s in
                 emit s (Ir.Bin (neg_id, Ir.Sub, Ir.I64, Ir.Const (Ir.I64, 0L), rhs));
                 let id = fresh s in
                 emit s
                   (Ir.Gep (id, Ir.I8, old, [ Ir.Index (Ir.Local (neg_id, Ir.I64)) ]));
-                Ok (Ir.Local (id, Ir.Ptr Ir.I8))
+                Ok (Ir.Local (id, Ir.Pointer Ir.I8))
             | _ -> emit_binary s span t op (ty at) old rhs
           in
           raw_store s at value p
@@ -1425,7 +1401,6 @@ and target_address s = function
       match Hashtbl.find_opt s.env local.id with
       | Some p -> Ok p
       | None -> error Span.synthetic ("unknown local `" ^ local.name ^ "`"))
-  | Hir.ADeref e -> expr s e
   | Hir.ARaw (b, off, _) -> raw_address s b off
   | Hir.AIndex (a, i) -> index_address s a i
   | Hir.AField (a, _, off) -> field_address s a off
@@ -1663,7 +1638,7 @@ let lower_func structs strings functions f =
             let* alignment = align s local.ty in
             let id = fresh s in
             emit s (Ir.Alloca (id, ty local.ty, alignment));
-            let p = Ir.Local (id, Ir.Ptr (ty local.ty)) in
+            let p = Ir.Local (id, Ir.Pointer (ty local.ty)) in
             bind_local s local p;
             emit s
               (Ir.Store

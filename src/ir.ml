@@ -5,7 +5,7 @@ type ty =
   | I32
   | I64
   | I128
-  | Ptr of ty
+  | Pointer of ty
   | Vector of int * ty
   | Struct of string
   | Array of int * ty
@@ -113,7 +113,7 @@ let rec ty_name = function
   | I32 -> "i32"
   | I64 -> "i64"
   | I128 -> "i128"
-  | Ptr _ -> "ptr"
+  | Pointer _ -> "ptr"
   | Vector (n, t) -> Printf.sprintf "<%d x %s>" n (ty_name t)
   | Struct n -> struct_name n
   | Array (n, t) -> Printf.sprintf "[%d x %s]" n (ty_name t)
@@ -135,7 +135,7 @@ let ( let* ) result next =
 
 let rec type_equal left right =
   match (left, right) with
-  | Ptr _, Ptr _ -> true
+  | Pointer _, Pointer _ -> true
   | Vector (left_lanes, left_elem), Vector (right_lanes, right_elem) ->
       left_lanes = right_lanes && type_equal left_elem right_elem
   | Array (left_length, left_elem), Array (right_length, right_elem) ->
@@ -149,7 +149,7 @@ let integer_width = function
   | I32 -> Some 32
   | I64 -> Some 64
   | I128 -> Some 128
-  | Ptr _ | Vector _ | Struct _ | Array _ | Void -> None
+  | Pointer _ | Vector _ | Struct _ | Array _ | Void -> None
 
 let integer_shape = function
   | Vector (lanes, elem) ->
@@ -158,21 +158,21 @@ let integer_shape = function
 
 let is_integer ty = Option.is_some (integer_width ty)
 let is_integer_like ty = Option.is_some (integer_shape ty)
-let is_pointer = function Ptr _ -> true | _ -> false
+let is_pointer = function Pointer _ -> true | _ -> false
 
 let valid_extension ty = function
   | No_extension -> true
   | Sign_extension | Zero_extension -> is_integer ty
 
 let is_equality_type = function
-  | Vector (_, Ptr _) | Ptr _ -> true
+  | Vector (_, Pointer _) | Pointer _ -> true
   | ty -> is_integer_like ty
 
 let rec valid_value_type = function
   | Void -> false
   | Vector (lanes, elem) -> lanes > 0 && (is_integer elem || is_pointer elem)
   | Array (length, elem) -> length >= 0 && valid_value_type elem
-  | I1 | I8 | I16 | I32 | I64 | I128 | Ptr _ | Struct _ -> true
+  | I1 | I8 | I16 | I32 | I64 | I128 | Pointer _ | Struct _ -> true
 
 let integer_constant_fits ty value =
   match integer_width ty with
@@ -195,7 +195,7 @@ let validate_value_form = function
       else if List.for_all (integer_constant_fits elem) values then Ok ()
       else Error "vector constant element does not fit its type"
   | Const_vector _ -> Error "vector constant requires an integer vector type"
-  | Null (Ptr _) -> Ok ()
+  | Null (Pointer _) -> Ok ()
   | Null _ -> Error "null constant requires a pointer type"
   | Undef ty | Zero ty | Local (_, ty) | Param (_, ty) | Global (_, ty) ->
       if valid_value_type ty then Ok () else Error "value has an invalid type"
@@ -209,15 +209,15 @@ let instruction_result = function
   | Shuffle_zero (id, ty, _) ->
       Some (id, ty)
   | Shufflevector (id, ty, _, _, _) -> Some (id, ty)
-  | Alloca (id, ty, _) | Gep (id, ty, _, _) -> Some (id, Ptr ty)
+  | Alloca (id, ty, _) | Gep (id, ty, _, _) -> Some (id, Pointer ty)
   | Extract (id, Vector (_, elem), _, _) -> Some (id, elem)
   | Extract (id, ty, _, _) -> Some (id, ty)
   | Cmp (id, _, ty, _, _) ->
       Some (id, match ty with Vector (lanes, _) -> Vector (lanes, I1) | _ -> I1)
   | Select (id, _, yes, _) -> Some (id, value_ty yes)
   | Call (Some id, _, ty, _, _) -> Some (id, ty)
-  | String_ptr (id, _, _) -> Some (id, Ptr I8)
-  | Global_ptr (id, _, ty) -> Some (id, Ptr ty)
+  | String_ptr (id, _, _) -> Some (id, Pointer I8)
+  | Global_ptr (id, _, ty) -> Some (id, Pointer ty)
   | Store _ | Call (None, _, _, _, _) | Trap -> None
 
 let terminator_successors = function
@@ -235,7 +235,7 @@ let validate_function struct_names globals (func : func) =
   let rec references_defined_type = function
     | Struct name -> Hashtbl.mem struct_names name
     | Array (_, elem) | Vector (_, elem) -> references_defined_type elem
-    | Ptr _ | I1 | I8 | I16 | I32 | I64 | I128 | Void -> true
+    | Pointer _ | I1 | I8 | I16 | I32 | I64 | I128 | Void -> true
   in
   let valid_module_value_type ty = valid_value_type ty && references_defined_type ty in
   let block_ids = Hashtbl.create (List.length func.blocks) in
@@ -346,7 +346,7 @@ let validate_function struct_names globals (func : func) =
     | Global (name, claimed) -> (
         match Hashtbl.find_opt globals name with
         | None -> fail "block %d uses unknown global `%s`" block_id name
-        | Some actual when type_equal claimed (Ptr actual) -> Ok ()
+        | Some actual when type_equal claimed (Pointer actual) -> Ok ()
         | Some _ -> fail "block %d global `%s` claims the wrong type" block_id name)
     | Const _ | Const_vector _ | Null _ | Undef _ | Zero _ -> Ok ()
   in
@@ -482,8 +482,8 @@ let validate_function struct_names globals (func : func) =
           match (result, ty) with
           | None, Void
           | ( Some _,
-              (I1 | I8 | I16 | I32 | I64 | I128 | Ptr _ | Vector _ | Struct _ | Array _)
-            ) ->
+              ( I1 | I8 | I16 | I32 | I64 | I128 | Pointer _ | Vector _ | Struct _
+              | Array _ ) ) ->
               Ok ()
           | None, _ -> fail "block %d discards a non-void call result" block_id
           | Some _, Void -> fail "block %d assigns a void call result" block_id
@@ -770,7 +770,7 @@ let validate module_ =
   let rec references_defined_type = function
     | Struct name -> Hashtbl.mem struct_names name
     | Array (_, elem) | Vector (_, elem) -> references_defined_type elem
-    | Ptr _ | I1 | I8 | I16 | I32 | I64 | I128 | Void -> true
+    | Pointer _ | I1 | I8 | I16 | I32 | I64 | I128 | Void -> true
   in
   let validate_struct (struct_def : struct_def) =
     let rec validate_fields = function
@@ -803,7 +803,7 @@ let validate module_ =
         let rec validate_type = function
           | Struct referenced -> validate_struct_cycles referenced
           | Array (_, elem) | Vector (_, elem) -> validate_type elem
-          | Ptr _ | I1 | I8 | I16 | I32 | I64 | I128 | Void -> Ok ()
+          | Pointer _ | I1 | I8 | I16 | I32 | I64 | I128 | Void -> Ok ()
         in
         let rec validate_fields = function
           | [] -> Ok ()
@@ -1004,7 +1004,7 @@ let emit_ty sink t =
     | I32 -> sink.text "i32"
     | I64 -> sink.text "i64"
     | I128 -> sink.text "i128"
-    | Ptr _ -> sink.text "ptr"
+    | Pointer _ -> sink.text "ptr"
     | Vector (n, t) ->
         sink.text "<";
         sink.text (string_of_int n);
@@ -1631,7 +1631,7 @@ let rec static_type_bytes structs visiting ty =
   | I64 -> Ok 8
   | I128 -> Ok 16
   | Void -> Ok 0
-  | Ptr _ -> Ok Target_layout.current.pointer_size
+  | Pointer _ -> Ok Target_layout.current.pointer_size
   | Struct name ->
       if List.mem name visiting then Error ()
       else
@@ -1673,7 +1673,7 @@ let rec static_type_bytes structs visiting ty =
           | I32 -> Ok 32
           | I64 -> Ok 64
           | I128 -> Ok 128
-          | Ptr _ -> Ok (Target_layout.current.pointer_size * 8)
+          | Pointer _ -> Ok (Target_layout.current.pointer_size * 8)
           | _ -> Error ()
         in
         match elem_bits with

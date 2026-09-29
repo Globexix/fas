@@ -20,17 +20,12 @@ let is_unsigned = function
   | Hir.Int (Hir.U8 | U16 | U32 | U64 | Usize) -> true
   | _ -> false
 
-let is_scalar = function
-  | Hir.Bool | Hir.Int _ | Hir.Ptr _ | Hir.ConstPtr _ -> true
-  | _ -> false
-
+let is_scalar = function Hir.Bool | Hir.Int _ -> true | _ -> false
 let is_numeric = function Hir.Int _ | Hir.Vec (_, Hir.Int _) -> true | _ -> false
 
 let cast_legal kind from target =
-  let pointer_bits = Target_layout.current.pointer_size * 8 in
   let value_bits = function
     | (Hir.Bool | Hir.Int _) as ty -> integer_value_bit_width ty
-    | Hir.Ptr _ | Hir.ConstPtr _ -> Some pointer_bits
     | _ -> None
   in
   let strictly_wider () =
@@ -64,11 +59,6 @@ let cast_legal kind from target =
       || lane_conversion ( > ) from target
   | Ast.Bitcast -> (
       match (from, target) with
-      | Hir.Ptr _, Hir.Ptr _ | Hir.Ptr _, Hir.ConstPtr _ -> true
-      | Hir.ConstPtr _, Hir.ConstPtr _ -> true
-      | (Hir.Ptr _ | Hir.ConstPtr _), Hir.Int k | Hir.Int k, (Hir.Ptr _ | Hir.ConstPtr _)
-        ->
-          int_bits k = pointer_bits
       | _ -> (
           match (integer_value_bit_width from, integer_value_bit_width target) with
           | Some source_width, Some destination_width ->
@@ -153,7 +143,6 @@ let mask_value ty value =
       let bits = int_bits k in
       if bits = 64 then value
       else Int64.logand value (Int64.sub (Int64.shift_left 1L bits) 1L)
-  | Hir.Ptr _ | Hir.ConstPtr _ -> value
   | _ -> value
 
 let literal_limit ~negative = function

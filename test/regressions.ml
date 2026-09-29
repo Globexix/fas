@@ -5408,10 +5408,7 @@ let () =
     [
       Hir.Expr
         ( Hir.Unary
-            ( Ast.Bit_not,
-              Hir.Null (Hir.Ptr (Hir.Int Hir.I8), Span.synthetic),
-              Hir.Ptr (Hir.Int Hir.I8),
-              Span.synthetic ),
+            (Ast.Bit_not, Hir.Null (Hir.Addr, Span.synthetic), Hir.Addr, Span.synthetic),
           Span.synthetic );
     ];
   lower_function_error "lower-logical-not-type"

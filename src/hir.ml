@@ -5,8 +5,6 @@ type ty =
   | Int of int_kind
   | Addr
   | Handle of string
-  | Ptr of ty
-  | ConstPtr of ty
   | Array of int * ty
   | Vec of int * ty
   | Struct of string
@@ -63,10 +61,8 @@ type expr =
   | Cast of Ast.cast_kind * expr * ty * Span.t
   | Index of expr * expr * ty * Span.t
   | Field of expr * string * ty * int * Span.t
-  | Deref of expr * ty * Span.t
   | Raw_select of expr * expr * ty * Span.t
   | Address of expr * ty * Span.t
-  | Ptr_add of bool * expr * expr * ty * Span.t
   | Sizeof of ty * int * Span.t
   | Alignof of ty * int * Span.t
   | Offsetof of ty * string * int * Span.t
@@ -77,7 +73,6 @@ type expr =
 
 type assign_target =
   | ALocal of local
-  | ADeref of expr
   | ARaw of expr * expr * ty
   | AIndex of expr * expr
   | AField of expr * string * int
@@ -120,8 +115,6 @@ let rec ty_equal a b =
   match (a, b) with
   | Bool, Bool | Void, Void -> true
   | Int a, Int b -> a = b
-  | Ptr a, Ptr b -> ty_equal a b
-  | ConstPtr a, ConstPtr b -> ty_equal a b
   | Addr, Addr -> true
   | Handle a, Handle b -> a = b
   | Array (na, a), Array (nb, b) | Vec (na, a), Vec (nb, b) -> na = nb && ty_equal a b
@@ -141,8 +134,6 @@ let rec ty_name = function
   | Int I64 -> "i64"
   | Int Usize -> "usize"
   | Int Isize -> "isize"
-  | Ptr t -> "ptr[" ^ ty_name t ^ "]"
-  | ConstPtr t -> "ptr[const " ^ ty_name t ^ "]"
   | Addr -> "addr"
   | Handle name -> "handle[" ^ name ^ "]"
   | Array (n, t) -> Printf.sprintf "arr[%d, %s]" n (ty_name t)
@@ -158,10 +149,8 @@ let expr_ty = function
   | Cast (_, _, t, _)
   | Index (_, _, t, _)
   | Field (_, _, t, _, _)
-  | Deref (_, t, _)
   | Raw_select (_, _, t, _)
   | Address (_, t, _)
-  | Ptr_add (_, _, _, t, _)
   | Splat (_, t, _)
   | Ternary (_, _, _, t, _)
   | Const_array (_, t, _)
@@ -186,10 +175,8 @@ let expr_span = function
   | Cast (_, _, _, s)
   | Index (_, _, _, s)
   | Field (_, _, _, _, s)
-  | Deref (_, _, s)
   | Raw_select (_, _, _, s)
   | Address (_, _, s)
-  | Ptr_add (_, _, _, _, s)
   | Sizeof (_, _, s)
   | Alignof (_, _, s)
   | Offsetof (_, _, _, s)
@@ -302,14 +289,14 @@ let int_layout target k = Target_layout.integer target (int_bytes ~target k * 8)
 let scalar_bits target = function
   | Bool -> Ok 1
   | Int k -> Ok (int_bytes ~target k * 8)
-  | Ptr _ | ConstPtr _ | Addr | Handle _ -> Ok (target.Target_layout.pointer_size * 8)
+  | Addr | Handle _ -> Ok (target.Target_layout.pointer_size * 8)
   | _ -> Error "vector element type must be a scalar"
 
 let layout ?(target = Target_layout.current) structs ty =
   let rec go visiting = function
     | Bool -> Target_layout.integer target 1
     | Int k -> int_layout target k
-    | Ptr _ | ConstPtr _ | Addr | Handle _ -> Target_layout.pointer target
+    | Addr | Handle _ -> Target_layout.pointer target
     | Array (n, t) ->
         let* s, a = go visiting t in
         let* size = Target_layout.multiply_size n s in
@@ -376,7 +363,7 @@ let compute_struct_cached cache name =
   and field_layout visiting = function
     | Bool -> Target_layout.integer target 1
     | Int k -> int_layout target k
-    | Ptr _ | ConstPtr _ | Addr | Handle _ -> Target_layout.pointer target
+    | Addr | Handle _ -> Target_layout.pointer target
     | Void -> Error "void has no object layout"
     | Opaque n -> Error (Printf.sprintf "opaque type `%s` has no layout" n)
     | Struct n ->

@@ -29,7 +29,7 @@ let vec_cap_error length (element : Hir.ty) =
       | Hir.Int (Hir.U16 | Hir.I16) -> Some 16
       | Hir.Int (Hir.U32 | Hir.I32) -> Some 32
       | Hir.Int (Hir.U64 | Hir.I64 | Hir.Usize | Hir.Isize) -> Some 64
-      | Hir.Ptr _ | Hir.ConstPtr _ | Hir.Addr | Hir.Handle _ -> Some 64
+      | Hir.Addr | Hir.Handle _ -> Some 64
       | _ -> None
     in
     match lane_bits with
@@ -133,12 +133,7 @@ let field_info structs name field =
         (fun (candidate : Hir.field) -> candidate.name = field)
         struct_def.fields
 
-let compatible actual expected =
-  Hir.ty_equal actual expected
-  ||
-  match (actual, expected) with
-  | Hir.Ptr actual, Hir.ConstPtr expected -> Hir.ty_equal actual expected
-  | _ -> false
+let compatible actual expected = Hir.ty_equal actual expected
 
 let ensure_expected actual expected span =
   if compatible actual expected then Ok ()

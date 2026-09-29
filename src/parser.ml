@@ -286,7 +286,7 @@ module P = struct
     | Token.Ident "void" ->
         ignore (bump p);
         Ok Ast.Void
-    | Token.Ident name when Names.type_constructor name = Some Names.Legacy_ptr ->
+    | Token.Ident "ptr" ->
         let s = span p in
         ignore (bump p);
         Error
@@ -1184,10 +1184,9 @@ module P = struct
               let* e = expr p in
               let* () = expected p Token.Rparen in
               Ok (Ast.Splat (e, sp))
-          | ( Some ((Names.Legacy_ptr_add | Names.Legacy_ptr_add_bytes) as operation),
-              Token.Lparen ) ->
+          | None, Token.Lparen when n = "ptr_add" || n = "ptr_add_bytes" ->
               let message =
-                if operation = Names.Legacy_ptr_add_bytes then
+                if n = "ptr_add_bytes" then
                   "ptr_add_bytes is no longer supported; use address arithmetic"
                 else "ptr_add is no longer supported; use address arithmetic"
               in

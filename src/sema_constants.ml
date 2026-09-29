@@ -426,13 +426,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
         then Ok ()
         else error s "constant cast requires scalar integer or bool types"
       in
-      let sb =
-        match st with
-        | Hir.Bool -> 1
-        | Hir.Int q -> int_bits q
-        | Hir.Ptr _ | Hir.ConstPtr _ -> Target_layout.current.pointer_size * 8
-        | _ -> 0
-      in
+      let sb = match st with Hir.Bool -> 1 | Hir.Int q -> int_bits q | _ -> 0 in
       let result =
         if reshaped then v
         else
