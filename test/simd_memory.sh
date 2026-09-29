@@ -8,7 +8,7 @@ OCAML_FAS=${OCAML_FAS:-$ROOT/_build/default/bin/main.exe}
 SIMD_TMP=$(mktemp -d)
 trap 'rm -rf "$SIMD_TMP"' EXIT HUP INT TERM
 
-python3 "$ROOT/test/simd_memory_generate.py" "$SIMD_TMP"
+PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/test/simd_memory_generate.py" "$SIMD_TMP"
 cat "$ROOT/test/simd_memory.fas" "$SIMD_TMP/simd_memory_matrix.fas" >"$SIMD_TMP/simd_memory.fas"
 ulimit -c 0 2>/dev/null || true
 

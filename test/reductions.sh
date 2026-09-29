@@ -11,7 +11,7 @@ RED_TMP=$(mktemp -d)
 trap 'rm -rf "$RED_TMP"' EXIT HUP INT TERM
 ulimit -c 0 2>/dev/null || true
 
-python3 - "$RED_TMP" << 'EOF'
+PYTHONDONTWRITEBYTECODE=1 python3 - "$RED_TMP" << 'EOF'
 import sys
 
 out = sys.argv[1]

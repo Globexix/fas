@@ -10,7 +10,7 @@ OCAML_FAS=${OCAML_FAS:-"$ROOT/_build/default/bin/main.exe"}
 SAT_TMP=$(mktemp -d)
 trap 'rm -rf "$SAT_TMP"' EXIT HUP INT TERM
 
-python3 - "$SAT_TMP" << 'EOF'
+PYTHONDONTWRITEBYTECODE=1 python3 - "$SAT_TMP" << 'EOF'
 import random
 import sys
 

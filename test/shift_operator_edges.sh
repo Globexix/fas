@@ -9,7 +9,7 @@ OCAML_FAS=${OCAML_FAS:-$ROOT/_build/default/bin/main.exe}
 SHIFT_TMP=$(mktemp -d)
 trap 'rm -rf "$SHIFT_TMP"' EXIT HUP INT TERM
 
-python3 - "$SHIFT_TMP" << 'EOF'
+PYTHONDONTWRITEBYTECODE=1 python3 - "$SHIFT_TMP" << 'EOF'
 import sys, os
 
 out = sys.argv[1]

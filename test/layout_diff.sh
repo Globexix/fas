@@ -2,4 +2,4 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-python3 "$ROOT/test/layout_diff.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/test/layout_diff.py"
