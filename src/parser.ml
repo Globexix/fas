@@ -1120,6 +1120,11 @@ module P = struct
 
   and primary p =
     match (peek p).kind with
+    | Token.Lbrace ->
+        let s = span p in
+        let* () = expected p Token.Lbrace in
+        let* elements = literal_elements p in
+        Ok (Ast.Array_lit (elements, s))
     | Token.Int s ->
         let sp = span p in
         ignore (bump p);

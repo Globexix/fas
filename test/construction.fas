@@ -1,0 +1,33 @@
+struct Pair { left i32 right i32 }
+struct Cell { x i32 y i32 }
+struct Board { cells arr[2,Cell] tail arr[2,u32] }
+
+extern "C" {
+  fn fas_record(value i32) i32
+
+  fn fas_construct_order() i32 {
+    pair Pair = {fas_record(1), fas_record(2)}
+    return pair.left * 10 + pair.right
+  }
+
+  fn fas_construct_nested_order() i32 {
+    board Board = {{{fas_record(3), fas_record(4)}, {fas_record(5), fas_record(6)}}, {7, 8}}
+    return board.cells[1].y
+  }
+
+  fn fas_construct_array() u32 {
+    values arr[3,u32] = {2, 3, 5}
+    return values[0] + values[1] + values[2]
+  }
+
+  fn fas_construct_explicit() i32 {
+    pair Pair = (Pair){11, 17}
+    return pair.left + pair.right
+  }
+
+  fn fas_construct_shuffle() u32 {
+    a vec[4,u32] = (vec[4,u32]){11, 13, 17, 19}
+    b vec[4,u32] = shuffle(a, a, (vec[4,u32]){3, 1, 2, 0})
+    return b[0] * 1000 + b[1] * 100 + b[2] * 10 + b[3]
+  }
+}

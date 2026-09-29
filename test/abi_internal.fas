@@ -33,15 +33,20 @@ fn pass_array(x arr[3,i64]) arr[3,i64] { return x }
 fn pass_vector(x vec[3,i32]) vec[3,i32] { return x }
 
 fn main() i32 {
-    pair Pair = pass_pair((Pair){11, -7})
+    pair_source Pair = (Pair){11, -7}
+    pair Pair = pass_pair(pair_source)
     if pair.left != 11 || pair.right != -7 { return 1 }
-    big Big = pass_big((Big){1, 2, 3})
+    big_source Big = (Big){1, 2, 3}
+    big Big = pass_big(big_source)
     if big.a != 1 || big.b != 2 || big.c != 3 { return 2 }
-    aligned Aligned = pass_aligned((Aligned){9, 77})
+    aligned_source Aligned = (Aligned){9, 77}
+    aligned Aligned = pass_aligned(aligned_source)
     if aligned.tag != 9 || aligned.value != 77 { return 3 }
-    nested Nested = pass_nested((Nested){5, aligned, 6})
+    nested_source Nested = (Nested){5, (Aligned){9, 77}, 6}
+    nested Nested = pass_nested(nested_source)
     if nested.lead != 5 || nested.item.value != 77 || nested.tail != 6 { return 4 }
-    empty Empty = pass_empty((Empty){})
+    empty_source Empty = (Empty){}
+    empty Empty = pass_empty(empty_source)
     again Empty = pass_empty(empty)
     array arr[3,i64] = pass_array(VALUES)
     if array[0] != 4 || array[1] != 5 || array[2] != 6 { return 5 }

@@ -53,6 +53,7 @@ type expr =
   | EInt of int64 * ty * Span.t
   | EBool of bool * Span.t
   | EVector of int64 list * ty * Span.t
+  | Vector_lit of expr list * ty * Span.t
   | Null of ty * Span.t
   | EString of int * Span.t
   | Local of local * Span.t
@@ -70,7 +71,10 @@ type expr =
   | Splat of expr * ty * Span.t
   | Ternary of expr * expr * expr * ty * Span.t
   | Const_array of string * ty * Span.t
-  | Struct_lit of string * expr list * ty * Span.t
+
+type construction =
+  | Init_value of expr
+  | Init_aggregate of ty * construction list * Span.t
 
 type assign_target =
   | ALocal of local
@@ -80,6 +84,7 @@ type assign_target =
 
 type stmt =
   | Let of local * expr option * Span.t
+  | Let_construct of local * construction * Span.t
   | View of local * expr * Span.t
   | Copy of expr * expr * ty * bool * Span.t
   | Volatile_store of ty * expr * expr * Span.t
@@ -147,6 +152,7 @@ let rec ty_name = function
 let expr_ty = function
   | EInt (_, t, _)
   | EVector (_, t, _)
+  | Vector_lit (_, t, _)
   | Unary (_, _, t, _)
   | Binary (_, _, _, t, _)
   | Call (_, _, t, _)
@@ -157,8 +163,7 @@ let expr_ty = function
   | Address (_, t, _)
   | Splat (_, t, _)
   | Ternary (_, _, _, t, _)
-  | Const_array (_, t, _)
-  | Struct_lit (_, _, t, _) ->
+  | Const_array (_, t, _) ->
       t
   | Local (local, _) -> local.ty
   | EBool _ -> Bool
@@ -169,6 +174,7 @@ let expr_ty = function
 let expr_span = function
   | EInt (_, _, s)
   | EVector (_, _, s)
+  | Vector_lit (_, _, s)
   | EBool (_, s)
   | Null (_, s)
   | EString (_, s)
@@ -186,8 +192,7 @@ let expr_span = function
   | Offsetof (_, _, _, s)
   | Splat (_, _, s)
   | Ternary (_, _, _, _, s)
-  | Const_array (_, _, s)
-  | Struct_lit (_, _, _, s) ->
+  | Const_array (_, _, s) ->
       s
 
 type flow_summary = {
@@ -259,8 +264,8 @@ let rec stmt_flow = function
       in
       sequence_flow prefix (loop_flow unconditional iteration)
   | Defer (body, _) -> cleanup_flow (block_flow body) flowing
-  | Let _ | View _ | Copy _ | Volatile_store _ | Assign _ | Compound_assign _ | Expr _
-    ->
+  | Let _ | Let_construct _ | View _ | Copy _ | Volatile_store _ | Assign _
+  | Compound_assign _ | Expr _ ->
       flowing
 
 and block_flow = function

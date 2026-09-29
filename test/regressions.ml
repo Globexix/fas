@@ -1576,7 +1576,8 @@ let () =
       "struct S { a u32 }\n\
        fn is(x u32) bool { return x == 1 }\n\
        fn f(x u32) void {\n\
-      \  if is((S) { x }.a) { return }\n\
+      \  literal S = (S) { x }\n\
+      \  if is(literal.a) { return }\n\
       \  return\n\
        }\n"
   in
@@ -1774,7 +1775,8 @@ let () =
        fn pass_array(value arr[2,i64]) arr[2,i64] { return value }\n\
        fn pass_vector(value vec[3,i32]) vec[3,i32] { return value }\n\
        fn main() i32 {\n\
-       s S = pass_struct((S){1, 2})\n\
+       literal S = (S){1, 2}\n\
+       s S = pass_struct(literal)\n\
        a arr[2,i64] = pass_array(A)\n\
        v vec[3,i32] = pass_vector(splat(3))\n\
        return zext[i32](s.x == a[0] && v[0] == 3)\n\
@@ -2965,7 +2967,8 @@ let () =
                     fn main() i64 { return first[i64, u8](7, 1) }\n")))));
   let nested_generic_function_source =
     "struct Box[T] { value T }\n\
-     fn inner[T](value T) Box[T] { return (Box[T]){value} }\n\
+     fn inner[T](value T) Box[T] { result Box[T] = (Box[T]){value}\n\
+     return result }\n\
      fn outer[T](value T) Box[T] { return inner[T](value) }\n\
      fn use() Box[u8] { return outer[u8](3) }\n"
   in
@@ -4325,7 +4328,8 @@ let () =
      fn stamp[T, N const usize](value T) T { seen usize = N\n\
      return value }\n\
      fn wrap[T, N const usize](value T) Box[T] { seen usize = N\n\
-     return (Box[T]){stamp[T, N](value)} }\n\
+     result Box[T] = (Box[T]){stamp[T, N](value)}\n\
+     return result }\n\
      fn main() Box[i64] { first Box[i64] = wrap[i64, THREE](7)\n\
      return wrap[i64, THREE](first.value) }\n"
   in
@@ -5238,7 +5242,8 @@ let () =
     \ return result\n\
      }\n\
      fn wrap[T, N const usize](value Buffer[T, N]) Wrapped[T, N] {\n\
-    \ return (Wrapped[T, N]){pass[T, N](value)}\n\
+    \ result Wrapped[T, N] = (Wrapped[T, N]){pass[T, N](value)}\n\
+    \ return result\n\
      }\n\
      fn sized(value Buffer[u8, 8]) Buffer[u8, 8] {\n\
     \ return pass[u8, sizeof[Unit]](value)\n\
@@ -5677,7 +5682,8 @@ let () =
   ignore
     (llvm_of
        "struct Pair[T] { left T right T }\n\
-        fn main() i64 { return ((Pair[i64]){12, 4}).left }\n");
+        fn main() i64 { pair Pair[i64] = (Pair[i64]){12, 4}\n\
+        return pair.left }\n");
 
   ignore (llvm_of "fn f(x u64) bool { return 1 == x }\n");
   let context_literal_arith_left =
@@ -7274,11 +7280,14 @@ let () =
      copy(destination, source)\n\
      return }\n";
   semantic_error "copy-rvalue-destination" "copy operands must be existing places"
-    "struct S { value i64 }\nfn f() void { source S\ncopy((S){1}, source)\nreturn }\n";
+    "struct S { value i64 }\n\
+     fn f(condition bool) void { source S = {1}\n\
+     copy(condition ? source : source, source)\n\
+     return }\n";
   semantic_error "copy-rvalue-source" "copy operands must be existing places"
     "struct S { value i64 }\n\
-     fn f() void { destination S\n\
-     copy(destination, (S){1})\n\
+     fn f(condition bool) void { destination S = {1}\n\
+     copy(destination, condition ? destination : destination)\n\
      return }\n";
   semantic_error "copy-constant-destination" "cannot modify constant"
     "const Values arr[2,u32] = {7, 9}\n\
@@ -7293,6 +7302,70 @@ let () =
      source S\n\
      copy(destination, source)\n\
      return }\n";
+
+  semantic_accept "construction-struct-brace-initializer"
+    "struct Pair { left i32 right bool }\n\
+     fn f() i32 { value Pair = {13, true}\n\
+     if value.right { return value.left } else { return 0 } }\n";
+  semantic_accept "construction-explicit-struct-initializer"
+    "struct Pair { left i32 right i32 }\n\
+     fn f() i32 { value Pair = (Pair){5, 8}\n\
+     return value.left + value.right }\n";
+  semantic_accept "construction-array-initializer"
+    "fn f() i32 { values arr[3,i32] = {2, 3, 5}\n\
+     return values[0] + values[1] + values[2] }\n";
+  semantic_accept "construction-nested-array-of-struct"
+    "struct Cell { x i32 y i32 }\n\
+     struct Board { cells arr[2,Cell] }\n\
+     fn f() i32 { board Board = {{{7, 11}, {13, 17}}}\n\
+     return board.cells[1].y }\n";
+  semantic_accept "construction-explicit-nested-entry"
+    "struct Cell { x i32 y i32 }\n\
+     struct Board { cell Cell }\n\
+     fn f() i32 { board Board = {(Cell){19, 23}}\n\
+     return board.cell.y }\n";
+  semantic_accept "construction-explicit-array-initializer"
+    "fn f() i32 { values arr[2,i32] = (arr[2,i32]){19, 23}\nreturn values[1] }\n";
+  semantic_accept "construction-vector-literal-shuffle-selector"
+    "fn f() u32 { a vec[4,u32] = (vec[4,u32]){11, 13, 17, 19}\n\
+     b vec[4,u32] = shuffle(a, a, (vec[4,u32]){3, 2, 1, 0})\n\
+     return b[0] + b[1] + b[2] + b[3] }\n";
+  semantic_accept "construction-local-facts-are-initialized"
+    "struct S { left i32 right i32 }\n\
+     fn f() i32 { value S = {29, 31}\n\
+     return value.left + value.right }\n";
+  semantic_accept "construction-vector-value"
+    "fn f() u32 { values vec[2,u32] = (vec[2,u32]){37, 41}\n\
+     return values[0] + values[1] }\n";
+  semantic_error "construction-array-entry-count"
+    "wrong number of array literal elements"
+    "fn f() void { values arr[2,i32] = {1}\nreturn }\n";
+  semantic_error "construction-struct-entry-count"
+    "wrong number of struct literal fields"
+    "struct Pair { left i32 right i32 }\nfn f() void { value Pair = {1}\nreturn }\n";
+  semantic_error "construction-vector-entry-count"
+    "wrong number of vector literal lanes"
+    "fn f() void { value vec[2,i32] = (vec[2,i32]){1}\nreturn }\n";
+  semantic_error "construction-entry-type-mismatch"
+    "type mismatch: expected i32, got bool"
+    "struct S { flag i32 }\nfn f() void { value S = {true}\nreturn }\n";
+  semantic_error "construction-explicit-type-mismatch"
+    "aggregate construction type does not match destination"
+    "struct A { value i32 }\n\
+     struct B { value i32 }\n\
+     fn f() void { value A = (B){1}\n\
+     return }\n";
+  semantic_error "construction-brace-needs-destination"
+    "aggregate construction needs a destination"
+    "fn consume(value arr[1,i32]) i32 { return value[0] }\n\
+     fn f() i32 { return consume({43}) }\n";
+  semantic_error "construction-aggregate-expression-needs-destination"
+    "aggregate construction needs a destination"
+    "struct S { value i32 }\n\
+     fn consume(value S) i32 { return value.value }\n\
+     fn f() i32 { return consume((S){47}) }\n";
+  semantic_error "construction-new-name-not-in-scope" "unknown name `value`"
+    "fn f() i32 { value arr[1,i32] = {value[0]}\nreturn 0 }\n";
 
   let copy_direct_locals =
     lower_of

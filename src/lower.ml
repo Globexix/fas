@@ -430,6 +430,23 @@ let rec expr s = function
       if List.length values = lanes then Ok (Ir.Const_vector (ty t, values))
       else error span "malformed vector constant lane count"
   | Hir.EVector (_, _, span) -> error span "malformed vector constant type"
+  | Hir.Vector_lit (elements, (Hir.Vec (lanes, _) as vector_ty), span) ->
+      if List.length elements <> lanes then
+        error span "malformed vector literal lane count"
+      else
+        let vector_ir_ty = ty vector_ty in
+        let rec lanes_to_value value index = function
+          | [] -> Ok value
+          | element :: rest ->
+              let* lane = expr s element in
+              let id = fresh s in
+              emit s
+                (Ir.Insert
+                   (id, vector_ir_ty, value, Ir.Const (Ir.I32, Int64.of_int index), lane));
+              lanes_to_value (Ir.Local (id, vector_ir_ty)) (index + 1) rest
+        in
+        lanes_to_value (Ir.Zero vector_ir_ty) 0 elements
+  | Hir.Vector_lit (_, _, span) -> error span "malformed vector literal type"
   | Hir.Null (t, _) -> Ok (Ir.Null (ty t))
   | Hir.EString (i, sp) ->
       if i < 0 || i >= List.length s.strings then error sp "missing interned string"
@@ -622,36 +639,6 @@ let rec expr s = function
       let value_id = fresh s in
       emit s (Ir.Load (value_id, ty t, Ir.Local (ptr_id, Ir.Pointer (ty t)), alignment));
       Ok (Ir.Local (value_id, ty t))
-  | Hir.Struct_lit (n, xs, t, sp) -> (
-      match find_struct s n with
-      | None -> error sp ("unknown struct `" ^ n ^ "`")
-      | Some d ->
-          let st = ty t in
-          let slot = fresh s in
-          emit s (Ir.Alloca (slot, st, d.align));
-          let p = Ir.Local (slot, Ir.Pointer st) in
-          let rec fields fs es =
-            match (fs, es) with
-            | [], [] -> Ok ()
-            | f :: ft, e :: et ->
-                let id = fresh s in
-                emit s
-                  (Ir.Gep
-                     ( id,
-                       Ir.I8,
-                       p,
-                       [ Ir.Index (Ir.Const (Ir.I64, Int64.of_int f.Hir.offset)) ] ));
-                let* v = expr s e in
-                let* alignment = align s f.ty in
-                emit s
-                  (Ir.Store (ty f.ty, v, Ir.Local (id, Ir.Pointer (ty f.ty)), alignment));
-                fields ft et
-            | _ -> error sp "struct literal arity mismatch"
-          in
-          let* () = fields d.fields xs in
-          let id = fresh s in
-          emit s (Ir.Load (id, st, p, d.align));
-          Ok (Ir.Local (id, st)))
 
 and exprs s xs = Result_list.map (expr s) xs
 
@@ -1340,6 +1327,13 @@ and stmt s = function
           let* v = expr s e in
           emit s (Ir.Store (ty local.ty, v, p, alignment));
           Ok ())
+  | Hir.Let_construct (local, construction, _) ->
+      let* alignment = align s local.ty in
+      let id = fresh s in
+      emit_entry s (Ir.Alloca (id, ty local.ty, alignment));
+      let pointer = Ir.Local (id, Ir.Pointer (ty local.ty)) in
+      bind_local s local pointer;
+      construct_into s pointer construction
   | Hir.View (local, place, span) ->
       let* pointer = address s place in
       if match value_ty pointer with Ir.Pointer _ -> true | _ -> false then (
@@ -1499,6 +1493,56 @@ and stmt s = function
           s.current.term := Some (Ir.Br l.continue_to);
           Ok ()
       | [] -> error sp "continue outside loop")
+
+and construct_into s destination = function
+  | Hir.Init_value expression ->
+      let* value = expr s expression in
+      let value_ty = Hir.expr_ty expression in
+      let* alignment = align s value_ty in
+      emit s (Ir.Store (ty value_ty, value, destination, alignment));
+      Ok ()
+  | Hir.Init_aggregate (Hir.Array (length, element_ty), elements, span) ->
+      if List.length elements <> length then
+        error span "internal error: array construction arity"
+      else
+        let aggregate_ty = Ir.Array (length, ty element_ty) in
+        let rec go index = function
+          | [] -> Ok ()
+          | element :: rest ->
+              let pointer_id = fresh s in
+              emit s
+                (Ir.Gep
+                   ( pointer_id,
+                     aggregate_ty,
+                     destination,
+                     [ Ir.Zero; Ir.Index (Ir.Const (Ir.I64, Int64.of_int index)) ] ));
+              let* () =
+                construct_into s
+                  (Ir.Local (pointer_id, Ir.Pointer (ty element_ty)))
+                  element
+              in
+              go (index + 1) rest
+        in
+        go 0 elements
+  | Hir.Init_aggregate (Hir.Struct name, elements, span) -> (
+      match find_struct s name with
+      | None -> error span ("internal error: unknown construction struct `" ^ name ^ "`")
+      | Some definition ->
+          if List.length elements <> List.length definition.fields then
+            error span "internal error: struct construction arity"
+          else
+            let rec go fields entries =
+              match (fields, entries) with
+              | [], [] -> Ok ()
+              | field :: rest_fields, entry :: rest_entries ->
+                  let* pointer = copy_offset s destination field.Hir.offset in
+                  let* () = construct_into s pointer entry in
+                  go rest_fields rest_entries
+              | _ -> error span "internal error: struct construction arity"
+            in
+            go definition.fields elements)
+  | Hir.Init_aggregate (_, _, span) ->
+      error span "internal error: construction requires an array or struct"
 
 and stmt_list s xs =
   List.fold_left

@@ -590,6 +590,28 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
       match lookup name arrays with
       | Some (_, (Hir.Vec _ as ty), values) -> Ok (ty, values)
       | _ -> error span "constant expression requires a known vector constant")
+  | Ast.Struct_lit (source_type, elements, span) -> (
+      let* vector_ty = source_ty_with_values named_types consts span source_type in
+      match vector_ty with
+      | Hir.Vec (lanes, element_ty) ->
+          if List.length elements <> lanes then
+            error span "wrong number of vector literal lanes"
+          else
+            let rec values acc = function
+              | [] -> Ok (List.rev acc)
+              | element :: rest ->
+                  let* actual_ty, value =
+                    const_expr ~structs ~named_types ~arrays ?resolve consts
+                      (Some element_ty) ~check_only element
+                  in
+                  let* () =
+                    ensure_expected actual_ty element_ty (Ast.expr_span element)
+                  in
+                  values (lane_mask element_ty value :: acc) rest
+            in
+            let* values = values [] elements in
+            Ok (vector_ty, values)
+      | _ -> error span "vector literal requires a vector type")
   | Ast.Splat (value, span) -> (
       match expected with
       | Some (Hir.Vec (lanes, element) as ty) ->

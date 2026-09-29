@@ -715,33 +715,91 @@ and check_expr (c : context) expected = function
         | Some _ when at = Hir.Void || bt = Hir.Void ->
             error s "ternary arms cannot have void type"
         | Some ty -> Ok (Hir.Ternary (tq, ta, tb, ty, s)))
-  | Ast.Array_lit (_, s) ->
-      error s "array literals are only valid in global const declarations"
+  | Ast.Array_lit (_, s) -> error s "aggregate construction needs a destination"
   | Ast.Struct_lit (source_type, xs, s) -> (
       let* literal_type = source_ty_in_context c s source_type in
       match literal_type with
-      | Hir.Struct n -> (
-          match List.find_opt (fun (d : Hir.struct_def) -> d.name = n) c.structs with
-          | None -> error s (Printf.sprintf "unknown struct `%s`" n)
-          | Some (d : Hir.struct_def) ->
-              if List.length xs <> List.length d.fields then
-                error s "wrong number of struct literal fields"
-              else
-                let rec go acc (fs : Hir.field list) es =
-                  match (fs, es) with
-                  | [], [] -> Ok (List.rev acc)
-                  | f :: ft, e :: et ->
-                      let* x = check_expr c (Some f.ty) e in
-                      let* () =
-                        ensure_expected (Hir.expr_ty x) f.ty (Ast.expr_span e)
-                      in
-                      go (x :: acc) ft et
-                  | _ -> error s "wrong struct literal arity"
-                in
-                let* xs = go [] d.fields xs in
-                Ok (Hir.Struct_lit (n, xs, literal_type, s)))
+      | Hir.Vec (lanes, element) ->
+          if List.length xs <> lanes then error s "wrong number of vector literal lanes"
+          else
+            let rec go acc = function
+              | [] -> Ok (List.rev acc)
+              | e :: rest ->
+                  let* x = check_expr c (Some element) e in
+                  let* () = ensure_expected (Hir.expr_ty x) element (Ast.expr_span e) in
+                  go (x :: acc) rest
+            in
+            let* xs = go [] xs in
+            Ok (Hir.Vector_lit (xs, literal_type, s))
+      | Hir.Array _ | Hir.Struct _ ->
+          error s "aggregate construction needs a destination"
       | Hir.Opaque n -> error s (Printf.sprintf "opaque type `%s` is not a struct" n)
-      | _ -> error s "struct literal requires a struct type")
+      | _ -> error s "aggregate literal requires an array, struct, or vector type")
+
+and check_initializer c expected expression =
+  let aggregate_entries ty entries span =
+    let* typed_entries =
+      match ty with
+      | Hir.Array (length, element) ->
+          if List.length entries <> length then
+            error span "wrong number of array literal elements"
+          else Ok (List.map (fun entry -> (element, entry)) entries)
+      | Hir.Struct name -> (
+          match
+            List.find_opt
+              (fun (definition : Hir.struct_def) -> definition.name = name)
+              c.structs
+          with
+          | None -> error span (Printf.sprintf "unknown struct `%s`" name)
+          | Some definition ->
+              if List.length entries <> List.length definition.fields then
+                error span "wrong number of struct literal fields"
+              else
+                Ok
+                  (List.map2
+                     (fun (field : Hir.field) entry -> (field.ty, entry))
+                     definition.fields entries))
+      | _ -> error span "aggregate construction needs a destination"
+    in
+    let rec check acc = function
+      | [] -> Ok (List.rev acc)
+      | (entry_ty, entry) :: rest ->
+          let* initialized = check_initializer c entry_ty entry in
+          let* () =
+            let actual =
+              match initialized with
+              | `Value value -> Hir.expr_ty value
+              | `Aggregate (ty, _, _) -> ty
+            in
+            ensure_expected actual entry_ty (Ast.expr_span entry)
+          in
+          let child =
+            match initialized with
+            | `Value value -> Hir.Init_value value
+            | `Aggregate (ty, children, child_span) ->
+                Hir.Init_aggregate (ty, children, child_span)
+          in
+          check (child :: acc) rest
+    in
+    let* entries = check [] typed_entries in
+    Ok (`Aggregate (ty, entries, span))
+  in
+  match expression with
+  | Ast.Array_lit (entries, span) -> aggregate_entries expected entries span
+  | Ast.Struct_lit (source_type, entries, span) -> (
+      let* source_type = source_ty_in_context c span source_type in
+      match source_type with
+      | Hir.Vec _ ->
+          let* value = check_expr c (Some expected) expression in
+          Ok (`Value value)
+      | Hir.Array _ | Hir.Struct _ ->
+          if not (Hir.ty_equal source_type expected) then
+            error span "aggregate construction type does not match destination"
+          else aggregate_entries expected entries span
+      | _ -> error span "aggregate construction needs a destination")
+  | _ ->
+      let* value = check_expr c (Some expected) expression in
+      Ok (`Value value)
 
 and generic_const_argument span = function
   | Ast.Const_arg expression -> Ok expression
@@ -1511,7 +1569,7 @@ let rec check_block (c : context) stmts =
   go [] stmts
 
 and check_stmt (c : context) = function
-  | Ast.Let { name; ty; init; span } ->
+  | Ast.Let { name; ty; init; span } -> (
       let* () = ensure_new_local name c span in
       let* t = source_ty_in_context c span ty in
       let* _ = Sema_limits.validate_object c.limits c.structs span t in
@@ -1519,13 +1577,26 @@ and check_stmt (c : context) = function
         match init with
         | None -> Ok None
         | Some e ->
-            let* v = check_expr c (Some t) e in
-            let* () = ensure_expected (Hir.expr_ty v) t (Ast.expr_span e) in
-            Ok (Some v)
+            let* initialized = check_initializer c t e in
+            let* () =
+              let actual =
+                match initialized with
+                | `Value value -> Hir.expr_ty value
+                | `Aggregate (ty, _, _) -> ty
+              in
+              ensure_expected actual t (Ast.expr_span e)
+            in
+            Ok (Some initialized)
       in
       let* binding = add_local name t c span in
       if Option.is_some x then mark_init binding c;
-      Ok (Hir.Let (binding, x, span))
+      match x with
+      | None -> Ok (Hir.Let (binding, None, span))
+      | Some (`Value value) -> Ok (Hir.Let (binding, Some value, span))
+      | Some (`Aggregate (ty, entries, construction_span)) ->
+          Ok
+            (Hir.Let_construct
+               (binding, Hir.Init_aggregate (ty, entries, construction_span), span)))
   | Ast.View { name; place; span } ->
       let* () = ensure_new_local name c span in
       let* place_info = check_place c place in
