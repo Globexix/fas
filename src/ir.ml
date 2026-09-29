@@ -866,7 +866,10 @@ let validate module_ =
           && valid_alignment align
           &&
           match (linkage, bytes) with
-          | Ast.Import_c, None | Ast.Export_c, Some _ | Ast.Internal_global, _ -> true
+          | (Ast.Import_c | Ast.Import_const_c), None
+          | Ast.Export_c, Some _
+          | Ast.Internal_global, _ ->
+              true
           | _ -> false
         in
         if not valid_storage then
@@ -1484,10 +1487,11 @@ let render_bounded ~budget m =
                 | Ast.Internal_global -> "internal global "
                 | Ast.Export_c -> "global "
                 | Ast.Import_c -> "external global "
+                | Ast.Import_const_c -> "external constant "
               in
               add (Printf.sprintf "@%s = %s[%d x i8]" name linkage_text size);
               (match bytes with
-              | None when linkage = Ast.Import_c -> ()
+              | None when linkage = Ast.Import_c || linkage = Ast.Import_const_c -> ()
               | None -> add " zeroinitializer"
               | Some data when String.for_all (fun byte -> byte = '\000') data ->
                   add " zeroinitializer"

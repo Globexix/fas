@@ -50,6 +50,7 @@ type context = {
   consts : (string * Hir.ty * int64) list;
   arrays : (string * Hir.ty * int64 list) list;
   globals : (string * Hir.ty * Ast.global_linkage) list;
+  c_unsupported : (string * string) list;
   signatures : (string * signature) list;
   templates : (string * Ast.item) list;
   top_level_bindings : top_level_binding list;

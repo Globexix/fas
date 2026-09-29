@@ -1,4 +1,10 @@
-type named_type_kind = Struct_name | Generic_struct_name | Opaque_name
+type named_type_kind =
+  | Struct_name
+  | Generic_struct_name
+  | Opaque_name
+  | Alias_name of Ast.ty
+  | Unsupported_name of string * string
+
 type named_types = (string * named_type_kind) list
 type const_values = (string * Hir.ty * int64) list
 
@@ -66,6 +72,9 @@ let rec source_ty named_types = function
       | Some Generic_struct_name ->
           Error (Printf.sprintf "generic struct `%s` requires type arguments" name)
       | Some Opaque_name -> Ok (Hir.Opaque name)
+      | Some (Alias_name ty) -> source_ty named_types ty
+      | Some (Unsupported_name (entity, reason)) ->
+          Error (Printf.sprintf "C declaration `%s` is not supported: %s" entity reason)
       | None -> Error (Printf.sprintf "unknown type `%s`" name))
   | Ast.Applied_type _ ->
       Error "generic type application reached ordinary type checking"

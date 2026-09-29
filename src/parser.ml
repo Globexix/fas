@@ -575,8 +575,8 @@ module P = struct
     let linkage =
       match (linkage, init) with
       | Ast.Internal_global, _ -> Ast.Internal_global
-      | (Ast.Export_c | Ast.Import_c), Some _ -> Ast.Export_c
-      | (Ast.Export_c | Ast.Import_c), None -> Ast.Import_c
+      | (Ast.Export_c | Ast.Import_c | Ast.Import_const_c), Some _ -> Ast.Export_c
+      | (Ast.Export_c | Ast.Import_c | Ast.Import_const_c), None -> Ast.Import_c
     in
     let* () = end_stmt p in
     Ok (Ast.Global { name; ty; init; linkage; span = s })

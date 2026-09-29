@@ -97,3 +97,583 @@ let import ~cc ~debug ~keep source headers =
                 (if message = "" then "Clang C header import failed"
                  else "Clang C header import failed: " ^ message);
             ])
+
+let get name = C_import_json.field name
+let text = function C_import_json.Str value -> Some value | _ -> None
+let string name value = Option.bind (get name value) text
+let children value = Option.fold ~none:[] ~some:C_import_json.array (get "inner" value)
+
+let rec trim value =
+  if value = "" then value
+  else
+    match value.[0] with
+    | ' ' | '\t' | '\n' | '\r' -> trim (String.sub value 1 (String.length value - 1))
+    | _ -> (
+        let last = String.length value - 1 in
+        match value.[last] with
+        | ' ' | '\t' | '\n' | '\r' -> trim (String.sub value 0 last)
+        | _ -> value)
+
+let words value =
+  String.split_on_char ' ' value |> List.map trim |> List.filter (( <> ) "")
+
+let join_words = String.concat " "
+let qualifiers = [ "const"; "volatile"; "restrict"; "__restrict"; "__restrict__" ]
+
+let clean_type value =
+  let parts = words value in
+  ( join_words (List.filter (fun word -> not (List.mem word qualifiers)) parts),
+    List.filter (fun word -> List.mem word qualifiers) parts |> List.sort_uniq compare
+  )
+
+let int_type = function
+  | "_Bool" | "bool" -> Some Ast.Bool
+  | "char" | "signed char" -> Some (Ast.Int Ast.I8)
+  | "unsigned char" -> Some (Ast.Int Ast.U8)
+  | "short" | "short int" | "signed short" | "signed short int" ->
+      Some (Ast.Int Ast.I16)
+  | "unsigned short" | "unsigned short int" -> Some (Ast.Int Ast.U16)
+  | "int" | "signed" | "signed int" -> Some (Ast.Int Ast.I32)
+  | "unsigned" | "unsigned int" -> Some (Ast.Int Ast.U32)
+  | "long" | "long int" | "signed long" | "signed long int" | "long long"
+  | "long long int" | "signed long long" | "signed long long int" ->
+      Some (Ast.Int Ast.I64)
+  | "unsigned long" | "unsigned long int" | "unsigned long long"
+  | "unsigned long long int" ->
+      Some (Ast.Int Ast.U64)
+  | _ -> None
+
+let has text part =
+  let value = String.lowercase_ascii text in
+  let n = String.length value and m = String.length part in
+  let rec find i = i + m <= n && (String.sub value i m = part || find (i + 1)) in
+  find 0
+
+let c_type_name node = Option.bind (get "type" node) (string "qualType")
+
+let c_type_spellings node =
+  match get "type" node with
+  | None -> []
+  | Some ty ->
+      List.filter_map (fun key -> string key ty) [ "qualType"; "desugaredQualType" ]
+
+let c_qualifiers node =
+  c_type_spellings node
+  |> List.concat_map (fun raw -> snd (clean_type raw))
+  |> List.sort_uniq compare
+
+let top_level_const node =
+  let is_const raw =
+    let from =
+      match String.rindex_opt raw '*' with Some index -> index + 1 | None -> 0
+    in
+    let suffix = String.sub raw from (String.length raw - from) in
+    List.mem "const" (snd (clean_type suffix))
+  in
+  List.exists is_const (c_type_spellings node)
+
+let type_error raw =
+  if has raw "__int128" then Some "`__int128` has no Fas type"
+  else if has raw "_bitint" then Some "`_BitInt` has no Fas type"
+  else
+    let tokens =
+      String.map
+        (function ('a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_') as c -> c | _ -> ' ')
+        (String.lowercase_ascii raw)
+      |> String.split_on_char ' '
+    in
+    if
+      List.exists
+        (fun token ->
+          List.mem token
+            [
+              "float";
+              "double";
+              "__fp16";
+              "_float16";
+              "_float32";
+              "_float64";
+              "_float128";
+              "_float32x";
+              "_float64x";
+              "__float128";
+              "__bf16";
+              "__ibm128";
+              "_decimal32";
+              "_decimal64";
+              "_decimal128";
+            ])
+        tokens
+    then Some "floating-point types are not supported"
+    else None
+
+let declaration_location node =
+  match get "loc" node with
+  | Some location ->
+      let number = function
+        | Some (C_import_json.Num value) -> int_of_string_opt value
+        | Some (C_import_json.Str value) -> int_of_string_opt value
+        | _ -> None
+      in
+      (string "file" location, number (get "line" location))
+  | None -> (None, None)
+
+let enum_integer_type node =
+  children node
+  |> List.find_map (fun child ->
+      if string "kind" child = Some "EnumConstantDecl" then c_type_name child else None)
+
+let record_name node =
+  match string "name" node with Some name when name <> "" -> Some name | _ -> None
+
+let type_result ~aliases ~records ~enums ~allow_record raw =
+  let raw, quals = clean_type raw in
+  let rec resolve seen raw =
+    let raw = trim raw in
+    match Hashtbl.find_opt aliases raw with
+    | Some (Ok (Ast.Named_type _)) when not allow_record ->
+        Error "struct and union values are not supported"
+    | Some result when not (List.mem raw seen) -> result
+    | Some _ -> Error "recursive C typedef is not supported"
+    | None -> parse seen raw
+  and parse seen raw =
+    match type_error raw with
+    | Some reason -> Error reason
+    | None when raw = "void" -> Ok Ast.Void
+    | None when has raw "(*" || has raw "(^" ->
+        Error "function pointers are not supported"
+    | None when has raw "vector_size" || has raw "ext_vector_type" || has raw "<" ->
+        Error "vector types are not supported by value"
+    | None when has raw "address_space" || has raw "addrspace" ->
+        Error "C address spaces are not supported"
+    | None
+      when has raw "stdcall" || has raw "fastcall" || has raw "vectorcall"
+           || has raw "ms_abi" || has raw "regcall" || has raw "preserve_most"
+           || has raw "preserve_all" || has raw "swiftcall"
+           || has raw "aarch64_vector_pcs" ->
+        Error "non-default calling conventions are not supported"
+    | None when String.contains raw '[' ->
+        Error "array types are not supported by value"
+    | None -> (
+        let stars =
+          String.fold_left (fun count c -> if c = '*' then count + 1 else count) 0 raw
+        in
+        if stars > 0 then
+          let pointee =
+            match String.index_opt raw '*' with
+            | None -> raw
+            | Some index -> trim (String.sub raw 0 index)
+          in
+          if stars > 1 then Ok Ast.Addr
+          else if pointee = "void" || Option.is_some (int_type pointee) then Ok Ast.Addr
+          else match_record_pointer seen pointee
+        else
+          match int_type raw with
+          | Some ty -> Ok ty
+          | None -> (
+              match raw with
+              | "void" -> Ok Ast.Void
+              | _ when String.starts_with ~prefix:"enum " raw ->
+                  let name = String.sub raw 5 (String.length raw - 5) in
+                  Option.fold ~none:(Error "enum representation is not supported")
+                    ~some:(fun underlying -> resolve seen underlying)
+                    (Hashtbl.find_opt enums name)
+              | _
+                when String.starts_with ~prefix:"struct " raw
+                     || String.starts_with ~prefix:"union " raw ->
+                  if allow_record then
+                    let name =
+                      String.sub raw
+                        (String.index raw ' ' + 1)
+                        (String.length raw - String.index raw ' ' - 1)
+                    in
+                    if Hashtbl.mem records name then Ok (Ast.Named_type name)
+                    else Error "anonymous records are not supported"
+                  else Error "struct and union values are not supported"
+              | _ when String.contains raw '(' ->
+                  Error "function types are not supported"
+              | _ -> Error ("unsupported C type " ^ raw)))
+  and match_record_pointer seen pointee =
+    if
+      String.starts_with ~prefix:"struct " pointee
+      || String.starts_with ~prefix:"union " pointee
+    then
+      let name =
+        String.sub pointee
+          (String.index pointee ' ' + 1)
+          (String.length pointee - String.index pointee ' ' - 1)
+      in
+      if Hashtbl.mem records name then Ok (Ast.Handle (Ast.Named_type name))
+      else Error "anonymous record pointers are not supported"
+    else
+      match Hashtbl.find_opt aliases pointee with
+      | Some (Ok (Ast.Named_type name)) when Hashtbl.mem records name ->
+          Ok (Ast.Handle (Ast.Named_type name))
+      | Some (Ok (Ast.Void | Ast.Bool | Ast.Int _ | Ast.Addr | Ast.Handle _)) ->
+          Ok Ast.Addr
+      | Some (Ok _) -> Error "pointer target type is not supported"
+      | Some (Error reason) -> Error reason
+      | None -> (
+          match resolve seen pointee with
+          | Ok (Ast.Named_type name) when Hashtbl.mem records name ->
+              Ok (Ast.Handle (Ast.Named_type name))
+          | Ok (Ast.Handle _ | Ast.Bool | Ast.Int _ | Ast.Addr) -> Ok Ast.Addr
+          | Ok _ -> Error "pointer target type is not supported"
+          | Error reason -> Error reason)
+  in
+  let _ = quals in
+  resolve [] raw
+
+type mapped = {
+  items : Ast.item list;
+  aliases : (string * Ast.ty) list;
+  unsupported : (string * string) list;
+  manifest : string list;
+}
+
+let map_declarations ~span declarations =
+  let nodes = C_import_json.array (C_import_json.Arr declarations) in
+  let records = Hashtbl.create 64
+  and enums = Hashtbl.create 32
+  and alias_nodes = Hashtbl.create 64 in
+  List.iter
+    (fun node ->
+      match string "kind" node with
+      | Some "RecordDecl" ->
+          Option.iter (fun name -> Hashtbl.replace records name ()) (record_name node)
+      | Some "EnumDecl" ->
+          Option.iter (fun name -> Hashtbl.replace enums name "int") (record_name node)
+      | Some "TypedefDecl" ->
+          Option.iter
+            (fun name -> Hashtbl.replace alias_nodes name node)
+            (record_name node)
+      | _ -> ())
+    nodes;
+  List.iter
+    (fun node ->
+      if string "kind" node = Some "EnumDecl" then
+        match (record_name node, enum_integer_type node) with
+        | Some name, Some underlying -> Hashtbl.replace enums name underlying
+        | _ -> ())
+    nodes;
+  let aliases = Hashtbl.create 64 in
+  let rec alias stack name =
+    match Hashtbl.find_opt aliases name with
+    | Some result -> result
+    | None when List.mem name stack -> Error "recursive C typedef is not supported"
+    | None -> (
+        match Hashtbl.find_opt alias_nodes name with
+        | None -> Error ("unknown C typedef " ^ name)
+        | Some node -> (
+            match c_type_name node with
+            | None -> Error "typedef has no canonical type"
+            | Some raw ->
+                let result = resolve_aliases (name :: stack) raw in
+                Hashtbl.replace aliases name result;
+                result))
+  and resolve_aliases stack raw =
+    let raw, _ = clean_type raw in
+    match int_type raw with
+    | Some ty -> Ok ty
+    | None when Option.is_some (type_error raw) -> Error (Option.get (type_error raw))
+    | None when Hashtbl.mem alias_nodes raw -> alias stack raw
+    | None
+      when String.starts_with ~prefix:"struct " raw
+           || String.starts_with ~prefix:"union " raw ->
+        let name =
+          String.sub raw
+            (String.index raw ' ' + 1)
+            (String.length raw - String.index raw ' ' - 1)
+        in
+        if Hashtbl.mem records name then Ok (Ast.Named_type name)
+        else Error "anonymous records are not supported"
+    | None ->
+        let result = type_result ~aliases ~records ~enums ~allow_record:true raw in
+        result
+  in
+  Hashtbl.iter (fun name _ -> ignore (alias [] name)) alias_nodes;
+  let typed_aliases =
+    Hashtbl.fold
+      (fun name result acc ->
+        match result with
+        | Ok (Ast.Named_type target) when target = name -> acc
+        | Ok ty when not (Names.reserved_binding_name name) -> (name, ty) :: acc
+        | Ok _ -> acc
+        | Error _ -> acc)
+      aliases []
+    |> List.sort compare
+  in
+  let entities = Hashtbl.create 256
+  and unsupported_seen = Hashtbl.create 128
+  and unsupported = ref []
+  and manifest = Hashtbl.create 256
+  and items = ref [] in
+  let add_unsupported name reason =
+    if not (Hashtbl.mem unsupported_seen name) then (
+      Hashtbl.add unsupported_seen name ();
+      unsupported := (name, reason) :: !unsupported)
+  in
+  Hashtbl.iter
+    (fun name result ->
+      if Names.reserved_binding_name name then
+        match result with
+        | Ok _ -> add_unsupported name "name is reserved in Fas"
+        | Error _ -> ())
+    aliases;
+  let add_item name signature item origin obligations reason =
+    let reason =
+      if Names.reserved_binding_name name then Some "name is reserved in Fas"
+      else reason
+    in
+    let item = if Option.is_some reason then None else item in
+    let declaration_file, line = origin in
+    let qualifier_text = String.concat "," obligations in
+    let reason_text =
+      Option.fold ~none:"" ~some:(fun r -> " unsupported=" ^ r) reason
+    in
+    let manifest_line =
+      Printf.sprintf "%s\t%s\t%s\t%s:%d%s" name signature qualifier_text
+        (Option.value ~default:"<unknown>" declaration_file)
+        (Option.value ~default:0 line)
+        reason_text
+    in
+    Hashtbl.replace manifest name manifest_line;
+    (match reason with Some reason -> add_unsupported name reason | None -> ());
+    match Hashtbl.find_opt entities name with
+    | Some previous when previous = signature -> ()
+    | Some _ -> add_unsupported name "conflicting C declarations"
+    | None ->
+        Hashtbl.add entities name signature;
+        Option.iter (fun item -> items := item :: !items) item
+  in
+  let origin node =
+    let file, line = declaration_location node in
+    (file, line)
+  in
+  let quals node = c_qualifiers node in
+  let as_type ~allow_record node =
+    match c_type_name node with
+    | None -> Error "declaration has no C type"
+    | Some raw -> type_result ~aliases ~records ~enums ~allow_record raw
+  in
+  let item_name = function
+    | Ast.Opaque { name; _ } -> name
+    | Ast.Const { name; _ } -> name
+    | Ast.Global { name; _ } -> name
+    | Ast.Func { name; _ } -> name
+    | _ -> ""
+  in
+  let function_type node =
+    match c_type_name node with
+    | None -> Error "function declaration has no C type"
+    | Some raw
+      when has raw "stdcall" || has raw "fastcall" || has raw "vectorcall"
+           || has raw "ms_abi" || has raw "regcall" || has raw "preserve_most"
+           || has raw "preserve_all" || has raw "swiftcall"
+           || has raw "aarch64_vector_pcs" ->
+        Error "non-default calling conventions are not supported"
+    | Some raw when has raw "address_space" || has raw "addrspace" ->
+        Error "C address spaces are not supported"
+    | Some raw when has raw "(*" || has raw "(^" ->
+        Error "function pointers are not supported"
+    | Some raw -> (
+        match String.index_opt raw '(' with
+        | None -> Error "function declaration has no parameter list"
+        | Some index ->
+            let ret = trim (String.sub raw 0 index) in
+            type_result ~aliases ~records ~enums ~allow_record:false ret)
+  in
+  Hashtbl.iter
+    (fun name underlying ->
+      match type_result ~aliases ~records ~enums ~allow_record:false underlying with
+      | Ok ty ->
+          if not (Hashtbl.mem alias_nodes name) then
+            let signature = "enum " ^ name ^ " as " ^ Ast.type_name ty in
+            add_item name signature None (None, None) [] None
+      | Error reason -> add_unsupported name reason)
+    enums;
+  let enum_aliases =
+    Hashtbl.fold
+      (fun name underlying acc ->
+        match type_result ~aliases ~records ~enums ~allow_record:false underlying with
+        | Ok ty
+          when (not (List.mem_assoc name typed_aliases))
+               && not (Names.reserved_binding_name name) ->
+            (name, ty) :: acc
+        | _ -> acc)
+      enums []
+  in
+  List.iter
+    (fun node ->
+      let name = Option.value ~default:"" (string "name" node) in
+      let kind = string "kind" node in
+      match (kind, name) with
+      | Some "RecordDecl", "" -> ()
+      | Some "RecordDecl", _ ->
+          let item = Ast.Opaque { name; span } in
+          add_item name ("opaque " ^ name) (Some item) (origin node) [] None
+      | Some "EnumDecl", _ ->
+          List.iter
+            (fun child ->
+              if string "kind" child = Some "EnumConstantDecl" then
+                match (string "name" child, c_type_name child) with
+                | Some constant, Some _ -> (
+                    let underlying =
+                      match as_type ~allow_record:false child with
+                      | Ok ty -> Ok ty
+                      | Error reason -> Error reason
+                    in
+                    let value =
+                      let rec find_value = function
+                        | [] -> None
+                        | node :: rest -> (
+                            match string "value" node with
+                            | Some value -> Some value
+                            | None -> find_value (children node @ rest))
+                      in
+                      find_value (children child)
+                    in
+                    match (underlying, value) with
+                    | Ok (Ast.Int _ as ty), Some value ->
+                        let expression =
+                          if String.starts_with ~prefix:"-" value then
+                            Ast.Unary
+                              ( Ast.Neg,
+                                Ast.Int_lit
+                                  (String.sub value 1 (String.length value - 1), span),
+                                span )
+                          else Ast.Int_lit (value, span)
+                        in
+                        let item =
+                          Ast.Const { name = constant; ty; value = expression; span }
+                        in
+                        add_item constant
+                          (Ast.type_name ty ^ " " ^ value)
+                          (Some item) (origin child) (quals child) None
+                    | Ok _, _ ->
+                        add_unsupported constant "enum constant type is not an integer"
+                    | Error reason, _ -> add_unsupported constant reason)
+                | _ -> ())
+            (children node)
+      | Some "TypedefDecl", _ -> (
+          match Hashtbl.find_opt aliases name with
+          | Some (Ok ty) ->
+              add_item name
+                ("typedef " ^ Ast.type_name ty)
+                None (origin node) (quals node) None
+          | Some (Error reason) ->
+              add_item name "typedef" None (origin node) (quals node) (Some reason)
+          | None -> ())
+      | Some "FunctionDecl", _ ->
+          let origin = origin node in
+          let static_inline =
+            string "storageClass" node = Some "static"
+            && get "inline" node = Some (C_import_json.Bool true)
+          in
+          let parameters =
+            children node
+            |> List.filter (fun child -> string "kind" child = Some "ParmVarDecl")
+            |> List.mapi (fun index parameter ->
+                ( Option.value
+                    ~default:("arg" ^ string_of_int index)
+                    (string "name" parameter),
+                  as_type ~allow_record:false parameter,
+                  quals parameter ))
+          in
+          let variadic =
+            Option.fold ~none:false ~some:(fun raw -> has raw "...") (c_type_name node)
+          in
+          let signature =
+            match function_type node with
+            | Error reason -> Error reason
+            | Ok ret ->
+                let rec types acc = function
+                  | [] -> Ok (List.rev acc)
+                  | (_, Error reason, _) :: _ -> Error reason
+                  | (name, Ok ty, _) :: rest -> types ((name, ty) :: acc) rest
+                in
+                Result.map (fun params -> (params, ret)) (types [] parameters)
+          in
+          let signature_name =
+            match signature with
+            | Ok (params, ret) ->
+                "fn("
+                ^ String.concat "," (List.map (fun (_, ty) -> Ast.type_name ty) params)
+                ^ (if variadic then ",..." else "")
+                ^ ")->" ^ Ast.type_name ret
+            | Error reason -> "unsupported: " ^ reason
+          in
+          let reason =
+            if static_inline then
+              Some "static inline functions require a C adapter (Phase 17)"
+            else match signature with Ok _ -> None | Error reason -> Some reason
+          in
+          let item =
+            match (signature, reason) with
+            | Ok (params, ret), None ->
+                Some
+                  (Ast.Func
+                     {
+                       name;
+                       params =
+                         List.mapi
+                           (fun index (_, ty) ->
+                             ({ Ast.name = "arg" ^ string_of_int index; ty; span }
+                               : Ast.param))
+                           params;
+                       ret;
+                       body = Ast.Declaration;
+                       linkage = Ast.External_c;
+                       variadic;
+                       generic_params = [];
+                       span;
+                     })
+            | _ -> None
+          in
+          add_item name signature_name item origin
+            (quals node @ List.concat_map (fun (_, _, q) -> q) parameters)
+            reason
+      | Some "VarDecl", _ ->
+          let ty = as_type ~allow_record:false node in
+          let storage = string "storageClass" node in
+          let reason =
+            if storage = Some "static" then
+              Some "static C globals are not externally visible"
+            else match ty with Ok _ -> None | Error reason -> Some reason
+          in
+          let item =
+            match (ty, reason) with
+            | Ok ty, None ->
+                Some
+                  (Ast.Global
+                     {
+                       name;
+                       ty;
+                       init = None;
+                       linkage =
+                         (if top_level_const node then Ast.Import_const_c
+                          else Ast.Import_c);
+                       span;
+                     })
+            | _ -> None
+          in
+          let signature =
+            match ty with
+            | Ok ty -> Ast.type_name ty
+            | Error reason -> "unsupported: " ^ reason
+          in
+          add_item name signature item (origin node) (quals node) reason
+      | _ -> ())
+    nodes;
+  let items =
+    List.sort
+      (fun left right -> String.compare (item_name left) (item_name right))
+      !items
+  in
+  {
+    items;
+    aliases = List.sort compare (typed_aliases @ enum_aliases);
+    unsupported = List.sort compare !unsupported;
+    manifest =
+      Hashtbl.fold (fun _ line acc -> line :: acc) manifest [] |> List.sort compare;
+  }

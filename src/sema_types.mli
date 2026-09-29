@@ -1,4 +1,10 @@
-type named_type_kind = Struct_name | Generic_struct_name | Opaque_name
+type named_type_kind =
+  | Struct_name
+  | Generic_struct_name
+  | Opaque_name
+  | Alias_name of Ast.ty
+  | Unsupported_name of string * string
+
 type named_types = (string * named_type_kind) list
 type const_values = (string * Hir.ty * int64) list
 

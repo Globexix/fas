@@ -443,14 +443,22 @@ let run_unprotected config =
   | Error diagnostics -> Error diagnostics
   | Ok (program, chains, c_imports) -> (
       let _, _, cc = tools () in
+      let c_items = ref [] and c_aliases = ref [] and c_unsupported = ref [] in
       let* () =
         let rec import = function
           | [] -> Ok ()
           | (source, headers) :: rest ->
-              let* _, kept =
+              let* declarations, kept =
                 C_import.import ~cc ~debug:config.Cli.debug ~keep:config.Cli.keep source
                   headers
               in
+              let mapped =
+                C_import.map_declarations ~span:(List.hd headers).C_import.span
+                  declarations
+              in
+              c_items := List.rev_append mapped.items !c_items;
+              c_aliases := List.rev_append mapped.aliases !c_aliases;
+              c_unsupported := List.rev_append mapped.unsupported !c_unsupported;
               Option.iter
                 (fun path -> prerr_endline ("fas: kept C import unit: " ^ path))
                 kept;
@@ -458,10 +466,16 @@ let run_unprotected config =
         in
         import c_imports
       in
+      let program = { Ast.items = program.items @ List.rev !c_items } in
       let* () = ast_budget (Ast.check_cumulative_asm_bytes ~limits program) in
       let* () = ast_budget (Ast.check_expanded_nodes ~limits program) in
       let* hir =
-        match Sema.check ~limits program with
+        match
+          Sema.check ~limits
+            ~c_aliases:(List.sort_uniq compare !c_aliases)
+            ~c_unsupported:(List.sort_uniq compare !c_unsupported)
+            program
+        with
         | Ok hir -> Ok hir
         | Error diagnostics -> Error (add_include_chains chains diagnostics)
       in

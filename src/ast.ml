@@ -90,7 +90,7 @@ and generic_param =
 
 and body = Declaration | Statements of stmt list | Asm of string
 and linkage = Internal | External_c
-and global_linkage = Internal_global | Export_c | Import_c
+and global_linkage = Internal_global | Export_c | Import_c | Import_const_c
 and c_header = C_quoted of string | C_system of string
 
 and item =
@@ -600,7 +600,7 @@ let render_program program =
     | Global { name; ty; init; linkage; _ } ->
         (match linkage with
         | Internal_global -> text "var "
-        | Export_c | Import_c -> text "extern var ");
+        | Export_c | Import_c | Import_const_c -> text "extern var ");
         add_name name;
         text " ";
         emit_ty ty;

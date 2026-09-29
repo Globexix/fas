@@ -8,6 +8,12 @@ open Sema_context
 let error span message = Error [ Diag.error span message ]
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 
+let c_unsupported c span name =
+  Option.map
+    (fun reason ->
+      error span (Printf.sprintf "C declaration `%s` is not supported: %s" name reason))
+    (List.assoc_opt name c.c_unsupported)
+
 let rec source_ty_in_context c span = function
   | Ast.Named_type name when Option.is_some (lookup_local name c) ->
       error span (Printf.sprintf "`%s` is a value, not a type" name)
@@ -257,6 +263,10 @@ let rec check_place (c : context) expr =
     | Error _ -> Dynamic
   in
   match expr with
+  | Ast.Ident (n, s)
+    when Option.is_none (lookup_local n c)
+         && Option.is_some (List.assoc_opt n c.c_unsupported) ->
+      Option.get (c_unsupported c s n)
   | Ast.Ident (n, s) -> (
       match lookup_local n c with
       | Some b ->
@@ -472,6 +482,10 @@ and check_expr (c : context) expected expression =
         let value = if cstr then v ^ "\000" else v in
         let* id = intern_string c s value in
         Ok (Hir.EString (id, s))
+  | Ast.Ident (n, s)
+    when Option.is_none (lookup_local n c)
+         && Option.is_some (List.assoc_opt n c.c_unsupported) ->
+      Option.get (c_unsupported c s n)
   | Ast.Ident (n, s) -> (
       match lookup_local n c with
       | Some b ->
@@ -940,6 +954,14 @@ and check_handle_from_addr c name opaque_name args s =
 
 and check_call c _expected fn args s =
   match fn with
+  | Ast.Ident (name, span)
+    when Option.is_none (lookup_local name c)
+         && Option.is_some (List.assoc_opt name c.c_unsupported) ->
+      Option.get (c_unsupported c span name)
+  | Ast.Generic_args (Ast.Ident (name, span), _, _)
+    when Option.is_none (lookup_local name c)
+         && Option.is_some (List.assoc_opt name c.c_unsupported) ->
+      Option.get (c_unsupported c span name)
   | Ast.Ident (name, _) when Names.reserved_float_name name ->
       error s "reserved for v0.5 floating point"
   | Ast.Generic_args (Ast.Ident (name, _), _, _) when Names.reserved_float_name name ->
@@ -1498,25 +1520,31 @@ let check_target (c : context) = function
               in
               Ok { target = Hir.ALocal b; root; path; through_view = is_view c.flow b })
       | None -> (
-          match lookup_top_level n c.top_level_bindings with
-          | Some { declaration_kind = Top_const; _ } ->
-              error span (Printf.sprintf "constant `%s` is not assignable" n)
-          | Some { declaration_kind = Top_type; _ } ->
-              error span (Printf.sprintf "type `%s` is not assignable" n)
-          | Some { declaration_kind = Top_function; _ } ->
-              error span (Printf.sprintf "function `%s` is not assignable" n)
-          | Some { declaration_kind = Top_global; _ } -> (
-              match lookup_global n c.globals with
-              | Some (_, ty, _) ->
-                  Ok
-                    {
-                      target = Hir.AGlobal (n, ty);
-                      root = None;
-                      path = None;
-                      through_view = false;
-                    }
-              | None -> error span "internal error: global declaration is missing")
-          | None -> error span (Printf.sprintf "unknown assignment target `%s`" n)))
+          match List.assoc_opt n c.c_unsupported with
+          | Some _ -> Option.get (c_unsupported c span n)
+          | None -> (
+              match lookup_top_level n c.top_level_bindings with
+              | Some { declaration_kind = Top_const; _ } ->
+                  error span (Printf.sprintf "constant `%s` is not assignable" n)
+              | Some { declaration_kind = Top_type; _ } ->
+                  error span (Printf.sprintf "type `%s` is not assignable" n)
+              | Some { declaration_kind = Top_function; _ } ->
+                  error span (Printf.sprintf "function `%s` is not assignable" n)
+              | Some { declaration_kind = Top_global; _ } -> (
+                  match lookup_global n c.globals with
+                  | Some (_, _, Ast.Import_const_c) ->
+                      error span (Printf.sprintf "global `%s` is read-only" n)
+                  | Some (_, ty, _) ->
+                      Ok
+                        {
+                          target = Hir.AGlobal (n, ty);
+                          root = None;
+                          path = None;
+                          through_view = false;
+                        }
+                  | None -> error span "internal error: global declaration is missing")
+              | None -> error span (Printf.sprintf "unknown assignment target `%s`" n)))
+      )
   | Ast.Target_select (a, args) -> (
       let* place = check_place c (Ast.Select (a, args, Ast.expr_span a)) in
       let x = place.expr in

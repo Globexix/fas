@@ -203,7 +203,7 @@ and object_value i =
       let keep = keep_field key in
       let skip_inner =
         key = "inner"
-        && (kind = "VarDecl" || kind = "FunctionDecl"
+        && (kind = "VarDecl" || kind = "RecordDecl" || kind = "FieldDecl"
            || String.ends_with ~suffix:"Stmt" kind)
       in
       let value =

@@ -9,4 +9,5 @@
 
 (test
  (name regressions)
- (libraries fas_compiler))
+ (libraries fas_compiler)
+ (deps c_import/matrix.h))

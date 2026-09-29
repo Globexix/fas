@@ -108,7 +108,7 @@ let validate_extern_c_signature span params converted ret =
       (Printf.sprintf "extern \"C\" cannot return `%s` by value; use an output pointer"
          (Hir.ty_name ret))
 
-let check ?(limits = Limits.default) program =
+let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = []) program =
   let global_names =
     List.filter_map
       (function Ast.Global { name; _ } -> Some name | _ -> None)
@@ -194,7 +194,24 @@ let check ?(limits = Limits.default) program =
           collect_named_types (String_set.add name seen) ((name, kind) :: acc) rest
     | _ :: rest -> collect_named_types seen acc rest
   in
+  let add_c_types named_types =
+    let seen = Hashtbl.create (List.length named_types + List.length c_aliases) in
+    List.iter (fun (name, _) -> Hashtbl.replace seen name ()) named_types;
+    let extras =
+      List.map (fun (name, ty) -> (name, Alias_name ty)) c_aliases
+      @ List.map
+          (fun (name, reason) -> (name, Unsupported_name (name, reason)))
+          c_unsupported
+      |> List.filter (fun (name, _) ->
+          if Hashtbl.mem seen name then false
+          else (
+            Hashtbl.add seen name ();
+            true))
+    in
+    named_types @ extras
+  in
   let* named_types = collect_named_types String_set.empty [] program.Ast.items in
+  let named_types = add_c_types named_types in
   let* () =
     Result_list.iter
       (function
@@ -246,9 +263,11 @@ let check ?(limits = Limits.default) program =
       ~target_ty:Sema_check.target_ty
       ~generic_const_argument:Sema_check.generic_const_argument
       ~eval_context:(base_structs, named_types, early_consts, [])
-      ~top_level_bindings ~limits ~type_node_account specializations program
+      ~c_aliases ~c_unsupported ~top_level_bindings ~limits ~type_node_account
+      specializations program
   in
   let* named_types = collect_named_types String_set.empty [] program.Ast.items in
+  let named_types = add_c_types named_types in
   let rec collect_structs named_types acc = function
     | [] -> Ok (List.rev acc)
     | Ast.Struct { generic_params = _ :: _; align; span; _ } :: rest ->
@@ -335,10 +354,11 @@ let check ?(limits = Limits.default) program =
       ~target_ty:Sema_check.target_ty
       ~generic_const_argument:Sema_check.generic_const_argument
       ~eval_context:(structs, named_types, consts_ordered, arrays_ordered)
-      ~eager_functions:true ~top_level_bindings ~limits ~type_node_account
-      specializations program
+      ~c_aliases ~c_unsupported ~eager_functions:true ~top_level_bindings ~limits
+      ~type_node_account specializations program
   in
   let* named_types = collect_named_types String_set.empty [] program.Ast.items in
+  let named_types = add_c_types named_types in
   let* structs_src = collect_structs named_types [] program.Ast.items in
   let* structs = build structs_src in
   let validate_object span t = Sema_limits.validate_object limits structs span t in
@@ -429,6 +449,7 @@ let check ?(limits = Limits.default) program =
         List.map
           (fun (global : Hir.global) -> (global.name, global.ty, global.linkage))
           globals;
+      c_unsupported;
       signatures = sigs_ordered;
       templates;
       top_level_bindings;

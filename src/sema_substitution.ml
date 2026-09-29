@@ -15,8 +15,9 @@ let error span message = Error [ Diag.error span message ]
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 
 let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
-    ~generic_const_argument ?eval_context ?(eager_functions = false) ~top_level_bindings
-    ~limits ~type_node_account specializations program =
+    ~generic_const_argument ?eval_context ?(c_aliases = []) ?(c_unsupported = [])
+    ?(eager_functions = false) ~top_level_bindings ~limits ~type_node_account
+    specializations program =
   let eval_structs, eval_named_types, eval_consts, eval_arrays =
     match eval_context with
     | None -> ([], [], [], [])
@@ -65,6 +66,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       (function
         | Ast.Opaque { name; _ } | Ast.Struct { name; _ } -> Some name | _ -> None)
       program.Ast.items
+    @ List.map fst c_aliases @ List.map fst c_unsupported
     |> String_set.of_list
   in
   let validation_signatures =
@@ -508,6 +510,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       consts = eval_consts;
       arrays = eval_arrays;
       globals = [];
+      c_unsupported;
       signatures = validation_signatures;
       templates = function_templates;
       top_level_bindings;

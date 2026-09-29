@@ -21,6 +21,67 @@ let expect_ok = function
   | Ok value -> value
   | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
 
+let c_import_fixture file =
+  let cwd = Sys.getcwd () in
+  let candidates =
+    [
+      Filename.concat cwd ("test/c_import/" ^ file);
+      Filename.concat cwd ("c_import/" ^ file);
+    ]
+  in
+  let header =
+    match List.find_opt Sys.file_exists candidates with
+    | Some path -> path
+    | None -> failwith ("missing C import fixture " ^ file)
+  in
+  let source = Filename.concat (Filename.dirname header) "probe.fas" in
+  let request =
+    C_import.
+      { spelling = Ast.C_quoted (Filename.basename header); span = Span.synthetic }
+  in
+  let declarations, _ =
+    expect_ok
+      (C_import.import ~cc:"clang-22" ~debug:false ~keep:false source [ request ])
+  in
+  (source, C_import.map_declarations ~span:Span.synthetic declarations)
+
+let c_semantic_result ((source, imported) : string * C_import.mapped) text =
+  incr checks_run;
+  let program =
+    match Parser.parse (Source.create ~file:source ~text) with
+    | Ok program -> program
+    | Error diagnostics ->
+        failwith (Diag.render_all ~source:None diagnostics ^ "\n" ^ text)
+  in
+  let program = { Ast.items = program.items @ imported.items } in
+  Sema.check ~c_aliases:imported.aliases ~c_unsupported:imported.unsupported program
+
+let c_semantic_accept name imported text =
+  match c_semantic_result imported text with
+  | Ok _ -> ()
+  | Error diagnostics ->
+      failwith
+        (name ^ ": unexpected rejection: " ^ Diag.render_all ~source:None diagnostics)
+
+let c_semantic_message name expected imported text =
+  match c_semantic_result imported text with
+  | Ok _ -> failwith (name ^ ": expected rejection")
+  | Error diagnostics -> (
+      match List.map (fun (diagnostic : Diag.t) -> diagnostic.message) diagnostics with
+      | [ actual ] when actual = expected -> ()
+      | actual ->
+          failwith
+            (name ^ ": expected [" ^ expected ^ "], got [" ^ String.concat "; " actual
+           ^ "]"))
+
+let c_semantic_error name fragment imported text =
+  match c_semantic_result imported text with
+  | Ok _ -> failwith (name ^ ": expected rejection")
+  | Error diagnostics ->
+      let rendered = Diag.render_all ~source:None diagnostics in
+      if not (contains rendered fragment) then
+        failwith (name ^ ": unexpected diagnostic: " ^ rendered)
+
 let parse_file file text = expect_ok (Parser.parse (Source.create ~file ~text))
 
 let check_files files =
@@ -8204,4 +8265,129 @@ let () =
     "opaque Token\nvar Value Token\n";
   parse_message "global-local-var" "expected an expression, found `var`"
     "fn run() void { var Value i32\nreturn }\n";
+
+  let c_matrix = c_import_fixture "matrix.h" in
+  c_semantic_accept "c-import-unused-unsupported" c_matrix
+    "fn main() i32 { return 0 }\n";
+  c_semantic_accept "c-import-integer-alias-matrix" c_matrix
+    "fn integers(a fas_i8, b fas_u8, c fas_i16, d fas_u16, e fas_i32, f fas_u32, g \
+     fas_i64, h fas_u64, flag fas_bool) void {\n\
+     fas_char_echo(a)\n\
+     fas_i8_echo(a)\n\
+     fas_u8_echo(b)\n\
+     fas_i16_echo(c)\n\
+     fas_u16_echo(d)\n\
+     fas_i32_echo(e)\n\
+     fas_u32_echo(f)\n\
+     fas_i64_echo(g)\n\
+     fas_u64_echo(h)\n\
+     fas_bool_echo(flag)\n\
+     return }\n";
+  c_semantic_accept "c-import-typedef-chain" c_matrix
+    "fn chain(value fas_i8_chain) fas_i8 { return value }\n";
+  c_semantic_accept "c-import-enum-values-and-abi" c_matrix
+    "fn enum_values() i64 {\n\
+     fas_enum_arg(FAS_ENUM_NEG)\n\
+     fas_enum_arg(FAS_ENUM_LARGE)\n\
+     return FAS_ENUM_NEG }\n";
+  let enum_program =
+    match
+      c_semantic_result c_matrix "fn enum_values() i64 { return FAS_ENUM_LARGE }\n"
+    with
+    | Ok program -> program
+    | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+  in
+  List.iter
+    (fun (name, value) ->
+      match
+        List.find_opt
+          (fun (constant : Hir.const_def) -> constant.name = name)
+          enum_program.consts
+      with
+      | Some { ty = Hir.Int Hir.I64; bits; _ } when bits = value -> ()
+      | Some { ty; bits; _ } ->
+          failwith
+            (Printf.sprintf "C enum %s: expected i64 %Ld, got %s %Ld" name value
+               (Hir.ty_name ty) bits)
+      | None -> failwith ("C enum constant not imported: " ^ name))
+    [ ("FAS_ENUM_NEG", -3L); ("FAS_ENUM_LARGE", 0xffffffffL) ];
+  c_semantic_accept "c-import-pointer-matrix" c_matrix
+    "fn pointers(p addr, bytes addr, record handle[FasRecord], other \
+     handle[FasOtherRecord]) void {\n\
+     fas_void_pointer(p)\n\
+     fas_scalar_pointer(bytes)\n\
+     fas_record_pointer(record)\n\
+     fas_record_alias_pointer(record)\n\
+     fas_other_pointer(other)\n\
+     fas_pointer_output(p)\n\
+     fas_variadic(1, true, 2)\n\
+     return }\n";
+  c_semantic_error "c-import-distinct-record-identities"
+    "expected handle[FasOtherRecord], got handle[FasRecord]" c_matrix
+    "fn wrong(record handle[FasRecord]) void {\nfas_other_pointer(record)\nreturn }\n";
+  c_semantic_accept "c-import-global-places" c_matrix
+    "fn globals() i32 {\n\
+     value i32 = fas_mutable_global\n\
+     fas_mutable_global = value\n\
+     fas_mutable_pointer_global = null\n\
+     fas_mutable_typedef_pointer_global = null\n\
+     return fas_readonly_global }\n";
+  c_semantic_message "c-import-readonly-global"
+    "global `fas_readonly_global` is read-only" c_matrix
+    "fn write() void { fas_readonly_global = 1\nreturn }\n";
+  c_semantic_message "c-import-readonly-pointer-global"
+    "global `fas_readonly_pointer_global` is read-only" c_matrix
+    "fn write() void { fas_readonly_pointer_global = null\nreturn }\n";
+  c_semantic_message "c-import-readonly-typedef-global"
+    "global `fas_readonly_alias_global` is read-only" c_matrix
+    "fn write() void { fas_readonly_alias_global = 1\nreturn }\n";
+  c_semantic_message "c-import-readonly-typedef-pointer-global"
+    "global `fas_readonly_typedef_pointer_global` is read-only" c_matrix
+    "fn write() void { fas_readonly_typedef_pointer_global = null\nreturn }\n";
+  let unsupported name reason expression =
+    c_semantic_message
+      ("c-import-unsupported-" ^ name)
+      (Printf.sprintf "C declaration `%s` is not supported: %s" name reason)
+      c_matrix
+      ("fn probe() i32 {\n" ^ expression ^ "\nreturn 0 }\n")
+  in
+  unsupported "fas_float_value" "floating-point types are not supported"
+    "fas_float_value(1)";
+  unsupported "fas_double_value" "floating-point types are not supported"
+    "fas_double_value(1)";
+  unsupported "fas_long_double_value" "floating-point types are not supported"
+    "fas_long_double_value(1)";
+  unsupported "fas_int128_value" "`__int128` has no Fas type" "fas_int128_value(1)";
+  unsupported "fas_uint128_value" "`__int128` has no Fas type" "fas_uint128_value(1)";
+  unsupported "fas_bitint_value" "`_BitInt` has no Fas type" "fas_bitint_value(1)";
+  unsupported "fas_struct_by_value" "struct and union values are not supported"
+    "fas_struct_by_value(null)";
+  unsupported "fas_union_by_value" "struct and union values are not supported"
+    "fas_union_by_value(null)";
+  unsupported "fas_bitfield_global" "struct and union values are not supported"
+    "fas_bitfield_global = null";
+  unsupported "fas_array_global" "array types are not supported by value"
+    "fas_array_global[0]";
+  unsupported "fas_function_pointer" "function pointers are not supported"
+    "fas_function_pointer(1)";
+  unsupported "fas_function_pointer_arg" "function pointers are not supported"
+    "fas_function_pointer_arg(null)";
+  unsupported "fas_function_pointer_nested" "function pointers are not supported"
+    "fas_function_pointer_nested(null)";
+  unsupported "fas_vector_value" "vector types are not supported by value"
+    "fas_vector_value(null)";
+  unsupported "fas_address_space" "C address spaces are not supported"
+    "fas_address_space(null)";
+  unsupported "fas_nondefault_abi" "non-default calling conventions are not supported"
+    "fas_nondefault_abi(1)";
+  unsupported "fas_static_inline"
+    "static inline functions require a C adapter (Phase 17)" "fas_static_inline(1)";
+  c_semantic_message "c-import-unsupported-anonymous-record"
+    "C declaration `FasAnonymous` is not supported: anonymous records are not supported"
+    c_matrix "fn anonymous(value FasAnonymous) void { return }\n";
+  c_semantic_message "c-import-reserved-name"
+    "C declaration `addr` is not supported: name is reserved in Fas" c_matrix
+    "fn probe() i32 { return addr(1) }\n";
+  c_semantic_message "c-import-macro-is-foreign-only" "unknown name `FAS_MACRO_ONLY`"
+    c_matrix "fn probe() i32 { return FAS_MACRO_ONLY }\n";
   Printf.printf "regression checks: %d passed\n" !checks_run
