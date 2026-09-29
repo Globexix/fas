@@ -1,0 +1,6 @@
+struct S { flag bool value u32 }
+
+fn copy_large_struct(dst addr, src addr) void {
+  copy(dst[arr[4096,S]], src[arr[4096,S]])
+  return
+}

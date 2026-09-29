@@ -40,6 +40,11 @@ extern "C" {
     return
   }
 
+  fn fas_copy_large(dst addr, src addr) void {
+    copy(dst[arr[65536,u8]], src[arr[65536,u8]])
+    return
+  }
+
   fn fas_copy_order(dst addr, src addr) void {
     copy(dst[arr[2,u32], fas_record(0)], src[arr[2,u32], fas_record(1)])
     return

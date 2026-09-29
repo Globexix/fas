@@ -1,0 +1,4 @@
+fn copy_large(dst addr, src addr) void {
+  copy(dst[arr[1048576,u8]], src[arr[1048576,u8]])
+  return
+}

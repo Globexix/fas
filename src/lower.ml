@@ -1327,6 +1327,29 @@ let copy_offset s pointer offset =
     (Ir.Gep (id, Ir.I8, pointer, [ Ir.Index (Ir.Const (Ir.I64, Int64.of_int offset)) ]));
   Ok (Ir.Local (id, Ir.Pointer Ir.I8))
 
+let capped_add left right = if left > 16 - right then 17 else left + right
+
+let capped_mul left right =
+  if left = 0 || right = 0 then 0 else if left > 16 / right then 17 else left * right
+
+let rec copy_leaf_count structs = function
+  | Hir.Struct name -> (
+      match
+        List.find_opt
+          (fun (definition : Hir.struct_def) -> definition.name = name)
+          structs
+      with
+      | None -> 17
+      | Some definition ->
+          List.fold_left
+            (fun count (field : Hir.field) ->
+              capped_add count (copy_leaf_count structs field.ty))
+            0 definition.fields)
+  | Hir.Array (length, element_ty) ->
+      capped_mul length (copy_leaf_count structs element_ty)
+  | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ | Hir.Vec _ -> 1
+  | _ -> 17
+
 let rec copy_place s span ty destination source =
   match ty with
   | Hir.Struct name -> (
@@ -1356,20 +1379,82 @@ let rec copy_place s span ty destination source =
               (Printf.sprintf "internal error: invalid array element in copy: %s"
                  message)
       in
-      let rec elements index =
-        if index = length then Ok ()
-        else
-          let offset = index * stride in
-          let* destination_element = copy_offset s destination offset in
-          let* source_element = copy_offset s source offset in
-          let* () = copy_place s span element_ty destination_element source_element in
-          elements (index + 1)
-      in
-      elements 0
+      let leaves = capped_mul length (copy_leaf_count s.structs element_ty) in
+      if leaves = 0 then Ok ()
+      else if leaves > 16 then
+        copy_array_loop s span length stride element_ty destination source
+      else
+        let rec elements index =
+          if index = length then Ok ()
+          else
+            let offset = index * stride in
+            let* destination_element = copy_offset s destination offset in
+            let* source_element = copy_offset s source offset in
+            let* () = copy_place s span element_ty destination_element source_element in
+            elements (index + 1)
+        in
+        elements 0
   | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ | Hir.Vec _ ->
       let* value = raw_load s ty source in
       raw_store s ty value destination
   | _ -> error span "internal error: invalid leaf type in aggregate copy"
+
+and copy_array_loop s span length stride element_ty destination source =
+  let preheader = s.current.id in
+  let head = fresh_block s
+  and body = fresh_block s
+  and latch = fresh_block s
+  and exit = fresh_block s in
+  let index = fresh s in
+  let next_index = fresh s in
+  s.current.term := Some (Ir.Br head.id);
+  s.current <- head;
+  emit s
+    (Ir.Phi
+       ( index,
+         Ir.I64,
+         [
+           (Ir.Const (Ir.I64, 0L), preheader); (Ir.Local (next_index, Ir.I64), latch.id);
+         ] ));
+  let condition = fresh s in
+  emit s
+    (Ir.Cmp
+       ( condition,
+         Ir.Ult,
+         Ir.I64,
+         Ir.Local (index, Ir.I64),
+         Ir.Const (Ir.I64, Int64.of_int length) ));
+  s.current.term := Some (Ir.CondBr (Ir.Local (condition, Ir.I1), body.id, exit.id));
+  s.current <- body;
+  let offset =
+    if stride = 1 then Ir.Local (index, Ir.I64)
+    else
+      let scaled = fresh s in
+      emit s
+        (Ir.Bin
+           ( scaled,
+             Ir.Mul,
+             Ir.I64,
+             Ir.Local (index, Ir.I64),
+             Ir.Const (Ir.I64, Int64.of_int stride) ));
+      Ir.Local (scaled, Ir.I64)
+  in
+  let destination_element = fresh s in
+  emit s (Ir.Gep (destination_element, Ir.I8, destination, [ Ir.Index offset ]));
+  let source_element = fresh s in
+  emit s (Ir.Gep (source_element, Ir.I8, source, [ Ir.Index offset ]));
+  let* () =
+    copy_place s span element_ty
+      (Ir.Local (destination_element, Ir.Pointer Ir.I8))
+      (Ir.Local (source_element, Ir.Pointer Ir.I8))
+  in
+  if open_block s then s.current.term := Some (Ir.Br latch.id);
+  s.current <- latch;
+  emit s
+    (Ir.Bin (next_index, Ir.Add, Ir.I64, Ir.Local (index, Ir.I64), Ir.Const (Ir.I64, 1L)));
+  s.current.term := Some (Ir.Br head.id);
+  s.current <- exit;
+  Ok ()
 
 let rec emit_defer_body s body =
   List.fold_left
