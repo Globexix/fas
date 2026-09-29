@@ -18,6 +18,8 @@ type const_arr_def = { name : string; ty : ty; elems : int64 list }
 type func_sig = { params : (string * ty) list; ret : ty; variadic : bool }
 type local = { name : string; ty : ty; id : int }
 type linkage = Internal | External_c
+type simd_load_kind = Masked | Gather | Gather_bytes
+type simd_store_kind = Masked_store | Scatter | Scatter_bytes
 
 type builtin =
   | Rotl
@@ -46,6 +48,7 @@ type builtin =
   | Handle_addr
   | Handle_from_addr of string
   | Volatile_load of ty
+  | Simd_load of ty * simd_load_kind
 
 type call_target = User of string | Builtin of builtin
 
@@ -88,6 +91,7 @@ type stmt =
   | View of local * expr * Span.t
   | Copy of expr * expr * ty * bool * Span.t
   | Volatile_store of ty * expr * expr * Span.t
+  | Simd_store of ty * simd_store_kind * expr list * Span.t
   | Assign of assign_target * expr * Span.t
   | Compound_assign of assign_target * Ast.binop * expr * ty * Span.t
   | Return of expr option * Span.t
@@ -264,8 +268,8 @@ let rec stmt_flow = function
       in
       sequence_flow prefix (loop_flow unconditional iteration)
   | Defer (body, _) -> cleanup_flow (block_flow body) flowing
-  | Let _ | Let_construct _ | View _ | Copy _ | Volatile_store _ | Assign _
-  | Compound_assign _ | Expr _ ->
+  | Let _ | Let_construct _ | View _ | Copy _ | Volatile_store _ | Simd_store _
+  | Assign _ | Compound_assign _ | Expr _ ->
       flowing
 
 and block_flow = function

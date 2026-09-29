@@ -1,0 +1,198 @@
+extern "C" {
+  fn simd_observe_addr(tag u32) addr
+  fn simd_observe_u32(tag u32) u32
+  fn simd_observe_bool(tag u32) bool
+}
+
+fn simd_hash4(v vec[4,u32]) u64 {
+  h u64 = zext[u64](v[0])
+  h = h * 1315423911 + zext[u64](v[1])
+  h = h * 1315423911 + zext[u64](v[2])
+  h = h * 1315423911 + zext[u64](v[3])
+  return h
+}
+
+fn simd_hash4_bool(v vec[4,bool]) u64 {
+  h u64 = zext[u64](v[0])
+  h = h * 1315423911 + zext[u64](v[1])
+  h = h * 1315423911 + zext[u64](v[2])
+  h = h * 1315423911 + zext[u64](v[3])
+  return h
+}
+
+fn simd_order_mask(tag u32) vec[4,bool] {
+  return splat(simd_observe_bool(tag))
+}
+
+fn simd_order_values(tag u32) vec[4,u32] {
+  return splat(simd_observe_u32(tag))
+}
+
+fn simd_order_indices(tag u32) vec[4,u32] {
+  return splat(simd_observe_u32(tag))
+}
+
+extern "C" {
+  fn fas_null_masked_load() u64 {
+    m vec[4,bool] = {false, false, false, false}
+    f vec[4,u32] = {13, 17, 19, 23}
+    return simd_hash4(masked_load[u32](null, m, f))
+  }
+
+  fn fas_null_masked_store() void {
+    m vec[4,bool] = {false, false, false, false}
+    v vec[4,u32] = {29, 31, 37, 41}
+    masked_store[u32](null, m, v)
+    return
+  }
+
+  fn fas_null_gather() u64 {
+    i vec[4,i64] = {-1, 0, 1, 2}
+    m vec[4,bool] = {false, false, false, false}
+    f vec[4,u32] = {43, 47, 53, 59}
+    return simd_hash4(gather[u32](null, i, m, f))
+  }
+
+  fn fas_null_scatter() void {
+    i vec[4,i64] = {-1, 0, 1, 2}
+    m vec[4,bool] = {false, false, false, false}
+    v vec[4,u32] = {61, 67, 71, 73}
+    scatter[u32](null, i, m, v)
+    return
+  }
+
+  fn fas_null_gather_bytes() u64 {
+    i vec[4,i64] = {-1, 0, 1, 2}
+    m vec[4,bool] = {false, false, false, false}
+    f vec[4,u32] = {79, 83, 89, 97}
+    return simd_hash4(gather_bytes[u32](null, i, m, f))
+  }
+
+  fn fas_null_scatter_bytes() void {
+    i vec[4,i64] = {-1, 0, 1, 2}
+    m vec[4,bool] = {false, false, false, false}
+    v vec[4,u32] = {101, 103, 107, 109}
+    scatter_bytes[u32](null, i, m, v)
+    return
+  }
+
+  fn fas_bool_load(p addr) u64 {
+    m vec[4,bool] = {true, true, true, true}
+    f vec[4,bool] = {false, false, false, false}
+    return simd_hash4_bool(masked_load[bool](p, m, f))
+  }
+
+  fn fas_bool_store(p addr) void {
+    m vec[4,bool] = {true, true, true, true}
+    v vec[4,bool] = {true, false, true, false}
+    masked_store[bool](p, m, v)
+    return
+  }
+
+  fn fas_guard_masked_load(p addr) u64 {
+    m vec[4,bool] = {true, true, true, false}
+    f vec[4,u32] = {0, 0, 0, 305419896}
+    return simd_hash4(masked_load[u32](p, m, f))
+  }
+
+  fn fas_guard_gather(p addr, page usize) u64 {
+    i vec[4,usize] = {0, page / 4, 1, 2}
+    m vec[4,bool] = {true, false, true, true}
+    f vec[4,u32] = {0, 33, 0, 0}
+    return simd_hash4(gather[u32](p, i, m, f))
+  }
+
+  fn fas_edge_gather_i8(p addr) u64 {
+    i vec[4,i8] = {-1, 0, 1, 2}
+    m vec[4,bool] = {true, true, true, true}
+    f vec[4,u32] = {0, 0, 0, 0}
+    return simd_hash4(gather[u32](p, i, m, f))
+  }
+
+  fn fas_edge_gather_u64(p addr) u64 {
+    i vec[4,u64] = {0x4000000000000000, 0, 1, 2}
+    m vec[4,bool] = {true, true, true, true}
+    f vec[4,u32] = {0, 0, 0, 0}
+    return simd_hash4(gather[u32](p, i, m, f))
+  }
+
+  fn fas_edge_gather_bytes_i8(p addr) u64 {
+    i vec[4,i8] = {-1, 0, 1, 2}
+    m vec[4,bool] = {true, true, true, true}
+    f vec[4,u32] = {0, 0, 0, 0}
+    return simd_hash4(gather_bytes[u32](p, i, m, f))
+  }
+
+  fn fas_edge_gather_bytes_u64(p addr) u64 {
+    i vec[4,u64] = {0xffffffffffffffff, 0, 1, 2}
+    m vec[4,bool] = {true, true, true, true}
+    f vec[4,u32] = {0, 0, 0, 0}
+    return simd_hash4(gather_bytes[u32](p, i, m, f))
+  }
+
+  fn fas_edge_scatter_i8(p addr) void {
+    i vec[4,i8] = {-1, 0, 1, 2}
+    m vec[4,bool] = {true, true, true, true}
+    v vec[4,u32] = {287454020, 1432778632, 2578103244, 3723427584}
+    scatter[u32](p, i, m, v)
+    return
+  }
+
+  fn fas_edge_scatter_u64(p addr) void {
+    i vec[4,u64] = {0x4000000000000000, 0, 1, 2}
+    m vec[4,bool] = {true, true, true, true}
+    v vec[4,u32] = {287454020, 1432778632, 2578103244, 3723427584}
+    scatter[u32](p, i, m, v)
+    return
+  }
+
+  fn fas_edge_scatter_bytes_i8(p addr) void {
+    i vec[4,i8] = {-1, 0, 1, 2}
+    m vec[4,bool] = {true, true, true, true}
+    v vec[4,u32] = {287454020, 1432778632, 2578103244, 3723427584}
+    scatter_bytes[u32](p, i, m, v)
+    return
+  }
+
+  fn fas_edge_scatter_bytes_u64(p addr) void {
+    i vec[4,u64] = {0xffffffffffffffff, 0, 1, 2}
+    m vec[4,bool] = {true, true, true, true}
+    v vec[4,u32] = {287454020, 1432778632, 2578103244, 3723427584}
+    scatter_bytes[u32](p, i, m, v)
+    return
+  }
+
+  fn fas_overlap_scatter(p addr) void {
+    i vec[4,u32] = {0, 1, 1, 2}
+    m vec[4,bool] = {true, true, true, true}
+    v vec[4,u32] = {287454020, 1432778632, 2578103244, 3723427584}
+    scatter[u32](p, i, m, v)
+    return
+  }
+
+  fn fas_overlap_scatter_bytes(p addr) void {
+    i vec[4,i64] = {0, 2, 2, 4}
+    m vec[4,bool] = {true, true, true, true}
+    v vec[4,u32] = {287454020, 1432778632, 2578103244, 3723427584}
+    scatter_bytes[u32](p, i, m, v)
+    return
+  }
+
+  fn fas_alias_scatter(p addr) void {
+    i vec[4,u32] = {1, 0, 2, 3}
+    m vec[4,bool] = {true, true, true, true}
+    v vec[4,u32] = p[vec[4,u32]]
+    scatter[u32](p, i, m, v)
+    return
+  }
+
+  fn fas_order_load() u64 {
+    v vec[4,u32] = masked_load[u32](simd_observe_addr(1), simd_order_mask(2), simd_order_values(3))
+    return simd_hash4(v)
+  }
+
+  fn fas_order_store() void {
+    scatter[u32](simd_observe_addr(1), simd_order_indices(2), simd_order_mask(3), simd_order_values(4))
+    return
+  }
+}

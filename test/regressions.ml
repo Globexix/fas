@@ -7607,4 +7607,121 @@ let () =
     || not (List.for_all (( = ) 0) copy_array_allocas)
   then failwith "copy-distinct-locals: expected two local allocas and no scratch";
 
+  semantic_accept "simd-memory-six-forms"
+    "fn ml(p addr, m vec[3,bool], f vec[3,u32]) vec[3,u32] { return \
+     masked_load[u32](p, m, f) }\n\
+     fn ms(p addr, m vec[3,bool], v vec[3,bool]) void { masked_store[bool](p, m, v)\n\
+     return }\n\
+     fn ga(p addr, i vec[3,i8], m vec[3,bool], f vec[3,bool]) vec[3,bool] { return \
+     gather[bool](p, i, m, f) }\n\
+     fn sc(p addr, i vec[3,u64], m vec[3,bool], v vec[3,u16]) void { scatter[u16](p, \
+     i, m, v)\n\
+     return }\n\
+     fn gb(p addr, i vec[3,u64], m vec[3,bool], f vec[3,u8]) vec[3,u8] { return \
+     gather_bytes[u8](p, i, m, f) }\n\
+     fn sb(p addr, i vec[3,i8], m vec[3,bool], v vec[3,u32]) void { \
+     scatter_bytes[u32](p, i, m, v)\n\
+     return }\n";
+  semantic_accept "simd-memory-generic-specialization"
+    "fn load[T](p addr, m vec[3,bool], f vec[3,T]) vec[3,T] { return masked_load[T](p, \
+     m, f) }\n\
+     fn use(p addr, m vec[3,bool], f vec[3,u32]) vec[3,u32] { return load[u32](p, m, \
+     f) }\n";
+  semantic_accept "simd-memory-generic-store-specialization"
+    "fn store[T](p addr, i vec[3,i8], m vec[3,bool], v vec[3,T]) void { \
+     scatter_bytes[T](p, i, m, v)\n\
+     return }\n\
+     fn use(p addr, i vec[3,i8], m vec[3,bool], v vec[3,u16]) void { store[u16](p, i, \
+     m, v)\n\
+     return }\n";
+  let simd_memory_type_error =
+    "SIMD memory element type must be a scalar integer or bool"
+  in
+  semantic_error "simd-memory-aggregate-element" simd_memory_type_error
+    "fn f(p addr, m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
+     masked_load[arr[2,u32]](p, m, v) }\n";
+  semantic_error "simd-memory-address-element" simd_memory_type_error
+    "fn f(p addr, m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
+     masked_load[addr](p, m, v) }\n";
+  semantic_error "simd-memory-vector-element" simd_memory_type_error
+    "fn f(p addr, m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
+     masked_load[vec[2,u32]](p, m, v) }\n";
+  semantic_error "simd-memory-handle-element" simd_memory_type_error
+    "opaque Token\n\
+     fn f(p addr, i vec[2,i8], m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
+     gather[handle[Token]](p, i, m, v) }\n";
+  semantic_error "simd-memory-mask-type" "masked_load mask must be a bool vector"
+    "fn f(p addr, m vec[2,u32], v vec[2,u32]) vec[2,u32] { return masked_load[u32](p, \
+     m, v) }\n";
+  semantic_error "simd-memory-index-type" "gather indices must be an integer vector"
+    "fn f(p addr, i vec[2,bool], m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
+     gather[u32](p, i, m, v) }\n";
+  semantic_error "simd-memory-lane-count"
+    "type mismatch: expected vec[2, bool], got vec[3, bool]"
+    "fn f(p addr, i vec[2,i8], m vec[3,bool], v vec[2,u32]) vec[2,u32] { return \
+     gather[u32](p, i, m, v) }\n";
+  semantic_error "simd-memory-fallback-type"
+    "type mismatch: expected vec[2, u32], got vec[3, u32]"
+    "fn f(p addr, m vec[2,bool], v vec[3,u32]) vec[2,u32] { return masked_load[u32](p, \
+     m, v) }\n";
+  semantic_error "simd-memory-base-type" "type mismatch: expected addr, got u32"
+    "fn f(p u32, m vec[2,bool], v vec[2,u32]) vec[2,u32] { return masked_load[u32](p, \
+     m, v) }\n";
+  semantic_error "simd-memory-load-arity" "builtin `masked_load` expects 3 arguments"
+    "fn f(p addr, m vec[2,bool]) vec[2,u32] { return masked_load[u32](p, m) }\n";
+  semantic_error "simd-memory-gather-arity" "builtin `gather` expects 4 arguments"
+    "fn f(p addr, i vec[2,i8], m vec[2,bool]) vec[2,u32] { return gather[u32](p, i, m) }\n";
+  semantic_error "simd-memory-byte-gather-arity"
+    "builtin `gather_bytes` expects 4 arguments"
+    "fn f(p addr, i vec[2,i8], m vec[2,bool]) vec[2,u32] { return gather_bytes[u32](p, \
+     i, m) }\n";
+  semantic_error "simd-memory-store-arity" "builtin `masked_store` expects 3 arguments"
+    "fn f(p addr, m vec[2,bool]) void { masked_store[u32](p, m)\nreturn }\n";
+  semantic_error "simd-memory-scatter-arity" "builtin `scatter` expects 4 arguments"
+    "fn f(p addr, i vec[2,i8], m vec[2,bool]) void { scatter[u32](p, i, m)\nreturn }\n";
+  semantic_error "simd-memory-byte-scatter-arity"
+    "builtin `scatter_bytes` expects 4 arguments"
+    "fn f(p addr, i vec[2,i8], m vec[2,bool]) void { scatter_bytes[u32](p, i, m)\n\
+     return }\n";
+  semantic_error "simd-memory-missing-type"
+    "builtin `masked_load` expects one type argument"
+    "fn f(p addr, m vec[2,bool], v vec[2,u32]) vec[2,u32] { return masked_load(p, m, \
+     v) }\n";
+  semantic_error "simd-memory-store-missing-type"
+    "builtin `masked_store` expects one type argument"
+    "fn f(p addr, m vec[2,bool], v vec[2,u32]) void { masked_store(p, m, v)\nreturn }\n";
+  semantic_error "simd-memory-masked-store-expression" "masked_store is statement-only"
+    "fn f(p addr, m vec[2,bool], v vec[2,u32]) u32 { return masked_store[u32](p, m, v) }\n";
+  semantic_error "simd-memory-scatter-expression" "scatter is statement-only"
+    "fn f(p addr, i vec[2,i8], m vec[2,bool], v vec[2,u32]) u32 { return \
+     scatter[u32](p, i, m, v) }\n";
+  semantic_error "simd-memory-scatter-bytes-expression"
+    "scatter_bytes is statement-only"
+    "fn f(p addr, i vec[2,i8], m vec[2,bool], v vec[2,u32]) u32 { return \
+     scatter_bytes[u32](p, i, m, v) }\n";
+  semantic_error "simd-memory-store-constant" "cannot modify constant"
+    "const C arr[2,u32] = {3, 5}\n\
+     fn f(m vec[2,bool], v vec[2,u32]) void { masked_store[u32](&C, m, v)\n\
+     return }\n";
+  semantic_error "simd-memory-store-readonly" "cannot modify read-only pointer"
+    "fn f(m vec[4,bool], v vec[4,u8]) void { masked_store[u8](c\"data\", m, v)\n\
+     return }\n";
+  semantic_error "simd-memory-constant-context"
+    "expression is not compile-time constant"
+    "const M vec[1,bool] = {true}\n\
+     const F vec[1,u32] = {0}\n\
+     const X u32 = masked_load[u32](null, M, F)[0]\n";
+  semantic_error "simd-memory-gather-constant-context"
+    "expression is not compile-time constant"
+    "const I vec[1,i8] = {0}\n\
+     const M vec[1,bool] = {true}\n\
+     const F vec[1,u32] = {0}\n\
+     const X u32 = gather[u32](null, I, M, F)[0]\n";
+  semantic_error "simd-memory-gather-bytes-constant-context"
+    "expression is not compile-time constant"
+    "const I vec[1,i8] = {0}\n\
+     const M vec[1,bool] = {true}\n\
+     const F vec[1,u32] = {0}\n\
+     const X u32 = gather_bytes[u32](null, I, M, F)[0]\n";
+
   Printf.printf "regression checks: %d passed\n" !checks_run

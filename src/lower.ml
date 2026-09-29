@@ -403,18 +403,16 @@ let pop_scope s =
 
 let find_struct s n = List.find_opt (fun (d : Hir.struct_def) -> d.name = n) s.structs
 
-let normalize_index s expression value =
+let normalize_index_type s index_ty span value =
   let bits = function
     | Hir.Int (Hir.U8 | Hir.I8) -> Ok 8
     | Hir.Int (Hir.U16 | Hir.I16) -> Ok 16
     | Hir.Int (Hir.U32 | Hir.I32) -> Ok 32
     | Hir.Int (Hir.U64 | Hir.I64) -> Ok 64
     | Hir.Int (Hir.Usize | Hir.Isize) -> Ok (Target_layout.current.pointer_size * 8)
-    | _ ->
-        error (Hir.expr_span expression)
-          "internal error: index lowering received a non-integer value"
+    | _ -> error span "internal error: index lowering received a non-integer value"
   in
-  let t = Hir.expr_ty expression in
+  let t = match index_ty with Hir.Vec (_, element) -> element | _ -> index_ty in
   let* source_bits = bits t in
   if source_bits = 64 then Ok value
   else
@@ -422,6 +420,9 @@ let normalize_index s expression value =
     let kind = if unsigned t then "zext" else "sext" in
     emit s (Ir.Cast (id, kind, value_ty value, value, Ir.I64));
     Ok (Ir.Local (id, Ir.I64))
+
+let normalize_index s expression value =
+  normalize_index_type s (Hir.expr_ty expression) (Hir.expr_span expression) value
 
 let rec expr s = function
   | Hir.EInt (v, t, _) -> Ok (Ir.Const (ty t, v))
@@ -651,6 +652,8 @@ and lower_builtin s b args t span =
   let rt = ty t in
   match (b, vs) with
   | Volatile_load access_ty, [ pointer ] -> volatile_load s span access_ty pointer
+  | Simd_load (access_ty, kind), values ->
+      simd_memory_load s span access_ty kind args values
   | Addr_bits, [ x ] ->
       let id = fresh s in
       emit s (Ir.Cast (id, "ptrtoint", Ir.value_ty x, x, rt));
@@ -727,7 +730,8 @@ and lower_builtin s b args t span =
             | ( ( Rotl | Rotr | Popcount | Ctz | Clz | Mul_hi | Any | All | Select
                 | Shuffle | Permute | Reduce_sum | Reduce_min | Reduce_max | Reduce_and
                 | Reduce_or | Reduce_xor | Compress | Expand | Addr_bits
-                | Addr_from_bits | Handle_addr | Handle_from_addr _ | Volatile_load _ ),
+                | Addr_from_bits | Handle_addr | Handle_from_addr _ | Volatile_load _
+                | Simd_load _ ),
                 _ ) ->
                 error span "internal error: invalid saturating builtin")
       in
@@ -1226,6 +1230,191 @@ and volatile_store s span access_ty value pointer =
   | Hir.Vec (lanes, Hir.Bool) -> packed_bool_store s true lanes value pointer
   | _ -> error span "internal error: invalid volatile access type"
 
+and simd_memory_address s span stride base index_ty index_value =
+  let* offset = normalize_index_type s index_ty span index_value in
+  let offset =
+    match stride with
+    | None | Some 1 -> offset
+    | Some bytes ->
+        let id = fresh s in
+        emit s
+          (Ir.Bin (id, Ir.Mul, Ir.I64, offset, Ir.Const (Ir.I64, Int64.of_int bytes)));
+        Ir.Local (id, Ir.I64)
+  in
+  match stride with
+  | Some _ ->
+      let id = fresh s in
+      emit s (Ir.Gep (id, Ir.I8, base, [ Ir.Index offset ]));
+      Ok (Ir.Local (id, Ir.Pointer Ir.I8))
+  | None ->
+      let bits = fresh s in
+      emit s (Ir.Cast (bits, "ptrtoint", Ir.Pointer Ir.I8, base, Ir.I64));
+      let sum = fresh s in
+      emit s (Ir.Bin (sum, Ir.Add, Ir.I64, Ir.Local (bits, Ir.I64), offset));
+      let pointer = fresh s in
+      emit s
+        (Ir.Cast (pointer, "inttoptr", Ir.I64, Ir.Local (sum, Ir.I64), Ir.Pointer Ir.I8));
+      Ok (Ir.Local (pointer, Ir.Pointer Ir.I8))
+
+and simd_memory_load_lane s span access_ty pointer =
+  match access_ty with
+  | Hir.Bool ->
+      let loaded = fresh s in
+      emit s (Ir.Load (loaded, Ir.I8, pointer, 1));
+      let normalized = fresh s in
+      emit s
+        (Ir.Cmp
+           (normalized, Ir.Ne, Ir.I8, Ir.Local (loaded, Ir.I8), Ir.Const (Ir.I8, 0L)));
+      Ok (Ir.Local (normalized, Ir.I1))
+  | Hir.Int _ ->
+      let loaded = fresh s in
+      emit s (Ir.Load (loaded, ty access_ty, pointer, 1));
+      Ok (Ir.Local (loaded, ty access_ty))
+  | _ -> error span "internal error: invalid SIMD memory element type"
+
+and simd_memory_store_lane s span access_ty value pointer =
+  match access_ty with
+  | Hir.Bool ->
+      let byte = fresh s in
+      emit s (Ir.Cast (byte, "zext", Ir.I1, value, Ir.I8));
+      emit s (Ir.Store (Ir.I8, Ir.Local (byte, Ir.I8), pointer, 1));
+      Ok ()
+  | Hir.Int _ ->
+      emit s (Ir.Store (ty access_ty, value, pointer, 1));
+      Ok ()
+  | _ -> error span "internal error: invalid SIMD memory element type"
+
+and simd_memory_load s span access_ty kind args values =
+  let parts =
+    match (kind, args, values) with
+    | Hir.Masked, [ _; _; _ ], [ base; mask; fallback ] ->
+        Some
+          ( base,
+            None,
+            Hir.Int Hir.Usize,
+            mask,
+            fallback,
+            Some (int_ty_bytes (ty access_ty)) )
+    | ( (Hir.Gather | Hir.Gather_bytes),
+        [ _; index_expr; _; _ ],
+        [ base; indices; mask; fallback ] ) ->
+        let stride =
+          if kind = Hir.Gather then Some (int_ty_bytes (ty access_ty)) else None
+        in
+        Some (base, Some indices, Hir.expr_ty index_expr, mask, fallback, stride)
+    | _ -> None
+  in
+  match parts with
+  | None -> error span "internal error: invalid SIMD memory load"
+  | Some (base, indices, index_ty, mask, fallback, stride) ->
+      let lanes = match value_ty mask with Ir.Vector (n, Ir.I1) -> n | _ -> 0 in
+      let result_ty = Ir.Vector (lanes, ty access_ty) in
+      let rec load_lane lane result =
+        if lane = lanes then Ok result
+        else
+          let lane_index = Ir.Const (Ir.I64, Int64.of_int lane) in
+          let mask_id = fresh s in
+          emit s (Ir.Extract (mask_id, value_ty mask, mask, lane_index));
+          let fallback_id = fresh s in
+          emit s (Ir.Extract (fallback_id, value_ty fallback, fallback, lane_index));
+          let inactive = s.current.id in
+          let active = fresh_block s and join = fresh_block s in
+          s.current.term :=
+            Some (Ir.CondBr (Ir.Local (mask_id, Ir.I1), active.id, join.id));
+          s.current <- active;
+          let index_value =
+            match indices with
+            | None -> Ir.Const (Ir.I64, Int64.of_int lane)
+            | Some vector ->
+                let id = fresh s in
+                emit s (Ir.Extract (id, value_ty vector, vector, lane_index));
+                Ir.Local
+                  ( id,
+                    match value_ty vector with
+                    | Ir.Vector (_, elem) -> elem
+                    | _ -> Ir.I64 )
+          in
+          let* pointer = simd_memory_address s span stride base index_ty index_value in
+          let* loaded = simd_memory_load_lane s span access_ty pointer in
+          let active_end = s.current.id in
+          s.current.term := Some (Ir.Br join.id);
+          s.current <- join;
+          let merged = fresh s in
+          emit s
+            (Ir.Phi
+               ( merged,
+                 ty access_ty,
+                 [
+                   (loaded, active_end); (Ir.Local (fallback_id, ty access_ty), inactive);
+                 ] ));
+          let inserted = fresh s in
+          emit s
+            (Ir.Insert
+               (inserted, result_ty, result, lane_index, Ir.Local (merged, ty access_ty)));
+          load_lane (lane + 1) (Ir.Local (inserted, result_ty))
+      in
+      load_lane 0 (Ir.Zero result_ty)
+
+and simd_memory_store s span access_ty kind args values =
+  let parts =
+    match (kind, args, values) with
+    | Hir.Masked_store, [ _; _; _ ], [ base; mask; stored ] ->
+        Some
+          ( base,
+            None,
+            Hir.Int Hir.Usize,
+            mask,
+            stored,
+            Some (int_ty_bytes (ty access_ty)) )
+    | ( (Hir.Scatter | Hir.Scatter_bytes),
+        [ _; index_expr; _; _ ],
+        [ base; indices; mask; stored ] ) ->
+        let stride =
+          if kind = Hir.Scatter then Some (int_ty_bytes (ty access_ty)) else None
+        in
+        Some (base, Some indices, Hir.expr_ty index_expr, mask, stored, stride)
+    | _ -> None
+  in
+  match parts with
+  | None -> error span "internal error: invalid SIMD memory store"
+  | Some (base, indices, index_ty, mask, stored, stride) ->
+      let lanes = match value_ty mask with Ir.Vector (n, Ir.I1) -> n | _ -> 0 in
+      let rec store_lane lane =
+        if lane = lanes then Ok ()
+        else
+          let lane_index = Ir.Const (Ir.I64, Int64.of_int lane) in
+          let mask_id = fresh s in
+          emit s (Ir.Extract (mask_id, value_ty mask, mask, lane_index));
+          let active = fresh_block s and join = fresh_block s in
+          s.current.term :=
+            Some (Ir.CondBr (Ir.Local (mask_id, Ir.I1), active.id, join.id));
+          s.current <- active;
+          let index_value =
+            match indices with
+            | None -> Ir.Const (Ir.I64, Int64.of_int lane)
+            | Some vector ->
+                let id = fresh s in
+                emit s (Ir.Extract (id, value_ty vector, vector, lane_index));
+                Ir.Local
+                  ( id,
+                    match value_ty vector with
+                    | Ir.Vector (_, elem) -> elem
+                    | _ -> Ir.I64 )
+          in
+          let* pointer = simd_memory_address s span stride base index_ty index_value in
+          let value_id = fresh s in
+          emit s (Ir.Extract (value_id, value_ty stored, stored, lane_index));
+          let* () =
+            simd_memory_store_lane s span access_ty
+              (Ir.Local (value_id, ty access_ty))
+              pointer
+          in
+          s.current.term := Some (Ir.Br join.id);
+          s.current <- join;
+          store_lane (lane + 1)
+      in
+      store_lane 0
+
 and raw_load s t p =
   match t with
   | Hir.Int k ->
@@ -1548,6 +1737,9 @@ and stmt s = function
       let* pointer = expr s pointer_expr in
       let* value = expr s value_expr in
       volatile_store s span access_ty value pointer
+  | Hir.Simd_store (access_ty, kind, args, span) ->
+      let* values = exprs s args in
+      simd_memory_store s span access_ty kind args values
   | Hir.Assign (target, e, _) -> (
       match target with
       | Hir.AIndex (a, i) when match Hir.expr_ty a with Hir.Vec _ -> true | _ -> false

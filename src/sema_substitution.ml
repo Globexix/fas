@@ -2,6 +2,12 @@ open Sema_constants
 open Sema_numeric
 open Sema_specialization
 open Sema_types
+
+let simd_memory_names =
+  [
+    "masked_load"; "masked_store"; "gather"; "scatter"; "gather_bytes"; "scatter_bytes";
+  ]
+
 open Sema_context
 module String_set = Set.Make (String)
 
@@ -233,7 +239,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let* () = validate_expression_names value_names type_names callee in
         Result_list.iter (validate_expression_names value_names type_names) arguments
     | Ast.Generic_args (Ast.Ident (name, _), arguments, span)
-      when name = "volatile_load" || name = "volatile_store" ->
+      when name = "volatile_load" || name = "volatile_store"
+           || List.mem name simd_memory_names ->
         Result_list.iter
           (validate_generic_argument_names value_names type_names span)
           arguments
@@ -1157,7 +1164,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         in
         Ok (Ast.Call (callee, arguments, span))
     | Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span)
-      when name = "volatile_load" || name = "volatile_store" ->
+      when name = "volatile_load" || name = "volatile_store"
+           || List.mem name simd_memory_names ->
         let resolve_argument = function
           | Ast.Type_arg ty ->
               let* ty =

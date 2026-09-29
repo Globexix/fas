@@ -99,6 +99,7 @@ let rec rooted_in_string_literal = function
   | _ -> false
 
 let rec rooted_in_readonly_storage = function
+  | Hir.EString _ -> true
   | Hir.Raw_select (a, _, _, _) | Hir.Index (a, _, _, _) | Hir.Field (a, _, _, _, _) ->
       rooted_in_string_literal a || rooted_in_readonly_storage a
   | Hir.Address (a, _, _) | Hir.Cast (_, a, _, _) ->
@@ -849,6 +850,64 @@ and volatile_access_type c name span arguments =
         "volatile access type must be a scalar integer, bool, addr, handle[T], vec[N, \
          integer], or vec[N, bool]"
 
+and simd_memory_access_type c name span arguments =
+  let* access_ty =
+    match arguments with
+    | [ Ast.Type_arg ty ] -> source_ty_in_context c span ty
+    | [ Ast.Name_arg (name, name_span) ] ->
+        source_ty_in_context c name_span (Ast.Named_type name)
+    | _ -> error span (Printf.sprintf "builtin `%s` expects one type argument" name)
+  in
+  match access_ty with
+  | Hir.Bool | Hir.Int _ -> Ok access_ty
+  | _ -> error span "SIMD memory element type must be a scalar integer or bool"
+
+and check_simd_memory_args c name access_ty args span =
+  let indexed =
+    name = "gather" || name = "scatter" || name = "gather_bytes"
+    || name = "scatter_bytes"
+  in
+  let arity = if indexed then 4 else 3 in
+  if List.length args <> arity then
+    error span (Printf.sprintf "builtin `%s` expects %d arguments" name arity)
+  else
+    let base_arg = List.nth args 0 in
+    let* base = check_expr c (Some Hir.Addr) base_arg in
+    let* () = ensure_expected (Hir.expr_ty base) Hir.Addr (Ast.expr_span base_arg) in
+    if not indexed then
+      let mask_arg = List.nth args 1 in
+      let* mask = check_expr c None mask_arg in
+      match Hir.expr_ty mask with
+      | Hir.Vec (lanes, Hir.Bool) ->
+          let value_arg = List.nth args 2 in
+          let value_ty = Hir.Vec (lanes, access_ty) in
+          let* value = check_expr c (Some value_ty) value_arg in
+          let* () =
+            ensure_expected (Hir.expr_ty value) value_ty (Ast.expr_span value_arg)
+          in
+          Ok ([ base; mask; value ], lanes)
+      | _ -> error (Ast.expr_span mask_arg) (name ^ " mask must be a bool vector")
+    else
+      let index_arg = List.nth args 1 in
+      let* indices = check_expr c None index_arg in
+      match Hir.expr_ty indices with
+      | Hir.Vec (lanes, Hir.Int _) ->
+          let mask_arg = List.nth args 2 in
+          let mask_ty = Hir.Vec (lanes, Hir.Bool) in
+          let* mask = check_expr c (Some mask_ty) mask_arg in
+          let* () =
+            ensure_expected (Hir.expr_ty mask) mask_ty (Ast.expr_span mask_arg)
+          in
+          let value_arg = List.nth args 3 in
+          let value_ty = Hir.Vec (lanes, access_ty) in
+          let* value = check_expr c (Some value_ty) value_arg in
+          let* () =
+            ensure_expected (Hir.expr_ty value) value_ty (Ast.expr_span value_arg)
+          in
+          Ok ([ base; indices; mask; value ], lanes)
+      | _ ->
+          error (Ast.expr_span index_arg) (name ^ " indices must be an integer vector")
+
 and check_handle_from_addr c name opaque_name args s =
   if List.length args <> 1 then
     error s (Printf.sprintf "builtin `%s` expects one argument" name)
@@ -890,6 +949,25 @@ and check_call c _expected fn args s =
       | _ -> error s (Printf.sprintf "builtin `%s` expects a type argument" name))
   | Ast.Generic_args (Ast.Ident ("copy", _), _, _) ->
       error s "copy is statement-only and takes no type arguments"
+  | Ast.Generic_args (Ast.Ident (name, _), _, _)
+    when name = "masked_store" || name = "scatter" || name = "scatter_bytes" ->
+      error s (name ^ " is statement-only")
+  | Ast.Generic_args (Ast.Ident (name, _), generic_args, application_span)
+    when name = "masked_load" || name = "gather" || name = "gather_bytes" ->
+      let* access_ty = simd_memory_access_type c name application_span generic_args in
+      let* checked, lanes = check_simd_memory_args c name access_ty args s in
+      let kind =
+        match name with
+        | "masked_load" -> Hir.Masked
+        | "gather" -> Hir.Gather
+        | _ -> Hir.Gather_bytes
+      in
+      Ok
+        (Hir.Call
+           ( Hir.Builtin (Hir.Simd_load (access_ty, kind)),
+             checked,
+             Hir.Vec (lanes, access_ty),
+             s ))
   | Ast.Generic_args (Ast.Ident ("volatile_load", _), generic_args, application_span) ->
       let* access_ty =
         volatile_access_type c "volatile_load" application_span generic_args
@@ -1018,6 +1096,10 @@ and check_call c _expected fn args s =
       error s "builtin `volatile_load` expects one type argument"
   | Ast.Ident ("volatile_store", _) ->
       error s "builtin `volatile_store` expects one type argument"
+  | Ast.Ident (name, _)
+    when name = "masked_load" || name = "masked_store" || name = "gather"
+         || name = "scatter" || name = "gather_bytes" || name = "scatter_bytes" ->
+      error s (Printf.sprintf "builtin `%s` expects one type argument" name)
   | Ast.Ident ("copy", _) -> error s "copy is statement-only"
   | Ast.Ident (name, _) when Names.value_operation name = Some Names.Len ->
       if List.length args <> 1 then error s "builtin `len` expects one argument"
@@ -1786,6 +1868,28 @@ and check_stmt (c : context) = function
           ensure_expected (Hir.expr_ty value) access_ty (Ast.expr_span value_arg)
         in
         Ok (Hir.Volatile_store (access_ty, pointer, value, span))
+  | Ast.Expr_stmt
+      ( Ast.Call
+          ( Ast.Generic_args (Ast.Ident (name, _), generic_args, application_span),
+            args,
+            call_span ),
+        span )
+    when name = "masked_store" || name = "scatter" || name = "scatter_bytes" ->
+      let* access_ty = simd_memory_access_type c name application_span generic_args in
+      let* checked, _ = check_simd_memory_args c name access_ty args call_span in
+      let* () =
+        match view_access_of_expr c (List.hd checked) with
+        | Constant_access -> error call_span "cannot modify constant"
+        | Readonly_access -> error call_span "cannot modify read-only pointer"
+        | Mutable_access -> Ok ()
+      in
+      let kind =
+        match name with
+        | "masked_store" -> Hir.Masked_store
+        | "scatter" -> Hir.Scatter
+        | _ -> Hir.Scatter_bytes
+      in
+      Ok (Hir.Simd_store (access_ty, kind, checked, span))
   | Ast.Expr_stmt (e, s) ->
       let* x = check_expr c None e in
       if aggregate_value_type (Hir.expr_ty x) then
