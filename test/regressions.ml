@@ -2703,6 +2703,11 @@ let () =
   | messages ->
       failwith
         ("use-c-angle-rejection: unexpected diagnostics " ^ String.concat "; " messages));
+  (match parse_messages "use \"C\" <<END\nint raw_fragment;\nEND\n" with
+  | [ message ] when message = "use \"C\" is not implemented until v0.2" -> ()
+  | messages ->
+      failwith
+        ("use-c-raw-rejection: unexpected diagnostics " ^ String.concat "; " messages));
   (match parse_messages "fn use() i32 { return 0 }\n" with
   | [ message ] when message = "expected identifier, found `use`" -> ()
   | messages ->
