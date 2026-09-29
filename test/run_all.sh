@@ -2,10 +2,31 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+START_DIR=$(pwd)
 LLVM_OPT=${LLVM_OPT:-opt-22}
 LLVM_LLC=${LLVM_LLC:-llc-22}
 CC=${CC:-clang-22}
 OCAML_FAS=${OCAML_FAS:-$ROOT/_build/default/bin/main.exe}
+
+resolve_tool_path() {
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    */*) printf '%s/%s\n' "$START_DIR" "$1" ;;
+    *)
+      resolved=$(command -v "$1" 2>/dev/null || true)
+      case "$resolved" in
+        /*) printf '%s\n' "$resolved" ;;
+        */*) printf '%s/%s\n' "$START_DIR" "$resolved" ;;
+        *) printf '%s\n' "$1" ;;
+      esac
+      ;;
+  esac
+}
+
+LLVM_OPT=$(resolve_tool_path "$LLVM_OPT")
+LLVM_LLC=$(resolve_tool_path "$LLVM_LLC")
+CC=$(resolve_tool_path "$CC")
+OCAML_FAS=$(resolve_tool_path "$OCAML_FAS")
 START_TIME=$(date +%s)
 GATE_TMP=$(mktemp -d)
 trap 'rm -rf "$GATE_TMP"' EXIT HUP INT TERM
@@ -21,6 +42,7 @@ done
 if [ "${FAS_OCAML_CONTAINER+x}" = x ]; then
   CONTAINER=$FAS_OCAML_CONTAINER
   DOCKER=${DOCKER:-docker}
+  DOCKER=$(resolve_tool_path "$DOCKER")
   if ! command -v "$DOCKER" >/dev/null 2>&1 && [ ! -x "$DOCKER" ]; then
     echo "validation: required tool is missing: $DOCKER" >&2
     exit 2
