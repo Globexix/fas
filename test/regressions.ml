@@ -2128,25 +2128,8 @@ let () =
     [ "-no-inline"; "helper"; "profile.fas" ];
   cli_error "no-inline-duplicate" "duplicate -no-inline"
     [ "-debug"; "-no-inline"; "helper"; "-no-inline"; "other"; "profile.fas" ];
-  let ast_profile_path = Filename.temp_file "fas-profile-ast-" ".fas" in
-  Fun.protect
-    ~finally:(fun () -> Sys.remove ast_profile_path)
-    (fun () ->
-      let channel = open_out_bin ast_profile_path in
-      output_string channel "fn helper() i64 { return 3 }\n";
-      close_out channel;
-      let config =
-        cli_run [ "-debug"; "--emit-ast"; "-no-inline"; "helper"; ast_profile_path ]
-      in
-      match Driver.run config with
-      | Error diagnostics ->
-          let rendered = Diag.render_all ~source:None diagnostics in
-          if
-            not
-              (contains rendered
-                 "-no-inline function `helper` requires an emitted function")
-          then failwith "no-inline: AST diagnostic changed"
-      | Ok _ -> failwith "no-inline: AST emission was accepted");
+  cli_error "removed-ast-output" "unknown option: --emit-ast"
+    [ "--emit-ast"; "profile.fas" ];
   cli_error "removed-release-option" "unknown option: -release"
     [ "-release"; "profile.fas" ];
   cli_error "removed-kernel-option" "unknown option: -kernel"

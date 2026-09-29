@@ -1,4 +1,4 @@
-type emit = Ast | Ir | Llvm | Asm | Obj | Executable
+type emit = Ir | Llvm | Asm | Obj | Executable
 
 type t = {
   inputs : string list;

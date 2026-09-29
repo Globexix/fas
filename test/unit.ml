@@ -1522,10 +1522,10 @@ let () =
     | Error message -> failwith message
   in
   let cli =
-    expect_cli (Cli.parse [| "fas"; "--emit-ast"; "-o"; "out"; "one.fas"; "two.fas" |])
+    expect_cli (Cli.parse [| "fas"; "--emit-ir"; "-o"; "out"; "one.fas"; "two.fas" |])
   in
   assert (
-    cli.Cli.emit = Cli.Ast && cli.output = "out" && cli.output_explicit
+    cli.Cli.emit = Cli.Ir && cli.output = "out" && cli.output_explicit
     && cli.inputs = [ "one.fas"; "two.fas" ]);
   let cli_obj = expect_cli (Cli.parse [| "fas"; "-c"; "path/prog.fas" |]) in
   assert (
@@ -1574,74 +1574,13 @@ let () =
               let contents = really_input_string channel (in_channel_length channel) in
               close_in channel;
               assert (contents <> "")))
-        [ "--emit-ast"; "--emit-ir"; "--emit-llvm" ]);
-  let huge_ast_path = Filename.temp_file "fas-ast-single-" ".fas" in
-  let cumulative_ast_path = Filename.temp_file "fas-ast-cumulative-" ".fas" in
-  let ast_output_path = Filename.temp_file "fas-ast-output-" ".txt" in
-  let separator_ast_path = Filename.temp_file "fas-ast-separator-" ".fas" in
-  Fun.protect
-    ~finally:(fun () ->
-      List.iter
-        (fun path -> if Sys.file_exists path then Sys.remove path)
-        [ huge_ast_path; cumulative_ast_path; ast_output_path; separator_ast_path ])
-    (fun () ->
-      let write path text =
-        let channel = open_out_bin path in
-        output_string channel text;
-        close_out channel
-      in
-      write huge_ast_path
-        (Printf.sprintf "fn f() u64 { x u64 = %s\n return x }\n"
-           (String.make 4_000_001 'a'));
-      (match
-         Driver.run (expect_cli (Cli.parse [| "fas"; "--emit-ast"; huge_ast_path |]))
-       with
-      | Error [ diagnostic ] ->
-          assert (
-            diagnostic.Diag.message
-            = "rendered AST node exceeds the configured limit of 4000000 bytes")
-      | Ok _ | Error _ -> assert false);
-      write cumulative_ast_path
-        (Printf.sprintf
-           "fn f() u64 { x u64 = %s\n\
-           \ return x }\n\
-            fn g() u64 { y u64 = %s\n\
-           \ return y }\n"
-           (String.make 2_200_000 'q') (String.make 2_200_000 'r'));
-      (match
-         Driver.run
-           (expect_cli (Cli.parse [| "fas"; "--emit-ast"; cumulative_ast_path |]))
-       with
-      | Error [ diagnostic ] ->
-          assert (
-            diagnostic.Diag.message
-            = "cumulative rendered AST bytes exceed the configured limit of 4000000 \
-               bytes")
-      | Ok _ | Error _ -> assert false);
-      let config =
-        expect_cli
-          (Cli.parse [| "fas"; "--emit-ast"; "-o"; ast_output_path; huge_ast_path |])
-      in
-      assert config.Cli.output_explicit;
-      Sys.remove ast_output_path;
-      (match Driver.run config with
-      | Error _ -> assert (not (Sys.file_exists ast_output_path))
-      | Ok _ -> assert false);
-      write separator_ast_path
-        (Printf.sprintf "opaque %s\nopaque B\n" (String.make 3_999_992 'a'));
-      match
-        Driver.run
-          (expect_cli (Cli.parse [| "fas"; "--emit-ast"; separator_ast_path |]))
-      with
-      | Error [ diagnostic ] ->
-          assert (
-            diagnostic.Diag.message
-            = "cumulative rendered AST bytes exceed the configured limit of 4000000 \
-               bytes");
-          assert (diagnostic.Diag.primary.Span.file = separator_ast_path);
-          assert (diagnostic.Diag.primary.Span.line = 2);
-          assert (diagnostic.Diag.primary.Span.column = 1)
-      | Ok _ | Error _ -> assert false);
+        [ "--emit-ir"; "--emit-llvm" ]);
+  (match Cli.parse [| "fas"; "--emit-ast"; "one.fas" |] with
+  | Error message -> assert (message = "unknown option: --emit-ast")
+  | Ok _ -> assert false);
+  (match Cli.parse [| "fas"; "-o"; "-"; "one.fas" |] with
+  | Error message -> assert (message = "-o - is not supported")
+  | Ok _ -> assert false);
   (match Cli.parse [| "fas"; "--unknown" |] with Ok _ -> assert false | Error _ -> ());
   let sema_error ?message text =
     let program = expect_ok (Parser.parse (source text)) in
