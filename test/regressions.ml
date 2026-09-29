@@ -8376,6 +8376,8 @@ let () =
            #include \"%s\"\n\
            int fas_fragment_value(void) { return FAS_CONTAINER_MACRO + CHAR_BIT + \
            FAS_CONTAINER_LOCAL; }\n\
+           static int fas_fragment_static(int value) { return value + 1; }\n\
+           static int fas_unused_fragment_static(void) { return 3; }\n\
            SECOND\n"
           (Filename.basename container_local_header)
       in
@@ -8406,7 +8408,7 @@ let () =
           List.iter (fun path -> try Sys.remove path with Sys_error _ -> ()) kept)
         (fun () ->
           match kept with
-          | [ unit_path; first_fragment; second_fragment ] ->
+          | [ unit_path; first_fragment; second_fragment ] -> (
               let read path =
                 let channel = open_in_bin path in
                 Fun.protect
@@ -8450,7 +8452,37 @@ let () =
                   (List.exists
                      (String.starts_with ~prefix:"fas_fragment_value\t")
                      imported.manifest)
-              then failwith "C function definition in a fragment was not imported"
+              then failwith "C function definition in a fragment was not imported";
+              incr checks_run;
+              List.iter
+                (fun name ->
+                  if
+                    not
+                      (List.exists
+                         (fun (static : C_import.static_function) -> static.name = name)
+                         imported.static_functions)
+                  then
+                    failwith ("static C function in fragment was not recorded: " ^ name))
+                [ "fas_fragment_static"; "fas_unused_fragment_static" ];
+              incr checks_run;
+              match
+                List.find_opt
+                  (fun (static : C_import.static_function) ->
+                    static.name = "fas_fragment_static")
+                  imported.static_functions
+              with
+              | Some static -> (
+                  match
+                    C_import.make_adapter ~occupied:[] container_source_path static
+                  with
+                  | Ok adapter
+                    when contains adapter.code "return fas_fragment_static(fas_arg0);"
+                    ->
+                      ()
+                  | Ok _ ->
+                      failwith "static C fragment adapter did not forward its call"
+                  | Error message -> failwith message)
+              | None -> failwith "static C fragment function was not recorded")
           | _ -> failwith "--keep omitted generated C units or fragment files"));
   List.iter
     (fun (name, expected) ->
@@ -8758,6 +8790,23 @@ let () =
       (contains rect_adapter.code "const struct FasRect * fas_arg0"
       && contains rect_adapter.code "return fas_rect_empty(fas_arg0);")
   then failwith "static inline handle adapter did not preserve its C signature";
+  incr checks_run;
+  if not (String.starts_with ~prefix:"__fas_c_adapter_" rect_adapter.symbol) then
+    failwith "static adapter symbol omitted its fixed prefix";
+  incr checks_run;
+  (match
+     List.find_opt
+       (fun (static : C_import.static_function) -> static.name = "fas_rect_empty")
+       c_matrix_imported.static_functions
+   with
+  | Some static -> (
+      match
+        C_import.make_adapter ~occupied:[ rect_adapter.symbol ] c_matrix_source static
+      with
+      | Ok adapter when adapter.symbol <> rect_adapter.symbol -> ()
+      | Ok _ -> failwith "static adapter symbol collision was not avoided"
+      | Error message -> failwith message)
+  | None -> failwith "static inline handle function was not recorded");
   unsupported "fas_static_float" "floating-point types are not supported"
     "fas_static_float(1)";
   let static_collision_header = Filename.temp_file "fas-static-collision-" ".h" in
