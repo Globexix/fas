@@ -11,6 +11,7 @@
 #include <x86intrin.h>
 
 extern uint64_t sum_xor_u32(void *, size_t);
+extern uint64_t sum_xor_u32_vector_acc(void *, size_t);
 extern void lookup_u32(void *, void *, void *, size_t);
 
 struct guarded_region {
@@ -118,10 +119,12 @@ static int run_case(size_t n, uint8_t *table, uint32_t *random_state,
     initialize_inputs(input.data, indices.data, n, random_state);
 
     uint64_t fas_sum = sum_xor_u32(input.data, n);
+    uint64_t fas_vector_sum = sum_xor_u32_vector_acc(input.data, n);
     uint64_t c_sum = c_sum_xor_u32(input.data, n);
-    if (fas_sum != c_sum) {
+    if (fas_sum != c_sum || fas_vector_sum != c_sum) {
         fprintf(stderr, "simd kernel: sum_xor mismatch at n=%zu: got %" PRIu64
-                        " expected %" PRIu64 "\n", n, fas_sum, c_sum);
+                        " and vector %" PRIu64 " expected %" PRIu64 "\n", n,
+                fas_sum, fas_vector_sum, c_sum);
         free(expected);
         guarded_region_destroy(output);
         guarded_region_destroy(indices);
@@ -184,6 +187,13 @@ static void measure(uint8_t *table)
     end = read_cycles();
     double c_sum_cycles = (double)(end - start) / ((double)rounds * (double)n);
     report_measurement("sum_xor_u32", fas_sum_cycles, c_sum_cycles);
+
+    start = read_cycles();
+    for (unsigned i = 0; i < rounds; ++i)
+        measure_sink ^= sum_xor_u32_vector_acc(input.data, n);
+    end = read_cycles();
+    double fas_vector_sum_cycles = (double)(end - start) / ((double)rounds * (double)n);
+    report_measurement("sum_xor_u32_vector_acc", fas_vector_sum_cycles, c_sum_cycles);
 
     start = read_cycles();
     for (unsigned i = 0; i < rounds; ++i) {

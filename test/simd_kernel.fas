@@ -18,6 +18,27 @@ extern "C" {
     return (zext[u64](sum) << 32) | zext[u64](bits)
   }
 
+  fn sum_xor_u32_vector_acc(p addr, n usize) u64 {
+    sum_values vec[8,u32] = splat(0)
+    xor_values vec[8,u32] = splat(0)
+    i usize = 0
+    while n - i >= 8 {
+      values vec[8,u32] = (p + i * 4)[vec[8,u32]]
+      sum_values += values
+      xor_values ^= values
+      i += 8
+    }
+    if n - i > 0 {
+      mask vec[8,bool] = {n - i > 0, n - i > 1, n - i > 2, n - i > 3, n - i > 4, n - i > 5, n - i > 6, n - i > 7}
+      values vec[8,u32] = masked_load[u32](p + i * 4, mask, splat(0))
+      sum_values += values
+      xor_values ^= values
+    }
+    sum u32 = reduce_sum(sum_values)
+    bits u32 = reduce_xor(xor_values)
+    return (zext[u64](sum) << 32) | zext[u64](bits)
+  }
+
   fn lookup_u32(table addr, idx addr, out addr, n usize) void {
     i usize = 0
     while n - i >= 8 {
