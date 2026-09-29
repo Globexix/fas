@@ -8353,6 +8353,105 @@ let () =
       ("FasProvenanceSecondType", "provenance_second.h", "1");
       ("fas_provenance_second", "provenance_second.h", "2");
     ];
+  incr checks_run;
+  let container_source_path = Filename.temp_file "fas-container-import-" ".fas" in
+  let container_local_header = container_source_path ^ ".h" in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun path -> try Sys.remove path with Sys_error _ -> ())
+        [ container_source_path; container_local_header ])
+    (fun () ->
+      let header_channel = open_out_bin container_local_header in
+      output_string header_channel "#define FAS_CONTAINER_LOCAL 2\n";
+      close_out header_channel;
+      let container_source =
+        Printf.sprintf
+          "use \"C\" <stddef.h>\n\
+           use \"C\" <<FIRST\n\
+           #define FAS_CONTAINER_MACRO 40\n\
+           FIRST\n\
+           use \"C\" <limits.h>\n\
+           use \"C\" <<SECOND\n\
+           #include \"%s\"\n\
+           int fas_fragment_value(void) { return FAS_CONTAINER_MACRO + CHAR_BIT + \
+           FAS_CONTAINER_LOCAL; }\n\
+           SECOND\n"
+          (Filename.basename container_local_header)
+      in
+      let parsed =
+        match
+          Parser.parse
+            (Source.create ~file:container_source_path ~text:container_source)
+        with
+        | Ok parsed -> parsed
+        | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+      in
+      let requests =
+        List.filter_map
+          (function
+            | Ast.Use { c_header = Some spelling; span; _ } ->
+                Some C_import.{ spelling; span }
+            | _ -> None)
+          parsed.items
+      in
+      let declarations, kept =
+        expect_ok
+          (C_import.import ~cc:"clang-22" ~debug:false ~keep:true container_source_path
+             requests)
+      in
+      let kept = Option.value ~default:[] kept in
+      Fun.protect
+        ~finally:(fun () ->
+          List.iter (fun path -> try Sys.remove path with Sys_error _ -> ()) kept)
+        (fun () ->
+          match kept with
+          | [ unit_path; first_fragment; second_fragment ] ->
+              let read path =
+                let channel = open_in_bin path in
+                Fun.protect
+                  ~finally:(fun () -> close_in_noerr channel)
+                  (fun () -> really_input_string channel (in_channel_length channel))
+              in
+              let unit = read unit_path in
+              let ordered =
+                [
+                  C_import.find_text unit "#include <stddef.h>" 0;
+                  C_import.find_text unit ("#include \"" ^ first_fragment ^ "\"") 0;
+                  C_import.find_text unit "#include <limits.h>" 0;
+                  C_import.find_text unit ("#include \"" ^ second_fragment ^ "\"") 0;
+                ]
+              in
+              (match ordered with
+              | [ Some first; Some second; Some third; Some fourth ]
+                when first < second && second < third && third < fourth ->
+                  ()
+              | _ -> failwith "C unit did not preserve header and fragment source order");
+              let first_line = (List.nth requests 1).C_import.span.Span.line + 1
+              and second_line = (List.nth requests 3).C_import.span.Span.line + 1 in
+              if
+                (not
+                   (String.starts_with
+                      ~prefix:
+                        (Printf.sprintf "#line %d %S\n" first_line container_source_path)
+                      (read first_fragment)))
+                || not
+                     (String.starts_with
+                        ~prefix:
+                          (Printf.sprintf "#line %d %S\n" second_line
+                             container_source_path)
+                        (read second_fragment))
+              then failwith "C fragment files did not start at their Fas source lines";
+              let imported =
+                C_import.map_declarations ~span:Span.synthetic declarations
+              in
+              if
+                not
+                  (List.exists
+                     (String.starts_with ~prefix:"fas_fragment_value\t")
+                     imported.manifest)
+              then failwith "C function definition in a fragment was not imported"
+          | _ -> failwith "--keep omitted generated C units or fragment files"));
   List.iter
     (fun (name, expected) ->
       incr checks_run;

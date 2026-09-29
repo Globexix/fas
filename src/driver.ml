@@ -458,7 +458,13 @@ let run_unprotected config =
               in
               imported := mapped :: !imported;
               Option.iter
-                (fun path -> prerr_endline ("fas: kept C import unit: " ^ path))
+                (function
+                  | unit_path :: fragments ->
+                      prerr_endline ("fas: kept C import unit: " ^ unit_path);
+                      List.iter
+                        (fun path -> prerr_endline ("fas: kept C fragment: " ^ path))
+                        fragments
+                  | [] -> ())
                 kept;
               import rest
         in

@@ -1,6 +1,6 @@
 type header = { spelling : Ast.c_header; span : Span.t }
 
-let include_line source = function
+let include_line source fragment_path = function
   | { spelling = Ast.C_quoted path; _ } ->
       let path =
         if Filename.is_relative path then Filename.concat (Filename.dirname source) path
@@ -8,8 +8,8 @@ let include_line source = function
       in
       Printf.sprintf "#include %S\n" path
   | { spelling = Ast.C_system path; _ } -> "#include <" ^ path ^ ">\n"
-  | { spelling = Ast.C_fragment fragment; span } ->
-      Printf.sprintf "#line %d %S\n%s\n" (span.Span.line + 1) source fragment.text
+  | { spelling = Ast.C_fragment _; _ } ->
+      Printf.sprintf "#include %S\n" (Option.get fragment_path)
 
 let find_text text needle start =
   let limit = String.length text - String.length needle in
@@ -41,9 +41,10 @@ let error_span headers line =
 let import ~cc ~debug ~keep source headers =
   let unit_path = Filename.temp_file "fas-c-import-" ".c" in
   let json_path = Filename.temp_file "fas-c-import-" ".json" in
+  let fragment_paths = ref [] in
   let cleanup () =
     let remove path = try Sys.remove path with Sys_error _ -> () in
-    if not keep then remove unit_path;
+    if not keep then List.iter remove (unit_path :: !fragment_paths);
     remove json_path
   in
   Fun.protect ~finally:cleanup (fun () ->
@@ -52,7 +53,22 @@ let import ~cc ~debug ~keep source headers =
         ~finally:(fun () -> close_out_noerr channel)
         (fun () ->
           List.iter
-            (fun header -> output_string channel (include_line source header))
+            (fun header ->
+              let fragment_path =
+                match header.spelling with
+                | Ast.C_fragment fragment ->
+                    let path = Filename.temp_file "fas-c-fragment-" ".c" in
+                    fragment_paths := path :: !fragment_paths;
+                    let fragment_channel = open_out_bin path in
+                    Fun.protect
+                      ~finally:(fun () -> close_out_noerr fragment_channel)
+                      (fun () ->
+                        Printf.fprintf fragment_channel "#line %d %S\n%s\n"
+                          (header.span.Span.line + 1) source fragment.text);
+                    Some path
+                | Ast.C_quoted _ | Ast.C_system _ -> None
+              in
+              output_string channel (include_line source fragment_path header))
             headers);
       let argv =
         [|
@@ -65,6 +81,8 @@ let import ~cc ~debug ~keep source headers =
           "-Xclang";
           "-skip-function-bodies";
           "--target=x86_64-unknown-linux-gnu";
+          "-iquote";
+          Filename.dirname source;
           unit_path;
         |]
       in
@@ -80,7 +98,9 @@ let import ~cc ~debug ~keep source headers =
                 ~finally:(fun () -> close_in_noerr channel)
                 (fun () -> C_import_json.declarations channel)
             in
-            Ok (declarations, if keep then Some unit_path else None)
+            Ok
+              ( declarations,
+                if keep then Some (unit_path :: List.rev !fragment_paths) else None )
           with Failure message ->
             Error
               [
