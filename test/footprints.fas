@@ -1,0 +1,43 @@
+struct Footprint {
+  lead u8,
+  value u32,
+  tail u8
+}
+
+extern "C" {
+  fn footprint_buffer() addr
+}
+
+extern "C" {
+  fn fas_write_footprints() void {
+    p addr = footprint_buffer()
+    (p + 4)[u32] = 287454020
+    (p + 20)[vec[3, u32]] = (vec[3, u32]){ 1, 2, 3 }
+    (p + 40)[vec[12, bool]] = (vec[12, bool]){ true, false, true, false, false, true, false, true, true, false, false, true }
+    (p + 60)[vec[5, u8]] = (vec[5, u8]){ 11, 22, 33, 44, 55 }
+    (p + 80)[Footprint].value = 1432778632
+  }
+
+  fn fas_load_bool_footprint() u32 {
+    p addr = footprint_buffer()
+    values vec[12, bool] = (p + 40)[vec[12, bool]]
+    bits u32 = 0
+    if values[0] { bits |= 1 }
+    if values[1] { bits |= 2 }
+    if values[2] { bits |= 4 }
+    if values[3] { bits |= 8 }
+    if values[4] { bits |= 16 }
+    if values[5] { bits |= 32 }
+    if values[6] { bits |= 64 }
+    if values[7] { bits |= 128 }
+    if values[8] { bits |= 256 }
+    if values[9] { bits |= 512 }
+    if values[10] { bits |= 1024 }
+    if values[11] { bits |= 2048 }
+    return bits
+  }
+
+  fn fas_guard_store(p addr) void {
+    p[vec[3, u32]] = (vec[3, u32]){ 305419896, 2271560481, 2309737967 }
+  }
+}
