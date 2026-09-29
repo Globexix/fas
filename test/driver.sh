@@ -51,6 +51,18 @@ FAS
 cat >"$WORK/part-b.fas" <<'FAS'
 fn another() i32 { return 3 }
 FAS
+cat >"$WORK/link.fas" <<'FAS'
+extern "C" {
+  fn c_link_probe(value i32) i32
+}
+fn main() i32 { return c_link_probe(1) - 2 }
+FAS
+cat >"$WORK/helper.c" <<'C'
+#include <math.h>
+int c_link_probe(int value) {
+  return value + (sin((double)value) > 0.0);
+}
+C
 cat >"$WORK/use-main.fas" <<'FAS'
 use "part-a.fas"
 use "part-b.fas"
@@ -126,6 +138,11 @@ done
 expect_failure "$OCAML_FAS" "$WORK/part-a.fas" "$WORK/part-b.fas"
 grep -Fx 'multiple input files are not supported; use "path.fas" for dependencies' \
   "$WORK/stderr" >/dev/null || fail "multiple input diagnostic changed"
+for mode in -c -S --emit-ir --emit-llvm; do
+  expect_failure "$OCAML_FAS" "$WORK/link.fas" "$WORK/helper.c" "$mode"
+  grep -Fx 'C inputs and link flags require an executable output' \
+    "$WORK/stderr" >/dev/null || fail "$mode accepted C link inputs"
+done
 for level in 0 1 2 3; do
   grep -F -- "default<O$level>" "$TOOL_LOG" >/dev/null || fail "-O$level opt pipeline missing"
   grep -F -- "llc -O$level -relocation-model=pic" "$TOOL_LOG" >/dev/null || fail "-O$level llc PIC model missing"
@@ -136,6 +153,18 @@ grep -F -- "-passes=verify" "$TOOL_LOG" >/dev/null || fail "LLVM verification mi
 grep -F -- "-verify-each" "$TOOL_LOG" >/dev/null || fail "pass-by-pass verification missing"
 grep -F -- "cc " "$TOOL_LOG" >/dev/null || fail "CC override was ignored"
 temps_empty
+
+: >"$TOOL_LOG"
+"$OCAML_FAS" -debug --keep "$WORK/link.fas" "$WORK/helper.c" -lm -o "$WORK/link" \
+  >"$WORK/stdout" 2>"$WORK/stderr"
+[ ! -s "$WORK/stdout" ] || fail "C link wrote to stdout"
+"$WORK/link" || fail "Fas C and libm link failed"
+grep -E "^cc [^ ]*fas-module-[^ ]*\\.s $WORK/helper.c -lm -o $WORK/\\.fas-output-[^ ]+\\.tmp$" \
+  "$TOOL_LOG" >/dev/null || fail "tool log omitted the exact CC argument order"
+grep -E "^fas: CC command: $CC [^ ]*fas-module-[^ ]*\\.s $WORK/helper.c -lm -o $WORK/\\.fas-output-[^ ]+\\.tmp$" \
+  "$WORK/stderr" >/dev/null || fail "debug log omitted the exact CC command"
+asm_path=$(sed -n 's/^fas: CC command: [^ ]* \([^ ]*fas-module-[^ ]*\.s\) .*/\1/p' "$WORK/stderr")
+[ -s "$asm_path" ] || fail "--keep did not retain the exact assembly input"
 
 "$OCAML_FAS" --emit-llvm -O2 "$WORK/good.fas" >"$WORK/raw.ll" 2>"$WORK/stderr"
 [ ! -s "$WORK/stderr" ] || fail "LLVM emission wrote diagnostics"

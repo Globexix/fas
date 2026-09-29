@@ -9,6 +9,7 @@ type t = {
   optimization : int;
   debug : bool;
   no_inline_function : string option;
+  link_inputs : string list;
 }
 
 type command = Run of t | Help

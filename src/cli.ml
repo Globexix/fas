@@ -9,12 +9,13 @@ type t = {
   optimization : int;
   debug : bool;
   no_inline_function : string option;
+  link_inputs : string list;
 }
 
 type command = Run of t | Help
 
 let usage =
-  "usage: fas [options] file.fas\n\
+  "usage: fas [options] file.fas [C inputs and link flags]\n\
   \  -o PATH       output path (default a.out, INPUT.o with -c, INPUT.s with -S)\n\
   \  --emit-ir     print the compiler's custom IR dump\n\
   \  --emit-llvm   print unoptimized LLVM IR after verification\n\
@@ -37,10 +38,19 @@ let default_output emit input =
 
 let parse argv =
   let n = Array.length argv in
+  let link_inputs_rev = ref [] in
+  let add_link_inputs values =
+    link_inputs_rev := List.rev_append values !link_inputs_rev
+  in
+  let passthrough_file file =
+    List.exists (Filename.check_suffix file) [ ".c"; ".o"; ".a"; ".so" ]
+  in
   let rec loop i input output emit keep optimization optimization_explicit debug
       no_inline_function =
     if i >= n then
       if Option.is_none input then Error "no input files"
+      else if !link_inputs_rev <> [] && emit <> Executable then
+        Error "C inputs and link flags require an executable output"
       else if Option.is_some no_inline_function && not debug then
         Error "-no-inline requires -debug"
       else
@@ -60,6 +70,7 @@ let parse argv =
                optimization;
                debug;
                no_inline_function;
+               link_inputs = List.rev !link_inputs_rev;
              })
     else
       match argv.(i) with
@@ -101,6 +112,18 @@ let parse argv =
             else
               loop (i + 2) input output emit keep optimization optimization_explicit
                 debug (Some name)
+      | ("-l" | "-L") as flag ->
+          if i + 1 >= n || argv.(i + 1) = "" then Error (flag ^ " requires an argument")
+          else (
+            add_link_inputs [ flag; argv.(i + 1) ];
+            loop (i + 2) input output emit keep optimization optimization_explicit debug
+              no_inline_function)
+      | flag
+        when (String.length flag > 2 && String.sub flag 0 2 = "-l")
+             || (String.length flag > 2 && String.sub flag 0 2 = "-L") ->
+          add_link_inputs [ flag ];
+          loop (i + 1) input output emit keep optimization optimization_explicit debug
+            no_inline_function
       | flag
         when String.length flag = 3
              && flag.[0] = '-'
@@ -112,6 +135,10 @@ let parse argv =
             true debug no_inline_function
       | flag when String.length flag > 0 && flag.[0] = '-' ->
           Error ("unknown option: " ^ flag)
+      | file when passthrough_file file ->
+          add_link_inputs [ file ];
+          loop (i + 1) input output emit keep optimization optimization_explicit debug
+            no_inline_function
       | file -> (
           match input with
           | None ->

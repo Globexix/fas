@@ -310,6 +310,15 @@ let report_kept config paths opt llc cc =
          (pass_report config.Cli.optimization)
          (llc_opt config.Cli.optimization)))
 
+let executable_command config cc asm_path =
+  let argv =
+    Array.of_list
+      (cc :: asm_path :: (config.Cli.link_inputs @ [ "-o"; config.Cli.output ]))
+  in
+  if config.Cli.debug || config.Cli.keep then
+    prerr_endline ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
+  argv
+
 let run_llc config llc ~filetype ~input ~output =
   run_tool llc
     [|
@@ -377,7 +386,7 @@ let emit_tools_unprotected config program ir =
           Ok ""
       | Cli.Executable ->
           let* _ = build_assembly config ir llc opt_path asm_path in
-          let* () = run_tool cc [| cc; asm_path; "-o"; config.output |] in
+          let* () = run_tool cc (executable_command config cc asm_path) in
           Ok ""
       | Cli.Ir | Cli.Llvm -> invalid_arg "Driver.emit_tools: non-tool emission")
 

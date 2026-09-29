@@ -1287,7 +1287,18 @@ let () =
   let cli = expect_cli (Cli.parse [| "fas"; "--emit-ir"; "-o"; "out"; "one.fas" |]) in
   assert (
     cli.Cli.emit = Cli.Ir && cli.output = "out" && cli.output_explicit
-    && cli.input = "one.fas");
+    && cli.input = "one.fas" && cli.link_inputs = []);
+  let cli_links =
+    expect_cli
+      (Cli.parse [| "fas"; "-L"; "lib"; "prog.fas"; "helper.c"; "-lm"; "obj.o" |])
+  in
+  assert (
+    cli_links.Cli.input = "prog.fas"
+    && cli_links.link_inputs = [ "-L"; "lib"; "helper.c"; "-lm"; "obj.o" ]);
+  (match Cli.parse [| "fas"; "--emit-llvm"; "prog.fas"; "helper.c" |] with
+  | Error message ->
+      assert (message = "C inputs and link flags require an executable output")
+  | Ok _ -> assert false);
   (match Cli.parse [| "fas"; "one.fas"; "two.fas" |] with
   | Error message
     when message

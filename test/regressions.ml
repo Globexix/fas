@@ -2159,6 +2159,9 @@ let () =
     [ "-release"; "profile.fas" ];
   cli_error "removed-kernel-option" "unknown option: -kernel"
     [ "-kernel"; "profile.fas" ];
+  cli_error "link-input-needs-executable"
+    "C inputs and link flags require an executable output"
+    [ "--emit-llvm"; "profile.fas"; "helper.c" ];
   let profile_path = Filename.temp_file "fas-profile-" ".fas" in
   Fun.protect
     ~finally:(fun () -> Sys.remove profile_path)
