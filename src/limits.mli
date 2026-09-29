@@ -17,6 +17,8 @@ type t = {
   max_static_data_bytes : int;
   max_type_nodes : int;
   max_stack_scratch_bytes : int;
+  max_use_files : int;
+  max_use_bytes : int;
 }
 
 val budget_version_name : budget_version -> string

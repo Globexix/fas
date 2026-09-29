@@ -128,7 +128,8 @@ let operation_names = List.map fst operations
 
 let reserved_binding_name name =
   List.mem name primitive_type_names
-  || List.mem name literal_names || name = "view"
+  || List.mem name literal_names
+  || List.mem name [ "view"; "use" ]
   || Option.is_some (List.assoc_opt name operations)
 
 let parser_operation name =

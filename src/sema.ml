@@ -119,6 +119,7 @@ let check ?(limits = Limits.default) program =
   let type_node_account = create_type_node_account limits in
   let specializations = Sema_specialization.create () in
   let declaration = function
+    | Ast.Use _ -> None
     | Ast.Opaque { name; span } | Ast.Struct { name; span; _ } ->
         Some (name, Top_type, span)
     | Ast.Const { name; span; _ } -> Some (name, Top_const, span)

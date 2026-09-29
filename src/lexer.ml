@@ -18,6 +18,7 @@ let keyword = function
   | "extern" -> Kw_extern
   | "defer" -> Kw_defer
   | "asm" -> Kw_asm
+  | "use" -> Kw_use
   | "for" -> Kw_for
   | "switch" -> Kw_switch
   | "case" -> Kw_case

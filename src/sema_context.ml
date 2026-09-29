@@ -245,6 +245,7 @@ and count_expanded_item_type_nodes item cap total =
   if total >= cap then cap
   else
     match item with
+    | Ast.Use _ -> total
     | Ast.Const { ty; value; _ } ->
         count_expanded_expr_type_nodes value cap
           (count_expanded_type_nodes ty cap total)

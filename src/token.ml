@@ -16,6 +16,7 @@ type kind =
   | Kw_extern
   | Kw_defer
   | Kw_asm
+  | Kw_use
   | Kw_for
   | Kw_switch
   | Kw_case
@@ -87,6 +88,7 @@ let show = function
   | Kw_extern -> "`extern`"
   | Kw_defer -> "`defer`"
   | Kw_asm -> "`asm`"
+  | Kw_use -> "`use`"
   | Kw_for -> "`for`"
   | Kw_switch -> "`switch`"
   | Kw_case -> "`case`"

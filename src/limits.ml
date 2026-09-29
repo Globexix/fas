@@ -17,6 +17,8 @@ type t = {
   max_static_data_bytes : int;
   max_type_nodes : int;
   max_stack_scratch_bytes : int;
+  max_use_files : int;
+  max_use_bytes : int;
 }
 
 let budget_version_name = function V0_15 -> "0.15"
@@ -43,6 +45,8 @@ let for_budget_version version =
         max_static_data_bytes = 1_073_741_824;
         max_type_nodes = 4_000_000;
         max_stack_scratch_bytes = 1_073_741_824;
+        max_use_files = 10_000;
+        max_use_bytes = 1_073_741_824;
       }
 
 let default = for_budget_version default_budget_version

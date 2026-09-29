@@ -11,6 +11,205 @@ let read_file path =
           Ok (really_input_string channel length))
   with Sys_error message -> Error message
 
+let normalize_absolute path =
+  let parts = String.split_on_char '/' path in
+  let parts =
+    List.fold_left
+      (fun acc part ->
+        match part with
+        | "" | "." -> acc
+        | ".." -> ( match acc with [] -> [] | _ :: rest -> rest)
+        | _ -> part :: acc)
+      [] parts
+    |> List.rev
+  in
+  "/" ^ String.concat "/" parts
+
+let rec canonical_path path =
+  try Unix.realpath path
+  with Unix.Unix_error _ ->
+    let absolute =
+      if Filename.is_relative path then Filename.concat (Sys.getcwd ()) path else path
+    in
+    let parent = Filename.dirname absolute in
+    if parent = absolute then normalize_absolute absolute
+    else
+      normalize_absolute
+        (Filename.concat (canonical_path parent) (Filename.basename absolute))
+
+let use_path_error path =
+  if String.contains path '\000' then
+    Some "Fas dependency paths cannot contain NUL bytes"
+  else if not (Filename.is_relative path) then
+    Some
+      "absolute Fas dependency paths are not supported; use a path relative to this \
+       file"
+  else if not (Filename.check_suffix path ".fas") then
+    Some
+      "Fas dependency paths must end in lowercase `.fas`; C headers use `use \"C\"` in \
+       v0.2"
+  else None
+
+let include_chain_note paths = "include chain: " ^ String.concat " -> " paths
+
+let with_chain diagnostics paths =
+  List.map
+    (fun (diagnostic : Diag.t) ->
+      { diagnostic with Diag.notes = diagnostic.notes @ [ include_chain_note paths ] })
+    diagnostics
+
+let definition_file note =
+  let prefix = "first definition is at " in
+  let prefix_length = String.length prefix in
+  if String.length note < prefix_length || String.sub note 0 prefix_length <> prefix
+  then None
+  else
+    let location = String.sub note prefix_length (String.length note - prefix_length) in
+    try
+      let last = String.rindex location ':' in
+      let before_column = String.sub location 0 last in
+      let line = String.rindex before_column ':' in
+      Some (String.sub before_column 0 line)
+    with Not_found -> None
+
+let add_include_chains chains diagnostics =
+  let chain_for file = List.assoc_opt file chains in
+  List.map
+    (fun (diagnostic : Diag.t) ->
+      let files =
+        diagnostic.primary.Span.file :: List.filter_map definition_file diagnostic.notes
+      in
+      let notes =
+        List.filter_map
+          (fun file ->
+            Option.map (fun chain -> include_chain_note chain) (chain_for file))
+          files
+        |> List.sort_uniq String.compare
+      in
+      { diagnostic with Diag.notes = diagnostic.notes @ notes })
+    diagnostics
+
+let load_program ~limits roots =
+  let loaded = Hashtbl.create 16 in
+  let chains = Hashtbl.create 16 in
+  let total_bytes = ref 0 in
+  let budget_error span name value =
+    Error
+      [
+        Diag.error span
+          (Printf.sprintf "dependency closure exceeds budget %s of %d (profile %s)" name
+             value
+             (Limits.budget_profile_name limits));
+      ]
+  in
+  let rec visit chain path use_span =
+    let canonical = canonical_path path in
+    if Hashtbl.mem loaded canonical then Ok ()
+    else
+      let file_chain = chain @ [ canonical ] in
+      let primary = Option.value use_span ~default:Span.synthetic in
+      if limits.Limits.max_use_files < 0 then
+        Error
+          [
+            Diag.error primary
+              (Printf.sprintf "budget max_use_files must not be negative (profile %s)"
+                 (Limits.budget_profile_name limits));
+          ]
+      else if Hashtbl.length loaded >= limits.Limits.max_use_files then
+        budget_error primary "max_use_files" limits.Limits.max_use_files
+      else if limits.Limits.max_use_bytes < 0 then
+        Error
+          [
+            Diag.error primary
+              (Printf.sprintf "budget max_use_bytes must not be negative (profile %s)"
+                 (Limits.budget_profile_name limits));
+          ]
+      else
+        match Unix.stat canonical with
+        | stats when stats.Unix.st_kind = Unix.S_DIR ->
+            let diagnostics =
+              [ Diag.error primary ("Fas dependency is a directory: " ^ canonical) ]
+            in
+            if Option.is_some use_span then Error (with_chain diagnostics file_chain)
+            else Error diagnostics
+        | stats when stats.Unix.st_size > limits.Limits.max_use_bytes - !total_bytes ->
+            budget_error primary "max_use_bytes" limits.Limits.max_use_bytes
+        | _ -> (
+            match read_file canonical with
+            | Error message ->
+                let diagnostics =
+                  [ Diag.error primary ("cannot read Fas dependency: " ^ message) ]
+                in
+                if Option.is_some use_span then
+                  Error (with_chain diagnostics file_chain)
+                else Error diagnostics
+            | Ok text -> (
+                if String.length text > limits.Limits.max_use_bytes - !total_bytes then
+                  budget_error primary "max_use_bytes" limits.Limits.max_use_bytes
+                else
+                  let source = Source.create ~file:canonical ~text in
+                  match Parser.parse ~limits source with
+                  | Error diagnostics -> Error (with_chain diagnostics file_chain)
+                  | Ok program ->
+                      total_bytes := !total_bytes + String.length text;
+                      Hashtbl.add loaded canonical program;
+                      Hashtbl.add chains canonical file_chain;
+                      let rec dependencies = function
+                        | [] -> Ok ()
+                        | Ast.Use { path = dependency; span } :: rest -> (
+                            match use_path_error dependency with
+                            | Some message ->
+                                Error
+                                  (with_chain
+                                     [ Diag.error span message ]
+                                     (file_chain @ [ dependency ]))
+                            | None -> (
+                                let target =
+                                  Filename.concat (Filename.dirname canonical)
+                                    dependency
+                                in
+                                let target_canonical = canonical_path target in
+                                match visit file_chain target_canonical (Some span) with
+                                | Error diagnostics -> Error diagnostics
+                                | Ok () -> dependencies rest))
+                        | _ :: rest -> dependencies rest
+                      in
+                      dependencies program.Ast.items))
+        | exception Unix.Unix_error (error, _, _) ->
+            let message = Unix.error_message error in
+            let diagnostics =
+              [
+                Diag.error primary
+                  ("cannot read Fas dependency " ^ canonical ^ ": " ^ message);
+              ]
+            in
+            if Option.is_some use_span then Error (with_chain diagnostics file_chain)
+            else Error diagnostics
+  in
+  let roots = List.sort_uniq String.compare (List.map canonical_path roots) in
+  let rec visit_roots = function
+    | [] ->
+        let files =
+          Hashtbl.fold (fun path program acc -> (path, program) :: acc) loaded []
+          |> List.sort (fun (left, _) (right, _) -> String.compare left right)
+        in
+        let items =
+          List.concat_map
+            (fun (_, program) ->
+              List.filter (function Ast.Use _ -> false | _ -> true) program.Ast.items)
+            files
+        in
+        let chains =
+          Hashtbl.fold (fun path chain acc -> (path, chain) :: acc) chains []
+        in
+        Ok ({ Ast.items }, List.map (fun (path, chain) -> (path, chain)) chains)
+    | root :: rest -> (
+        match visit [] root None with
+        | Error diagnostics -> Error diagnostics
+        | Ok () -> visit_roots rest)
+  in
+  visit_roots roots
+
 let write_file path text =
   let channel = open_out_bin path in
   Fun.protect
@@ -215,33 +414,16 @@ let apply_no_inline config ir =
       | Some _ -> Ok { ir with Ir.no_inline_function = Some name })
 
 let run_unprotected config =
-  let rec parse_files acc = function
-    | [] -> Ok (List.rev acc)
-    | path :: rest -> (
-        match read_file path with
-        | Error message ->
-            Error
-              [
-                Diag.error Span.synthetic
-                  (Printf.sprintf "cannot read %s: %s" path message);
-              ]
-        | Ok text -> (
-            let source = Source.create ~file:path ~text in
-            match Parser.parse source with
-            | Error diagnostics -> Error diagnostics
-            | Ok program -> parse_files (program :: acc) rest))
-  in
-  match parse_files [] config.Cli.inputs with
+  match load_program ~limits config.Cli.inputs with
   | Error diagnostics -> Error diagnostics
-  | Ok programs -> (
-      let program =
-        {
-          Ast.items = List.concat (List.map (fun program -> program.Ast.items) programs);
-        }
-      in
+  | Ok (program, chains) -> (
       let* () = ast_budget (Ast.check_cumulative_asm_bytes ~limits program) in
       let* () = ast_budget (Ast.check_expanded_nodes ~limits program) in
-      let* hir = Sema.check ~limits program in
+      let* hir =
+        match Sema.check ~limits program with
+        | Ok hir -> Ok hir
+        | Error diagnostics -> Error (add_include_chains chains diagnostics)
+      in
       let* ir = Lower.lower hir in
       let* ir = apply_no_inline config ir in
       let* () = ir_budget program (Ir.check_lowered_nodes ~limits ir) in
@@ -278,18 +460,6 @@ let run_unstaged config =
             (Printf.sprintf "backend %s(%s) failed: %s" operation argument
                (Unix.error_message code));
         ]
-
-let canonical_path path =
-  try Unix.realpath path
-  with Unix.Unix_error _ ->
-    let directory = Filename.dirname path in
-    let absolute_directory =
-      try Unix.realpath directory
-      with Unix.Unix_error _ ->
-        if Filename.is_relative directory then Filename.concat (Sys.getcwd ()) directory
-        else directory
-    in
-    Filename.concat absolute_directory (Filename.basename path)
 
 let same_as_input config =
   List.exists

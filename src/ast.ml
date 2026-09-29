@@ -92,6 +92,7 @@ and body = Declaration | Statements of stmt list | Asm of string
 and linkage = Internal | External_c
 
 and item =
+  | Use of { path : string; span : Span.t }
   | Const of { name : string; ty : ty; value : expr; span : Span.t }
   | Struct of {
       name : string;
@@ -239,7 +240,11 @@ and expr_name = function
       "(" ^ type_name t ^ "){" ^ String.concat ", " (List.map expr_name xs) ^ "}"
 
 let item_span = function
-  | Const { span; _ } | Struct { span; _ } | Opaque { span; _ } | Func { span; _ } ->
+  | Use { span; _ }
+  | Const { span; _ }
+  | Struct { span; _ }
+  | Opaque { span; _ }
+  | Func { span; _ } ->
       span
 
 let render_program program =
@@ -561,6 +566,10 @@ let render_program program =
   in
   let emit_item item =
     match item with
+    | Use { path; _ } ->
+        text "use \"";
+        add_escaped path;
+        text "\""
     | Const { name; ty; value; _ } ->
         text "const ";
         add_name name;
@@ -745,6 +754,7 @@ let fold_expanded_nodes ~limit program =
       let at = item_span item in
       count at;
       match item with
+      | Use _ -> ()
       | Const { ty; value; span; _ } ->
           go_ty span ty;
           go_expr value

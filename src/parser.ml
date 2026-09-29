@@ -460,6 +460,15 @@ module P = struct
 
   and item p =
     match (peek p).kind with
+    | Token.Kw_use ->
+        let s = span p in
+        ignore (bump p);
+        let* path = string p in
+        if path = "C" then
+          Error [ Diag.error s "use \"C\" is not implemented until v0.2" ]
+        else
+          let* () = end_stmt p in
+          Ok [ Ast.Use { path; span = s } ]
     | Token.Kw_const ->
         let* x = const_item p in
         Ok [ x ]

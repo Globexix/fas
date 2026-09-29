@@ -22,6 +22,8 @@ let () =
   assert (Limits.default.max_aggregate_elements = 1_000_000);
   assert (Limits.default.max_object_alignment = 1_048_576);
   assert (Limits.default.max_object_size = 1_073_741_824);
+  assert (Limits.default.max_use_files = 10_000);
+  assert (Limits.default.max_use_bytes = 1_073_741_824);
   assert (Target_layout.pointer_integer_bits Target_layout.current = Ok 64);
   assert (
     Target_layout.pointer_integer_bits

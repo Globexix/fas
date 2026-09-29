@@ -192,7 +192,8 @@ let () =
   semantic_error "i64-distinct-from-isize" "type mismatch: expected i64, got isize"
     "fn convert(value isize) i64 { return value }\n";
   semantic_error "usize-call-distinct-from-u64" "type mismatch: expected usize, got u64"
-    "fn take(value usize) void { return }\nfn use(value u64) void { take(value) }\n";
+    "fn take(value usize) void { return }\n\
+     fn check_case(value u64) void { take(value) }\n";
   semantic_error "named-bool-constant-keeps-type"
     "type mismatch: expected i32, got bool"
     "const Flag bool = true\nfn main() i32 { value i32 = Flag\n return value }\n";
@@ -209,7 +210,7 @@ let () =
     "type mismatch: expected i32, got i8"
     "const Small i8 = 7\n\
      fn take(value i32) void { return }\n\
-     fn use() void { take(Small) }\n";
+     fn check_case() void { take(Small) }\n";
   semantic_error "named-i8-constant-binary-keeps-type"
     "binary operands must have the same type"
     "const Small i8 = 7\nfn add(value i32) i32 { return Small + value }\n";
@@ -217,7 +218,7 @@ let () =
     "const argument type mismatch"
     "const Small i8 = 7\n\
      fn value[N const i32]() i32 { return N }\n\
-     fn use() i32 { return value[Small]() }\n";
+     fn check_case() i32 { return value[Small]() }\n";
   let named_constant_explicit_conversions =
     llvm_of
       "const Negative i8 = -1\n\
@@ -1508,16 +1509,18 @@ let () =
   if not (contains lexical_initializer_shadow "add i64 1, 1") then
     failwith "lexical-scope-initializer-shadow: outer binding was not visible";
   semantic_error "lexical-scope-function-call-shadow" "value, not a function"
-    "fn target() i32 { return 1 }\nfn use() i32 { target i32 = 2\n return target() }\n";
+    "fn target() i32 { return 1 }\n\
+     fn check_case() i32 { target i32 = 2\n\
+    \ return target() }\n";
   semantic_error "lexical-scope-generic-call-shadow" "value, not a function"
     "fn target[N const i32]() i32 { return N }\n\
-     fn use() i32 { target i32 = 2\n\
+     fn check_case() i32 { target i32 = 2\n\
     \ return target[1]() }\n";
   semantic_error "lexical-scope-type-shadow" "value, not a type"
-    "struct Item { value i32 }\nfn use(Item i32) i32 { local Item\n return 0 }\n";
+    "struct Item { value i32 }\nfn check_case(Item i32) i32 { local Item\n return 0 }\n";
   semantic_error "lexical-scope-aggregate-length-shadow" "not a compile-time constant"
     "const Count usize = 2\n\
-     fn use(Count usize) i32 { local arr[Count,i32]\n\
+     fn check_case(Count usize) i32 { local arr[Count,i32]\n\
     \ return 0 }\n";
   ignore
     (lower_of
@@ -1936,14 +1939,15 @@ let () =
   let neutral_named_type =
     expect_ok
       (Parser.parse
-         (source "fn use(value handle[Handle]) i64 { return 0 }\nopaque Handle\n"))
+         (source "fn check_case(value handle[Handle]) i64 { return 0 }\nopaque Handle\n"))
   in
   (match neutral_named_type.Ast.items with
   | Ast.Func { params = [ { ty = Ast.Handle (Ast.Named_type "Handle"); _ } ]; _ } :: _
     ->
       ()
   | _ -> failwith "named-type-neutral-ast: parser classified a declaration name");
-  ignore (lower_of "fn use(value handle[Handle]) i64 { return 0 }\nopaque Handle\n");
+  ignore
+    (lower_of "fn check_case(value handle[Handle]) i64 { return 0 }\nopaque Handle\n");
   let forward_struct =
     llvm_of
       "fn make() i64 { value Pair = (Pair){7, 9}\n\
@@ -1962,9 +1966,9 @@ let () =
     (fun files -> ignore (expect_ok (check_files files) |> Lower.lower |> expect_ok))
     [ [ use_file; declarations_file ]; [ declarations_file; use_file ] ];
   semantic_error "unknown-named-type" "unknown type `Missing`"
-    "fn use(value handle[Missing]) i64 { return 0 }\n";
+    "fn check_case(value handle[Missing]) i64 { return 0 }\n";
   semantic_error "opaque-struct-literal" "opaque type `Handle` is not a struct"
-    "opaque Handle\nfn use() i64 { (Handle){}\n return 0 }\n";
+    "opaque Handle\nfn check_case() i64 { (Handle){}\n return 0 }\n";
   ignore
     (lower_of
        "fn preserve(value handle[Handle]) handle[Handle] { local handle[Handle] = value\n\
@@ -1975,27 +1979,27 @@ let () =
         opaque Handle\n");
   semantic_error "opaque-local-by-value"
     "opaque type `Handle` may only be used behind a pointer"
-    "opaque Handle\nfn use() void { value Handle }\n";
+    "opaque Handle\nfn check_case() void { value Handle }\n";
   semantic_error "opaque-struct-field-by-value" "opaque type `Handle` has no layout"
     "opaque Handle\nstruct Wrapper { value Handle }\n";
   semantic_error "opaque-array-by-value"
     "opaque type `Handle` may only be used behind a pointer"
-    "opaque Handle\nfn use() void { values arr[2,Handle] }\n";
+    "opaque Handle\nfn check_case() void { values arr[2,Handle] }\n";
   semantic_error "opaque-vector-by-value" "vector element type must be a scalar"
-    "opaque Handle\nfn use() void { values vec[2,Handle] }\n";
+    "opaque Handle\nfn check_case() void { values vec[2,Handle] }\n";
   semantic_error "opaque-parameter-by-value"
     "opaque type `Handle` may only be used behind a pointer"
-    "opaque Handle\nfn use(value Handle) void { return }\n";
+    "opaque Handle\nfn check_case(value Handle) void { return }\n";
   semantic_error "opaque-return-by-value"
     "opaque type `Handle` may only be used behind a pointer"
-    "opaque Handle\nfn use() Handle { }\n";
+    "opaque Handle\nfn check_case() Handle { }\n";
   semantic_error "opaque-sizeof" "opaque type `Handle` has no layout"
-    "opaque Handle\nfn use() usize { return sizeof[Handle] }\n";
+    "opaque Handle\nfn check_case() usize { return sizeof[Handle] }\n";
   semantic_error "opaque-alignof" "opaque type `Handle` has no layout"
-    "opaque Handle\nfn use() usize { return alignof[Handle] }\n";
+    "opaque Handle\nfn check_case() usize { return alignof[Handle] }\n";
   semantic_error "opaque-implicit-erasure"
     "type mismatch: expected addr, got handle[Handle]"
-    "opaque Handle\nfn use(value handle[Handle]) addr { return value }\n";
+    "opaque Handle\nfn check_case(value handle[Handle]) addr { return value }\n";
   ignore
     (lower_of
        "fn accept(value addr) void { return }\n\
@@ -2003,38 +2007,38 @@ let () =
         fn choose(flag bool, mutable addr, read_only addr) addr {\n\
        \ return flag ? mutable : read_only\n\
         }\n\
-        fn use(value addr) bool {\n\
+        fn check_case(value addr) bool {\n\
        \ read_only addr = value\n\
        \ accept(value)\n\
        \ read_only = value\n\
        \ return value == read_only\n\
         }\n");
   semantic_error "pointer-implicit-to-integer" "type mismatch: expected usize, got addr"
-    "fn use(value addr) void { bits usize = value }\n";
+    "fn check_case(value addr) void { bits usize = value }\n";
   semantic_error "integer-implicit-to-pointer" "type mismatch: expected addr, got usize"
-    "fn use(value usize) void { pointer addr = value }\n";
+    "fn check_case(value usize) void { pointer addr = value }\n";
   semantic_error "pointer-bitcast-discards-const"
     "illegal cast for source and destination widths"
-    "fn use(value addr) addr { return bitcast[addr](value) }\n";
+    "fn check_case(value addr) addr { return bitcast[addr](value) }\n";
   semantic_error "pointer-bitcast-u32-width"
     "illegal cast for source and destination widths"
-    "fn use(value addr) u32 { return bitcast[u32](value) }\n";
+    "fn check_case(value addr) u32 { return bitcast[u32](value) }\n";
   semantic_error "pointer-bitcast-i32-width"
     "illegal cast for source and destination widths"
-    "fn use(value i32) addr { return bitcast[addr](value) }\n";
+    "fn check_case(value i32) addr { return bitcast[addr](value) }\n";
   semantic_error "const-pointer-bitcast-u32-width"
     "illegal cast for source and destination widths"
-    "fn use(value addr) u32 { return bitcast[u32](value) }\n";
+    "fn check_case(value addr) u32 { return bitcast[u32](value) }\n";
   semantic_error "integer-bitcast-const-pointer-u32-width"
     "illegal cast for source and destination widths"
-    "fn use(value u32) addr { return bitcast[addr](value) }\n";
+    "fn check_case(value u32) addr { return bitcast[addr](value) }\n";
   let before_messages =
     semantic_messages
-      "struct Stable { x i64 }\nfn use(value Missing) i64 { return 0 }\n"
+      "struct Stable { x i64 }\nfn check_case(value Missing) i64 { return 0 }\n"
   in
   let after_messages =
     semantic_messages
-      "fn use(value Missing) i64 { return 0 }\nstruct Stable { x i64 }\n"
+      "fn check_case(value Missing) i64 { return 0 }\nstruct Stable { x i64 }\n"
   in
   if before_messages <> after_messages then
     failwith "named-type-order-diagnostic: declaration reordering changed diagnostics";
@@ -2167,7 +2171,7 @@ let () =
             failwith "no-inline: missing function diagnostic changed"
       | Ok _ -> failwith "no-inline: missing function was accepted");
   let generic_profile_source =
-    "fn use() i64 { return identity[i64](7) }\n\
+    "fn check_case() i64 { return identity[i64](7) }\n\
      fn identity[T](value T) T { return value }\n"
   in
   let generic_profile_hir =
@@ -2505,11 +2509,11 @@ let () =
   semantic_error "const-type-collision" "duplicate declaration `F`"
     "const F i64 = 1\nopaque F\n";
   semantic_error "constant-used-as-function" "constant, not a function"
-    "const F i64 = 1\nfn use() i64 { return F() }\n";
+    "const F i64 = 1\nfn check_case() i64 { return F() }\n";
   semantic_error "function-used-as-value" "function, not a value"
-    "fn F() i64 { return 1 }\nfn use() i64 { return F }\n";
+    "fn F() i64 { return 1 }\nfn check_case() i64 { return F }\n";
   semantic_error "type-used-as-value" "type, not a value"
-    "opaque F\nfn use() i64 { return F }\n";
+    "opaque F\nfn check_case() i64 { return F }\n";
   semantic_error "const-env-duplicate-const" "duplicate const `A`"
     "const A arr[2, i64] = {1, 2}\nconst A i64 = 1\n";
   semantic_error "const-env-array-length-mismatch" "const array length mismatch"
@@ -2671,6 +2675,166 @@ let () =
         (Printf.sprintf "`%s` is reserved and cannot be used as a binding" name)
         (Printf.sprintf "fn %s(x i64) i64 { return x }\n" name))
     Names.operation_names;
+
+  (match parse_messages "use \"C\"\n" with
+  | [ message ] when message = "use \"C\" is not implemented until v0.2" -> ()
+  | messages ->
+      failwith ("use-c-rejection: unexpected diagnostics " ^ String.concat "; " messages));
+  (match parse_messages "use \"C\" \"local.h\"\n" with
+  | [ message ] when message = "use \"C\" is not implemented until v0.2" -> ()
+  | messages ->
+      failwith
+        ("use-c-quoted-rejection: unexpected diagnostics " ^ String.concat "; " messages));
+  (match parse_messages "use \"C\" <system.h>\n" with
+  | [ message ] when message = "use \"C\" is not implemented until v0.2" -> ()
+  | messages ->
+      failwith
+        ("use-c-angle-rejection: unexpected diagnostics " ^ String.concat "; " messages));
+  (match parse_messages "fn use() i32 { return 0 }\n" with
+  | [ message ] when message = "expected identifier, found `use`" -> ()
+  | messages ->
+      failwith
+        ("use-keyword-rejection: unexpected diagnostics " ^ String.concat "; " messages));
+  if not (Names.reserved_binding_name "use") then
+    failwith "use-keyword: use is not registered as a reserved binding";
+  (match Driver.use_path_error "/opt/lib.fas" with
+  | Some message
+    when message
+         = "absolute Fas dependency paths are not supported; use a path relative to \
+            this file" ->
+      ()
+  | _ -> failwith "use-absolute-path: unexpected validation result");
+  (match Driver.use_path_error "lib\000.fas" with
+  | Some message when message = "Fas dependency paths cannot contain NUL bytes" -> ()
+  | _ -> failwith "use-nul-path: unexpected validation result");
+  (match Driver.use_path_error "lib.FAS" with
+  | Some message
+    when message
+         = "Fas dependency paths must end in lowercase `.fas`; C headers use `use \
+            \"C\"` in v0.2" ->
+      ()
+  | _ -> failwith "use-extension-case: unexpected validation result");
+  (match Driver.use_path_error "lib.h" with
+  | Some message
+    when message
+         = "Fas dependency paths must end in lowercase `.fas`; C headers use `use \
+            \"C\"` in v0.2" ->
+      ()
+  | _ -> failwith "use-c-header-path: unexpected validation result");
+  if Option.is_some (Driver.use_path_error "lib/../ops.fas") then
+    failwith "use-relative-parent-path: approved relative path rejected";
+  let use_limit_directory =
+    Filename.concat
+      (Filename.get_temp_dir_name ())
+      (Printf.sprintf "fas-use-regressions-%d" (Unix.getpid ()))
+  in
+  Unix.mkdir use_limit_directory 0o700;
+  let use_limit_root = Filename.concat use_limit_directory "root.fas" in
+  let use_limit_child = Filename.concat use_limit_directory "child.fas" in
+  let use_missing_root = Filename.concat use_limit_directory "missing-root.fas" in
+  let use_directory = Filename.concat use_limit_directory "directory.fas" in
+  let use_directory_root = Filename.concat use_limit_directory "directory-root.fas" in
+  let use_duplicate_root = Filename.concat use_limit_directory "duplicate-root.fas" in
+  let use_duplicate_one = Filename.concat use_limit_directory "one.fas" in
+  let use_duplicate_two = Filename.concat use_limit_directory "two.fas" in
+  let write_use_test_file path contents =
+    let channel = open_out_bin path in
+    Fun.protect
+      ~finally:(fun () -> close_out_noerr channel)
+      (fun () -> output_string channel contents)
+  in
+  let remove_use_test_path path = try Sys.remove path with Sys_error _ -> () in
+  let remove_use_test_directory path =
+    try Unix.rmdir path with Unix.Unix_error _ -> ()
+  in
+  let use_limit_root_text = "use \"child.fas\"\nfn main() i32 { return 0 }\n" in
+  write_use_test_file use_limit_root use_limit_root_text;
+  write_use_test_file use_limit_child "fn child() i32 { return 0 }\n";
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter remove_use_test_path
+        [
+          use_limit_root;
+          use_limit_child;
+          use_missing_root;
+          Filename.concat use_limit_directory "absent.fas";
+          use_directory_root;
+          use_duplicate_root;
+          use_duplicate_one;
+          use_duplicate_two;
+        ];
+      remove_use_test_directory use_directory;
+      remove_use_test_directory use_limit_directory)
+    (fun () ->
+      let dependency_limit_error limits =
+        match Driver.load_program ~limits [ use_limit_root ] with
+        | Error [ diagnostic ] -> diagnostic.Diag.message
+        | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+        | Ok _ -> failwith "dependency-closure-limit: expected rejection"
+      in
+      let file_error =
+        dependency_limit_error { Limits.default with max_use_files = 1 }
+      in
+      if
+        file_error
+        <> "dependency closure exceeds budget max_use_files of 1 (profile 0.15)"
+      then failwith ("dependency-file-limit: unexpected diagnostic " ^ file_error);
+      let byte_error =
+        dependency_limit_error
+          { Limits.default with max_use_bytes = String.length use_limit_root_text }
+      in
+      if
+        byte_error
+        <> "dependency closure exceeds budget max_use_bytes of "
+           ^ string_of_int (String.length use_limit_root_text)
+           ^ " (profile 0.15)"
+      then failwith ("dependency-byte-limit: unexpected diagnostic " ^ byte_error);
+      let driver_error path =
+        match Driver.run (cli_run [ path ]) with
+        | Error [ diagnostic ] -> diagnostic
+        | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+        | Ok _ -> failwith "use-diagnostic-pins: expected driver rejection"
+      in
+      write_use_test_file use_missing_root "use \"absent.fas\"\n";
+      let missing = driver_error use_missing_root in
+      if
+        missing.Diag.message
+        <> "cannot read Fas dependency "
+           ^ Filename.concat use_limit_directory "absent.fas"
+           ^ ": No such file or directory"
+        || missing.primary.Span.file <> use_missing_root
+        || missing.primary.Span.line <> 1
+        || missing.primary.Span.column <> 1
+        || missing.notes
+           <> [
+                "include chain: " ^ use_missing_root ^ " -> "
+                ^ Filename.concat use_limit_directory "absent.fas";
+              ]
+      then failwith "use-missing-chain: diagnostic or include chain changed";
+      Unix.mkdir use_directory 0o700;
+      write_use_test_file use_directory_root "use \"directory.fas\"\n";
+      let directory = driver_error use_directory_root in
+      if
+        directory.Diag.message <> "Fas dependency is a directory: " ^ use_directory
+        || directory.notes
+           <> [ "include chain: " ^ use_directory_root ^ " -> " ^ use_directory ]
+      then failwith "use-directory-chain: diagnostic or include chain changed";
+      write_use_test_file use_duplicate_root "use \"one.fas\"\nuse \"two.fas\"\n";
+      write_use_test_file use_duplicate_one "fn duplicate() i32 { return 1 }\n";
+      write_use_test_file use_duplicate_two "fn duplicate() i64 { return 2 }\n";
+      let duplicate = driver_error use_duplicate_root in
+      if
+        duplicate.Diag.message <> "duplicate function `duplicate`"
+        || duplicate.primary.Span.file <> use_duplicate_two
+        || duplicate.primary.Span.line <> 1
+        || duplicate.primary.Span.column <> 1
+        || duplicate.notes
+           <> [
+                "first definition is at " ^ use_duplicate_one ^ ":1:1";
+                "include chain: " ^ use_duplicate_root ^ " -> " ^ use_duplicate_one;
+                "include chain: " ^ use_duplicate_root ^ " -> " ^ use_duplicate_two;
+              ]
+      then failwith "use-duplicate-sites: diagnostic or include chains changed");
 
   List.iter
     (fun name ->
@@ -2990,7 +3154,8 @@ let () =
   then failwith "type-generic-declarations: AST rendering lost generic parameters";
   let applied_type_syntax =
     expect_ok
-      (Parser.parse (source "fn use(value Mixed[T, addr, 3]) i64 { return 0 }\n"))
+      (Parser.parse
+         (source "fn check_case(value Mixed[T, addr, 3]) i64 { return 0 }\n"))
   in
   (match applied_type_syntax.Ast.items with
   | [
@@ -3019,7 +3184,7 @@ let () =
   parse_error_message "type-generic-missing-const-type" "expected a type, found `]`"
     "fn bad[T const](value T) T { return value }\n";
   let generic_function_source =
-    "fn use() i64 { return identity[i64](identity[i64](7)) }\n\
+    "fn check_case() i64 { return identity[i64](identity[i64](7)) }\n\
      fn identity[T](value T) T { return value }\n"
   in
   let generic_function_hir =
@@ -3058,7 +3223,7 @@ let () =
      fn inner[T](value T) T { result Box[T] = (Box[T]){value}\n\
      return result.value }\n\
      fn outer[T](value T) T { return inner[T](value) }\n\
-     fn use() u8 { return outer[u8](3) }\n"
+     fn check_case() u8 { return outer[u8](3) }\n"
   in
   let nested_generic_function_hir =
     expect_ok (Parser.parse (source nested_generic_function_source))
@@ -7044,8 +7209,8 @@ let () =
     llvm_of
       "fn unwrap[N const u64](mask vec[1,bool]) bool { return bitcast[bool](mask) }\n\
        fn widen_generic[N const u64](value u8) u64 { return zext[u64](value) + N }\n\
-       fn use_it() bool { return unwrap[7](splat(true)) }\n\
-       fn use_wide() u64 { return widen_generic[2](255) }\n"
+       fn check_case_it() bool { return unwrap[7](splat(true)) }\n\
+       fn check_case_wide() u64 { return widen_generic[2](255) }\n"
   in
   List.iter
     (fun marker ->
@@ -7134,7 +7299,7 @@ let () =
        fn load_integer(p addr) u32 { return volatile_load[u32](p) }\n\
        fn load_address(p addr) addr { return volatile_load[addr](p) }\n\
        fn generic_load[T](p addr) T { return volatile_load[T](p) }\n\
-       fn use_generic(p addr) u32 { return generic_load[u32](p) }\n\
+       fn check_case_generic(p addr) u32 { return generic_load[u32](p) }\n\
        fn store_handle(p addr, value handle[Token]) void {\n\
        volatile_store[handle[Token]](p, value)\n\
        return\n\
@@ -7648,14 +7813,14 @@ let () =
   semantic_accept "simd-memory-generic-specialization"
     "fn load[T](p addr, m vec[3,bool], f vec[3,T]) vec[3,T] { return masked_load[T](p, \
      m, f) }\n\
-     fn use(p addr, m vec[3,bool], f vec[3,u32]) vec[3,u32] { return load[u32](p, m, \
-     f) }\n";
+     fn check_case(p addr, m vec[3,bool], f vec[3,u32]) vec[3,u32] { return \
+     load[u32](p, m, f) }\n";
   semantic_accept "simd-memory-generic-store-specialization"
     "fn store[T](p addr, i vec[3,i8], m vec[3,bool], v vec[3,T]) void { \
      scatter_bytes[T](p, i, m, v)\n\
      return }\n\
-     fn use(p addr, i vec[3,i8], m vec[3,bool], v vec[3,u16]) void { store[u16](p, i, \
-     m, v)\n\
+     fn check_case(p addr, i vec[3,i8], m vec[3,bool], v vec[3,u16]) void { \
+     store[u16](p, i, m, v)\n\
      return }\n";
   let simd_memory_type_error =
     "SIMD memory element type must be a scalar integer or bool"

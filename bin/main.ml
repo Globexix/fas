@@ -9,9 +9,8 @@ let load_source path =
     Some (Source.create ~file:path ~text)
   with Sys_error _ -> None
 
-let diagnostic_source config = function
-  | diagnostic :: _ when List.mem diagnostic.Diag.primary.Span.file config.Cli.inputs ->
-      load_source diagnostic.primary.file
+let diagnostic_source _config = function
+  | diagnostic :: _ -> load_source diagnostic.Diag.primary.Span.file
   | _ -> None
 
 let () =
