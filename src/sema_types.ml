@@ -58,6 +58,8 @@ let rec source_ty named_types = function
           | Some message -> Error message
           | None -> Ok (Hir.Vec (n, element)))
       | result -> result)
+  | Ast.Named_type name when Names.reserved_float_name name ->
+      Error "reserved for v0.5 floating point"
   | Ast.Named_type name -> (
       match List.assoc_opt name named_types with
       | Some Struct_name -> Ok (Hir.Struct name)

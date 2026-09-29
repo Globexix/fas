@@ -62,13 +62,13 @@ extern "C" {
   fn fas_scale_pixels(input addr, output addr, n usize, factor u8) void {
     factors vec[16,u8] = splat(factor)
     bias vec[16,u8] = splat(37)
-    floor vec[16,u8] = splat(19)
+    floor_value vec[16,u8] = splat(19)
     i usize = 0
     while n - i >= 16 {
       values vec[16,u8] = (input + i)[vec[16,u8]]
       scaled vec[16,u8] = mul_hi(values, factors)
       raised vec[16,u8] = add_sat(scaled, bias)
-      result vec[16,u8] = sub_sat(raised, floor)
+      result vec[16,u8] = sub_sat(raised, floor_value)
       (output + i)[vec[16,u8]] = result
       i += 16
     }
@@ -77,7 +77,7 @@ extern "C" {
       values vec[16,u8] = masked_load[u8](input + i, active, splat(0))
       scaled vec[16,u8] = mul_hi(values, factors)
       raised vec[16,u8] = add_sat(scaled, bias)
-      result vec[16,u8] = sub_sat(raised, floor)
+      result vec[16,u8] = sub_sat(raised, floor_value)
       masked_store[u8](output + i, active, result)
     }
     return

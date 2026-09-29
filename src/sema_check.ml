@@ -925,6 +925,10 @@ and check_handle_from_addr c name opaque_name args s =
 
 and check_call c _expected fn args s =
   match fn with
+  | Ast.Ident (name, _) when Names.reserved_float_name name ->
+      error s "reserved for v0.5 floating point"
+  | Ast.Generic_args (Ast.Ident (name, _), _, _) when Names.reserved_float_name name ->
+      error s "reserved for v0.5 floating point"
   | Ast.Generic_args (Ast.Ident (name, _), generic_args, application_span)
     when name = "handle_from_addr" -> (
       match generic_args with

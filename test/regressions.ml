@@ -2879,27 +2879,66 @@ let () =
         failwith ("released-shift-name: user function was not called: " ^ name))
     [ "shl"; "lshr"; "ashr"; "shr" ];
 
+  let exact_semantic_error name expected text =
+    match semantic_messages text with
+    | [ message ] when message = expected -> ()
+    | messages ->
+        failwith
+          (name ^ ": expected `" ^ expected ^ "`, got " ^ String.concat "; " messages)
+  in
+  let reserved_float_names = Names.reserved_float_names in
+  if reserved_float_names <> [ "f32"; "f64"; "sqrt"; "fma"; "floor"; "ceil"; "round" ]
+  then failwith "reserved-float-names: registry changed";
+  List.iter
+    (fun name ->
+      exact_semantic_error
+        ("reserved-float-type-" ^ name)
+        "reserved for v0.5 floating point"
+        (Printf.sprintf "fn main() %s { return 1 }\n" name);
+      exact_semantic_error
+        ("reserved-float-call-" ^ name)
+        "reserved for v0.5 floating point"
+        (Printf.sprintf "fn main() i32 { return %s() }\n" name))
+    reserved_float_names;
+  List.iter
+    (fun name ->
+      exact_semantic_error
+        ("reserved-float-function-" ^ name)
+        (Printf.sprintf "`%s` is reserved and cannot be used as a binding" name)
+        (Printf.sprintf "fn %s() i32 { return 0 }\n" name);
+      if not (Names.reserved_binding_name name) then
+        failwith ("reserved-float-binding-registry: " ^ name))
+    reserved_float_names;
+  List.iter
+    (fun (name, binding_name, text) ->
+      exact_semantic_error name
+        (Printf.sprintf "`%s` is reserved and cannot be used as a binding" binding_name)
+        text)
+    [
+      ("reserved-float-local", "f32", "fn main() i32 { f32 i32 = 1\n return f32 }\n");
+      ("reserved-float-parameter", "f64", "fn main(f64 i32) i32 { return f64 }\n");
+      ("reserved-float-function", "sqrt", "fn sqrt() i32 { return 0 }\n");
+      ("reserved-float-struct", "fma", "struct fma { value i32 }\n");
+      ( "reserved-float-generic-parameter",
+        "floor",
+        "fn value[floor](x i32) i32 { return x }\n" );
+      ( "reserved-float-const-parameter",
+        "ceil",
+        "fn value[ceil const u32](x i32) i32 { return x }\n" );
+      ("reserved-float-const", "round", "const round i32 = 1\n");
+    ];
   let released_unreserved_names =
     llvm_of
       "struct Members { len i32 i32 i32 true i32 }\n\
-       fn sqrt(x i32) i32 { return x }\n\
-       fn fma(x i32) i32 { return x }\n\
        fn main() i32 { value Members = (Members){1, 2, 3}\n\
-       return sqrt(value.len) + fma(value.i32) + value.true }\n"
+       return value.len + value.i32 + value.true }\n"
   in
-  List.iter
-    (fun marker ->
-      if not (contains released_unreserved_names marker) then
-        failwith ("released-unreserved-name: missing `" ^ marker ^ "`"))
-    [ "call i32 @sqrt"; "call i32 @fma"; "%struct.Members = type" ];
-  semantic_error "float-type-unavailable" "unknown type `f32`"
-    "fn main() f32 { return 1 }\n";
+  if not (contains released_unreserved_names "%struct.Members = type") then
+    failwith "released-unreserved-name: member labels stopped compiling";
   parse_error_message "floating-literal-unavailable" "expected identifier, found `5`"
     "fn main() i32 { return 1.5 }\n";
   parse_error_message "character-literal-unavailable" "unexpected character"
     "fn main() i32 { return 'a' }\n";
-  semantic_error "integer-sqrt-excluded" "unknown function `sqrt`"
-    "fn main() i32 { return sqrt(4) }\n";
   parse_error "labeled-break-rejected" "fn f() void { while true { break outer } }\n";
 
   let hygienic_parameter_names =

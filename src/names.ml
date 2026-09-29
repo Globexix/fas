@@ -57,9 +57,13 @@ let scalar_type_names =
 
 let primitive_type_names = scalar_type_names @ [ "addr"; "handle"; "arr"; "vec" ]
 let literal_names = [ "true"; "false"; "null" ]
+let reserved_float_names = [ "f32"; "f64"; "sqrt"; "fma"; "floor"; "ceil"; "round" ]
+let reserved_float_name name = List.mem name reserved_float_names
+let reserved_float_type_names = [ "f32"; "f64" ]
 
 let parser_type_name name =
   List.mem name scalar_type_names
+  || List.mem name reserved_float_type_names
   || List.mem name [ "ptr"; "addr"; "handle"; "arr"; "vec" ]
 
 let type_constructor = function
@@ -122,6 +126,11 @@ let operations =
     ("addr_from_bits", Value Addr_from_bits);
     ("handle_addr", Value Handle_addr);
     ("handle_from_addr", Value Handle_from_addr);
+    ("sqrt", Reserved);
+    ("fma", Reserved);
+    ("floor", Reserved);
+    ("ceil", Reserved);
+    ("round", Reserved);
   ]
 
 let operation_names = List.map fst operations
@@ -130,6 +139,7 @@ let reserved_binding_name name =
   List.mem name primitive_type_names
   || List.mem name literal_names
   || List.mem name [ "view"; "use" ]
+  || reserved_float_name name
   || Option.is_some (List.assoc_opt name operations)
 
 let parser_operation name =

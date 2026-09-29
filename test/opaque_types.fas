@@ -21,8 +21,8 @@ fn main() i32 {
   same handle[First] = preserve(first)
   back addr = make_addr(same)
   if addr_bits(back) != 0 { return 1 }
-  round handle[First] = recover(back)
-  if addr_bits(handle_addr(round)) != 0 { return 2 }
+  round_trip handle[First] = recover(back)
+  if addr_bits(handle_addr(round_trip)) != 0 { return 2 }
   if pointer_layout() != 16 { return 3 }
   return 0
 }

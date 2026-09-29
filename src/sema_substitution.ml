@@ -173,6 +173,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               else error span (Printf.sprintf "unknown name `%s`" length)
         in
         validate_type_names value_names type_names span ty
+    | Ast.Named_type name when Names.reserved_float_name name ->
+        error span "reserved for v0.5 floating point"
     | Ast.Named_type name -> (
         match nearest_kind value_names type_names name with
         | Some (`Type _) -> Ok ()
@@ -982,6 +984,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let* length = resolve_aggregate_length values span length in
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Vec (length, ty))
+    | Ast.Named_type name when Names.reserved_float_name name ->
+        error span "reserved for v0.5 floating point"
     | Ast.Named_type name -> (
         match List.assoc_opt name substitutions with
         | Some ty -> Ok ty
