@@ -525,10 +525,13 @@ let () =
         failwith ("integer-vector-comparison: missing `icmp " ^ predicate ^ "`"))
     [ "eq"; "ne"; "slt"; "sle"; "sgt"; "sge"; "ult"; "ule"; "ugt"; "uge" ];
   if
-    (not (contains integer_vector_comparisons "store <4 x i1>"))
+    (not (contains integer_vector_comparisons "store i8"))
     || (not (contains integer_vector_comparisons "extractelement <4 x i1>"))
-    || not (contains integer_vector_comparisons "icmp eq <8 x i1>")
+    || (not (contains integer_vector_comparisons "icmp eq <8 x i1>"))
+    || not (contains integer_vector_comparisons "and <8 x i1>")
   then failwith "integer-vector-comparison: result vector was not preserved";
+  if contains integer_vector_comparisons "store <4 x i1>" then
+    failwith "integer-vector-comparison: mask store retained unused bits";
   semantic_error "integer-vector-comparison-lanes" "same type"
     "fn f(left vec[4,i32], right vec[8,i32]) vec[4,bool] { return left == right }\n";
   semantic_error "integer-vector-comparison-elements" "same type"

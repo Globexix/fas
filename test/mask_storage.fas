@@ -1,0 +1,144 @@
+extern "C" {
+  fn mask_storage_buffer(category u32, slot u32) addr
+  fn mask_storage_capture(dst addr, src addr, length usize) void
+}
+const MASK_1 vec[1, bool] = splat(true)
+struct Holder_1 { flags vec[1, bool] }
+fn run_1() void {
+  raw addr = mask_storage_buffer(0, 0)
+  raw[vec[1, bool]] = MASK_1
+  volatile addr = mask_storage_buffer(1, 0)
+  volatile_store[vec[1, bool]](volatile, MASK_1)
+  dst addr = mask_storage_buffer(2, 0)
+  src addr = mask_storage_buffer(3, 0)
+  copy(dst[Holder_1], src[Holder_1])
+  initialized vec[1, bool] = MASK_1
+  mask_storage_capture(mask_storage_buffer(4, 0), &initialized, 1)
+  assigned vec[1, bool] = splat(false)
+  assigned = MASK_1
+  mask_storage_capture(mask_storage_buffer(5, 0), &assigned, 1)
+  return
+}
+extern "C" {
+  fn mask_storage_run_1() void { run_1() }
+}
+const MASK_3 vec[3, bool] = splat(true)
+struct Holder_3 { flags vec[3, bool] }
+fn run_3() void {
+  raw addr = mask_storage_buffer(0, 1)
+  raw[vec[3, bool]] = MASK_3
+  volatile addr = mask_storage_buffer(1, 1)
+  volatile_store[vec[3, bool]](volatile, MASK_3)
+  dst addr = mask_storage_buffer(2, 1)
+  src addr = mask_storage_buffer(3, 1)
+  copy(dst[Holder_3], src[Holder_3])
+  initialized vec[3, bool] = MASK_3
+  mask_storage_capture(mask_storage_buffer(4, 1), &initialized, 1)
+  assigned vec[3, bool] = splat(false)
+  assigned = MASK_3
+  mask_storage_capture(mask_storage_buffer(5, 1), &assigned, 1)
+  return
+}
+extern "C" {
+  fn mask_storage_run_3() void { run_3() }
+}
+const MASK_5 vec[5, bool] = splat(true)
+struct Holder_5 { flags vec[5, bool] }
+fn run_5() void {
+  raw addr = mask_storage_buffer(0, 2)
+  raw[vec[5, bool]] = MASK_5
+  volatile addr = mask_storage_buffer(1, 2)
+  volatile_store[vec[5, bool]](volatile, MASK_5)
+  dst addr = mask_storage_buffer(2, 2)
+  src addr = mask_storage_buffer(3, 2)
+  copy(dst[Holder_5], src[Holder_5])
+  initialized vec[5, bool] = MASK_5
+  mask_storage_capture(mask_storage_buffer(4, 2), &initialized, 1)
+  assigned vec[5, bool] = splat(false)
+  assigned = MASK_5
+  mask_storage_capture(mask_storage_buffer(5, 2), &assigned, 1)
+  return
+}
+extern "C" {
+  fn mask_storage_run_5() void { run_5() }
+}
+const MASK_7 vec[7, bool] = splat(true)
+struct Holder_7 { flags vec[7, bool] }
+fn run_7() void {
+  raw addr = mask_storage_buffer(0, 3)
+  raw[vec[7, bool]] = MASK_7
+  volatile addr = mask_storage_buffer(1, 3)
+  volatile_store[vec[7, bool]](volatile, MASK_7)
+  dst addr = mask_storage_buffer(2, 3)
+  src addr = mask_storage_buffer(3, 3)
+  copy(dst[Holder_7], src[Holder_7])
+  initialized vec[7, bool] = MASK_7
+  mask_storage_capture(mask_storage_buffer(4, 3), &initialized, 1)
+  assigned vec[7, bool] = splat(false)
+  assigned = MASK_7
+  mask_storage_capture(mask_storage_buffer(5, 3), &assigned, 1)
+  return
+}
+extern "C" {
+  fn mask_storage_run_7() void { run_7() }
+}
+const MASK_9 vec[9, bool] = splat(true)
+struct Holder_9 { flags vec[9, bool] }
+fn run_9() void {
+  raw addr = mask_storage_buffer(0, 4)
+  raw[vec[9, bool]] = MASK_9
+  volatile addr = mask_storage_buffer(1, 4)
+  volatile_store[vec[9, bool]](volatile, MASK_9)
+  dst addr = mask_storage_buffer(2, 4)
+  src addr = mask_storage_buffer(3, 4)
+  copy(dst[Holder_9], src[Holder_9])
+  initialized vec[9, bool] = MASK_9
+  mask_storage_capture(mask_storage_buffer(4, 4), &initialized, 2)
+  assigned vec[9, bool] = splat(false)
+  assigned = MASK_9
+  mask_storage_capture(mask_storage_buffer(5, 4), &assigned, 2)
+  return
+}
+extern "C" {
+  fn mask_storage_run_9() void { run_9() }
+}
+const MASK_13 vec[13, bool] = splat(true)
+struct Holder_13 { flags vec[13, bool] }
+fn run_13() void {
+  raw addr = mask_storage_buffer(0, 5)
+  raw[vec[13, bool]] = MASK_13
+  volatile addr = mask_storage_buffer(1, 5)
+  volatile_store[vec[13, bool]](volatile, MASK_13)
+  dst addr = mask_storage_buffer(2, 5)
+  src addr = mask_storage_buffer(3, 5)
+  copy(dst[Holder_13], src[Holder_13])
+  initialized vec[13, bool] = MASK_13
+  mask_storage_capture(mask_storage_buffer(4, 5), &initialized, 2)
+  assigned vec[13, bool] = splat(false)
+  assigned = MASK_13
+  mask_storage_capture(mask_storage_buffer(5, 5), &assigned, 2)
+  return
+}
+extern "C" {
+  fn mask_storage_run_13() void { run_13() }
+}
+const MASK_255 vec[255, bool] = splat(true)
+struct Holder_255 { flags vec[255, bool] }
+fn run_255() void {
+  raw addr = mask_storage_buffer(0, 6)
+  raw[vec[255, bool]] = MASK_255
+  volatile addr = mask_storage_buffer(1, 6)
+  volatile_store[vec[255, bool]](volatile, MASK_255)
+  dst addr = mask_storage_buffer(2, 6)
+  src addr = mask_storage_buffer(3, 6)
+  copy(dst[Holder_255], src[Holder_255])
+  initialized vec[255, bool] = MASK_255
+  mask_storage_capture(mask_storage_buffer(4, 6), &initialized, 32)
+  assigned vec[255, bool] = splat(false)
+  assigned = MASK_255
+  mask_storage_capture(mask_storage_buffer(5, 6), &assigned, 32)
+  return
+}
+extern "C" {
+  fn mask_storage_run_255() void { run_255() }
+}

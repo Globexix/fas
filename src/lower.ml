@@ -1022,7 +1022,7 @@ and materialize s e =
   let id = fresh s in
   emit s (Ir.Alloca (id, ty ht, alignment));
   let p = Ir.Local (id, Ir.Pointer (ty ht)) in
-  emit s (Ir.Store (ty ht, v, p, alignment));
+  let* () = store_value s ht v p alignment in
   Ok p
 
 and address s e =
@@ -1141,6 +1141,7 @@ and packed_bool_store s is_volatile lanes value pointer =
       let chunk_bytes, chunk_ty = volatile_chunk (bytes - byte_offset) in
       let bits = chunk_bytes * 8 in
       let first_lane = byte_offset * 8 in
+      let lane_count = min bits (lanes - first_lane) in
       let mask =
         Ir.Const_vector
           ( Ir.Vector (bits, Ir.I32),
@@ -1150,9 +1151,20 @@ and packed_bool_store s is_volatile lanes value pointer =
       let packed = fresh s in
       let packed_ty = Ir.Vector (bits, Ir.I1) in
       emit s (Ir.Shufflevector (packed, packed_ty, value, value, mask));
+      let packed_value = Ir.Local (packed, packed_ty) in
+      let* packed_value =
+        if lane_count = bits then Ok packed_value
+        else
+          let valid_lanes =
+            Ir.Const_vector
+              (packed_ty, List.init bits (fun i -> if i < lane_count then 1L else 0L))
+          in
+          let masked = fresh s in
+          emit s (Ir.Bin (masked, Ir.And, packed_ty, packed_value, valid_lanes));
+          Ok (Ir.Local (masked, packed_ty))
+      in
       let stored = fresh s in
-      emit s
-        (Ir.Cast (stored, "bitcast", packed_ty, Ir.Local (packed, packed_ty), chunk_ty));
+      emit s (Ir.Cast (stored, "bitcast", packed_ty, packed_value, chunk_ty));
       let* chunk_pointer = volatile_offset s pointer byte_offset in
       emit s (store chunk_ty (Ir.Local (stored, chunk_ty)) chunk_pointer);
       store_chunks (byte_offset + chunk_bytes)
@@ -1500,6 +1512,13 @@ and raw_store s t v p =
   | Hir.Vec (lanes, Hir.Bool) -> packed_bool_store s false lanes v p
   | _ -> error Span.synthetic "internal error: aggregate raw store"
 
+and store_value s t value pointer alignment =
+  match t with
+  | Hir.Vec (lanes, Hir.Bool) when lanes mod 8 <> 0 -> raw_store s t value pointer
+  | _ ->
+      emit s (Ir.Store (ty t, value, pointer, alignment));
+      Ok ()
+
 and field_address s a off =
   let* p =
     if
@@ -1701,8 +1720,7 @@ and stmt s = function
       | None -> Ok ()
       | Some e ->
           let* v = expr s e in
-          emit s (Ir.Store (ty local.ty, v, p, alignment));
-          Ok ())
+          store_value s local.ty v p alignment)
   | Hir.Let_construct (local, construction, _) ->
       let* alignment = align s local.ty in
       let id = fresh s in
@@ -1755,8 +1773,7 @@ and stmt s = function
           let loaded = Ir.Local (loaded_id, vt) in
           let ins = fresh s in
           emit s (Ir.Insert (ins, vt, loaded, iv, x));
-          emit s (Ir.Store (vt, Ir.Local (ins, vt), p, alignment));
-          Ok ()
+          store_value s source_ty (Ir.Local (ins, vt)) p alignment
       | Hir.ARaw (b, off, at) ->
           let* p = raw_address s b off in
           let* v = expr s e in
@@ -1766,8 +1783,7 @@ and stmt s = function
           let* v = expr s e in
           let t = Hir.expr_ty e in
           let* alignment = align s t in
-          emit s (Ir.Store (ty t, v, p, alignment));
-          Ok ())
+          store_value s t v p alignment)
   | Hir.Compound_assign (target, op, e, t, span) -> (
       match target with
       | Hir.AIndex (a, i) when match Hir.expr_ty a with Hir.Vec _ -> true | _ -> false
@@ -1788,8 +1804,7 @@ and stmt s = function
           let latest = Ir.Local (latest_id, vt) in
           let ins = fresh s in
           emit s (Ir.Insert (ins, vt, latest, iv, value));
-          emit s (Ir.Store (vt, Ir.Local (ins, vt), p, alignment));
-          Ok ()
+          store_value s source_ty (Ir.Local (ins, vt)) p alignment
       | Hir.ARaw (b, off, at) ->
           let* p = raw_address s b off in
           let* old = raw_load s at p in
@@ -1815,8 +1830,7 @@ and stmt s = function
             | Hir.Addr, Ast.Sub -> address_step s Ir.Sub old rhs
             | _ -> emit_binary s span t op it old rhs
           in
-          emit s (Ir.Store (it, value, p, alignment));
-          Ok ())
+          store_value s t value p alignment)
   | Hir.Expr (e, _) ->
       let* _ = expr s e in
       Ok ()
@@ -1862,8 +1876,7 @@ and construct_into s destination = function
       let* value = expr s expression in
       let value_ty = Hir.expr_ty expression in
       let* alignment = align s value_ty in
-      emit s (Ir.Store (ty value_ty, value, destination, alignment));
-      Ok ()
+      store_value s value_ty value destination alignment
   | Hir.Init_aggregate (Hir.Array (length, element_ty), elements, span) ->
       if List.length elements <> length then
         error span "internal error: array construction arity"
@@ -2155,9 +2168,11 @@ let lower_func structs strings functions f =
             emit s (Ir.Alloca (id, ty local.ty, alignment));
             let p = Ir.Local (id, Ir.Pointer (ty local.ty)) in
             bind_local s local p;
-            emit s
-              (Ir.Store
-                 (ty local.ty, Ir.Param (parameter.name, ty local.ty), p, alignment));
+            let* () =
+              store_value s local.ty
+                (Ir.Param (parameter.name, ty local.ty))
+                p alignment
+            in
             bind_parameters local_rest parameter_rest
         | _ ->
             error Span.synthetic
