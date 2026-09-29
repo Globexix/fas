@@ -2,10 +2,31 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+START_DIR=$(pwd)
 CC=$(printenv CC || printf 'clang-22')
 LLVM_OPT=$(printenv LLVM_OPT || printf 'opt-22')
 LLVM_LLC=$(printenv LLVM_LLC || printf 'llc-22')
 OCAML_FAS=$(printenv OCAML_FAS || printf '%s/_build/default/bin/main.exe' "$ROOT")
+
+resolve_tool_path() {
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    */*) printf '%s/%s\n' "$START_DIR" "$1" ;;
+    *)
+      resolved=$(command -v "$1" 2>/dev/null || true)
+      case "$resolved" in
+        /*) printf '%s\n' "$resolved" ;;
+        */*) printf '%s/%s\n' "$START_DIR" "$resolved" ;;
+        *) printf '%s\n' "$1" ;;
+      esac
+      ;;
+  esac
+}
+
+CC=$(resolve_tool_path "$CC")
+LLVM_OPT=$(resolve_tool_path "$LLVM_OPT")
+LLVM_LLC=$(resolve_tool_path "$LLVM_LLC")
+OCAML_FAS=$(resolve_tool_path "$OCAML_FAS")
 REAL_CC=$(command -v "$CC")
 REAL_OPT=$(command -v "$LLVM_OPT")
 REAL_LLC=$(command -v "$LLVM_LLC")
