@@ -661,9 +661,10 @@ and check_expr (c : context) expected expression =
       Ok place.expr
   | Ast.Addr_of (e, s) -> (
       let* place = check_place c e in
-      (match place.root with
-      | Some binding -> set_state c binding [] Unknown
-      | None -> ());
+      (match (place.root, place.path) with
+      | Some binding, Some (Exact path) -> set_state c binding path Unknown
+      | Some binding, Some (Dynamic_prefix path) -> set_state c binding path Unknown
+      | _ -> ());
       match place.expr with
       | Hir.Index (base, _, _, _)
         when match Hir.expr_ty base with Hir.Vec _ -> true | _ -> false ->
@@ -1562,8 +1563,9 @@ let check_copy c args span =
         set_state c destination_root destination_path Unknown
     | None, _ -> (
         match local_path destination with
-        | Some (destination_root, Dynamic_prefix _) ->
-            set_state c destination_root [] Unknown
+        | Some (destination_root, Exact path)
+        | Some (destination_root, Dynamic_prefix path) ->
+            set_state c destination_root path Unknown
         | _ -> ()));
     Ok (Hir.Copy (destination.expr, source.expr, destination_ty, scratch_free, span))
 
@@ -1681,7 +1683,7 @@ and check_stmt (c : context) = function
       in
       (match (checked_target.root, checked_target.path) with
       | Some binding, Some (Exact path) -> set_state c binding path Full
-      | Some binding, Some (Dynamic_prefix _) -> set_state c binding [] Unknown
+      | Some binding, Some (Dynamic_prefix path) -> set_state c binding path Unknown
       | _ -> ());
       Ok (Hir.Assign (target, v, span))
   | Ast.Compound_assign (t, op, e, span) ->
@@ -1736,7 +1738,7 @@ and check_stmt (c : context) = function
       else (
         (match (checked_target.root, checked_target.path) with
         | Some binding, Some (Exact path) -> set_state c binding path Full
-        | Some binding, Some (Dynamic_prefix _) -> set_state c binding [] Unknown
+        | Some binding, Some (Dynamic_prefix path) -> set_state c binding path Unknown
         | _ -> ());
         Ok (Hir.Compound_assign (target, op, v, et, span)))
   | Ast.Expr_stmt (Ast.Call (Ast.Ident ("copy", _), args, call_span), _) ->

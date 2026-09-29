@@ -1158,15 +1158,15 @@ let () =
   ignore
     (llvm_of
        "fn take(p addr) void { return }\nfn f() i64 { x i64\n take(&x)\n return x }\n");
-  ignore
-    (lower_of
-       "struct S { x i64 y i64 }\n\
-        fn take(p addr) void { return }\n\
-        fn f() i64 { s S\n\
-       \ take(&s.x)\n\
-       \ t S\n\
-       \ copy(t, s)\n\
-       \ return 0 }\n");
+  semantic_error "field-escape-preserves-sibling-initialization"
+    "use of uninitialized local `s`"
+    "struct S { x i64 y i64 }\n\
+     fn take(p addr) void { return }\n\
+     fn f() i64 { s S\n\
+     take(&s.x)\n\
+     t S\n\
+     copy(t, s)\n\
+     return 0 }\n";
   ignore
     (lower_of
        "struct S { x i64 y i64 }\n\
@@ -7192,8 +7192,48 @@ let () =
      return a[0][i] }\n";
   semantic_accept "aggregate-dynamic-write-read-unknown"
     "fn f(i i64) i64 { a arr[2,i64]\na[i] = 1\nreturn a[i] }\n";
+  semantic_accept "aggregate-dynamic-write-preserves-subtree"
+    "struct S { values arr[2,u32] other u32 }\n\
+     fn f(i usize) u32 { value S\n\
+     value.values[i] = 7\n\
+     return value.values[0] }\n";
+  semantic_accept "aggregate-dynamic-compound-preserves-subtree"
+    "struct S { values arr[2,u32] other u32 }\n\
+     fn f(i usize) u32 { value S\n\
+     value.values[0] = 3\n\
+     value.values[1] = 5\n\
+     value.values[i] += 1\n\
+     return value.values[0] }\n";
+  semantic_accept "aggregate-dynamic-copy-preserves-subtree"
+    "struct S { values arr[2,arr[2,u32]] other u32 }\n\
+     fn f(i usize) u32 { value S\n\
+     source arr[2,u32] = {7, 11}\n\
+     copy(value.values[i], source)\n\
+     return value.values[0][0] }\n";
+  semantic_accept "aggregate-dynamic-nested-loop-write"
+    "fn f() u32 { values arr[2,arr[2,u32]]\n\
+     for j usize = 0; j < 2; j += 1 { for i usize = 0; i < 2; i += 1 {\n\
+     values[j][i] = trunc[u32](j * 2 + i) } }\n\
+     return values[1][1] }\n";
   semantic_accept "aggregate-dynamic-pointer-element-unknown"
     "fn f(i i64) i64 { x i64\na arr[2,addr]\na[0] = &x\na[i][i64,0] = 1\nreturn x }\n";
+  semantic_accept "aggregate-address-root-remains-unknown"
+    "struct S { left u32 right u32 }\n\
+     fn f() u32 { value S\n\
+     pointer addr = &value\n\
+     pointer[S].left = 13\n\
+     return value.right }\n";
+  semantic_accept "aggregate-address-field-preserves-target"
+    "struct S { left u32 right u32 }\n\
+     fn f() u32 { value S\n\
+     pointer addr = &value.left\n\
+     return value.left }\n";
+  semantic_accept "aggregate-view-dynamic-write-preserves-subtree"
+    "struct S { values arr[2,u32] other u32 }\n\
+     fn f(i usize) u32 { value S\n\
+     view values = value.values\n\
+     values[i] = 17\n\
+     return value.values[0] }\n";
   semantic_accept "aggregate-branch-partial-unknown"
     "struct S { x i64 y i64 }\n\
      fn f(p bool) i64 { s S\n\
@@ -7251,6 +7291,40 @@ let () =
   semantic_error "aggregate-branch-no-else-established-uninitialized"
     "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\nfn f(p bool) i64 { s S\nif p { s.x = 1 }\nreturn s.y }\n";
+  semantic_error "aggregate-dynamic-write-preserves-sibling"
+    "use of uninitialized local `value`"
+    "struct S { values arr[2,u32] other u32 }\n\
+     fn f(i usize) u32 { value S\n\
+     value.values[i] = 7\n\
+     return value.other }\n";
+  semantic_error "aggregate-dynamic-compound-preserves-sibling"
+    "use of uninitialized local `value`"
+    "struct S { values arr[2,u32] other u32 }\n\
+     fn f(i usize) u32 { value S\n\
+     value.values[0] = 3\n\
+     value.values[1] = 5\n\
+     value.values[i] += 1\n\
+     return value.other }\n";
+  semantic_error "aggregate-dynamic-copy-preserves-sibling"
+    "use of uninitialized local `value`"
+    "struct S { values arr[2,arr[2,u32]] other u32 }\n\
+     fn f(i usize) u32 { value S\n\
+     source arr[2,u32] = {7, 11}\n\
+     copy(value.values[i], source)\n\
+     return value.other }\n";
+  semantic_error "aggregate-address-field-preserves-sibling"
+    "use of uninitialized local `value`"
+    "struct S { left u32 right u32 }\n\
+     fn f() u32 { value S\n\
+     pointer addr = &value.left\n\
+     return value.right }\n";
+  semantic_error "aggregate-view-dynamic-write-preserves-sibling"
+    "use of uninitialized local `value`"
+    "struct S { values arr[2,u32] other u32 }\n\
+     fn f(i usize) u32 { value S\n\
+     view values = value.values\n\
+     values[i] = 17\n\
+     return value.other }\n";
   semantic_error "aggregate-switch-established-uninitialized"
     "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\n\
