@@ -137,6 +137,13 @@ let supported = function
 
 let string = function Str s -> Some s | _ -> None
 
+let keep_field = function
+  | "kind" | "name" | "type" | "loc" | "value" | "storageClass" | "inline" | "tagUsed"
+  | "fixedUnderlyingType" | "isBitfield" | "isImplicit" | "inner" | "qualType"
+  | "desugaredQualType" | "file" | "line" ->
+      true
+  | _ -> false
+
 let rec json i =
   space i;
   match peek i with
@@ -193,26 +200,33 @@ and object_value i =
       expect i '"';
       let key = read_string i in
       expect i ':';
+      let keep = keep_field key in
+      let skip_inner =
+        key = "inner"
+        && (kind = "VarDecl" || kind = "FunctionDecl"
+           || String.ends_with ~suffix:"Stmt" kind)
+      in
       let value =
-        if
-          key = "inner"
-          && (kind = "RecordDecl" || kind = "VarDecl" || kind = "FunctionDecl"
-             || String.ends_with ~suffix:"Stmt" kind
-             || String.ends_with ~suffix:"Expr" kind)
-        then (
+        if (not keep) || skip_inner then (
           skip_value i;
-          Arr [])
-        else json i
+          None)
+        else Some (json i)
       in
       let kind =
-        if key = "kind" then Option.value ~default:kind (string value) else kind
+        if key = "kind" then Option.value ~default:kind (Option.bind value string)
+        else kind
       in
       match
         space i;
         take i
       with
-      | '}' -> Obj (List.rev ((key, value) :: acc))
-      | ',' -> loop kind ((key, value) :: acc)
+      | '}' ->
+          Obj
+            (match value with
+            | None -> List.rev acc
+            | Some value -> List.rev ((key, value) :: acc))
+      | ',' ->
+          loop kind (match value with None -> acc | Some value -> (key, value) :: acc)
       | _ -> failwith "invalid Clang JSON object"
     in
     loop "" []
@@ -240,7 +254,7 @@ let declaration i =
         expect i '"';
         let key = read_string i in
         expect i ':';
-        if keep then rest ((key, json i) :: acc)
+        if keep && keep_field key then rest ((key, json i) :: acc)
         else (
           skip_value i;
           rest acc)
