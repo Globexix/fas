@@ -6,6 +6,9 @@ extern int32_t fas_construct_nested_order(void);
 extern uint32_t fas_construct_array(void);
 extern int32_t fas_construct_explicit(void);
 extern uint32_t fas_construct_shuffle(void);
+extern uint32_t fas_construct_contextual_vector(void);
+extern uint32_t fas_construct_vector_in_struct(void);
+extern uint32_t fas_construct_array_of_vectors(void);
 
 static int32_t recorded[16];
 static int32_t recorded_count;
@@ -49,6 +52,18 @@ int main(void) {
   if (fas_construct_shuffle() != 20481) {
     fputs("vector literal shuffle selector failed\n", stderr);
     return 5;
+  }
+  if (fas_construct_contextual_vector() != 2357u) {
+    fputs("contextual vector construction failed\n", stderr);
+    return 6;
+  }
+  if (fas_construct_vector_in_struct() != 1113u) {
+    fputs("vector-in-struct construction failed\n", stderr);
+    return 7;
+  }
+  if (fas_construct_array_of_vectors() != 88u) {
+    fputs("array-of-vectors construction failed\n", stderr);
+    return 8;
   }
   return 0;
 }

@@ -424,7 +424,24 @@ and raw_offset_expr c s access_ty index_payload =
                Hir.Int Hir.Usize,
                s ))
 
-and check_expr (c : context) expected = function
+and check_expr (c : context) expected expression =
+  let vector_literal literal_type lanes element entries span =
+    if List.length entries <> lanes then
+      error span "wrong number of vector literal lanes"
+    else
+      let rec go acc = function
+        | [] -> Ok (List.rev acc)
+        | entry :: rest ->
+            let* value = check_expr c (Some element) entry in
+            let* () =
+              ensure_expected (Hir.expr_ty value) element (Ast.expr_span entry)
+            in
+            go (value :: acc) rest
+      in
+      let* entries = go [] entries in
+      Ok (Hir.Vector_lit (entries, literal_type, span))
+  in
+  match expression with
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
@@ -716,22 +733,15 @@ and check_expr (c : context) expected = function
         | Some _ when at = Hir.Void || bt = Hir.Void ->
             error s "ternary arms cannot have void type"
         | Some ty -> Ok (Hir.Ternary (tq, ta, tb, ty, s)))
-  | Ast.Array_lit (_, s) -> error s "aggregate construction needs a destination"
+  | Ast.Array_lit (entries, s) -> (
+      match expected with
+      | Some (Hir.Vec (lanes, element) as literal_type) ->
+          vector_literal literal_type lanes element entries s
+      | _ -> error s "aggregate construction needs a destination")
   | Ast.Struct_lit (source_type, xs, s) -> (
       let* literal_type = source_ty_in_context c s source_type in
       match literal_type with
-      | Hir.Vec (lanes, element) ->
-          if List.length xs <> lanes then error s "wrong number of vector literal lanes"
-          else
-            let rec go acc = function
-              | [] -> Ok (List.rev acc)
-              | e :: rest ->
-                  let* x = check_expr c (Some element) e in
-                  let* () = ensure_expected (Hir.expr_ty x) element (Ast.expr_span e) in
-                  go (x :: acc) rest
-            in
-            let* xs = go [] xs in
-            Ok (Hir.Vector_lit (xs, literal_type, s))
+      | Hir.Vec (lanes, element) -> vector_literal literal_type lanes element xs s
       | Hir.Array _ | Hir.Struct _ ->
           error s "aggregate construction needs a destination"
       | Hir.Opaque n -> error s (Printf.sprintf "opaque type `%s` is not a struct" n)
@@ -760,7 +770,7 @@ and check_initializer c expected expression =
                   (List.map2
                      (fun (field : Hir.field) entry -> (field.ty, entry))
                      definition.fields entries))
-      | _ -> error span "aggregate construction needs a destination"
+      | _ -> error span "construction needs an array, struct or vector type"
     in
     let rec check acc = function
       | [] -> Ok (List.rev acc)
@@ -792,7 +802,12 @@ and check_initializer c expected expression =
     Ok (`Aggregate (ty, entries, span))
   in
   match expression with
-  | Ast.Array_lit (entries, span) -> aggregate_entries expected entries span
+  | Ast.Array_lit (entries, span) -> (
+      match expected with
+      | Hir.Vec _ ->
+          let* value = check_expr c (Some expected) expression in
+          Ok (`Value value)
+      | _ -> aggregate_entries expected entries span)
   | Ast.Struct_lit (source_type, entries, span) -> (
       let* source_type = source_ty_in_context c span source_type in
       match source_type with
@@ -803,7 +818,7 @@ and check_initializer c expected expression =
           if not (Hir.ty_equal source_type expected) then
             error span "aggregate construction type does not match destination"
           else aggregate_entries expected entries span
-      | _ -> error span "aggregate construction needs a destination")
+      | _ -> error span "construction needs an array, struct or vector type")
   | _ ->
       let* value = check_expr c (Some expected) expression in
       Ok (`Value value)

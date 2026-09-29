@@ -7442,6 +7442,15 @@ let () =
   semantic_accept "construction-vector-value"
     "fn f() u32 { values vec[2,u32] = (vec[2,u32]){37, 41}\n\
      return values[0] + values[1] }\n";
+  semantic_accept "construction-contextual-vector"
+    "fn f() u32 { values vec[4,u32] = {1, 2, 3, 4}\nreturn values[3] }\n";
+  semantic_accept "construction-contextual-vector-in-struct"
+    "struct S { values vec[2,u32] tag u32 }\n\
+     fn f() u32 { value S = {{5, 7}, 11}\n\
+     return value.values[1] + value.tag }\n";
+  semantic_accept "construction-contextual-array-of-vectors"
+    "fn f() u32 { values arr[2,vec[2,u32]] = {{13, 17}, {19, 23}}\n\
+     return values[1][0] + values[1][1] }\n";
   semantic_error "construction-array-entry-count"
     "wrong number of array literal elements"
     "fn f() void { values arr[2,i32] = {1}\nreturn }\n";
@@ -7451,6 +7460,9 @@ let () =
   semantic_error "construction-vector-entry-count"
     "wrong number of vector literal lanes"
     "fn f() void { value vec[2,i32] = (vec[2,i32]){1}\nreturn }\n";
+  semantic_error "construction-scalar-literal-destination"
+    "construction needs an array, struct or vector type"
+    "fn f() void { value u32 = {1}\nreturn }\n";
   semantic_error "construction-entry-type-mismatch"
     "type mismatch: expected i32, got bool"
     "struct S { flag i32 }\nfn f() void { value S = {true}\nreturn }\n";

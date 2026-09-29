@@ -1,6 +1,7 @@
 struct Pair { left i32 right i32 }
 struct Cell { x i32 y i32 }
 struct Board { cells arr[2,Cell] tail arr[2,u32] }
+struct VectorBox { values vec[2,u32] }
 
 extern "C" {
   fn fas_record(value i32) i32
@@ -29,5 +30,20 @@ extern "C" {
     a vec[4,u32] = (vec[4,u32]){11, 13, 17, 19}
     b vec[4,u32] = shuffle(a, a, (vec[4,u32]){3, 1, 2, 0})
     return b[0] * 1000 + b[1] * 100 + b[2] * 10 + b[3]
+  }
+
+  fn fas_construct_contextual_vector() u32 {
+    values vec[4,u32] = {2, 3, 5, 7}
+    return values[0] * 1000 + values[1] * 100 + values[2] * 10 + values[3]
+  }
+
+  fn fas_construct_vector_in_struct() u32 {
+    value VectorBox = {{11, 13}}
+    return value.values[0] * 100 + value.values[1]
+  }
+
+  fn fas_construct_array_of_vectors() u32 {
+    values arr[2,vec[2,u32]] = {{17, 19}, {23, 29}}
+    return values[0][0] + values[0][1] + values[1][0] + values[1][1]
   }
 }
