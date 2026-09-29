@@ -1,0 +1,13 @@
+extern "C" {
+  fn fas_ordinary_payload_length() usize {
+    return len("a\0b")
+  }
+
+  fn fas_utf8_payload_length() usize {
+    return len("é")
+  }
+
+  fn fas_c_payload_length() usize {
+    return len(c"fas")
+  }
+}

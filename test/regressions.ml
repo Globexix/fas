@@ -2345,6 +2345,25 @@ let () =
 
   semantic_error "fas-026-const-array-write" "cannot modify constant"
     "const K arr[2, i64] = {1, 2}\nfn main() i32 { K[0] = 9\n return 0 }\n";
+  let const_array_address =
+    llvm_of
+      "const K arr[2,u32] = {4, 5}\n\
+       fn pointer() addr { return &K }\n\
+       fn main() u32 { return K[0] }\n"
+  in
+  if
+    (not
+       (contains const_array_address
+          "@K = private unnamed_addr constant [2 x i32] [i32 4, i32 5]"))
+    || not (contains const_array_address "getelementptr [2 x i32], ptr @K")
+  then failwith "named-aggregate-constant-address: storage is not static and readonly";
+  semantic_error "named-aggregate-constant-view-write" "cannot modify constant"
+    "const K arr[2,u32] = {4, 5}\n\
+     fn main() void { view values = K\n\
+    \ values[0] = 8\n\
+    \ return }\n";
+  semantic_error "scalar-constant-address" "constant `K` is not a place"
+    "const K u32 = 4\nfn main() addr { return &K }\n";
   semantic_error "fas-029-string-literal-index" "cannot modify read-only pointer"
     "fn main() i32 { \"x\"[u8] = 9\n return 0 }\n";
   let string_literals =
@@ -2400,6 +2419,11 @@ let () =
   in
   if not (contains c_literal_length "ret i64 3\n") then
     failwith "fas-031-len: C literal payload length is incorrect";
+  let c_literal_embedded_payload_length =
+    llvm_of "fn main() i64 { return bitcast[i64](len(\"a\\0b\")) }\n"
+  in
+  if not (contains c_literal_embedded_payload_length "ret i64 3\n") then
+    failwith "fas-031-len: ordinary byte payload length included a terminator";
   let literal_const_specialization =
     llvm_of
       "fn literal_size[N const usize]() usize { return N }\n\
