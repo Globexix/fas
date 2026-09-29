@@ -211,6 +211,7 @@ let type_error raw =
 let declaration_location node =
   match get "loc" node with
   | Some location ->
+      let location = Option.value ~default:location (get "expansionLoc" location) in
       let number = function
         | Some (C_import_json.Num value) -> int_of_string_opt value
         | Some (C_import_json.Str value) -> int_of_string_opt value

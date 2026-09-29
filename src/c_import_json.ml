@@ -11,6 +11,8 @@ type input = {
   data : bytes;
   mutable pos : int;
   mutable size : int;
+  mutable last_file : string option;
+  mutable last_line : string option;
 }
 
 let refill i =
@@ -38,49 +40,6 @@ let rec space i =
 let expect i c =
   space i;
   if take i <> c then failwith "invalid Clang JSON"
-
-let skip_string i =
-  let escaped = ref false and closed = ref false in
-  while not !closed do
-    refill i;
-    let c = Bytes.get i.data i.pos in
-    i.pos <- i.pos + 1;
-    if !escaped then escaped := false
-    else if c = '\\' then escaped := true
-    else if c = '"' then closed := true
-  done
-
-let skip_value i =
-  space i;
-  match take i with
-  | '"' -> skip_string i
-  | '{' | '[' ->
-      let depth = ref 1 and quoted = ref false and escaped = ref false in
-      while !depth > 0 do
-        refill i;
-        while i.pos < i.size && !depth > 0 do
-          let c = Bytes.get i.data i.pos in
-          i.pos <- i.pos + 1;
-          if !quoted then (
-            if !escaped then escaped := false
-            else if c = '\\' then escaped := true
-            else if c = '"' then quoted := false)
-          else
-            match c with
-            | '"' -> quoted := true
-            | '{' | '[' -> incr depth
-            | '}' | ']' -> decr depth
-            | _ -> ()
-        done
-      done
-  | _ ->
-      while
-        match peek i with
-        | ',' | ']' | '}' | ' ' | '\n' | '\r' | '\t' -> false
-        | _ -> true
-      do
-        ignore (take i)
-      done
 
 let hex i =
   let digit = function
@@ -131,6 +90,64 @@ let read_string i =
   in
   loop ()
 
+let record_location_value i field value =
+  if field = "file" then i.last_file <- Some value
+  else if field = "line" then i.last_line <- Some value
+
+let rec skip_value ?(location = false) ?(range = false) ?(field = "") i =
+  space i;
+  match take i with
+  | '"' ->
+      let value = read_string i in
+      if location && (field = "file" || field = "line") then
+        record_location_value i field value
+  | '{' ->
+      let rec fields () =
+        space i;
+        if peek i = '}' then ignore (take i)
+        else (
+          expect i '"';
+          let key = read_string i in
+          expect i ':';
+          let child_location =
+            List.mem key [ "loc"; "expansionLoc"; "spellingLoc" ]
+            || (range && List.mem key [ "begin"; "end" ])
+            || (location && List.mem key [ "file"; "line" ])
+          in
+          skip_value ~location:child_location ~range:(key = "range") ~field:key i;
+          space i;
+          match take i with
+          | '}' -> ()
+          | ',' -> fields ()
+          | _ -> failwith "invalid Clang JSON object")
+      in
+      fields ()
+  | '[' ->
+      let rec values () =
+        space i;
+        if peek i = ']' then ignore (take i)
+        else (
+          skip_value i;
+          space i;
+          match take i with
+          | ']' -> ()
+          | ',' -> values ()
+          | _ -> failwith "invalid Clang JSON array")
+      in
+      values ()
+  | _ ->
+      let b = Buffer.create 12 in
+      while
+        match peek i with
+        | ',' | ']' | '}' | ' ' | '\n' | '\r' | '\t' -> false
+        | _ -> true
+      do
+        Buffer.add_char b (take i)
+      done;
+      let value = Buffer.contents b in
+      if location && (field = "file" || field = "line") then
+        record_location_value i field value
+
 let supported = function
   | "FunctionDecl" | "VarDecl" | "TypedefDecl" | "EnumDecl" | "RecordDecl" -> true
   | _ -> false
@@ -140,17 +157,18 @@ let string = function Str s -> Some s | _ -> None
 let keep_field = function
   | "kind" | "id" | "decl" | "name" | "type" | "loc" | "value" | "storageClass"
   | "inline" | "tagUsed" | "fixedUnderlyingType" | "isBitfield" | "isImplicit" | "inner"
-  | "qualType" | "desugaredQualType" | "file" | "line" ->
+  | "qualType" | "desugaredQualType" | "file" | "line" | "expansionLoc" | "spellingLoc"
+    ->
       true
   | _ -> false
 
-let rec json i =
+let rec json ?(location = false) i =
   space i;
   match peek i with
   | '"' ->
       ignore (take i);
       Str (read_string i)
-  | '{' -> object_value i
+  | '{' -> object_value ~location i
   | '[' -> array_value i
   | 't' -> literal i "true" (Bool true)
   | 'f' -> literal i "false" (Bool false)
@@ -189,12 +207,24 @@ and array_value i =
     in
     loop []
 
-and object_value i =
+and object_value ?(location = false) i =
+  let inherited_file = i.last_file and inherited_line = i.last_line in
+  let location_fields fields =
+    if not location then fields
+    else
+      let add_if_missing key value fields =
+        if List.mem_assoc key fields then fields
+        else Option.fold ~none:fields ~some:(fun v -> (key, v) :: fields) value
+      in
+      fields
+      |> add_if_missing "file" (Option.map (fun v -> Str v) inherited_file)
+      |> add_if_missing "line" (Option.map (fun v -> Num v) inherited_line)
+  in
   expect i '{';
   space i;
   if peek i = '}' then (
     ignore (take i);
-    Obj [])
+    Obj (location_fields []))
   else
     let rec loop kind acc =
       expect i '"';
@@ -206,12 +236,17 @@ and object_value i =
         && (kind = "VarDecl" || kind = "RecordDecl" || kind = "FieldDecl"
            || String.ends_with ~suffix:"Stmt" kind)
       in
+      let child_location = List.mem key [ "loc"; "expansionLoc"; "spellingLoc" ] in
       let value =
         if (not keep) || skip_inner then (
-          skip_value i;
+          skip_value ~location:child_location ~range:(key = "range") ~field:key i;
           None)
-        else Some (json i)
+        else Some (json ~location:child_location i)
       in
+      (match (location, key, value) with
+      | true, ("file" | "line"), Some (Str value) -> record_location_value i key value
+      | true, "line", Some (Num value) -> record_location_value i key value
+      | _ -> ());
       let kind =
         if key = "kind" then Option.value ~default:kind (Option.bind value string)
         else kind
@@ -221,10 +256,12 @@ and object_value i =
         take i
       with
       | '}' ->
-          Obj
-            (match value with
+          let fields =
+            match value with
             | None -> List.rev acc
-            | Some value -> List.rev ((key, value) :: acc))
+            | Some value -> List.rev ((key, value) :: acc)
+          in
+          Obj (location_fields fields)
       | ',' ->
           loop kind (match value with None -> acc | Some value -> (key, value) :: acc)
       | _ -> failwith "invalid Clang JSON object"
@@ -264,16 +301,32 @@ let declaration i =
         expect i '"';
         let key = read_string i in
         expect i ':';
-        if keep && keep_field key then rest ((key, json i) :: acc)
+        if keep && keep_field key then
+          rest
+            (( key,
+               json ~location:(List.mem key [ "loc"; "expansionLoc"; "spellingLoc" ]) i
+             )
+            :: acc)
         else (
-          skip_value i;
+          skip_value
+            ~location:(List.mem key [ "loc"; "expansionLoc"; "spellingLoc" ])
+            ~range:(key = "range") ~field:key i;
           rest acc)
     | _ -> failwith "invalid Clang declaration"
   in
   rest acc
 
 let declarations channel =
-  let i = { channel; data = Bytes.create 65536; pos = 0; size = 0 } in
+  let i =
+    {
+      channel;
+      data = Bytes.create 65536;
+      pos = 0;
+      size = 0;
+      last_file = None;
+      last_line = None;
+    }
+  in
   expect i '{';
   let rec root acc =
     space i;

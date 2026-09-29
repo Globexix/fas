@@ -8268,6 +8268,49 @@ let () =
 
   let c_matrix = c_import_fixture "matrix.h" in
   let c_matrix_source, c_matrix_imported = c_matrix in
+  let provenance_dir = Filename.dirname c_matrix_source in
+  let provenance_headers =
+    List.map
+      (fun (name, line) ->
+        C_import.
+          {
+            spelling = Ast.C_quoted name;
+            span =
+              Span.make ~file:c_matrix_source ~start_offset:0 ~end_offset:0 ~line
+                ~column:1;
+          })
+      [ ("provenance_first.h", 1); ("provenance_second.h", 2) ]
+  in
+  let provenance_declarations, _ =
+    expect_ok
+      (C_import.import ~cc:"clang-22" ~debug:false ~keep:false c_matrix_source
+         provenance_headers)
+  in
+  let provenance_import =
+    C_import.map_declarations ~span:Span.synthetic provenance_declarations
+  in
+  List.iter
+    (fun (name, header, line) ->
+      incr checks_run;
+      let expected_file = Filename.concat provenance_dir header ^ ":" ^ line in
+      match
+        List.find_opt
+          (fun entry -> String.starts_with ~prefix:(name ^ "\t") entry)
+          provenance_import.manifest
+      with
+      | Some entry when contains entry expected_file -> ()
+      | Some entry ->
+          failwith
+            (Printf.sprintf "C provenance %s: expected %s, got %s" name expected_file
+               entry)
+      | None -> failwith ("C provenance declaration missing: " ^ name))
+    [
+      ("FasProvenanceFirstType", "provenance_first.h", "1");
+      ("fas_provenance_first", "provenance_first.h", "2");
+      ("fas_provenance_macro", "provenance_first.h", "4");
+      ("FasProvenanceSecondType", "provenance_second.h", "1");
+      ("fas_provenance_second", "provenance_second.h", "2");
+    ];
   List.iter
     (fun (name, expected) ->
       incr checks_run;
