@@ -85,8 +85,10 @@ let source_ty_diag named_types span ty =
 
 let lookup name table = List.find_opt (fun (entry, _, _) -> entry = name) table
 
-let resolve_aggregate_length values span length =
+let resolve_aggregate_length ?(globals = []) values span length =
   match lookup length values with
+  | None when List.mem length globals ->
+      error span (Printf.sprintf "global `%s` is not a constant" length)
   | None -> Ok length
   | Some (_, ty, value) ->
       if Sema_numeric.is_unsigned ty then
@@ -100,18 +102,18 @@ let resolve_aggregate_length values span length =
           error span "aggregate length is not a machine integer"
         else Ok (Int64.to_string value)
 
-let rec source_ty_with_values named_types values span = function
+let rec source_ty_with_values ?(globals = []) named_types values span = function
   | Ast.Array (length, ty) -> (
-      let* length = resolve_aggregate_length values span length in
-      let* ty = source_ty_with_values named_types values span ty in
+      let* length = resolve_aggregate_length ~globals values span length in
+      let* ty = source_ty_with_values ~globals named_types values span ty in
       try
         let length = int_of_string length in
         if length < 0 then error span "negative aggregate length"
         else Ok (Hir.Array (length, ty))
       with Failure _ -> error span "aggregate length is not a machine integer")
   | Ast.Vec (length, ty) -> (
-      let* length = resolve_aggregate_length values span length in
-      let* ty = source_ty_with_values named_types values span ty in
+      let* length = resolve_aggregate_length ~globals values span length in
+      let* ty = source_ty_with_values ~globals named_types values span ty in
       try
         let length = int_of_string length in
         if length < 0 then error span "negative aggregate length"

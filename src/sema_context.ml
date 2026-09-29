@@ -17,7 +17,7 @@ type checked_target = {
 
 type signature = { params : (string * Hir.ty) list; ret : Hir.ty; variadic : bool }
 type trailing_args = Reject | Promote_variadic
-type top_level_kind = Top_type | Top_function | Top_const
+type top_level_kind = Top_type | Top_function | Top_const | Top_global
 
 type top_level_binding = {
   declaration_id : int;
@@ -49,6 +49,7 @@ type context = {
   named_types : (string * named_type_kind) list;
   consts : (string * Hir.ty * int64) list;
   arrays : (string * Hir.ty * int64 list) list;
+  globals : (string * Hir.ty * Ast.global_linkage) list;
   signatures : (string * signature) list;
   templates : (string * Ast.item) list;
   top_level_bindings : top_level_binding list;
@@ -63,6 +64,9 @@ type context = {
 
 let lookup_top_level name bindings =
   List.find_opt (fun binding -> binding.declaration_name = name) bindings
+
+let lookup_global name globals =
+  List.find_opt (fun (global_name, _, _) -> global_name = name) globals
 
 type type_node_account = {
   type_node_limits : Limits.t;
@@ -249,6 +253,13 @@ and count_expanded_item_type_nodes item cap total =
     | Ast.Const { ty; value; _ } ->
         count_expanded_expr_type_nodes value cap
           (count_expanded_type_nodes ty cap total)
+    | Ast.Global { ty; init; _ } ->
+        Option.fold
+          ~none:(count_expanded_type_nodes ty cap total)
+          ~some:(fun value ->
+            count_expanded_expr_type_nodes value cap
+              (count_expanded_type_nodes ty cap total))
+          init
     | Ast.Struct { fields; generic_params; _ } ->
         List.fold_left
           (fun total parameter ->

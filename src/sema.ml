@@ -109,6 +109,11 @@ let validate_extern_c_signature span params converted ret =
          (Hir.ty_name ret))
 
 let check ?(limits = Limits.default) program =
+  let global_names =
+    List.filter_map
+      (function Ast.Global { name; _ } -> Some name | _ -> None)
+      program.Ast.items
+  in
   let* () =
     if limits.Limits.max_type_nodes >= 0 then Ok ()
     else
@@ -123,6 +128,7 @@ let check ?(limits = Limits.default) program =
     | Ast.Opaque { name; span } | Ast.Struct { name; span; _ } ->
         Some (name, Top_type, span)
     | Ast.Const { name; span; _ } -> Some (name, Top_const, span)
+    | Ast.Global { name; span; _ } -> Some (name, Top_global, span)
     | Ast.Func { name; span; _ } -> Some (name, Top_function, span)
   in
   let rec validate_declarations next_id seen bindings = function
@@ -157,6 +163,7 @@ let check ?(limits = Limits.default) program =
                     | Top_type -> "type"
                     | Top_const -> "const"
                     | Top_function -> "function"
+                    | Top_global -> "global"
                   in
                   duplicate (Printf.sprintf "duplicate %s `%s`" label name)
                 else duplicate (Printf.sprintf "duplicate declaration `%s`" name)))
@@ -226,7 +233,8 @@ let check ?(limits = Limits.default) program =
       base_structs_src
   in
   let* early_consts =
-    Sema_constants.resolve_scalar_declarations ~structs:base_structs ~named_types
+    Sema_constants.resolve_scalar_declarations ~globals:global_names
+      ~structs:base_structs ~named_types
       ~resolve_type:(fun span ty ->
         source_ty named_types ty
         |> Result.map_error (fun message -> [ Diag.error span message ]))
@@ -303,11 +311,12 @@ let check ?(limits = Limits.default) program =
       params
   in
   let* scalar_consts =
-    Sema_constants.resolve_scalar_declarations ~structs ~named_types
-      ~resolve_type:source_obj ~strict:true program.Ast.items
+    Sema_constants.resolve_scalar_declarations ~globals:global_names ~structs
+      ~named_types ~resolve_type:source_obj ~strict:true program.Ast.items
   in
   let* consts_ordered, arrays_ordered, arrays_names =
-    Sema_const_env.collect ~source_obj ~structs ~named_types ~scalar_consts program
+    Sema_const_env.collect ~global_names ~source_obj ~structs ~named_types
+      ~scalar_consts program
   in
   let* () =
     Sema_invariants.check_const_environment
@@ -340,6 +349,10 @@ let check ?(limits = Limits.default) program =
   let source_return span t =
     let* t = source_ty_diag named_types span t in
     if t = Hir.Void then Ok t else validate_object span t
+  in
+  let* globals =
+    Sema_global_env.collect ~source_obj ~structs ~named_types ~consts:consts_ordered
+      ~arrays:arrays_ordered ~global_names program.items
   in
   let source_params =
     map_params (fun (param : Ast.param) -> source_obj param.span param.ty)
@@ -412,6 +425,10 @@ let check ?(limits = Limits.default) program =
       consts =
         (if extra_consts = [] then consts_ordered else extra_consts @ consts_ordered);
       arrays = arrays_ordered;
+      globals =
+        List.map
+          (fun (global : Hir.global) -> (global.name, global.ty, global.linkage))
+          globals;
       signatures = sigs_ordered;
       templates;
       top_level_bindings;
@@ -586,6 +603,7 @@ let check ?(limits = Limits.default) program =
        Hir.structs;
        consts = hconsts;
        const_arrays = harrays;
+       globals;
        funcs = List.rev !funcs;
        strings = List.rev program_strings.reversed;
      }

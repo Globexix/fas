@@ -165,8 +165,8 @@ let mulhi_apply kind x y =
 let sat_or_mulhi name kind x y =
   if name = "mul_hi" then mulhi_apply kind x y else sat_apply name kind x y
 
-let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve consts
-    expected ?(check_only = false) ?(validate_dead = true) = function
+let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?(globals = [])
+    ?resolve consts expected ?(check_only = false) ?(validate_dead = true) = function
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
@@ -181,6 +181,8 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
   | Ast.Ident (n, s) -> (
       match lookup n consts with
       | Some (_, t, v) -> Ok (t, v)
+      | None when List.mem n globals ->
+          error s (Printf.sprintf "global `%s` is not a constant" n)
       | None -> (
           match resolve with
           | Some resolve -> resolve ~check_only n s
@@ -199,55 +201,55 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
       else error s ("integer literal is out of range for " ^ ty_name t)
   | Ast.Unary (Ast.Neg, e, s) ->
       let* t, v =
-        const_expr ~structs ~named_types ~arrays ?resolve consts expected ~check_only
-          ~validate_dead e
+        const_expr ~structs ~named_types ~arrays ~globals ?resolve consts expected
+          ~check_only ~validate_dead e
       in
       if not (is_int t) then error s "unary minus requires an integer"
       else Ok (t, mask_value t (Int64.neg v))
   | Ast.Unary (Ast.Bit_not, e, s) ->
       let* t, v =
-        const_expr ~structs ~named_types ~arrays ?resolve consts expected ~check_only
-          ~validate_dead e
+        const_expr ~structs ~named_types ~arrays ~globals ?resolve consts expected
+          ~check_only ~validate_dead e
       in
       if not (is_int t) then error s "bitwise not requires an integer"
       else Ok (t, mask_value t (Int64.lognot v))
   | Ast.Unary (Ast.Not, e, s) ->
       let* t, v =
-        const_expr ~structs ~named_types ~arrays ?resolve consts None ~check_only
-          ~validate_dead e
+        const_expr ~structs ~named_types ~arrays ~globals ?resolve consts None
+          ~check_only ~validate_dead e
       in
       if t <> Hir.Bool then error s "logical not requires bool"
       else Ok (Hir.Bool, if v = 0L then 1L else 0L)
   | Ast.Binary (((Ast.And | Ast.Or) as op), l, r, s) ->
       let* lt, lv =
-        const_expr ~structs ~named_types ~arrays ?resolve consts None ~check_only
-          ~validate_dead l
+        const_expr ~structs ~named_types ~arrays ~globals ?resolve consts None
+          ~check_only ~validate_dead l
       in
       if lt <> Hir.Bool then error s "logical operands must be bool"
       else if
         (not check_only) && ((op = Ast.And && lv = 0L) || (op = Ast.Or && lv <> 0L))
       then
         let* _ =
-          const_expr ~structs ~named_types ~arrays ?resolve consts None ~check_only:true
-            ~validate_dead r
+          const_expr ~structs ~named_types ~arrays ~globals ?resolve consts None
+            ~check_only:true ~validate_dead r
         in
         Ok (Hir.Bool, if op = Ast.And then 0L else 1L)
       else
         let* rt, rv =
-          const_expr ~structs ~named_types ~arrays ?resolve consts None ~check_only
-            ~validate_dead r
+          const_expr ~structs ~named_types ~arrays ~globals ?resolve consts None
+            ~check_only ~validate_dead r
         in
         if rt <> Hir.Bool then error s "logical operands must be bool"
         else Ok (Hir.Bool, if rv <> 0L then 1L else 0L)
   | Ast.Binary (((Ast.Shl | Ast.Shr) as op), l, r, s) ->
       let* lt, lv =
-        const_expr ~structs ~named_types ~arrays ?resolve consts
+        const_expr ~structs ~named_types ~arrays ~globals ?resolve consts
           (match expected with Some (Hir.Int _) -> expected | _ -> None)
           ~check_only ~validate_dead l
       in
       let* rt, rv =
-        const_expr ~structs ~named_types ~arrays ?resolve consts None ~check_only
-          ~validate_dead r
+        const_expr ~structs ~named_types ~arrays ~globals ?resolve consts None
+          ~check_only ~validate_dead r
       in
       let* () =
         match lt with
@@ -279,22 +281,22 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
         match (unresolved_shape_of l, unresolved_shape_of r) with
         | Some _, None ->
             let* rt, rv =
-              const_expr ~structs ~named_types ~arrays ?resolve consts hint ~check_only
-                ~validate_dead r
+              const_expr ~structs ~named_types ~arrays ~globals ?resolve consts hint
+                ~check_only ~validate_dead r
             in
             let* lt, lv =
-              const_expr ~structs ~named_types ~arrays ?resolve consts
+              const_expr ~structs ~named_types ~arrays ~globals ?resolve consts
                 (contextual_peer_type op rt l)
                 ~check_only ~validate_dead l
             in
             Ok ((lt, lv), (rt, rv))
         | _ ->
             let* lt, lv =
-              const_expr ~structs ~named_types ~arrays ?resolve consts hint ~check_only
-                ~validate_dead l
+              const_expr ~structs ~named_types ~arrays ~globals ?resolve consts hint
+                ~check_only ~validate_dead l
             in
             let* rt, rv =
-              const_expr ~structs ~named_types ~arrays ?resolve consts
+              const_expr ~structs ~named_types ~arrays ~globals ?resolve consts
                 (contextual_peer_type op lt r)
                 ~check_only ~validate_dead r
             in
@@ -366,36 +368,36 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
           Ok (result_ty, mask_value result_ty result)
   | Ast.Ternary (c, a, b, s) ->
       let* ct, cv =
-        const_expr ~structs ~named_types ~arrays ?resolve consts None ~check_only
-          ~validate_dead c
+        const_expr ~structs ~named_types ~arrays ~globals ?resolve consts None
+          ~check_only ~validate_dead c
       in
       if ct <> Hir.Bool then error s "ternary condition must be bool"
       else if cv <> 0L then
         let* at, av =
-          const_expr ~structs ~named_types ~arrays ?resolve consts expected ~check_only
-            ~validate_dead a
+          const_expr ~structs ~named_types ~arrays ~globals ?resolve consts expected
+            ~check_only ~validate_dead a
         in
         let* () =
           if not validate_dead then Ok ()
           else
             let* bt, _ =
-              const_expr ~structs ~named_types ~arrays ?resolve consts (Some at)
-                ~check_only:true ~validate_dead b
+              const_expr ~structs ~named_types ~arrays ~globals ?resolve consts
+                (Some at) ~check_only:true ~validate_dead b
             in
             ensure_expected bt at (Ast.expr_span b)
         in
         Ok (at, av)
       else
         let* bt, bv =
-          const_expr ~structs ~named_types ~arrays ?resolve consts expected ~check_only
-            ~validate_dead b
+          const_expr ~structs ~named_types ~arrays ~globals ?resolve consts expected
+            ~check_only ~validate_dead b
         in
         let* () =
           if not validate_dead then Ok ()
           else
             let* at, _ =
-              const_expr ~structs ~named_types ~arrays ?resolve consts (Some bt)
-                ~check_only:true ~validate_dead a
+              const_expr ~structs ~named_types ~arrays ~globals ?resolve consts
+                (Some bt) ~check_only:true ~validate_dead a
             in
             ensure_expected at bt (Ast.expr_span a)
         in
@@ -403,7 +405,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
   | Ast.Cast (k, dst, e, s) ->
       let* dt = source_ty_with_values named_types consts s dst in
       let scalar_source () =
-        const_expr ~structs ~named_types ~arrays ?resolve consts ~check_only
+        const_expr ~structs ~named_types ~arrays ~globals ?resolve consts ~check_only
           ~validate_dead
           (if
              k = Ast.Bitcast
@@ -420,7 +422,8 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
         | Ok (st, v) -> Ok (st, v, false)
         | Error scalar_error -> (
             match
-              vector_const_expr ~structs ~named_types ~arrays ?resolve consts None e
+              vector_const_expr ~structs ~named_types ~arrays ~globals ?resolve consts
+                None e
             with
             | Ok (st, values) when k = Ast.Bitcast && cast_legal k st dt -> (
                 match constant_bitcast st values dt with
@@ -459,7 +462,8 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
       | _ -> error s "len requires a fixed array or string literal")
   | Ast.Call (Ast.Ident (name, _), [ arg ], _s) when name = "any" || name = "all" -> (
       match
-        vector_const_expr ~structs ~named_types ~arrays ?resolve consts None arg
+        vector_const_expr ~structs ~named_types ~arrays ~globals ?resolve consts None
+          arg
       with
       | Ok (Hir.Vec (_, Hir.Bool), values) ->
           let result =
@@ -473,7 +477,8 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
     when name = "reduce_sum" || name = "reduce_min" || name = "reduce_max"
          || name = "reduce_and" || name = "reduce_or" || name = "reduce_xor" -> (
       match
-        vector_const_expr ~structs ~named_types ~arrays ?resolve consts None arg
+        vector_const_expr ~structs ~named_types ~arrays ~globals ?resolve consts None
+          arg
       with
       | Ok (Hir.Vec (_, Hir.Int kind), (_ :: _ as values)) ->
           let ty = Hir.Int kind in
@@ -512,7 +517,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
       let* vals =
         Result_list.map
           (fun a ->
-            const_expr ~structs ~named_types ~arrays ?resolve consts expected
+            const_expr ~structs ~named_types ~arrays ~globals ?resolve consts expected
               ~check_only ~validate_dead a)
           args
       in
@@ -577,13 +582,13 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve c
       | _ -> error s "offsetof requires a struct")
   | expr -> error (Ast.expr_span expr) "expression is not compile-time constant"
 
-and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolve consts
-    expected ?(check_only = false) expression =
+and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?(globals = [])
+    ?resolve consts expected ?(check_only = false) expression =
   let lane_type = function Hir.Vec (_, element) -> Some element | _ -> None in
   let lane_mask ty value = mask_value ty value in
   let lane_signed ty value = sign_extend_value ty value in
   let evaluate =
-    vector_const_expr ~structs ~named_types ~arrays ?resolve consts ~check_only
+    vector_const_expr ~structs ~named_types ~arrays ~globals ?resolve consts ~check_only
   in
   match expression with
   | Ast.Ident (name, span) -> (
@@ -601,7 +606,7 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
               | [] -> Ok (List.rev acc)
               | element :: rest ->
                   let* actual_ty, value =
-                    const_expr ~structs ~named_types ~arrays ?resolve consts
+                    const_expr ~structs ~named_types ~arrays ~globals ?resolve consts
                       (Some element_ty) ~check_only element
                   in
                   let* () =
@@ -616,8 +621,8 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
       match expected with
       | Some (Hir.Vec (lanes, element) as ty) ->
           let* actual, value =
-            const_expr ~structs ~named_types ~arrays ?resolve consts (Some element)
-              ~check_only value
+            const_expr ~structs ~named_types ~arrays ~globals ?resolve consts
+              (Some element) ~check_only value
           in
           let* () = ensure_expected actual element (Ast.expr_span expression) in
           Ok (ty, List.init lanes (fun _ -> lane_mask element value))
@@ -640,8 +645,8 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
         | Ok (count_ty, counts) -> Ok (count_ty, counts)
         | Error _ -> (
             match
-              const_expr ~structs ~named_types ~arrays ?resolve consts None ~check_only
-                count
+              const_expr ~structs ~named_types ~arrays ~globals ?resolve consts None
+                ~check_only count
             with
             | Ok (count_ty, count_value) -> Ok (count_ty, [ count_value ])
             | Error diagnostics -> Error diagnostics)
@@ -813,7 +818,8 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
         | _ -> error span "builtin shift value must be an integer vector"
       in
       let* count_ty, count =
-        const_expr ~structs ~named_types ~arrays ?resolve consts None ~check_only count
+        const_expr ~structs ~named_types ~arrays ~globals ?resolve consts None
+          ~check_only count
       in
       if not (is_int count_ty) then error span "builtin shift count must be an integer"
       else
@@ -968,23 +974,23 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
             left_values right_values )
   | Ast.Ternary (condition, yes, no, span) ->
       let* condition_ty, condition_value =
-        const_expr ~structs ~named_types ~arrays ?resolve consts None ~check_only
-          condition
+        const_expr ~structs ~named_types ~arrays ~globals ?resolve consts None
+          ~check_only condition
       in
       if condition_ty <> Hir.Bool then error span "ternary condition must be bool"
       else if condition_value <> 0L then
         let* yes_ty, yes_values = evaluate expected yes in
         let* no_ty, _ =
-          vector_const_expr ~structs ~named_types ~arrays ?resolve consts (Some yes_ty)
-            ~check_only:true no
+          vector_const_expr ~structs ~named_types ~arrays ~globals ?resolve consts
+            (Some yes_ty) ~check_only:true no
         in
         let* () = ensure_expected no_ty yes_ty (Ast.expr_span no) in
         Ok (yes_ty, yes_values)
       else
         let* no_ty, no_values = evaluate expected no in
         let* yes_ty, _ =
-          vector_const_expr ~structs ~named_types ~arrays ?resolve consts (Some no_ty)
-            ~check_only:true yes
+          vector_const_expr ~structs ~named_types ~arrays ~globals ?resolve consts
+            (Some no_ty) ~check_only:true yes
         in
         let* () = ensure_expected yes_ty no_ty (Ast.expr_span yes) in
         Ok (no_ty, no_values)
@@ -1005,7 +1011,7 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
               else None
             in
             let* source, value =
-              const_expr ~structs ~named_types ~arrays ?resolve consts context
+              const_expr ~structs ~named_types ~arrays ~globals ?resolve consts context
                 ~check_only value
             in
             Ok (source, [ value ])
@@ -1047,7 +1053,8 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = []) ?resolv
       error (Ast.expr_span expression)
         "expression is not a compile-time vector constant"
 
-let resolve_scalar_declarations ~structs ~named_types ~resolve_type ~strict items =
+let resolve_scalar_declarations ?(globals = []) ~structs ~named_types ~resolve_type
+    ~strict items =
   let scalar_constant_type = function
     | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ -> true
     | _ -> false
@@ -1090,7 +1097,8 @@ let resolve_scalar_declarations ~structs ~named_types ~resolve_type ~strict item
               let () = Hashtbl.add visiting name () in
               let result =
                 let* actual_ty, value =
-                  const_expr ~structs ~named_types ~resolve [] (Some ty) initial_value
+                  const_expr ~structs ~named_types ~globals ~resolve [] (Some ty)
+                    initial_value
                 in
                 if Hir.ty_equal actual_ty ty then Ok (ty, value)
                 else error declaration_span "constant initializer type mismatch"

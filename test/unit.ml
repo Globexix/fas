@@ -808,6 +808,7 @@ let () =
       Hir.structs = [];
       consts = [];
       const_arrays = [];
+      globals = [];
       funcs =
         [
           {

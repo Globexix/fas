@@ -11,6 +11,7 @@ type kind =
   | Kw_break
   | Kw_continue
   | Kw_const
+  | Kw_var
   | Kw_struct
   | Kw_opaque
   | Kw_extern
@@ -83,6 +84,7 @@ let show = function
   | Kw_break -> "`break`"
   | Kw_continue -> "`continue`"
   | Kw_const -> "`const`"
+  | Kw_var -> "`var`"
   | Kw_struct -> "`struct`"
   | Kw_opaque -> "`opaque`"
   | Kw_extern -> "`extern`"

@@ -138,7 +138,7 @@ let operation_names = List.map fst operations
 let reserved_binding_name name =
   List.mem name primitive_type_names
   || List.mem name literal_names
-  || List.mem name [ "view"; "use" ]
+  || List.mem name [ "view"; "use"; "var" ]
   || reserved_float_name name
   || Option.is_some (List.assoc_opt name operations)
 

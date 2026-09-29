@@ -42,6 +42,14 @@ let semantic_diagnostics text =
 let semantic_messages text =
   List.map (fun (diagnostic : Diag.t) -> diagnostic.message) (semantic_diagnostics text)
 
+let semantic_message name expected text =
+  incr checks_run;
+  match semantic_messages text with
+  | [ actual ] when actual = expected -> ()
+  | actual ->
+      failwith
+        (name ^ ": expected [" ^ expected ^ "], got [" ^ String.concat "; " actual ^ "]")
+
 let semantic_error name fragment text =
   incr checks_run;
   let program = expect_ok (Parser.parse (source text)) in
@@ -73,6 +81,14 @@ let parse_messages text =
   | Ok _ -> failwith "expected parse rejection"
   | Error diagnostics ->
       List.map (fun (diagnostic : Diag.t) -> diagnostic.message) diagnostics
+
+let parse_message name expected text =
+  incr checks_run;
+  match parse_messages text with
+  | [ actual ] when actual = expected -> ()
+  | actual ->
+      failwith
+        (name ^ ": expected [" ^ expected ^ "], got [" ^ String.concat "; " actual ^ "]")
 
 let parse_error_message name fragment text =
   incr checks_run;
@@ -113,6 +129,7 @@ let lower_struct_error name fragment (struct_def : Hir.struct_def) =
         Hir.structs = [ struct_def ];
         consts = [];
         const_arrays = [];
+        globals = [];
         funcs = [];
         strings = [];
       }
@@ -131,6 +148,7 @@ let lower_function_error name fragment params body =
         Hir.structs = [];
         consts = [];
         const_arrays = [];
+        globals = [];
         funcs =
           [
             {
@@ -5874,6 +5892,7 @@ let () =
            ];
          consts = [];
          const_arrays = [];
+         globals = [];
          funcs = [];
          strings = [];
        }
@@ -5916,6 +5935,7 @@ let () =
          Hir.structs = [];
          consts = [];
          const_arrays = [];
+         globals = [];
          strings = [];
          funcs =
            [
@@ -5941,6 +5961,7 @@ let () =
          Hir.structs = [];
          consts = [];
          const_arrays = [];
+         globals = [];
          strings = [];
          funcs =
            [
@@ -5974,6 +5995,7 @@ let () =
          Hir.structs = [];
          consts = [];
          const_arrays = [];
+         globals = [];
          strings = [];
          funcs =
            [
@@ -6073,6 +6095,7 @@ let () =
            [
              { Hir.name = "A"; ty = Hir.Array (2, Hir.Opaque "X"); elems = [ 0L; 0L ] };
            ];
+         globals = [];
          strings = [];
          funcs = [];
        }
@@ -8113,4 +8136,59 @@ let () =
      const F vec[1,u32] = {0}\n\
      const X u32 = gather_bytes[u32](null, I, M, F)[0]\n";
 
+  semantic_accept "global-declaration-forms"
+    "struct Pair { x i32\n\
+     y i32 }\n\
+     var Zero i32\n\
+     var Number i32 = 7\n\
+     var Values arr[2,i32] = {3, 5}\n\
+     var Item Pair = {11, 13}\n\
+     extern \"C\" {\n\
+     var Exported i32 = 17\n\
+     var Imported i32\n\
+     }\n\
+     fn update() i32 {\n\
+     Zero = Number\n\
+     Zero += Values[0]\n\
+     Item.y = Zero\n\
+     return Imported + Exported + Item.y}\n";
+  semantic_accept "global-address-place"
+    "var Number i32 = 7\nfn address() addr { return &Number }\n";
+  semantic_accept "global-inner-shadow"
+    "var Value i32 = 7\nfn local() i32 { Value i32 = 11\n return Value }\n";
+  let cross_file_global =
+    check_files
+      [
+        ("globals.fas", "var Shared i32 = 19\n");
+        ("reader.fas", "fn read() i32 { return Shared }\n");
+      ]
+  in
+  ignore cross_file_global;
+  semantic_message "global-duplicate" "duplicate global `Value`"
+    "var Value i32\nvar Value u32\n";
+  semantic_message "global-function-name-collision" "duplicate declaration `Value`"
+    "var Value i32\nfn Value() i32 { return 0 }\n";
+  parse_message "global-reserved-var" "expected identifier, found `var`" "var var i32\n";
+  semantic_message "global-initializer-not-constant"
+    "global initializer must be a constant expression"
+    "fn dynamic() i32 { return 1 }\nvar Value i32 = dynamic()\n";
+  semantic_message "global-initializer-global-read" "global `Source` is not a constant"
+    "var Source i32 = 1\nvar Value i32 = Source\n";
+  semantic_message "const-global-read" "global `Value` is not a constant"
+    "var Value i32 = 1\nconst Copy i32 = Value\n";
+  semantic_message "global-array-length-read" "global `Count` is not a constant"
+    "var Count usize = 2\nfn run() void { local arr[Count,i32]\nreturn }\n";
+  semantic_message "global-generic-argument-read" "global `Count` is not a constant"
+    "var Count i32 = 2\n\
+     fn get[N const i32]() i32 { return N }\n\
+     fn run() i32 { return get[Count]() }\n";
+  semantic_message "global-case-label-read" "global `Choice` is not a constant"
+    "var Choice i32 = 2\n\
+     fn run() i32 { switch 0 { case Choice: return 1 }\n\
+     return 0 }\n";
+  semantic_message "global-array-initializer-arity"
+    "wrong number of array literal elements" "var Values arr[2,i32] = {1}\n";
+  semantic_message "global-struct-initializer-arity"
+    "wrong number of struct literal fields"
+    "struct Pair { x i32\ny i32 }\nvar Item Pair = {1}\n";
   Printf.printf "regression checks: %d passed\n" !checks_run

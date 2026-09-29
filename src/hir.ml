@@ -60,6 +60,7 @@ type expr =
   | Null of ty * Span.t
   | EString of int * Span.t
   | Local of local * Span.t
+  | Global of string * ty * Span.t
   | Unary of Ast.unop * expr * ty * Span.t
   | Binary of Ast.binop * expr * expr * ty * Span.t
   | Call of call_target * expr list * ty * Span.t
@@ -81,6 +82,7 @@ type construction =
 
 type assign_target =
   | ALocal of local
+  | AGlobal of string * ty
   | ARaw of expr * expr * ty
   | AIndex of expr * expr
   | AField of expr * string * int
@@ -116,10 +118,26 @@ type func = {
   variadic : bool;
 }
 
+type global_initializer =
+  | Global_int of int64
+  | Global_bool of bool
+  | Global_null
+  | Global_vector of int64 list
+  | Global_array of global_initializer list
+  | Global_struct of global_initializer list
+
+type global = {
+  name : string;
+  ty : ty;
+  init_value : global_initializer option;
+  linkage : Ast.global_linkage;
+}
+
 type program = {
   structs : struct_def list;
   consts : const_def list;
   const_arrays : const_arr_def list;
+  globals : global list;
   funcs : func list;
   strings : string list;
 }
@@ -170,6 +188,7 @@ let expr_ty = function
   | Const_array (_, t, _) ->
       t
   | Local (local, _) -> local.ty
+  | Global (_, ty, _) -> ty
   | EBool _ -> Bool
   | Null (t, _) -> t
   | EString _ -> Addr
@@ -183,6 +202,7 @@ let expr_span = function
   | Null (_, s)
   | EString (_, s)
   | Local (_, s)
+  | Global (_, _, s)
   | Unary (_, _, _, s)
   | Binary (_, _, _, _, s)
   | Call (_, _, _, s)
@@ -402,7 +422,7 @@ let render p =
   let one_struct (s : struct_def) =
     Printf.sprintf "struct %s size=%d align=%d" s.name s.size s.align
   in
-  let one_fn f =
+  let one_fn (f : func) =
     Printf.sprintf "fn %s(%s) %s" f.name
       (String.concat ", "
          (List.map

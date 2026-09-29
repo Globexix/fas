@@ -472,6 +472,9 @@ module P = struct
     | Token.Kw_const ->
         let* x = const_item p in
         Ok [ x ]
+    | Token.Kw_var ->
+        let* x = global_item p Ast.Internal_global in
+        Ok [ x ]
     | Token.Kw_struct ->
         let* x = struct_item p in
         Ok [ x ]
@@ -527,6 +530,27 @@ module P = struct
     in
     let* () = end_stmt p in
     Ok (Ast.Const { name; ty; value; span = s })
+
+  and global_item p linkage =
+    let s = span p in
+    let* () = expected p Token.Kw_var in
+    let* name = ident p in
+    let* ty = ty p in
+    let* init =
+      if eat p Token.Assign then (
+        skip_newlines p;
+        let* value = expr p in
+        Ok (Some value))
+      else Ok None
+    in
+    let linkage =
+      match (linkage, init) with
+      | Ast.Internal_global, _ -> Ast.Internal_global
+      | (Ast.Export_c | Ast.Import_c), Some _ -> Ast.Export_c
+      | (Ast.Export_c | Ast.Import_c), None -> Ast.Import_c
+    in
+    let* () = end_stmt p in
+    Ok (Ast.Global { name; ty; init; linkage; span = s })
 
   and struct_item p =
     let s = span p in
@@ -643,6 +667,9 @@ module P = struct
           let* () = expected p Token.Rbrace in
           let* () = end_stmt p in
           Ok (List.rev acc)
+        else if at p Token.Kw_var then
+          let* global = global_item p Ast.Export_c in
+          ds (global :: acc)
         else
           let* x = fn_item p false true in
           match x with

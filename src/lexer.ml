@@ -13,6 +13,7 @@ let keyword = function
   | "break" -> Kw_break
   | "continue" -> Kw_continue
   | "const" -> Kw_const
+  | "var" -> Kw_var
   | "struct" -> Kw_struct
   | "opaque" -> Kw_opaque
   | "extern" -> Kw_extern

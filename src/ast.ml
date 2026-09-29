@@ -90,10 +90,18 @@ and generic_param =
 
 and body = Declaration | Statements of stmt list | Asm of string
 and linkage = Internal | External_c
+and global_linkage = Internal_global | Export_c | Import_c
 
 and item =
   | Use of { path : string; span : Span.t }
   | Const of { name : string; ty : ty; value : expr; span : Span.t }
+  | Global of {
+      name : string;
+      ty : ty;
+      init : expr option;
+      linkage : global_linkage;
+      span : Span.t;
+    }
   | Struct of {
       name : string;
       generic_params : generic_param list;
@@ -242,6 +250,7 @@ and expr_name = function
 let item_span = function
   | Use { span; _ }
   | Const { span; _ }
+  | Global { span; _ }
   | Struct { span; _ }
   | Opaque { span; _ }
   | Func { span; _ } ->
@@ -577,6 +586,18 @@ let render_program program =
         emit_ty ty;
         text " = ";
         emit_expr value
+    | Global { name; ty; init; linkage; _ } ->
+        (match linkage with
+        | Internal_global -> text "var "
+        | Export_c | Import_c -> text "extern var ");
+        add_name name;
+        text " ";
+        emit_ty ty;
+        Option.iter
+          (fun value ->
+            text " = ";
+            emit_expr value)
+          init
     | Struct { name; generic_params; fields; align; _ } ->
         text "struct ";
         add_name name;
@@ -758,6 +779,9 @@ let fold_expanded_nodes ~limit program =
       | Const { ty; value; span; _ } ->
           go_ty span ty;
           go_expr value
+      | Global { ty; init; span; _ } ->
+          go_ty span ty;
+          Option.iter go_expr init
       | Struct { generic_params; fields; _ } ->
           List.iter go_generic_param generic_params;
           List.iter go_field fields

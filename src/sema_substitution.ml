@@ -53,9 +53,15 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   in
   let global_value_names =
     List.filter_map
-      (function Ast.Const { name; _ } -> Some name | _ -> None)
+      (function
+        | Ast.Const { name; _ } | Ast.Global { name; _ } -> Some name | _ -> None)
       program.Ast.items
     |> String_set.of_list
+  in
+  let global_names =
+    List.filter_map
+      (function Ast.Global { name; _ } -> Some name | _ -> None)
+      program.Ast.items
   in
   let named_type_names =
     List.filter_map
@@ -73,13 +79,16 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 Result_list.map
                   (fun (parameter : Ast.param) ->
                     let* ty =
-                      source_ty_with_values eval_named_types eval_consts parameter.span
-                        parameter.ty
+                      source_ty_with_values ~globals:global_names eval_named_types
+                        eval_consts parameter.span parameter.ty
                     in
                     Ok (parameter.name, ty))
                   params
               in
-              let* ret = source_ty_with_values eval_named_types eval_consts span ret in
+              let* ret =
+                source_ty_with_values ~globals:global_names eval_named_types eval_consts
+                  span ret
+              in
               Ok (name, { params; ret; variadic })
             in
             match result with Ok signature -> Some signature | Error _ -> None)
@@ -111,6 +120,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       | Some { declaration_id; declaration_kind = Top_function; _ } ->
           Some (`Function declaration_id)
       | Some { declaration_id; declaration_kind = Top_const; _ } ->
+          Some (`Value (Some declaration_id))
+      | Some { declaration_id; declaration_kind = Top_global; _ } ->
           Some (`Value (Some declaration_id))
       | None when String_set.mem name named_type_names -> Some (`Type None)
       | None when String_set.mem name function_names -> Some (`Function (-1))
@@ -322,7 +333,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   let rec validate_target_names value_names type_names = function
     | Ast.Target_ident (name, span) -> (
         match nearest_kind value_names type_names name with
-        | Some (`Value _) when String_set.mem name value_names -> Ok ()
+        | Some (`Value _)
+          when String_set.mem name value_names || List.mem name global_names ->
+            Ok ()
         | Some (`Value _) ->
             error span (Printf.sprintf "constant `%s` is not assignable" name)
         | Some (`Type _) ->
@@ -497,6 +510,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       named_types = eval_named_types;
       consts = eval_consts;
       arrays = eval_arrays;
+      globals = [];
       signatures = validation_signatures;
       templates = function_templates;
       top_level_bindings;
@@ -647,12 +661,13 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                           substituted
                       in
                       let* ty =
-                        source_ty_with_values eval_named_types eval_consts
-                          parameter.span substituted
+                        source_ty_with_values ~globals:global_names eval_named_types
+                          eval_consts parameter.span substituted
                       in
                       let* actual_ty, value =
                         const_expr ~structs:eval_structs ~named_types:eval_named_types
-                          ~arrays:eval_arrays eval_consts (Some ty) expression
+                          ~globals:global_names ~arrays:eval_arrays eval_consts
+                          (Some ty) expression
                       in
                       let* () =
                         ensure_expected actual_ty ty (Ast.expr_span expression)
@@ -682,8 +697,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                             ~where:(Printf.sprintf "declaration `%s`" name)
                             substituted
                         in
-                        source_ty_with_values eval_named_types values parameter.span
-                          substituted)
+                        source_ty_with_values ~globals:global_names eval_named_types
+                          values parameter.span substituted)
                       params
                   in
                   if List.length formals <> List.length arguments then
@@ -703,7 +718,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                           ~where:(Printf.sprintf "declaration `%s`" name)
                           substituted
                       in
-                      source_ty_with_values eval_named_types values span substituted
+                      source_ty_with_values ~globals:global_names eval_named_types
+                        values span substituted
                     in
                     match expected with
                     | None -> Ok ()
@@ -736,7 +752,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             if type_mentions dependent destination then Ok ()
             else
               let* destination =
-                source_ty_with_values eval_named_types eval_consts span destination
+                source_ty_with_values ~globals:global_names eval_named_types eval_consts
+                  span destination
               in
               let valid =
                 match (kind, destination) with
@@ -757,7 +774,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             if type_mentions dependent destination then Ok ()
             else
               let* resolved =
-                source_ty_with_values eval_named_types eval_consts span destination
+                source_ty_with_values ~globals:global_names eval_named_types eval_consts
+                  span destination
               in
               match resolved with
               | Hir.Opaque _ -> Ok ()
@@ -811,7 +829,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Let { name; ty; init; span; _ } ->
         if type_mentions dependent ty then Ok (name :: dependent)
         else
-          let* ty = source_ty_with_values eval_named_types eval_consts span ty in
+          let* ty =
+            source_ty_with_values ~globals:global_names eval_named_types eval_consts
+              span ty
+          in
           let* () =
             match init with
             | None -> Ok ()
@@ -932,7 +953,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     let expected_return =
       if type_mentions dependent ret then None
       else
-        match source_ty_with_values eval_named_types eval_consts span ret with
+        match
+          source_ty_with_values ~globals:global_names eval_named_types eval_consts span
+            ret
+        with
         | Ok ty -> Some ty
         | Error _ -> None
     in
@@ -946,8 +970,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             add_parameters (parameter.name :: dependent) rest
           else
             let* ty =
-              source_ty_with_values eval_named_types eval_consts parameter.span
-                parameter.ty
+              source_ty_with_values ~globals:global_names eval_named_types eval_consts
+                parameter.span parameter.ty
             in
             let* binding = add_local parameter.name ty context parameter.span in
             mark_init binding context;
@@ -977,11 +1001,15 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Handle ty)
     | Ast.Array (length, ty) ->
-        let* length = resolve_aggregate_length values span length in
+        let* length =
+          resolve_aggregate_length ~globals:global_names values span length
+        in
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Array (length, ty))
     | Ast.Vec (length, ty) ->
-        let* length = resolve_aggregate_length values span length in
+        let* length =
+          resolve_aggregate_length ~globals:global_names values span length
+        in
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Vec (length, ty))
     | Ast.Named_type name when Names.reserved_float_name name ->
@@ -1080,8 +1108,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                     let* const_ty = source_ty_diag [] parameter.span parameter.ty in
                     let* actual_ty, value =
                       const_expr ~structs:eval_structs ~named_types:eval_named_types
-                        ~arrays:eval_arrays (values @ eval_consts) (Some const_ty)
-                        expression
+                        ~globals:global_names ~arrays:eval_arrays (values @ eval_consts)
+                        (Some const_ty) expression
                     in
                     if not (equal actual_ty const_ty) then
                       error (Ast.expr_span expression) "const argument type mismatch"
@@ -1282,7 +1310,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                               parameter.ty
                           in
                           let* actual_ty, value =
-                            const_expr ~structs:eval_structs
+                            const_expr ~structs:eval_structs ~globals:global_names
                               ~named_types:eval_named_types ~arrays:eval_arrays
                               (values @ eval_consts) (Some const_ty) expression
                           in
@@ -1618,7 +1646,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           else
             match
               const_expr ~structs:eval_structs ~named_types:eval_named_types
-                ~arrays:eval_arrays constant_environment None condition
+                ~globals:global_names ~arrays:eval_arrays constant_environment None
+                condition
             with
             | Ok (_, value) -> Some (value <> 0L)
             | Error _ -> None
@@ -1819,6 +1848,16 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let* ty = resolve_ty [] 0 span ty in
         let* value = resolve_expr [] 0 value in
         Ok (Ast.Const { item with ty; value })
+    | Ast.Global ({ ty; init; span; _ } as item) ->
+        let* ty = resolve_ty [] 0 span ty in
+        let* init =
+          match init with
+          | None -> Ok None
+          | Some value ->
+              let* value = resolve_expr [] 0 value in
+              Ok (Some value)
+        in
+        Ok (Ast.Global { item with ty; init })
     | Ast.Func { generic_params = _ :: _; _ } as item -> Ok item
     | Ast.Func ({ params; ret; body; generic_params; span; _ } as item) ->
         let defer_const_structs = not eager_functions in

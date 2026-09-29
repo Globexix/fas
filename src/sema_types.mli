@@ -7,10 +7,19 @@ val source_ty_diag : named_types -> Span.t -> Ast.ty -> (Hir.ty, Diag.t list) re
 val vec_cap_error : int -> Hir.ty -> string option
 
 val resolve_aggregate_length :
-  const_values -> Span.t -> string -> (string, Diag.t list) result
+  ?globals:string list ->
+  const_values ->
+  Span.t ->
+  string ->
+  (string, Diag.t list) result
 
 val source_ty_with_values :
-  named_types -> const_values -> Span.t -> Ast.ty -> (Hir.ty, Diag.t list) result
+  ?globals:string list ->
+  named_types ->
+  const_values ->
+  Span.t ->
+  Ast.ty ->
+  (Hir.ty, Diag.t list) result
 
 val layout_diag :
   Span.t -> Hir.struct_def list -> Hir.ty -> (int * int, Diag.t list) result

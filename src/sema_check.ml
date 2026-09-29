@@ -17,6 +17,8 @@ let rec source_ty_in_context c span = function
           error span (Printf.sprintf "`%s` is a constant, not a type" name)
       | Some { declaration_kind = Top_function; _ } ->
           error span (Printf.sprintf "`%s` is a function, not a type" name)
+      | Some { declaration_kind = Top_global; _ } ->
+          error span (Printf.sprintf "`%s` is a global, not a type" name)
       | Some { declaration_kind = Top_type; _ } | None ->
           source_ty_diag c.named_types span (Ast.Named_type name))
   | Ast.Array (length, ty) ->
@@ -39,7 +41,10 @@ and source_aggregate_in_context c span make length element =
     | Some _ -> Ok length
     | None when Option.is_some (lookup_local length c) ->
         error span (Printf.sprintf "`%s` is not a compile-time constant" length)
-    | None -> resolve_aggregate_length c.consts span length
+    | None ->
+        resolve_aggregate_length
+          ~globals:(List.map (fun (name, _, _) -> name) c.globals)
+          c.consts span length
   in
   let* element = source_ty_in_context c span element in
   match int_of_string_opt length with
@@ -245,6 +250,7 @@ let rec check_place (c : context) expr =
   let static_index source =
     match
       const_expr ~structs:c.structs ~named_types:c.named_types ~arrays:c.arrays
+        ~globals:(List.map (fun (name, _, _) -> name) c.globals)
         visible_consts None ~validate_dead:false source
     with
     | Ok (ty, value) -> Known (ty, value)
@@ -275,6 +281,11 @@ let rec check_place (c : context) expr =
                   error s (Printf.sprintf "type `%s` is not a place" n)
               | Some { declaration_kind = Top_function; _ } ->
                   error s (Printf.sprintf "function `%s` is not a place" n)
+              | Some { declaration_kind = Top_global; _ } -> (
+                  match lookup_global n c.globals with
+                  | Some (_, ty, _) ->
+                      Ok { expr = Hir.Global (n, ty, s); root = None; path = None }
+                  | None -> error s "internal error: global declaration is missing")
               | None -> error s (Printf.sprintf "unknown name `%s`" n))))
   | Ast.Select (a, args, s) -> (
       let* base = check_place c a in
@@ -476,6 +487,10 @@ and check_expr (c : context) expected expression =
               error s (Printf.sprintf "`%s` is a type, not a value" n)
           | Some { declaration_kind = Top_function; _ } ->
               error s (Printf.sprintf "`%s` is a function, not a value" n)
+          | Some { declaration_kind = Top_global; _ } -> (
+              match lookup_global n c.globals with
+              | Some (_, ty, _) -> Ok (Hir.Global (n, ty, s))
+              | None -> error s "internal error: global declaration is missing")
           | Some { declaration_kind = Top_const; _ } | None -> (
               match lookup n c.consts with
               | Some (_, ((Hir.Addr | Hir.Handle _) as t), 0L) -> Ok (Hir.Null (t, s))
@@ -670,8 +685,8 @@ and check_expr (c : context) expected expression =
       | Hir.Index (base, _, _, _)
         when match Hir.expr_ty base with Hir.Vec _ -> true | _ -> false ->
           error s "cannot take address of a vector lane"
-      | Hir.Local _ | Hir.Index _ | Hir.Field _ | Hir.Const_array _ | Hir.Raw_select _
-        ->
+      | Hir.Local _ | Hir.Global _ | Hir.Index _ | Hir.Field _ | Hir.Const_array _
+      | Hir.Raw_select _ ->
           Ok (Hir.Address (place.expr, Hir.Addr, s))
       | _ -> error s "cannot take the address of this expression")
   | Ast.Sizeof (t, s) ->
@@ -1019,6 +1034,7 @@ and check_call c _expected fn args s =
                       in
                       let* vt, v =
                         const_expr ~structs:c.structs ~named_types:c.named_types
+                          ~globals:(List.map (fun (name, _, _) -> name) c.globals)
                           ~arrays:c.arrays c.consts (Some ct) a
                       in
                       if equal vt ct then eval ((cp.name, ct, v) :: acc) cs rest
@@ -1266,6 +1282,7 @@ and check_call c _expected fn args s =
                 in
                 match
                   vector_const_expr ~structs:c.structs ~named_types:c.named_types
+                    ~globals:(List.map (fun (name, _, _) -> name) c.globals)
                     ~arrays:c.arrays visible_consts None (List.nth args 2)
                 with
                 | Ok ((Hir.Vec (m, (Hir.Int _ as sel_elem)) as sty), values) ->
@@ -1488,6 +1505,17 @@ let check_target (c : context) = function
               error span (Printf.sprintf "type `%s` is not assignable" n)
           | Some { declaration_kind = Top_function; _ } ->
               error span (Printf.sprintf "function `%s` is not assignable" n)
+          | Some { declaration_kind = Top_global; _ } -> (
+              match lookup_global n c.globals with
+              | Some (_, ty, _) ->
+                  Ok
+                    {
+                      target = Hir.AGlobal (n, ty);
+                      root = None;
+                      path = None;
+                      through_view = false;
+                    }
+              | None -> error span "internal error: global declaration is missing")
           | None -> error span (Printf.sprintf "unknown assignment target `%s`" n)))
   | Ast.Target_select (a, args) -> (
       let* place = check_place c (Ast.Select (a, args, Ast.expr_span a)) in
@@ -1570,6 +1598,7 @@ let check_target (c : context) = function
 
 let target_ty c = function
   | Hir.ALocal binding -> Some binding.ty
+  | Hir.AGlobal (_, ty) -> Some ty
   | Hir.ARaw (_, _, t) -> Some t
   | Hir.AIndex (expression, _) -> (
       match Hir.expr_ty expression with
@@ -1584,7 +1613,7 @@ let target_ty c = function
       | _ -> None)
 
 let rec existing_place = function
-  | Hir.Local _ | Hir.Const_array _ | Hir.Raw_select _ -> true
+  | Hir.Local _ | Hir.Global _ | Hir.Const_array _ | Hir.Raw_select _ -> true
   | Hir.Index (base, _, _, _) -> (
       match Hir.expr_ty base with Hir.Array _ -> existing_place base | _ -> false)
   | Hir.Field (base, _, _, _, _) -> existing_place base
@@ -1732,7 +1761,7 @@ and check_stmt (c : context) = function
       let* () = ensure_new_local name c span in
       let* place_info = check_place c place in
       let rec addressable = function
-        | Hir.Local _ | Hir.Const_array _ | Hir.Raw_select _ -> true
+        | Hir.Local _ | Hir.Global _ | Hir.Const_array _ | Hir.Raw_select _ -> true
         | Hir.Index (base, _, _, _) -> (
             match Hir.expr_ty base with
             | Hir.Array _ -> addressable base
@@ -2025,12 +2054,19 @@ and check_stmt (c : context) = function
           | (k, b) :: xs ->
               let* kt, kv =
                 const_expr ~structs:c.structs ~named_types:c.named_types
+                  ~globals:(List.map (fun (name, _, _) -> name) c.globals)
                   ~arrays:c.arrays c.consts (Some et) k
-                |> Result.map_error (fun _ ->
-                    [
-                      Diag.error (Ast.expr_span k)
-                        "case label must be a compile-time constant";
-                    ])
+                |> Result.map_error (function
+                  | [ diagnostic ]
+                    when String.starts_with ~prefix:"global `" diagnostic.Diag.message
+                         && String.ends_with ~suffix:" is not a constant"
+                              diagnostic.Diag.message ->
+                      [ diagnostic ]
+                  | _ ->
+                      [
+                        Diag.error (Ast.expr_span k)
+                          "case label must be a compile-time constant";
+                      ])
               in
               let* () = ensure_expected kt et (Ast.expr_span k) in
               if List.mem kv !seen then

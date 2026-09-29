@@ -466,6 +466,12 @@ let rec expr s = function
           let id = fresh s in
           emit s (Ir.Load (id, ty local.ty, p, alignment));
           Ok (Ir.Local (id, ty local.ty)))
+  | Hir.Global (name, global_ty, _) ->
+      let* p = address s (Hir.Global (name, global_ty, Span.synthetic)) in
+      let* alignment = align s global_ty in
+      let id = fresh s in
+      emit s (Ir.Load (id, ty global_ty, p, alignment));
+      Ok (Ir.Local (id, ty global_ty))
   | Hir.Unary (op, e, t, span) -> (
       let* v = expr s e in
       let rt = ty t in
@@ -1027,6 +1033,10 @@ and materialize s e =
 
 and address s e =
   match e with
+  | Hir.Global (name, global_ty, _) ->
+      let id = fresh s in
+      emit s (Ir.Global_ptr (id, name, ty global_ty));
+      Ok (Ir.Local (id, Ir.Pointer (ty global_ty)))
   | Hir.Local (local, sp) -> (
       match Hashtbl.find_opt s.env local.id with
       | Some v -> Ok v
@@ -1523,7 +1533,7 @@ and field_address s a off =
   let* p =
     if
       match a with
-      | Hir.Local _ | Index _ | Field _ | Const_array _ -> true
+      | Hir.Local _ | Global _ | Index _ | Field _ | Const_array _ -> true
       | _ -> false
     then address s a
     else materialize s a
@@ -1932,6 +1942,10 @@ and target_address s = function
       match Hashtbl.find_opt s.env local.id with
       | Some p -> Ok p
       | None -> error Span.synthetic ("unknown local `" ^ local.name ^ "`"))
+  | Hir.AGlobal (name, global_ty) ->
+      let id = fresh s in
+      emit s (Ir.Global_ptr (id, name, ty global_ty));
+      Ok (Ir.Local (id, Ir.Pointer (ty global_ty)))
   | Hir.ARaw (b, off, _) -> raw_address s b off
   | Hir.AIndex (a, i) -> index_address s a i
   | Hir.AField (a, _, off) -> field_address s a off
