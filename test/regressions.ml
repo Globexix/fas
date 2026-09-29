@@ -2808,16 +2808,14 @@ let () =
   | [ message ] when message = "use \"C\" is not implemented until v0.2" -> ()
   | messages ->
       failwith ("use-c-rejection: unexpected diagnostics " ^ String.concat "; " messages));
-  (match parse_messages "use \"C\" \"local.h\"\n" with
-  | [ message ] when message = "use \"C\" is not implemented until v0.2" -> ()
-  | messages ->
-      failwith
-        ("use-c-quoted-rejection: unexpected diagnostics " ^ String.concat "; " messages));
-  (match parse_messages "use \"C\" <system.h>\n" with
-  | [ message ] when message = "use \"C\" is not implemented until v0.2" -> ()
-  | messages ->
-      failwith
-        ("use-c-angle-rejection: unexpected diagnostics " ^ String.concat "; " messages));
+  incr checks_run;
+  (match (parse_file "quoted-use.fas" "use \"C\" \"local.h\"\n").Ast.items with
+  | [ Ast.Use { path = "C"; c_header = Some (Ast.C_quoted "local.h"); _ } ] -> ()
+  | _ -> failwith "use-c-quoted: parser did not preserve the quoted header");
+  incr checks_run;
+  (match (parse_file "angle-use.fas" "use \"C\" <system.h>\n").Ast.items with
+  | [ Ast.Use { path = "C"; c_header = Some (Ast.C_system "system.h"); _ } ] -> ()
+  | _ -> failwith "use-c-angle: parser did not preserve the system header");
   (match parse_messages "use \"C\" <<END\nint raw_fragment;\nEND\n" with
   | [ message ] when message = "use \"C\" is not implemented until v0.2" -> ()
   | messages ->

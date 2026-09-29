@@ -450,6 +450,33 @@ module P = struct
 
   and finish_statement p consume_end = if consume_end then end_stmt p else Ok ()
 
+  and c_header p use_span =
+    match (peek p).kind with
+    | Token.String header ->
+        ignore (bump p);
+        Ok (Ast.C_quoted header)
+    | Token.Newline | Token.Eof | Token.Ltlt ->
+        Error [ Diag.error use_span "use \"C\" is not implemented until v0.2" ]
+    | Token.Lt ->
+        ignore (bump p);
+        let rec path parts =
+          match (bump p).kind with
+          | Token.Gt ->
+              if parts = [] then
+                Error [ Diag.error use_span "C header name cannot be empty" ]
+              else Ok (Ast.C_system (String.concat "" (List.rev parts)))
+          | Token.Ident s | Token.Int s -> path (s :: parts)
+          | Token.Dot -> path ("." :: parts)
+          | Token.Slash -> path ("/" :: parts)
+          | Token.Minus -> path ("-" :: parts)
+          | Token.Plus -> path ("+" :: parts)
+          | Token.Newline | Token.Eof ->
+              Error [ Diag.error use_span "expected `>` in C header name" ]
+          | _ -> Error [ Diag.error use_span "expected `>` in C header name" ]
+        in
+        path []
+    | _ -> Error [ Diag.error use_span "expected a quoted or angle-bracket C header" ]
+
   and items p =
     skip_newlines p;
     if at p Token.Eof then Ok []
@@ -465,10 +492,12 @@ module P = struct
         ignore (bump p);
         let* path = string p in
         if path = "C" then
-          Error [ Diag.error s "use \"C\" is not implemented until v0.2" ]
+          let* header = c_header p s in
+          let* () = end_stmt p in
+          Ok [ Ast.Use { path; c_header = Some header; span = s } ]
         else
           let* () = end_stmt p in
-          Ok [ Ast.Use { path; span = s } ]
+          Ok [ Ast.Use { path; c_header = None; span = s } ]
     | Token.Kw_const ->
         let* x = const_item p in
         Ok [ x ]

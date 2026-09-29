@@ -182,12 +182,36 @@ grep -F 'Fas dependency paths must end in lowercase `.fas`; C headers use `use "
 expect_failure "$OCAML_FAS" "$USE_EDGES_TMP/paths/directory.fas/root.fas"
 grep -F "Fas dependency is a directory:" "$USE_EDGES_TMP/stderr" >/dev/null \
   || fail "directory dependency diagnostic changed"
+cat >"$USE_EDGES_TMP/paths/library.h" <<'C'
+typedef unsigned long imported_size;
+C
 cat >"$USE_EDGES_TMP/paths/c-import.fas" <<'FAS'
+use "C" <stddef.h>
 use "C" "library.h"
+fn main() i32 { return 0 }
 FAS
-expect_failure "$OCAML_FAS" "$USE_EDGES_TMP/paths/c-import.fas"
-grep -Fx "$USE_EDGES_TMP/paths/c-import.fas:1:1: error: use \"C\" is not implemented until v0.2" \
-  "$USE_EDGES_TMP/stderr" >/dev/null || fail "use C rejection diagnostic changed"
+TMPDIR="$USE_EDGES_TMP" "$OCAML_FAS" --emit-ir "$USE_EDGES_TMP/paths/c-import.fas" \
+  >"$USE_EDGES_TMP/c-import.ir"
+TMPDIR="$USE_EDGES_TMP" "$OCAML_FAS" -debug --keep --emit-ir \
+  "$USE_EDGES_TMP/paths/c-import.fas" >"$USE_EDGES_TMP/c-import-keep.ir" \
+  2>"$USE_EDGES_TMP/c-import-keep.log"
+grep -F "fas: Clang import command: $CC -x c -fsyntax-only -Xclang -ast-dump=json -Xclang -skip-function-bodies" \
+  "$USE_EDGES_TMP/c-import-keep.log" >/dev/null \
+  || fail "debug log omitted the Clang import command"
+c_import_unit=$(sed -n 's/^fas: kept C import unit: //p' "$USE_EDGES_TMP/c-import-keep.log")
+[ -s "$c_import_unit" ] || fail "--keep did not retain the generated C import unit"
+grep -F '#include <stddef.h>' "$c_import_unit" >/dev/null \
+  || fail "generated C import unit omitted the angle header"
+grep -F "#include \"$USE_EDGES_TMP/paths/library.h\"" "$c_import_unit" >/dev/null \
+  || fail "quoted header was not resolved relative to its Fas file"
+cat >"$USE_EDGES_TMP/paths/missing-import.fas" <<'FAS'
+use "C" "absent.h"
+FAS
+expect_failure "$OCAML_FAS" --emit-ir "$USE_EDGES_TMP/paths/missing-import.fas"
+grep -F "$USE_EDGES_TMP/paths/missing-import.fas:1:1: error: Clang C header import failed:" \
+  "$USE_EDGES_TMP/stderr" >/dev/null || fail "Clang error was not mapped to its use line"
+grep -F "fatal error: '$USE_EDGES_TMP/paths/absent.h' file not found" \
+  "$USE_EDGES_TMP/stderr" >/dev/null || fail "mapped diagnostic omitted Clang's location text"
 
 mkdir -p "$USE_EDGES_TMP/library"
 cat >"$USE_EDGES_TMP/library/api.fas" <<'FAS'

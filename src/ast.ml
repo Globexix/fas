@@ -91,9 +91,10 @@ and generic_param =
 and body = Declaration | Statements of stmt list | Asm of string
 and linkage = Internal | External_c
 and global_linkage = Internal_global | Export_c | Import_c
+and c_header = C_quoted of string | C_system of string
 
 and item =
-  | Use of { path : string; span : Span.t }
+  | Use of { path : string; c_header : c_header option; span : Span.t }
   | Const of { name : string; ty : ty; value : expr; span : Span.t }
   | Global of {
       name : string;
@@ -575,10 +576,20 @@ let render_program program =
   in
   let emit_item item =
     match item with
-    | Use { path; _ } ->
-        text "use \"";
-        add_escaped path;
-        text "\""
+    | Use { path; c_header; _ } -> (
+        match c_header with
+        | None ->
+            text "use \"";
+            add_escaped path;
+            text "\""
+        | Some (C_quoted header) ->
+            text "use \"C\" \"";
+            add_escaped header;
+            text "\""
+        | Some (C_system header) ->
+            text "use \"C\" <";
+            text header;
+            text ">")
     | Const { name; ty; value; _ } ->
         text "const ";
         add_name name;

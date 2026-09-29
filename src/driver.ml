@@ -156,7 +156,8 @@ let load_program ~limits root =
                       Hashtbl.add chains canonical file_chain;
                       let rec dependencies = function
                         | [] -> Ok ()
-                        | Ast.Use { path = dependency; span } :: rest -> (
+                        | Ast.Use { path = dependency; c_header = None; span } :: rest
+                          -> (
                             match use_path_error dependency with
                             | Some message ->
                                 Error
@@ -172,6 +173,7 @@ let load_program ~limits root =
                                 match visit file_chain target_canonical (Some span) with
                                 | Error diagnostics -> Error diagnostics
                                 | Ok () -> dependencies rest))
+                        | Ast.Use { c_header = Some _; _ } :: rest -> dependencies rest
                         | _ :: rest -> dependencies rest
                       in
                       dependencies program.Ast.items))
@@ -199,10 +201,24 @@ let load_program ~limits root =
             List.filter (function Ast.Use _ -> false | _ -> true) program.Ast.items)
           files
       in
+      let c_imports =
+        List.filter_map
+          (fun (path, program) ->
+            let headers =
+              List.filter_map
+                (function
+                  | Ast.Use { c_header = Some spelling; span; _ } ->
+                      Some C_import.{ spelling; span }
+                  | _ -> None)
+                program.Ast.items
+            in
+            if headers = [] then None else Some (path, headers))
+          files
+      in
       let chains =
         Hashtbl.fold (fun path chain acc -> (path, chain) :: acc) chains []
       in
-      Ok ({ Ast.items }, List.map (fun (path, chain) -> (path, chain)) chains)
+      Ok ({ Ast.items }, List.map (fun (path, chain) -> (path, chain)) chains, c_imports)
 
 let write_file path text =
   let channel = open_out_bin path in
@@ -425,7 +441,23 @@ let apply_no_inline config ir =
 let run_unprotected config =
   match load_program ~limits config.Cli.input with
   | Error diagnostics -> Error diagnostics
-  | Ok (program, chains) -> (
+  | Ok (program, chains, c_imports) -> (
+      let _, _, cc = tools () in
+      let* () =
+        let rec import = function
+          | [] -> Ok ()
+          | (source, headers) :: rest ->
+              let* _, kept =
+                C_import.import ~cc ~debug:config.Cli.debug ~keep:config.Cli.keep source
+                  headers
+              in
+              Option.iter
+                (fun path -> prerr_endline ("fas: kept C import unit: " ^ path))
+                kept;
+              import rest
+        in
+        import c_imports
+      in
       let* () = ast_budget (Ast.check_cumulative_asm_bytes ~limits program) in
       let* () = ast_budget (Ast.check_expanded_nodes ~limits program) in
       let* hir =
