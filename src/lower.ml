@@ -93,6 +93,9 @@ let c_extension = function
       |> ir_extension
   | _ -> Ir.No_extension
 
+let has_c_abi (f : Hir.func) =
+  f.linkage = Hir.External_c || match f.body with Hir.Asm _ -> true | _ -> false
+
 let align s t =
   match Hir.layout s.structs t with
   | Ok (_, a) -> Ok a
@@ -531,7 +534,7 @@ let rec expr s = function
         | None -> error sp ("unknown function `" ^ n ^ "` reached lowering")
       in
       let* vs = exprs s args in
-      let c_function = if target.linkage = Hir.External_c then Some target else None in
+      let c_function = if has_c_abi target then Some target else None in
       let av =
         List.mapi
           (fun index v ->
@@ -2068,6 +2071,7 @@ and lower_switch s e arms default span =
   Ok ()
 
 let lower_func structs strings functions f =
+  let c_abi = has_c_abi f in
   let* () =
     Result_list.iter
       (fun (local : Hir.local) -> layout_ok structs local.ty)
@@ -2080,16 +2084,12 @@ let lower_func structs strings functions f =
         ({
            Ir.name = "a" ^ string_of_int index;
            ty = ty local.ty;
-           extension =
-             (if f.linkage = Hir.External_c then c_extension local.ty
-              else Ir.No_extension);
+           extension = (if c_abi then c_extension local.ty else Ir.No_extension);
          }
           : Ir.param))
       f.Hir.params
   in
-  let ret_extension =
-    if f.linkage = Hir.External_c then c_extension f.ret else Ir.No_extension
-  in
+  let ret_extension = if c_abi then c_extension f.ret else Ir.No_extension in
   match f.body with
   | Hir.Asm raw ->
       Ok

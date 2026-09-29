@@ -1,14 +1,60 @@
+opaque Token
+
+asm fn asm_echo_bool(x bool) bool { movzbl %dil, %eax; ret }
+asm fn asm_echo_u8(x u8) u8 { movzbl %dil, %eax; ret }
+asm fn asm_echo_i8(x i8) i8 { movsbl %dil, %eax; ret }
+asm fn asm_echo_u16(x u16) u16 { movzwl %di, %eax; ret }
+asm fn asm_echo_i16(x i16) i16 { movswl %di, %eax; ret }
+asm fn asm_echo_u32(x u32) u32 { movl %edi, %eax; ret }
+asm fn asm_echo_i32(x i32) i32 { movl %edi, %eax; ret }
+asm fn asm_echo_u64(x u64) u64 { movq %rdi, %rax; ret }
+asm fn asm_echo_i64(x i64) i64 { movq %rdi, %rax; ret }
+asm fn asm_echo_usize(x usize) usize { movq %rdi, %rax; ret }
+asm fn asm_echo_isize(x isize) isize { movq %rdi, %rax; ret }
+asm fn asm_echo_addr(x addr) addr { movq %rdi, %rax; ret }
+asm fn asm_echo_handle(x handle[Token]) handle[Token] { movq %rdi, %rax; ret }
+asm fn asm_noop() void { ret }
+
+asm fn asm_seven(a u8, b i16, c u32, d i64, e usize, f bool, g u64) u64 {
+    movq 8(%rsp), %rax
+    movzbl %dil, %r10d
+    xorq %r10, %rax
+    movswq %si, %r10
+    xorq %r10, %rax
+    movl %edx, %r10d
+    xorq %r10, %rax
+    xorq %rcx, %rax
+    xorq %r8, %rax
+    movzbl %r9b, %r10d
+    xorq %r10, %rax
+    ret
+}
+
+asm fn asm_write(value addr) void { movb $73, (%rdi); ret }
+
 extern "C" {
-  fn assembly_helper(x i64) i64 { return x + 1 }
-}
-
-asm fn assembly_call(x i64) i64 {
-  subq $8, %rsp
-  call assembly_helper
-  addq $8, %rsp
-  retq
-}
-
-fn main() i32 {
-  return assembly_call(40) == 41 ? 0 : 1
+    fn fas_verify_assembly() i32 {
+        if asm_echo_bool(false) || !asm_echo_bool(true) { return 1 }
+        if asm_echo_u8(0) != 0 || asm_echo_u8(255) != 255 || asm_echo_u8(trunc[u8](-1)) != 255 { return 2 }
+        if asm_echo_i8(-128) != -128 || asm_echo_i8(127) != 127 || asm_echo_i8(-1) != -1 { return 3 }
+        if asm_echo_u16(0) != 0 || asm_echo_u16(65535) != 65535 || asm_echo_u16(trunc[u16](-1)) != 65535 { return 4 }
+        if asm_echo_i16(-32768) != -32768 || asm_echo_i16(32767) != 32767 || asm_echo_i16(-1) != -1 { return 5 }
+        if asm_echo_u32(0) != 0 || asm_echo_u32(4294967295) != 4294967295 || asm_echo_u32(bitcast[u32](-1)) != 4294967295 { return 6 }
+        if asm_echo_i32(-2147483648) != -2147483648 || asm_echo_i32(2147483647) != 2147483647 || asm_echo_i32(-1) != -1 { return 7 }
+        if asm_echo_u64(0) != 0 || asm_echo_u64(18446744073709551615) != 18446744073709551615 || asm_echo_u64(sext[u64](-1)) != 18446744073709551615 { return 8 }
+        if asm_echo_i64(-9223372036854775808) != -9223372036854775808 || asm_echo_i64(9223372036854775807) != 9223372036854775807 || asm_echo_i64(-1) != -1 { return 9 }
+        if asm_echo_usize(0) != 0 || asm_echo_usize(18446744073709551615) != 18446744073709551615 { return 10 }
+        if asm_echo_isize(-9223372036854775808) != -9223372036854775808 || asm_echo_isize(9223372036854775807) != 9223372036854775807 { return 11 }
+        byte u8 = 0
+        if asm_echo_addr(null) != null || asm_echo_addr(&byte) != &byte { return 12 }
+        token handle[Token] = handle_from_addr[Token](&byte)
+        if asm_echo_handle(null) != null || asm_echo_handle(token) != token { return 13 }
+        minimum i64 = -9223372036854775808
+        expected u64 = zext[u64](255) ^ sext[u64](-2) ^ zext[u64](bitcast[u32](-1)) ^ bitcast[u64](minimum) ^ 18446744073709551615 ^ zext[u64](true) ^ 18446744073709551615
+        if asm_seven(255, -2, 4294967295, minimum, 18446744073709551615, true, 18446744073709551615) != expected { return 14 }
+        asm_noop()
+        asm_write(&byte)
+        if byte != 73 { return 15 }
+        return 0
+    }
 }
