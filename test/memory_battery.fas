@@ -1,0 +1,109 @@
+struct Empty { }
+opaque Token
+struct Resources { pointer addr token handle[Token] }
+
+extern "C" {
+  fn battery_base(tag u32) addr
+  fn battery_index(tag u32) usize
+  fn battery_rhs(tag u32) u32
+  fn battery_hold(pointer addr) void
+  fn battery_compound_rhs() u32
+  fn battery_hold_vector(pointer addr) void
+  fn battery_vector_rhs() u32
+  fn battery_foreign_hold(pointer addr) void
+  fn battery_unrelated_write() void
+
+  fn fas_order_array_assignment() u32 {
+    values arr[2,u32] = {4, 6}
+    values[battery_index(1)] = battery_rhs(2)
+    return values[1]
+  }
+
+  fn fas_order_array_compound() u32 {
+    values arr[2,u32] = {5, 7}
+    values[battery_index(4)] += battery_rhs(5)
+    return values[1]
+  }
+
+  fn fas_order_raw_store() void {
+    battery_base(6)[u32, battery_index(7)] = battery_rhs(8)
+    return
+  }
+
+  fn fas_order_view_binding() void {
+    view slot = battery_base(9)[u32, battery_index(10)]
+    slot = battery_rhs(11)
+    return
+  }
+
+  fn fas_order_copy() void {
+    copy(battery_base(12)[arr[2,u32], battery_index(13)], battery_base(14)[arr[2,u32], battery_index(15)])
+    return
+  }
+
+  fn fas_order_vector_lane() u32 {
+    values vec[4,u32] = {1, 2, 3, 4}
+    values[battery_index(16)] = battery_rhs(17)
+    return values[1]
+  }
+
+  fn fas_raw_alias() u32 {
+    value u32 = 1
+    (&value)[u32] = 5
+    return value
+  }
+
+  fn fas_view_alias() u32 {
+    value u32 = 2
+    view alias = value
+    alias = 7
+    return value
+  }
+
+  fn fas_compound_alias() u32 {
+    value u32 = 10
+    pointer addr = &value
+    battery_hold(pointer)
+    pointer[u32] += battery_compound_rhs()
+    return value
+  }
+
+  fn fas_vector_alias() u32 {
+    values vec[4,u32] = {1, 2, 3, 4}
+    battery_hold_vector(&values)
+    values[0] = battery_vector_rhs()
+    return values[0] * 1000 + values[1] * 10 + values[2] + values[3]
+  }
+
+  fn fas_empty_views() u32 {
+    empty Empty
+    view empty_view = empty
+    values arr[0,u32]
+    view zero_view = values
+    return 1
+  }
+
+  fn fas_uninitialized_view() u32 {
+    value u32
+    view alias = value
+    alias = 61
+    return value
+  }
+
+  fn fas_handle_round_trip(value handle[Token]) bool {
+    restored handle[Token] = handle_from_addr[Token](handle_addr(value))
+    return restored == value
+  }
+
+  fn fas_copy_resources(destination addr, source addr) void {
+    copy(destination[Resources], source[Resources])
+    return
+  }
+
+  fn fas_foreign_effect() u32 {
+    value u32
+    battery_foreign_hold(&value)
+    battery_unrelated_write()
+    return value
+  }
+}
