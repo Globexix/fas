@@ -475,7 +475,9 @@ let run_unprotected config =
             try Filename.chop_extension base with Invalid_argument _ -> base
           in
           let path =
-            Filename.concat (Filename.get_temp_dir_name ()) (name ^ ".bindings.txt")
+            Filename.temp_file
+              ~temp_dir:(Filename.get_temp_dir_name ())
+              (name ^ ".bindings-") ".txt"
           in
           write_file path (C_import.manifest_text imported);
           prerr_endline ("fas: kept C bindings: " ^ path));

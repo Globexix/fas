@@ -114,17 +114,45 @@ let rec trim value =
         | ' ' | '\t' | '\n' | '\r' -> trim (String.sub value 0 last)
         | _ -> value)
 
-let words value =
-  String.split_on_char ' ' value |> List.map trim |> List.filter (( <> ) "")
-
-let join_words = String.concat " "
 let qualifiers = [ "const"; "volatile"; "restrict"; "__restrict"; "__restrict__" ]
 
 let clean_type value =
-  let parts = words value in
-  ( join_words (List.filter (fun word -> not (List.mem word qualifiers)) parts),
-    List.filter (fun word -> List.mem word qualifiers) parts |> List.sort_uniq compare
-  )
+  let length = String.length value in
+  let output = Buffer.create length in
+  let found = ref [] in
+  let is_ident = function
+    | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' -> true
+    | _ -> false
+  in
+  let rec scan index =
+    if index < length then
+      if is_ident value.[index] then (
+        let finish = ref (index + 1) in
+        while !finish < length && is_ident value.[!finish] do
+          incr finish
+        done;
+        let word = String.sub value index (!finish - index) in
+        if List.mem word qualifiers then found := word :: !found
+        else Buffer.add_string output word;
+        scan !finish)
+      else (
+        Buffer.add_char output value.[index];
+        scan (index + 1))
+  in
+  scan 0;
+  let raw = Buffer.contents output in
+  let normalized = Buffer.create (String.length raw) in
+  let space = ref false in
+  String.iter
+    (fun char ->
+      if char = ' ' || char = '\t' || char = '\n' || char = '\r' then
+        space := Buffer.length normalized > 0
+      else (
+        if !space then Buffer.add_char normalized ' ';
+        Buffer.add_char normalized char;
+        space := false))
+    raw;
+  (Buffer.contents normalized, List.sort_uniq compare !found)
 
 let int_type = function
   | "_Bool" | "bool" -> Some Ast.Bool
@@ -477,19 +505,19 @@ let map_declarations ~span declarations =
         | Ok _ -> add_unsupported name "name is reserved in Fas"
         | Error _ -> ())
     aliases;
-  let add_item name signature item origin obligations reason =
+  let add_item name spelling signature item origin obligations reason =
     let reason =
       if Names.reserved_binding_name name then Some "name is reserved in Fas"
       else reason
     in
     let item = if Option.is_some reason then None else item in
     let declaration_file, line = origin in
-    let qualifier_text = String.concat "," obligations in
+    let qualifier_text = List.sort_uniq compare obligations |> String.concat "," in
     let reason_text =
       Option.fold ~none:"" ~some:(fun r -> " unsupported=" ^ r) reason
     in
     let manifest_line =
-      Printf.sprintf "%s\t%s\t%s\t%s:%d%s" name signature qualifier_text
+      Printf.sprintf "%s\t%s\t%s\t%s\t%s:%d%s" name spelling signature qualifier_text
         (Option.value ~default:"<unknown>" declaration_file)
         (Option.value ~default:0 line)
         reason_text
@@ -512,6 +540,13 @@ let map_declarations ~span declarations =
   let origin node =
     let file, line = declaration_location node in
     (file, line)
+  in
+  let declaration_spelling node name =
+    match c_type_name node with
+    | Some raw -> raw ^ " " ^ name
+    | None ->
+        let tag = Option.value ~default:"record" (string "tagUsed" node) in
+        tag ^ " " ^ name
   in
   let quals node = c_qualifiers node in
   let as_type ~allow_record node =
@@ -545,7 +580,7 @@ let map_declarations ~span declarations =
       | Ok ty ->
           if not (Hashtbl.mem alias_nodes name) then
             let signature = "enum " ^ name ^ " as " ^ Ast.type_name ty in
-            add_item name signature None (None, None) [] None
+            add_item name ("enum " ^ name) signature None (None, None) [] None
       | Error reason -> add_unsupported name reason)
     enums;
   let enum_aliases =
@@ -567,7 +602,9 @@ let map_declarations ~span declarations =
       | Some "RecordDecl", "" -> ()
       | Some "RecordDecl", _ ->
           let item = Ast.Opaque { name; span } in
-          add_item name ("opaque " ^ name) (Some item) (origin node) [] None
+          add_item name
+            (declaration_spelling node name)
+            ("opaque " ^ name) (Some item) (origin node) [] None
       | Some "EnumDecl", _ ->
           let previous_value = ref None in
           List.iter
@@ -613,6 +650,7 @@ let map_declarations ~span declarations =
                           Ast.Const { name = constant; ty; value = expression; span }
                         in
                         add_item constant
+                          (declaration_spelling child constant)
                           (Ast.type_name ty ^ " " ^ value)
                           (Some item) (origin child) (quals child) None
                     | Ok _, _ ->
@@ -625,10 +663,13 @@ let map_declarations ~span declarations =
           | Some (Ok (Ast.Named_type target)) when target = name -> ()
           | Some (Ok ty) ->
               add_item name
+                (declaration_spelling node name)
                 ("typedef " ^ Ast.type_name ty)
                 None (origin node) (quals node) None
           | Some (Error reason) ->
-              add_item name "typedef" None (origin node) (quals node) (Some reason)
+              add_item name
+                (declaration_spelling node name)
+                "typedef" None (origin node) (quals node) (Some reason)
           | None -> ())
       | Some "FunctionDecl", _ ->
           let origin = origin node in
@@ -696,7 +737,9 @@ let map_declarations ~span declarations =
                      })
             | _ -> None
           in
-          add_item name signature_name item origin
+          add_item name
+            (declaration_spelling node name)
+            signature_name item origin
             (quals node @ List.concat_map (fun (_, _, q) -> q) parameters)
             reason
       | Some "VarDecl", _ ->
@@ -728,7 +771,9 @@ let map_declarations ~span declarations =
             | Ok ty -> Ast.type_name ty
             | Error reason -> "unsupported: " ^ reason
           in
-          add_item name signature item (origin node) (quals node) reason
+          add_item name
+            (declaration_spelling node name)
+            signature item (origin node) (quals node) reason
       | _ -> ())
     nodes;
   let items =
@@ -889,7 +934,7 @@ let manifest_text imported =
     Hashtbl.fold
       (fun name line acc ->
         match String.split_on_char '\t' line with
-        | _ :: signature :: qualifiers :: location :: _ ->
+        | _ :: spelling :: signature :: qualifiers :: location :: _ ->
             let location =
               match find_text location " unsupported=" 0 with
               | Some stop -> String.sub location 0 stop
@@ -900,7 +945,8 @@ let manifest_text imported =
                 ~some:(fun value -> " unsupported=" ^ value)
                 (List.assoc_opt name imported.unsupported)
             in
-            Printf.sprintf "%s\t%s\t%s\t%s%s" name signature qualifiers location reason
+            Printf.sprintf "%s\t%s\t%s\t%s\t%s%s" name spelling signature qualifiers
+              location reason
             :: acc
         | _ -> acc)
       rows []
@@ -912,7 +958,7 @@ let manifest_text imported =
           if Hashtbl.mem rows name then None
           else
             Some
-              (Printf.sprintf "%s\tunsupported\t\t<unknown>:0 unsupported=%s" name
+              (Printf.sprintf "%s\t\tunsupported\t\t<unknown>:0 unsupported=%s" name
                  reason))
         imported.unsupported
     |> List.sort compare

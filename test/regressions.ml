@@ -8268,6 +8268,24 @@ let () =
 
   let c_matrix = c_import_fixture "matrix.h" in
   let c_matrix_source, c_matrix_imported = c_matrix in
+  let restrict_manifest =
+    C_import.manifest_text c_matrix_imported
+    |> String.split_on_char '\n'
+    |> List.find_opt (fun line ->
+        String.starts_with ~prefix:"fas_restrict_pointer\t" line)
+  in
+  incr checks_run;
+  (match restrict_manifest with
+  | Some line -> (
+      match String.split_on_char '\t' line with
+      | [ "fas_restrict_pointer"; spelling; signature; qualifiers; location ]
+        when spelling = "void (int *restrict) fas_restrict_pointer"
+             && signature = "fn(addr)->void" && qualifiers = "restrict"
+             && contains location "matrix.h:" ->
+          ()
+      | columns ->
+          failwith ("C manifest columns changed: " ^ String.concat " | " columns))
+  | None -> failwith "C manifest omitted the restrict function");
   let provenance_dir = Filename.dirname c_matrix_source in
   let provenance_headers =
     List.map

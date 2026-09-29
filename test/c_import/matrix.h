@@ -77,3 +77,4 @@ int fas_nondefault_abi(int value) __attribute__((ms_abi));
 static inline int fas_static_inline(int value) { return value; }
 
 #define FAS_MACRO_ONLY 7
+void fas_restrict_pointer(int *restrict value);

@@ -240,6 +240,8 @@ TMPDIR="$USE_EDGES_TMP" "$OCAML_FAS" --keep --emit-ir \
   "$USE_EDGES_TMP/paths/manifest.fas" >"$USE_EDGES_TMP/manifest-second.ir" \
   2>"$USE_EDGES_TMP/manifest-second.log"
 bindings_again=$(sed -n 's/^fas: kept C bindings: //p' "$USE_EDGES_TMP/manifest-second.log")
+[ "$bindings" != "$bindings_again" ] \
+  || fail "kept C bindings manifest path was reused"
 cmp -s "$USE_EDGES_TMP/manifest-first.txt" "$bindings_again" \
   || fail "bindings manifest changed between identical runs"
 cat >"$USE_EDGES_TMP/paths/missing-import.fas" <<'FAS'
