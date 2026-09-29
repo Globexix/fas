@@ -128,6 +128,7 @@ let clean_type value =
 
 let int_type = function
   | "_Bool" | "bool" -> Some Ast.Bool
+  | "__size_t" -> Some (Ast.Int Ast.U64)
   | "char" | "signed char" -> Some (Ast.Int Ast.I8)
   | "unsigned char" -> Some (Ast.Int Ast.U8)
   | "short" | "short int" | "signed short" | "signed short int" ->
