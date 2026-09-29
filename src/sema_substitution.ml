@@ -51,18 +51,15 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       program.Ast.items
     |> String_set.of_list
   in
-  let global_value_names =
-    List.filter_map
-      (function
-        | Ast.Const { name; _ } | Ast.Global { name; _ } -> Some name | _ -> None)
-      program.Ast.items
-    |> String_set.of_list
+  let global_names, global_value_names =
+    List.fold_left
+      (fun (globals, values) -> function
+        | Ast.Const { name; _ } -> (globals, name :: values)
+        | Ast.Global { name; _ } -> (name :: globals, name :: values)
+        | _ -> (globals, values))
+      ([], []) program.Ast.items
   in
-  let global_names =
-    List.filter_map
-      (function Ast.Global { name; _ } -> Some name | _ -> None)
-      program.Ast.items
-  in
+  let global_value_names = String_set.of_list global_value_names in
   let named_type_names =
     List.filter_map
       (function

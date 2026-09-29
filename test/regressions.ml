@@ -8159,6 +8159,10 @@ let () =
     "var Number i32 = 7\nfn address() addr { return &Number }\n";
   semantic_accept "global-inner-shadow"
     "var Value i32 = 7\nfn local() i32 { Value i32 = 11\n return Value }\n";
+  semantic_accept "global-handle-type"
+    "opaque Token\n\
+     var Current handle[Token] = null\n\
+     fn current_token() handle[Token] { return Current }\n";
   let cross_file_global =
     check_files
       [
@@ -8177,6 +8181,9 @@ let () =
     "fn dynamic() i32 { return 1 }\nvar Value i32 = dynamic()\n";
   semantic_message "global-initializer-global-read" "global `Source` is not a constant"
     "var Source i32 = 1\nvar Value i32 = Source\n";
+  semantic_message "global-address-initializer"
+    "global initializer must be a constant expression"
+    "var Target u32\nvar Pointer addr = &Target\n";
   semantic_message "const-global-read" "global `Value` is not a constant"
     "var Value i32 = 1\nconst Copy i32 = Value\n";
   semantic_message "global-array-length-read" "global `Count` is not a constant"
@@ -8194,4 +8201,9 @@ let () =
   semantic_message "global-struct-initializer-arity"
     "wrong number of struct literal fields"
     "struct Pair { x i32\ny i32 }\nvar Item Pair = {1}\n";
+  semantic_message "global-opaque-object"
+    "opaque type `Token` may only be used behind a pointer"
+    "opaque Token\nvar Value Token\n";
+  parse_message "global-local-var" "expected an expression, found `var`"
+    "fn run() void { var Value i32\nreturn }\n";
   Printf.printf "regression checks: %d passed\n" !checks_run
