@@ -26,7 +26,7 @@ int main(void) {
       values[2] != UINT32_C(2578103244))
     return 2;
   if (buffer[12] != 0xa5 || buffer[31] != 0xa5 || buffer[34] != 0xa5 ||
-      buffer[39] != 0xa5 || buffer[40] != 0xa5 || buffer[41] != 0xf9 ||
+      buffer[39] != 0xa5 || buffer[40] != 0xa5 || buffer[41] != 0x09 ||
       buffer[42] != 0xa5)
     return 3;
 

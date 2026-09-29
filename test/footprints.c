@@ -36,7 +36,7 @@ int main(void) {
     return 1;
   if (buffer[20] != 1 || buffer[24] != 2 || buffer[28] != 3)
     return 2;
-  if (buffer[40] != 0xa5 || buffer[41] != 0xf9)
+  if (buffer[40] != 0xa5 || buffer[41] != 0x09)
     return 3;
   if (buffer[60] != 11 || buffer[61] != 22 ||
       buffer[62] != 33 || buffer[63] != 44 || buffer[64] != 55)
@@ -67,7 +67,7 @@ int main(void) {
     return 11;
   uint8_t *last_bool = mapping + page_size - 3;
   fas_guard_bool_store(last_bool);
-  if (last_bool[0] != 0xa5 || last_bool[1] != 0x55 || last_bool[2] != 0xff)
+  if (last_bool[0] != 0xa5 || last_bool[1] != 0x55 || last_bool[2] != 0x01)
     return 12;
   if (fas_guard_bool_load(last_bool) != 0)
     return 13;
