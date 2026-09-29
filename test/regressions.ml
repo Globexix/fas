@@ -7065,7 +7065,7 @@ let () =
     (fun marker ->
       if not (contains raw_mask_shape marker) then
         failwith ("raw-mask-shape: missing `" ^ marker ^ "`"))
-    [ "load i8, ptr %"; "bitcast i8"; "shufflevector" ];
+    [ "load i8, ptr %"; "bitcast i8"; "extractelement"; "insertelement" ];
   let raw_addr_shape = llvm_of "fn f(p addr, n usize) addr { return p + n }\n" in
   List.iter
     (fun marker ->

@@ -9,6 +9,8 @@ void *footprint_buffer(void);
 void fas_write_footprints(void);
 uint32_t fas_load_bool_footprint(void);
 void fas_guard_store(void *p);
+void fas_guard_bool_store(void *p);
+int32_t fas_guard_bool_load(void *p);
 
 static uint8_t buffer[128];
 
@@ -60,7 +62,13 @@ int main(void) {
   if (last[0] != UINT32_C(305419896) || last[1] != UINT32_C(2271560481) ||
       last[2] != UINT32_C(2309737967))
     return 10;
-  if (munmap(mapping, (size_t)page_size * 2) != 0)
+  uint8_t *last_bool = mapping + page_size - 3;
+  fas_guard_bool_store(last_bool);
+  if (last_bool[0] != 0xa5 || last_bool[1] != 0x55 || last_bool[2] != 0xff)
     return 11;
+  if (fas_guard_bool_load(last_bool) != 0)
+    return 12;
+  if (munmap(mapping, (size_t)page_size * 2) != 0)
+    return 13;
   return 0;
 }

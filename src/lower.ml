@@ -1047,16 +1047,6 @@ and raw_address s base off =
   emit s (Ir.Gep (id, Ir.I8, bv, [ Ir.Index ov ]));
   Ok (Ir.Local (id, Ir.Pointer Ir.I8))
 
-and mask_chunk_ty lanes =
-  let bytes = (lanes + 7) / 8 in
-  match bytes with
-  | 1 -> (8, Ir.I8)
-  | 2 -> (16, Ir.I16)
-  | 3 | 4 -> (32, Ir.I32)
-  | 5 | 6 | 7 | 8 -> (64, Ir.I64)
-  | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 -> (128, Ir.I128)
-  | _ -> (128, Ir.I128)
-
 and int_ty_bytes = function
   | Ir.I1 | Ir.I8 -> 1
   | Ir.I16 -> 2
@@ -1079,6 +1069,84 @@ and volatile_offset s pointer offset =
     emit s
       (Ir.Gep (id, Ir.I8, pointer, [ Ir.Index (Ir.Const (Ir.I64, Int64.of_int offset)) ]));
     Ok (Ir.Local (id, Ir.Pointer Ir.I8))
+
+and packed_bool_load s is_volatile lanes pointer =
+  let vector_ty = Ir.Vector (lanes, Ir.I1) in
+  let bytes = (lanes + 7) / 8 in
+  let load id ty pointer =
+    if is_volatile then Ir.Load_volatile (id, ty, pointer, 1)
+    else Ir.Load (id, ty, pointer, 1)
+  in
+  let rec load_chunks byte_offset current =
+    if byte_offset = bytes then Ok current
+    else
+      let chunk_bytes, chunk_ty = volatile_chunk (bytes - byte_offset) in
+      let bits = chunk_bytes * 8 in
+      let* chunk_pointer = volatile_offset s pointer byte_offset in
+      let loaded = fresh s in
+      emit s (load loaded chunk_ty chunk_pointer);
+      let unpacked = fresh s in
+      let unpacked_ty = Ir.Vector (bits, Ir.I1) in
+      emit s
+        (Ir.Cast
+           (unpacked, "bitcast", chunk_ty, Ir.Local (loaded, chunk_ty), unpacked_ty));
+      let first_lane = byte_offset * 8 in
+      let count = min (lanes - first_lane) bits in
+      let rec insert_lane i result =
+        if i = count then Ok result
+        else
+          let lane = first_lane + i in
+          let extracted = fresh s in
+          emit s
+            (Ir.Extract
+               ( extracted,
+                 unpacked_ty,
+                 Ir.Local (unpacked, unpacked_ty),
+                 Ir.Const (Ir.I64, Int64.of_int i) ));
+          let inserted = fresh s in
+          emit s
+            (Ir.Insert
+               ( inserted,
+                 vector_ty,
+                 result,
+                 Ir.Const (Ir.I64, Int64.of_int lane),
+                 Ir.Local (extracted, Ir.I1) ));
+          insert_lane (i + 1) (Ir.Local (inserted, vector_ty))
+      in
+      let* result = insert_lane 0 current in
+      load_chunks (byte_offset + chunk_bytes) result
+  in
+  load_chunks 0 (Ir.Undef vector_ty)
+
+and packed_bool_store s is_volatile lanes value pointer =
+  let bytes = (lanes + 7) / 8 in
+  let store ty value pointer =
+    if is_volatile then Ir.Store_volatile (ty, value, pointer, 1)
+    else Ir.Store (ty, value, pointer, 1)
+  in
+  let rec store_chunks byte_offset =
+    if byte_offset = bytes then Ok ()
+    else
+      let chunk_bytes, chunk_ty = volatile_chunk (bytes - byte_offset) in
+      let bits = chunk_bytes * 8 in
+      let first_lane = byte_offset * 8 in
+      let mask =
+        Ir.Const_vector
+          ( Ir.Vector (bits, Ir.I32),
+            List.init bits (fun i ->
+                Int64.of_int (if first_lane + i < lanes then first_lane + i else 0)) )
+      in
+      let packed = fresh s in
+      let packed_ty = Ir.Vector (bits, Ir.I1) in
+      emit s (Ir.Shufflevector (packed, packed_ty, value, value, mask));
+      let stored = fresh s in
+      emit s
+        (Ir.Cast (stored, "bitcast", packed_ty, Ir.Local (packed, packed_ty), chunk_ty));
+      let* chunk_pointer = volatile_offset s pointer byte_offset in
+      emit s (store chunk_ty (Ir.Local (stored, chunk_ty)) chunk_pointer);
+      store_chunks (byte_offset + chunk_bytes)
+  in
+  store_chunks 0
 
 and volatile_load s span access_ty pointer =
   match access_ty with
@@ -1119,53 +1187,7 @@ and volatile_load s span access_ty pointer =
           load_lane (i + 1) (Ir.Local (inserted, vector_ty))
       in
       load_lane 0 (Ir.Undef vector_ty)
-  | Hir.Vec (lanes, Hir.Bool) ->
-      let vector_ty = Ir.Vector (lanes, Ir.I1) in
-      let bytes = (lanes + 7) / 8 in
-      let rec load_chunks byte_offset current =
-        if byte_offset = bytes then Ok current
-        else
-          let chunk_bytes, chunk_ty = volatile_chunk (bytes - byte_offset) in
-          let bits = chunk_bytes * 8 in
-          let* chunk_pointer = volatile_offset s pointer byte_offset in
-          let loaded = fresh s in
-          emit s (Ir.Load_volatile (loaded, chunk_ty, chunk_pointer, 1));
-          let unpacked = fresh s in
-          emit s
-            (Ir.Cast
-               ( unpacked,
-                 "bitcast",
-                 chunk_ty,
-                 Ir.Local (loaded, chunk_ty),
-                 Ir.Vector (bits, Ir.I1) ));
-          let first_lane = byte_offset * 8 in
-          let count = min (lanes - first_lane) bits in
-          let rec insert_lane i result =
-            if i = count then Ok result
-            else
-              let lane = first_lane + i in
-              let unpacked_ty = Ir.Vector (bits, Ir.I1) in
-              let extracted = fresh s in
-              emit s
-                (Ir.Extract
-                   ( extracted,
-                     unpacked_ty,
-                     Ir.Local (unpacked, unpacked_ty),
-                     Ir.Const (Ir.I64, Int64.of_int i) ));
-              let inserted = fresh s in
-              emit s
-                (Ir.Insert
-                   ( inserted,
-                     vector_ty,
-                     result,
-                     Ir.Const (Ir.I64, Int64.of_int lane),
-                     Ir.Local (extracted, Ir.I1) ));
-              insert_lane (i + 1) (Ir.Local (inserted, vector_ty))
-          in
-          let* result = insert_lane 0 current in
-          load_chunks (byte_offset + chunk_bytes) result
-      in
-      load_chunks 0 (Ir.Undef vector_ty)
+  | Hir.Vec (lanes, Hir.Bool) -> packed_bool_load s true lanes pointer
   | _ -> error span "internal error: invalid volatile access type"
 
 and volatile_store s span access_ty value pointer =
@@ -1197,40 +1219,8 @@ and volatile_store s span access_ty value pointer =
           store_lane (i + 1)
       in
       store_lane 0
-  | Hir.Vec (lanes, Hir.Bool) ->
-      let bytes = (lanes + 7) / 8 in
-      let rec store_chunks byte_offset =
-        if byte_offset = bytes then Ok ()
-        else
-          let chunk_bytes, chunk_ty = volatile_chunk (bytes - byte_offset) in
-          let bits = chunk_bytes * 8 in
-          let first_lane = byte_offset * 8 in
-          let mask =
-            Ir.Const_vector
-              ( Ir.Vector (bits, Ir.I32),
-                List.init bits (fun i ->
-                    Int64.of_int (if first_lane + i < lanes then first_lane + i else 0))
-              )
-          in
-          let packed = fresh s in
-          let packed_ty = Ir.Vector (bits, Ir.I1) in
-          emit s (Ir.Shufflevector (packed, packed_ty, value, value, mask));
-          let stored = fresh s in
-          emit s
-            (Ir.Cast
-               (stored, "bitcast", packed_ty, Ir.Local (packed, packed_ty), chunk_ty));
-          let* chunk_pointer = volatile_offset s pointer byte_offset in
-          emit s
-            (Ir.Store_volatile (chunk_ty, Ir.Local (stored, chunk_ty), chunk_pointer, 1));
-          store_chunks (byte_offset + chunk_bytes)
-      in
-      store_chunks 0
+  | Hir.Vec (lanes, Hir.Bool) -> packed_bool_store s true lanes value pointer
   | _ -> error span "internal error: invalid volatile access type"
-
-and raw_mask_index_vector lanes total =
-  Ir.Const_vector
-    ( Ir.Vector (total, Ir.I32),
-      List.init total (fun i -> Int64.of_int (if i < lanes then i else 0)) )
 
 and raw_load s t p =
   match t with
@@ -1273,27 +1263,7 @@ and raw_load s t p =
           go (i + 1) (Ir.Local (iid, vt))
       in
       go 0 (Ir.Undef vt)
-  | Hir.Vec (lanes, Hir.Bool) ->
-      let chunk_bits, chunk_ty = mask_chunk_ty lanes in
-      let id = fresh s in
-      emit s (Ir.Load (id, chunk_ty, p, 1));
-      let bc = fresh s in
-      emit s
-        (Ir.Cast
-           ( bc,
-             "bitcast",
-             chunk_ty,
-             Ir.Local (id, chunk_ty),
-             Ir.Vector (chunk_bits, Ir.I1) ));
-      let out = fresh s in
-      emit s
-        (Ir.Shufflevector
-           ( out,
-             Ir.Vector (lanes, Ir.I1),
-             Ir.Local (bc, Ir.Vector (chunk_bits, Ir.I1)),
-             Ir.Local (bc, Ir.Vector (chunk_bits, Ir.I1)),
-             raw_mask_index_vector lanes lanes ));
-      Ok (Ir.Local (out, Ir.Vector (lanes, Ir.I1)))
+  | Hir.Vec (lanes, Hir.Bool) -> packed_bool_load s false lanes p
   | _ -> error Span.synthetic "internal error: aggregate raw load"
 
 and raw_store s t v p =
@@ -1331,26 +1301,7 @@ and raw_store s t v p =
           go (i + 1)
       in
       go 0
-  | Hir.Vec (lanes, Hir.Bool) ->
-      let chunk_bits, chunk_ty = mask_chunk_ty lanes in
-      let pid = fresh s in
-      emit s
-        (Ir.Shufflevector
-           ( pid,
-             Ir.Vector (chunk_bits, Ir.I1),
-             v,
-             v,
-             raw_mask_index_vector lanes chunk_bits ));
-      let bid = fresh s in
-      emit s
-        (Ir.Cast
-           ( bid,
-             "bitcast",
-             Ir.Vector (chunk_bits, Ir.I1),
-             Ir.Local (pid, Ir.Vector (chunk_bits, Ir.I1)),
-             chunk_ty ));
-      emit s (Ir.Store (chunk_ty, Ir.Local (bid, chunk_ty), p, 1));
-      Ok ()
+  | Hir.Vec (lanes, Hir.Bool) -> packed_bool_store s false lanes v p
   | _ -> error Span.synthetic "internal error: aggregate raw store"
 
 and field_address s a off =

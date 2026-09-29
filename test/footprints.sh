@@ -11,7 +11,7 @@ trap 'rm -rf "$FP_TMP"' EXIT HUP INT TERM
 "$OCAML_FAS" --emit-llvm "$ROOT/test/footprints.fas" >"$FP_TMP/footprints.ll"
 "$LLVM_OPT" -passes=verify "$FP_TMP/footprints.ll" -disable-output
 
-for symbol in fas_write_footprints fas_guard_store; do
+for symbol in fas_write_footprints fas_guard_store fas_guard_bool_store; do
   body=$(awk -v name="$symbol" '$0 ~ "^define .*@" name "\\(" { in_fn = 1 } in_fn { print } in_fn && /^}/ { exit }' "$FP_TMP/footprints.ll")
   if printf '%s\n' "$body" | grep -Eq ' = load (i[0-9]+|<[0-9]+ x i[0-9]+|\[[^]]+\])'; then
     echo "footprints: $symbol reads a stored value" >&2
