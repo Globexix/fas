@@ -101,9 +101,9 @@ for (vt, vw, vs) in widths:
                 body.append(var("x%d" % idx[0], vt, vw, vs, x_bits))
                 body.append(var("n%d" % idx[0], nt, nw, ns, n_bits))
                 body.append(var("e%d" % idx[0], vt, vw, vs, exp_l))
-                body.append(var("f%d" % idx[0], vt, vw, vs, exp_r))
+                body.append(var("right%d" % idx[0], vt, vw, vs, exp_r))
                 body.append("  if x%d << n%d != e%d { return %d }\n" % (idx[0], idx[0], idx[0], idx[0]))
-                body.append("  if x%d >> n%d != f%d { return %d }\n" % (idx[0], idx[0], idx[0], idx[0] + 1))
+                body.append("  if x%d >> n%d != right%d { return %d }\n" % (idx[0], idx[0], idx[0], idx[0] + 1))
 body.append("  return 0\n}\n")
 open(os.path.join(out, "boundaries.fas"), "w").write("".join(body))
 
