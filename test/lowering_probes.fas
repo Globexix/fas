@@ -1,0 +1,56 @@
+extern "C" {
+  fn lowering_stack_sample() void
+}
+
+extern "C" {
+  fn lowering_load32_le(p addr) u32 {
+    return zext[u32](p[u8]) | zext[u32](p[u8, 1]) << 8 | zext[u32](p[u8, 2]) << 16 | zext[u32](p[u8, 3]) << 24
+  }
+
+  fn lowering_short_circuit(p addr, enabled bool) bool {
+    return !enabled || p[u32] != 0
+  }
+
+  fn lowering_masked_load(p addr, active bool) u64 {
+    mask vec[4,bool] = {true, true, true, active}
+    fallback vec[4,u32] = {13, 17, 19, 23}
+    values vec[4,u32] = masked_load[u32](p, mask, fallback)
+    return zext[u64](values[0]) | zext[u64](values[1]) << 16 | zext[u64](values[2]) << 32 | zext[u64](values[3]) << 48
+  }
+
+  fn lowering_masked_none(p addr) u64 {
+    mask vec[4,bool] = {false, false, false, false}
+    fallback vec[4,u32] = {13, 17, 19, 23}
+    values vec[4,u32] = masked_load[u32](p, mask, fallback)
+    return zext[u64](values[0]) | zext[u64](values[1]) << 16 | zext[u64](values[2]) << 32 | zext[u64](values[3]) << 48
+  }
+
+  fn lowering_div_invariant(p addr, n usize, divisor u32) u64 {
+    i usize = 0
+    total u64 = 0
+    while i < n {
+      total += zext[u64](p[u32, i] / divisor)
+      i += 1
+    }
+    return total
+  }
+
+  fn lowering_add_recurrence(input addr, output addr, n usize) void {
+    i usize = 0
+    while i < n {
+      output[u32, i] = input[u32, i] + 1
+      i += 1
+    }
+    return
+  }
+
+  fn lowering_copy_stack(dst addr, src addr, count usize) void {
+    i usize = 0
+    while i < count {
+      copy(dst[arr[512,u64]], src[arr[512,u64]])
+      lowering_stack_sample()
+      i += 1
+    }
+    return
+  }
+}
