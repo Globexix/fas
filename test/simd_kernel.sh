@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+CC=${CC:-clang-22}
+LLVM_OPT=${LLVM_OPT:-opt-22}
+OCAML_FAS=${OCAML_FAS:-$ROOT/_build/default/bin/main.exe}
+KERNEL_TMP=$(mktemp -d)
+trap 'rm -rf "$KERNEL_TMP"' EXIT HUP INT TERM
+
+"$OCAML_FAS" --emit-llvm "$ROOT/test/simd_kernel.fas" >"$KERNEL_TMP/simd_kernel.ll"
+"$LLVM_OPT" -passes=verify "$KERNEL_TMP/simd_kernel.ll" -disable-output
+
+ulimit -c 0 2>/dev/null || true
+for level in 0 2; do
+  "$LLVM_OPT" -S "-passes=default<O$level>" "$KERNEL_TMP/simd_kernel.ll" \
+    -o "$KERNEL_TMP/simd_kernel.O$level.ll"
+  "$LLVM_OPT" -passes=verify "$KERNEL_TMP/simd_kernel.O$level.ll" -disable-output
+  "$CC" -Werror -Wno-override-module -std=c17 -O"$level" \
+    "$KERNEL_TMP/simd_kernel.O$level.ll" "$ROOT/test/simd_kernel.c" \
+    -o "$KERNEL_TMP/simd_kernel.O$level"
+  if [ "$level" -eq 2 ]; then
+    timeout 120 "$KERNEL_TMP/simd_kernel.O$level" --measure
+  else
+    timeout 120 "$KERNEL_TMP/simd_kernel.O$level"
+  fi
+done
+
+printf 'simd kernel: O0/O2 verified and linked: ok\n'

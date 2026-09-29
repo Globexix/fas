@@ -1,0 +1,37 @@
+extern "C" {
+  fn sum_xor_u32(p addr, n usize) u64 {
+    sum u32 = 0
+    bits u32 = 0
+    i usize = 0
+    while n - i >= 8 {
+      values vec[8,u32] = (p + i * 4)[vec[8,u32]]
+      sum += reduce_sum(values)
+      bits ^= reduce_xor(values)
+      i += 8
+    }
+    if n - i > 0 {
+      mask vec[8,bool] = {n - i > 0, n - i > 1, n - i > 2, n - i > 3, n - i > 4, n - i > 5, n - i > 6, n - i > 7}
+      values vec[8,u32] = masked_load[u32](p + i * 4, mask, splat(0))
+      sum += reduce_sum(values)
+      bits ^= reduce_xor(values)
+    }
+    return (zext[u64](sum) << 32) | zext[u64](bits)
+  }
+
+  fn lookup_u32(table addr, idx addr, out addr, n usize) void {
+    i usize = 0
+    while n - i >= 8 {
+      indices vec[8,u8] = (idx + i)[vec[8,u8]]
+      values vec[8,u32] = gather[u32](table, indices, splat(true), splat(0))
+      (out + i * 4)[vec[8,u32]] = values
+      i += 8
+    }
+    if n - i > 0 {
+      mask vec[8,bool] = {n - i > 0, n - i > 1, n - i > 2, n - i > 3, n - i > 4, n - i > 5, n - i > 6, n - i > 7}
+      indices vec[8,u8] = masked_load[u8](idx + i, mask, splat(0))
+      values vec[8,u32] = gather[u32](table, indices, mask, splat(0))
+      masked_store[u32](out + i * 4, mask, values)
+    }
+    return
+  }
+}
