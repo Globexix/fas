@@ -120,6 +120,17 @@ grep -F "Module {" "$WORK/custom.ir" >/dev/null || fail "custom IR emission omit
 [ "$(od -An -tx1 -N4 "$WORK/good.o" | tr -d ' \n')" = "7f454c46" ] || fail "-c output is not ELF"
 "$OCAML_FAS" --emit-obj "$WORK/good.fas" -o "$WORK/alias.o" >"$WORK/stdout" 2>"$WORK/stderr"
 [ -s "$WORK/alias.o" ] || fail "--emit-obj did not produce an object"
+cp "$WORK/good.fas" "$WORK/auto.fas"
+(cd "$WORK" && "$OCAML_FAS" auto.fas >stdout 2>stderr)
+[ -x "$WORK/a.out" ] || fail "default executable output path was not used"
+[ ! -s "$WORK/stdout" ] && [ ! -s "$WORK/stderr" ] || fail "default executable wrote diagnostics"
+"$WORK/a.out" || fail "default executable output failed"
+(cd "$WORK" && "$OCAML_FAS" -S auto.fas >stdout 2>stderr)
+[ -s "$WORK/auto.s" ] || fail "default assembly output path was not used"
+[ ! -s "$WORK/stdout" ] && [ ! -s "$WORK/stderr" ] || fail "default assembly wrote diagnostics"
+(cd "$WORK" && "$OCAML_FAS" -c auto.fas >stdout 2>stderr)
+[ -s "$WORK/auto.o" ] || fail "default object output path was not used"
+[ ! -s "$WORK/stdout" ] && [ ! -s "$WORK/stderr" ] || fail "default object wrote diagnostics"
 
 "$OCAML_FAS" -debug --keep "$WORK/good.fas" -o "$WORK/debug" >"$WORK/stdout" 2>"$WORK/stderr"
 [ ! -s "$WORK/stdout" ] || fail "--keep wrote to stdout"
