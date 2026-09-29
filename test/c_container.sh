@@ -20,15 +20,58 @@ expect_failure() {
   [ ! -s "$CONTAINER_TMP/stdout" ] || fail "failure wrote to stdout: $*"
 }
 
-cat >"$CONTAINER_TMP/program.fas" <<'FAS'
-use "C" <<END
-int container_value(void) { return 11; }
-END
-extern "C" {
-  fn fas_container_value() i32 { return container_value() + 31 }
+mkdir "$CONTAINER_TMP/deps"
+cat >"$CONTAINER_TMP/deps/first.fas" <<'FAS'
+use "C" <<FIRST
+#define FIRST_VALUE 17
+FIRST
+use "C" <<SECOND
+#include <stdio.h>
+int fragment_value(void) { return FIRST_VALUE; }
+int c_calls_fas(void) {
+  extern int fas_exported_value(void);
+  return fas_exported_value();
 }
-fn main() i32 { return fas_container_value() - 42 }
+static inline int fas_static_value(int value) { return value + 2; }
+static int fas_unused_static_helper(void) { return 99; }
+int fas_container_global = 13;
+void fas_report_result(int value) { printf("%d\n", value); }
+SECOND
 FAS
+cat >"$CONTAINER_TMP/deps/second.fas" <<'FAS'
+use "C" <<OTHER
+#ifdef FIRST_VALUE
+#error macro escaped across Fas translation units
+#endif
+#define SECOND_VALUE 23
+int other_value(void) { return SECOND_VALUE; }
+OTHER
+FAS
+cat >"$CONTAINER_TMP/program.fas" <<'FAS'
+use "deps/first.fas"
+use "deps/second.fas"
+extern "C" {
+  fn fas_exported_value() i32 { return 10 }
+}
+fn main() i32 {
+  result i32 = fragment_value() + other_value()
+  result += c_calls_fas()
+  result += fas_static_value(1)
+  result += fas_container_global
+  fas_report_result(result)
+  if result != 66 { return 1 }
+  return 0
+}
+FAS
+cat >"$CONTAINER_TMP/oracle.c" <<'C'
+#include <stdio.h>
+int main(void) {
+  printf("66\n");
+  return 0;
+}
+C
+"$CC" "$CONTAINER_TMP/oracle.c" -o "$CONTAINER_TMP/oracle"
+"$CONTAINER_TMP/oracle" >"$CONTAINER_TMP/oracle.out"
 
 for level in 0 2; do
   "$OCAML_FAS" -O"$level" --emit-llvm "$CONTAINER_TMP/program.fas" \
@@ -39,8 +82,22 @@ for level in 0 2; do
   "$LLVM_OPT" -passes=verify "$CONTAINER_TMP/optimized.O$level.ll" -disable-output
   "$OCAML_FAS" -O"$level" "$CONTAINER_TMP/program.fas" \
     -o "$CONTAINER_TMP/program.O$level"
-  "$CONTAINER_TMP/program.O$level" || fail "container executable failed at O$level"
+  "$CONTAINER_TMP/program.O$level" >"$CONTAINER_TMP/program.O$level.out" \
+    || fail "container executable failed at O$level"
+  cmp -s "$CONTAINER_TMP/oracle.out" "$CONTAINER_TMP/program.O$level.out" \
+    || fail "container output differed from the C oracle at O$level"
 done
+
+"$OCAML_FAS" -c -O0 "$CONTAINER_TMP/program.fas" -o "$CONTAINER_TMP/container.o"
+nm "$CONTAINER_TMP/container.o" >"$CONTAINER_TMP/container.nm"
+grep -E ' [A-Za-z] __fas_c_adapter_.*_fas_static_value$' \
+  "$CONTAINER_TMP/container.nm" >/dev/null || fail "used static adapter was absent from object"
+if grep -E '__fas_c_adapter_.*_fas_unused_static_helper$' \
+  "$CONTAINER_TMP/container.nm" >/dev/null; then
+  fail "unused static function produced an adapter symbol"
+fi
+grep -E ' [BD] fas_container_global$' "$CONTAINER_TMP/container.nm" >/dev/null \
+  || fail "container-defined C global was absent from object"
 
 cat >"$CONTAINER_TMP/object.fas" <<'FAS'
 use "C" <<END
@@ -165,6 +222,31 @@ for mode in -S --emit-llvm --emit-ir; do
     >/dev/null || fail "$mode omitted the first C error"
 done
 
+cat >"$CONTAINER_TMP/unbalanced.fas" <<'FAS'
+use "C" <<IF
+#if 1
+int unbalanced(void) { return 1; }
+IF
+fn main() i32 { return 0 }
+FAS
+expect_failure "$OCAML_FAS" --emit-llvm "$CONTAINER_TMP/unbalanced.fas"
+grep -F "$CONTAINER_TMP/unbalanced.fas:2:" "$CONTAINER_TMP/stderr" >/dev/null \
+  || fail "unbalanced #if error was not mapped to the Fas line"
+grep -F "unterminated conditional directive" "$CONTAINER_TMP/stderr" >/dev/null \
+  || fail "unbalanced #if omitted Clang's diagnostic"
+
+cat >"$CONTAINER_TMP/syntax-error.fas" <<'FAS'
+use "C" <<ERR
+int broken(void) { return (1 + ; }
+ERR
+fn main() i32 { return 0 }
+FAS
+expect_failure "$OCAML_FAS" --emit-llvm "$CONTAINER_TMP/syntax-error.fas"
+grep -F "$CONTAINER_TMP/syntax-error.fas:2:" "$CONTAINER_TMP/stderr" >/dev/null \
+  || fail "C syntax error was not mapped to the Fas line"
+grep -F "expected expression" "$CONTAINER_TMP/stderr" >/dev/null \
+  || fail "C syntax error omitted Clang's diagnostic"
+
 "$OCAML_FAS" --keep -debug "$CONTAINER_TMP/program.fas" \
   -o "$CONTAINER_TMP/kept" >"$CONTAINER_TMP/stdout" 2>"$CONTAINER_TMP/stderr"
 grep -F "fas: kept C import unit:" "$CONTAINER_TMP/stderr" >/dev/null \
@@ -173,6 +255,10 @@ grep -F "fas: kept C fragment:" "$CONTAINER_TMP/stderr" >/dev/null \
   || fail "--keep omitted the generated fragment"
 grep -F "fas: kept C object:" "$CONTAINER_TMP/stderr" >/dev/null \
   || fail "--keep omitted the generated C object"
+bindings=$(sed -n 's/^fas: kept C bindings: //p' "$CONTAINER_TMP/stderr")
+[ -s "$bindings" ] || fail "--keep omitted the C bindings manifest"
+grep -F "adapter for fas_static_value" "$bindings" >/dev/null \
+  || fail "bindings manifest omitted the static adapter"
 grep -F "fas: CC command: $CC --target=x86_64-unknown-linux-gnu -fPIC -O0 -c " \
   "$CONTAINER_TMP/stderr" >/dev/null || fail "-debug omitted the C compile command"
 
