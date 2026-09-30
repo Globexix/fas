@@ -8260,6 +8260,8 @@ let () =
   semantic_message "global-function-name-collision" "duplicate declaration `Value`"
     "var Value i32\nfn Value() i32 { return 0 }\n";
   parse_message "global-reserved-var" "expected identifier, found `var`" "var var i32\n";
+  parse_message "native-struct-keyword-field-rejected" "expected identifier, found `fn`"
+    "struct S { fn i32 }\n";
   semantic_message "global-initializer-not-constant"
     "global initializer must be a constant expression"
     "fn dynamic() i32 { return 1 }\nvar Value i32 = dynamic()\n";
@@ -9103,7 +9105,6 @@ let () =
       ("FasAnonymousMemberRecord", "anonymous members are not supported");
       ("FasFloatRecord", "floating-point fields are not supported");
       ("FasFunctionPointerRecord", "function-pointer fields are not supported");
-      ("FasKeywordFieldRecord", "field name is a Fas keyword");
       ("FasConstFieldRecord", "const fields are not supported");
       ("FasNestedConstFieldRecord", "const fields are not supported");
     ];
@@ -9223,6 +9224,18 @@ let () =
      fields are not supported"
     phase21_records
     "fn read(value FasFunctionPointerRecord) i32 { return value.callback }\n";
+  let keyword_fields, _ = require_struct "FasKeywordFieldRecord" in
+  if
+    List.map (fun (field : Ast.field) -> field.name) keyword_fields
+    <> [ "opaque"; "fn"; "var" ]
+  then failwith "C keyword-named fields were not imported";
+  c_semantic_accept "c-import-keyword-field-record-access" phase21_records
+    "fn fields(raw addr) i32 {\n\
+     raw[FasKeywordFieldRecord].opaque = 1\n\
+     raw[FasKeywordFieldRecord].fn = 2\n\
+     raw[FasKeywordFieldRecord].var = 3\n\
+     return raw[FasKeywordFieldRecord].opaque + raw[FasKeywordFieldRecord].fn + \
+     raw[FasKeywordFieldRecord].var }\n";
   c_semantic_accept "c-import-keyword-field-record-remains-handle" phase21_records
     "fn retain(value handle[FasKeywordFieldRecord]) handle[FasKeywordFieldRecord] { \
      return value }\n";

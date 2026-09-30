@@ -14,7 +14,7 @@ struct FasAnonymousMemberRecord { union { int integer; unsigned char byte; }; };
 struct FasFloatRecord { float value; };
 struct FasFunctionPointerRecord { int (*callback)(int); };
 struct FasFieldNamesRecord { int handle; int len; int view; int i32; };
-struct FasKeywordFieldRecord { int fn; };
+struct FasKeywordFieldRecord { int opaque; int fn; int var; };
 struct FasConstFieldRecord { const int value; };
 struct FasNestedConstFieldRecord { struct FasConstFieldRecord inner; };
 struct FasConstPointerRecord { const char *value; };

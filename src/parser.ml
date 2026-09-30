@@ -310,6 +310,21 @@ module P = struct
         Error
           [ Diag.error (peek p).span ("expected identifier, found " ^ Token.show t) ]
 
+  let field_ident p =
+    let token = bump p in
+    match token.kind with
+    | Token.Ident name -> Ok name
+    | ( Token.Kw_fn | Token.Kw_return | Token.Kw_if | Token.Kw_else | Token.Kw_while
+      | Token.Kw_break | Token.Kw_continue | Token.Kw_const | Token.Kw_var
+      | Token.Kw_struct | Token.Kw_opaque | Token.Kw_extern | Token.Kw_defer
+      | Token.Kw_asm | Token.Kw_use | Token.Kw_for | Token.Kw_switch | Token.Kw_case
+      | Token.Kw_default ) as kind ->
+        let shown = Token.show kind in
+        Ok (String.sub shown 1 (String.length shown - 2))
+    | kind ->
+        Error
+          [ Diag.error token.span ("expected identifier, found " ^ Token.show kind) ]
+
   let skip_newlines p =
     while at p Token.Newline do
       ignore (bump p)
@@ -1268,7 +1283,7 @@ module P = struct
                   "pointer dereference is no longer supported; use raw selection";
               ]
           else
-            let* n = ident p in
+            let* n = field_ident p in
             go (Ast.Field (e, n, s))
       | _ -> Ok e
     in
