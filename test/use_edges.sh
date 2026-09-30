@@ -248,10 +248,13 @@ cat >"$USE_EDGES_TMP/paths/missing-import.fas" <<'FAS'
 use "C" "absent.h"
 FAS
 expect_failure "$OCAML_FAS" --emit-ir "$USE_EDGES_TMP/paths/missing-import.fas"
-grep -F "$USE_EDGES_TMP/paths/missing-import.fas:1:1: error: Clang C header import failed:" \
+grep -F "$USE_EDGES_TMP/paths/missing-import.fas:1:1: error: C compilation failed:" \
   "$USE_EDGES_TMP/stderr" >/dev/null || fail "Clang error was not mapped to its use line"
-grep -F "fatal error: '$USE_EDGES_TMP/paths/absent.h' file not found" \
-  "$USE_EDGES_TMP/stderr" >/dev/null || fail "mapped diagnostic omitted Clang's location text"
+grep -F "C compilation failed: '$USE_EDGES_TMP/paths/absent.h' file not found" \
+  "$USE_EDGES_TMP/stderr" >/dev/null || fail "mapped diagnostic omitted the missing header reason"
+
+grep -E '^note: .*:1:10$' "$USE_EDGES_TMP/stderr" >/dev/null \
+  || fail "missing header diagnostic omitted its Clang location note"
 
 mkdir -p "$USE_EDGES_TMP/library"
 cat >"$USE_EDGES_TMP/library/api.fas" <<'FAS'

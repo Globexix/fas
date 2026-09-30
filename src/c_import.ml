@@ -47,6 +47,11 @@ let error_location line =
   match find_text line "error:" 0 with
   | None -> None
   | Some error_at -> (
+      let error_at =
+        if error_at >= 6 && String.sub line (error_at - 6) 6 = "fatal " then
+          error_at - 6
+        else error_at
+      in
       let prefix = String.trim (String.sub line 0 error_at) in
       let prefix =
         if String.ends_with ~suffix:":" prefix then

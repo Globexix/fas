@@ -8919,6 +8919,12 @@ let () =
         2,
         12,
         [] );
+      ( "c-diagnostic-fatal",
+        "header.h:3:9: fatal error: expected expression\n",
+        "import.fas",
+        7,
+        1,
+        [ "header.h:3:9" ] );
       ( "c-diagnostic-header",
         "header.h:3:9: error: expected expression\n",
         "import.fas",
