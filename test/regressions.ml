@@ -8264,9 +8264,88 @@ let () =
     "fn dynamic() i32 { return 1 }\nvar Value i32 = dynamic()\n";
   semantic_message "global-initializer-global-read" "global `Source` is not a constant"
     "var Source i32 = 1\nvar Value i32 = Source\n";
-  semantic_message "global-address-initializer"
-    "global initializer must be a constant expression"
+  semantic_accept "global-address-initializer"
     "var Target u32\nvar Pointer addr = &Target\n";
+  semantic_accept "address-constants-forward-cycle" "var A addr = &B\nvar B addr = &A\n";
+  semantic_accept "address-constants-c-string-table"
+    "const Names arr[2,addr] = {c\"TROO\", c\"SARG\"}\n\
+     fn get() addr { return Names[1] }\n";
+  semantic_accept "address-constants-nested-selectors"
+    "struct Pair { x i32\n\
+     y arr[3,i32] }\n\
+     var G Pair\n\
+     const T arr[1,arr[2,addr]] = {{&G.x, &G.y[1+1]}}\n";
+  semantic_accept "address-constants-forward-const-target"
+    "const Links arr[1,addr] = {&Later[0]}\nconst Later arr[1,i32] = {7}\n";
+  semantic_accept "address-constants-imported-target"
+    "extern \"C\" { var Imported i32 }\nvar P addr = &Imported\n";
+  semantic_accept "address-constants-handle-slot"
+    "opaque Token\nvar G i32\nvar P handle[Token] = handle_from_addr[Token](&G)\n";
+  semantic_accept "address-constants-null-table"
+    "const P arr[1,addr] = {null}\nfn f() addr { return P[0] }\n";
+  semantic_accept "address-constants-nested-struct-table"
+    "struct Link { p addr }\n\
+     struct Menu { n i32\n\
+     link Link }\n\
+     var G i32\n\
+     const M arr[1,Menu] = {{7,{&G}}}\n\
+     fn f() addr { return M[0].link.p }\n";
+  semantic_accept "address-constants-specialization"
+    "var G i32\n\
+     const P arr[1,addr] = {&G}\n\
+     fn get[T](x T) addr { return P[0] }\n\
+     fn f() addr { return get[i32](0) }\n";
+  semantic_message "address-constants-oob" "array index is out of bounds"
+    "var G arr[2,i32]\nvar P addr = &G[2]\n";
+  semantic_message "address-constants-scalar-slot"
+    "global initializer must be a constant expression" "var G i32\nvar P i32 = &G\n";
+  semantic_message "address-constants-arithmetic" "address constants are storable only"
+    "var G i32\nvar P addr = &G + 1\n";
+  semantic_message "address-constants-comparison"
+    "global initializer must be a constant expression"
+    "var G i32\nconst P bool = &G == &G\n";
+  semantic_message "address-constants-integer-conversion"
+    "global initializer must be a constant expression"
+    "var G i32\nconst P usize = usize(&G)\n";
+  semantic_message "address-constants-bitcast"
+    "global initializer must be a constant expression"
+    "var G i32\nconst P usize = bitcast[usize](&G)\n";
+  semantic_message "address-constants-array-length"
+    "aggregate length is not a machine integer"
+    "var G i32\nconst P addr = &G\nvar A arr[P,i32]\n";
+  semantic_message "address-constants-switch-case" "global `P` is not a constant"
+    "var G i32\n\
+     const P addr = &G\n\
+     fn f() i32 { switch 0 { case P: return 1 }\n\
+     return 0 }\n";
+  parse_message "address-constants-sizeof-value" "expected a type, found `&`"
+    "var G i32\nconst P usize = sizeof[&G]\n";
+  semantic_message "address-constants-table-copy" "address constants are storable only"
+    "var G i32\nconst P arr[1,addr] = {&G}\nconst Q arr[1,addr] = {P[0]}\n";
+  semantic_message "address-constants-function-target" "function `f` is not a place"
+    "fn f() void { return }\nvar P addr = &f\n";
+  semantic_message "address-constants-scalar-constant-target"
+    "constant `G` is not a place" "const G i32 = 1\nvar P addr = &G\n";
+  semantic_message "address-constants-vector-constant-target"
+    "cannot take the address of this expression"
+    "const G vec[2,i32] = splat(1)\nvar P addr = &G\n";
+  semantic_message "address-constants-ordinary-string"
+    "address constants require a C string literal" "var P addr = \"x\"\n";
+  semantic_message "address-constants-readonly-table" "cannot modify read-only pointer"
+    "var G i32\nconst P arr[1,addr] = {&G}\nfn f() void { P[0] = null\nreturn }\n";
+  let relocatable =
+    llvm_of
+      "struct Pair { x i32\n\
+       p addr\n\
+       y i32 }\n\
+       var G arr[3,i32]\n\
+       var T Pair = {7,&G[1+1],9}\n"
+  in
+  if
+    (not (contains relocatable "@T = internal global <{ [8 x i8], ptr, [8 x i8] }>"))
+    || (not (contains relocatable "getelementptr (i8, ptr @G, i64 8)"))
+    || contains relocatable "inbounds"
+  then failwith "address-constants-mixed-layout: invalid relocation or layout";
   semantic_message "const-global-read" "global `Value` is not a constant"
     "var Value i32 = 1\nconst Copy i32 = Value\n";
   semantic_message "global-array-length-read" "global `Count` is not a constant"

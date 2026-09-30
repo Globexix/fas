@@ -94,6 +94,8 @@ type global =
       storage_ty : ty;
       size : int;
       bytes : string option;
+      pointers : (int * string * int) list;
+      readonly : bool;
       align : int;
       linkage : Ast.global_linkage;
     }
@@ -857,13 +859,29 @@ let validate module_ =
         else if not (valid_alignment align) then
           Error (Printf.sprintf "global `%s` has invalid alignment %d" name align)
         else Ok ()
-    | Storage_global { name; storage_ty; size; bytes; align; linkage } ->
+    | Storage_global
+        { name; storage_ty; size; bytes; pointers; readonly; align; linkage } ->
         let valid_storage =
           valid_value_type storage_ty
           && references_defined_type storage_ty
           && size >= 0
           && Option.fold ~none:true ~some:(fun data -> String.length data = size) bytes
           && valid_alignment align
+          && List.for_all
+               (fun (offset, symbol, _) ->
+                 offset >= 0
+                 && offset <= size - 8
+                 && List.exists
+                      (fun global -> global_name global = symbol)
+                      module_.globals)
+               pointers
+          && (let rec ordered = function
+                | (offset, _, _) :: ((next, _, _) :: _ as rest) ->
+                    next >= offset + 8 && ordered rest
+                | _ -> true
+              in
+              ordered pointers)
+          && ((not readonly) || linkage = Ast.Internal_global)
           &&
           match (linkage, bytes) with
           | (Ast.Import_c | Ast.Import_const_c), None
@@ -1481,24 +1499,69 @@ let render_bounded ~budget m =
               add "], align ";
               add (string_of_int align);
               newline ()
-          | Storage_global { name; size; bytes; align; linkage; _ } ->
+          | Storage_global { name; size; bytes; pointers; readonly; align; linkage; _ }
+            ->
               let linkage_text =
                 match linkage with
-                | Ast.Internal_global -> "internal global "
+                | Ast.Internal_global ->
+                    if readonly then "private constant " else "internal global "
                 | Ast.Export_c -> "global "
                 | Ast.Import_c -> "external global "
                 | Ast.Import_const_c -> "external constant "
               in
-              add (Printf.sprintf "@%s = %s[%d x i8]" name linkage_text size);
-              (match bytes with
-              | None when linkage = Ast.Import_c || linkage = Ast.Import_const_c -> ()
-              | None -> add " zeroinitializer"
-              | Some data when String.for_all (fun byte -> byte = '\000') data ->
-                  add " zeroinitializer"
-              | Some data ->
-                  add " c\"";
-                  add_escaped_bytes data;
-                  add "\"");
+              (if pointers = [] then (
+                 add (Printf.sprintf "@%s = %s[%d x i8]" name linkage_text size);
+                 match bytes with
+                 | None when linkage = Ast.Import_c || linkage = Ast.Import_const_c ->
+                     ()
+                 | None -> add " zeroinitializer"
+                 | Some data when String.for_all (fun byte -> byte = '\000') data ->
+                     add " zeroinitializer"
+                 | Some data ->
+                     add " c\"";
+                     add_escaped_bytes data;
+                     add "\"")
+               else
+                 let data = Option.get bytes in
+                 let cursor = ref 0 in
+                 let pieces = ref [] in
+                 let bytes_until stop =
+                   if stop > !cursor then
+                     pieces :=
+                       `Bytes (String.sub data !cursor (stop - !cursor)) :: !pieces;
+                   cursor := stop
+                 in
+                 List.iter
+                   (fun (offset, symbol, displacement) ->
+                     bytes_until offset;
+                     pieces := `Pointer (symbol, displacement) :: !pieces;
+                     cursor := offset + 8)
+                   pointers;
+                 bytes_until size;
+                 let pieces = List.rev !pieces in
+                 let piece_ty = function
+                   | `Bytes data -> Printf.sprintf "[%d x i8]" (String.length data)
+                   | `Pointer _ -> "ptr"
+                 in
+                 add
+                   (Printf.sprintf "@%s = %s<{ %s }> <{ " name linkage_text
+                      (String.concat ", " (List.map piece_ty pieces)));
+                 List.iteri
+                   (fun index piece ->
+                     if index > 0 then add ", ";
+                     add (piece_ty piece);
+                     match piece with
+                     | `Bytes data ->
+                         add " c\"";
+                         add_escaped_bytes data;
+                         add "\""
+                     | `Pointer (symbol, 0) -> add (" @" ^ symbol)
+                     | `Pointer (symbol, offset) ->
+                         add
+                           (Printf.sprintf " getelementptr (i8, ptr @%s, i64 %d)" symbol
+                              offset))
+                   pieces;
+                 add " }>");
               add (Printf.sprintf ", align %d\n" align))
         m.globals;
       List.iter

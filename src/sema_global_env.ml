@@ -5,7 +5,8 @@ let error span message = Error [ Diag.error span message ]
 let ( let* ) result next =
   match result with Ok value -> next value | Error _ as e -> e
 
-let collect ~source_obj ~structs ~named_types ~consts ~arrays ~global_names items =
+let collect ~source_obj ~structs ~named_types ~consts ~arrays ~global_names
+    ~address_value ~readonly_names items =
   let rec value span ty expression =
     let array_items, struct_items =
       match expression with
@@ -18,6 +19,9 @@ let collect ~source_obj ~structs ~named_types ~consts ~arrays ~global_names item
       Ok (wrap items)
     in
     match ty with
+    | (Hir.Addr | Hir.Handle _) when expression <> Ast.Null (Ast.expr_span expression)
+      ->
+        address_value ty expression
     | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ ->
         let* actual, bits =
           const_expr ~structs ~named_types ~arrays ~globals:global_names consts
@@ -90,7 +94,16 @@ let collect ~source_obj ~structs ~named_types ~consts ~arrays ~global_names item
               let* value = evaluate span ty expression in
               Ok (Some value)
         in
-        globals ({ Hir.name; ty; init_value; linkage } :: acc) rest
+        globals
+          ({
+             Hir.name;
+             ty;
+             init_value;
+             linkage;
+             readonly = List.mem name readonly_names;
+           }
+          :: acc)
+          rest
     | _ :: rest -> globals acc rest
   in
   globals [] items

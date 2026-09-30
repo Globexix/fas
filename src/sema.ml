@@ -249,13 +249,15 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = []) pro
         | Error _ -> None)
       base_structs_src
   in
+  let symbolic_names = Sema_static_env.names program.Ast.items in
+  let ordinary_program = Sema_static_env.ordinary_program symbolic_names program in
   let* early_consts =
     Sema_constants.resolve_scalar_declarations ~globals:global_names
       ~structs:base_structs ~named_types
       ~resolve_type:(fun span ty ->
         source_ty named_types ty
         |> Result.map_error (fun message -> [ Diag.error span message ]))
-      ~strict:false program.Ast.items
+      ~strict:false ordinary_program.Ast.items
   in
   let* program =
     Sema_substitution.monomorphize_types ~check_expr:Sema_check.check_expr
@@ -329,24 +331,29 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = []) pro
         Ok (param.name, ty))
       params
   in
+  let symbolic_names = Sema_static_env.names program.Ast.items in
+  let ordinary_program = Sema_static_env.ordinary_program symbolic_names program in
   let* scalar_consts =
     Sema_constants.resolve_scalar_declarations ~globals:global_names ~structs
-      ~named_types ~resolve_type:source_obj ~strict:true program.Ast.items
+      ~named_types ~resolve_type:source_obj ~strict:true ordinary_program.Ast.items
   in
   let* consts_ordered, arrays_ordered, arrays_names =
     Sema_const_env.collect ~global_names ~source_obj ~structs ~named_types
-      ~scalar_consts program
+      ~scalar_consts ordinary_program
   in
   let* () =
     Sema_invariants.check_const_environment
       ~declared:
         (List.filter_map
            (function Ast.Const { name; _ } -> Some name | _ -> None)
-           program.Ast.items)
+           ordinary_program.Ast.items)
       ~early:(List.map (fun (name, _, _) -> name) scalar_consts)
       ~consts:(List.map (fun (name, _, _) -> name) consts_ordered)
       ~arrays:(List.map (fun (name, _, _) -> name) arrays_ordered)
     |> phase_invariant
+  in
+  let* eval_globals =
+    Sema_static_env.declarations ~source_obj symbolic_names program.items
   in
   let* program =
     Sema_substitution.monomorphize_types ~check_expr:Sema_check.check_expr
@@ -354,8 +361,8 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = []) pro
       ~target_ty:Sema_check.target_ty
       ~generic_const_argument:Sema_check.generic_const_argument
       ~eval_context:(structs, named_types, consts_ordered, arrays_ordered)
-      ~c_aliases ~c_unsupported ~eager_functions:true ~top_level_bindings ~limits
-      ~type_node_account specializations program
+      ~eval_globals ~c_aliases ~c_unsupported ~eager_functions:true ~top_level_bindings
+      ~limits ~type_node_account specializations program
   in
   let* named_types = collect_named_types String_set.empty [] program.Ast.items in
   let named_types = add_c_types named_types in
@@ -370,9 +377,36 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = []) pro
     let* t = source_ty_diag named_types span t in
     if t = Hir.Void then Ok t else validate_object span t
   in
+  let program_strings = create_string_pool limits in
+  let* storage_declarations =
+    Sema_static_env.declarations ~source_obj symbolic_names program.items
+  in
+  let address_context =
+    {
+      structs;
+      named_types;
+      consts = consts_ordered;
+      arrays = arrays_ordered;
+      globals = storage_declarations;
+      c_unsupported;
+      signatures = [];
+      templates = [];
+      top_level_bindings;
+      specializations;
+      spec_depth = 0;
+      spec_trace = [];
+      flow = Sema_flow.create ~initial_scope:false structs;
+      string_pool = program_strings;
+      ret_ty = Hir.Void;
+      limits;
+    }
+  in
   let* globals =
     Sema_global_env.collect ~source_obj ~structs ~named_types ~consts:consts_ordered
-      ~arrays:arrays_ordered ~global_names program.items
+      ~arrays:arrays_ordered ~global_names
+      ~address_value:(Sema_static_env.address_value address_context)
+      ~readonly_names:symbolic_names
+      (Sema_static_env.storage_items symbolic_names program.items)
   in
   let source_params =
     map_params (fun (param : Ast.param) -> source_obj param.span param.ty)
@@ -432,7 +466,6 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = []) pro
         | _ -> None)
       program.items
   in
-  let program_strings = create_string_pool limits in
   let funcs = ref [] in
   let hir_linkage = function
     | Ast.External_c -> Hir.External_c
@@ -447,7 +480,10 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = []) pro
       arrays = arrays_ordered;
       globals =
         List.map
-          (fun (global : Hir.global) -> (global.name, global.ty, global.linkage))
+          (fun (global : Hir.global) ->
+            ( global.name,
+              global.ty,
+              if global.readonly then Ast.Import_const_c else global.linkage ))
           globals;
       c_unsupported;
       signatures = sigs_ordered;

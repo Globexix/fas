@@ -2397,6 +2397,7 @@ let lower (p : Hir.program) =
              message)
     | Ok (size, align) -> (
         let data = Bytes.make size (Char.chr 0) in
+        let pointers = ref [] in
         let object_size ty = fst (Result.get_ok (Hir.layout p.structs ty)) in
         let set offset value =
           if offset < 0 || offset >= size then
@@ -2413,6 +2414,8 @@ let lower (p : Hir.program) =
           | Hir.Global_int value -> write_integer offset (object_size ty) value
           | Hir.Global_bool value -> set offset (if value then 1 else 0)
           | Hir.Global_null -> ()
+          | Hir.Global_address (symbol, displacement) ->
+              pointers := (offset, symbol, displacement) :: !pointers
           | Hir.Global_vector values when ty = Hir.Vec (List.length values, Hir.Bool) ->
               List.iteri
                 (fun index value ->
@@ -2475,6 +2478,8 @@ let lower (p : Hir.program) =
                  storage_ty = ty global.ty;
                  size;
                  bytes;
+                 pointers = List.rev !pointers;
+                 readonly = global.readonly;
                  align;
                  linkage = global.linkage;
                })

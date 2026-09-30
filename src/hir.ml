@@ -122,6 +122,7 @@ type global_initializer =
   | Global_int of int64
   | Global_bool of bool
   | Global_null
+  | Global_address of string * int
   | Global_vector of int64 list
   | Global_array of global_initializer list
   | Global_struct of global_initializer list
@@ -130,6 +131,7 @@ type global = {
   name : string;
   ty : ty;
   init_value : global_initializer option;
+  readonly : bool;
   linkage : Ast.global_linkage;
 }
 

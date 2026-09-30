@@ -296,8 +296,11 @@ let rec check_place (c : context) expr =
           | Some _ -> error s (Printf.sprintf "constant `%s` is not a place" n)
           | None -> (
               match lookup_top_level n c.top_level_bindings with
-              | Some { declaration_kind = Top_const; _ } ->
-                  error s (Printf.sprintf "constant `%s` is not a place" n)
+              | Some { declaration_kind = Top_const; _ } -> (
+                  match lookup_global n c.globals with
+                  | Some (_, ((Hir.Array _ | Hir.Struct _) as ty), _) ->
+                      Ok { expr = Hir.Global (n, ty, s); root = None; path = None }
+                  | _ -> error s (Printf.sprintf "constant `%s` is not a place" n))
               | Some { declaration_kind = Top_type; _ } ->
                   error s (Printf.sprintf "type `%s` is not a place" n)
               | Some { declaration_kind = Top_function; _ } ->
@@ -516,6 +519,10 @@ and check_expr (c : context) expected expression =
               match lookup_global n c.globals with
               | Some (_, ty, _) -> Ok (Hir.Global (n, ty, s))
               | None -> error s "internal error: global declaration is missing")
+          | (Some { declaration_kind = Top_const; _ } | None)
+            when Option.is_some (lookup_global n c.globals) ->
+              let _, ty, _ = Option.get (lookup_global n c.globals) in
+              Ok (Hir.Global (n, ty, s))
           | Some { declaration_kind = Top_const; _ } | None -> (
               match lookup n c.consts with
               | Some (_, ((Hir.Addr | Hir.Handle _) as t), 0L) -> Ok (Hir.Null (t, s))
