@@ -16,5 +16,6 @@
   c_import/enums.h
   c_import/records.h
   c_import/phase21_records.h
+  c_import/sizes.h
   c_import/provenance_first.h
   c_import/provenance_second.h))

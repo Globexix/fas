@@ -308,7 +308,7 @@ let clean_type value =
 
 let int_type = function
   | "_Bool" | "bool" -> Some Ast.Bool
-  | "__size_t" -> Some (Ast.Int Ast.U64)
+  | "__size_t" -> Some (Ast.Int Ast.Usize)
   | "char" | "signed char" -> Some (Ast.Int Ast.I8)
   | "unsigned char" -> Some (Ast.Int Ast.U8)
   | "short" | "short int" | "signed short" | "signed short int" ->
@@ -824,10 +824,19 @@ let map_declarations ?(container = false) ~span declarations =
       | _ -> ())
     nodes;
   let aliases = Hashtbl.create 64 in
+  let machine_integer_type = function
+    | "size_t" | "uintptr_t" -> Some (Ast.Int Ast.Usize)
+    | "ssize_t" | "ptrdiff_t" | "intptr_t" -> Some (Ast.Int Ast.Isize)
+    | _ -> None
+  in
   let rec alias stack name =
     match Hashtbl.find_opt aliases name with
     | Some result -> result
     | None when List.mem name stack -> Error "recursive C typedef is not supported"
+    | None when Option.is_some (machine_integer_type name) ->
+        let result = Ok (Option.get (machine_integer_type name)) in
+        Hashtbl.replace aliases name result;
+        result
     | None -> (
         match Hashtbl.find_opt alias_nodes name with
         | None -> Error ("unknown C typedef " ^ name)

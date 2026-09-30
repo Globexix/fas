@@ -8746,6 +8746,33 @@ let () =
      return }\n";
   c_semantic_accept "c-import-typedef-chain" c_matrix
     "fn chain(value fas_i8_chain) fas_i8 { return value }\n";
+  let c_sizes = c_import_fixture "sizes.h" in
+  List.iter
+    (fun (name, expected) ->
+      incr checks_run;
+      match List.assoc_opt name (snd c_sizes).aliases with
+      | Some actual when actual = Ast.Int expected -> ()
+      | Some actual ->
+          failwith
+            (Printf.sprintf "C machine typedef %s: expected %s, got %s" name
+               (Ast.type_name (Ast.Int expected))
+               (Ast.type_name actual))
+      | None -> failwith ("C machine typedef was not imported: " ^ name))
+    [
+      ("size_t", Ast.Usize);
+      ("uintptr_t", Ast.Usize);
+      ("ssize_t", Ast.Isize);
+      ("ptrdiff_t", Ast.Isize);
+      ("intptr_t", Ast.Isize);
+      ("fas_size_alias", Ast.Usize);
+      ("fas_uintptr_alias", Ast.Usize);
+      ("fas_ssize_alias", Ast.Isize);
+      ("fas_ptrdiff_alias", Ast.Isize);
+      ("fas_intptr_alias", Ast.Isize);
+    ];
+  c_semantic_accept "c-import-size-functions" c_sizes
+    "fn length() usize { return strlen(c\"fas\") }\n\
+     fn allocation(n usize) addr { return malloc(n) }\n";
   c_semantic_accept "c-import-enum-values-and-abi" c_matrix
     "fn enum_values() i64 {\n\
      fas_enum_arg(FAS_ENUM_NEG)\n\
