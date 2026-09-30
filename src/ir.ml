@@ -239,7 +239,7 @@ let terminator_successors = function
   | CondBr (_, yes, no) -> [ yes; no ]
   | Switch (_, _, cases, default) -> default :: List.map snd cases
 
-let validate_function struct_names globals (func : func) =
+let validate_function struct_names globals functions (func : func) =
   let fail format =
     Printf.ksprintf
       (fun message -> Error ("function `" ^ func.name ^ "` " ^ message))
@@ -358,9 +358,10 @@ let validate_function struct_names globals (func : func) =
         | Some _ -> fail "block %d parameter `%s` claims the wrong type" block_id name)
     | Global (name, claimed) -> (
         match Hashtbl.find_opt globals name with
-        | None -> fail "block %d uses unknown global `%s`" block_id name
         | Some actual when type_equal claimed (Pointer actual) -> Ok ()
-        | Some _ -> fail "block %d global `%s` claims the wrong type" block_id name)
+        | Some _ -> fail "block %d global `%s` claims the wrong type" block_id name
+        | None when Hashtbl.mem functions name && is_pointer claimed -> Ok ()
+        | None -> fail "block %d uses unknown global `%s`" block_id name)
     | Const _ | Const_vector _ | Null _ | Undef _ | Zero _ -> Ok ()
   in
   let operand block_id expected value =
@@ -871,9 +872,12 @@ let validate module_ =
                (fun (offset, symbol, _) ->
                  offset >= 0
                  && offset <= size - 8
-                 && List.exists
-                      (fun global -> global_name global = symbol)
-                      module_.globals)
+                 && (List.exists
+                       (fun global -> global_name global = symbol)
+                       module_.globals
+                    || List.exists
+                         (fun (func : func) -> func.name = symbol)
+                         module_.funcs))
                pointers
           && (let rec ordered = function
                 | (offset, _, _) :: ((next, _, _) :: _ as rest) ->
@@ -985,7 +989,7 @@ let validate module_ =
   let rec validate_functions = function
     | [] -> Ok ()
     | func :: rest ->
-        let* () = validate_function struct_names globals func in
+        let* () = validate_function struct_names globals functions func in
         let* () = validate_function_calls func in
         validate_functions rest
   in

@@ -69,6 +69,7 @@ type expr =
   | Field of expr * string * ty * int * Span.t
   | Raw_select of expr * expr * ty * Span.t
   | Address of expr * ty * Span.t
+  | Function_address of string * Span.t
   | Sizeof of ty * int * Span.t
   | Alignof of ty * int * Span.t
   | Offsetof of ty * string * int * Span.t
@@ -191,6 +192,7 @@ let expr_ty = function
       t
   | Local (local, _) -> local.ty
   | Global (_, ty, _) -> ty
+  | Function_address _ -> Addr
   | EBool _ -> Bool
   | Null (t, _) -> t
   | EString _ -> Addr
@@ -213,6 +215,7 @@ let expr_span = function
   | Field (_, _, _, _, s)
   | Raw_select (_, _, _, s)
   | Address (_, _, s)
+  | Function_address (_, s)
   | Sizeof (_, _, s)
   | Alignof (_, _, s)
   | Offsetof (_, _, _, s)

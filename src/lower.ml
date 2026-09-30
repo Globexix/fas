@@ -472,6 +472,7 @@ let rec expr s = function
       let id = fresh s in
       emit s (Ir.Load (id, ty global_ty, p, alignment));
       Ok (Ir.Local (id, ty global_ty))
+  | Hir.Function_address (name, _) -> Ok (Ir.Global (name, Ir.Pointer Ir.I8))
   | Hir.Unary (op, e, t, span) -> (
       let* v = expr s e in
       let rt = ty t in

@@ -471,8 +471,7 @@ let type_result ?(allow_arrays = false) ~aliases ~records ~enums ~allow_record r
     match type_error raw with
     | Some reason -> Error reason
     | None when raw = "void" -> Ok Ast.Void
-    | None when has raw "(*" || has raw "(^" ->
-        Error "function pointers are not supported"
+    | None when has raw "(*" || has raw "(^" -> Ok Ast.Addr
     | None when has raw "vector_size" || has raw "ext_vector_type" || has raw "<" ->
         Error "vector types are not supported by value"
     | None when has raw "address_space" || has raw "addrspace" ->
@@ -1219,7 +1218,19 @@ let map_declarations ?(container = false) ~span declarations =
               ^ String.concat ", "
                   (List.map
                      (fun (field : Ast.field) ->
-                       field.name ^ " " ^ Ast.type_name field.ty)
+                       let c_type =
+                         children node
+                         |> List.find_opt (fun child ->
+                             string "kind" child = Some "FieldDecl"
+                             && record_name child = Some field.name)
+                         |> fun field -> Option.bind field c_type_name
+                       in
+                       field.name ^ " " ^ Ast.type_name field.ty
+                       ^ Option.fold ~none:""
+                           ~some:(fun raw -> " (C " ^ raw ^ ")")
+                           (match c_type with
+                           | Some raw when has raw "(*" || has raw "(^" -> Some raw
+                           | _ -> None))
                      fields)
               ^ "}" )
         | None ->
@@ -1264,8 +1275,6 @@ let map_declarations ?(container = false) ~span declarations =
         Error "non-default calling conventions are not supported"
     | Some raw when has raw "address_space" || has raw "addrspace" ->
         Error "C address spaces are not supported"
-    | Some raw when has raw "(*" || has raw "(^" ->
-        Error "function pointers are not supported"
     | Some raw -> (
         match String.index_opt raw '(' with
         | None -> Error "function declaration has no parameter list"

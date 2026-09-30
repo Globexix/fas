@@ -306,7 +306,9 @@ let rec check_place (c : context) expr =
               | Some { declaration_kind = Top_type; _ } ->
                   error s (Printf.sprintf "type `%s` is not a place" n)
               | Some { declaration_kind = Top_function; _ } ->
-                  error s (Printf.sprintf "function `%s` is not a place" n)
+                  if List.mem n c.external_c_functions then
+                    Ok { expr = Hir.Function_address (n, s); root = None; path = None }
+                  else error s (Printf.sprintf "function `%s` is not a place" n)
               | Some { declaration_kind = Top_global; _ } -> (
                   match lookup_global n c.globals with
                   | Some (_, ty, _) ->
@@ -716,6 +718,7 @@ and check_expr (c : context) expected expression =
       | Some binding, Some (Dynamic_prefix path) -> set_state c binding path Unknown
       | _ -> ());
       match place.expr with
+      | Hir.Function_address _ -> Ok place.expr
       | Hir.Index (base, _, _, _)
         when match Hir.expr_ty base with Hir.Vec _ -> true | _ -> false ->
           error s "cannot take address of a vector lane"

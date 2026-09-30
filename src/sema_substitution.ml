@@ -512,6 +512,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       globals = eval_globals;
       c_unsupported;
       signatures = validation_signatures;
+      external_c_functions =
+        List.filter_map
+          (function
+            | Ast.Func { name; linkage = Ast.External_c; _ } -> Some name | _ -> None)
+          program.items;
       templates = function_templates;
       top_level_bindings;
       specializations;

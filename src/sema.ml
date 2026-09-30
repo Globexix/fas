@@ -403,6 +403,11 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       globals = storage_declarations;
       c_unsupported;
       signatures = [];
+      external_c_functions =
+        List.filter_map
+          (function
+            | Ast.Func { name; linkage = Ast.External_c; _ } -> Some name | _ -> None)
+          program.items;
       templates = [];
       top_level_bindings;
       specializations;
@@ -502,6 +507,11 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
           globals;
       c_unsupported;
       signatures = sigs_ordered;
+      external_c_functions =
+        List.filter_map
+          (function
+            | Ast.Func { name; linkage = Ast.External_c; _ } -> Some name | _ -> None)
+          program.items;
       templates;
       top_level_bindings;
       specializations;

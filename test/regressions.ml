@@ -8939,12 +8939,15 @@ let () =
     c_matrix "fn probe() void { copy(fas_array_readonly, fas_array_global) }\n";
   c_semantic_accept "c-import-array-readonly-pointer-target" c_matrix
     "fn probe() void { fas_array_readonly_pointer_elements[0][i32] = 1 }\n";
-  unsupported "fas_function_pointer" "function pointers are not supported"
-    "fas_function_pointer(1)";
-  unsupported "fas_function_pointer_arg" "function pointers are not supported"
-    "fas_function_pointer_arg(null)";
-  unsupported "fas_function_pointer_nested" "function pointers are not supported"
-    "fas_function_pointer_nested(null)";
+  c_semantic_accept "c-import-function-pointer-global-is-addr" c_matrix
+    "fn read() addr { return fas_function_pointer }\n";
+  c_semantic_message "c-import-function-pointer-global-not-callable"
+    "unknown function `fas_function_pointer`" c_matrix
+    "fn probe() i32 { return fas_function_pointer(1) }\n";
+  c_semantic_accept "c-import-function-pointer-parameter-is-addr" c_matrix
+    "fn probe() i32 { return fas_function_pointer_arg(null) }\n";
+  c_semantic_accept "c-import-nested-function-pointer-is-addr" c_matrix
+    "fn probe() i32 { return fas_function_pointer_nested(null) }\n";
   unsupported "fas_vector_value" "vector types are not supported by value"
     "fas_vector_value(null)";
   unsupported "fas_address_space" "C address spaces are not supported"
@@ -9104,7 +9107,6 @@ let () =
       ("FasFlexibleRecord", "flexible array members are not supported");
       ("FasAnonymousMemberRecord", "anonymous members are not supported");
       ("FasFloatRecord", "floating-point fields are not supported");
-      ("FasFunctionPointerRecord", "function-pointer fields are not supported");
       ("FasConstFieldRecord", "const fields are not supported");
       ("FasNestedConstFieldRecord", "const fields are not supported");
     ];
@@ -9144,6 +9146,43 @@ let () =
          "FasNestedRecord\tstruct FasNestedRecord\tstruct FasNestedRecord {inner \
           FasInnerRecord, values arr[2, i32]}")
   then failwith "C record manifest did not list admitted fields";
+  let callback_fields, _ = require_struct "FasFunctionPointerRecord" in
+  if
+    List.map (fun (field : Ast.field) -> (field.name, field.ty)) callback_fields
+    <> [ ("callback", Ast.Addr) ]
+  then failwith "C function-pointer field did not map to addr";
+  if List.assoc_opt "FasCallback" phase21_imported.aliases <> Some Ast.Addr then
+    failwith "C function-pointer typedef did not map to addr";
+  let callback_function name =
+    List.find_map
+      (function
+        | Ast.Func { name = found; params; ret; _ } when found = name ->
+            Some (params, ret)
+        | _ -> None)
+      phase21_imported.items
+  in
+  (match callback_function "fas_callback_parameter" with
+  | Some ([ { ty = Ast.Addr; _ } ], Ast.Int Ast.I32) -> ()
+  | _ -> failwith "C function-pointer parameter did not map to addr");
+  (match callback_function "fas_callback_result" with
+  | Some ([], Ast.Addr) -> ()
+  | _ -> failwith "C function-pointer result did not map to addr");
+  (match
+     List.find_opt
+       (function
+         | Ast.Global { name = "fas_callback_global"; ty = Ast.Addr; _ } -> true
+         | _ -> false)
+       phase21_imported.items
+   with
+  | Some _ -> ()
+  | None -> failwith "C function-pointer global did not map to addr");
+  let callback_manifest =
+    phase21_manifest |> String.split_on_char '\n'
+    |> List.find_opt (String.starts_with ~prefix:"FasFunctionPointerRecord\t")
+  in
+  (match callback_manifest with
+  | Some line when contains line "callback addr (C int (*)(int))" -> ()
+  | _ -> failwith "C manifest omitted the function-pointer field signature");
   c_semantic_accept "c-import-record-handle-and-field-access" phase21_records
     "fn read(value handle[FasSelfRecord]) i32 {\n\
      return handle_addr(value)[FasSelfRecord].value }\n\
@@ -9219,11 +9258,8 @@ let () =
     "C declaration `FasFloatRecord` is not supported: floating-point fields are not \
      supported"
     phase21_records "fn read(value FasFloatRecord) i32 { return value.value }\n";
-  c_semantic_message "c-import-function-pointer-field-record-reason"
-    "C declaration `FasFunctionPointerRecord` is not supported: function-pointer \
-     fields are not supported"
-    phase21_records
-    "fn read(value FasFunctionPointerRecord) i32 { return value.callback }\n";
+  c_semantic_accept "c-import-function-pointer-field-record" phase21_records
+    "fn read(value addr) addr { return value[FasFunctionPointerRecord].callback }\n";
   let keyword_fields, _ = require_struct "FasKeywordFieldRecord" in
   if
     List.map (fun (field : Ast.field) -> field.name) keyword_fields
@@ -9239,6 +9275,36 @@ let () =
   c_semantic_accept "c-import-keyword-field-record-remains-handle" phase21_records
     "fn retain(value handle[FasKeywordFieldRecord]) handle[FasKeywordFieldRecord] { \
      return value }\n";
+  let function_addresses =
+    "extern \"C\" {\n\
+     fn fas_address_c_callback(value i32) i32 { return value }\n\
+     fn fas_address_c_declaration() i32 }\n\
+     fn fas_return_imported_address() addr { return &fas_callback_result }\n\
+     fn fas_return_exported_address() addr { return &fas_address_c_callback }\n\
+     fn fas_return_declared_address() addr { return &fas_address_c_declaration }\n\
+     const FasCallbacks arr[1,FasFunctionPointerRecord] = {{&fas_callback_result}}\n"
+  in
+  let function_address_ir =
+    match c_semantic_result phase21_records function_addresses with
+    | Ok program -> Ir.render (expect_ok (Lower.lower program))
+    | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+  in
+  if
+    (not (contains function_address_ir "@fas_callback_result"))
+    || (not (contains function_address_ir "@fas_address_c_callback"))
+    || (not (contains function_address_ir "@fas_address_c_declaration"))
+    || (not (contains function_address_ir "ptr @fas_callback_result"))
+    || contains function_address_ir "dso_local"
+  then failwith "C function addresses did not lower to plain function relocations";
+  semantic_error "address-of-asm-function-remains-rejected"
+    "function `f` is not a place" "asm fn f() void {}\nfn g() addr { return &f }\n";
+  c_semantic_accept "c-import-qsort-and-atexit-function-addresses" phase21_records
+    "extern \"C\" {\n\
+     fn fas_qsort_compare(left addr, right addr) i32 { return 0 }\n\
+     fn fas_atexit_callback() void { return }\n\
+     }\n\
+     fn fas_sort(values addr) void { qsort(values, 2, 4, &fas_qsort_compare) }\n\
+     fn fas_register() i32 { return atexit(&fas_atexit_callback) }\n";
   c_semantic_accept "c-import-const-field-record-remains-handle" phase21_records
     "fn retain(value handle[FasConstFieldRecord]) handle[FasConstFieldRecord] { return \
      value }\n\

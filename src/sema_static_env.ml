@@ -97,8 +97,11 @@ let address_value c ty expression =
             match List.find_opt (fun (entry, _, _) -> entry = name) c.arrays with
             | Some (_, (Hir.Array _ as ty), _) -> Ok (name, ty, 0)
             | _ ->
-                error span
-                  "address initializer requires static storage and constant selectors"))
+                if List.mem name c.external_c_functions then Ok (name, Hir.Addr, 0)
+                else
+                  error span
+                    "address initializer requires static storage and constant selectors"
+            ))
     | Ast.Field (base, field, span) -> (
         let* name, ty, previous = place base in
         match ty with
@@ -157,6 +160,7 @@ let address_value c ty expression =
         in
         let* name, _, offset = target expression in
         Ok (Hir.Global_address (name, offset))
+    | Hir.Function_address (name, _) -> Ok (Hir.Global_address (name, 0))
     | Hir.Call (Hir.Builtin (Hir.Handle_from_addr _), [ value ], _, _) -> address value
     | value -> error (Hir.expr_span value) "address constants are storable only"
   in

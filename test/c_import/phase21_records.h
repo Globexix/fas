@@ -1,3 +1,4 @@
+#include <stdlib.h>
 struct FasTagRecord { int first; unsigned char second; };
 typedef struct { unsigned char byte; int word; } FasAnonymousRecord;
 struct FasAliasRecord { int value; };
@@ -12,7 +13,11 @@ struct FasBitfieldRecord { unsigned int value : 3; };
 struct FasFlexibleRecord { int length; unsigned char data[]; };
 struct FasAnonymousMemberRecord { union { int integer; unsigned char byte; }; };
 struct FasFloatRecord { float value; };
+typedef int (*FasCallback)(int);
 struct FasFunctionPointerRecord { int (*callback)(int); };
+extern FasCallback fas_callback_global;
+FasCallback fas_callback_result(void);
+int fas_callback_parameter(FasCallback callback);
 struct FasFieldNamesRecord { int handle; int len; int view; int i32; };
 struct FasKeywordFieldRecord { int opaque; int fn; int var; };
 struct FasConstFieldRecord { const int value; };
