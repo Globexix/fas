@@ -45,6 +45,21 @@ let c_import_fixture file =
   in
   (source, C_import.map_declarations ~span:Span.synthetic declarations)
 
+let c_import_container name fragment_text =
+  let source = Filename.temp_file ("fas-" ^ name ^ "-") ".fas" in
+  let span = Span.make ~file:source ~start_offset:0 ~end_offset:0 ~line:1 ~column:1 in
+  let request =
+    C_import.{ spelling = Ast.C_fragment { tag = "UNION"; text = fragment_text }; span }
+  in
+  Fun.protect
+    ~finally:(fun () -> try Sys.remove source with Sys_error _ -> ())
+    (fun () ->
+      let declarations, _, _ =
+        expect_ok
+          (C_import.import ~cc:"clang-22" ~debug:false ~keep:false source [ request ])
+      in
+      (source, C_import.map_declarations ~span declarations))
+
 let c_import_macro_fixture ?(c_flags = []) file macro_names =
   let cwd = Sys.getcwd () in
   let header =
@@ -9189,6 +9204,12 @@ let () =
     "fn anonymous() i32 { value FasAnonymous = (FasAnonymous){ 1 }\n\
      return value.field }\n";
   let phase21_records = c_import_fixture "phase21_records.h" in
+  let phase23_container_union =
+    c_import_container "phase23-union"
+      "struct FasContainerNested { unsigned short first; unsigned int second; };\n\
+       union FasContainerUnion { unsigned int word; unsigned char bytes[8];\n\
+       struct FasContainerNested nested; };\n"
+  in
   let phase22_time = c_import_fixture "phase22_time.h" in
   c_semantic_accept "c-import-record-address-handle-contexts" phase22_time
     "fn read_clock() i32 { ts timespec\n\
@@ -9446,6 +9467,54 @@ let () =
      return fas_union_pointer_result() }\n\
      var union_global FasUnionRecord = {3}\n\
      const union_constant FasUnionRecord = {4}\n";
+  let container_union_program =
+    match
+      c_semantic_result phase23_container_union
+        "fn nested(value handle[FasContainerUnion]) u32 {\n\
+         raw addr = handle_addr(value)\n\
+         raw[FasContainerUnion].nested.second = 17\n\
+         return raw[FasContainerUnion].nested.second }\n\
+         const initial FasContainerUnion = {29}\n"
+    with
+    | Ok program -> program
+    | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+  in
+  let container_union_layout =
+    List.find_opt
+      (fun (record : Hir.struct_def) -> record.name = "FasContainerUnion")
+      container_union_program.structs
+    |> Option.get
+  in
+  if
+    container_union_layout.size <> 8
+    || container_union_layout.align <> 4
+    || (not container_union_layout.is_union)
+    || List.map
+         (fun (field : Hir.field) -> (field.name, field.offset))
+         container_union_layout.fields
+       <> [ ("word", 0); ("bytes", 0); ("nested", 0) ]
+  then failwith "container union layout mismatch";
+  ignore (expect_ok (Lower.lower container_union_program));
+  if
+    not
+      (contains
+         (C_import.manifest_text (snd phase23_container_union))
+         "FasContainerUnion\tunion FasContainerUnion\tunion FasContainerUnion size=8 \
+          align=4 {word u32 @0, bytes arr[8, u8] @0, nested FasContainerNested @0}")
+  then failwith "container union manifest omitted its layout or fields";
+  c_semantic_message "c-import-union-by-value-parameter"
+    "C declaration `fas_union_by_value` is not supported: struct and union values are \
+     not supported"
+    phase21_records "fn probe() i32 { return fas_union_by_value(null) }\n";
+  c_semantic_message "c-import-float-union-field"
+    "C declaration `FasFloatUnion` is not supported: floating-point fields are not \
+     supported"
+    phase21_records "fn read_float(value FasFloatUnion) u32 { return value.bits }\n";
+  c_semantic_message "c-import-bitfield-union-member"
+    "C declaration `FasBitfieldUnion` is not supported: bit-fields are not supported"
+    phase21_records "fn read_bits(value FasBitfieldUnion) u32 { return value.word }\n";
+  parse_message "native-union-declaration" "expected a top-level item, found `union`"
+    "union NativeUnion { value i32 }\n";
   c_semantic_message "c-import-bitfield-record-reason"
     "C declaration `FasBitfieldRecord` is not supported: bit-fields are not supported"
     phase21_records "fn read(value FasBitfieldRecord) i32 { return value.value }\n";

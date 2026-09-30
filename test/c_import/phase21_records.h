@@ -11,6 +11,9 @@ struct __attribute__((packed)) FasPackedRecord { unsigned char byte; int word; }
 union FasUnionRecord { int value; unsigned char byte; };
 void fas_union_pointer(union FasUnionRecord *value);
 union FasUnionRecord *fas_union_pointer_result(void);
+int fas_union_by_value(union FasUnionRecord value);
+union FasFloatUnion { float value; unsigned int bits; };
+union FasBitfieldUnion { unsigned int value : 3; unsigned int word; };
 struct FasBitfieldRecord { unsigned int value : 3; };
 struct FasFlexibleRecord { int length; unsigned char data[]; };
 struct FasAnonymousMemberRecord { union { int integer; unsigned char byte; }; };
