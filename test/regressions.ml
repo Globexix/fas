@@ -8864,4 +8864,32 @@ let () =
     "fn probe() i32 { return addr(1) }\n";
   c_semantic_message "c-import-macro-is-foreign-only" "unknown name `FAS_MACRO_ONLY`"
     c_matrix "fn probe() i32 { return FAS_MACRO_ONLY }\n";
+  List.iter
+    (fun (name, output, file, line, column, notes) ->
+      incr checks_run;
+      let fallback =
+        Span.make ~file:"import.fas" ~start_offset:0 ~end_offset:0 ~line:7 ~column:1
+      in
+      let diagnostic = C_import.compilation_error fallback output in
+      if
+        diagnostic.message <> "C compilation failed: expected expression"
+        || diagnostic.primary.file <> file
+        || diagnostic.primary.line <> line
+        || diagnostic.primary.column <> column
+        || diagnostic.notes <> notes
+      then failwith (name ^ ": " ^ Diag.render_all ~source:None [ diagnostic ]))
+    [
+      ( "c-diagnostic-fas",
+        "m.fas:2:12: error: expected expression\n",
+        "m.fas",
+        2,
+        12,
+        [] );
+      ( "c-diagnostic-header",
+        "header.h:3:9: error: expected expression\n",
+        "import.fas",
+        7,
+        1,
+        [ "header.h:3:9" ] );
+    ];
   Printf.printf "regression checks: %d passed\n" !checks_run

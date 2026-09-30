@@ -73,11 +73,24 @@ let error_location line =
                     (fun column -> (file, line, column))
                     (int_of_string_opt column))))
 
-let mapped_error_span source fallback output =
-  Option.bind (first_error output) error_location |> function
-  | Some (file, line, column) when file = source ->
-      Span.make ~file ~start_offset:0 ~end_offset:0 ~line ~column
-  | _ -> fallback
+let compilation_error fallback output =
+  let line = Option.value ~default:(String.trim output) (first_error output) in
+  let message =
+    match find_text line "error:" 0 with
+    | None -> line
+    | Some start ->
+        String.trim (String.sub line (start + 6) (String.length line - start - 6))
+  in
+  let span, notes =
+    match error_location line with
+    | Some (file, line, column) when Filename.check_suffix file ".fas" ->
+        (Span.make ~file ~start_offset:0 ~end_offset:0 ~line ~column, [])
+    | Some (file, line, column) ->
+        (fallback, [ Printf.sprintf "%s:%d:%d" file line column ])
+    | None -> (fallback, [])
+  in
+  Diag.error ~notes span
+    (if message = "" then "C compilation failed" else "C compilation failed: " ^ message)
 
 let unit_line unit_path output =
   match find_text output (unit_path ^ ":") 0 with
@@ -167,20 +180,11 @@ let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) source headers =
                   ("internal error: C import JSON reader: " ^ message);
               ])
       | Error failure ->
-          let message =
-            Option.value ~default:(String.trim failure.stderr)
-              (first_error failure.stderr)
-          in
-          let span =
-            mapped_error_span source
-              (error_span headers (unit_line unit_path failure.stderr))
-              failure.stderr
-          in
           Error
             [
-              Diag.error span
-                (if message = "" then "Clang C header import failed"
-                 else "Clang C header import failed: " ^ message);
+              compilation_error
+                (error_span headers (unit_line unit_path failure.stderr))
+                failure.stderr;
             ])
 
 let get name = C_import_json.field name

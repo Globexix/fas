@@ -244,8 +244,21 @@ FAS
 expect_failure "$OCAML_FAS" --emit-llvm "$CONTAINER_TMP/syntax-error.fas"
 grep -F "$CONTAINER_TMP/syntax-error.fas:2:" "$CONTAINER_TMP/stderr" >/dev/null \
   || fail "C syntax error was not mapped to the Fas line"
-grep -F "expected expression" "$CONTAINER_TMP/stderr" >/dev/null \
-  || fail "C syntax error omitted Clang's diagnostic"
+grep -F "$CONTAINER_TMP/syntax-error.fas:2:32: error: C compilation failed: expected expression" "$CONTAINER_TMP/stderr" >/dev/null \
+  || fail "C syntax error has the wrong primary message"
+
+cat >"$CONTAINER_TMP/broken.h" <<'C'
+extern int broken = ;
+C
+cat >"$CONTAINER_TMP/header-error.fas" <<'FAS'
+use "C" "broken.h"
+fn main() i32 { return 0 }
+FAS
+expect_failure "$OCAML_FAS" --emit-llvm "$CONTAINER_TMP/header-error.fas"
+grep -F "$CONTAINER_TMP/header-error.fas:1:1: error: C compilation failed: expected expression" "$CONTAINER_TMP/stderr" >/dev/null \
+  || fail "header error has the wrong primary message"
+grep -Fx "note: $CONTAINER_TMP/broken.h:1:21" "$CONTAINER_TMP/stderr" >/dev/null \
+  || fail "header error omitted its foreign location"
 
 "$OCAML_FAS" --keep -debug "$CONTAINER_TMP/program.fas" \
   -o "$CONTAINER_TMP/kept" >"$CONTAINER_TMP/stdout" 2>"$CONTAINER_TMP/stderr"

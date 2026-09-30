@@ -525,17 +525,7 @@ let compile_c_units config cc units adapters artifacts =
               compile (object_path :: acc) rest
           | Error failure ->
               remove object_path;
-              let message =
-                Option.value ~default:(String.trim failure.stderr)
-                  (C_import.first_error failure.stderr)
-              in
-              Error
-                [
-                  Diag.error
-                    (C_import.mapped_error_span unit.source unit.use_span failure.stderr)
-                    (if message = "" then "Clang C compilation failed"
-                     else "Clang C compilation failed: " ^ message);
-                ])
+              Error [ C_import.compilation_error unit.use_span failure.stderr ])
   in
   compile [] units
 
