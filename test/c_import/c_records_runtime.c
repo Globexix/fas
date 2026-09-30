@@ -33,6 +33,14 @@ int32_t c_check_table(const FasAddressEntry *entries) {
       && entries[0].value == 77 && entries[1].value == 88 ? 0 : 1;
 }
 
+int32_t c_check_link_table(void) {
+  return fas_link_table[0].link == &fas_link_table[1]
+      && fas_link_table[0].link->link == &fas_link_table[2]
+      && fas_link_table[0].link->link->link == &fas_link_table[0]
+      && fas_link_table[0].link->value + fas_link_table[0].link->link->value
+          + fas_link_table[0].link->link->link->value == 60 ? 0 : 1;
+}
+
 int32_t c_check_and_mutate_exports(void) {
   if (!layout_ok()) return 1;
   if (fas_exported_records[0].kind != 1

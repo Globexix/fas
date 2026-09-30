@@ -6,6 +6,11 @@ const fas_constant_table arr[2,FasAddressEntry] = {
 }
 
 extern "C" {
+  var fas_link_table arr[3,FasLinkRecord] = {
+    {10, &fas_link_table[1]},
+    {20, &fas_link_table[2]},
+    {30, &fas_link_table[0]}
+  }
   var fas_constant_target i32 = 1234
   var fas_exported_records arr[2,FasRecord] = {
     {1, 20, {30, 40}},
@@ -52,6 +57,7 @@ extern "C" {
     if fas_read_c_filled() != 1426 { return 1 }
     if fas_pass_local_to_c() != 0 { return 2 }
     if fas_check_table() != 0 { return 3 }
+    if c_check_link_table() != 0 { return 7 }
     if c_check_and_mutate_exports() != 0 { return 4 }
     if fas_read_exported_records() != 120 { return 5 }
     if fas_read_completed_values() != 51 { return 6 }

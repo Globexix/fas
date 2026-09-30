@@ -166,8 +166,26 @@ let address_value c ty expression =
         error span "address constants require a C string literal"
     | _ -> Ok ()
   in
-  let* checked = Sema_check.check_expr c (Some ty) expression in
-  if not (Hir.ty_equal ty (Hir.expr_ty checked)) then
+  let record_handle_address =
+    match (ty, expression) with
+    | Hir.Handle record, Ast.Addr_of (target, _) -> (
+        match place target with
+        | Ok (_, Hir.Struct actual, _) ->
+            actual = record
+            && List.exists
+                 (function
+                   | _, Sema_types.C_record_name (imported, _) -> imported = record
+                   | _ -> false)
+                 c.named_types
+        | _ -> false)
+    | _ -> false
+  in
+  let* checked =
+    Sema_check.check_expr c
+      (Some (if record_handle_address then Hir.Addr else ty))
+      expression
+  in
+  if not (record_handle_address || Hir.ty_equal ty (Hir.expr_ty checked)) then
     error (Ast.expr_span expression) "constant initializer type mismatch"
   else address checked
 

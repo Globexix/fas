@@ -15,3 +15,6 @@ struct FasFloatRecord { float value; };
 struct FasFunctionPointerRecord { int (*callback)(int); };
 struct FasFieldNamesRecord { int handle; int len; int view; int i32; };
 struct FasKeywordFieldRecord { int fn; };
+extern struct FasSelfRecord fas_address_self;
+extern struct FasNestedRecord fas_address_nested;
+extern struct FasSelfRecord fas_address_self_array[2];

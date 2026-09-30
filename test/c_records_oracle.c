@@ -4,6 +4,12 @@
 #include <stdio.h>
 #include <string.h>
 
+FasLinkRecord fas_link_table[3] = {
+  {10, &fas_link_table[1]},
+  {20, &fas_link_table[2]},
+  {30, &fas_link_table[0]},
+};
+
 FasRecord fas_exported_records[2] = {
   {1, 20, {30, 40}},
   {2, 50, {60, 70}},

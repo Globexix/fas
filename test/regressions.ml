@@ -9123,6 +9123,41 @@ let () =
      raw[FasFieldNamesRecord].i32 = 4\n\
      return raw[FasFieldNamesRecord].handle + raw[FasFieldNamesRecord].len + \
      raw[FasFieldNamesRecord].view + raw[FasFieldNamesRecord].i32 }\n";
+  c_semantic_accept "address-constants-imported-record-handles" phase21_records
+    "var Direct handle[FasSelfRecord] = &fas_address_self\n\
+     const Nested arr[1,arr[1,handle[FasInnerRecord]]] = {{&fas_address_nested.inner}}\n\
+     var Indexed arr[1,handle[FasSelfRecord]] = {&fas_address_self_array[1]}\n";
+  c_semantic_message "address-constants-different-imported-record"
+    "constant initializer type mismatch" phase21_records
+    "var P handle[FasTagRecord] = &fas_address_self\n";
+  c_semantic_message "address-constants-native-record-handle"
+    "constant initializer type mismatch" phase21_records
+    "struct NativeAddressRecord { value i32 }\n\
+     var G NativeAddressRecord = {1}\n\
+     var P handle[FasSelfRecord] = &G\n";
+  c_semantic_message "address-constants-scalar-record-handle"
+    "constant initializer type mismatch" phase21_records
+    "var G i32 = 1\nvar P handle[FasSelfRecord] = &G\n";
+  let imported_record_addresses =
+    match
+      c_semantic_result phase21_records
+        "var Direct handle[FasSelfRecord] = &fas_address_self\n\
+         const Nested arr[1,arr[1,handle[FasInnerRecord]]] = \
+         {{&fas_address_nested.inner}}\n\
+         var Indexed arr[1,handle[FasSelfRecord]] = {&fas_address_self_array[1]}\n"
+    with
+    | Ok program -> Ir.render (expect_ok (Lower.lower program))
+    | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+  in
+  if
+    (not (contains imported_record_addresses "@fas_address_self"))
+    || (not (contains imported_record_addresses "@fas_address_nested"))
+    || (not (contains imported_record_addresses "@fas_address_self_array"))
+    || (not
+          (contains imported_record_addresses
+             "getelementptr (i8, ptr @fas_address_self_array, i64 16)"))
+    || contains imported_record_addresses "inbounds"
+  then failwith "address-constants-imported-record-handles: invalid relocation";
   c_semantic_accept "c-import-unsupported-record-remains-handle" phase21_records
     "fn retain(value handle[FasUnionRecord]) handle[FasUnionRecord] { return value }\n";
   c_semantic_message "c-import-packed-record-layout"
