@@ -28,10 +28,11 @@ let names items =
     | Ast.Named_type name when not (List.mem name seen) ->
         List.exists
           (function
-            | Ast.Struct { name = actual; fields; _ } when name = actual ->
-                List.exists
-                  (fun (field : Ast.field) -> address_type (name :: seen) field.ty)
-                  fields
+            | Ast.Struct { name = actual; fields; is_union; _ } when name = actual ->
+                is_union
+                || List.exists
+                     (fun (field : Ast.field) -> address_type (name :: seen) field.ty)
+                     fields
             | _ -> false)
           items
     | _ -> false

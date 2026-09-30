@@ -9,6 +9,8 @@ struct FasSelfRecord { struct FasSelfRecord *next; int value; };
 struct __attribute__((aligned(16))) FasAlignedRecord { int value; };
 struct __attribute__((packed)) FasPackedRecord { unsigned char byte; int word; };
 union FasUnionRecord { int value; unsigned char byte; };
+void fas_union_pointer(union FasUnionRecord *value);
+union FasUnionRecord *fas_union_pointer_result(void);
 struct FasBitfieldRecord { unsigned int value : 3; };
 struct FasFlexibleRecord { int length; unsigned char data[]; };
 struct FasAnonymousMemberRecord { union { int integer; unsigned char byte; }; };

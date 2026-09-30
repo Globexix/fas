@@ -187,24 +187,35 @@ let rec normalize_state flow ty = function
             with
             | None -> (false, false)
             | Some struct_def ->
-                let all =
-                  List.for_all
-                    (fun (field : Hir.field) ->
-                      match List.assoc_opt (Field field.name) entries with
-                      | Some state ->
-                          state_usable state || is_vacuous_type flow field.ty
-                      | None -> is_vacuous_type flow field.ty)
-                    struct_def.fields
-                in
-                let unknown =
-                  List.exists
-                    (fun (field : Hir.field) ->
-                      match List.assoc_opt (Field field.name) entries with
-                      | Some Unknown -> true
-                      | _ -> false)
-                    struct_def.fields
-                in
-                (all, unknown))
+                if struct_def.is_union then
+                  let initialized =
+                    List.exists
+                      (fun (field : Hir.field) ->
+                        match List.assoc_opt (Field field.name) entries with
+                        | Some state -> state_usable state
+                        | None -> false)
+                      struct_def.fields
+                  in
+                  (initialized, initialized)
+                else
+                  let all =
+                    List.for_all
+                      (fun (field : Hir.field) ->
+                        match List.assoc_opt (Field field.name) entries with
+                        | Some state ->
+                            state_usable state || is_vacuous_type flow field.ty
+                        | None -> is_vacuous_type flow field.ty)
+                      struct_def.fields
+                  in
+                  let unknown =
+                    List.exists
+                      (fun (field : Hir.field) ->
+                        match List.assoc_opt (Field field.name) entries with
+                        | Some Unknown -> true
+                        | _ -> false)
+                      struct_def.fields
+                  in
+                  (all, unknown))
         | Hir.Array (length, element_ty) | Hir.Vec (length, element_ty) ->
             let all =
               length >= 0

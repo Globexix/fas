@@ -247,7 +247,14 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
         | _ -> None)
       program.Ast.items
   in
-  let base_struct_cache = Hir.struct_layout_cache base_structs_src in
+  let base_union_names =
+    List.filter_map
+      (function Ast.Struct { name; is_union = true; _ } -> Some name | _ -> None)
+      program.Ast.items
+  in
+  let base_struct_cache =
+    Hir.struct_layout_cache ~unions:base_union_names base_structs_src
+  in
   let base_structs =
     List.filter_map
       (fun (name, _, _) ->
@@ -279,6 +286,11 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
   in
   let* named_types = collect_named_types String_set.empty [] program.Ast.items in
   let named_types = add_c_records (add_c_types named_types) in
+  let union_names =
+    List.filter_map
+      (function Ast.Struct { name; is_union = true; _ } -> Some name | _ -> None)
+      program.Ast.items
+  in
   let rec collect_structs named_types acc = function
     | [] -> Ok (List.rev acc)
     | Ast.Struct { generic_params = _ :: _; align; span; _ } :: rest ->
@@ -312,7 +324,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
   in
   let* structs_src = collect_structs named_types [] program.Ast.items in
   let build structs_src =
-    let cache = Hir.struct_layout_cache structs_src in
+    let cache = Hir.struct_layout_cache ~unions:union_names structs_src in
     let rec go acc = function
       | [] -> Ok (List.rev acc)
       | (name, _, _) :: xs ->

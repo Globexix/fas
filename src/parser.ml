@@ -752,7 +752,9 @@ module P = struct
     let* fs = fields [] in
     let* () = expected p Token.Rbrace in
     let* () = end_stmt p in
-    Ok (Ast.Struct { name; generic_params; fields = fs; align; span = s })
+    Ok
+      (Ast.Struct
+         { name; generic_params; fields = fs; align; is_union = false; span = s })
 
   and opaque_item p =
     let s = span p in

@@ -1583,15 +1583,18 @@ let rec copy_place s span ty destination source =
       | None ->
           error span (Printf.sprintf "internal error: unknown struct `%s` in copy" name)
       | Some definition ->
-          let rec fields = function
-            | [] -> Ok ()
-            | (field : Hir.field) :: rest ->
-                let* destination_field = copy_offset s destination field.offset in
-                let* source_field = copy_offset s source field.offset in
-                let* () = copy_place s span field.ty destination_field source_field in
-                fields rest
-          in
-          fields definition.fields)
+          if definition.is_union then
+            copy_array_loop s span definition.size 1 (Hir.Int Hir.U8) destination source
+          else
+            let rec fields = function
+              | [] -> Ok ()
+              | (field : Hir.field) :: rest ->
+                  let* destination_field = copy_offset s destination field.offset in
+                  let* source_field = copy_offset s source field.offset in
+                  let* () = copy_place s span field.ty destination_field source_field in
+                  fields rest
+            in
+            fields definition.fields)
   | Hir.Array (length, element_ty) ->
       let* stride, _ =
         match Hir.layout s.structs element_ty with
@@ -1915,7 +1918,19 @@ and construct_into s destination = function
       match find_struct s name with
       | None -> error span ("internal error: unknown construction struct `" ^ name ^ "`")
       | Some definition ->
-          if List.length elements <> List.length definition.fields then
+          if definition.is_union then
+            match (definition.fields, elements) with
+            | field :: _, [ entry ] ->
+                let* alignment = align s (Hir.Struct name) in
+                let* () =
+                  store_value s (Hir.Struct name)
+                    (Ir.Zero (ty (Hir.Struct name)))
+                    destination alignment
+                in
+                let* pointer = copy_offset s destination field.Hir.offset in
+                construct_into s pointer entry
+            | _ -> error span "internal error: union construction arity"
+          else if List.length elements <> List.length definition.fields then
             error span "internal error: struct construction arity"
           else
             let rec go fields entries =
@@ -2330,30 +2345,46 @@ let lower (p : Hir.program) =
           | Error message -> malformed_struct d message
         in
         let* fields, used, natural_align =
-          let rec go offset out used natural_align = function
-            | [] -> Ok (List.rev out, used, natural_align)
-            | (f : Hir.field) :: rest ->
-                let* size = field_size f.ty in
-                let* align = field_align f.ty in
-                if f.offset < offset then
-                  malformed_struct d
-                    (Printf.sprintf "field `%s` overlaps a preceding field" f.name)
-                else if f.offset mod align <> 0 then
-                  malformed_struct d
-                    (Printf.sprintf "field `%s` is not aligned to %d" f.name align)
-                else if f.offset > max_int - size then
-                  malformed_struct d
-                    (Printf.sprintf "field `%s` end offset overflows" f.name)
-                else
-                  let field_end = f.offset + size in
-                  let padding = f.offset - offset in
-                  let out =
-                    if padding > 0 then Ir.Array (padding, Ir.I8) :: out else out
-                  in
-                  go field_end (ty f.ty :: out) (max used field_end)
-                    (max natural_align align) rest
-          in
-          go 0 [] 0 1 d.fields
+          if d.is_union then
+            let rec validate natural_align = function
+              | [] -> Ok ([ Ir.Array (d.size, Ir.I8) ], d.size, natural_align)
+              | (field : Hir.field) :: rest ->
+                  let* size = field_size field.ty in
+                  let* align = field_align field.ty in
+                  if field.offset <> 0 then
+                    malformed_struct d
+                      (Printf.sprintf "union field `%s` is not at zero" field.name)
+                  else if size > d.size then
+                    malformed_struct d
+                      (Printf.sprintf "union field `%s` exceeds its size" field.name)
+                  else validate (max natural_align align) rest
+            in
+            validate 1 d.fields
+          else
+            let rec go offset out used natural_align = function
+              | [] -> Ok (List.rev out, used, natural_align)
+              | (f : Hir.field) :: rest ->
+                  let* size = field_size f.ty in
+                  let* align = field_align f.ty in
+                  if f.offset < offset then
+                    malformed_struct d
+                      (Printf.sprintf "field `%s` overlaps a preceding field" f.name)
+                  else if f.offset mod align <> 0 then
+                    malformed_struct d
+                      (Printf.sprintf "field `%s` is not aligned to %d" f.name align)
+                  else if f.offset > max_int - size then
+                    malformed_struct d
+                      (Printf.sprintf "field `%s` end offset overflows" f.name)
+                  else
+                    let field_end = f.offset + size in
+                    let padding = f.offset - offset in
+                    let out =
+                      if padding > 0 then Ir.Array (padding, Ir.I8) :: out else out
+                    in
+                    go field_end (ty f.ty :: out) (max used field_end)
+                      (max natural_align align) rest
+            in
+            go 0 [] 0 1 d.fields
         in
         if d.align < natural_align then
           malformed_struct d
@@ -2451,17 +2482,22 @@ let lower (p : Hir.program) =
           | Hir.Global_struct values -> (
               match ty with
               | Hir.Struct name ->
-                  let fields =
-                    (List.find_opt
-                       (fun (definition : Hir.struct_def) -> definition.name = name)
-                       p.structs
-                    |> Option.get)
-                      .fields
+                  let definition =
+                    List.find_opt
+                      (fun (definition : Hir.struct_def) -> definition.name = name)
+                      p.structs
+                    |> Option.get
                   in
-                  List.iter2
-                    (fun (field : Hir.field) value ->
-                      write (offset + field.offset) field.ty value)
-                    fields values
+                  if definition.is_union then
+                    match (definition.fields, values) with
+                    | field :: _, value :: _ ->
+                        write (offset + field.offset) field.ty value
+                    | _ -> failwith "union initializer type mismatch"
+                  else
+                    List.iter2
+                      (fun (field : Hir.field) value ->
+                        write (offset + field.offset) field.ty value)
+                      definition.fields values
               | _ -> failwith "struct initializer type mismatch")
         in
         try

@@ -1394,7 +1394,12 @@ let map_declarations ?(container = false) ~span declarations =
             fields
         in
         let reason =
-          if string "tagUsed" node = Some "union" then Some "unions are not supported"
+          if
+            string "tagUsed" node = Some "union"
+            && List.exists
+                 (fun child -> string "kind" child = Some "TransparentUnionAttr")
+                 (children node)
+          then Some "transparent unions are not supported"
           else !unsupported
         in
         (name, node, fields, record_layout node name, reason, !blocked))
@@ -1467,7 +1472,13 @@ let map_declarations ?(container = false) ~span declarations =
     List.filter_map candidate_fields raw_records
     |> List.map (fun (name, fields) -> (name, fields, None))
   in
-  let natural_cache = Hir.struct_layout_cache natural in
+  let union_names =
+    List.filter_map
+      (fun (name, node, _, _, _, _) ->
+        if string "tagUsed" node = Some "union" then Some name else None)
+      raw_records
+  in
+  let natural_cache = Hir.struct_layout_cache ~unions:union_names natural in
   let alignments =
     List.filter_map
       (fun (name, node, _, layout, reason, blocked) ->
@@ -1490,7 +1501,7 @@ let map_declarations ?(container = false) ~span declarations =
         (name, fields, align))
       (List.filter_map candidate_fields raw_records)
   in
-  let layouts_cache = Hir.struct_layout_cache struct_declarations in
+  let layouts_cache = Hir.struct_layout_cache ~unions:union_names struct_declarations in
   let record_results =
     List.map
       (fun (name, node, fields, layout, reason, blocked) ->
@@ -1542,10 +1553,11 @@ let map_declarations ?(container = false) ~span declarations =
         aliases []
   in
   List.iter
-    (fun (name, node, fields, reason, blocked, file, _) ->
+    (fun (name, node, fields, reason, blocked, file, c_layout) ->
+      let is_union = string "tagUsed" node = Some "union" in
+      let kind = if is_union then "union" else "struct" in
       let spelling =
-        if Hashtbl.mem anonymous_record_aliases name then name
-        else Option.value ~default:"struct" (string "tagUsed" node) ^ " " ^ name
+        if Hashtbl.mem anonymous_record_aliases name then name else kind ^ " " ^ name
       in
       let layout =
         if blocked || Option.is_some reason then None
@@ -1556,8 +1568,15 @@ let map_declarations ?(container = false) ~span declarations =
       let item, signature =
         match layout with
         | Some align ->
-            ( Ast.Struct { name; generic_params = []; fields; align; span },
-              "struct " ^ name ^ " {"
+            ( Ast.Struct { name; generic_params = []; fields; align; is_union; span },
+              kind ^ " " ^ name
+              ^ (if is_union then
+                   Option.fold ~none:""
+                     ~some:(fun layout ->
+                       Printf.sprintf " size=%d align=%d" layout.size layout.align)
+                     c_layout
+                 else "")
+              ^ " {"
               ^ String.concat ", "
                   (List.map
                      (fun (field : Ast.field) ->
@@ -1569,6 +1588,7 @@ let map_declarations ?(container = false) ~span declarations =
                          |> fun field -> Option.bind field c_type_name
                        in
                        field.name ^ " " ^ Ast.type_name field.ty
+                       ^ (if is_union then " @0" else "")
                        ^ Option.fold ~none:""
                            ~some:(fun raw -> " (C " ^ raw ^ ")")
                            (match c_type with

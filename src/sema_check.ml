@@ -851,7 +851,11 @@ and check_initializer c expected expression =
           with
           | None -> error span (Printf.sprintf "unknown struct `%s`" name)
           | Some definition ->
-              if List.length entries <> List.length definition.fields then
+              if definition.is_union then
+                match (definition.fields, entries) with
+                | field :: _, [ entry ] -> Ok [ (field.ty, entry) ]
+                | _ -> error span "wrong number of struct literal fields"
+              else if List.length entries <> List.length definition.fields then
                 error span "wrong number of struct literal fields"
               else
                 Ok

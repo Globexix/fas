@@ -66,8 +66,12 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~consts ~arrays
               (fun (definition : Hir.struct_def) -> definition.name = name)
               structs )
         with
+        | Some [ item ], Some { Hir.is_union = true; fields = field :: _; _ } ->
+            let* value = value span field.ty item in
+            Ok (Hir.Global_struct [ value ])
         | Some items, Some definition
-          when List.length items = List.length definition.fields ->
+          when (not definition.is_union)
+               && List.length items = List.length definition.fields ->
             let* values =
               Result_list.map
                 (fun ((field : Hir.field), item) -> value span field.ty item)

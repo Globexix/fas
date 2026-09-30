@@ -6000,6 +6000,7 @@ let () =
                fields = [ { Hir.name = "x"; ty = Hir.Opaque "X"; offset = 0 } ];
                size = 8;
                align = 8;
+               is_union = false;
              };
            ];
          consts = [];
@@ -6024,6 +6025,7 @@ let () =
         ];
       size = 8;
       align = 8;
+      is_union = false;
     };
   lower_struct_error "layout-invariant-size" "size is smaller than its fields"
     {
@@ -6031,6 +6033,7 @@ let () =
       fields = [ { Hir.name = "x"; ty = Hir.Int Hir.U64; offset = 0 } ];
       size = 4;
       align = 8;
+      is_union = false;
     };
   lower_struct_error "layout-invariant-alignment"
     "alignment must be a positive power of two"
@@ -6039,6 +6042,7 @@ let () =
       fields = [ { Hir.name = "x"; ty = Hir.Int Hir.U8; offset = 0 } ];
       size = 3;
       align = 3;
+      is_union = false;
     };
 
   (match
@@ -9278,7 +9282,6 @@ let () =
       then failwith ("unsupported C record reason was not retained for " ^ name))
     [
       ("FasPackedRecord", "record layout differs from C");
-      ("FasUnionRecord", "unions are not supported");
       ("FasBitfieldRecord", "bit-fields are not supported");
       ("FasFlexibleRecord", "flexible array members are not supported");
       ("FasAnonymousMemberRecord", "anonymous members are not supported");
@@ -9313,7 +9316,10 @@ let () =
           ("FasNestedRecord", 16, 4, [ ("inner", 0); ("values", 8) ]);
           ("FasSelfRecord", 16, 8, [ ("next", 0); ("value", 8) ]);
           ("FasAlignedRecord", 16, 16, [ ("value", 0) ]);
-        ]
+          ("FasUnionRecord", 4, 4, [ ("value", 0); ("byte", 0) ]);
+        ];
+      if not (layout "FasUnionRecord").is_union then
+        failwith "imported union lost its union layout"
   | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics));
   let phase21_manifest = C_import.manifest_text phase21_imported in
   if
@@ -9322,6 +9328,12 @@ let () =
          "FasNestedRecord\tstruct FasNestedRecord\tstruct FasNestedRecord {inner \
           FasInnerRecord, values arr[2, i32]}")
   then failwith "C record manifest did not list admitted fields";
+  if
+    not
+      (contains phase21_manifest
+         "FasUnionRecord\tunion FasUnionRecord\tunion FasUnionRecord size=4 align=4 \
+          {value i32 @0, byte u8 @0}")
+  then failwith "C union manifest did not list its layout and fields";
   let callback_fields, _ = require_struct "FasFunctionPointerRecord" in
   if
     List.map (fun (field : Ast.field) -> (field.name, field.ty)) callback_fields
@@ -9415,9 +9427,25 @@ let () =
   c_semantic_message "c-import-packed-record-layout"
     "C declaration `FasPackedRecord` is not supported: record layout differs from C"
     phase21_records "fn read(value FasPackedRecord) i32 { return value.word }\n";
-  c_semantic_message "c-import-union-record-reason"
-    "C declaration `FasUnionRecord` is not supported: unions are not supported"
-    phase21_records "fn read(value FasUnionRecord) i32 { return value.value }\n";
+  c_semantic_accept "c-import-union-record" phase21_records
+    "fn read(value handle[FasUnionRecord]) i32 {\n\
+     return handle_addr(value)[FasUnionRecord].value }\n\
+     fn local() i32 { value FasUnionRecord = {7}\n\
+    \ return value.value }\n\
+     fn return_handle() handle[FasUnionRecord] {\n\
+     value FasUnionRecord = {1}\n\
+    \ return &value }\n\
+     fn via_view(value handle[FasUnionRecord]) i32 {\n\
+     view record = handle_addr(value)[FasUnionRecord]\n\
+     record.value = 9\n\
+    \ return record.value }\n\
+     fn pass_address() void { value FasUnionRecord = {1}\n\
+     fas_union_pointer(&value)\n\
+    \ return }\n\
+     fn c_handle_result() handle[FasUnionRecord] {\n\
+     return fas_union_pointer_result() }\n\
+     var union_global FasUnionRecord = {3}\n\
+     const union_constant FasUnionRecord = {4}\n";
   c_semantic_message "c-import-bitfield-record-reason"
     "C declaration `FasBitfieldRecord` is not supported: bit-fields are not supported"
     phase21_records "fn read(value FasBitfieldRecord) i32 { return value.value }\n";

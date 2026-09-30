@@ -12,7 +12,15 @@ type ty =
   | Void
 
 type field = { name : string; ty : ty; offset : int }
-type struct_def = { name : string; fields : field list; size : int; align : int }
+
+type struct_def = {
+  name : string;
+  fields : field list;
+  size : int;
+  align : int;
+  is_union : bool;
+}
+
 type const_def = { name : string; ty : ty; bits : int64 }
 type const_arr_def = { name : string; ty : ty; elems : int64 list }
 type func_sig = { params : (string * ty) list; ret : ty; variadic : bool }
@@ -359,11 +367,12 @@ let layout ?(target = Target_layout.current) structs ty =
 type struct_layout_cache = {
   target : Target_layout.t;
   decls : (string * (string * ty) list * int option) list;
+  unions : string list;
   definitions : (string, struct_def) Hashtbl.t;
 }
 
-let struct_layout_cache ?(target = Target_layout.current) decls =
-  { target; decls; definitions = Hashtbl.create (List.length decls) }
+let struct_layout_cache ?(target = Target_layout.current) ?(unions = []) decls =
+  { target; decls; unions; definitions = Hashtbl.create (List.length decls) }
 
 let compute_struct_cached cache name =
   let target = cache.target in
@@ -382,7 +391,9 @@ let compute_struct_cached cache name =
                 | [] ->
                     let align = max maxa (Option.value ~default:1 explicit) in
                     let* size = Target_layout.round_up_size off align in
-                    let definition = { name = n; fields = List.rev out; size; align } in
+                    let definition =
+                      { name = n; fields = List.rev out; size; align; is_union = false }
+                    in
                     Hashtbl.replace cache.definitions n definition;
                     Ok (definition.fields, definition.size, definition.align)
                 | (fname, fty) :: rest ->
@@ -399,7 +410,38 @@ let compute_struct_cached cache name =
                       ({ name = fname; ty = fty; offset = next } :: out)
                       rest
               in
-              each 0 1 [] fields)
+              let union_fields max_size max_align out =
+                let rec go max_size max_align out = function
+                  | [] ->
+                      let align = max max_align (Option.value ~default:1 explicit) in
+                      let* size = Target_layout.round_up_size max_size align in
+                      let definition =
+                        {
+                          name = n;
+                          fields = List.rev out;
+                          size;
+                          align;
+                          is_union = true;
+                        }
+                      in
+                      Hashtbl.replace cache.definitions n definition;
+                      Ok (definition.fields, definition.size, definition.align)
+                  | (fname, fty) :: rest ->
+                      let* size, align =
+                        match fty with
+                        | Struct sn ->
+                            let* _, size, align = calc (n :: visiting) sn in
+                            Ok (size, align)
+                        | _ -> field_layout (n :: visiting) fty
+                      in
+                      go (max max_size size) (max max_align align)
+                        ({ name = fname; ty = fty; offset = 0 } :: out)
+                        rest
+                in
+                go max_size max_align out fields
+              in
+              if List.mem n cache.unions then union_fields 0 1 []
+              else each 0 1 [] fields)
   and field_layout visiting = function
     | Bool -> Target_layout.integer target 1
     | Int k -> int_layout target k
@@ -418,10 +460,10 @@ let compute_struct_cached cache name =
         Target_layout.vector target n bits
   in
   let* fields, size, align = calc [] name in
-  Ok { name; fields; size; align }
+  Ok { name; fields; size; align; is_union = List.mem name cache.unions }
 
-let compute_struct ?target decls name =
-  compute_struct_cached (struct_layout_cache ?target decls) name
+let compute_struct ?target ?unions decls name =
+  compute_struct_cached (struct_layout_cache ?target ?unions decls) name
 
 let render p =
   let one_struct (s : struct_def) =

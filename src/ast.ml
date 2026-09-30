@@ -109,6 +109,7 @@ and item =
       generic_params : generic_param list;
       fields : field list;
       align : int option;
+      is_union : bool;
       span : Span.t;
     }
   | Opaque of { name : string; span : Span.t }
