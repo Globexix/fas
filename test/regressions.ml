@@ -9180,6 +9180,15 @@ let () =
   assert (
     List.hd errors
     = "export `a` has no C declaration: arr[0, u8] contains a zero-length array");
+  let text, _, errors =
+    generate
+      "extern \"C\" {\nvar fas_vec_3_u8 i32 = 5\nvar lanes vec[3,u8] = splat(1)\n}\n"
+  in
+  assert (
+    errors = []
+    && contains text
+         "typedef uint8_t fas_vec_3_u8_ __attribute__((ext_vector_type(3)));\n"
+    && contains text "extern fas_vec_3_u8_ lanes;\n");
   let header =
     C_exports.header ~name:"my-api.h" ~headers:[ "#include <api.h>\n" ]
       "void done(void);\n"
@@ -9228,6 +9237,7 @@ let () =
   let dir = root ^ ".dir" in
   Unix.mkdir dir 0o700;
   let angle = Filename.concat dir "types.h" in
+  let inner = Filename.concat dir "inner.h" in
   let write path text =
     let ch = open_out_bin path in
     output_string ch text;
@@ -9243,7 +9253,7 @@ let () =
     ~finally:(fun () ->
       List.iter
         (fun p -> try Sys.remove p with Sys_error _ -> ())
-        [ root; h; out; angle ];
+        [ root; h; out; angle; inner ];
       Unix.rmdir dir)
     (fun () ->
       List.iter
@@ -9320,6 +9330,22 @@ let () =
         expect_ok (Driver.run (cli_run [ "--emit-header"; "-I"; dir; root ]))
       in
       assert (contains header ("#include <" ^ "types.h" ^ ">\n"));
+      write inner "typedef struct { int x; } NestedAlias;\n";
+      write angle "#include \"inner.h\"\n";
+      write root
+        "use \"C\" <types.h>\n\
+         use \"C\" <<C\n\
+         NestedAlias *wrapper(NestedAlias *x) { return echo(x); }\n\
+         C\n\
+         extern \"C\" { fn echo(x handle[NestedAlias]) handle[NestedAlias] { return x \
+         } }\n";
+      let nested =
+        expect_ok (Driver.run (cli_run [ "--emit-header"; "-I"; dir; root ]))
+      in
+      assert (
+        contains nested "#include <types.h>\n"
+        && contains nested "NestedAlias * echo(NestedAlias * x);\n");
+
       assert (
         String.starts_with
           ~prefix:

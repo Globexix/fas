@@ -9,7 +9,7 @@ let includes =
    #include <stdint.h>\n\
    #include <stddef.h>\n"
 
-let declarations records (program : program) =
+let declarations ?(reserved = []) records (program : program) =
   let find name = List.find (fun (s : struct_def) -> s.name = name) program.structs in
   let rec invalid = function
     | Array (0, _) -> Some "a zero-length array"
@@ -84,7 +84,16 @@ let declarations records (program : program) =
               add ("struct " ^ name ^ ";\n"));
             "struct " ^ name ^ " *")
     | Vec (n, ty) ->
-        let name = Printf.sprintf "fas_vec_%d_%s" n (ty_name ty) in
+        let stem = Printf.sprintf "fas_vec_%d_%s" n (ty_name ty) in
+        let rec available suffix =
+          let name = stem ^ suffix in
+          if
+            List.mem name reserved
+            || List.exists (fun (export, _, _) -> export = name) exports
+          then available (suffix ^ "_")
+          else name
+        in
+        let name = available "" in
         if not (Hashtbl.mem seen name) then (
           Hashtbl.add seen name ();
           add

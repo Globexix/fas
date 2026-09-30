@@ -32,6 +32,7 @@ struct State @align(32) {
     data arr[2,arr[3,i32]]
 }
 extern "C" {
+var fas_vec_3_u8 i32 = 5
 var scalar i32 = 7
 var table arr[4,i32] = {4,-2,9,1}
 var state State = {{3,true},splat(2),splat(true),null,null,{{1,2,3},{4,5,6}}}

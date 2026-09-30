@@ -4,6 +4,7 @@
 int sort_values(void *base, size_t count);
 int run_events(void *data);
 int main(void) {
+    if (fas_vec_3_u8 != 5) return 7;
     struct ExportTag tag = {19};
     ExportAlias opaque_alias = {23};
     if (fas_tag(&tag) != &tag || fas_alias(&opaque_alias) != &opaque_alias) return 1;

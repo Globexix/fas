@@ -1,5 +1,6 @@
 #include "api.h"
 #include <stdlib.h>
+int32_t fas_vec_3_u8 = 5;
 int32_t scalar = 7;
 int32_t table[4] = {4,-2,9,1};
 struct State state = {{3,true},{2,2,2},{true,true,true,true,true,true,true,true},NULL,NULL,{{1,2,3},{4,5,6}}};

@@ -152,6 +152,7 @@ let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) source headers =
              "-x";
              "c";
              "-fsyntax-only";
+             "-H";
              "-Xclang";
              "-ast-dump=json";
              "-Xclang";
@@ -165,13 +166,39 @@ let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) source headers =
         prerr_endline
           ("fas: Clang import command: " ^ String.concat " " (Array.to_list argv));
       match Process.run_to_file argv json_path with
-      | Ok _ -> (
+      | Ok trace -> (
           try
             let channel = open_in_bin json_path in
             let declarations =
               Fun.protect
                 ~finally:(fun () -> close_in_noerr channel)
                 (fun () -> C_import_json.declarations channel)
+            in
+            let origins = Hashtbl.create 32 and root = ref "" in
+            String.split_on_char '\n' trace
+            |> List.iter (fun line ->
+                let depth = ref 0 in
+                while !depth < String.length line && line.[!depth] = '.' do
+                  incr depth
+                done;
+                if !depth > 0 && !depth < String.length line && line.[!depth] = ' ' then (
+                  let path =
+                    String.sub line (!depth + 1) (String.length line - !depth - 1)
+                  in
+                  if !depth = 1 then root := path;
+                  Hashtbl.replace origins path !root));
+            let declarations =
+              List.map
+                (fun node ->
+                  let open C_import_json in
+                  let origin =
+                    Option.bind (field "loc" node) (fun loc ->
+                        Option.bind (field "file" loc) string)
+                  in
+                  match (node, Option.bind origin (Hashtbl.find_opt origins)) with
+                  | Obj fields, Some header -> Obj (("fasHeader", Str header) :: fields)
+                  | _ -> node)
+                declarations
             in
             completed := true;
             Ok
@@ -1025,7 +1052,12 @@ let map_declarations ~span declarations =
                   fst (declaration_location node) )
           | Some "TypedefDecl", Some name when Hashtbl.mem anonymous_record_aliases name
             ->
-              Some (name, name, fst (declaration_location node))
+              Some
+                ( name,
+                  name,
+                  match string "fasHeader" node with
+                  | Some _ as header -> header
+                  | None -> fst (declaration_location node) )
           | _ -> None)
         nodes;
     items;

@@ -509,6 +509,14 @@ let compile_c_units config cc units adapters prelude artifacts =
             | Ok text -> Ok text
             | Error message -> Error [ Diag.error unit.use_span message ]
           in
+          let original =
+            String.split_on_char '\n' original
+            |> List.filter (fun line ->
+                not
+                  (String.starts_with ~prefix:"#include " line
+                  && Option.is_some (C_import.find_text prelude (line ^ "\n") 0)))
+            |> String.concat "\n"
+          in
           write_file unit.unit_path (prelude ^ original);
           let object_path =
             if config.Cli.emit = Cli.Header then ""
@@ -739,7 +747,9 @@ let run_unprotected ?header_output config =
               imported.records
           in
           let declarations, declaration_headers, declaration_errors =
-            C_exports.declarations records hir
+            C_exports.declarations
+              ~reserved:(List.concat_map (fun unit -> unit.c_names) !c_units)
+              records hir
           in
           let* () =
             match (config.Cli.emit, declaration_errors) with
