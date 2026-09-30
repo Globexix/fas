@@ -9130,6 +9130,8 @@ let () =
      raw[FasFieldNamesRecord].i32 = 4\n\
      return raw[FasFieldNamesRecord].handle + raw[FasFieldNamesRecord].len + \
      raw[FasFieldNamesRecord].view + raw[FasFieldNamesRecord].i32 }\n";
+  c_semantic_accept "c-import-record-typedef-global-initializer" phase21_records
+    "var AliasValue FasAlias = (FasAlias){7}\n";
   c_semantic_accept "address-constants-imported-record-handles" phase21_records
     "var Direct handle[FasSelfRecord] = &fas_address_self\n\
      const Nested arr[1,arr[1,handle[FasInnerRecord]]] = {{&fas_address_nested.inner}}\n\

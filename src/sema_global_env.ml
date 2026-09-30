@@ -53,7 +53,11 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~consts ~arrays
         let items =
           match struct_items with
           | Some (None, items) -> Some items
-          | Some (Some actual, items) when actual = name -> Some items
+          | Some (Some actual, items)
+            when match Sema_types.source_ty named_types (Ast.Named_type actual) with
+                 | Ok (Hir.Struct actual) -> actual = name
+                 | _ -> false ->
+              Some items
           | _ -> None
         in
         match
