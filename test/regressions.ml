@@ -8860,6 +8860,14 @@ let () =
           (snd c_namespaces).items
       then failwith ("ordinary C name lost to record tag " ^ name))
     [ "FasTagFunction"; "FasTagGlobal"; "FasTagEnum" ];
+  if
+    List.exists
+      (function Ast.Struct { name; _ } -> name = "FasTagTypedef" | _ -> false)
+      (snd c_namespaces).items
+  then failwith "ordinary C typedef lost to record tag FasTagTypedef";
+  c_semantic_accept "c-import-tag-typedef-collision" c_namespaces
+    "fn collision_typedef(value FasTagTypedef) FasTagTypedef { return value }\n\
+     fn collision_pointer() addr { return fas_tag_typedef_pointer() }\n";
   c_semantic_accept "c-import-enum-values-and-abi" c_matrix
     "fn enum_values() i64 {\n\
      fas_enum_arg(FAS_ENUM_NEG)\n\
