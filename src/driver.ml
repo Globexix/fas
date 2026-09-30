@@ -510,7 +510,10 @@ let compile_c_units config cc units adapters prelude artifacts =
             | Error message -> Error [ Diag.error unit.use_span message ]
           in
           write_file unit.unit_path (prelude ^ original);
-          let object_path = Filename.temp_file "fas-c-object-" ".o" in
+          let object_path =
+            if config.Cli.emit = Cli.Header then ""
+            else Filename.temp_file "fas-c-object-" ".o"
+          in
           let argv =
             Array.of_list
               ([
@@ -527,6 +530,7 @@ let compile_c_units config cc units adapters prelude artifacts =
           if config.Cli.debug || config.Cli.keep then
             prerr_endline ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
           match Process.run argv with
+          | Ok _ when config.Cli.emit = Cli.Header -> compile acc rest
           | Ok _ ->
               artifacts := object_path :: !artifacts;
               if config.Cli.keep then

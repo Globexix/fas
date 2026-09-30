@@ -1,0 +1,19 @@
+opaque Token
+extern "C" {
+fn signed8(x i8) i8 { return x }
+fn signed16(x i16) i16 { return x }
+fn signed32(x i32) i32 { return x }
+fn signed64(x i64) i64 { return x }
+fn unsigned8(x u8) u8 { return x }
+fn unsigned16(x u16) u16 { return x }
+fn unsigned32(x u32) u32 { return x }
+fn unsigned64(x u64) u64 { return x }
+fn machine_signed(x isize) isize { return x }
+fn machine_unsigned(x usize) usize { return x }
+fn boolean(x bool) bool { return x }
+fn pointer(x addr) addr { return x }
+fn token(x handle[Token]) handle[Token] { return x }
+fn nothing() void {}
+var count usize = 3
+var bytes arr[2,arr[3,u8]] = {{1,2,3},{4,5,6}}
+}
