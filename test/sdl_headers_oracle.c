@@ -44,18 +44,26 @@ int main(void) {
     if (!window) { SDL_Quit(); return 2; }
     SDL_Surface *surface = SDL_CreateRGBSurface(0, 320, 200, 32, 0, 0, 0, 0);
     if (!surface) { SDL_DestroyWindow(window); SDL_Quit(); return 3; }
+    SDL_Rect rect = {0, 0, 320, 200};
+    if (SDL_FillRect(surface, &rect, 0) != 0) {
+        SDL_FreeSurface(surface); SDL_DestroyWindow(window); SDL_Quit(); return 4;
+    }
+    if (surface->w != 320 || surface->h != 200 || surface->pitch < 320 * 4) {
+        SDL_FreeSurface(surface); SDL_DestroyWindow(window); SDL_Quit(); return 5;
+    }
     uint64_t hash = render_checksum((uint32_t *)surface->pixels, surface->pitch);
     int pushed = 0;
     SDL_Event event;
     SDL_zero(event);
     event.type = SDL_USEREVENT;
     while (pushed < 19) {
-        if (SDL_PushEvent(&event) != 1) return 4;
+    if (SDL_PushEvent(&event) != 1) return 6;
         pushed++;
     }
     int events = 0;
     while (SDL_PollEvent(&event)) if (event.type == SDL_USEREVENT) events++;
-    printf("%llu %d\n", (unsigned long long)hash, events);
+    printf("%llu %d %d %d %d\n", (unsigned long long)hash, events,
+        surface->w, surface->h, surface->pitch);
     SDL_FreeSurface(surface);
     SDL_DestroyWindow(window);
     SDL_Quit();

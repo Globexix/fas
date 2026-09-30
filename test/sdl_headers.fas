@@ -2,14 +2,6 @@ use "C" <<C
 #include <SDL2/SDL.h>
 #include <stdio.h>
 
-static inline void *fas_surface_pixels(SDL_Surface *surface) {
-    return surface->pixels;
-}
-
-static inline int fas_surface_pitch(SDL_Surface *surface) {
-    return surface->pitch;
-}
-
 static inline int fas_push_user_events(int count) {
     int pushed = 0;
     SDL_Event event;
@@ -84,18 +76,33 @@ fn main() i32 {
         SDL_Quit()
         return 3
     }
-    pixels addr = fas_surface_pixels(surface)
-    pitch i32 = fas_surface_pitch(surface)
+    rect SDL_Rect = (SDL_Rect){0, 0, 320, 200}
+    if SDL_FillRect(surface, handle_from_addr[SDL_Rect](&rect), 0) != 0 {
+        SDL_FreeSurface(surface)
+        SDL_DestroyWindow(window)
+        SDL_Quit()
+        return 4
+    }
+    if handle_addr(surface)[SDL_Surface].w != 320 || handle_addr(surface)[SDL_Surface].h != 200 || handle_addr(surface)[SDL_Surface].pitch < 320 * 4 {
+        SDL_FreeSurface(surface)
+        SDL_DestroyWindow(window)
+        SDL_Quit()
+        return 5
+    }
+    pixels addr = handle_addr(surface)[SDL_Surface].pixels
+    pitch i32 = handle_addr(surface)[SDL_Surface].pitch
     render_fire(pixels, pitch)
     pushed i32 = fas_push_user_events(19)
     if pushed != 19 {
         SDL_FreeSurface(surface)
         SDL_DestroyWindow(window)
         SDL_Quit()
-        return 4
+        return 6
     }
     events i32 = fas_count_user_events()
-    printf(c"%llu %d\n", checksum(pixels, pitch), events)
+    printf(c"%llu %d %d %d %d\n", checksum(pixels, pitch), events,
+        handle_addr(surface)[SDL_Surface].w,
+        handle_addr(surface)[SDL_Surface].h, pitch)
     SDL_FreeSurface(surface)
     SDL_DestroyWindow(window)
     SDL_Quit()
