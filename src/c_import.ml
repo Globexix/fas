@@ -394,12 +394,17 @@ let record_name node =
 
 let type_result ?(allow_arrays = false) ~aliases ~records ~enums ~allow_record raw =
   let raw, quals = clean_type raw in
+  let rec record_value = function
+    | Ast.Named_type _ -> true
+    | Ast.Array (_, element) -> record_value element
+    | _ -> false
+  in
   let rec resolve seen raw =
     let raw = trim raw in
     match Hashtbl.find_opt aliases raw with
     | Some (Ok (Ast.Array _)) when not allow_arrays ->
         Error "array types are not supported by value"
-    | Some (Ok (Ast.Named_type _)) when not allow_record ->
+    | Some (Ok ty) when (not allow_record) && record_value ty ->
         Error "struct and union values are not supported"
     | Some result when not (List.mem raw seen) -> result
     | Some _ -> Error "recursive C typedef is not supported"
@@ -654,8 +659,9 @@ let map_declarations ~span declarations =
     | None when Option.is_some (type_error raw) -> Error (Option.get (type_error raw))
     | None when Hashtbl.mem alias_nodes raw -> alias stack raw
     | None
-      when String.starts_with ~prefix:"struct " raw
-           || String.starts_with ~prefix:"union " raw ->
+      when (String.starts_with ~prefix:"struct " raw
+           || String.starts_with ~prefix:"union " raw)
+           && not (String.contains raw '[') ->
         let name =
           String.sub raw
             (String.index raw ' ' + 1)

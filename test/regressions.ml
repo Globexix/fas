@@ -8773,6 +8773,10 @@ let () =
     "fn probe() i32 { return fas_array_parameter(&fas_array_global) }\n";
   c_semantic_accept "c-import-array-mutable-pointer-elements" c_matrix
     "fn probe() void { fas_array_pointer_elements[0] = null }\n";
+  unsupported "fas_direct_record_array" "struct and union values are not supported"
+    "fas_direct_record_array[0]";
+  unsupported "fas_alias_record_array" "struct and union values are not supported"
+    "fas_alias_record_array[0]";
   unsupported "fas_array_unknown" "arrays of unknown size are not supported"
     "fas_array_unknown[0]";
   unsupported "fas_array_float" "floating-point types are not supported"
