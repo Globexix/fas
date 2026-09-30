@@ -211,6 +211,7 @@ let declarations ?(reserved = []) records (program : program) =
                   s.fields
               in
               add ("struct " ^ name ^ " {\n" ^ String.concat "" fields ^ "};\n");
+              add ("typedef struct " ^ name ^ " " ^ name ^ ";\n");
               checks ("struct " ^ name) (Struct name);
               List.iter
                 (fun (f : field) ->

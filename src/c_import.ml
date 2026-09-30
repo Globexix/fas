@@ -893,13 +893,19 @@ let map_declarations ?(container = false) ~span declarations =
     (fun name result ->
       if Names.reserved_binding_name name then
         match result with
-        | Ok _ -> add_unsupported name "name is reserved in Fas"
+        | Ok _ ->
+            add_unsupported name
+              "name is reserved in Fas; call it through a C container function with \
+               another name"
         | Error _ -> ())
     aliases;
   let add_item name spelling signature item origin obligations reason
       ?(entity_scope = "") ?(keep_unsupported_item = false) () =
     let reason =
-      if Names.reserved_binding_name name then Some "name is reserved in Fas"
+      if Names.reserved_binding_name name then
+        Some
+          "name is reserved in Fas; call it through a C container function with \
+           another name"
       else reason
     in
     let item =

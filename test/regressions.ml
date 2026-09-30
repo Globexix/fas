@@ -9319,8 +9319,9 @@ let () =
       | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
       | Ok _ -> failwith "incomplete array with the wrong element type was accepted");
   c_semantic_message "c-import-reserved-name"
-    "C declaration `addr` is not supported: name is reserved in Fas" c_matrix
-    "fn probe() i32 { return addr(1) }\n";
+    "C declaration `addr` is not supported: name is reserved in Fas; call it through a \
+     C container function with another name"
+    c_matrix "fn probe() i32 { return addr(1) }\n";
   c_semantic_message "c-import-macro-is-foreign-only" "unknown name `FAS_MACRO_ONLY`"
     c_matrix "fn probe() i32 { return FAS_MACRO_ONLY }\n";
   List.iter
@@ -9403,6 +9404,7 @@ let () =
     "struct Inner {\n\
     \  alignas(2) uint16_t x;\n\
      };\n\
+     typedef struct Inner Inner;\n\
      static_assert(sizeof(struct Inner) == 2, \"struct Inner size\");\n\
      static_assert(alignof(struct Inner) == 2, \"struct Inner alignment\");\n\
      static_assert(offsetof(struct Inner, x) == 0, \"Inner.x offset\");\n\
@@ -9420,6 +9422,7 @@ let () =
     \  struct Token * ptr;\n\
     \  int32_t data[2][3];\n\
      };\n\
+     typedef struct Outer Outer;\n\
      static_assert(sizeof(struct Outer) == 48, \"struct Outer size\");\n\
      static_assert(alignof(struct Outer) == 16, \"struct Outer alignment\");\n\
      static_assert(offsetof(struct Outer, inner) == 0, \"Outer.inner offset\");\n\
@@ -9590,6 +9593,7 @@ let () =
           "  alignas(4) int32_t x;";
           "  int32_t y;";
           "};";
+          "typedef struct Pair Pair;";
           "static_assert(sizeof(struct Pair) == 8, \"struct Pair size\");";
           "static_assert(alignof(struct Pair) == 4, \"struct Pair alignment\");";
           "static_assert(offsetof(struct Pair, x) == 0, \"Pair.x offset\");";
