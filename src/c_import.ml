@@ -152,11 +152,11 @@ let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) source headers =
              "-x";
              "c";
              "-fsyntax-only";
-             "-H";
              "-Xclang";
              "-ast-dump=json";
              "-Xclang";
              "-skip-function-bodies";
+             "-H";
              "--target=x86_64-unknown-linux-gnu";
            ]
           @ c_flags

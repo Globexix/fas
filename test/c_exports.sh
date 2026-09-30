@@ -19,10 +19,12 @@ printf '#include "scalars.h"\n#include "scalars.h"\n' >"$EXPORT_TMP/scalars.c"
 printf '#include "api.h"\n#include "api.h"\n' >"$EXPORT_TMP/header.c"
 "$CC" -std=c11 -Wall -Wextra -Werror -pedantic -I"$EXPORT_TMP/headers" -fsyntax-only "$EXPORT_TMP/scalars.c"
 "$CXX" -x c++ -std=c++17 -Wall -Wextra -Werror -I"$EXPORT_TMP/headers" -fsyntax-only "$EXPORT_TMP/scalars.c"
+VECTOR_PEDANTIC=-pedantic
 if ! "$CC" -std=c11 -Wall -Wextra -Werror -pedantic -I"$EXPORT_TMP/headers" -fsyntax-only "$EXPORT_TMP/header.c" >"$EXPORT_TMP/vector-gate.log" 2>&1; then
     cat "$EXPORT_TMP/vector-gate.log"
     if ! grep -E 'ext_vector_type|vector.*extension' "$EXPORT_TMP/vector-gate.log" >/dev/null; then exit 1; fi
     "$CC" -std=c11 -Wall -Wextra -Werror -I"$EXPORT_TMP/headers" -fsyntax-only "$EXPORT_TMP/header.c"
+    VECTOR_PEDANTIC=
     echo 'c_exports: vector header requires the approved non-pedantic gate'
 fi
 "$CXX" -x c++ -std=c++17 -Wall -Wextra -Werror -I"$EXPORT_TMP/headers" -fsyntax-only "$EXPORT_TMP/header.c"
@@ -30,7 +32,7 @@ fi
 "$LLVM_OPT" -passes=verify "$EXPORT_TMP/library.ll" -disable-output
 "$LLVM_OPT" -passes='default<O2>' -verify-each "$EXPORT_TMP/library.ll" -S -o "$EXPORT_TMP/library-o2.ll"
 "$LLVM_OPT" -passes=verify "$EXPORT_TMP/library-o2.ll" -disable-output
-"$CC" -std=c11 -Wall -Wextra -Werror -pedantic -I"$EXPORT_TMP/headers" "$ROOT/test/c_exports/oracle.c" "$ROOT/test/c_exports/main.c" -o "$EXPORT_TMP/oracle"
+"$CC" -std=c11 -Wall -Wextra -Werror $VECTOR_PEDANTIC -I"$EXPORT_TMP/headers" "$ROOT/test/c_exports/oracle.c" "$ROOT/test/c_exports/main.c" -o "$EXPORT_TMP/oracle"
 "$EXPORT_TMP/oracle" >"$EXPORT_TMP/expected"
 for level in 0 2; do
     "$OCAML_FAS" -O"$level" -c "$ROOT/test/c_exports/library.fas" -o "$EXPORT_TMP/library-$level.o"
@@ -43,7 +45,7 @@ for level in 0 2; do
     done
     if readelf -d "$EXPORT_TMP/libexports-$level.so" | grep TEXTREL; then exit 1; fi
     for kind in a so; do
-        "$CC" -std=c11 -Wall -Wextra -Werror -pedantic -O"$level" -I"$EXPORT_TMP/headers" "$ROOT/test/c_exports/main.c" "$EXPORT_TMP/libexports-$level.$kind" -o "$EXPORT_TMP/main-$level-$kind"
+        "$CC" -std=c11 -Wall -Wextra -Werror $VECTOR_PEDANTIC -O"$level" -I"$EXPORT_TMP/headers" "$ROOT/test/c_exports/main.c" "$EXPORT_TMP/libexports-$level.$kind" -o "$EXPORT_TMP/main-$level-$kind"
         "$EXPORT_TMP/main-$level-$kind" >"$EXPORT_TMP/actual"
         diff -u "$EXPORT_TMP/expected" "$EXPORT_TMP/actual"
     done
