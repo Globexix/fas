@@ -157,3 +157,12 @@ let header ~name ~headers declarations =
   "#ifndef " ^ guard ^ "\n#define " ^ guard ^ "\n" ^ includes ^ String.concat "" headers
   ^ "#ifdef __cplusplus\nextern \"C\" {\n#endif\n" ^ declarations
   ^ "#ifdef __cplusplus\n}\n#endif\n#endif\n"
+
+let relative_path directory path =
+  let parts path = String.split_on_char '/' (Unix.realpath path) in
+  let rec common left right =
+    match (left, right) with
+    | a :: left, b :: right when a = b -> common left right
+    | left, right -> String.concat "/" (List.map (fun _ -> "..") left @ right)
+  in
+  common (parts directory) (parts path)

@@ -451,7 +451,8 @@ let emit_tools_unprotected config program ir c_objects =
           let* _ = build_assembly config ir llc opt_path asm_path in
           let* () = run_tool cc (executable_command config cc asm_path c_objects) in
           Ok ""
-      | Cli.Ir | Cli.Llvm -> invalid_arg "Driver.emit_tools: non-tool emission")
+      | Cli.Ir | Cli.Llvm | Cli.Header ->
+          invalid_arg "Driver.emit_tools: non-tool emission")
 
 let emit_tools config program ir c_objects =
   try emit_tools_unprotected config program ir c_objects with
@@ -519,7 +520,9 @@ let compile_c_units config cc units adapters prelude artifacts =
                  llc_opt config.Cli.optimization;
                ]
               @ config.Cli.c_flags
-              @ [ "-c"; unit.unit_path; "-o"; object_path ])
+              @
+              if config.Cli.emit = Cli.Header then [ "-fsyntax-only"; unit.unit_path ]
+              else [ "-c"; unit.unit_path; "-o"; object_path ])
           in
           if config.Cli.debug || config.Cli.keep then
             prerr_endline ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
@@ -620,7 +623,7 @@ let add_static_adapters units ir =
   | Ok () -> Ok (ir, adapters)
   | Error message -> Error [ Diag.error Span.synthetic ("internal error: " ^ message) ]
 
-let run_unprotected config =
+let run_unprotected ?header_output config =
   let c_artifacts = ref [] in
   Fun.protect
     ~finally:(fun () -> if not config.Cli.keep then List.iter remove !c_artifacts)
@@ -731,8 +734,13 @@ let run_unprotected config =
                 C_exports.{ name; spelling; header = required_header })
               imported.records
           in
-          let declarations, declaration_headers, _ =
+          let declarations, declaration_headers, declaration_errors =
             C_exports.declarations records hir
+          in
+          let* () =
+            match (config.Cli.emit, declaration_errors) with
+            | Cli.Header, message :: _ -> Error [ Diag.error Span.synthetic message ]
+            | _ -> Ok ()
           in
           let* ir = Lower.lower hir in
           let* ir = apply_no_inline config ir in
@@ -766,6 +774,26 @@ let run_unprotected config =
               c_artifacts
           in
           match config.emit with
+          | Cli.Header ->
+              let output = Option.value ~default:config.Cli.output header_output in
+              let name =
+                if config.Cli.output_explicit then Filename.basename output
+                else Filename.remove_extension (Filename.basename config.Cli.input)
+              in
+              let headers =
+                List.map
+                  (fun line ->
+                    if String.starts_with ~prefix:"#include \"" line then
+                      let path = Scanf.sscanf line "#include %S" Fun.id in
+                      Printf.sprintf "#include %S\n"
+                        (C_exports.relative_path
+                           (if config.Cli.output_explicit then Filename.dirname output
+                            else Sys.getcwd ())
+                           path)
+                    else line)
+                  declaration_headers
+              in
+              emit_text config (C_exports.header ~name ~headers declarations)
           | Cli.Ir -> (
               match Ir.render_debug_bounded ~limits ir with
               | Ok text -> emit_text config text
@@ -787,8 +815,8 @@ let run_unprotected config =
           | Cli.Asm | Cli.Obj | Cli.Executable -> emit_tools config program ir c_objects
           ))
 
-let run_unstaged config =
-  try run_unprotected config with
+let run_unstaged ?header_output config =
+  try run_unprotected ?header_output config with
   | Sys_error message ->
       Error [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ]
   | Unix.Unix_error (code, operation, argument) ->
@@ -817,7 +845,10 @@ let run config =
         remove config.Cli.output;
         Error [ Diag.error Span.synthetic ("output I/O failed: " ^ message) ]
     | Ok staged_path -> (
-        let result = run_unstaged { config with Cli.output = staged_path } in
+        let result =
+          run_unstaged ~header_output:config.Cli.output
+            { config with Cli.output = staged_path }
+        in
         match result with
         | Ok output -> (
             try

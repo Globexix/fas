@@ -1,4 +1,4 @@
-type emit = Ir | Llvm | Asm | Obj | Executable
+type emit = Ir | Llvm | Asm | Obj | Header | Executable
 
 type t = {
   input : string;
@@ -18,6 +18,7 @@ type command = Run of t | Help
 let usage =
   "usage: fas [options] file.fas [C inputs and link flags]\n\
   \  -o PATH       output path (default a.out, INPUT.o with -c, INPUT.s with -S)\n\
+  \  --emit-header write an ABI-checked C header (stdout without -o)\n\
   \  --emit-ir     print the compiler's custom IR dump\n\
   \  --emit-llvm   print unoptimized LLVM IR after verification\n\
   \  --emit-asm, -S emit assembly\n\
@@ -40,6 +41,7 @@ let default_output emit input =
 
 let parse argv =
   let n = Array.length argv in
+  let header_selected = ref false and other_output = ref false in
   let link_inputs_rev = ref [] in
   let c_flags_rev = ref [] in
   let add_link_inputs values =
@@ -53,6 +55,8 @@ let parse argv =
       no_inline_function =
     if i >= n then
       if Option.is_none input then Error "no input files"
+      else if !header_selected && !other_output then
+        Error "--emit-header cannot be combined with other output modes"
       else if !link_inputs_rev <> [] && emit <> Executable then
         Error "C inputs and link flags require an executable output"
       else if Option.is_some no_inline_function && not debug then
@@ -87,16 +91,24 @@ let parse argv =
             loop (i + 2) input
               (Some argv.(i + 1))
               emit keep optimization optimization_explicit debug no_inline_function
+      | "--emit-header" ->
+          header_selected := true;
+          loop (i + 1) input output Header keep optimization optimization_explicit debug
+            no_inline_function
       | "--emit-ir" ->
+          other_output := true;
           loop (i + 1) input output Ir keep optimization optimization_explicit debug
             no_inline_function
       | "--emit-llvm" ->
+          other_output := true;
           loop (i + 1) input output Llvm keep optimization optimization_explicit debug
             no_inline_function
       | "--emit-asm" | "-S" ->
+          other_output := true;
           loop (i + 1) input output Asm keep optimization optimization_explicit debug
             no_inline_function
       | "--emit-obj" | "-c" ->
+          other_output := true;
           loop (i + 1) input output Obj keep optimization optimization_explicit debug
             no_inline_function
       | "--keep" ->

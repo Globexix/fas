@@ -1339,6 +1339,24 @@ let () =
       ()
   | Error message -> failwith ("multiple input files: unexpected message " ^ message)
   | Ok _ -> failwith "multiple input files: expected rejection");
+  let header = expect_cli (Cli.parse [| "fas"; "--emit-header"; "root.fas" |]) in
+  assert (header.emit = Cli.Header && not header.output_explicit);
+  List.iter
+    (fun mode ->
+      List.iter
+        (fun args ->
+          match Cli.parse (Array.of_list (("fas" :: args) @ [ "root.fas" ])) with
+          | Error message ->
+              assert (
+                message = "--emit-header cannot be combined with other output modes")
+          | Ok _ -> assert false)
+        [ [ "--emit-header"; mode ]; [ mode; "--emit-header" ] ])
+    [ "--emit-ir"; "--emit-llvm"; "-S"; "--emit-asm"; "-c"; "--emit-obj" ];
+  (match Cli.parse [| "fas"; "--emit-header"; "root.fas"; "extra.c" |] with
+  | Error message ->
+      assert (message = "C inputs and link flags require an executable output")
+  | Ok _ -> assert false);
+  assert (contains Cli.usage "--emit-header");
   let cli_obj = expect_cli (Cli.parse [| "fas"; "-c"; "path/prog.fas" |]) in
   assert (
     cli_obj.Cli.emit = Cli.Obj && cli_obj.output = "prog.o"

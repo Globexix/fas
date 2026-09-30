@@ -1,4 +1,4 @@
-type emit = Ir | Llvm | Asm | Obj | Executable
+type emit = Ir | Llvm | Asm | Obj | Header | Executable
 
 type t = {
   input : string;
