@@ -1021,7 +1021,7 @@ let extension_attr = function
 
 exception Render_exhausted
 
-type sink = { text : string -> unit; room : int -> bool }
+type sink = { text : string -> unit; room : int -> bool; redirect : string -> string }
 
 let emit_escaped_identifier sink n =
   let len = String.length n in
@@ -1034,6 +1034,7 @@ let emit_escaped_identifier sink n =
   run 0
 
 let emit_symbol sink n =
+  let n = sink.redirect n in
   if not (sink.room (String.length n + 1)) then raise Render_exhausted;
   if String.for_all safe_identifier_char n then (
     sink.text "@";
@@ -1353,7 +1354,9 @@ let emit_instr sink = function
 
 let instr_line instr =
   let buffer = Buffer.create 64 in
-  emit_instr { text = Buffer.add_string buffer; room = (fun _ -> true) } instr;
+  emit_instr
+    { text = Buffer.add_string buffer; room = (fun _ -> true); redirect = Fun.id }
+    instr;
   Buffer.contents buffer
 
 let emit_term sink = function
@@ -1396,10 +1399,12 @@ let emit_term sink = function
 
 let term_line terminator =
   let buffer = Buffer.create 64 in
-  emit_term { text = Buffer.add_string buffer; room = (fun _ -> true) } terminator;
+  emit_term
+    { text = Buffer.add_string buffer; room = (fun _ -> true); redirect = Fun.id }
+    terminator;
   Buffer.contents buffer
 
-let render_bounded ~budget m =
+let render_bounded ?(redirect = Fun.id) ~budget m =
   if budget < 0 then Error "rendered LLVM text budget must not be negative"
   else
     let buffer = Buffer.create 4096 in
@@ -1407,7 +1412,9 @@ let render_bounded ~budget m =
       if Buffer.length buffer > budget - String.length s then raise Render_exhausted
       else Buffer.add_string buffer s
     in
-    let sink = { text = add; room = (fun n -> Buffer.length buffer <= budget - n) } in
+    let sink =
+      { text = add; room = (fun n -> Buffer.length buffer <= budget - n); redirect }
+    in
     let newline () = add "\n" in
     let add_escaped_bytes s =
       let len = String.length s in
@@ -1559,11 +1566,13 @@ let render_bounded ~budget m =
                          add " c\"";
                          add_escaped_bytes data;
                          add "\""
-                     | `Pointer (symbol, 0) -> add (" @" ^ symbol)
+                     | `Pointer (symbol, 0) ->
+                         add " ";
+                         emit_symbol sink symbol
                      | `Pointer (symbol, offset) ->
-                         add
-                           (Printf.sprintf " getelementptr (i8, ptr @%s, i64 %d)" symbol
-                              offset))
+                         add " getelementptr (i8, ptr ";
+                         emit_symbol sink symbol;
+                         add (Printf.sprintf ", i64 %d)" offset))
                    pieces;
                  add " }>");
               add (Printf.sprintf ", align %d\n" align))

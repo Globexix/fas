@@ -9049,6 +9049,9 @@ let () =
     "fas_nondefault_abi(1)";
   c_semantic_accept "c-import-static-inline" c_matrix
     "fn static_inline_call() i32 { return fas_static_inline(4) }\n";
+  c_semantic_accept "c-import-static-function-address" c_matrix
+    "fn static_inline_address() addr { return &fas_static_inline }\n\
+     const FasStaticInlineAddresses arr[1, addr] = {&fas_static_inline}\n";
   if
     not
       (List.exists

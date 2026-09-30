@@ -365,8 +365,8 @@ let run_tool label argv =
 let remove path = try Sys.remove path with Sys_error _ -> ()
 let optimization_level level = max 0 (min 3 level)
 
-let render_ir ir =
-  match Ir.render_bounded ~budget:limits.Limits.max_rendered_ir_bytes ir with
+let render_ir ?(redirect = Fun.id) ir =
+  match Ir.render_bounded ~redirect ~budget:limits.Limits.max_rendered_ir_bytes ir with
   | Ok text -> Ok text
   | Error message -> Error [ Diag.error Span.synthetic message ]
 
@@ -432,10 +432,10 @@ let build_assembly config ir llc opt_path asm_path =
   write_file asm_path assembly;
   Ok assembly
 
-let emit_tools_unprotected config program ir c_objects =
+let emit_tools_unprotected config program ir c_objects redirect =
   let* () = ir_budget program (Ir.check_static_data_bytes ~limits ir) in
   let* () = ir_budget program (Ir.check_raw_asm_bytes ~limits ir) in
-  let* ll_text = render_ir ir in
+  let* ll_text = render_ir ~redirect ir in
   let ll_path = Filename.temp_file "fas-module-" ".ll" in
   let opt_path = Filename.temp_file "fas-opt-" ".ll" in
   let asm_path = Filename.temp_file "fas-module-" ".s" in
@@ -526,8 +526,8 @@ let emit_tools_unprotected config program ir c_objects =
       | Cli.Ir | Cli.Llvm | Cli.Header ->
           invalid_arg "Driver.emit_tools: non-tool emission")
 
-let emit_tools config program ir c_objects =
-  try emit_tools_unprotected config program ir c_objects with
+let emit_tools config program ir c_objects redirect =
+  try emit_tools_unprotected config program ir c_objects redirect with
   | Sys_error message ->
       Error [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ]
   | Unix.Unix_error (code, operation, argument) ->
@@ -622,8 +622,9 @@ let compile_c_units config cc units adapters prelude artifacts =
   in
   compile [] units
 
-let add_static_adapters units ir =
-  let called = Hashtbl.create 32 in
+let add_static_adapters units referenced_names ir =
+  let referenced = Hashtbl.create (List.length referenced_names) in
+  List.iter (fun name -> Hashtbl.replace referenced name ()) referenced_names;
   let occupied = Hashtbl.create 64 in
   List.iter
     (fun unit -> List.iter (fun name -> Hashtbl.replace occupied name ()) unit.c_names)
@@ -636,23 +637,13 @@ let add_static_adapters units ir =
       | Ir.Storage_global { name; _ } ->
           Hashtbl.replace occupied name ())
     ir.Ir.globals;
-  List.iter
-    (fun (func : Ir.func) ->
-      List.iter
-        (fun (block : Ir.block) ->
-          List.iter
-            (function
-              | Ir.Call (_, _, _, name, _) -> Hashtbl.replace called name () | _ -> ())
-            block.instrs)
-        func.blocks)
-    ir.Ir.funcs;
   let all_adapters = ref [] in
   let rec collect = function
     | [] -> Ok (List.rev !all_adapters)
     | unit :: rest ->
         let rec make = function
           | [] -> collect rest
-          | static :: tail when Hashtbl.mem called static.C_import.name -> (
+          | static :: tail when Hashtbl.mem referenced static.C_import.name -> (
               match
                 C_import.make_adapter
                   ~occupied:
@@ -676,35 +667,14 @@ let add_static_adapters units ir =
       in
       if adapters <> [] then C_import.append_adapters unit.unit_path adapters)
     units;
-  let redirects = Hashtbl.create (List.length adapters) in
-  List.iter
-    (fun (adapter : C_import.adapter) ->
-      Hashtbl.replace redirects adapter.c_name adapter.symbol)
-    adapters;
-  let redirect name = Option.value ~default:name (Hashtbl.find_opt redirects name) in
-  let funcs =
+  let redirects =
     List.map
-      (fun (func : Ir.func) ->
-        let blocks =
-          List.map
-            (fun (block : Ir.block) ->
-              let instrs =
-                List.map
-                  (function
-                    | Ir.Call (result, extension, ty, name, args) ->
-                        Ir.Call (result, extension, ty, redirect name, args)
-                    | instruction -> instruction)
-                  block.instrs
-              in
-              { block with Ir.instrs })
-            func.blocks
-        in
-        { func with Ir.name = redirect func.name; blocks })
-      ir.Ir.funcs
+      (fun (adapter : C_import.adapter) -> (adapter.c_name, adapter.symbol))
+      adapters
   in
-  let ir = { ir with Ir.funcs } in
+  let redirect name = Option.value ~default:name (List.assoc_opt name redirects) in
   match Ir.validate ir with
-  | Ok () -> Ok (ir, adapters)
+  | Ok () -> Ok (ir, adapters, redirect)
   | Error message -> Error [ Diag.error Span.synthetic ("internal error: " ^ message) ]
 
 let run_unprotected ?header_output config =
@@ -718,9 +688,11 @@ let run_unprotected ?header_output config =
           let _, _, cc = tools () in
           let imported = ref [] in
           let c_units = ref [] in
+          let referenced_names = Ast.unresolved_names program in
           let macro_names =
-            Ast.unresolved_names program
-            |> List.filter (fun name -> Option.is_none (Names.value_operation name))
+            List.filter
+              (fun name -> Option.is_none (Names.value_operation name))
+              referenced_names
           in
           let* () =
             let rec import = function
@@ -842,7 +814,9 @@ let run_unprotected ?header_output config =
           in
           let* ir = Lower.lower hir in
           let* ir = apply_no_inline config ir in
-          let* ir, adapters = add_static_adapters (List.rev !c_units) ir in
+          let* ir, adapters, redirect =
+            add_static_adapters (List.rev !c_units) referenced_names ir
+          in
           let imported =
             {
               imported with
@@ -899,7 +873,7 @@ let run_unprotected ?header_output config =
               | Ok text -> emit_text config text
               | Error message -> Error [ Diag.error Span.synthetic message ])
           | Cli.Llvm ->
-              let* text = render_ir ir in
+              let* text = render_ir ~redirect ir in
               let opt, _, _ = tools () in
               let path = Filename.temp_file "fas-verify-" ".ll" in
               if config.Cli.keep then (
@@ -912,8 +886,8 @@ let run_unprotected ?header_output config =
                   write_file path text;
                   let* () = verify_llvm opt path in
                   emit_text config text)
-          | Cli.Asm | Cli.Obj | Cli.Executable -> emit_tools config program ir c_objects
-          ))
+          | Cli.Asm | Cli.Obj | Cli.Executable ->
+              emit_tools config program ir c_objects redirect))
 
 let run_unstaged ?header_output config =
   try run_unprotected ?header_output config with

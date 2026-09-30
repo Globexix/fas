@@ -2,12 +2,22 @@ use "C" <stdio.h>
 use "C" <stdlib.h>
 use "C" <string.h>
 use "C" <time.h>
+use "C" "c_interop_address.h"
+use "C" <<ADDRESS
+int fas_interop_call_int(int (*function)(int), int value) {
+  return function(value);
+}
+ADDRESS
 use "C" <<STAT
 #include <sys/stat.h>
 typedef struct stat stat_t;
 STAT
 
 var fas_interop_values arr[5, i32] = {9, 1, 7, 2, 4}
+const fas_interop_function_table arr[2, addr] = {
+  &fas_interop_static_helper,
+  &fas_interop_address_only
+}
 
 extern "C" {
   fn fas_interop_compare(left addr, right addr) i32 {
@@ -20,6 +30,11 @@ extern "C" {
 }
 
 fn main() i32 {
+  if fas_interop_static_helper(1) != 2 { return 16 }
+  if fas_interop_call_int(&fas_interop_static_helper, 41) != 42 { return 17 }
+  if fas_interop_call_int(fas_interop_function_table[0], 8) != 9 { return 18 }
+  if fas_interop_call_int(fas_interop_function_table[1], 9) != 18 { return 19 }
+
   path addr = c"interop.bin"
   size usize = strlen(c"fas")
   memory addr = malloc(size)

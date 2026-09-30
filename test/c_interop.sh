@@ -19,6 +19,13 @@ fail() {
 "$OCAML_FAS" --emit-llvm -D_POSIX_C_SOURCE=200809L \
   "$ROOT/test/c_interop.fas" >"$TMP/program.ll"
 "$LLVM_OPT" -passes=verify "$TMP/program.ll" -disable-output
+grep -Eq 'ptr @__fas_c_adapter_[[:xdigit:]]+_fas_interop_static_helper' "$TMP/program.ll" \
+  || fail "static helper address did not relocate to its adapter"
+grep -Eq 'ptr @__fas_c_adapter_[[:xdigit:]]+_fas_interop_address_only' "$TMP/program.ll" \
+  || fail "address-only static function did not get an adapter relocation"
+if grep -q 'dso_local' "$TMP/program.ll"; then
+  fail "static function address emitted dso_local"
+fi
 
 for level in 0 2; do
   "$LLVM_OPT" -S "-passes=default<O$level>" "$TMP/program.ll" \

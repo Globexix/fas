@@ -4,6 +4,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include "c_interop_address.h"
 
 static void at_exit_output(void) { puts("exit"); }
 
@@ -13,6 +14,10 @@ static int compare_i32(const void *left, const void *right) {
   memcpy(&a, left, sizeof(a));
   memcpy(&b, right, sizeof(b));
   return (a > b) - (a < b);
+}
+
+static int call_int(int (*function)(int), int value) {
+  return function(value);
 }
 
 int main(void) {
@@ -26,6 +31,13 @@ int main(void) {
   FILE *file;
   long end_position;
   int eof;
+  int (*const functions[2])(int) = {fas_interop_static_helper,
+                                    fas_interop_address_only};
+
+  if (fas_interop_static_helper(1) != 2 ||
+      call_int(fas_interop_static_helper, 41) != 42 ||
+      call_int(functions[0], 8) != 9 || call_int(functions[1], 9) != 18)
+    return 13;
 
   if (memory == NULL) return 1;
   free(memory);
