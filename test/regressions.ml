@@ -9116,3 +9116,215 @@ let () =
   if actual <> expected then failwith ("c-export-matrix:\n" ^ actual);
   assert (headers = [] && errors = []);
   print_endline "C export declaration matrix: passed"
+
+let () =
+  let generate text =
+    C_exports.declarations [] (expect_ok (Sema.check (parse_file "exports.fas" text)))
+  in
+  let widths =
+    [
+      ("i8", "int8_t");
+      ("u8", "uint8_t");
+      ("i16", "int16_t");
+      ("u16", "uint16_t");
+      ("i32", "int32_t");
+      ("u32", "uint32_t");
+      ("i64", "int64_t");
+      ("u64", "uint64_t");
+      ("isize", "ptrdiff_t");
+      ("usize", "size_t");
+      ("bool", "bool");
+      ("addr", "void *");
+    ]
+  in
+  List.iter
+    (fun (fas, c) ->
+      incr checks_run;
+      let value =
+        if fas = "bool" then "true" else if fas = "addr" then "null" else "1"
+      in
+      let text, _, errors =
+        generate
+          (Printf.sprintf
+             "extern \"C\" {\nvar value %s = %s\nfn echo(x %s) %s { return x }\n}\n" fas
+             value fas fas)
+      in
+      assert (errors = []);
+      assert (text = Printf.sprintf "%s echo(%s x);\nextern %s value;\n" c c c))
+    widths;
+  let text, _, errors = generate "extern \"C\" { fn done() void {} }\n" in
+  assert (text = "void done(void);\n" && errors = []);
+  List.iter
+    (fun (source, expected) ->
+      incr checks_run;
+      let text, _, errors = generate source in
+      assert (text = "extern int32_t good;\n" && errors = [ expected ]))
+    [
+      ( "struct Empty {}\n\
+         extern \"C\" {\n\
+         var bad arr[2,Empty] = {{},{}}\n\
+         var good i32 = 1\n\
+         }\n",
+        "export `bad` has no C declaration: arr[2, Empty] contains an empty struct" );
+      ( "struct Zero { x arr[0,u8] }\n\
+         extern \"C\" {\n\
+         var bad Zero = {{}}\n\
+         var good i32 = 1\n\
+         }\n",
+        "export `bad` has no C declaration: Zero contains a zero-length array" );
+    ];
+  let _, _, errors =
+    generate
+      "struct Empty {}\nextern \"C\" {\nvar z Empty = {}\nvar a arr[0,u8] = {}\n}\n"
+  in
+  assert (
+    List.hd errors
+    = "export `a` has no C declaration: arr[0, u8] contains a zero-length array");
+  let header =
+    C_exports.header ~name:"my-api.h" ~headers:[ "#include <api.h>\n" ]
+      "void done(void);\n"
+  in
+  assert (
+    header
+    = "#ifndef FAS_MY_API_H_H\n\
+       #define FAS_MY_API_H_H\n\
+       #include <stdbool.h>\n\
+       #include <stdalign.h>\n\
+       #include <assert.h>\n\
+       #include <stdint.h>\n\
+       #include <stddef.h>\n\
+       #include <api.h>\n\
+       #ifdef __cplusplus\n\
+       extern \"C\" {\n\
+       #endif\n\
+       void done(void);\n\
+       #ifdef __cplusplus\n\
+       }\n\
+       #endif\n\
+       #endif\n");
+  let records =
+    [
+      C_exports.{ name = "Tag"; spelling = "struct Tag"; header = None };
+      C_exports.
+        { name = "Alias"; spelling = "Alias"; header = Some "#include <alias.h>\n" };
+    ]
+  in
+  let hir =
+    expect_ok
+      (Sema.check
+         (parse_file "handles.fas"
+            "opaque Tag\n\
+             opaque Alias\n\
+             extern \"C\" { fn get(x handle[Tag], y handle[Alias]) handle[Alias] { \
+             return y } }\n"))
+  in
+  let text, headers, errors = C_exports.declarations records hir in
+  assert (
+    text = "struct Tag;\nAlias * get(struct Tag * x, Alias * y);\n"
+    && headers = [ "#include <alias.h>\n" ]
+    && errors = []);
+  let root = Filename.temp_file "fas-export-pins-" ".fas" in
+  let h = root ^ ".h" and out = root ^ ".api.h" in
+  let dir = root ^ ".dir" in
+  Unix.mkdir dir 0o700;
+  let angle = Filename.concat dir "types.h" in
+  let write path text =
+    let ch = open_out_bin path in
+    output_string ch text;
+    close_out ch
+  in
+  let read path =
+    let ch = open_in_bin path in
+    let text = really_input_string ch (in_channel_length ch) in
+    close_in ch;
+    text
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun p -> try Sys.remove p with Sys_error _ -> ())
+        [ root; h; out; angle ];
+      Unix.rmdir dir)
+    (fun () ->
+      List.iter
+        (fun source ->
+          write root source;
+          match Driver.run (cli_run [ "--emit-header"; root ]) with
+          | Error [ d ] ->
+              assert (
+                d.Diag.message
+                = "export `bad` has no C declaration: Empty contains an empty struct")
+          | _ -> failwith "c-export-empty-header: expected exact rejection")
+        [ "struct Empty {}\nextern \"C\" { var bad Empty = {} }\n" ];
+      write root "extern \"C\" { var bad arr[0,u8] = {} }\n";
+      (match Driver.run (cli_run [ "--emit-header"; root ]) with
+      | Error [ d ] ->
+          assert (
+            d.Diag.message
+            = "export `bad` has no C declaration: arr[0, u8] contains a zero-length \
+               array")
+      | _ -> failwith "c-export-zero-header: expected exact rejection");
+      write root
+        "use \"C\" <<C\n\
+         int exported(int x);\n\
+         int invoke(void) { return exported(2); }\n\
+         C\n\
+         extern \"C\" { fn exported(x i32) i32 { return x } }\n";
+      ignore (expect_ok (Driver.run (cli_run [ "--emit-header"; root ])));
+      write root
+        "use \"C\" <<C\n\
+         long exported(int x);\n\
+         C\n\
+         extern \"C\" { fn exported(x i32) i32 { return x } }\n";
+      (match Driver.run (cli_run [ "--emit-header"; root ]) with
+      | Error [ d ] ->
+          assert (
+            d.Diag.message = "C compilation failed: conflicting types for 'exported'"
+            && d.primary.line = 2 && d.primary.file = root)
+      | _ -> failwith "c-export-incompatible-prototype: expected mapped Clang rejection");
+      write root
+        "use \"C\" <<C\n\
+         void *missing(void) { return &bad; }\n\
+         C\n\
+         extern \"C\" { var bad arr[0,u8] = {} }\n";
+      (match Driver.run (cli_run [ "--emit-ir"; root ]) with
+      | Error [ d ] ->
+          assert (
+            d.Diag.message = "C compilation failed: use of undeclared identifier 'bad'"
+            && d.primary.line = 2)
+      | _ -> failwith "c-export-omitted-container: expected mapped Clang rejection");
+      write h
+        "#ifndef EXPORT_TYPES_H\n\
+         #define EXPORT_TYPES_H\n\
+         typedef struct { int x; } Alias;\n\
+         struct Tag;\n\
+         #endif\n";
+      let exports =
+        "extern \"C\" {\n\
+         fn exported(x handle[Alias], y handle[Tag]) handle[Alias] { return x }\n\
+         }\n"
+      in
+      write root (Printf.sprintf "use \"C\" %S\n%s" (Filename.basename h) exports);
+      ignore (expect_ok (Driver.run (cli_run [ "--emit-header"; "-o"; out; root ])));
+      let header = read out in
+      assert (contains header (Printf.sprintf "#include %S\n" (Filename.basename h)));
+      assert (
+        contains header "struct Tag;\nAlias * exported(Alias * x, struct Tag * y);\n");
+      assert (
+        String.starts_with
+          ~prefix:("#ifndef FAS_" ^ C_exports.guard (Filename.basename out) ^ "_H\n")
+          header);
+      write angle (read h);
+      write root (Printf.sprintf "use \"C\" <%s>\n%s" "types.h" exports);
+      let header =
+        expect_ok (Driver.run (cli_run [ "--emit-header"; "-I"; dir; root ]))
+      in
+      assert (contains header ("#include <" ^ "types.h" ^ ">\n"));
+      assert (
+        String.starts_with
+          ~prefix:
+            ("#ifndef FAS_"
+            ^ C_exports.guard (Filename.remove_extension (Filename.basename root))
+            ^ "_H\n")
+          header));
+  print_endline "C export spelling, omission, diagnostics and header pins: passed"
