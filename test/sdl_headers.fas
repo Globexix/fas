@@ -64,7 +64,7 @@ fn checksum(pixels addr, pitch i32) u64 {
 }
 
 fn main() i32 {
-    if SDL_Init(32) != 0 { return 1 }
+    if SDL_Init(SDL_INIT_VIDEO) != 0 { return 1 }
     window handle[SDL_Window] = SDL_CreateWindow(c"fas-sdl-fire", 0x1fff0000, 0x1fff0000, 320, 200, 0)
     if window == null {
         SDL_Quit()
