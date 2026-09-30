@@ -8295,6 +8295,25 @@ let () =
      const P arr[1,addr] = {&G}\n\
      fn get[T](x T) addr { return P[0] }\n\
      fn f() addr { return get[i32](0) }\n";
+  semantic_accept "address-constants-c-string-length-context"
+    "const N usize = len(c\"abc\")\nfn f() usize { local arr[N,i32]\nreturn N }\n";
+  semantic_accept "address-constants-length-query-specialization"
+    "var G i32\n\
+     const P arr[2,addr] = {&G,null}\n\
+     const N usize = len(P)\n\
+     const A arr[1,usize] = {len(P)}\n\
+     fn get[T](x T) i32 { switch N { case len(P): return 7 }\n\
+     return 1 }\n\
+     fn f() i32 { return get[i32](0) }\n";
+  let address_length =
+    llvm_of
+      "var G i32\n\
+       const P arr[2,addr] = {&G,null}\n\
+       const N usize = len(P)\n\
+       fn f() usize { return N }\n"
+  in
+  if not (contains address_length "ret i64 2") then
+    failwith "address-constants-length-query: incorrect fixed length";
   semantic_message "address-constants-oob" "array index is out of bounds"
     "var G arr[2,i32]\nvar P addr = &G[2]\n";
   semantic_message "address-constants-scalar-slot"

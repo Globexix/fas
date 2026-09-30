@@ -15,9 +15,9 @@ let error span message = Error [ Diag.error span message ]
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 
 let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
-    ~generic_const_argument ?eval_context ?(eval_globals = []) ?(c_aliases = [])
-    ?(c_unsupported = []) ?(eager_functions = false) ~top_level_bindings ~limits
-    ~type_node_account specializations program =
+    ~generic_const_argument ?eval_context ?(eval_globals = []) ?(array_lengths = [])
+    ?(c_aliases = []) ?(c_unsupported = []) ?(eager_functions = false)
+    ~top_level_bindings ~limits ~type_node_account specializations program =
   let eval_structs, eval_named_types, eval_consts, eval_arrays =
     match eval_context with
     | None -> ([], [], [], [])
@@ -666,8 +666,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                       in
                       let* actual_ty, value =
                         const_expr ~structs:eval_structs ~named_types:eval_named_types
-                          ~globals:global_names ~arrays:eval_arrays eval_consts
-                          (Some ty) expression
+                          ~globals:global_names
+                          ~array_lengths:
+                            (array_lengths
+                            @ static_array_lengths top_level_bindings eval_globals)
+                          ~arrays:eval_arrays eval_consts (Some ty) expression
                       in
                       let* () =
                         ensure_expected actual_ty ty (Ast.expr_span expression)
@@ -1108,8 +1111,12 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                     let* const_ty = source_ty_diag [] parameter.span parameter.ty in
                     let* actual_ty, value =
                       const_expr ~structs:eval_structs ~named_types:eval_named_types
-                        ~globals:global_names ~arrays:eval_arrays (values @ eval_consts)
-                        (Some const_ty) expression
+                        ~globals:global_names
+                        ~array_lengths:
+                          (array_lengths
+                          @ static_array_lengths top_level_bindings eval_globals)
+                        ~arrays:eval_arrays (values @ eval_consts) (Some const_ty)
+                        expression
                     in
                     if not (equal actual_ty const_ty) then
                       error (Ast.expr_span expression) "const argument type mismatch"
@@ -1311,8 +1318,12 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                           in
                           let* actual_ty, value =
                             const_expr ~structs:eval_structs ~globals:global_names
-                              ~named_types:eval_named_types ~arrays:eval_arrays
-                              (values @ eval_consts) (Some const_ty) expression
+                              ~named_types:eval_named_types
+                              ~array_lengths:
+                                (array_lengths
+                                @ static_array_lengths top_level_bindings eval_globals)
+                              ~arrays:eval_arrays (values @ eval_consts) (Some const_ty)
+                              expression
                           in
                           if not (equal actual_ty const_ty) then
                             error (Ast.expr_span expression)
@@ -1646,8 +1657,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           else
             match
               const_expr ~structs:eval_structs ~named_types:eval_named_types
-                ~globals:global_names ~arrays:eval_arrays constant_environment None
-                condition
+                ~globals:global_names
+                ~array_lengths:
+                  (array_lengths @ static_array_lengths top_level_bindings eval_globals)
+                ~arrays:eval_arrays constant_environment None condition
             with
             | Ok (_, value) -> Some (value <> 0L)
             | Error _ -> None

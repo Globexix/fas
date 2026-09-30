@@ -252,8 +252,9 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = []) pro
   let symbolic_names = Sema_static_env.names program.Ast.items in
   let ordinary_program = Sema_static_env.ordinary_program symbolic_names program in
   let* early_consts =
-    Sema_constants.resolve_scalar_declarations ~globals:global_names
-      ~structs:base_structs ~named_types
+    Sema_constants.resolve_scalar_declarations
+      ~array_lengths:(Sema_static_env.source_array_lengths program.Ast.items)
+      ~globals:global_names ~structs:base_structs ~named_types
       ~resolve_type:(fun span ty ->
         source_ty named_types ty
         |> Result.map_error (fun message -> [ Diag.error span message ]))
@@ -264,6 +265,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = []) pro
       ~check_stmt:Sema_check.check_stmt ~check_target:Sema_check.check_target
       ~target_ty:Sema_check.target_ty
       ~generic_const_argument:Sema_check.generic_const_argument
+      ~array_lengths:(Sema_static_env.source_array_lengths program.Ast.items)
       ~eval_context:(base_structs, named_types, early_consts, [])
       ~c_aliases ~c_unsupported ~top_level_bindings ~limits ~type_node_account
       specializations program
@@ -334,12 +336,15 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = []) pro
   let symbolic_names = Sema_static_env.names program.Ast.items in
   let ordinary_program = Sema_static_env.ordinary_program symbolic_names program in
   let* scalar_consts =
-    Sema_constants.resolve_scalar_declarations ~globals:global_names ~structs
-      ~named_types ~resolve_type:source_obj ~strict:true ordinary_program.Ast.items
+    Sema_constants.resolve_scalar_declarations
+      ~array_lengths:(Sema_static_env.source_array_lengths program.Ast.items)
+      ~globals:global_names ~structs ~named_types ~resolve_type:source_obj ~strict:true
+      ordinary_program.Ast.items
   in
   let* consts_ordered, arrays_ordered, arrays_names =
-    Sema_const_env.collect ~global_names ~source_obj ~structs ~named_types
-      ~scalar_consts ordinary_program
+    Sema_const_env.collect
+      ~array_lengths:(Sema_static_env.source_array_lengths program.Ast.items)
+      ~global_names ~source_obj ~structs ~named_types ~scalar_consts ordinary_program
   in
   let* () =
     Sema_invariants.check_const_environment
@@ -360,6 +365,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = []) pro
       ~check_stmt:Sema_check.check_stmt ~check_target:Sema_check.check_target
       ~target_ty:Sema_check.target_ty
       ~generic_const_argument:Sema_check.generic_const_argument
+      ~array_lengths:(Sema_static_env.source_array_lengths program.Ast.items)
       ~eval_context:(structs, named_types, consts_ordered, arrays_ordered)
       ~eval_globals ~c_aliases ~c_unsupported ~eager_functions:true ~top_level_bindings
       ~limits ~type_node_account specializations program
@@ -402,8 +408,10 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = []) pro
     }
   in
   let* globals =
-    Sema_global_env.collect ~source_obj ~structs ~named_types ~consts:consts_ordered
-      ~arrays:arrays_ordered ~global_names
+    Sema_global_env.collect
+      ~array_lengths:(Sema_static_env.source_array_lengths program.Ast.items)
+      ~source_obj ~structs ~named_types ~consts:consts_ordered ~arrays:arrays_ordered
+      ~global_names
       ~address_value:(Sema_static_env.address_value address_context)
       ~readonly_names:symbolic_names
       (Sema_static_env.storage_items symbolic_names program.items)

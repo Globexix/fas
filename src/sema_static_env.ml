@@ -11,6 +11,7 @@ let rec symbolic_expression names = function
       symbolic_expression names x
   | Ast.Binary (_, x, y, _) ->
       symbolic_expression names x || symbolic_expression names y
+  | Ast.Call (Ast.Ident ("len", _), _, _) -> false
   | Ast.Call (x, xs, _) -> List.exists (symbolic_expression names) (x :: xs)
   | Ast.Select (x, args, _) | Ast.Generic_args (x, args, _) ->
       symbolic_expression names x
@@ -112,8 +113,11 @@ let address_value c ty expression =
         let* name, ty, previous = place base in
         let* index = Sema_check.select_value_arg span argument in
         let* index_ty, index =
-          Sema_constants.const_expr ~structs:c.structs ~named_types:c.named_types
-            ~arrays:c.arrays c.consts None index
+          Sema_constants.const_expr
+            ~array_lengths:
+              (Sema_context.static_array_lengths c.top_level_bindings c.globals)
+            ~structs:c.structs ~named_types:c.named_types ~arrays:c.arrays c.consts None
+            index
         in
         match ty with
         | Hir.Array (length, element) when Sema_numeric.is_int index_ty ->
@@ -166,3 +170,13 @@ let address_value c ty expression =
   if not (Hir.ty_equal ty (Hir.expr_ty checked)) then
     error (Ast.expr_span expression) "constant initializer type mismatch"
   else address checked
+
+let source_array_lengths items =
+  let symbolic_names = names items in
+  List.filter_map
+    (function
+      | Ast.Const { name; ty = Ast.Array (length, _); _ }
+        when List.mem name symbolic_names ->
+          Some (name, length)
+      | _ -> None)
+    items

@@ -365,3 +365,14 @@ let require_place_state binding path c span =
 let merge_maps c left right = Sema_flow.merge c.flow left right
 let validate_exit_defers c keep = Sema_flow.validate_exit_defers c.flow keep
 let mark_init binding c = Sema_flow.mark_init binding c.flow
+
+let static_array_lengths bindings declarations =
+  List.filter_map
+    (function
+      | name, Hir.Array (length, _), Ast.Import_const_c
+        when match lookup_top_level name bindings with
+             | Some { declaration_kind = Top_const; _ } -> true
+             | _ -> false ->
+          Some (name, string_of_int length)
+      | _ -> None)
+    declarations

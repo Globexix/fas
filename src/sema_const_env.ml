@@ -5,8 +5,8 @@ module String_set = Set.Make (String)
 let error span message = Error [ Diag.error span message ]
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 
-let collect ?(global_names = []) ~source_obj ~structs ~named_types ~scalar_consts
-    (program : Ast.program) =
+let collect ?(global_names = []) ?(array_lengths = []) ~source_obj ~structs ~named_types
+    ~scalar_consts (program : Ast.program) =
   let consts = ref (List.rev scalar_consts) and arrays = ref [] in
   let consts_names =
     ref (String_set.of_list (List.map (fun (n, _, _) -> n) scalar_consts))
@@ -26,8 +26,8 @@ let collect ?(global_names = []) ~source_obj ~structs ~named_types ~scalar_const
                   | [] -> Ok (List.rev acc)
                   | x :: rest ->
                       let* vt, v =
-                        const_expr ~structs ~named_types ~globals:global_names
-                          ~arrays:!arrays !consts (Some elem) x
+                        const_expr ~array_lengths ~structs ~named_types
+                          ~globals:global_names ~arrays:!arrays !consts (Some elem) x
                       in
                       if equal vt elem then values (v :: acc) rest
                       else error (Ast.expr_span x) "const array element type mismatch"
@@ -39,8 +39,8 @@ let collect ?(global_names = []) ~source_obj ~structs ~named_types ~scalar_const
           | Hir.Array _, _ -> error span "const array needs a brace-list initializer"
           | (Hir.Vec _ as vector_ty), _ ->
               let* actual_ty, values =
-                vector_const_expr ~structs ~named_types ~globals:global_names
-                  ~arrays:!arrays !consts (Some vector_ty) value
+                vector_const_expr ~array_lengths ~structs ~named_types
+                  ~globals:global_names ~arrays:!arrays !consts (Some vector_ty) value
               in
               if equal actual_ty vector_ty then (
                 arrays := (name, vector_ty, values) :: !arrays;
@@ -50,8 +50,8 @@ let collect ?(global_names = []) ~source_obj ~structs ~named_types ~scalar_const
           | _, Ast.Array_lit _ -> error span "brace-list requires an array type"
           | _, _ ->
               let* vt, v =
-                const_expr ~structs ~named_types ~globals:global_names ~arrays:!arrays
-                  !consts (Some t) value
+                const_expr ~array_lengths ~structs ~named_types ~globals:global_names
+                  ~arrays:!arrays !consts (Some t) value
               in
               if equal vt t then (
                 consts := (name, t, v) :: !consts;

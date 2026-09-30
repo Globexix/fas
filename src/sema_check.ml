@@ -266,7 +266,9 @@ let rec check_place (c : context) expr =
   in
   let static_index source =
     match
-      const_expr ~structs:c.structs ~named_types:c.named_types ~arrays:c.arrays
+      const_expr
+        ~array_lengths:(static_array_lengths c.top_level_bindings c.globals)
+        ~structs:c.structs ~named_types:c.named_types ~arrays:c.arrays
         ~globals:(List.map (fun (name, _, _) -> name) c.globals)
         visible_consts None ~validate_dead:false source
     with
@@ -1073,7 +1075,10 @@ and check_call c _expected fn args s =
                         source_ty_diag c.named_types (Ast.expr_span a) cp.Ast.ty
                       in
                       let* vt, v =
-                        const_expr ~structs:c.structs ~named_types:c.named_types
+                        const_expr
+                          ~array_lengths:
+                            (static_array_lengths c.top_level_bindings c.globals)
+                          ~structs:c.structs ~named_types:c.named_types
                           ~globals:(List.map (fun (name, _, _) -> name) c.globals)
                           ~arrays:c.arrays c.consts (Some ct) a
                       in
@@ -1321,7 +1326,9 @@ and check_call c _expected fn args s =
                     c.consts
                 in
                 match
-                  vector_const_expr ~structs:c.structs ~named_types:c.named_types
+                  vector_const_expr
+                    ~array_lengths:(static_array_lengths c.top_level_bindings c.globals)
+                    ~structs:c.structs ~named_types:c.named_types
                     ~globals:(List.map (fun (name, _, _) -> name) c.globals)
                     ~arrays:c.arrays visible_consts None (List.nth args 2)
                 with
@@ -2099,7 +2106,9 @@ and check_stmt (c : context) = function
           | [] -> Ok (List.rev acc)
           | (k, b) :: xs ->
               let* kt, kv =
-                const_expr ~structs:c.structs ~named_types:c.named_types
+                const_expr
+                  ~array_lengths:(static_array_lengths c.top_level_bindings c.globals)
+                  ~structs:c.structs ~named_types:c.named_types
                   ~globals:(List.map (fun (name, _, _) -> name) c.globals)
                   ~arrays:c.arrays c.consts (Some et) k
                 |> Result.map_error (function
