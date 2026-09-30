@@ -9,15 +9,68 @@ let includes =
    #include <stdint.h>\n\
    #include <stddef.h>\n"
 
+let reserved_identifier name =
+  List.mem name
+    (String.split_on_char ' '
+       "auto break case char const continue default do double else enum extern float \
+        for goto if inline int long register restrict return short signed sizeof \
+        static struct switch typedef union unsigned void volatile while _Alignas \
+        _Alignof _Atomic _Bool _Complex _Generic _Imaginary _Noreturn _Static_assert \
+        _Thread_local alignas alignof and and_eq asm bitand bitor bool catch class \
+        compl constexpr const_cast decltype delete dynamic_cast explicit export false \
+        friend mutable namespace new noexcept not not_eq nullptr operator or or_eq \
+        private protected public reinterpret_cast static_assert static_cast template \
+        this thread_local throw true try typeid typename using virtual wchar_t \
+        char16_t char32_t xor xor_eq offsetof NULL size_t ptrdiff_t assert \
+        __bool_true_false_are_defined __alignas_is_defined __alignof_is_defined int8_t \
+        int16_t int32_t int64_t uint8_t uint16_t uint32_t uint64_t int_least8_t \
+        int_least16_t int_least32_t int_least64_t uint_least8_t uint_least16_t \
+        uint_least32_t uint_least64_t int_fast8_t int_fast16_t int_fast32_t \
+        int_fast64_t uint_fast8_t uint_fast16_t uint_fast32_t uint_fast64_t intptr_t \
+        uintptr_t intmax_t uintmax_t max_align_t wchar_t SIZE_MAX INT8_C INT16_C \
+        INT32_C INT64_C UINT8_C UINT16_C UINT32_C UINT64_C INTMAX_C UINTMAX_C \
+        _ASSERT_H _ASSERT_H_DECLS _STDINT_H __ASSERT_FUNCTION __ASSERT_VOID_CAST")
+  || List.mem name
+       (String.split_on_char ' '
+          "INTPTR_MIN INTPTR_MAX UINTPTR_MAX INTMAX_MIN INTMAX_MAX UINTMAX_MAX \
+           PTRDIFF_MIN PTRDIFF_MAX SIG_ATOMIC_MIN SIG_ATOMIC_MAX WCHAR_MIN WCHAR_MAX \
+           WINT_MIN WINT_MAX INT8_MIN INT8_MAX UINT8_MAX INT_LEAST8_MIN INT_LEAST8_MAX \
+           UINT_LEAST8_MAX INT_FAST8_MIN INT_FAST8_MAX UINT_FAST8_MAX INT16_MIN \
+           INT16_MAX UINT16_MAX INT_LEAST16_MIN INT_LEAST16_MAX UINT_LEAST16_MAX \
+           INT_FAST16_MIN INT_FAST16_MAX UINT_FAST16_MAX INT32_MIN INT32_MAX \
+           UINT32_MAX INT_LEAST32_MIN INT_LEAST32_MAX UINT_LEAST32_MAX INT_FAST32_MIN \
+           INT_FAST32_MAX UINT_FAST32_MAX INT64_MIN INT64_MAX UINT64_MAX \
+           INT_LEAST64_MIN INT_LEAST64_MAX UINT_LEAST64_MAX INT_FAST64_MIN \
+           INT_FAST64_MAX UINT_FAST64_MAX")
+
 let declarations ?(reserved = []) records (program : program) =
   let find name = List.find (fun (s : struct_def) -> s.name = name) program.structs in
+  let identifier name =
+    if reserved_identifier name then
+      Some (Printf.sprintf "`%s` is a reserved C or C++ identifier" name)
+    else None
+  in
   let rec invalid = function
-    | Array (0, _) -> Some "a zero-length array"
+    | Array (0, _) -> Some "contains a zero-length array"
     | Array (_, ty) -> invalid ty
     | Struct name ->
         let s = find name in
-        if s.fields = [] then Some "an empty struct"
-        else List.find_map (fun (f : field) -> invalid f.ty) s.fields
+        if s.fields = [] then Some "contains an empty struct"
+        else
+          List.find_map Fun.id
+            (identifier name
+            :: List.map
+                 (fun (f : field) ->
+                   match identifier f.name with
+                   | Some _ as e -> e
+                   | None -> invalid f.ty)
+                 s.fields)
+    | Handle name -> (
+        match List.find_opt (fun r -> r.name = name) records with
+        | Some r when r.header = None && not (String.contains r.spelling ' ') ->
+            Some (Printf.sprintf "`%s` is declared only in a C container" name)
+        | Some _ -> None
+        | None -> identifier name)
     | _ -> None
   in
   let exports =
@@ -36,22 +89,28 @@ let declarations ?(reserved = []) records (program : program) =
         program.funcs
     |> List.sort (fun (a, _, _) (b, _, _) -> String.compare a b)
   in
+  let error (name, types, _) =
+    match identifier name with
+    | Some _ as e -> e
+    | None ->
+        List.find_map
+          (fun ty ->
+            Option.map
+              (fun reason ->
+                if String.starts_with ~prefix:"contains " reason then
+                  ty_name ty ^ " " ^ reason
+                else reason)
+              (invalid ty))
+          types
+  in
   let errors, exports =
-    List.partition
-      (fun (_, types, _) -> Option.is_some (List.find_map invalid types))
-      exports
+    List.partition (fun export -> Option.is_some (error export)) exports
   in
   let errors =
     List.map
-      (fun (name, types, _) ->
-        let ty, reason =
-          List.find_map
-            (fun ty -> Option.map (fun reason -> (ty, reason)) (invalid ty))
-            types
-          |> Option.get
-        in
-        Printf.sprintf "export `%s` has no C declaration: %s contains %s" name
-          (ty_name ty) reason)
+      (fun ((name, _, _) as export) ->
+        Printf.sprintf "export `%s` has no C declaration: %s" name
+          (Option.get (error export)))
       errors
   in
   let lines = ref [] and headers = ref [] and seen = Hashtbl.create 32 in
@@ -147,7 +206,10 @@ let declarations ?(reserved = []) records (program : program) =
         | `Global g -> "extern " ^ declarator g.ty g.name ^ ";\n"
         | `Function f ->
             let params =
-              List.map (fun (p : local) -> declarator p.ty p.name) f.params
+              List.map
+                (fun (p : local) ->
+                  declarator p.ty (if reserved_identifier p.name then "" else p.name))
+                f.params
             in
             base f.ret ^ " " ^ f.name ^ "("
             ^ (if params = [] then "void" else String.concat ", " params)

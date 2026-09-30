@@ -9303,6 +9303,46 @@ let () =
             d.Diag.message = "C compilation failed: use of undeclared identifier 'bad'"
             && d.primary.line = 2)
       | _ -> failwith "c-export-omitted-container: expected mapped Clang rejection");
+      List.iter
+        (fun (source, expected) ->
+          write root ("use \"C\" <<C\nint sentinel(void) { return 1; }\nC\n" ^ source);
+          ignore (expect_ok (Driver.run (cli_run [ "--emit-ir"; root ])));
+          match Driver.run (cli_run [ "--emit-header"; root ]) with
+          | Error [ d ] -> assert (d.Diag.message = expected)
+          | _ -> failwith "c-export-third-run: expected exact rejection")
+        [
+          ( "use \"C\" <<T\n\
+             typedef struct { int x; } Alias;\n\
+             T\n\
+             extern \"C\" { fn echo(x handle[Alias]) handle[Alias] { return x } }\n",
+            "export `echo` has no C declaration: `Alias` is declared only in a C \
+             container" );
+          ( "extern \"C\" { fn unsigned(new i32) i32 { return new } }\n",
+            "export `unsigned` has no C declaration: `unsigned` is a reserved C or C++ \
+             identifier" );
+          ( "struct S { char u8\nclass i32 }\nextern \"C\" { var value S = {1,2} }\n",
+            "export `value` has no C declaration: `char` is a reserved C or C++ \
+             identifier" );
+          ( "struct Inner { class i32 }\n\
+             struct Outer { x arr[1,Inner] }\n\
+             extern \"C\" { var value Outer = {{{1}}} }\n",
+            "export `value` has no C declaration: `class` is a reserved C or C++ \
+             identifier" );
+          ( "struct size_t { x i32 }\nextern \"C\" { var value size_t = {1} }\n",
+            "export `value` has no C declaration: `size_t` is a reserved C or C++ \
+             identifier" );
+        ];
+      write root
+        "extern \"C\" { fn echo(new i32, assert i32) i32 { return new + assert } }\n";
+      let header = expect_ok (Driver.run (cli_run [ "--emit-header"; root ])) in
+      assert (contains header "int32_t echo(int32_t , int32_t );\n");
+      write root
+        "use \"C\" <<C\n\
+         struct Tag;\n\
+         C\n\
+         extern \"C\" { fn echo(x handle[Tag]) handle[Tag] { return x } }\n";
+      let header = expect_ok (Driver.run (cli_run [ "--emit-header"; root ])) in
+      assert (contains header "struct Tag * echo(struct Tag * x);\n");
       write h
         "#ifndef EXPORT_TYPES_H\n\
          #define EXPORT_TYPES_H\n\
