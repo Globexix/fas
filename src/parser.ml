@@ -254,10 +254,32 @@ module P = struct
     mutable depth : int;
     mutable nesting : int;
     mutable block_expression_depth : int option;
+    mutable delimited_depth : int;
   }
 
-  let peek p = p.tokens.(min p.pos (Array.length p.tokens - 1))
-  let peek_n p n = p.tokens.(min (p.pos + n) (Array.length p.tokens - 1))
+  let skip_delimited_newlines p =
+    while
+      p.delimited_depth > 0
+      && p.pos < Array.length p.tokens - 1
+      && p.tokens.(p.pos).Token.kind = Token.Newline
+    do
+      p.pos <- p.pos + 1
+    done
+
+  let peek p =
+    skip_delimited_newlines p;
+    p.tokens.(min p.pos (Array.length p.tokens - 1))
+
+  let peek_n p n =
+    skip_delimited_newlines p;
+    let rec find i remaining =
+      if i >= Array.length p.tokens - 1 then p.tokens.(Array.length p.tokens - 1)
+      else if p.delimited_depth > 0 && p.tokens.(i).Token.kind = Token.Newline then
+        find (i + 1) remaining
+      else if remaining = 0 then p.tokens.(i)
+      else find (i + 1) (remaining - 1)
+    in
+    find p.pos n
 
   let bump p =
     let t = peek p in
@@ -292,6 +314,13 @@ module P = struct
     while at p Token.Newline do
       ignore (bump p)
     done
+
+  let delimited p parse =
+    let previous = p.delimited_depth in
+    p.delimited_depth <- previous + 1;
+    let result = parse () in
+    p.delimited_depth <- previous;
+    result
 
   let end_stmt p =
     if eat p Token.Semi then (
@@ -374,25 +403,28 @@ module P = struct
     | Token.Ident name when Names.type_constructor name = Some Names.Handle ->
         ignore (bump p);
         let* () = expected p Token.Lbracket in
-        let* t = ty p in
-        let* () = expected p Token.Rbracket in
-        Ok (Ast.Handle t)
+        delimited p (fun () ->
+            let* t = ty p in
+            let* () = expected p Token.Rbracket in
+            Ok (Ast.Handle t))
     | Token.Ident name when Names.type_constructor name = Some Names.Array ->
         ignore (bump p);
         let* () = expected p Token.Lbracket in
-        let* n = aggregate_length p in
-        let* () = expected p Token.Comma in
-        let* t = ty p in
-        let* () = expected p Token.Rbracket in
-        Ok (Ast.Array (n, t))
+        delimited p (fun () ->
+            let* n = aggregate_length p in
+            let* () = expected p Token.Comma in
+            let* t = ty p in
+            let* () = expected p Token.Rbracket in
+            Ok (Ast.Array (n, t)))
     | Token.Ident name when Names.type_constructor name = Some Names.Vector ->
         ignore (bump p);
         let* () = expected p Token.Lbracket in
-        let* n = aggregate_length p in
-        let* () = expected p Token.Comma in
-        let* t = ty p in
-        let* () = expected p Token.Rbracket in
-        Ok (Ast.Vec (n, t))
+        delimited p (fun () ->
+            let* n = aggregate_length p in
+            let* () = expected p Token.Comma in
+            let* t = ty p in
+            let* () = expected p Token.Rbracket in
+            Ok (Ast.Vec (n, t)))
     | Token.Ident s when List.mem s Names.scalar_type_names -> (
         ignore (bump p);
         match s with
@@ -417,14 +449,15 @@ module P = struct
     | t -> Error [ Diag.error (span p) ("expected a type, found " ^ Token.show t) ]
 
   and select_payloads p =
-    let rec go acc =
-      let* arg = select_payload p in
-      if eat p Token.Comma then go (arg :: acc)
-      else
-        let* () = expected p Token.Rbracket in
-        Ok (List.rev (arg :: acc))
-    in
-    go []
+    delimited p (fun () ->
+        let rec go acc =
+          let* arg = select_payload p in
+          if eat p Token.Comma then go (arg :: acc)
+          else
+            let* () = expected p Token.Rbracket in
+            Ok (List.rev (arg :: acc))
+        in
+        go [])
 
   and select_payload p =
     match ((peek p).kind, (peek_n p 1).kind) with
@@ -447,14 +480,15 @@ module P = struct
 
   and generic_args p =
     let* () = expected p Token.Lbracket in
-    let rec go acc =
-      let* arg = generic_arg p in
-      if eat p Token.Comma then go (arg :: acc)
-      else
-        let* () = expected p Token.Rbracket in
-        Ok (List.rev (arg :: acc))
-    in
-    go []
+    delimited p (fun () ->
+        let rec go acc =
+          let* arg = generic_arg p in
+          if eat p Token.Comma then go (arg :: acc)
+          else
+            let* () = expected p Token.Rbracket in
+            Ok (List.rev (arg :: acc))
+        in
+        go [])
 
   and generic_arg p =
     match ((peek p).kind, (peek_n p 1).kind) with
@@ -488,6 +522,7 @@ module P = struct
       | Token.Lbracket -> scan (offset + 1) (depth + 1)
       | Token.Rbracket when depth = 1 -> (peek_n p (offset + 1)).kind = Token.Lparen
       | Token.Rbracket when depth > 1 -> scan (offset + 1) (depth - 1)
+      | Token.Newline when depth > 0 -> scan (offset + 1) depth
       | Token.Eof | Token.Newline -> false
       | _ -> scan (offset + 1) depth
     in
@@ -504,7 +539,8 @@ module P = struct
       | Token.Lbracket -> scan (offset + 1) (brackets + 1)
       | Token.Rbracket when brackets > 0 -> scan (offset + 1) (brackets - 1)
       | Token.Rparen when brackets = 0 -> (peek_n p (offset + 1)).kind = Token.Lbrace
-      | Token.Newline | Token.Eof -> false
+      | Token.Newline -> scan (offset + 1) brackets
+      | Token.Eof -> false
       | _ -> scan (offset + 1) brackets
     in
     p.block_expression_depth <> Some p.depth
@@ -615,27 +651,25 @@ module P = struct
     let* () = expected p Token.Assign in
     skip_newlines p;
     let* value =
-      if at p Token.Lbrace then (
+      if at p Token.Lbrace then
         let* () = expected p Token.Lbrace in
-        skip_newlines p;
-        let rec es acc =
-          if at p Token.Rbrace then Ok (List.rev acc)
-          else
-            let* e = expr p in
-            let* () =
-              skip_newlines p;
-              if eat p Token.Comma then (
-                skip_newlines p;
-                Ok ())
-              else if at p Token.Rbrace then Ok ()
+        delimited p (fun () ->
+            let rec es acc =
+              if at p Token.Rbrace then Ok (List.rev acc)
               else
-                Error [ Diag.error (span p) "expected comma between literal elements" ]
+                let* e = expr p in
+                let* () =
+                  if eat p Token.Comma then Ok ()
+                  else if at p Token.Rbrace then Ok ()
+                  else
+                    Error
+                      [ Diag.error (span p) "expected comma between literal elements" ]
+                in
+                es (e :: acc)
             in
-            es (e :: acc)
-        in
-        let* xs = es [] in
-        let* () = expected p Token.Rbrace in
-        Ok (Ast.Array_lit (xs, s)))
+            let* xs = es [] in
+            let* () = expected p Token.Rbrace in
+            Ok (Ast.Array_lit (xs, s)))
       else expr p
     in
     let* () = end_stmt p in
@@ -676,9 +710,10 @@ module P = struct
           Error [ Diag.error at_span ("unknown attribute `@" ^ attr_name ^ "`") ]
         else
           let* () = expected p Token.Lparen in
-          let* n = int_value p in
-          let* () = expected p Token.Rparen in
-          Ok (Some n)
+          delimited p (fun () ->
+              let* n = int_value p in
+              let* () = expected p Token.Rparen in
+              Ok (Some n))
       else Ok None
     in
     let* () = expected p Token.Lbrace in
@@ -688,6 +723,7 @@ module P = struct
       else
         let fs = span p in
         let* n = ident p in
+        skip_newlines p;
         let* t = ty p in
         let* () =
           if eat p Token.Comma then (
@@ -715,54 +751,55 @@ module P = struct
     if not (at p Token.Lbracket) then Ok []
     else
       let* () = expected p Token.Lbracket in
-      let rec go acc =
-        let s = span p in
-        let* n = ident p in
-        let* next =
-          if eat p Token.Kw_const then
-            let* t = ty p in
-            Ok (Ast.Const_param { Ast.name = n; ty = t; span = s })
-          else Ok (Ast.Type_param { name = n; span = s })
-        in
-        if eat p Token.Comma then go (next :: acc)
-        else
-          let* () = expected p Token.Rbracket in
-          Ok (List.rev (next :: acc))
-      in
-      go []
+      delimited p (fun () ->
+          let rec go acc =
+            let s = span p in
+            let* n = ident p in
+            let* next =
+              if eat p Token.Kw_const then
+                let* t = ty p in
+                Ok (Ast.Const_param { Ast.name = n; ty = t; span = s })
+              else Ok (Ast.Type_param { name = n; span = s })
+            in
+            if eat p Token.Comma then go (next :: acc)
+            else
+              let* () = expected p Token.Rbracket in
+              Ok (List.rev (next :: acc))
+          in
+          go [])
 
   and signature p allow_variadic =
     let* () = expected p Token.Lparen in
-    skip_newlines p;
-    let rec params acc variadic =
-      if at p Token.Rparen then
-        let* () = expected p Token.Rparen in
-        let* ret = ty p in
-        Ok (List.rev acc, ret, variadic)
-      else if at p Token.Ellipsis then
-        if not allow_variadic then
-          Error [ Diag.error (span p) "`...` is legal only in extern \"C\"" ]
-        else if acc = [] then
-          Error [ Diag.error (span p) "a variadic declaration needs a fixed parameter" ]
-        else
-          let* () = expected p Token.Ellipsis in
-          let* () = expected p Token.Rparen in
-          let* ret = ty p in
-          Ok (List.rev acc, ret, true)
-      else
-        let ps = span p in
-        let* name = ident p in
-        let* t = ty p in
-        let param : Ast.param = { Ast.name; ty = t; span = ps } in
-        let* () =
-          if eat p Token.Comma then (
-            skip_newlines p;
-            Ok ())
-          else Ok ()
-        in
-        params (param :: acc) variadic
+    let* ps, variadic =
+      delimited p (fun () ->
+          let rec params acc variadic =
+            if at p Token.Rparen then
+              let* () = expected p Token.Rparen in
+              Ok (List.rev acc, variadic)
+            else if at p Token.Ellipsis then
+              if not allow_variadic then
+                Error [ Diag.error (span p) "`...` is legal only in extern \"C\"" ]
+              else if acc = [] then
+                Error
+                  [
+                    Diag.error (span p) "a variadic declaration needs a fixed parameter";
+                  ]
+              else
+                let* () = expected p Token.Ellipsis in
+                let* () = expected p Token.Rparen in
+                Ok (List.rev acc, true)
+            else
+              let ps = span p in
+              let* name = ident p in
+              let* t = ty p in
+              let param : Ast.param = { Ast.name; ty = t; span = ps } in
+              ignore (eat p Token.Comma);
+              params (param :: acc) variadic
+          in
+          params [] false)
     in
-    params [] false
+    let* ret = ty p in
+    Ok (ps, ret, variadic)
 
   and extern_block p =
     let s = span p in
@@ -1201,6 +1238,7 @@ module P = struct
         | Token.Lbracket -> scan (offset + 1) (depth + 1)
         | Token.Rbracket when depth = 1 -> (peek_n p (offset + 1)).kind = Token.Lparen
         | Token.Rbracket when depth > 1 -> scan (offset + 1) (depth - 1)
+        | Token.Newline when depth > 0 -> scan (offset + 1) depth
         | Token.Eof | Token.Newline -> false
         | _ -> scan (offset + 1) depth
       in
@@ -1238,33 +1276,50 @@ module P = struct
     go first
 
   and literal_elements p =
-    let rec elements acc =
-      if at p Token.Rbrace then
-        let* () = expected p Token.Rbrace in
-        Ok (List.rev acc)
-      else
-        let* expression = expr p in
-        let* () =
-          if eat p Token.Comma then Ok ()
-          else if at p Token.Rbrace then Ok ()
-          else Error [ Diag.error (span p) "expected comma between literal elements" ]
+    delimited p (fun () ->
+        let rec elements acc =
+          if at p Token.Rbrace then
+            let* () = expected p Token.Rbrace in
+            Ok (List.rev acc)
+          else
+            let* expression = expr p in
+            let* () =
+              if eat p Token.Comma then Ok ()
+              else if at p Token.Rbrace then Ok ()
+              else
+                Error [ Diag.error (span p) "expected comma between literal elements" ]
+            in
+            elements (expression :: acc)
         in
-        elements (expression :: acc)
-    in
-    elements []
+        elements [])
 
   and args p =
     let* () = expected p Token.Lparen in
-    if eat p Token.Rparen then Ok []
-    else
-      let rec go acc =
-        let* x = expr p in
-        if eat p Token.Comma then go (x :: acc)
+    delimited p (fun () ->
+        if eat p Token.Rparen then Ok []
         else
-          let* () = expected p Token.Rparen in
-          Ok (List.rev (x :: acc))
-      in
-      go []
+          let rec go acc =
+            let* x = expr p in
+            if eat p Token.Comma then go (x :: acc)
+            else
+              let* () = expected p Token.Rparen in
+              Ok (List.rev (x :: acc))
+          in
+          go [])
+
+  and type_argument p =
+    let* () = expected p Token.Lbracket in
+    delimited p (fun () ->
+        let* t = ty p in
+        let* () = expected p Token.Rbracket in
+        Ok t)
+
+  and expression_argument p =
+    let* () = expected p Token.Lparen in
+    delimited p (fun () ->
+        let* e = expr p in
+        let* () = expected p Token.Rparen in
+        Ok e)
 
   and primary p =
     match (peek p).kind with
@@ -1289,15 +1344,17 @@ module P = struct
         let s = span p in
         if starts_struct_literal p then
           let* () = expected p Token.Lparen in
-          let* t = ty p in
-          let* () = expected p Token.Rparen in
+          let* t =
+            delimited p (fun () ->
+                let* t = ty p in
+                let* () = expected p Token.Rparen in
+                Ok t)
+          in
           let* () = expected p Token.Lbrace in
           let* elements = literal_elements p in
           Ok (Ast.Struct_lit (t, elements, s))
         else
-          let* () = expected p Token.Lparen in
-          let* e = expr p in
-          let* () = expected p Token.Rparen in
+          let* e = expression_argument p in
           Ok e
     | Token.Ident n -> (
         let sp = span p in
@@ -1317,39 +1374,30 @@ module P = struct
                 | Names.Bitcast -> Ast.Bitcast
                 | _ -> assert false
               in
-              ignore (bump p);
-              let* t = ty p in
-              let* () = expected p Token.Rbracket in
-              let* () = expected p Token.Lparen in
-              let* e = expr p in
-              let* () = expected p Token.Rparen in
+              let* t = type_argument p in
+              let* e = expression_argument p in
               Ok (Ast.Cast (kind, t, e, sp))
           | None, Token.Lbracket
             when Names.value_operation n = Some Names.Handle_from_addr ->
-              ignore (bump p);
-              let* t = ty p in
-              let* () = expected p Token.Rbracket in
-              let* () = expected p Token.Lparen in
-              let* e = expr p in
-              let* () = expected p Token.Rparen in
+              let* t = type_argument p in
+              let* e = expression_argument p in
               Ok (Ast.Handle_from_addr (t, e, sp))
           | Some ((Names.Sizeof | Names.Alignof | Names.Offsetof) as operation), _ ->
               let* () = expected p Token.Lbracket in
-              let* t = ty p in
-              if operation = Names.Offsetof then
-                let* () = expected p Token.Comma in
-                let* f = ident p in
-                let* () = expected p Token.Rbracket in
-                Ok (Ast.Offsetof (t, f, sp))
-              else
-                let* () = expected p Token.Rbracket in
-                Ok
-                  (if operation = Names.Sizeof then Ast.Sizeof (t, sp)
-                   else Ast.Alignof (t, sp))
+              delimited p (fun () ->
+                  let* t = ty p in
+                  if operation = Names.Offsetof then
+                    let* () = expected p Token.Comma in
+                    let* f = ident p in
+                    let* () = expected p Token.Rbracket in
+                    Ok (Ast.Offsetof (t, f, sp))
+                  else
+                    let* () = expected p Token.Rbracket in
+                    Ok
+                      (if operation = Names.Sizeof then Ast.Sizeof (t, sp)
+                       else Ast.Alignof (t, sp)))
           | Some Names.Splat, Token.Lparen ->
-              ignore (bump p);
-              let* e = expr p in
-              let* () = expected p Token.Rparen in
+              let* e = expression_argument p in
               Ok (Ast.Splat (e, sp))
           | None, Token.Lparen when n = "ptr_add" || n = "ptr_add_bytes" ->
               let message =
@@ -1381,6 +1429,7 @@ let parse ?(limits = Limits.default) source =
               depth = 0;
               nesting = 0;
               block_expression_depth = None;
+              delimited_depth = 0;
             }
           in
           match P.items p with

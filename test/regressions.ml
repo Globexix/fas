@@ -9481,4 +9481,39 @@ let () =
             ^ C_exports.guard (Filename.remove_extension (Filename.basename root))
             ^ "_H\n")
           header));
+  semantic_accept "newline-whitespace-in-delimited-lists"
+    "struct Shape {\n\
+     value\n\
+     i32\n\
+     }\n\
+     const values arr[2,i32] = {\n\
+     1,\n\
+     2\n\
+     }\n\
+     fn identity[T](\n\
+     value T\n\
+     ) T { return value }\n\
+     fn combine(\n\
+     left i32,\n\
+     right i32\n\
+     ) i32 { return (left +\n\
+     right) }\n\
+     fn f() i32 {\n\
+     items arr[\n\
+     2,\n\
+     i32\n\
+     ] = {\n\
+     3,\n\
+     4\n\
+     }\n\
+     return identity[\n\
+     i32\n\
+     ](combine(\n\
+     items[\n\
+     0\n\
+     ],\n\
+     values[\n\
+     1\n\
+     ]))\n\
+     }\n";
   print_endline "C export spelling, omission, diagnostics and header pins: passed"

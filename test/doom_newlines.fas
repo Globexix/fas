@@ -1,0 +1,100 @@
+use "C" <<C
+#include <stdio.h>
+C
+
+struct WeaponInfo {
+    ammo
+    i32
+    upstate
+    i32
+    downstate
+    i32
+    readystate
+    i32
+    atkstate
+    i32
+    flashstate
+    i32
+}
+
+struct SfxInfo {
+    name addr
+    link addr
+}
+
+const rndtable arr[4,u8] = {
+    3,
+    5,
+    7,
+    11
+}
+
+var weaponinfo arr[2,WeaponInfo] = {
+    (WeaponInfo){
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+    },
+    (WeaponInfo){
+        1,
+        11,
+        12,
+        13,
+        17,
+        18
+    }
+}
+
+var sfx arr[2,SfxInfo] = {
+    (SfxInfo){
+        c"pistol",
+        null
+    },
+    (SfxInfo){
+        c"rapid",
+        &sfx[0]
+    }
+}
+
+fn identity[T](value T) T {
+    return value
+}
+
+fn combine(
+    left i32,
+    right i32
+) i32 {
+    return left * 10 + right
+}
+
+extern "C" {
+fn main() i32 {
+    values arr[
+        3,
+        i32
+    ] = {
+        1 +
+            2,
+        4,
+        5
+    }
+    picked u8 = rndtable[
+        1 +
+            1
+    ]
+    result i32 = combine(
+        (values[0] +
+            values[1]),
+        zext[i32](picked)
+    )
+    checked i32 = identity[
+        i32
+    ](result)
+    linked i32 = sfx[1].link == &sfx[0] ? 1 : 0
+    printf(c"%d %d %d %d\n", checked, values[2], weaponinfo[1].atkstate, linked)
+    return 0
+}
+}
