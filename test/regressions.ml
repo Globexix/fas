@@ -45,6 +45,31 @@ let c_import_fixture file =
   in
   (source, C_import.map_declarations ~span:Span.synthetic declarations)
 
+let c_import_macro_fixture ?(c_flags = []) file macro_names =
+  let cwd = Sys.getcwd () in
+  let header =
+    match
+      List.find_opt Sys.file_exists
+        [
+          Filename.concat cwd ("test/c_import/" ^ file);
+          Filename.concat cwd ("c_import/" ^ file);
+        ]
+    with
+    | Some path -> path
+    | None -> failwith ("missing C import fixture " ^ file)
+  in
+  let source = Filename.concat (Filename.dirname header) "probe.fas" in
+  let request =
+    C_import.
+      { spelling = Ast.C_quoted (Filename.basename header); span = Span.synthetic }
+  in
+  let declarations, _, _ =
+    expect_ok
+      (C_import.import ~cc:"clang-22" ~debug:false ~keep:false ~c_flags ~macro_names
+         source [ request ])
+  in
+  (source, C_import.map_declarations ~span:Span.synthetic declarations)
+
 let c_semantic_result ((source, imported) : string * C_import.mapped) text =
   incr checks_run;
   let program =
@@ -9490,6 +9515,95 @@ let () =
     c_matrix "fn probe() i32 { return addr(1) }\n";
   c_semantic_message "c-import-macro-is-foreign-only" "unknown name `FAS_MACRO_ONLY`"
     c_matrix "fn probe() i32 { return FAS_MACRO_ONLY }\n";
+  let c_macros =
+    c_import_macro_fixture "macros.h"
+      [
+        "EOF";
+        "SEEK_END";
+        "FAS_MACRO_UHEX";
+        "FAS_MACRO_LONG";
+        "FAS_MACRO_ENUM";
+        "FAS_MACRO_CHAIN";
+        "FAS_MACRO_STRING";
+        "FAS_MACRO_FUNCTION";
+        "FAS_MACRO_ERRNO";
+        "stdout";
+        "FAS_MACRO_POINTER";
+        "FAS_MACRO_EMPTY";
+        "addr";
+      ]
+  in
+  let macro_program =
+    match c_semantic_result c_macros "fn macro_probe() i32 { return 0 }\n" with
+    | Ok program -> program
+    | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+  in
+  List.iter
+    (fun (name, ty, bits) ->
+      incr checks_run;
+      let bits = if bits < 0L then Int64.logand bits 0xffffffffL else bits in
+      match
+        List.find_opt
+          (fun (constant : Hir.const_def) -> constant.name = name)
+          macro_program.consts
+      with
+      | Some { ty = actual; bits = actual_bits; _ }
+        when actual = ty && actual_bits = bits ->
+          ()
+      | Some { ty = actual; bits = actual_bits; _ } ->
+          failwith
+            (Printf.sprintf "C macro %s: expected %s %Ld, got %s %Ld" name
+               (Hir.ty_name ty) bits (Hir.ty_name actual) actual_bits)
+      | None -> failwith ("C integer macro was not imported: " ^ name))
+    [
+      ("EOF", Hir.Int Hir.I32, -1L);
+      ("SEEK_END", Hir.Int Hir.I32, 2L);
+      ("FAS_MACRO_UHEX", Hir.Int Hir.U32, 3735928559L);
+      ("FAS_MACRO_LONG", Hir.Int Hir.I64, 19L);
+      ("FAS_MACRO_ENUM", Hir.Int Hir.I32, 37L);
+      ("FAS_MACRO_CHAIN", Hir.Int Hir.I32, 41L);
+    ];
+  if
+    not
+      (contains
+         (C_import.manifest_text (snd c_macros))
+         "FAS_MACRO_UHEX\tmacro FAS_MACRO_UHEX\tmacro u32 3735928559")
+  then failwith "integer macro was omitted from the C manifest";
+  List.iter
+    (fun name ->
+      c_semantic_message
+        ("c-import-invisible-macro-" ^ name)
+        ("unknown name `" ^ name ^ "`")
+        c_macros
+        ("fn probe() i32 { return " ^ name ^ " }\n"))
+    [
+      "FAS_MACRO_STRING";
+      "FAS_MACRO_FUNCTION";
+      "FAS_MACRO_ERRNO";
+      "stdout";
+      "FAS_MACRO_POINTER";
+      "FAS_MACRO_EMPTY";
+    ];
+  c_semantic_message "c-import-reserved-macro"
+    "C declaration `addr` is not supported: name is reserved in Fas; call it through a \
+     C container function with another name"
+    c_macros "fn probe() i32 { return addr(1) }\n";
+  let c_from_d =
+    c_import_macro_fixture ~c_flags:[ "-DFAS_FROM_D=19" ] "macros.h" [ "FAS_FROM_D" ]
+  in
+  c_semantic_message "c-import-command-line-macro-is-invisible"
+    "unknown name `FAS_FROM_D`" c_from_d "fn probe() i32 { return FAS_FROM_D }\n";
+  let first_macro =
+    c_import_macro_fixture "macros_conflict_first.h" [ "FAS_MACRO_CONFLICT" ]
+  and second_macro =
+    c_import_macro_fixture "macros_conflict_second.h" [ "FAS_MACRO_CONFLICT" ]
+  in
+  let macro_conflict =
+    (fst first_macro, C_import.merge_imports [ snd first_macro; snd second_macro ])
+  in
+  c_semantic_message "c-import-macro-conflict"
+    "C declaration `FAS_MACRO_CONFLICT` is not supported: conflicting C declarations"
+    macro_conflict "fn probe() i32 { return FAS_MACRO_CONFLICT }\n";
   List.iter
     (fun (name, output, file, line, column, notes) ->
       incr checks_run;

@@ -662,7 +662,7 @@ let render_program program =
   text "\n";
   Buffer.contents buffer
 
-let fold_expanded_nodes ~limit program =
+let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
   let total = ref 0 in
   let failed = ref None in
   let count span =
@@ -688,13 +688,16 @@ let fold_expanded_nodes ~limit program =
     | Const_arg e ->
         count at;
         go_expr e
-    | Name_arg (_, span) -> count span
+    | Name_arg (name, span) ->
+        identifiers := name :: !identifiers;
+        count span
   and go_expr e =
     if !failed = None then (
       let at = expr_span e in
       count at;
       match e with
-      | Int_lit _ | Bool_lit _ | Null _ | String_lit _ | Ident _ -> ()
+      | Ident (name, _) -> identifiers := name :: !identifiers
+      | Int_lit _ | Bool_lit _ | Null _ | String_lit _ -> ()
       | Unary (_, x, _) -> go_expr x
       | Binary (_, l, r, _) ->
           go_expr l;
@@ -728,7 +731,9 @@ let fold_expanded_nodes ~limit program =
           go_ty at ty;
           List.iter go_expr xs)
   and go_target = function
-    | Target_ident (_, span) -> count span
+    | Target_ident (name, span) ->
+        identifiers := name :: !identifiers;
+        count span
     | Target_select (a, args) ->
         let at = expr_span a in
         count at;
@@ -812,6 +817,24 @@ let fold_expanded_nodes ~limit program =
   (!total, !failed)
 
 let count_expanded_nodes program = fst (fold_expanded_nodes ~limit:max_int program)
+
+let unresolved_names program =
+  let identifiers = ref [] in
+  let declaration name =
+    List.exists
+      (function
+        | Const { name = declared; _ }
+        | Global { name = declared; _ }
+        | Struct { name = declared; _ }
+        | Opaque { name = declared; _ }
+        | Func { name = declared; _ } ->
+            declared = name
+        | Use _ -> false)
+      program.items
+  in
+  ignore (fold_expanded_nodes ~identifiers ~limit:max_int program);
+  List.sort_uniq String.compare !identifiers
+  |> List.filter (fun name -> not (declaration name))
 
 let check_expanded_nodes ~limits program =
   if limits.Limits.max_ast_nodes < 0 then

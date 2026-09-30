@@ -718,13 +718,18 @@ let run_unprotected ?header_output config =
           let _, _, cc = tools () in
           let imported = ref [] in
           let c_units = ref [] in
+          let macro_names =
+            Ast.unresolved_names program
+            |> List.filter (fun name -> Option.is_none (Names.value_operation name))
+          in
           let* () =
             let rec import = function
               | [] -> Ok ()
               | (source, headers) :: rest ->
                   let* declarations, kept, artifacts =
                     C_import.import ~cc ~debug:config.Cli.debug ~keep:config.Cli.keep
-                      ~retain:true ~c_flags:config.Cli.c_flags source headers
+                      ~retain:true ~c_flags:config.Cli.c_flags ~macro_names source
+                      headers
                   in
                   c_artifacts := artifacts @ !c_artifacts;
                   let mapped =

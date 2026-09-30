@@ -32,4 +32,21 @@ for level in 0 2; do
     || fail "Fas and C oracle outputs differ at -O$level"
 done
 
+cat >"$C_IMPORT_TMP/lazy.fas" <<'FAS'
+use "C" <string.h>
+fn main() i32 { return strlen(c"") > 0 ? 1 : 0 }
+FAS
+REAL_CC=$(command -v "$CC")
+cat >"$C_IMPORT_TMP/count-clang" <<'SH'
+#!/bin/sh
+case " $* " in
+  *" -dD "*|*" -emit-llvm "*) printf '%s\n' "$*" >>"$MACRO_LOG" ;;
+esac
+exec "$REAL_CC" "$@"
+SH
+chmod +x "$C_IMPORT_TMP/count-clang"
+CC="$C_IMPORT_TMP/count-clang" REAL_CC="$REAL_CC" MACRO_LOG="$C_IMPORT_TMP/macros.log" \
+  "$OCAML_FAS" --emit-ir "$C_IMPORT_TMP/lazy.fas" >"$C_IMPORT_TMP/lazy.ir"
+[ ! -e "$C_IMPORT_TMP/macros.log" ] || fail "resolved C function triggered a macro scan"
+
 echo "c_import: O0/O2 verified and linked through L1: ok"

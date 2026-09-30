@@ -20,5 +20,8 @@
   c_import/sizes.h
   c_import/stat.h
   c_import/namespaces.h
+  c_import/macros.h
+  c_import/macros_conflict_first.h
+  c_import/macros_conflict_second.h
   c_import/provenance_first.h
   c_import/provenance_second.h))

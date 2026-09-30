@@ -1,0 +1,1 @@
+#define FAS_MACRO_CONFLICT 2

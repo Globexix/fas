@@ -111,15 +111,225 @@ let error_span (headers : header list) line =
   | None -> (List.hd headers).span
   | Some header -> header.span
 
-let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) source headers =
+let macro_definitions text names =
+  let wanted = Hashtbl.create 16 and definitions = Hashtbl.create 16 in
+  List.iter (fun name -> Hashtbl.replace wanted name ()) names;
+  let real_file = ref false in
+  let take prefix line =
+    if not (String.starts_with ~prefix line) then None
+    else
+      let start = String.length prefix and stop = ref (String.length prefix) in
+      while
+        !stop < String.length line
+        &&
+        match line.[!stop] with
+        | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' -> true
+        | _ -> false
+      do
+        incr stop
+      done;
+      if !stop = start then None
+      else
+        Some
+          ( String.sub line start (!stop - start),
+            !stop < String.length line && line.[!stop] = '(' )
+  in
+  String.split_on_char '\n' text
+  |> List.iter (fun line ->
+      if String.starts_with ~prefix:"# " line then
+        real_file :=
+          match String.index_opt line '"' with
+          | None -> false
+          | Some first -> (
+              match String.index_from_opt line (first + 1) '"' with
+              | Some last ->
+                  not
+                    (String.starts_with ~prefix:"<"
+                       (String.sub line (first + 1) (last - first - 1)))
+              | None -> false)
+      else if !real_file then
+        match take "#define " line with
+        | Some (name, function_like) when Hashtbl.mem wanted name ->
+            Hashtbl.replace definitions name function_like
+        | _ -> (
+            match take "#undef " line with
+            | Some (name, _) -> Hashtbl.remove definitions name
+            | None -> ()));
+  List.filter_map
+    (fun name ->
+      Option.map (fun kind -> (name, kind)) (Hashtbl.find_opt definitions name))
+    names
+
+let macro_type = function
+  | (1 | 2) as code ->
+      Some ((if code = 1 then "signed char" else "unsigned char"), 8, code = 2)
+  | (3 | 4) as code ->
+      Some ((if code = 3 then "short" else "unsigned short"), 16, code = 4)
+  | (5 | 6) as code -> Some ((if code = 5 then "int" else "unsigned int"), 32, code = 6)
+  | (7 | 8) as code ->
+      Some ((if code = 7 then "long" else "unsigned long"), 64, code = 8)
+  | (9 | 10) as code ->
+      Some ((if code = 9 then "long long" else "unsigned long long"), 64, code = 10)
+  | 11 -> Some ("_Bool", 8, true)
+  | 12 -> Some ("char", 8, false)
+  | _ -> None
+
+let macro_probe_types =
+  "signed char:1, unsigned char:2, short:3, unsigned short:4, int:5, "
+  ^ "unsigned int:6, long:7, unsigned long:8, long long:9, "
+  ^ "unsigned long long:10, _Bool:11, char:12, default:0"
+
+let llvm_integer ir name =
+  let key = "@" ^ name in
+  String.split_on_char '\n' ir
+  |> List.find_map (fun line ->
+      if Option.is_none (find_text line key 0) then None
+      else
+        let rec value = function
+          | "constant" :: ty :: literal :: _ when String.starts_with ~prefix:"i" ty ->
+              let literal = String.trim literal in
+              Some
+                ( ty,
+                  if String.ends_with ~suffix:"," literal then
+                    String.sub literal 0 (String.length literal - 1)
+                  else literal )
+          | _ :: rest -> value rest
+          | [] -> None
+        in
+        value (String.split_on_char ' ' line |> List.filter (( <> ) "")))
+
+let fas_macro_value width unsigned literal =
+  let value = Int64.of_string literal in
+  if unsigned && width < 64 then
+    Int64.logand value (Int64.sub (Int64.shift_left 1L width) 1L) |> Int64.to_string
+  else if unsigned && value < 0L then Printf.sprintf "0x%Lx" value
+  else Int64.to_string value
+
+let macro_probe_source path stem candidates =
+  let out = open_out_bin path in
+  Fun.protect
+    ~finally:(fun () -> close_out_noerr out)
+    (fun () ->
+      Printf.fprintf out "#include %S\n" stem;
+      List.iteri
+        (fun i (name, _) ->
+          let prefix = "__fas_mv_" ^ Digest.to_hex (Digest.string stem) ^ "_" in
+          Printf.fprintf out
+            "static const __typeof__((%s)) %s%d __attribute__((used)) = (%s);\n\
+             static const int %st_%d __attribute__((used)) = _Generic((%s), %s);\n"
+            name prefix i name prefix i name macro_probe_types)
+        candidates)
+
+let imported_macro_nodes ~cc ~c_flags ~source ~unit_path ~paths ~macro_names =
+  if macro_names = [] then Ok []
+  else
+    let common =
+      [ "-x"; "c"; "--target=x86_64-unknown-linux-gnu" ]
+      @ c_flags
+      @ [ "-iquote"; Filename.dirname source ]
+    in
+    let pp = Array.of_list ([ cc; "-E"; "-dD" ] @ common @ [ unit_path ]) in
+    match Process.run pp with
+    | Error e -> Error e.stderr
+    | Ok (text, _) ->
+        let definitions = macro_definitions text macro_names in
+        let candidates = List.filter (fun (_, fn) -> not fn) definitions in
+        let probe = Filename.temp_file "fas-c-macro-probe-" ".c" in
+        paths := probe :: !paths;
+        let prefix = "__fas_mv_" ^ Digest.to_hex (Digest.string unit_path) ^ "_" in
+        let run xs =
+          macro_probe_source probe unit_path xs;
+          let argv =
+            Array.of_list
+              ([ cc; "-S"; "-emit-llvm"; "-o"; "-" ]
+              @ common
+              @ [ "-Wno-implicit-function-declaration"; "-Wno-int-conversion"; probe ])
+          in
+          match Process.run argv with
+          | Ok (ir, _) -> Ok (ir, xs)
+          | Error e ->
+              let bad =
+                String.split_on_char '\n' e.stderr
+                |> List.filter_map (fun line ->
+                    Option.bind (error_location line) (fun (file, n, _) ->
+                        if file = probe && n >= 2 then
+                          Option.map fst (List.nth_opt xs ((n - 2) / 2))
+                        else None))
+                |> List.sort_uniq compare
+              in
+              if bad = [] then Error e.stderr
+              else Error ("bad macros: " ^ String.concat "\n" bad)
+        in
+        let probed =
+          match run candidates with
+          | Error message when String.starts_with ~prefix:"bad macros: " message ->
+              let bad =
+                String.sub message 12 (String.length message - 12)
+                |> String.split_on_char '\n'
+              in
+              run (List.filter (fun (name, _) -> not (List.mem name bad)) candidates)
+          | result -> result
+        in
+        Result.map
+          (fun (ir, candidates) ->
+            let integer (i, (name, _)) =
+              match
+                ( llvm_integer ir (prefix ^ string_of_int i),
+                  llvm_integer ir (prefix ^ "t_" ^ string_of_int i) )
+              with
+              | Some (ty, literal), Some (_, id) when String.starts_with ~prefix:"i" ty
+                ->
+                  let width =
+                    int_of_string_opt (String.sub ty 1 (String.length ty - 1))
+                  in
+                  Option.bind width (fun width ->
+                      Option.bind (int_of_string_opt id) (fun id ->
+                          Option.bind (macro_type id) (fun (c_ty, bits, unsigned) ->
+                              if width <> bits then None
+                              else
+                                Some (name, c_ty, fas_macro_value bits unsigned literal))))
+              | _ -> None
+            in
+            let imported =
+              List.filter_map integer (List.mapi (fun i item -> (i, item)) candidates)
+            in
+            let node kind name extra =
+              C_import_json.Obj
+                (("kind", C_import_json.Str kind)
+                :: ("name", C_import_json.Str name)
+                :: extra)
+            in
+            List.map
+              (fun (name, ty, value) ->
+                node "FasIntegerMacro" name
+                  [
+                    ("macroType", C_import_json.Str ty);
+                    ("value", C_import_json.Str value);
+                  ])
+              imported
+            @ List.filter_map
+                (fun (name, _) ->
+                  if List.exists (fun (n, _, _) -> n = name) imported then None
+                  else Some (node "FasInvisibleMacro" name []))
+                definitions)
+          probed
+
+let has_c_name name node =
+  C_import_json.field "kind" node = Some (C_import_json.Str "FunctionDecl")
+  && C_import_json.field "name" node = Some (C_import_json.Str name)
+
+let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) ?(macro_names = []) source
+    headers =
   let unit_path = Filename.temp_file "fas-c-import-" ".c" in
   let json_path = Filename.temp_file "fas-c-import-" ".json" in
   let fragment_paths = ref [] in
+  let macro_paths = ref [] in
   let completed = ref false in
   let cleanup () =
     let remove path = try Sys.remove path with Sys_error _ -> () in
     if (not keep) && ((not retain) || not !completed) then
       List.iter remove (unit_path :: !fragment_paths);
+    List.iter remove !macro_paths;
     remove json_path
   in
   Fun.protect ~finally:cleanup (fun () ->
@@ -223,19 +433,35 @@ let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) source headers =
             match Process.run layout_argv with
             | Error failure ->
                 Error [ compilation_error (List.hd headers).span failure.stderr ]
-            | Ok (layouts, _) ->
-                completed := true;
-                Ok
-                  ( declarations
-                    @ [
-                        C_import_json.Obj
-                          [
-                            ("kind", C_import_json.Str "FasLayoutDump");
-                            ("value", C_import_json.Str layouts);
-                          ];
-                      ],
-                    (if keep then Some (unit_path :: List.rev !fragment_paths) else None),
-                    if retain then unit_path :: List.rev !fragment_paths else [] )
+            | Ok (layouts, _) -> (
+                let macro_names =
+                  List.filter
+                    (fun name -> not (List.exists (has_c_name name) declarations))
+                    macro_names
+                in
+                match
+                  imported_macro_nodes ~cc ~c_flags ~source ~unit_path
+                    ~paths:macro_paths ~macro_names
+                with
+                | Error message ->
+                    Error
+                      [
+                        Diag.error (List.hd headers).span
+                          ("internal error: C macro import failed: " ^ message);
+                      ]
+                | Ok macros ->
+                    completed := true;
+                    Ok
+                      ( declarations
+                        @ C_import_json.Obj
+                            [
+                              ("kind", C_import_json.Str "FasLayoutDump");
+                              ("value", C_import_json.Str layouts);
+                            ]
+                          :: macros,
+                        (if keep then Some (unit_path :: List.rev !fragment_paths)
+                         else None),
+                        if retain then unit_path :: List.rev !fragment_paths else [] ))
           with Failure message ->
             Error
               [
@@ -764,6 +990,26 @@ let map_declarations ?(container = false) ~span declarations =
   let nodes =
     C_import_json.array (C_import_json.Arr declarations)
     |> List.filter (fun node -> string "kind" node <> Some "FasLayoutDump")
+  in
+  let macro_shadow_names =
+    List.filter_map
+      (fun node ->
+        match string "kind" node with
+        | Some ("FasIntegerMacro" | "FasInvisibleMacro") -> string "name" node
+        | _ -> None)
+      nodes
+  in
+  let nodes =
+    List.filter
+      (fun node ->
+        match string "kind" node with
+        | Some ("FasIntegerMacro" | "FasInvisibleMacro") -> true
+        | _ ->
+            not
+              (List.mem
+                 (Option.value ~default:"" (record_name node))
+                 macro_shadow_names))
+      nodes
   in
   let records = Hashtbl.create 64
   and record_ids = Hashtbl.create 64
@@ -1360,12 +1606,37 @@ let map_declarations ?(container = false) ~span declarations =
       let name = Option.value ~default:"" (string "name" node) in
       let kind = string "kind" node in
       match (kind, name) with
+      | Some "FasIntegerMacro", name when name <> "" -> (
+          let macro_type = string "macroType" node and value = string "value" node in
+          match (macro_type, value, int_type (Option.value ~default:"" macro_type)) with
+          | Some _, Some value, Some ty ->
+              let macro_span = span in
+              let expression =
+                if String.starts_with ~prefix:"-" value then
+                  Ast.Unary
+                    ( Ast.Neg,
+                      Ast.Int_lit
+                        (String.sub value 1 (String.length value - 1), macro_span),
+                      macro_span )
+                else Ast.Int_lit (value, macro_span)
+              in
+              add_item name ("macro " ^ name)
+                ("macro " ^ Ast.type_name ty ^ " " ^ value)
+                (Some (Ast.Const { name; ty; value = expression; span = macro_span }))
+                (None, None) [] None ()
+          | _ -> ())
       | Some "RecordDecl", _ -> ()
       | Some "EnumDecl", _ ->
           let previous_value = ref None in
           List.iter
             (fun child ->
-              if string "kind" child = Some "EnumConstantDecl" then
+              if
+                string "kind" child = Some "EnumConstantDecl"
+                && not
+                     (List.mem
+                        (Option.value ~default:"" (record_name child))
+                        macro_shadow_names)
+              then
                 match (string "name" child, c_type_name child) with
                 | Some constant, Some _ -> (
                     let underlying =
