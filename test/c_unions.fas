@@ -1,0 +1,35 @@
+use "C" "c_unions.h"
+use "C" <<UNION_IMPL
+#include <stdio.h>
+
+void fas_union_fill(union FasPhase23Union *value) {
+  for (unsigned i = 0; i < 8; ++i) value->bytes[i] = (uint8_t)(i + 1);
+}
+
+void fas_union_report(uint32_t word, uint8_t high) {
+  printf("%u %u\n", word, (unsigned)high);
+}
+
+void fas_union_read_after_write(const union FasPhase23Union *value) {
+  printf("%u %u\n", (unsigned)value->bytes[0], (unsigned)value->bytes[3]);
+}
+
+void fas_union_check_table(const union FasPhase23Union *table) {
+  printf("%u %u %u %u\n", table[0].word, (unsigned)table[0].bytes[4],
+         table[1].word, (unsigned)table[1].bytes[4]);
+}
+UNION_IMPL
+
+const fas_phase23_table arr[2, FasPhase23Union] = {
+  {0x11223344}, {0x55667788}
+}
+
+fn main() i32 {
+  value FasPhase23Union = {0}
+  fas_union_fill(&value)
+  fas_union_report(value.word, value.bytes[7])
+  value.word = 0x76543210
+  fas_union_read_after_write(&value)
+  fas_union_check_table(&fas_phase23_table[0])
+  return 0
+}
