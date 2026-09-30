@@ -89,6 +89,78 @@ let add_include_chains chains diagnostics =
       { diagnostic with Diag.notes = diagnostic.notes @ notes })
     diagnostics
 
+let c_export_diagnostic (program : Ast.program) message =
+  let tick_values text =
+    let rec collect index acc =
+      match String.index_from_opt text index '`' with
+      | None -> List.rev acc
+      | Some start -> (
+          match String.index_from_opt text (start + 1) '`' with
+          | None -> List.rev acc
+          | Some stop ->
+              collect (stop + 1) (String.sub text (start + 1) (stop - start - 1) :: acc)
+          )
+    in
+    collect 0 []
+  in
+  let export_name = List.hd (tick_values message) in
+  let export =
+    List.find_map
+      (function
+        | Ast.Global { name; ty; linkage = Ast.Export_c; init = Some _; span }
+          when name = export_name ->
+            Some (span, [ ty ])
+        | Ast.Func { name; params; ret; linkage = Ast.External_c; body; span; _ }
+          when name = export_name && body <> Ast.Declaration ->
+            Some (span, ret :: List.map (fun (param : Ast.param) -> param.ty) params)
+        | _ -> None)
+      program.items
+  in
+  let primary, types = Option.value ~default:(Span.synthetic, []) export in
+  let field_note =
+    match tick_values message with
+    | _ :: offending :: _
+      when String.ends_with ~suffix:"is a reserved C or C++ identifier" message ->
+        let structs =
+          List.filter_map
+            (function
+              | Ast.Struct { name; fields; _ } -> Some (name, fields) | _ -> None)
+            program.items
+        in
+        let rec find visited = function
+          | Ast.Named_type name when not (List.mem name visited) ->
+              Option.bind (List.assoc_opt name structs) (fun fields ->
+                  match
+                    List.find_opt
+                      (fun (field : Ast.field) -> field.Ast.name = offending)
+                      fields
+                  with
+                  | Some (field : Ast.field) -> Some field.Ast.span
+                  | None ->
+                      List.find_map
+                        (fun (field : Ast.field) -> find (name :: visited) field.Ast.ty)
+                        fields)
+          | Ast.Applied_type (name, args, _) -> (
+              let from_fields = find visited (Ast.Named_type name) in
+              match
+                List.find_map
+                  (function Ast.Type_arg ty -> find visited ty | _ -> None)
+                  args
+              with
+              | Some _ as found -> found
+              | None -> from_fields)
+          | Ast.Array (_, ty) | Ast.Vec (_, ty) | Ast.Handle ty -> find visited ty
+          | _ -> None
+        in
+        Option.map
+          (fun span ->
+            Printf.sprintf "offending field `%s` is declared here: %s" offending
+              (Span.to_string span))
+          (List.find_map (find []) types)
+    | _ -> None
+  in
+  Diag.error ?notes:(Option.map (fun note -> [ note ]) field_note) primary message
+
 let load_program ~limits root =
   let loaded = Hashtbl.create 16 in
   let chains = Hashtbl.create 16 in
@@ -753,7 +825,7 @@ let run_unprotected ?header_output config =
           in
           let* () =
             match (config.Cli.emit, declaration_errors) with
-            | Cli.Header, message :: _ -> Error [ Diag.error Span.synthetic message ]
+            | Cli.Header, message :: _ -> Error [ c_export_diagnostic program message ]
             | _ -> Ok ()
           in
           let* ir = Lower.lower hir in

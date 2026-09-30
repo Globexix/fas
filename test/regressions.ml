@@ -9386,6 +9386,22 @@ let () =
         contains nested "#include <types.h>\n"
         && contains nested "NestedAlias * echo(NestedAlias * x);\n");
 
+      write root "struct S { char u8 }\nextern \"C\" { var value S = {1} }\n";
+      (match Driver.run (cli_run [ "--emit-header"; root ]) with
+      | Error [ d ] ->
+          assert (
+            d.Diag.message
+            = "export `value` has no C declaration: `char` is a reserved C or C++ \
+               identifier"
+            && d.primary.Span.file = root && d.primary.Span.line = 2
+            && d.primary.Span.column = 14
+            && d.notes
+               = [
+                   Printf.sprintf "offending field `char` is declared here: %s:1:12"
+                     root;
+                 ])
+      | _ -> failwith "c-export-field-span: expected exact rejection location");
+
       assert (
         String.starts_with
           ~prefix:
