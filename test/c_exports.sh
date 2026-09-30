@@ -15,19 +15,27 @@ TMPDIR="$EXPORT_TMP" "$OCAML_FAS" --emit-header --keep -o "$EXPORT_TMP/headers/k
 if grep -E 'kept C object|kept intermediate' "$EXPORT_TMP/header-keep.log"; then exit 1; fi
 grep -F -- '-fsyntax-only' "$EXPORT_TMP/header-keep.log" >/dev/null
 "$OCAML_FAS" --emit-header -o "$EXPORT_TMP/headers/scalars.h" "$ROOT/test/c_exports/scalars.fas"
+"$OCAML_FAS" --emit-header -o "$EXPORT_TMP/headers/plain.h" "$ROOT/test/c_exports/plain.fas"
+"$OCAML_FAS" --emit-header -o "$EXPORT_TMP/headers/layout.h" "$ROOT/test/c_exports/layout.fas"
 printf '#include "scalars.h"\n#include "scalars.h"\n' >"$EXPORT_TMP/scalars.c"
 printf '#include "api.h"\n#include "api.h"\n' >"$EXPORT_TMP/header.c"
+printf '#include "kept.h"\n#include "kept.h"\n' >"$EXPORT_TMP/kept.c"
+printf '#include "plain.h"\n#include "layout.h"\n' >"$EXPORT_TMP/standard.c"
 "$CC" -std=c11 -Wall -Wextra -Werror -pedantic -I"$EXPORT_TMP/headers" -fsyntax-only "$EXPORT_TMP/scalars.c"
 "$CXX" -x c++ -std=c++17 -Wall -Wextra -Werror -I"$EXPORT_TMP/headers" -fsyntax-only "$EXPORT_TMP/scalars.c"
+"$CC" -std=c11 -Wall -Wextra -Werror -pedantic -I"$EXPORT_TMP/headers" -fsyntax-only "$EXPORT_TMP/standard.c"
+"$CXX" -x c++ -std=c++17 -Wall -Wextra -Werror -I"$EXPORT_TMP/headers" -fsyntax-only "$EXPORT_TMP/standard.c"
 VECTOR_PEDANTIC=-pedantic
-if ! "$CC" -std=c11 -Wall -Wextra -Werror -pedantic -I"$EXPORT_TMP/headers" -fsyntax-only "$EXPORT_TMP/header.c" >"$EXPORT_TMP/vector-gate.log" 2>&1; then
-    cat "$EXPORT_TMP/vector-gate.log"
-    if ! grep -E 'ext_vector_type|vector.*extension' "$EXPORT_TMP/vector-gate.log" >/dev/null; then exit 1; fi
-    "$CC" -std=c11 -Wall -Wextra -Werror -I"$EXPORT_TMP/headers" -fsyntax-only "$EXPORT_TMP/header.c"
-    VECTOR_PEDANTIC=
-    echo 'c_exports: vector header requires the approved non-pedantic gate'
-fi
-"$CXX" -x c++ -std=c++17 -Wall -Wextra -Werror -I"$EXPORT_TMP/headers" -fsyntax-only "$EXPORT_TMP/header.c"
+for header_source in header.c kept.c; do
+    if ! "$CC" -std=c11 -Wall -Wextra -Werror -pedantic -I"$EXPORT_TMP/headers" -fsyntax-only "$EXPORT_TMP/$header_source" >"$EXPORT_TMP/vector-gate.log" 2>&1; then
+        cat "$EXPORT_TMP/vector-gate.log"
+        if ! grep -E 'ext_vector_type|vector.*extension' "$EXPORT_TMP/vector-gate.log" >/dev/null; then exit 1; fi
+        "$CC" -std=c11 -Wall -Wextra -Werror -I"$EXPORT_TMP/headers" -fsyntax-only "$EXPORT_TMP/$header_source"
+        VECTOR_PEDANTIC=
+        echo 'c_exports: vector header requires the approved non-pedantic gate'
+    fi
+    "$CXX" -x c++ -std=c++17 -Wall -Wextra -Werror -I"$EXPORT_TMP/headers" -fsyntax-only "$EXPORT_TMP/$header_source"
+done
 "$OCAML_FAS" --emit-llvm "$ROOT/test/c_exports/library.fas" >"$EXPORT_TMP/library.ll"
 "$LLVM_OPT" -passes=verify "$EXPORT_TMP/library.ll" -disable-output
 "$LLVM_OPT" -passes='default<O2>' -verify-each "$EXPORT_TMP/library.ll" -S -o "$EXPORT_TMP/library-o2.ll"

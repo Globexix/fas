@@ -2,12 +2,32 @@ open Hir
 
 type record = { name : string; spelling : string; header : string option }
 
-let includes =
-  "#include <stdbool.h>\n\
-   #include <stdalign.h>\n\
-   #include <assert.h>\n\
-   #include <stdint.h>\n\
-   #include <stddef.h>\n"
+let includes declarations =
+  let tokens =
+    String.map
+      (function
+        | ' ' | '\t' | '\r' | '\n' | '*' | '(' | ')' | ',' | ';' | '[' | ']' -> ' '
+        | c -> c)
+      declarations
+    |> String.split_on_char ' '
+  in
+  let uses name = List.mem name tokens in
+  let any names = List.exists uses names in
+  [
+    ("stdbool.h", uses "bool");
+    ("stdalign.h", any [ "alignas"; "alignof" ]);
+    ("assert.h", uses "static_assert");
+    ( "stdint.h",
+      List.exists
+        (fun width ->
+          uses ("int" ^ string_of_int width ^ "_t")
+          || uses ("uint" ^ string_of_int width ^ "_t"))
+        [ 8; 16; 32; 64 ] );
+    ("stddef.h", any [ "size_t"; "ptrdiff_t"; "offsetof" ]);
+  ]
+  |> List.filter_map (fun (header, needed) ->
+      if needed then Some ("#include <" ^ header ^ ">\n") else None)
+  |> String.concat ""
 
 let reserved_identifier name =
   List.mem name
@@ -225,9 +245,9 @@ let guard name =
 
 let header ~name ~headers declarations =
   let guard = "FAS_" ^ guard name ^ "_H" in
-  "#ifndef " ^ guard ^ "\n#define " ^ guard ^ "\n" ^ includes ^ String.concat "" headers
-  ^ "#ifdef __cplusplus\nextern \"C\" {\n#endif\n" ^ declarations
-  ^ "#ifdef __cplusplus\n}\n#endif\n#endif\n"
+  "#ifndef " ^ guard ^ "\n#define " ^ guard ^ "\n" ^ includes declarations
+  ^ String.concat "" headers ^ "#ifdef __cplusplus\nextern \"C\" {\n#endif\n"
+  ^ declarations ^ "#ifdef __cplusplus\n}\n#endif\n#endif\n"
 
 let relative_path directory path =
   let parts path = String.split_on_char '/' (Unix.realpath path) in

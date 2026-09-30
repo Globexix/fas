@@ -9197,11 +9197,6 @@ let () =
     header
     = "#ifndef FAS_MY_API_H_H\n\
        #define FAS_MY_API_H_H\n\
-       #include <stdbool.h>\n\
-       #include <stdalign.h>\n\
-       #include <assert.h>\n\
-       #include <stdint.h>\n\
-       #include <stddef.h>\n\
        #include <api.h>\n\
        #ifdef __cplusplus\n\
        extern \"C\" {\n\
@@ -9211,6 +9206,83 @@ let () =
        }\n\
        #endif\n\
        #endif\n");
+  let plain_header =
+    C_exports.header ~name:"plain.h" ~headers:[] "void print(void * text);\n"
+  in
+  assert (
+    plain_header
+    = "#ifndef FAS_PLAIN_H_H\n\
+       #define FAS_PLAIN_H_H\n\
+       #ifdef __cplusplus\n\
+       extern \"C\" {\n\
+       #endif\n\
+       void print(void * text);\n\
+       #ifdef __cplusplus\n\
+       }\n\
+       #endif\n\
+       #endif\n");
+  let scalar_declarations, _, errors =
+    generate
+      "extern \"C\" {\n\
+       fn echo(x i32) i32 { return x }\n\
+       var flag bool = true\n\
+       var count usize = 1\n\
+       }\n"
+  in
+  assert (errors = []);
+  let scalar_header =
+    C_exports.header ~name:"scalars.h" ~headers:[] scalar_declarations
+  in
+  assert (
+    scalar_header
+    = "#ifndef FAS_SCALARS_H_H\n\
+       #define FAS_SCALARS_H_H\n\
+       #include <stdbool.h>\n\
+       #include <stdint.h>\n\
+       #include <stddef.h>\n\
+       #ifdef __cplusplus\n\
+       extern \"C\" {\n\
+       #endif\n\
+       extern size_t count;\n\
+       int32_t echo(int32_t x);\n\
+       extern bool flag;\n\
+       #ifdef __cplusplus\n\
+       }\n\
+       #endif\n\
+       #endif\n");
+  let struct_declarations, _, errors =
+    generate "struct Pair { x i32\n y i32 }\nextern \"C\" { var pair Pair = {1, 2} }\n"
+  in
+  assert (errors = []);
+  let struct_header = C_exports.header ~name:"pair.h" ~headers:[] struct_declarations in
+  assert (
+    struct_header
+    = String.concat "\n"
+        [
+          "#ifndef FAS_PAIR_H_H";
+          "#define FAS_PAIR_H_H";
+          "#include <stdalign.h>";
+          "#include <assert.h>";
+          "#include <stdint.h>";
+          "#include <stddef.h>";
+          "#ifdef __cplusplus";
+          "extern \"C\" {";
+          "#endif";
+          "struct Pair {";
+          "  alignas(4) int32_t x;";
+          "  int32_t y;";
+          "};";
+          "static_assert(sizeof(struct Pair) == 8, \"struct Pair size\");";
+          "static_assert(alignof(struct Pair) == 4, \"struct Pair alignment\");";
+          "static_assert(offsetof(struct Pair, x) == 0, \"Pair.x offset\");";
+          "static_assert(offsetof(struct Pair, y) == 4, \"Pair.y offset\");";
+          "extern struct Pair pair;";
+          "#ifdef __cplusplus";
+          "}";
+          "#endif";
+          "#endif";
+        ]
+      ^ "\n");
   let records =
     [
       C_exports.{ name = "Tag"; spelling = "struct Tag"; header = None };

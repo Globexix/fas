@@ -856,7 +856,9 @@ let run_unprotected ?header_output config =
           let* () = ir_budget program (Ir.check_stack_scratch_bytes ~limits ir) in
           let* c_objects =
             compile_c_units config cc (List.rev !c_units) adapters
-              (C_exports.includes ^ String.concat "" declaration_headers ^ declarations)
+              (C_exports.includes declarations
+              ^ String.concat "" declaration_headers
+              ^ declarations)
               c_artifacts
           in
           match config.emit with

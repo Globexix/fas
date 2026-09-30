@@ -1,0 +1,5 @@
+struct Pair { x i32
+y i32 }
+extern "C" {
+var pair Pair = {1, 2}
+}
