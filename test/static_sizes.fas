@@ -1,0 +1,15 @@
+const N usize = 3
+var V arr[N,i32] = {1,2,3}
+const T arr[N,i32] = {1,2,3}
+struct P { d arr[N,u8] }
+const S arr[3,u8] = {1,2,3}
+const K usize = len(S)
+const L usize = len(c"abc")
+var W arr[L,u8]
+var X arr[K,u8] = {7,8,9}
+extern "C" { fn report(a i32, b i32, c i32, d i32, e usize, f i32, g i32) void }
+fn main() i32 {
+    p P = {{4,5,6}}
+    report(V[2], T[1], zext[i32](p.d[2]), zext[i32](S[1]), K, zext[i32](W[2]), zext[i32](X[2]))
+    return 0
+}

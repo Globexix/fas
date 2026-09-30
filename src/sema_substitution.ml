@@ -1851,18 +1851,18 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let* fields =
           Result_list.map
             (fun (field : Ast.field) ->
-              let* ty = resolve_ty [] 0 field.span field.ty in
+              let* ty = resolve_ty ~values:eval_consts [] 0 field.span field.ty in
               Ok ({ field with ty } : Ast.field))
             fields
         in
         Ok (Ast.Struct { item with fields })
     | Ast.Opaque _ as item -> Ok item
     | Ast.Const ({ ty; value; span; _ } as item) ->
-        let* ty = resolve_ty [] 0 span ty in
+        let* ty = resolve_ty ~values:eval_consts [] 0 span ty in
         let* value = resolve_expr [] 0 value in
         Ok (Ast.Const { item with ty; value })
     | Ast.Global ({ ty; init; span; _ } as item) ->
-        let* ty = resolve_ty [] 0 span ty in
+        let* ty = resolve_ty ~values:eval_consts [] 0 span ty in
         let* init =
           match init with
           | None -> Ok None

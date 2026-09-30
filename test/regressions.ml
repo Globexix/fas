@@ -9039,4 +9039,26 @@ let () =
         1,
         [ "header.h:3:9" ] );
     ];
+  semantic_accept "static-named-sizes"
+    "const N usize = 3\n\
+     var V arr[N,i32] = {1,2,3}\n\
+     const T arr[N,i32] = {1,2,3}\n\
+     struct P { d arr[N,u8] }\n\
+     const S arr[3,u8] = {1,2,3}\n\
+     const K usize = len(S)\n\
+     const L usize = len(c\"abc\")\n\
+     var W arr[L,u8]\n\
+     var X arr[K,u8]\n\
+     var Q vec[N,u8]\n";
+  semantic_accept "static-forward-named-sizes"
+    "var V arr[N,i32]\nstruct P { d arr[N,u8] }\nconst N usize = 3\n";
+  semantic_message "static-size-self-cycle" "cyclic constant dependency involving `N`"
+    "const N usize = len(A)\nconst A arr[N,u8] = {1}\n";
+  semantic_message "static-size-mutual-cycle" "cyclic constant dependency involving `N`"
+    "const N usize = len(B)\n\
+     const M usize = len(A)\n\
+     const A arr[N,u8] = {1}\n\
+     const B arr[M,u8] = {2}\n";
+  parse_message "static-size-direct-len-cycle" "expected `,`, found `(`"
+    "const A arr[len(B),u8] = {1}\nconst B arr[len(A),u8] = {2}\n";
   Printf.printf "regression checks: %d passed\n" !checks_run

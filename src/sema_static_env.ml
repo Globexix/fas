@@ -172,11 +172,8 @@ let address_value c ty expression =
   else address checked
 
 let source_array_lengths items =
-  let symbolic_names = names items in
   List.filter_map
     (function
-      | Ast.Const { name; ty = Ast.Array (length, _); _ }
-        when List.mem name symbolic_names ->
-          Some (name, length)
+      | Ast.Const { name; ty = Ast.Array (length, _); _ } -> Some (name, length)
       | _ -> None)
     items
