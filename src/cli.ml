@@ -31,7 +31,7 @@ let usage =
   \  LLVM_OPT, LLVM_LLC, CC select tools (defaults: opt-22, llc-22, clang-22)\n\
   \  FAS_OPT, FAS_LLC, FAS_CC are fallback tool aliases\n\
   \  FAS_OPT_PASSES overrides opt's pipeline (default: default<Olevel>)\n\
-  \  --help        show this help"
+  \  -h, --help    show this help"
 
 let default_output emit input =
   let source_output extension =

@@ -117,7 +117,8 @@ temps_empty() {
 [ ! -s "$WORK/stderr" ] || fail "help wrote to stderr"
 "$OCAML_FAS" -h >"$WORK/short-help" 2>"$WORK/stderr"
 cmp "$WORK/help" "$WORK/short-help" >/dev/null || fail "-h differs from --help"
-for flag in --emit-ir --emit-llvm --emit-asm --emit-obj --keep -O0..-O3 -debug -no-inline; do
+for flag in -o --emit-header --emit-ir --emit-llvm --emit-asm -S --emit-obj -c --keep \
+  -O0..-O3 -debug -no-inline -I -isystem -D -h --help; do
   grep -F -- "$flag" "$WORK/help" >/dev/null || fail "help omitted $flag"
 done
 if grep -F -- "--emit-ast" "$WORK/help" >/dev/null; then fail "help advertises removed --emit-ast"; fi
