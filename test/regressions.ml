@@ -9022,6 +9022,11 @@ let () =
     List.map (fun (field : Ast.field) -> (field.name, field.ty)) tag_fields
     <> [ ("first", Ast.Int Ast.I32); ("second", Ast.Int Ast.U8) ]
   then failwith "C tag record fields were not imported in order";
+  let const_pointer_fields, _ = require_struct "FasConstPointerRecord" in
+  if
+    List.map (fun (field : Ast.field) -> (field.name, field.ty)) const_pointer_fields
+    <> [ ("value", Ast.Addr) ]
+  then failwith "const pointee field was not admitted";
   let anonymous_fields, _ = require_struct "FasAnonymousRecord" in
   if
     List.map (fun (field : Ast.field) -> (field.name, field.ty)) anonymous_fields
@@ -9072,6 +9077,8 @@ let () =
       ("FasFloatRecord", "floating-point fields are not supported");
       ("FasFunctionPointerRecord", "function-pointer fields are not supported");
       ("FasKeywordFieldRecord", "field name is a Fas keyword");
+      ("FasConstFieldRecord", "const fields are not supported");
+      ("FasNestedConstFieldRecord", "const fields are not supported");
     ];
   (match c_semantic_result phase21_records "fn noop() void { return }\n" with
   | Ok program ->
@@ -9190,6 +9197,20 @@ let () =
   c_semantic_accept "c-import-keyword-field-record-remains-handle" phase21_records
     "fn retain(value handle[FasKeywordFieldRecord]) handle[FasKeywordFieldRecord] { \
      return value }\n";
+  c_semantic_accept "c-import-const-field-record-remains-handle" phase21_records
+    "fn retain(value handle[FasConstFieldRecord]) handle[FasConstFieldRecord] { return \
+     value }\n\
+     fn retain_nested(value handle[FasNestedConstFieldRecord]) \
+     handle[FasNestedConstFieldRecord] { return value }\n";
+  c_semantic_message "c-import-const-field-record-reason"
+    "C declaration `FasConstFieldRecord` is not supported: const fields are not \
+     supported"
+    phase21_records "fn read(value FasConstFieldRecord) i32 { return value.value }\n";
+  c_semantic_message "c-import-nested-const-field-record-reason"
+    "C declaration `FasNestedConstFieldRecord` is not supported: const fields are not \
+     supported"
+    phase21_records
+    "fn read(value FasNestedConstFieldRecord) i32 { return value.inner.value }\n";
   semantic_error "addr-handle-c-record-native-still-rejected"
     "handle type argument must be an opaque type"
     "struct NativeRecord { value i32 }\n\

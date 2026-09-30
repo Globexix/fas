@@ -1001,7 +1001,11 @@ let map_declarations ?(container = false) ~span declarations =
               let field_name = record_name field in
               let raw = c_type_name field in
               let reason =
-                if field_name = None then Some "anonymous members are not supported"
+                if top_level_const field then (
+                  blocked := true;
+                  None)
+                else if field_name = None then
+                  Some "anonymous members are not supported"
                 else if get "isBitfield" field = Some (C_import_json.Bool true) then
                   Some "bit-fields are not supported"
                 else if Lexer.is_keyword (Option.get field_name) then
@@ -1010,8 +1014,6 @@ let map_declarations ?(container = false) ~span declarations =
                   match raw with
                   | None -> Some "field has no C type"
                   | Some raw -> (
-                      let _, qualifiers = clean_type raw in
-                      if List.mem "const" qualifiers then blocked := true;
                       match
                         type_result ~allow_arrays:true ~aliases ~records ~enums
                           ~allow_record:true raw
@@ -1042,6 +1044,34 @@ let map_declarations ?(container = false) ~span declarations =
         in
         (name, node, fields, record_layout node name, reason, !blocked))
       records_by_name
+  in
+  let rec contains_const_fields = function
+    | Ast.Named_type name -> (
+        match
+          List.find_opt (fun (record, _, _, _, _, _) -> record = name) raw_records
+        with
+        | Some (_, _, fields, _, _, blocked) ->
+            blocked
+            || List.exists
+                 (fun (field : Ast.field) -> contains_const_fields field.ty)
+                 fields
+        | None -> false)
+    | Ast.Array (_, element) -> contains_const_fields element
+    | _ -> false
+  in
+  let raw_records =
+    List.map
+      (fun (name, node, fields, layout, reason, blocked) ->
+        ( name,
+          node,
+          fields,
+          layout,
+          reason,
+          blocked
+          || List.exists
+               (fun (field : Ast.field) -> contains_const_fields field.ty)
+               fields ))
+      raw_records
   in
   let hir_ty =
     let rec convert = function
@@ -1129,8 +1159,8 @@ let map_declarations ?(container = false) ~span declarations =
     match
       List.find_opt (fun (record, _, _, _, _, _, _) -> record = name) record_results
     with
+    | Some (_, _, _, _, true, _, _) -> Some "const fields are not supported"
     | Some (_, _, _, Some reason, _, _, _) -> Some reason
-    | Some (_, _, _, None, true, _, _) -> Some "const-qualified field rule unresolved"
     | Some _ -> None
     | None when Hashtbl.mem records name ->
         Some "struct and union values are not supported"
@@ -1144,21 +1174,15 @@ let map_declarations ?(container = false) ~span declarations =
   let record_types =
     List.concat_map
       (fun (name, _, _, reason, blocked, _, _) ->
-        if blocked then [] else [ (name, name, reason) ])
+        if blocked then [ (name, name, Some "const fields are not supported") ]
+        else [ (name, name, reason) ])
       record_results
     @ Hashtbl.fold
         (fun name result acc ->
           match result with
           | Ok (Ast.Named_type target)
             when target <> name && Hashtbl.mem record_definitions target ->
-              ( name,
-                target,
-                Option.bind
-                  (List.find_opt
-                     (fun (record, _, _, _, _, _, _) -> record = target)
-                     record_results)
-                  (fun (_, _, _, reason, _, _, _) -> reason) )
-              :: acc
+              (name, target, record_value_reason target) :: acc
           | _ -> acc)
         aliases []
   in
@@ -1187,11 +1211,10 @@ let map_declarations ?(container = false) ~span declarations =
               ^ "}" )
         | None ->
             ( Ast.Opaque { name; span },
-              if blocked then
-                "opaque " ^ name ^ " (const-qualified field rule unresolved)"
+              if blocked then "opaque " ^ name ^ " (const fields are not supported)"
               else "opaque " ^ name )
       in
-      let reason = if blocked then None else reason in
+      let reason = if blocked then Some "const fields are not supported" else reason in
       add_item name spelling signature (Some item)
         ( file,
           Option.bind (get "loc" node) (fun loc ->
