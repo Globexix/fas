@@ -9035,6 +9035,32 @@ let () =
     "fn anonymous() i32 { value FasAnonymous = (FasAnonymous){ 1 }\n\
      return value.field }\n";
   let phase21_records = c_import_fixture "phase21_records.h" in
+  let phase22_time = c_import_fixture "phase22_time.h" in
+  c_semantic_accept "c-import-record-address-handle-contexts" phase22_time
+    "fn read_clock() i32 { ts timespec\n\
+     return clock_gettime(1, &ts) }\n\
+     fn assign_handle() handle[timespec] {\n\
+     ts timespec\n\
+     result handle[timespec] = null\n\
+     result = &ts\n\
+     return result }\n\
+     fn init_handle() handle[timespec] {\n\
+     ts timespec\n\
+     result handle[timespec] = &ts\n\
+     return result }\n\
+     fn return_handle() handle[timespec] { ts timespec\n\
+     return &ts }\n\
+     fn peer_handle(other handle[timespec]) bool {\n\
+     ts timespec\n\
+     return (&ts == other) && (other == &ts) }\n\
+     fn address_default() addr { ts timespec\n\
+     return &ts }\n\
+     struct NativeTimespec { value i32 }\n\
+     fn native_address() addr { ts NativeTimespec\n\
+     return &ts }\n";
+  c_semantic_message "c-import-record-address-different-handle"
+    "type mismatch: expected handle[timespec], got addr" phase22_time
+    "fn wrong_record() i32 { ts FasOtherTimespec\nreturn clock_gettime(1, &ts) }\n";
   let phase21_imported = snd phase21_records in
   let imported_struct name =
     List.find_map

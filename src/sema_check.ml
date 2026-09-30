@@ -88,6 +88,18 @@ let intern_string c span s =
 let with_dead_check c dead check = Sema_flow.with_dead_check c.flow dead check
 let aggregate_value_type = function Hir.Array _ | Hir.Struct _ -> true | _ -> false
 
+let imported_record_type c name =
+  List.exists
+    (function _, C_record_name (record, None) when record = name -> true | _ -> false)
+    c.named_types
+
+let address_type_for_expected c expected place =
+  match (expected, Hir.expr_ty place) with
+  | Some (Hir.Handle record as ty), Hir.Struct actual
+    when record = actual && imported_record_type c record ->
+      ty
+  | _ -> Hir.Addr
+
 let rec rooted_in_constant = function
   | Hir.Const_array _ | Hir.EVector _ -> true
   | Hir.Index (a, _, _, _)
@@ -465,6 +477,15 @@ and raw_offset_expr c s access_ty index_payload =
                s ))
 
 and check_expr (c : context) expected expression =
+  let peer_handle_type expression =
+    let before = Sema_flow.snapshot c.flow in
+    let checked = check_expr c None expression in
+    Sema_flow.restore c.flow before;
+    match checked with
+    | Ok value -> (
+        match Hir.expr_ty value with Hir.Handle _ as ty -> Some ty | _ -> None)
+    | Error _ -> None
+  in
   let vector_literal literal_type lanes element entries span =
     if List.length entries <> lanes then
       error span "wrong number of vector literal lanes"
@@ -619,6 +640,13 @@ and check_expr (c : context) expected expression =
         in
         Ok (Hir.Binary (op, a, b, at, s))
       else
+        let address_peer_type =
+          match (expected, l, r) with
+          | None, Ast.Addr_of _, Ast.Addr_of _ | Some _, _, _ -> None
+          | None, Ast.Addr_of _, _ ->
+              Option.map (fun ty -> `Left ty) (peer_handle_type r)
+          | None, _, _ -> None
+        in
         let* a, b =
           match (unresolved_shape_of l, unresolved_shape_of r) with
           | Some _, None ->
@@ -626,7 +654,12 @@ and check_expr (c : context) expected expression =
               let* a = check_expr c (contextual_peer_type op (Hir.expr_ty b) l) l in
               Ok (a, b)
           | _ ->
-              let* a = check_expr c (operand_type_hint op expected l r) l in
+              let left_expected =
+                match address_peer_type with
+                | Some (`Left ty) -> Some ty
+                | _ -> operand_type_hint op expected l r
+              in
+              let* a = check_expr c left_expected l in
               let* b = check_expr c (contextual_peer_type op (Hir.expr_ty a) r) r in
               Ok (a, b)
         in
@@ -724,7 +757,8 @@ and check_expr (c : context) expected expression =
           error s "cannot take address of a vector lane"
       | Hir.Local _ | Hir.Global _ | Hir.Index _ | Hir.Field _ | Hir.Const_array _
       | Hir.Raw_select _ ->
-          Ok (Hir.Address (place.expr, Hir.Addr, s))
+          Ok
+            (Hir.Address (place.expr, address_type_for_expected c expected place.expr, s))
       | _ -> error s "cannot take the address of this expression")
   | Ast.Sizeof (t, s) ->
       let* t = source_ty_in_context c s t in
