@@ -8306,7 +8306,7 @@ let () =
     "var G i32\nconst P bool = &G == &G\n";
   semantic_message "address-constants-integer-conversion"
     "global initializer must be a constant expression"
-    "var G i32\nconst P usize = usize(&G)\n";
+    "var G i32\nconst P usize = zext[usize](&G)\n";
   semantic_message "address-constants-bitcast"
     "global initializer must be a constant expression"
     "var G i32\nconst P usize = bitcast[usize](&G)\n";
@@ -8331,6 +8331,11 @@ let () =
     "const G vec[2,i32] = splat(1)\nvar P addr = &G\n";
   semantic_message "address-constants-ordinary-string"
     "address constants require a C string literal" "var P addr = \"x\"\n";
+  semantic_message "address-constants-local-target" "unknown name `Local`"
+    "fn f() void { Local i32 = 1\nreturn }\nvar P addr = &Local\n";
+  semantic_message "address-constants-handle-ordinary-string"
+    "address constants require a C string literal"
+    "opaque Token\nvar P handle[Token] = handle_from_addr[Token](\"x\")\n";
   semantic_message "address-constants-readonly-table" "cannot modify read-only pointer"
     "var G i32\nconst P arr[1,addr] = {&G}\nfn f() void { P[0] = null\nreturn }\n";
   let relocatable =

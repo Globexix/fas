@@ -2762,6 +2762,26 @@ let () =
           ("initialized global budget reported the wrong object: "
           ^ Option.value offender ~default:"none")
     | Ok () -> failwith "initialized global was omitted from static-data budget");
+    let address_data_program =
+      expect_ok
+        (Parser.parse
+           (source "var Target i32\nconst Table arr[2,addr] = {&Target,&Target}\n"))
+    in
+    let address_data_ir =
+      expect_ok (Sema.check address_data_program) |> Lower.lower |> expect_ok
+    in
+    assert (
+      Ir.check_static_data_bytes
+        ~limits:{ Limits.default with max_static_data_bytes = 16 }
+        address_data_ir
+      = Ok ());
+    (match
+       Ir.check_static_data_bytes
+         ~limits:{ Limits.default with max_static_data_bytes = 15 }
+         address_data_ir
+     with
+    | Error (Some "Table", _) -> ()
+    | _ -> failwith "address slots must each count eight static-data bytes");
     pair "specializations-vs-aggregate"
       ({ Limits.default with max_specializations = 0 }, "max_specializations")
       ({ Limits.default with max_aggregate_elements = 50 }, "max_aggregate_elements")
