@@ -9294,6 +9294,7 @@ let () =
     || (not (contains function_address_ir "@fas_address_c_callback"))
     || (not (contains function_address_ir "@fas_address_c_declaration"))
     || (not (contains function_address_ir "ptr @fas_callback_result"))
+    || contains function_address_ir "getelementptr (i8, ptr @fas_callback_result"
     || contains function_address_ir "dso_local"
   then failwith "C function addresses did not lower to plain function relocations";
   semantic_error "address-of-asm-function-remains-rejected"
