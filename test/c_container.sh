@@ -51,6 +51,7 @@ cat >"$CONTAINER_TMP/program.fas" <<'FAS'
 use "deps/first.fas"
 use "deps/second.fas"
 extern "C" {
+  var fas_exported_global i32 = 10
   fn fas_exported_value() i32 { return 10 }
 }
 fn main() i32 {
@@ -86,6 +87,18 @@ for level in 0 2; do
     || fail "container executable failed at O$level"
   cmp -s "$CONTAINER_TMP/oracle.out" "$CONTAINER_TMP/program.O$level.out" \
     || fail "container output differed from the C oracle at O$level"
+  "$OCAML_FAS" -c -O"$level" "$CONTAINER_TMP/program.fas" -o "$CONTAINER_TMP/visibility.o"
+  "$CC" -shared "$CONTAINER_TMP/visibility.o" -o "$CONTAINER_TMP/visibility.so"
+  readelf --dyn-syms --wide "$CONTAINER_TMP/visibility.so" >"$CONTAINER_TMP/dynsym"
+  for symbol in fas_exported_value fas_exported_global fragment_value; do
+    grep -E "GLOBAL +DEFAULT +[0-9]+ +$symbol$" "$CONTAINER_TMP/dynsym" >/dev/null \
+      || fail "O$level missing default-visible export $symbol"
+  done
+  if grep -F '__fas_c_adapter_' "$CONTAINER_TMP/dynsym"; then
+    fail "O$level adapter escaped into the shared library"
+  fi
+  readelf -d "$CONTAINER_TMP/visibility.so" >"$CONTAINER_TMP/dynamic"
+  if grep -F TEXTREL "$CONTAINER_TMP/dynamic"; then fail "O$level shared library has TEXTREL"; fi
 done
 
 "$OCAML_FAS" -c -O0 "$CONTAINER_TMP/program.fas" -o "$CONTAINER_TMP/container.o"

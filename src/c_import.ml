@@ -556,8 +556,9 @@ let make_adapter ~occupied source (static : static_function) =
         c_name = static.name;
         symbol;
         code =
-          Printf.sprintf "#line %d %S\n%s %s(%s) { %s }\n" static.span.Span.line source
-            static.return_type symbol params body;
+          Printf.sprintf
+            "#line %d %S\n__attribute__((visibility(\"hidden\"))) %s %s(%s) { %s }\n"
+            static.span.Span.line source static.return_type symbol params body;
         file = source;
         line = static.span.Span.line;
         signature = static.signature;
