@@ -558,6 +558,42 @@ let has text part =
 
 let c_type_name node = Option.bind (get "type" node) (string "qualType")
 
+let function_result_spelling raw =
+  match find_text raw "(*(" 0 with
+  | None -> None
+  | Some pointer ->
+      let open_index = pointer + 2 in
+      let rec close depth index =
+        if index = String.length raw then None
+        else
+          let depth =
+            depth + if raw.[index] = '(' then 1 else if raw.[index] = ')' then -1 else 0
+          in
+          if depth = 0 then Some index else close depth (index + 1)
+      in
+      Option.map
+        (fun close ->
+          String.sub raw 0 open_index
+          ^ String.sub raw (close + 1) (String.length raw - close - 1))
+        (close 0 open_index)
+
+let c_function_result raw fallback =
+  Option.fold ~none:fallback ~some:trim (function_result_spelling raw)
+
+let c_named_type raw name =
+  match find_text raw "(*" 0 with
+  | None -> raw ^ " " ^ name
+  | Some pointer -> (
+      match String.index_from_opt raw (pointer + 2) ')' with
+      | None -> raw ^ " " ^ name
+      | Some close ->
+          String.sub raw 0 close
+          ^ (if close = pointer + 2 || raw.[close - 1] = '*' || raw.[close - 1] = ' '
+             then ""
+             else " ")
+          ^ name
+          ^ String.sub raw close (String.length raw - close))
+
 let c_type_spellings node =
   match get "type" node with
   | None -> []
@@ -836,7 +872,9 @@ let make_adapter ~occupied source (static : static_function) =
     in
     let symbol = choose 0 in
     let params =
-      List.mapi (fun i ty -> ty ^ " fas_arg" ^ string_of_int i) static.parameter_types
+      List.mapi
+        (fun i ty -> c_named_type ty ("fas_arg" ^ string_of_int i))
+        static.parameter_types
     in
     let call_args =
       List.mapi (fun i _ -> "fas_arg" ^ string_of_int i) static.parameter_types
@@ -844,14 +882,20 @@ let make_adapter ~occupied source (static : static_function) =
     let params = if params = [] then "void" else String.concat ", " params in
     let call = static.name ^ "(" ^ String.concat ", " call_args ^ ")" in
     let body = if static.void_result then call ^ ";" else "return " ^ call ^ ";" in
+    let return_type, return_typedef =
+      if Option.is_some (find_text static.return_type "(*" 0) then
+        let alias = symbol ^ "_result" in
+        (alias, "typedef " ^ c_named_type static.return_type alias ^ ";\n")
+      else (static.return_type, "")
+    in
     Ok
       {
         c_name = static.name;
         symbol;
         code =
           Printf.sprintf
-            "#line %d %S\n__attribute__((visibility(\"hidden\"))) %s %s(%s) { %s }\n"
-            static.span.Span.line source static.return_type symbol params body;
+            "#line %d %S\n%s__attribute__((visibility(\"hidden\"))) %s %s(%s) { %s }\n"
+            static.span.Span.line source return_typedef return_type symbol params body;
         file = source;
         line = static.span.Span.line;
         signature = static.signature;
@@ -1578,7 +1622,7 @@ let map_declarations ?(container = false) ~span declarations =
         match String.index_opt raw '(' with
         | None -> Error "function declaration has no parameter list"
         | Some index ->
-            let ret = trim (String.sub raw 0 index) in
+            let ret = c_function_result raw (String.sub raw 0 index) in
             type_result ~aliases ~records ~enums ~allow_record:false ret)
   in
   Hashtbl.iter
@@ -1754,7 +1798,9 @@ let map_declarations ?(container = false) ~span declarations =
                   Hashtbl.replace static_functions name
                     {
                       name;
-                      return_type = trim (String.sub c_signature 0 open_paren);
+                      return_type =
+                        c_function_result c_signature
+                          (String.sub c_signature 0 open_paren);
                       parameter_types;
                       variadic;
                       void_result = ret = Ast.Void;

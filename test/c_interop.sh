@@ -23,6 +23,10 @@ grep -Eq 'ptr @__fas_c_adapter_[[:xdigit:]]+_fas_interop_static_helper' "$TMP/pr
   || fail "static helper address did not relocate to its adapter"
 grep -Eq 'ptr @__fas_c_adapter_[[:xdigit:]]+_fas_interop_address_only' "$TMP/program.ll" \
   || fail "address-only static function did not get an adapter relocation"
+grep -Eq 'call ptr @__fas_c_adapter_[[:xdigit:]]+_fas_interop_raw_get' "$TMP/program.ll" \
+  || fail "raw function-pointer result did not use its adapter"
+grep -Eq 'call i32 @__fas_c_adapter_[[:xdigit:]]+_fas_interop_raw_apply' "$TMP/program.ll" \
+  || fail "raw function-pointer parameter did not use its adapter"
 if grep -q 'dso_local' "$TMP/program.ll"; then
   fail "static function address emitted dso_local"
 fi

@@ -22,6 +22,7 @@ static int call_int(int (*function)(int), int value) {
 
 int main(void) {
   int values[5] = {9, 1, 7, 2, 4};
+  int raw_values[4] = {9, 1, 7, 2};
   const char *path = "interop.bin";
   const char payload[] = "12345678";
   size_t size = strlen("fas");
@@ -38,6 +39,10 @@ int main(void) {
       call_int(fas_interop_static_helper, 41) != 42 ||
       call_int(functions[0], 8) != 9 || call_int(functions[1], 9) != 18)
     return 13;
+  if (fas_interop_raw_apply(fas_interop_raw_get(), 5) != 16 ||
+      fas_interop_raw_apply(fas_interop_raw_global, 5) != 16 ||
+      fas_interop_raw_array(&raw_values) != 7)
+    return 14;
 
   if (memory == NULL) return 1;
   free(memory);

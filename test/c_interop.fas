@@ -34,6 +34,9 @@ fn main() i32 {
   if fas_interop_call_int(&fas_interop_static_helper, 41) != 42 { return 17 }
   if fas_interop_call_int(fas_interop_function_table[0], 8) != 9 { return 18 }
   if fas_interop_call_int(fas_interop_function_table[1], 9) != 18 { return 19 }
+  if fas_interop_raw_apply(fas_interop_raw_get(), 5) != 16 { return 20 }
+  if fas_interop_raw_apply(fas_interop_raw_global, 5) != 16 { return 21 }
+  if fas_interop_raw_array(&fas_interop_values[0]) != 7 { return 22 }
 
   path addr = c"interop.bin"
   size usize = strlen(c"fas")

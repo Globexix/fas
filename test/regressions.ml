@@ -9041,6 +9041,60 @@ let () =
     "fn probe() i32 { return fas_function_pointer_arg(null) }\n";
   c_semantic_accept "c-import-nested-function-pointer-is-addr" c_matrix
     "fn probe() i32 { return fas_function_pointer_nested(null) }\n";
+  let phase23_raw = c_import_fixture "phase23_raw.h" in
+  let phase23_raw_source, phase23_raw_imported = phase23_raw in
+  c_semantic_accept "c-import-raw-function-pointer-declarators" phase23_raw
+    "fn get_callback() addr { return fas_raw_get() }\n\
+     fn call_raw(values addr) i32 {\n\
+     return fas_raw_apply(fas_raw_get(), 1) + fas_raw_apply(fas_raw_global, 1) + \
+     fas_raw_array(values) }\n\
+     fn read_callback(value addr) addr {\n\
+     return value[FasRawCallbackRecord].callback }\n";
+  (match
+     List.find_opt
+       (function
+         | Ast.Func { name = "fas_raw_get"; ret = Ast.Addr; _ } -> true | _ -> false)
+       phase23_raw_imported.items
+   with
+  | Some _ -> ()
+  | None -> failwith "raw C function-pointer result did not map to addr");
+  (match
+     List.find_opt
+       (function
+         | Ast.Global { name = "fas_raw_global"; ty = Ast.Addr; _ } -> true | _ -> false)
+       phase23_raw_imported.items
+   with
+  | Some _ -> ()
+  | None -> failwith "raw C function-pointer global did not map to addr");
+  (match
+     List.find_map
+       (function
+         | Ast.Struct { name = "FasRawCallbackRecord"; fields; _ } -> Some fields
+         | _ -> None)
+       phase23_raw_imported.items
+   with
+  | Some [ { Ast.name = "callback"; ty = Ast.Addr; _ } ] -> ()
+  | _ -> failwith "raw C function-pointer field did not map to addr");
+  List.iter
+    (fun (name, expected) ->
+      match
+        List.find_opt
+          (fun (static : C_import.static_function) -> static.name = name)
+          phase23_raw_imported.static_functions
+      with
+      | None -> failwith ("raw C adapter source was not recorded for " ^ name)
+      | Some static -> (
+          match C_import.make_adapter ~occupied:[] phase23_raw_source static with
+          | Ok adapter when contains adapter.code expected -> ()
+          | Ok adapter ->
+              failwith
+                ("raw C adapter declarator missing for " ^ name ^ ": " ^ adapter.code)
+          | Error message -> failwith message))
+    [
+      ("fas_raw_get", "fas_raw_get_result");
+      ("fas_raw_apply", "int (*fas_arg0)(int)");
+      ("fas_raw_array", "int (*fas_arg0)[4]");
+    ];
   unsupported "fas_vector_value" "vector types are not supported by value"
     "fas_vector_value(null)";
   unsupported "fas_address_space" "C address spaces are not supported"
