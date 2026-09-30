@@ -200,11 +200,42 @@ let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) source headers =
                   | _ -> node)
                 declarations
             in
-            completed := true;
-            Ok
-              ( declarations,
-                (if keep then Some (unit_path :: List.rev !fragment_paths) else None),
-                if retain then unit_path :: List.rev !fragment_paths else [] )
+            let layout_argv =
+              Array.of_list
+                ([
+                   cc;
+                   "-x";
+                   "c";
+                   "-fsyntax-only";
+                   "-Xclang";
+                   "-skip-function-bodies";
+                   "-Xclang";
+                   "-fdump-record-layouts-complete";
+                   "--target=x86_64-unknown-linux-gnu";
+                 ]
+                @ c_flags
+                @ [ "-iquote"; Filename.dirname source; unit_path ])
+            in
+            if debug || keep then
+              prerr_endline
+                ("fas: Clang layout command: "
+                ^ String.concat " " (Array.to_list layout_argv));
+            match Process.run layout_argv with
+            | Error failure ->
+                Error [ compilation_error (List.hd headers).span failure.stderr ]
+            | Ok (layouts, _) ->
+                completed := true;
+                Ok
+                  ( declarations
+                    @ [
+                        C_import_json.Obj
+                          [
+                            ("kind", C_import_json.Str "FasLayoutDump");
+                            ("value", C_import_json.Str layouts);
+                          ];
+                      ],
+                    (if keep then Some (unit_path :: List.rev !fragment_paths) else None),
+                    if retain then unit_path :: List.rev !fragment_paths else [] )
           with Failure message ->
             Error
               [
@@ -555,6 +586,8 @@ type mapped = {
   manifest : string list;
   static_functions : static_function list;
   records : (string * string * string option) list;
+  record_types : (string * string * string option) list;
+  incomplete_arrays : (string * Ast.ty) list;
 }
 
 let adapter_symbol source name =
@@ -605,15 +638,130 @@ let adapter_manifest (adapter : adapter) =
 
 let item_name = function
   | Ast.Opaque { name; _ }
+  | Ast.Struct { name; _ }
   | Ast.Const { name; _ }
   | Ast.Global { name; _ }
   | Ast.Func { name; _ } ->
       name
   | _ -> ""
 
+type clang_layout = {
+  layout_name : string;
+  size : int;
+  align : int;
+  offsets : (string * int) list;
+}
+
+let clang_layouts text =
+  let lines = String.split_on_char '\n' text in
+  let after marker line =
+    match find_text line marker 0 with
+    | None -> None
+    | Some at ->
+        let start = at + String.length marker in
+        let finish = ref start in
+        while
+          !finish < String.length line && line.[!finish] >= '0' && line.[!finish] <= '9'
+        do
+          incr finish
+        done;
+        int_of_string_opt (String.sub line start (!finish - start))
+  in
+  let index value items =
+    let rec find i = function
+      | [] -> None
+      | item :: rest -> if item = value then Some i else find (i + 1) rest
+    in
+    find 0 items
+  in
+  let rec groups current acc = function
+    | [] -> List.rev (finish current acc)
+    | line :: rest when find_text line "*** Dumping AST Record Layout" 0 = Some 0 ->
+        groups [ line ] (finish current acc) rest
+    | line :: rest -> groups (line :: current) acc rest
+  and finish group acc =
+    match List.rev group with
+    | [] -> acc
+    | lines -> (
+        let header =
+          List.find_map
+            (fun line ->
+              match String.index_opt line '|' with
+              | None -> None
+              | Some bar ->
+                  let right =
+                    String.sub line (bar + 1) (String.length line - bar - 1)
+                  in
+                  let body = trim right in
+                  if
+                    String.length right - String.length body = 1
+                    && (String.starts_with ~prefix:"struct " body
+                       || String.starts_with ~prefix:"union " body)
+                  then Some (line, body)
+                  else None)
+            lines
+        in
+        let summary =
+          List.find_opt (fun line -> Option.is_some (after "sizeof=" line)) lines
+        in
+        match (header, summary) with
+        | Some (header, name), Some summary -> (
+            match (after "sizeof=" summary, after "align=" summary) with
+            | Some size, Some align ->
+                let header_at = Option.get (index header lines) in
+                let summary_at = Option.get (index summary lines) in
+                let offsets =
+                  List.mapi (fun i line -> (i, line)) lines
+                  |> List.filter_map (fun (i, line) ->
+                      if i <= header_at || i >= summary_at then None
+                      else
+                        match String.index_opt line '|' with
+                        | None -> None
+                        | Some bar ->
+                            let left = trim (String.sub line 0 bar) in
+                            let right =
+                              String.sub line (bar + 1) (String.length line - bar - 1)
+                            in
+                            let body = trim right in
+                            if String.length right - String.length body < 3 then None
+                            else
+                              let field =
+                                match
+                                  List.rev
+                                    (String.split_on_char ' ' body
+                                    |> List.filter (( <> ) ""))
+                                with
+                                | name :: _ -> Some name
+                                | [] -> None
+                              in
+                              Option.bind (int_of_string_opt left) (fun offset ->
+                                  Option.map (fun field -> (field, offset)) field))
+                in
+                { layout_name = name; size; align; offsets } :: acc
+            | _ -> acc)
+        | _ -> acc)
+  in
+  groups [] [] lines
+
 let map_declarations ~span declarations =
-  let nodes = C_import_json.array (C_import_json.Arr declarations) in
+  let layout_dump =
+    List.find_map
+      (function
+        | C_import_json.Obj fields
+          when List.assoc_opt "kind" fields = Some (C_import_json.Str "FasLayoutDump")
+          ->
+            Option.bind (List.assoc_opt "value" fields) C_import_json.string
+        | _ -> None)
+      declarations
+  in
+  let layouts = Option.fold ~none:[] ~some:clang_layouts layout_dump in
+  let nodes =
+    C_import_json.array (C_import_json.Arr declarations)
+    |> List.filter (fun node -> string "kind" node <> Some "FasLayoutDump")
+  in
   let records = Hashtbl.create 64
+  and record_ids = Hashtbl.create 64
+  and record_nodes_by_id = Hashtbl.create 64
   and anonymous_record_ids = Hashtbl.create 32
   and anonymous_record_aliases = Hashtbl.create 32
   and enums = Hashtbl.create 32
@@ -626,8 +774,13 @@ let map_declarations ~span declarations =
           match
             (Option.bind (get "id" node) C_import_json.string, record_name node)
           with
-          | Some _, Some name -> Hashtbl.replace records name ()
-          | Some id, None -> Hashtbl.replace anonymous_record_ids id ()
+          | Some id, Some name ->
+              Hashtbl.replace records name ();
+              Hashtbl.replace record_ids id name;
+              Hashtbl.replace record_nodes_by_id id node
+          | Some id, None ->
+              Hashtbl.replace anonymous_record_ids id ();
+              Hashtbl.replace record_nodes_by_id id node
           | None, _ -> ())
       | Some "EnumDecl" -> (
           Option.iter (fun name -> Hashtbl.replace enums name "int") (record_name node);
@@ -645,8 +798,11 @@ let map_declarations ~span declarations =
       match (string "kind" node, record_name node, record_decl_id node) with
       | Some "TypedefDecl", Some name, Some id when Hashtbl.mem anonymous_record_ids id
         ->
-          Hashtbl.replace records name ();
-          Hashtbl.replace anonymous_record_aliases name ()
+          let canonical = Option.value ~default:name (Hashtbl.find_opt record_ids id) in
+          Hashtbl.replace records canonical ();
+          Hashtbl.replace anonymous_record_aliases canonical ();
+          Hashtbl.replace record_ids id canonical;
+          Hashtbl.replace record_nodes_by_id id (Hashtbl.find record_nodes_by_id id)
       | _ -> ())
     nodes;
   List.iter
@@ -719,6 +875,7 @@ let map_declarations ~span declarations =
   let entities = Hashtbl.create 256
   and unsupported = Hashtbl.create 128
   and manifest = Hashtbl.create 256
+  and incomplete_arrays = Hashtbl.create 16
   and static_functions = Hashtbl.create 32
   and items = ref [] in
   let add_unsupported name reason = Hashtbl.replace unsupported name reason in
@@ -730,12 +887,14 @@ let map_declarations ~span declarations =
         | Error _ -> ())
     aliases;
   let add_item name spelling signature item origin obligations reason
-      ?(entity_scope = "") () =
+      ?(entity_scope = "") ?(keep_unsupported_item = false) () =
     let reason =
       if Names.reserved_binding_name name then Some "name is reserved in Fas"
       else reason
     in
-    let item = if Option.is_some reason then None else item in
+    let item =
+      if Option.is_some reason && not keep_unsupported_item then None else item
+    in
     let declaration_file, line = origin in
     let qualifier_text = List.sort_uniq compare obligations |> String.concat "," in
     let reason_text =
@@ -780,6 +939,283 @@ let map_declarations ~span declarations =
     | None -> Error "declaration has no C type"
     | Some raw -> type_result ~allow_arrays ~aliases ~records ~enums ~allow_record raw
   in
+  let record_definitions = Hashtbl.create 64 in
+  List.iter
+    (fun node ->
+      if
+        string "kind" node = Some "RecordDecl"
+        && get "completeDefinition" node = Some (C_import_json.Bool true)
+      then
+        match Option.bind (get "id" node) C_import_json.string with
+        | Some id ->
+            Option.iter
+              (fun name -> Hashtbl.replace record_definitions name node)
+              (Hashtbl.find_opt record_ids id)
+        | None -> ())
+    nodes;
+  let record_layout node name =
+    let tag = Option.value ~default:"struct" (string "tagUsed" node) in
+    let direct = tag ^ " " ^ name in
+    match List.find_opt (fun layout -> layout.layout_name = direct) layouts with
+    | Some layout -> Some layout
+    | None -> (
+        let loc =
+          Option.map
+            (fun loc -> Option.value ~default:loc (get "expansionLoc" loc))
+            (get "loc" node)
+        in
+        match loc with
+        | None -> None
+        | Some loc -> (
+            let file = string "file" loc in
+            let number = function
+              | C_import_json.Num value -> int_of_string_opt value
+              | _ -> None
+            in
+            let line = Option.bind (get "line" loc) number in
+            let col = Option.bind (get "col" loc) number in
+            match (file, line, col) with
+            | Some file, Some line, Some col ->
+                let spelling =
+                  Printf.sprintf "%s (unnamed at %s:%d:%d)" tag file line col
+                in
+                List.find_opt (fun layout -> layout.layout_name = spelling) layouts
+            | _ -> None))
+  in
+  let records_by_name =
+    Hashtbl.fold (fun name node acc -> (name, node) :: acc) record_definitions []
+    |> List.sort compare
+  in
+  let raw_records =
+    List.map
+      (fun (name, node) ->
+        let fields =
+          children node
+          |> List.filter (fun child -> string "kind" child = Some "FieldDecl")
+        in
+        let unsupported = ref None and blocked = ref false in
+        let fields =
+          List.filter_map
+            (fun field ->
+              let field_name = record_name field in
+              let raw = c_type_name field in
+              let reason =
+                if field_name = None then Some "anonymous members are not supported"
+                else if get "isBitfield" field = Some (C_import_json.Bool true) then
+                  Some "bit-fields are not supported"
+                else if Names.reserved_binding_name (Option.get field_name) then
+                  Some "reserved field names are not supported"
+                else
+                  match raw with
+                  | None -> Some "field has no C type"
+                  | Some raw -> (
+                      let _, qualifiers = clean_type raw in
+                      if List.mem "const" qualifiers then blocked := true;
+                      match
+                        type_result ~allow_arrays:true ~aliases ~records ~enums
+                          ~allow_record:true raw
+                      with
+                      | Ok _ -> None
+                      | Error "arrays of unknown size are not supported" ->
+                          Some "flexible array members are not supported"
+                      | Error "floating-point types are not supported" ->
+                          Some "floating-point fields are not supported"
+                      | Error "function pointers are not supported" ->
+                          Some "function-pointer fields are not supported"
+                      | Error reason -> Some reason)
+              in
+              (match reason with
+              | Some reason -> unsupported := Some reason
+              | None -> ());
+              match (field_name, raw, reason) with
+              | Some field_name, Some _, None -> (
+                  match as_type ~allow_arrays:true ~allow_record:true field with
+                  | Ok ty -> Some ({ Ast.name = field_name; ty; span } : Ast.field)
+                  | Error _ -> None)
+              | _ -> None)
+            fields
+        in
+        let reason =
+          if string "tagUsed" node = Some "union" then Some "unions are not supported"
+          else !unsupported
+        in
+        (name, node, fields, record_layout node name, reason, !blocked))
+      records_by_name
+  in
+  let hir_ty =
+    let rec convert = function
+      | Ast.Bool -> Some Hir.Bool
+      | Ast.Int Ast.U8 -> Some (Hir.Int Hir.U8)
+      | Ast.Int U16 -> Some (Hir.Int Hir.U16)
+      | Ast.Int U32 -> Some (Hir.Int Hir.U32)
+      | Ast.Int U64 -> Some (Hir.Int Hir.U64)
+      | Ast.Int I8 -> Some (Hir.Int Hir.I8)
+      | Ast.Int I16 -> Some (Hir.Int Hir.I16)
+      | Ast.Int I32 -> Some (Hir.Int Hir.I32)
+      | Ast.Int I64 -> Some (Hir.Int Hir.I64)
+      | Ast.Int Usize -> Some (Hir.Int Hir.Usize)
+      | Ast.Int Isize -> Some (Hir.Int Hir.Isize)
+      | Ast.Addr -> Some Hir.Addr
+      | Ast.Handle (Ast.Named_type name) -> Some (Hir.Handle name)
+      | Ast.Named_type name -> Some (Hir.Struct name)
+      | Ast.Array (length, ty) ->
+          Option.bind (int_of_string_opt length) (fun n ->
+              Option.map (fun ty -> Hir.Array (n, ty)) (convert ty))
+      | _ -> None
+    in
+    convert
+  in
+  let candidate_fields (name, _, fields, _, reason, blocked) =
+    if Option.is_some reason || blocked then None
+    else
+      let fields =
+        List.map
+          (fun (field : Ast.field) ->
+            Option.map (fun ty -> (field.name, ty)) (hir_ty field.ty))
+          fields
+      in
+      if List.exists Option.is_none fields then None
+      else Some (name, List.map Option.get fields)
+  in
+  let natural =
+    List.filter_map candidate_fields raw_records
+    |> List.map (fun (name, fields) -> (name, fields, None))
+  in
+  let natural_cache = Hir.struct_layout_cache natural in
+  let alignments =
+    List.filter_map
+      (fun (name, node, _, layout, reason, blocked) ->
+        if Option.is_some reason || blocked then None
+        else
+          match (layout, Hir.compute_struct_cached natural_cache name) with
+          | Some layout, Ok natural
+            when layout.align > natural.align
+                 && List.exists
+                      (fun child -> string "kind" child = Some "AlignedAttr")
+                      (children node) ->
+              Some (name, Some layout.align)
+          | _ -> Some (name, None))
+      raw_records
+  in
+  let struct_declarations =
+    List.map
+      (fun (name, fields) ->
+        let align = List.assoc_opt name alignments |> Option.join in
+        (name, fields, align))
+      (List.filter_map candidate_fields raw_records)
+  in
+  let layouts_cache = Hir.struct_layout_cache struct_declarations in
+  let record_results =
+    List.map
+      (fun (name, node, fields, layout, reason, blocked) ->
+        let reason =
+          if Option.is_some reason || blocked then reason
+          else
+            match (layout, Hir.compute_struct_cached layouts_cache name) with
+            | Some clang, Ok fas
+              when clang.size = fas.size && clang.align = fas.align
+                   && List.for_all
+                        (fun (field : Hir.field) ->
+                          List.assoc_opt field.name clang.offsets = Some field.offset)
+                        fas.fields ->
+                None
+            | _ -> Some "record layout differs from C"
+        in
+        (name, node, fields, reason, blocked, fst (declaration_location node), layout))
+      raw_records
+  in
+  let record_value_reason name =
+    match
+      List.find_opt (fun (record, _, _, _, _, _, _) -> record = name) record_results
+    with
+    | Some (_, _, _, Some reason, _, _, _) -> Some reason
+    | Some (_, _, _, None, true, _, _) -> Some "const-qualified field rule unresolved"
+    | Some _ -> None
+    | None when Hashtbl.mem records name ->
+        Some "struct and union values are not supported"
+    | None -> None
+  in
+  let rec type_value_reason = function
+    | Ast.Named_type name -> record_value_reason name
+    | Ast.Array (_, element) -> type_value_reason element
+    | _ -> None
+  in
+  let record_types =
+    List.concat_map
+      (fun (name, _, _, reason, blocked, _, _) ->
+        if blocked then [] else [ (name, name, reason) ])
+      record_results
+    @ Hashtbl.fold
+        (fun name result acc ->
+          match result with
+          | Ok (Ast.Named_type target)
+            when target <> name && Hashtbl.mem record_definitions target ->
+              ( name,
+                target,
+                Option.bind
+                  (List.find_opt
+                     (fun (record, _, _, _, _, _, _) -> record = target)
+                     record_results)
+                  (fun (_, _, _, reason, _, _, _) -> reason) )
+              :: acc
+          | _ -> acc)
+        aliases []
+  in
+  List.iter
+    (fun (name, node, fields, reason, blocked, file, _) ->
+      let spelling =
+        if Hashtbl.mem anonymous_record_aliases name then name
+        else Option.value ~default:"struct" (string "tagUsed" node) ^ " " ^ name
+      in
+      let layout =
+        if blocked || Option.is_some reason then None
+        else
+          let align = List.assoc_opt name alignments |> Option.join in
+          Some align
+      in
+      let item, signature =
+        match layout with
+        | Some align ->
+            ( Ast.Struct { name; generic_params = []; fields; align; span },
+              "struct " ^ name ^ " {"
+              ^ String.concat ", "
+                  (List.map
+                     (fun (field : Ast.field) ->
+                       field.name ^ " " ^ Ast.type_name field.ty)
+                     fields)
+              ^ "}" )
+        | None ->
+            ( Ast.Opaque { name; span },
+              if blocked then
+                "opaque " ^ name ^ " (const-qualified field rule unresolved)"
+              else "opaque " ^ name )
+      in
+      let reason = if blocked then None else reason in
+      add_item name spelling signature (Some item)
+        ( file,
+          Option.bind (get "loc" node) (fun loc ->
+              Option.bind (get "line" loc) (function
+                | C_import_json.Num n -> int_of_string_opt n
+                | _ -> None)) )
+        [] reason ~keep_unsupported_item:true ())
+    record_results;
+  Hashtbl.iter
+    (fun name () ->
+      if not (Hashtbl.mem record_definitions name) then
+        match
+          Hashtbl.fold
+            (fun id record found ->
+              if found <> None || Hashtbl.find_opt record_ids id <> Some name then found
+              else Some record)
+            record_nodes_by_id None
+        with
+        | None -> ()
+        | Some node ->
+            let item = Ast.Opaque { name; span } in
+            add_item name
+              (declaration_spelling node name)
+              ("opaque " ^ name) (Some item) (origin node) [] None ())
+    records;
   let function_type node =
     match c_type_name node with
     | None -> Error "function declaration has no C type"
@@ -825,12 +1261,7 @@ let map_declarations ~span declarations =
       let name = Option.value ~default:"" (string "name" node) in
       let kind = string "kind" node in
       match (kind, name) with
-      | Some "RecordDecl", "" -> ()
-      | Some "RecordDecl", _ ->
-          let item = Ast.Opaque { name; span } in
-          add_item name
-            (declaration_spelling node name)
-            ("opaque " ^ name) (Some item) (origin node) [] None ()
+      | Some "RecordDecl", _ -> ()
       | Some "EnumDecl", _ ->
           let previous_value = ref None in
           List.iter
@@ -886,12 +1317,7 @@ let map_declarations ~span declarations =
             (children node)
       | Some "TypedefDecl", _ -> (
           match Hashtbl.find_opt aliases name with
-          | Some (Ok (Ast.Named_type target)) when target = name ->
-              if Hashtbl.mem anonymous_record_aliases name then
-                let item = Ast.Opaque { name; span } in
-                add_item name
-                  (declaration_spelling node name)
-                  ("opaque " ^ name) (Some item) (origin node) (quals node) None ()
+          | Some (Ok (Ast.Named_type target)) when target = name -> ()
           | Some (Ok ty) ->
               add_item name
                 (declaration_spelling node name)
@@ -997,12 +1423,34 @@ let map_declarations ~span declarations =
             ~entity_scope:(if is_static then span.Span.file else "")
             ()
       | Some "VarDecl", _ ->
-          let ty = as_type ~allow_arrays:true ~allow_record:false node in
+          let ty =
+            match as_type ~allow_arrays:true ~allow_record:true node with
+            | Error "anonymous records are not supported" ->
+                Error "struct and union values are not supported"
+            | result -> result
+          in
+          let incomplete_element =
+            Option.bind (c_type_name node) (fun raw ->
+                let raw = trim raw in
+                if String.ends_with ~suffix:"[]" raw then
+                  let element = trim (String.sub raw 0 (String.length raw - 2)) in
+                  match
+                    type_result ~allow_arrays:true ~aliases ~records ~enums
+                      ~allow_record:true element
+                  with
+                  | Ok ty -> Some ty
+                  | Error _ -> None
+                else None)
+          in
+          Option.iter (Hashtbl.replace incomplete_arrays name) incomplete_element;
           let storage = string "storageClass" node in
           let reason =
             if storage = Some "static" then
               Some "static C globals are not externally visible"
-            else match ty with Ok _ -> None | Error reason -> Some reason
+            else
+              match ty with
+              | Error reason -> Some reason
+              | Ok ty -> type_value_reason ty
           in
           let item =
             match (ty, reason) with
@@ -1042,24 +1490,51 @@ let map_declarations ~span declarations =
   in
   {
     records =
-      List.filter_map
-        (fun node ->
-          match (string "kind" node, record_name node) with
-          | Some "RecordDecl", Some name ->
-              Some
-                ( name,
-                  Option.value ~default:"struct" (string "tagUsed" node) ^ " " ^ name,
-                  fst (declaration_location node) )
-          | Some "TypedefDecl", Some name when Hashtbl.mem anonymous_record_aliases name
-            ->
-              Some
-                ( name,
-                  name,
+      Hashtbl.fold
+        (fun name () acc ->
+          let node =
+            match Hashtbl.find_opt record_definitions name with
+            | Some node -> Some node
+            | None ->
+                Hashtbl.fold
+                  (fun id record found ->
+                    if found <> None || Hashtbl.find_opt record_ids id <> Some name then
+                      found
+                    else Some record)
+                  record_nodes_by_id None
+          in
+          match node with
+          | None -> acc
+          | Some node ->
+              let spelling =
+                if Hashtbl.mem anonymous_record_aliases name then name
+                else Option.value ~default:"struct" (string "tagUsed" node) ^ " " ^ name
+              in
+              let origin =
+                if Hashtbl.mem anonymous_record_aliases name then
+                  match
+                    List.find_opt
+                      (fun node ->
+                        string "kind" node = Some "TypedefDecl"
+                        && string "name" node = Some name)
+                      nodes
+                  with
+                  | Some alias -> (
+                      match string "fasHeader" alias with
+                      | Some header -> Some header
+                      | None -> fst (declaration_location node))
+                  | None -> fst (declaration_location node)
+                else
                   match string "fasHeader" node with
-                  | Some _ as header -> header
-                  | None -> fst (declaration_location node) )
-          | _ -> None)
-        nodes;
+                  | Some header -> Some header
+                  | None -> fst (declaration_location node)
+              in
+              (name, spelling, origin) :: acc)
+        records []
+      |> List.sort compare;
+    record_types;
+    incomplete_arrays =
+      Hashtbl.fold (fun name ty acc -> (name, ty) :: acc) incomplete_arrays [];
     items;
     aliases =
       List.filter
@@ -1116,6 +1591,14 @@ let merge_imports mappings =
     records =
       List.concat_map (fun mapping -> mapping.records) mappings
       |> List.sort_uniq compare;
+    record_types =
+      List.concat_map (fun mapping -> mapping.record_types) mappings
+      |> List.sort_uniq compare
+      |> List.filter (fun (name, _, _) -> not (bad name));
+    incomplete_arrays =
+      List.concat_map (fun mapping -> mapping.incomplete_arrays) mappings
+      |> List.sort_uniq compare
+      |> List.filter (fun (name, _) -> not (bad name));
     unsupported;
     identities = [];
     manifest = List.concat_map (fun mapping -> mapping.manifest) mappings;
@@ -1150,11 +1633,11 @@ let c_signature aliases = function
   | _ -> "unsupported C declaration"
 
 let source_signature aliases = function
-  | Ast.Func
-      { linkage = Ast.External_c; body = Ast.Declaration; generic_params = []; _ } as
-    item ->
+  | Ast.Func { linkage = Ast.External_c; generic_params = []; _ } as item ->
       Some (c_signature aliases item)
   | Ast.Global { linkage = Ast.Import_c; init = None; _ } as item ->
+      Some (c_signature aliases item)
+  | Ast.Global { linkage = Ast.Export_c; init = Some _; _ } as item ->
       Some (c_signature aliases item)
   | _ -> None
 
@@ -1177,12 +1660,6 @@ let reconcile_source source_items imported =
           (Printf.sprintf "duplicate declaration `%s`" name)
       in
       match (item, binding, source_signature imported.aliases item) with
-      | ( Ast.Func { linkage = Ast.External_c; body = Ast.Statements _ | Ast.Asm _; _ },
-          _,
-          _ )
-      | Ast.Global { linkage = Ast.Export_c; init = Some _; _ }, _, _ ->
-          confirmed := name :: !confirmed;
-          None
       | _, Some foreign, Some native ->
           let actual = c_signature imported.aliases foreign in
           if actual = native then (
@@ -1194,6 +1671,25 @@ let reconcile_source source_items imported =
                  (Printf.sprintf
                     "C declaration `%s` has type `%s`, but Fas declares `%s`" name
                     actual native))
+      | _, None, Some _ when List.mem_assoc name imported.incomplete_arrays -> (
+          let element = List.assoc name imported.incomplete_arrays in
+          match item with
+          | Ast.Global
+              { linkage = Ast.Export_c; init = Some _; ty = Ast.Array (_, actual); _ }
+            when canonical_type imported.aliases actual
+                 = canonical_type imported.aliases element ->
+              confirmed := name :: !confirmed;
+              None
+          | Ast.Global
+              { linkage = Ast.Export_c; init = Some _; ty = Ast.Array (_, actual); _ }
+            ->
+              Some
+                (Diag.error (Ast.item_span item)
+                   (Printf.sprintf
+                      "C declaration `%s` has type `arr[?, %s]`, but Fas declares `%s`"
+                      name (Ast.type_name element)
+                      (Ast.type_name (Ast.Array ("?", actual)))))
+          | _ -> Some (duplicate ()))
       | _ -> Some (duplicate ())
   in
   match List.find_map check source_items with
@@ -1206,6 +1702,25 @@ let reconcile_source source_items imported =
             List.filter
               (fun item -> not (List.mem (item_name item) !confirmed))
               imported.items;
+          unsupported =
+            List.filter
+              (fun (name, _) -> not (List.mem name !confirmed))
+              imported.unsupported;
+          manifest =
+            List.filter
+              (fun line ->
+                match String.index_opt line '\t' with
+                | None -> true
+                | Some stop ->
+                    not
+                      (List.mem (String.sub line 0 stop) !confirmed
+                      && List.mem_assoc (String.sub line 0 stop)
+                           imported.incomplete_arrays))
+              imported.manifest;
+          incomplete_arrays =
+            List.filter
+              (fun (name, _) -> not (List.mem name !confirmed))
+              imported.incomplete_arrays;
         }
 
 let manifest_text imported =

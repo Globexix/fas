@@ -2,6 +2,7 @@ type named_type_kind =
   | Struct_name
   | Generic_struct_name
   | Opaque_name
+  | C_record_name of string * string option
   | Alias_name of Ast.ty
   | Unsupported_name of string * string
 
@@ -48,11 +49,8 @@ let rec source_ty named_types = function
   | Ast.Void -> Ok Hir.Void
   | Ast.Int kind -> Ok (Hir.Int (src_int kind))
   | Ast.Addr -> Ok Hir.Addr
-  | Ast.Handle ty -> (
-      let* ty = source_ty named_types ty in
-      match ty with
-      | Hir.Opaque name -> Ok (Hir.Handle name)
-      | _ -> Error "handle type argument must be an opaque type")
+  | Ast.Handle ty ->
+      Result.map (fun name -> Hir.Handle name) (handle_target named_types ty)
   | Ast.Array (length, ty) ->
       source_aggregate named_types (fun n element -> Hir.Array (n, element)) length ty
   | Ast.Vec (length, ty) -> (
@@ -72,12 +70,30 @@ let rec source_ty named_types = function
       | Some Generic_struct_name ->
           Error (Printf.sprintf "generic struct `%s` requires type arguments" name)
       | Some Opaque_name -> Ok (Hir.Opaque name)
+      | Some (C_record_name (record, None)) -> Ok (Hir.Struct record)
+      | Some (C_record_name (_, Some reason)) ->
+          Error (Printf.sprintf "C declaration `%s` is not supported: %s" name reason)
       | Some (Alias_name ty) -> source_ty named_types ty
       | Some (Unsupported_name (entity, reason)) ->
           Error (Printf.sprintf "C declaration `%s` is not supported: %s" entity reason)
       | None -> Error (Printf.sprintf "unknown type `%s`" name))
   | Ast.Applied_type _ ->
       Error "generic type application reached ordinary type checking"
+
+and handle_target named_types = function
+  | Ast.Named_type name -> (
+      match List.assoc_opt name named_types with
+      | Some (C_record_name (record, _)) -> Ok record
+      | _ -> (
+          match source_ty named_types (Ast.Named_type name) with
+          | Ok (Hir.Opaque name) -> Ok name
+          | Ok _ -> Error "handle type argument must be an opaque type"
+          | Error message -> Error message))
+  | ty -> (
+      match source_ty named_types ty with
+      | Ok (Hir.Opaque name) -> Ok name
+      | Ok _ -> Error "handle type argument must be an opaque type"
+      | Error message -> Error message)
 
 and source_aggregate named_types make raw element =
   try

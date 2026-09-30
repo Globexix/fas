@@ -108,7 +108,8 @@ let validate_extern_c_signature span params converted ret =
       (Printf.sprintf "extern \"C\" cannot return `%s` by value; use an output pointer"
          (Hir.ty_name ret))
 
-let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = []) program =
+let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
+    ?(c_records = []) program =
   let global_names =
     List.filter_map
       (function Ast.Global { name; _ } -> Some name | _ -> None)
@@ -210,8 +211,14 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = []) pro
     in
     named_types @ extras
   in
+  let add_c_records named_types =
+    List.fold_left
+      (fun types (name, record, reason) ->
+        (name, C_record_name (record, reason)) :: List.remove_assoc name types)
+      named_types c_records
+  in
   let* named_types = collect_named_types String_set.empty [] program.Ast.items in
-  let named_types = add_c_types named_types in
+  let named_types = add_c_records (add_c_types named_types) in
   let* () =
     Result_list.iter
       (function
@@ -271,7 +278,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = []) pro
       specializations program
   in
   let* named_types = collect_named_types String_set.empty [] program.Ast.items in
-  let named_types = add_c_types named_types in
+  let named_types = add_c_records (add_c_types named_types) in
   let rec collect_structs named_types acc = function
     | [] -> Ok (List.rev acc)
     | Ast.Struct { generic_params = _ :: _; align; span; _ } :: rest ->
@@ -371,7 +378,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = []) pro
       ~limits ~type_node_account specializations program
   in
   let* named_types = collect_named_types String_set.empty [] program.Ast.items in
-  let named_types = add_c_types named_types in
+  let named_types = add_c_records (add_c_types named_types) in
   let* structs_src = collect_structs named_types [] program.Ast.items in
   let* structs = build structs_src in
   let validate_object span t = Sema_limits.validate_object limits structs span t in

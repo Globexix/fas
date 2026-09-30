@@ -778,7 +778,8 @@ let run_unprotected ?header_output config =
           let* hir =
             match
               Sema.check ~limits ~c_aliases:imported.aliases
-                ~c_unsupported:imported.unsupported program
+                ~c_unsupported:imported.unsupported ~c_records:imported.record_types
+                program
             with
             | Ok hir -> Ok hir
             | Error diagnostics -> Error (add_include_chains chains diagnostics)
@@ -787,33 +788,30 @@ let run_unprotected ?header_output config =
             List.map
               (fun (name, spelling, origin) ->
                 let required_header =
-                  if String.contains spelling ' ' then None
-                  else
-                    List.find_map
-                      (fun (source, headers) ->
-                        List.find_map
-                          (fun (h : C_import.header) ->
-                            match h.spelling with
-                            | Ast.C_quoted path ->
-                                let path =
-                                  if Filename.is_relative path then
-                                    Filename.concat (Filename.dirname source) path
-                                  else path
-                                in
-                                if origin = Some path then
-                                  Some (Printf.sprintf "#include %S\n" path)
-                                else None
-                            | Ast.C_system path ->
-                                if
-                                  Option.fold ~none:false
-                                    ~some:(fun file ->
-                                      String.ends_with ~suffix:path file)
-                                    origin
-                                then Some ("#include <" ^ path ^ ">\n")
-                                else None
-                            | Ast.C_fragment _ -> None)
-                          headers)
-                      c_imports
+                  List.find_map
+                    (fun (source, headers) ->
+                      List.find_map
+                        (fun (h : C_import.header) ->
+                          match h.spelling with
+                          | Ast.C_quoted path ->
+                              let path =
+                                if Filename.is_relative path then
+                                  Filename.concat (Filename.dirname source) path
+                                else path
+                              in
+                              if origin = Some path then
+                                Some (Printf.sprintf "#include %S\n" path)
+                              else None
+                          | Ast.C_system path ->
+                              if
+                                Option.fold ~none:false
+                                  ~some:(fun file -> String.ends_with ~suffix:path file)
+                                  origin
+                              then Some ("#include <" ^ path ^ ">\n")
+                              else None
+                          | Ast.C_fragment _ -> None)
+                        headers)
+                    c_imports
                 in
                 C_exports.{ name; spelling; header = required_header })
               imported.records

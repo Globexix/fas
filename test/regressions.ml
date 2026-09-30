@@ -54,7 +54,8 @@ let c_semantic_result ((source, imported) : string * C_import.mapped) text =
         failwith (Diag.render_all ~source:None diagnostics ^ "\n" ^ text)
   in
   let program = { Ast.items = program.items @ imported.items } in
-  Sema.check ~c_aliases:imported.aliases ~c_unsupported:imported.unsupported program
+  Sema.check ~c_aliases:imported.aliases ~c_unsupported:imported.unsupported
+    ~c_records:imported.record_types program
 
 let c_semantic_accept name imported text =
   match c_semantic_result imported text with
@@ -8702,6 +8703,7 @@ let () =
   (match
      Sema.check ~c_aliases:matching_import.aliases
        ~c_unsupported:matching_import.unsupported
+       ~c_records:matching_import.record_types
        { Ast.items = matching.items @ matching_import.items }
    with
   | Ok _ -> ()
@@ -8866,7 +8868,7 @@ let () =
     "fas_struct_by_value(null)";
   unsupported "fas_union_by_value" "struct and union values are not supported"
     "fas_union_by_value(null)";
-  unsupported "fas_bitfield_global" "struct and union values are not supported"
+  unsupported "fas_bitfield_global" "bit-fields are not supported"
     "fas_bitfield_global = null";
   c_semantic_accept "c-import-array-global" c_matrix
     "fn probe() i32 { fas_array_global[3] = 9; return fas_array_global[0] }\n";
@@ -8876,10 +8878,10 @@ let () =
     "fn probe() i32 { return fas_array_parameter(&fas_array_global) }\n";
   c_semantic_accept "c-import-array-mutable-pointer-elements" c_matrix
     "fn probe() void { fas_array_pointer_elements[0] = null }\n";
-  unsupported "fas_direct_record_array" "struct and union values are not supported"
-    "fas_direct_record_array[0]";
-  unsupported "fas_alias_record_array" "struct and union values are not supported"
-    "fas_alias_record_array[0]";
+  c_semantic_accept "c-import-record-array-global" c_matrix
+    "fn probe() i32 { return fas_direct_record_array[0].field }\n";
+  c_semantic_accept "c-import-typedef-record-array-global" c_matrix
+    "fn probe() i32 { return fas_alias_record_array[0].field }\n";
   unsupported "fas_array_unknown" "arrays of unknown size are not supported"
     "fas_array_unknown[0]";
   unsupported "fas_array_float" "floating-point types are not supported"
@@ -8997,9 +8999,232 @@ let () =
       c_semantic_message "c-import-static-name-collision"
         "C declaration `fas_shared_static` is not supported: conflicting C declarations"
         (static_left, collided) "fn call_static() i32 { return fas_shared_static(1) }\n");
-  c_semantic_message "c-import-anonymous-record-typedef-by-value"
-    "opaque type `FasAnonymous` may only be used behind a pointer" c_matrix
-    "fn anonymous(value FasAnonymous) void { return }\n";
+  c_semantic_accept "c-import-anonymous-record-typedef-by-value" c_matrix
+    "fn anonymous() i32 { value FasAnonymous = (FasAnonymous){ 1 }\n\
+     return value.field }\n";
+  let phase21_records = c_import_fixture "phase21_records.h" in
+  let phase21_imported = snd phase21_records in
+  let imported_struct name =
+    List.find_map
+      (function
+        | Ast.Struct { name = found; fields; align; _ } when found = name ->
+            Some (fields, align)
+        | _ -> None)
+      phase21_imported.items
+  in
+  let require_struct name =
+    match imported_struct name with
+    | Some result -> result
+    | None -> failwith ("missing admitted C record " ^ name)
+  in
+  let tag_fields, _ = require_struct "FasTagRecord" in
+  if
+    List.map (fun (field : Ast.field) -> (field.name, field.ty)) tag_fields
+    <> [ ("first", Ast.Int Ast.I32); ("second", Ast.Int Ast.U8) ]
+  then failwith "C tag record fields were not imported in order";
+  let anonymous_fields, _ = require_struct "FasAnonymousRecord" in
+  if
+    List.map (fun (field : Ast.field) -> (field.name, field.ty)) anonymous_fields
+    <> [ ("byte", Ast.Int Ast.U8); ("word", Ast.Int Ast.I32) ]
+  then failwith "anonymous C typedef record fields were not imported";
+  let alias_fields, _ = require_struct "FasAliasRecord" in
+  if
+    List.length alias_fields <> 1
+    || List.length
+         (List.filter
+            (function Ast.Struct { name = "FasAliasRecord"; _ } -> true | _ -> false)
+            phase21_imported.items)
+       <> 1
+    || List.assoc_opt "FasAlias" phase21_imported.aliases
+       <> Some (Ast.Named_type "FasAliasRecord")
+  then failwith "tag and typedef did not preserve one C record identity";
+  let nested_fields, _ = require_struct "FasNestedRecord" in
+  if
+    List.map (fun (field : Ast.field) -> (field.name, field.ty)) nested_fields
+    <> [
+         ("inner", Ast.Named_type "FasInnerRecord");
+         ("values", Ast.Array ("2", Ast.Int Ast.I32));
+       ]
+  then failwith "nested record or array field type was not imported";
+  let self_fields, _ = require_struct "FasSelfRecord" in
+  if
+    List.map (fun (field : Ast.field) -> (field.name, field.ty)) self_fields
+    <> [
+         ("next", Ast.Handle (Ast.Named_type "FasSelfRecord"));
+         ("value", Ast.Int Ast.I32);
+       ]
+  then failwith "self-referential record pointer did not map to a handle";
+  let _, aligned = require_struct "FasAlignedRecord" in
+  if aligned <> Some 16 then failwith "aligned C record did not map to @align(16)";
+  List.iter
+    (fun (name, reason) ->
+      if
+        imported_struct name <> None
+        || (not (List.mem_assoc name phase21_imported.unsupported))
+        || List.assoc name phase21_imported.unsupported <> reason
+      then failwith ("unsupported C record reason was not retained for " ^ name))
+    [
+      ("FasPackedRecord", "record layout differs from C");
+      ("FasUnionRecord", "unions are not supported");
+      ("FasBitfieldRecord", "bit-fields are not supported");
+      ("FasFlexibleRecord", "flexible array members are not supported");
+      ("FasAnonymousMemberRecord", "anonymous members are not supported");
+      ("FasFloatRecord", "floating-point fields are not supported");
+      ("FasFunctionPointerRecord", "function-pointer fields are not supported");
+      ("FasReservedFieldRecord", "reserved field names are not supported");
+    ];
+  (match c_semantic_result phase21_records "fn noop() void { return }\n" with
+  | Ok program ->
+      let layout name =
+        match
+          List.find_opt
+            (fun (record : Hir.struct_def) -> record.name = name)
+            program.structs
+        with
+        | Some record -> record
+        | None -> failwith ("missing checked record layout " ^ name)
+      in
+      List.iter
+        (fun (name, size, align, offsets) ->
+          let record = layout name in
+          if
+            record.size <> size || record.align <> align
+            || List.map
+                 (fun (field : Hir.field) -> (field.name, field.offset))
+                 record.fields
+               <> offsets
+          then failwith ("unexpected imported record layout for " ^ name))
+        [
+          ("FasTagRecord", 8, 4, [ ("first", 0); ("second", 4) ]);
+          ("FasAnonymousRecord", 8, 4, [ ("byte", 0); ("word", 4) ]);
+          ("FasNestedRecord", 16, 4, [ ("inner", 0); ("values", 8) ]);
+          ("FasSelfRecord", 16, 8, [ ("next", 0); ("value", 8) ]);
+          ("FasAlignedRecord", 16, 16, [ ("value", 0) ]);
+        ]
+  | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics));
+  let phase21_manifest = C_import.manifest_text phase21_imported in
+  if
+    not
+      (contains phase21_manifest
+         "FasNestedRecord\tstruct FasNestedRecord\tstruct FasNestedRecord {inner \
+          FasInnerRecord, values arr[2, i32]}")
+  then failwith "C record manifest did not list admitted fields";
+  c_semantic_accept "c-import-record-handle-and-field-access" phase21_records
+    "fn read(value handle[FasSelfRecord]) i32 {\n\
+     return handle_addr(value)[FasSelfRecord].value }\n\
+     fn cast(pointer addr) handle[FasTagRecord] {\n\
+     return handle_from_addr[FasTagRecord](pointer) }\n";
+  c_semantic_accept "c-import-unsupported-record-remains-handle" phase21_records
+    "fn retain(value handle[FasUnionRecord]) handle[FasUnionRecord] { return value }\n";
+  c_semantic_message "c-import-packed-record-layout"
+    "C declaration `FasPackedRecord` is not supported: record layout differs from C"
+    phase21_records "fn read(value FasPackedRecord) i32 { return value.word }\n";
+  c_semantic_message "c-import-union-record-reason"
+    "C declaration `FasUnionRecord` is not supported: unions are not supported"
+    phase21_records "fn read(value FasUnionRecord) i32 { return value.value }\n";
+  c_semantic_message "c-import-bitfield-record-reason"
+    "C declaration `FasBitfieldRecord` is not supported: bit-fields are not supported"
+    phase21_records "fn read(value FasBitfieldRecord) i32 { return value.value }\n";
+  c_semantic_message "c-import-flexible-record-reason"
+    "C declaration `FasFlexibleRecord` is not supported: flexible array members are \
+     not supported"
+    phase21_records "fn read(value FasFlexibleRecord) i32 { return value.length }\n";
+  c_semantic_message "c-import-anonymous-member-record-reason"
+    "C declaration `FasAnonymousMemberRecord` is not supported: anonymous members are \
+     not supported"
+    phase21_records
+    "fn read(value FasAnonymousMemberRecord) i32 { return value.integer }\n";
+  c_semantic_message "c-import-float-field-record-reason"
+    "C declaration `FasFloatRecord` is not supported: floating-point fields are not \
+     supported"
+    phase21_records "fn read(value FasFloatRecord) i32 { return value.value }\n";
+  c_semantic_message "c-import-function-pointer-field-record-reason"
+    "C declaration `FasFunctionPointerRecord` is not supported: function-pointer \
+     fields are not supported"
+    phase21_records
+    "fn read(value FasFunctionPointerRecord) i32 { return value.callback }\n";
+  c_semantic_message "c-import-reserved-field-record-reason"
+    "C declaration `FasReservedFieldRecord` is not supported: reserved field names are \
+     not supported"
+    phase21_records "fn read(value FasReservedFieldRecord) i32 { return value.addr }\n";
+  semantic_error "addr-handle-c-record-native-still-rejected"
+    "handle type argument must be an opaque type"
+    "struct NativeRecord { value i32 }\n\
+     fn f(pointer addr) handle[NativeRecord] {\n\
+     return handle_from_addr[NativeRecord](pointer) }\n";
+  let phase21_definition_header = Filename.temp_file "fas-phase21-definition-" ".h" in
+  let phase21_definition_source =
+    Filename.concat
+      (Filename.dirname phase21_definition_header)
+      "phase21-definition.fas"
+  in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove phase21_definition_header)
+    (fun () ->
+      let output = open_out_bin phase21_definition_header in
+      output_string output
+        "extern int fas_phase21_imported_global;\n\
+         int fas_phase21_imported_function(int value);\n\
+         extern int fas_phase21_incomplete[];\n";
+      close_out output;
+      let imported =
+        let span =
+          Span.make ~file:phase21_definition_source ~start_offset:0 ~end_offset:0
+            ~line:1 ~column:1
+        in
+        let declarations, _, _ =
+          expect_ok
+            (C_import.import ~cc:"clang-22" ~debug:false ~keep:false
+               phase21_definition_source
+               [ C_import.{ spelling = Ast.C_quoted phase21_definition_header; span } ])
+        in
+        C_import.map_declarations ~span declarations
+      in
+      let definitions =
+        parse_file phase21_definition_source
+          "extern \"C\" { var fas_phase21_imported_global i32 = 7\n\
+           fn fas_phase21_imported_function(value i32) i32 { return value }\n\
+           var fas_phase21_incomplete arr[3,i32] = {1,2,3} }\n"
+      in
+      let reconciled =
+        expect_ok (C_import.reconcile_source definitions.items imported)
+      in
+      ignore
+        (expect_ok (Sema.check { Ast.items = definitions.items @ reconciled.items }));
+      if
+        List.exists
+          (function
+            | Ast.Global { name; _ } | Ast.Func { name; _ } ->
+                List.mem name
+                  [ "fas_phase21_imported_global"; "fas_phase21_imported_function" ]
+            | _ -> false)
+          reconciled.items
+        || List.mem_assoc "fas_phase21_incomplete" reconciled.unsupported
+      then failwith "matching C definitions retained conflicting imports";
+      let mismatching =
+        parse_file phase21_definition_source
+          "extern \"C\" { fn fas_phase21_imported_function(value u32) i32 {return 0 } }\n"
+      in
+      (match C_import.reconcile_source mismatching.items imported with
+      | Error [ diagnostic ]
+        when diagnostic.message
+             = "C declaration `fas_phase21_imported_function` has type `fn(i32)->i32`, \
+                but Fas declares `fn(u32)->i32`" ->
+          ()
+      | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+      | Ok _ -> failwith "mismatching imported function definition was accepted");
+      let wrong_element =
+        parse_file phase21_definition_source
+          "extern \"C\" { var fas_phase21_incomplete arr[3,u32] = {1,2,3} }\n"
+      in
+      match C_import.reconcile_source wrong_element.items imported with
+      | Error [ diagnostic ]
+        when diagnostic.message
+             = "C declaration `fas_phase21_incomplete` has type `arr[?, i32]`, but Fas \
+                declares `arr[?, u32]`" ->
+          ()
+      | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+      | Ok _ -> failwith "incomplete array with the wrong element type was accepted");
   c_semantic_message "c-import-reserved-name"
     "C declaration `addr` is not supported: name is reserved in Fas" c_matrix
     "fn probe() i32 { return addr(1) }\n";
@@ -9361,9 +9586,11 @@ let () =
       (match Driver.run (cli_run [ "--emit-header"; root ]) with
       | Error [ d ] ->
           assert (
-            d.Diag.message = "C compilation failed: conflicting types for 'exported'"
-            && d.primary.line = 2 && d.primary.file = root)
-      | _ -> failwith "c-export-incompatible-prototype: expected mapped Clang rejection");
+            d.Diag.message
+            = "C declaration `exported` has type `fn(i32)->i64`, but Fas declares \
+               `fn(i32)->i32`"
+            && d.primary.line = 4 && d.primary.file = root)
+      | _ -> failwith "c-export-incompatible-prototype: expected signature rejection");
       write root
         "use \"C\" <<C\n\
          void *missing(void) { return &bad; }\n\

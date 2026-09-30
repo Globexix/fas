@@ -776,13 +776,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           let* () =
             if type_mentions dependent destination then Ok ()
             else
-              let* resolved =
-                source_ty_with_values ~globals:global_names eval_named_types eval_consts
-                  span destination
-              in
-              match resolved with
-              | Hir.Opaque _ -> Ok ()
-              | _ -> error span "handle type argument must be an opaque type"
+              handle_target eval_named_types destination
+              |> Result.map_error (fun message -> [ Diag.error span message ])
+              |> Result.map (fun _ -> ())
           in
           validate_non_dependent_expression c dependent None value
       | Ast.Field (value, _, _) ->

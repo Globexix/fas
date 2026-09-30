@@ -1,0 +1,16 @@
+struct FasTagRecord { int first; unsigned char second; };
+typedef struct { unsigned char byte; int word; } FasAnonymousRecord;
+struct FasAliasRecord { int value; };
+typedef struct FasAliasRecord FasAlias;
+struct FasInnerRecord { short left; int right; };
+struct FasNestedRecord { struct FasInnerRecord inner; int values[2]; };
+struct FasSelfRecord { struct FasSelfRecord *next; int value; };
+struct __attribute__((aligned(16))) FasAlignedRecord { int value; };
+struct __attribute__((packed)) FasPackedRecord { unsigned char byte; int word; };
+union FasUnionRecord { int value; unsigned char byte; };
+struct FasBitfieldRecord { unsigned int value : 3; };
+struct FasFlexibleRecord { int length; unsigned char data[]; };
+struct FasAnonymousMemberRecord { union { int integer; unsigned char byte; }; };
+struct FasFloatRecord { float value; };
+struct FasFunctionPointerRecord { int (*callback)(int); };
+struct FasReservedFieldRecord { int addr; };

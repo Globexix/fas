@@ -156,9 +156,9 @@ let string = function Str s -> Some s | _ -> None
 
 let keep_field = function
   | "kind" | "id" | "decl" | "name" | "type" | "loc" | "value" | "storageClass"
-  | "inline" | "tagUsed" | "fixedUnderlyingType" | "isBitfield" | "isImplicit" | "inner"
-  | "qualType" | "desugaredQualType" | "file" | "line" | "expansionLoc" | "spellingLoc"
-    ->
+  | "inline" | "tagUsed" | "completeDefinition" | "fixedUnderlyingType" | "isBitfield"
+  | "isImplicit" | "inner" | "qualType" | "desugaredQualType" | "file" | "line" | "col"
+  | "expansionLoc" | "spellingLoc" ->
       true
   | _ -> false
 
@@ -232,9 +232,7 @@ and object_value ?(location = false) i =
       expect i ':';
       let keep = keep_field key in
       let skip_inner =
-        key = "inner"
-        && (kind = "VarDecl" || kind = "RecordDecl" || kind = "FieldDecl"
-           || String.ends_with ~suffix:"Stmt" kind)
+        key = "inner" && (kind = "VarDecl" || String.ends_with ~suffix:"Stmt" kind)
       in
       let child_location = List.mem key [ "loc"; "expansionLoc"; "spellingLoc" ] in
       let value =

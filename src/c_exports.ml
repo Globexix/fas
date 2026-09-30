@@ -73,18 +73,23 @@ let declarations ?(reserved = []) records (program : program) =
   let rec invalid = function
     | Array (0, _) -> Some "contains a zero-length array"
     | Array (_, ty) -> invalid ty
-    | Struct name ->
-        let s = find name in
-        if s.fields = [] then Some "contains an empty struct"
-        else
-          List.find_map Fun.id
-            (identifier name
-            :: List.map
-                 (fun (f : field) ->
-                   match identifier f.name with
-                   | Some _ as e -> e
-                   | None -> invalid f.ty)
-                 s.fields)
+    | Struct name -> (
+        match List.find_opt (fun r -> r.name = name) records with
+        | Some r when r.header = None ->
+            Some (Printf.sprintf "`%s` is declared only in a C container" name)
+        | Some _ -> None
+        | None ->
+            let s = find name in
+            if s.fields = [] then Some "contains an empty struct"
+            else
+              List.find_map Fun.id
+                (identifier name
+                :: List.map
+                     (fun (f : field) ->
+                       match identifier f.name with
+                       | Some _ as e -> e
+                       | None -> invalid f.ty)
+                     s.fields))
     | Handle name -> (
         match List.find_opt (fun r -> r.name = name) records with
         | Some r when r.header = None && not (String.contains r.spelling ' ') ->
@@ -180,28 +185,45 @@ let declarations ?(reserved = []) records (program : program) =
                (base ty) name n);
           checks name (Vec (n, ty)));
         name
-    | Struct name ->
+    | Struct name -> (
         if not (Hashtbl.mem seen ("struct:" ^ name)) then (
           Hashtbl.add seen ("struct:" ^ name) ();
           let s = find name in
-          let fields =
-            List.mapi
-              (fun i (f : field) ->
-                Printf.sprintf "  %s%s;\n"
-                  (if i = 0 then Printf.sprintf "alignas(%d) " s.align else "")
-                  (declarator f.ty f.name))
-              s.fields
-          in
-          add ("struct " ^ name ^ " {\n" ^ String.concat "" fields ^ "};\n");
-          checks ("struct " ^ name) (Struct name);
-          List.iter
-            (fun (f : field) ->
-              add
-                (Printf.sprintf
-                   "static_assert(offsetof(struct %s, %s) == %d, \"%s.%s offset\");\n"
-                   name f.name f.offset name f.name))
-            s.fields);
-        "struct " ^ name
+          match List.find_opt (fun r -> r.name = name) records with
+          | Some r ->
+              Option.iter (fun h -> headers := h :: !headers) r.header;
+              checks r.spelling (Struct name);
+              List.iter
+                (fun (f : field) ->
+                  add
+                    (Printf.sprintf
+                       "static_assert(offsetof(%s, %s) == %d, \"%s.%s offset\");\n"
+                       r.spelling f.name f.offset name f.name))
+                s.fields;
+              r.spelling
+          | None ->
+              let fields =
+                List.mapi
+                  (fun i (f : field) ->
+                    Printf.sprintf "  %s%s;\n"
+                      (if i = 0 then Printf.sprintf "alignas(%d) " s.align else "")
+                      (declarator f.ty f.name))
+                  s.fields
+              in
+              add ("struct " ^ name ^ " {\n" ^ String.concat "" fields ^ "};\n");
+              checks ("struct " ^ name) (Struct name);
+              List.iter
+                (fun (f : field) ->
+                  add
+                    (Printf.sprintf
+                       "static_assert(offsetof(struct %s, %s) == %d, \"%s.%s offset\");\n"
+                       name f.name f.offset name f.name))
+                s.fields;
+              "struct " ^ name)
+        else
+          match List.find_opt (fun r -> r.name = name) records with
+          | Some r -> r.spelling
+          | None -> "struct " ^ name)
     | Array _ | Opaque _ -> invalid_arg "internal error: C declaration base type"
   and declarator ty name =
     match ty with

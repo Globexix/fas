@@ -2,6 +2,7 @@ type named_type_kind =
   | Struct_name
   | Generic_struct_name
   | Opaque_name
+  | C_record_name of string * string option
   | Alias_name of Ast.ty
   | Unsupported_name of string * string
 
@@ -9,6 +10,7 @@ type named_types = (string * named_type_kind) list
 type const_values = (string * Hir.ty * int64) list
 
 val source_ty : named_types -> Ast.ty -> (Hir.ty, string) result
+val handle_target : named_types -> Ast.ty -> (string, string) result
 val source_ty_diag : named_types -> Span.t -> Ast.ty -> (Hir.ty, Diag.t list) result
 val vec_cap_error : int -> Hir.ty -> string option
 

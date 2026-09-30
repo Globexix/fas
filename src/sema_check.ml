@@ -654,20 +654,20 @@ and check_expr (c : context) expected expression =
             else Ok (Hir.Binary (op, a, b, result_ty, s)))
   | Ast.Call (fn, args, s) -> check_call c None fn args s
   | Ast.Handle_from_addr (t, e, s) -> (
-      let* resolved = source_ty_diag c.named_types s t in
-      match resolved with
-      | Hir.Opaque opaque_name -> (
-          let* a = check_expr c None e in
-          match Hir.expr_ty a with
-          | Hir.Addr ->
-              Ok
-                (Hir.Call
-                   ( Hir.Builtin (Hir.Handle_from_addr opaque_name),
-                     [ a ],
-                     Hir.Handle opaque_name,
-                     s ))
-          | _ -> error s "handle_from_addr argument must be an addr")
-      | _ -> error s "handle type argument must be an opaque type")
+      let* opaque_name =
+        handle_target c.named_types t
+        |> Result.map_error (fun message -> [ Diag.error s message ])
+      in
+      let* a = check_expr c None e in
+      match Hir.expr_ty a with
+      | Hir.Addr ->
+          Ok
+            (Hir.Call
+               ( Hir.Builtin (Hir.Handle_from_addr opaque_name),
+                 [ a ],
+                 Hir.Handle opaque_name,
+                 s ))
+      | _ -> error s "handle_from_addr argument must be an addr")
   | Ast.Generic_args (_fn, _, s) ->
       error s "generic specialization is not available in this context"
   | Ast.Cast (k, t, e, s) ->
@@ -990,21 +990,15 @@ and check_call c _expected fn args s =
     when name = "handle_from_addr" -> (
       match generic_args with
       | [ Ast.Type_arg type_arg ] ->
-          let* resolved = source_ty_diag c.named_types application_span type_arg in
           let* opaque_name =
-            match resolved with
-            | Hir.Opaque n -> Ok n
-            | _ -> error application_span "handle type argument must be an opaque type"
+            handle_target c.named_types type_arg
+            |> Result.map_error (fun message -> [ Diag.error application_span message ])
           in
           check_handle_from_addr c name opaque_name args s
       | [ Ast.Name_arg (type_name, name_span) ] ->
-          let* resolved =
-            source_ty_diag c.named_types name_span (Ast.Named_type type_name)
-          in
           let* opaque_name =
-            match resolved with
-            | Hir.Opaque n -> Ok n
-            | _ -> error name_span "handle type argument must be an opaque type"
+            handle_target c.named_types (Ast.Named_type type_name)
+            |> Result.map_error (fun message -> [ Diag.error name_span message ])
           in
           check_handle_from_addr c name opaque_name args s
       | _ -> error s (Printf.sprintf "builtin `%s` expects a type argument" name))
