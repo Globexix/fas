@@ -1,0 +1,60 @@
+use "C" <stdio.h>
+use "C" <stdlib.h>
+use "C" <string.h>
+use "C" <time.h>
+use "C" <<STAT
+#include <sys/stat.h>
+typedef struct stat stat_t;
+STAT
+
+var fas_interop_values arr[5, i32] = {9, 1, 7, 2, 4}
+
+extern "C" {
+  fn fas_interop_compare(left addr, right addr) i32 {
+    return left[i32] - right[i32]
+  }
+  fn fas_interop_exit() void {
+    puts(c"exit")
+    return
+  }
+}
+
+fn main() i32 {
+  path addr = c"interop.bin"
+  size usize = strlen(c"fas")
+  memory addr = malloc(size)
+  if memory == null { return 1 }
+  free(memory)
+
+  file handle[FILE] = fopen(path, c"wb")
+  if file == null { return 2 }
+  if fwrite(c"12345678", 1, strlen(c"12345678"), file) != 8 { return 3 }
+  if fclose(file) != 0 { return 4 }
+
+  stat_result stat_t
+  if stat(path, &stat_result) != 0 { return 5 }
+  if stat_result.st_size != 8 { return 6 }
+
+  clock_result timespec = (timespec){0, 0}
+  if clock_gettime(1, &clock_result) != 0 { return 7 }
+  if clock_result.tv_sec < 0 { return 8 }
+
+  file = fopen(path, c"rb")
+  if file == null { return 9 }
+  if fseek(file, 0, SEEK_END) != 0 { return 10 }
+  end_position i64 = ftell(file)
+  if end_position != 8 { return 11 }
+  if getc(file) != EOF { return 12 }
+  if fclose(file) != 0 { return 13 }
+
+  qsort(&fas_interop_values[0], 5, sizeof[i32], &fas_interop_compare)
+  if fas_interop_values[0] != 1 { return 14 }
+  if fas_interop_values[1] != 2 { return 14 }
+  if fas_interop_values[2] != 4 { return 14 }
+  if fas_interop_values[3] != 7 { return 14 }
+  if fas_interop_values[4] != 9 { return 14 }
+  if atexit(&fas_interop_exit) != 0 { return 15 }
+  puts(c"interop: ok")
+  puts(c"main")
+  return 0
+}
