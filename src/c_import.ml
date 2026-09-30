@@ -387,11 +387,13 @@ let rec record_decl_id node =
 let record_name node =
   match string "name" node with Some name when name <> "" -> Some name | _ -> None
 
-let type_result ~aliases ~records ~enums ~allow_record raw =
+let type_result ?(allow_arrays = false) ~aliases ~records ~enums ~allow_record raw =
   let raw, quals = clean_type raw in
   let rec resolve seen raw =
     let raw = trim raw in
     match Hashtbl.find_opt aliases raw with
+    | Some (Ok (Ast.Array _)) when not allow_arrays ->
+        Error "array types are not supported by value"
     | Some (Ok (Ast.Named_type _)) when not allow_record ->
         Error "struct and union values are not supported"
     | Some result when not (List.mem raw seen) -> result
@@ -414,7 +416,30 @@ let type_result ~aliases ~records ~enums ~allow_record raw =
            || has raw "aarch64_vector_pcs" ->
         Error "non-default calling conventions are not supported"
     | None when String.contains raw '[' ->
-        Error "array types are not supported by value"
+        if not allow_arrays then Error "array types are not supported by value"
+        else
+          let first = String.index raw '[' in
+          let element = trim (String.sub raw 0 first) in
+          let rec dimensions index =
+            if index = String.length raw then resolve seen element
+            else if raw.[index] = ' ' then dimensions (index + 1)
+            else if raw.[index] <> '[' then
+              Error "array types are not supported by value"
+            else
+              match String.index_from_opt raw index ']' with
+              | None -> Error "array types are not supported by value"
+              | Some finish -> (
+                  let length = trim (String.sub raw (index + 1) (finish - index - 1)) in
+                  if length = "" then Error "arrays of unknown size are not supported"
+                  else
+                    match int_of_string_opt length with
+                    | Some size when size >= 0 ->
+                        Result.map
+                          (fun ty -> Ast.Array (length, ty))
+                          (dimensions (finish + 1))
+                    | _ -> Error "array types are not supported by value")
+          in
+          dimensions first
     | None -> (
         let stars =
           String.fold_left (fun count c -> if c = '*' then count + 1 else count) 0 raw
@@ -634,7 +659,9 @@ let map_declarations ~span declarations =
         if Hashtbl.mem records name then Ok (Ast.Named_type name)
         else Error "anonymous records are not supported"
     | None ->
-        let result = type_result ~aliases ~records ~enums ~allow_record:true raw in
+        let result =
+          type_result ~allow_arrays:true ~aliases ~records ~enums ~allow_record:true raw
+        in
         result
   in
   Hashtbl.iter (fun name _ -> ignore (alias [] name)) alias_nodes;
@@ -708,10 +735,10 @@ let map_declarations ~span declarations =
         tag ^ " " ^ name
   in
   let quals node = c_qualifiers node in
-  let as_type ~allow_record node =
+  let as_type ?(allow_arrays = false) ~allow_record node =
     match c_type_name node with
     | None -> Error "declaration has no C type"
-    | Some raw -> type_result ~aliases ~records ~enums ~allow_record raw
+    | Some raw -> type_result ~allow_arrays ~aliases ~records ~enums ~allow_record raw
   in
   let function_type node =
     match c_type_name node with
@@ -930,7 +957,7 @@ let map_declarations ~span declarations =
             ~entity_scope:(if is_static then span.Span.file else "")
             ()
       | Some "VarDecl", _ ->
-          let ty = as_type ~allow_record:false node in
+          let ty = as_type ~allow_arrays:true ~allow_record:false node in
           let storage = string "storageClass" node in
           let reason =
             if storage = Some "static" then

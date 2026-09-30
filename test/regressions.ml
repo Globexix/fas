@@ -8765,8 +8765,42 @@ let () =
     "fas_union_by_value(null)";
   unsupported "fas_bitfield_global" "struct and union values are not supported"
     "fas_bitfield_global = null";
-  unsupported "fas_array_global" "array types are not supported by value"
-    "fas_array_global[0]";
+  c_semantic_accept "c-import-array-global" c_matrix
+    "fn probe() i32 { fas_array_global[3] = 9; return fas_array_global[0] }\n";
+  c_semantic_accept "c-import-array-nested" c_matrix
+    "fn probe() i8 { fas_array_names[3][7] = 65; return fas_array_names[0][0] }\n";
+  c_semantic_accept "c-import-array-parameter-adjustment" c_matrix
+    "fn probe() i32 { return fas_array_parameter(&fas_array_global) }\n";
+  c_semantic_accept "c-import-array-mutable-pointer-elements" c_matrix
+    "fn probe() void { fas_array_pointer_elements[0] = null }\n";
+  unsupported "fas_array_unknown" "arrays of unknown size are not supported"
+    "fas_array_unknown[0]";
+  unsupported "fas_array_float" "floating-point types are not supported"
+    "fas_array_float[0]";
+  List.iter
+    (fun name ->
+      c_semantic_message
+        ("c-import-array-readonly-" ^ name)
+        "cannot modify read-only pointer" c_matrix
+        ("fn probe() void { " ^ name ^ "[0] = null }\n"))
+    [ "fas_array_readonly_pointer_elements" ];
+  List.iter
+    (fun name ->
+      c_semantic_message
+        ("c-import-array-readonly-" ^ name)
+        "cannot modify read-only pointer" c_matrix
+        ("fn probe() void { " ^ name ^ "[0] = 1 }\n"))
+    [ "fas_array_readonly"; "fas_array_readonly_alias" ];
+  c_semantic_message "c-import-array-bounds" "array index is out of bounds" c_matrix
+    "fn probe() i32 { return fas_array_global[4] }\n";
+  c_semantic_message "c-import-array-nested-bounds" "array index is out of bounds"
+    c_matrix "fn probe() i8 { return fas_array_names[0][8] }\n";
+  c_semantic_message "c-import-array-readonly-view" "cannot modify read-only pointer"
+    c_matrix "fn probe() void { view values = fas_array_readonly; values[0] = 1 }\n";
+  c_semantic_message "c-import-array-readonly-copy" "cannot modify read-only pointer"
+    c_matrix "fn probe() void { copy(fas_array_readonly, fas_array_global) }\n";
+  c_semantic_accept "c-import-array-readonly-pointer-target" c_matrix
+    "fn probe() void { fas_array_readonly_pointer_elements[0][i32] = 1 }\n";
   unsupported "fas_function_pointer" "function pointers are not supported"
     "fas_function_pointer(1)";
   unsupported "fas_function_pointer_arg" "function pointers are not supported"

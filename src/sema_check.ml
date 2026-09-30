@@ -134,9 +134,20 @@ let rec inherited_view_access c = function
       else Mutable_access
   | _ -> Mutable_access
 
+let rec readonly_global_place c = function
+  | Hir.Global (name, _, _) -> (
+      match lookup_global name c.globals with
+      | Some (_, _, Ast.Import_const_c) -> true
+      | _ -> false)
+  | Hir.Index (base, _, _, _) when aggregate_value_type (Hir.expr_ty base) ->
+      readonly_global_place c base
+  | Hir.Field (base, _, _, _, _) -> readonly_global_place c base
+  | _ -> false
+
 let view_access_of_expr c expression =
   if rooted_in_constant expression then Constant_access
-  else if rooted_in_readonly_storage expression then Readonly_access
+  else if rooted_in_readonly_storage expression || readonly_global_place c expression
+  then Readonly_access
   else inherited_view_access c expression
 
 let rec expression_uses_view c = function
