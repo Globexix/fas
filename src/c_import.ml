@@ -527,6 +527,7 @@ type mapped = {
   identities : (string * string) list;
   manifest : string list;
   static_functions : static_function list;
+  records : (string * string * string option) list;
 }
 
 let adapter_symbol source name =
@@ -1013,6 +1014,20 @@ let map_declarations ~span declarations =
     Hashtbl.fold (fun name identity acc -> (name, identity) :: acc) entities []
   in
   {
+    records =
+      List.filter_map
+        (fun node ->
+          match (string "kind" node, record_name node) with
+          | Some "RecordDecl", Some name ->
+              Some
+                ( name,
+                  Option.value ~default:"struct" (string "tagUsed" node) ^ " " ^ name,
+                  fst (declaration_location node) )
+          | Some "TypedefDecl", Some name when Hashtbl.mem anonymous_record_aliases name
+            ->
+              Some (name, name, fst (declaration_location node))
+          | _ -> None)
+        nodes;
     items;
     aliases =
       List.filter
@@ -1066,6 +1081,9 @@ let merge_imports mappings =
   {
     items;
     aliases;
+    records =
+      List.concat_map (fun mapping -> mapping.records) mappings
+      |> List.sort_uniq compare;
     unsupported;
     identities = [];
     manifest = List.concat_map (fun mapping -> mapping.manifest) mappings;
@@ -1126,8 +1144,14 @@ let reconcile_source source_items imported =
         Diag.error (Ast.item_span item)
           (Printf.sprintf "duplicate declaration `%s`" name)
       in
-      match (binding, source_signature imported.aliases item) with
-      | Some foreign, Some native ->
+      match (item, binding, source_signature imported.aliases item) with
+      | ( Ast.Func { linkage = Ast.External_c; body = Ast.Statements _ | Ast.Asm _; _ },
+          _,
+          _ )
+      | Ast.Global { linkage = Ast.Export_c; init = Some _; _ }, _, _ ->
+          confirmed := name :: !confirmed;
+          None
+      | _, Some foreign, Some native ->
           let actual = c_signature imported.aliases foreign in
           if actual = native then (
             confirmed := name :: !confirmed;

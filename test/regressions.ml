@@ -9062,3 +9062,57 @@ let () =
   parse_message "static-size-direct-len-cycle" "expected `,`, found `(`"
     "const A arr[len(B),u8] = {1}\nconst B arr[len(A),u8] = {2}\n";
   Printf.printf "regression checks: %d passed\n" !checks_run
+
+let () =
+  let hir =
+    expect_ok
+      (Sema.check
+         (parse_file "exports.fas"
+            "opaque Token\n\
+             struct Inner { x u16 }\n\
+             struct Outer @align(16) { inner Inner, lanes vec[3,u8], mask vec[8,bool], \
+             ptr handle[Token], data arr[2,arr[3,i32]] }\n\
+             extern \"C\" {\n\
+             var state Outer = {{2},splat(1),splat(true),null,{{1,2,3},{4,5,6}}}\n\
+             var a i8 = 1\n\
+             fn z(p addr, t handle[Token], n usize, s isize, b bool) i32 { return 2 }\n\
+             fn imported() i32\n\
+             }\n\
+             fn private() i32 { return 1 }\n"))
+  in
+  let actual, headers, errors = C_exports.declarations [] hir in
+  let expected =
+    "struct Inner {\n\
+    \  alignas(2) uint16_t x;\n\
+     };\n\
+     static_assert(sizeof(struct Inner) == 2, \"struct Inner size\");\n\
+     static_assert(alignof(struct Inner) == 2, \"struct Inner alignment\");\n\
+     static_assert(offsetof(struct Inner, x) == 0, \"Inner.x offset\");\n\
+     typedef uint8_t fas_vec_3_u8 __attribute__((ext_vector_type(3)));\n\
+     static_assert(sizeof(fas_vec_3_u8) == 4, \"fas_vec_3_u8 size\");\n\
+     static_assert(alignof(fas_vec_3_u8) == 4, \"fas_vec_3_u8 alignment\");\n\
+     typedef bool fas_vec_8_bool __attribute__((ext_vector_type(8)));\n\
+     static_assert(sizeof(fas_vec_8_bool) == 1, \"fas_vec_8_bool size\");\n\
+     static_assert(alignof(fas_vec_8_bool) == 1, \"fas_vec_8_bool alignment\");\n\
+     struct Token;\n\
+     struct Outer {\n\
+    \  alignas(16) struct Inner inner;\n\
+    \  fas_vec_3_u8 lanes;\n\
+    \  fas_vec_8_bool mask;\n\
+    \  struct Token * ptr;\n\
+    \  int32_t data[2][3];\n\
+     };\n\
+     static_assert(sizeof(struct Outer) == 48, \"struct Outer size\");\n\
+     static_assert(alignof(struct Outer) == 16, \"struct Outer alignment\");\n\
+     static_assert(offsetof(struct Outer, inner) == 0, \"Outer.inner offset\");\n\
+     static_assert(offsetof(struct Outer, lanes) == 4, \"Outer.lanes offset\");\n\
+     static_assert(offsetof(struct Outer, mask) == 8, \"Outer.mask offset\");\n\
+     static_assert(offsetof(struct Outer, ptr) == 16, \"Outer.ptr offset\");\n\
+     static_assert(offsetof(struct Outer, data) == 24, \"Outer.data offset\");\n\
+     extern int8_t a;\n\
+     extern struct Outer state;\n\
+     int32_t z(void * p, struct Token * t, size_t n, ptrdiff_t s, bool b);\n"
+  in
+  if actual <> expected then failwith ("c-export-matrix:\n" ^ actual);
+  assert (headers = [] && errors = []);
+  print_endline "C export declaration matrix: passed"

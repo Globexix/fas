@@ -494,7 +494,7 @@ type imported_c_unit = {
   c_names : string list;
 }
 
-let compile_c_units config cc units adapters artifacts =
+let compile_c_units config cc units adapters prelude artifacts =
   let rec compile acc = function
     | [] -> Ok (List.rev acc)
     | unit :: rest -> (
@@ -503,6 +503,12 @@ let compile_c_units config cc units adapters artifacts =
         in
         if (not unit.has_fragments) && not has_adapters then compile acc rest
         else
+          let* original =
+            match read_file unit.unit_path with
+            | Ok text -> Ok text
+            | Error message -> Error [ Diag.error unit.use_span message ]
+          in
+          write_file unit.unit_path (prelude ^ original);
           let object_path = Filename.temp_file "fas-c-object-" ".o" in
           let argv =
             Array.of_list
@@ -690,6 +696,44 @@ let run_unprotected config =
             | Ok hir -> Ok hir
             | Error diagnostics -> Error (add_include_chains chains diagnostics)
           in
+          let records =
+            List.map
+              (fun (name, spelling, origin) ->
+                let required_header =
+                  if String.contains spelling ' ' then None
+                  else
+                    List.find_map
+                      (fun (source, headers) ->
+                        List.find_map
+                          (fun (h : C_import.header) ->
+                            match h.spelling with
+                            | Ast.C_quoted path ->
+                                let path =
+                                  if Filename.is_relative path then
+                                    Filename.concat (Filename.dirname source) path
+                                  else path
+                                in
+                                if origin = Some path then
+                                  Some (Printf.sprintf "#include %S\n" path)
+                                else None
+                            | Ast.C_system path ->
+                                if
+                                  Option.fold ~none:false
+                                    ~some:(fun file ->
+                                      String.ends_with ~suffix:path file)
+                                    origin
+                                then Some ("#include <" ^ path ^ ">\n")
+                                else None
+                            | Ast.C_fragment _ -> None)
+                          headers)
+                      c_imports
+                in
+                C_exports.{ name; spelling; header = required_header })
+              imported.records
+          in
+          let declarations, declaration_headers, _ =
+            C_exports.declarations records hir
+          in
           let* ir = Lower.lower hir in
           let* ir = apply_no_inline config ir in
           let* ir, adapters = add_static_adapters (List.rev !c_units) ir in
@@ -717,7 +761,9 @@ let run_unprotected config =
           let* () = ir_budget program (Ir.check_lowered_nodes ~limits ir) in
           let* () = ir_budget program (Ir.check_stack_scratch_bytes ~limits ir) in
           let* c_objects =
-            compile_c_units config cc (List.rev !c_units) adapters c_artifacts
+            compile_c_units config cc (List.rev !c_units) adapters
+              (C_exports.includes ^ String.concat "" declaration_headers ^ declarations)
+              c_artifacts
           in
           match config.emit with
           | Cli.Ir -> (
