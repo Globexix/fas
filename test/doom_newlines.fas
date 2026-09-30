@@ -3,18 +3,12 @@ use "C" <<C
 C
 
 struct WeaponInfo {
-    ammo
-    i32
-    upstate
-    i32
-    downstate
-    i32
-    readystate
-    i32
-    atkstate
-    i32
-    flashstate
-    i32
+    ammo i32
+    upstate i32
+    downstate i32
+    readystate i32
+    atkstate i32
+    flashstate i32
 }
 
 struct SfxInfo {

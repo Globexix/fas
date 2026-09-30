@@ -723,7 +723,6 @@ module P = struct
       else
         let fs = span p in
         let* n = ident p in
-        skip_newlines p;
         let* t = ty p in
         let* () =
           if eat p Token.Comma then (

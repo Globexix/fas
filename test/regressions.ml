@@ -9481,10 +9481,30 @@ let () =
             ^ C_exports.guard (Filename.remove_extension (Filename.basename root))
             ^ "_H\n")
           header));
+  semantic_accept "struct-fields-adjacent" "struct V { x i32 y i32 z i32 }\n";
+  semantic_accept "struct-fields-comma-separated" "struct V { x i32, y i32 }\n";
+  semantic_accept "struct-fields-one-per-line" "struct V {\nx i32\ny i32\n}\n";
+  semantic_accept "struct-field-nested-struct-on-one-line"
+    "struct V { x i32 }\nstruct B { lo V hi V }\n";
+  semantic_accept "struct-field-multiline-array-type"
+    "struct S { values arr[\n2,\ni32\n] }\n";
+  let split_struct_field = "struct S { a\ni32 }\n" in
+  incr checks_run;
+  (match Parser.parse (source split_struct_field) with
+  | Ok _ -> failwith "struct-field-newline-before-type: expected parse rejection"
+  | Error [ diagnostic ] ->
+      let span = diagnostic.Diag.primary in
+      if
+        diagnostic.message <> "expected a type, found newline"
+        || span.Span.file <> "regression.fas"
+        || span.start_offset <> 12 || span.end_offset <> 13 || span.line <> 1
+        || span.column <> 13
+      then
+        failwith "struct-field-newline-before-type: diagnostic message or span changed"
+  | Error _ -> failwith "struct-field-newline-before-type: expected one diagnostic");
   semantic_accept "newline-whitespace-in-delimited-lists"
     "struct Shape {\n\
-     value\n\
-     i32\n\
+     value i32\n\
      }\n\
      const values arr[2,i32] = {\n\
      1,\n\
