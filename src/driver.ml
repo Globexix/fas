@@ -729,6 +729,13 @@ let run_unprotected ?header_output config =
                   c_artifacts := artifacts @ !c_artifacts;
                   let mapped =
                     C_import.map_declarations ~span:(List.hd headers).C_import.span
+                      ~container:
+                        (List.exists
+                           (fun header ->
+                             match header.C_import.spelling with
+                             | Ast.C_fragment _ -> true
+                             | Ast.C_quoted _ | Ast.C_system _ -> false)
+                           headers)
                       declarations
                   in
                   c_units :=
@@ -770,7 +777,9 @@ let run_unprotected ?header_output config =
           in
           let* imported =
             C_import.merge_imports (List.rev !imported)
-            |> C_import.reconcile_source program.items
+            |> C_import.reconcile_source
+                 ~container_mismatch_to_clang:(config.Cli.emit <> Cli.Header)
+                 program.items
           in
           let program = { Ast.items = program.items @ imported.items } in
           let* () = ast_budget (Ast.check_cumulative_asm_bytes ~limits program) in

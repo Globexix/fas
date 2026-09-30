@@ -588,6 +588,7 @@ type mapped = {
   records : (string * string * string option) list;
   record_types : (string * string * string option) list;
   incomplete_arrays : (string * Ast.ty) list;
+  container_names : string list;
 }
 
 let adapter_symbol source name =
@@ -743,7 +744,7 @@ let clang_layouts text =
   in
   groups [] [] lines
 
-let map_declarations ~span declarations =
+let map_declarations ?(container = false) ~span declarations =
   let layout_dump =
     List.find_map
       (function
@@ -1535,6 +1536,12 @@ let map_declarations ~span declarations =
     record_types;
     incomplete_arrays =
       Hashtbl.fold (fun name ty acc -> (name, ty) :: acc) incomplete_arrays [];
+    container_names =
+      (if container then
+         List.map item_name items
+         @ Hashtbl.fold (fun name _ acc -> name :: acc) unsupported []
+         |> List.sort_uniq String.compare
+       else []);
     items;
     aliases =
       List.filter
@@ -1599,6 +1606,9 @@ let merge_imports mappings =
       List.concat_map (fun mapping -> mapping.incomplete_arrays) mappings
       |> List.sort_uniq compare
       |> List.filter (fun (name, _) -> not (bad name));
+    container_names =
+      List.concat_map (fun mapping -> mapping.container_names) mappings
+      |> List.sort_uniq String.compare;
     unsupported;
     identities = [];
     manifest = List.concat_map (fun mapping -> mapping.manifest) mappings;
@@ -1641,7 +1651,7 @@ let source_signature aliases = function
       Some (c_signature aliases item)
   | _ -> None
 
-let reconcile_source source_items imported =
+let reconcile_source ?(container_mismatch_to_clang = false) source_items imported =
   let confirmed = ref [] in
   let bindings = List.map (fun item -> (item_name item, item)) imported.items in
   let check item =
@@ -1663,6 +1673,10 @@ let reconcile_source source_items imported =
       | _, Some foreign, Some native ->
           let actual = c_signature imported.aliases foreign in
           if actual = native then (
+            confirmed := name :: !confirmed;
+            None)
+          else if container_mismatch_to_clang && List.mem name imported.container_names
+          then (
             confirmed := name :: !confirmed;
             None)
           else
