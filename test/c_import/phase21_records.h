@@ -13,4 +13,5 @@ struct FasFlexibleRecord { int length; unsigned char data[]; };
 struct FasAnonymousMemberRecord { union { int integer; unsigned char byte; }; };
 struct FasFloatRecord { float value; };
 struct FasFunctionPointerRecord { int (*callback)(int); };
-struct FasReservedFieldRecord { int addr; };
+struct FasFieldNamesRecord { int handle; int len; int view; int i32; };
+struct FasKeywordFieldRecord { int fn; };

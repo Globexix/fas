@@ -1004,8 +1004,8 @@ let map_declarations ?(container = false) ~span declarations =
                 if field_name = None then Some "anonymous members are not supported"
                 else if get "isBitfield" field = Some (C_import_json.Bool true) then
                   Some "bit-fields are not supported"
-                else if Names.reserved_binding_name (Option.get field_name) then
-                  Some "reserved field names are not supported"
+                else if Lexer.is_keyword (Option.get field_name) then
+                  Some "field name is a Fas keyword"
                 else
                   match raw with
                   | None -> Some "field has no C type"

@@ -26,6 +26,8 @@ let keyword = function
   | "default" -> Kw_default
   | name -> Ident name
 
+let is_keyword name = match keyword name with Token.Ident _ -> false | _ -> true
+
 let lex ?(limits = Limits.default) source =
   let text = Source.text source in
   let n = String.length text in

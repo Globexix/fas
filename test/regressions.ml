@@ -9071,7 +9071,7 @@ let () =
       ("FasAnonymousMemberRecord", "anonymous members are not supported");
       ("FasFloatRecord", "floating-point fields are not supported");
       ("FasFunctionPointerRecord", "function-pointer fields are not supported");
-      ("FasReservedFieldRecord", "reserved field names are not supported");
+      ("FasKeywordFieldRecord", "field name is a Fas keyword");
     ];
   (match c_semantic_result phase21_records "fn noop() void { return }\n" with
   | Ok program ->
@@ -9114,6 +9114,15 @@ let () =
      return handle_addr(value)[FasSelfRecord].value }\n\
      fn cast(pointer addr) handle[FasTagRecord] {\n\
      return handle_from_addr[FasTagRecord](pointer) }\n";
+  c_semantic_accept "c-import-record-fas-field-names" phase21_records
+    "fn fields(value handle[FasFieldNamesRecord]) i32 {\n\
+     raw addr = handle_addr(value)\n\
+     raw[FasFieldNamesRecord].handle = 1\n\
+     raw[FasFieldNamesRecord].len = 2\n\
+     raw[FasFieldNamesRecord].view = 3\n\
+     raw[FasFieldNamesRecord].i32 = 4\n\
+     return raw[FasFieldNamesRecord].handle + raw[FasFieldNamesRecord].len + \
+     raw[FasFieldNamesRecord].view + raw[FasFieldNamesRecord].i32 }\n";
   c_semantic_accept "c-import-unsupported-record-remains-handle" phase21_records
     "fn retain(value handle[FasUnionRecord]) handle[FasUnionRecord] { return value }\n";
   c_semantic_message "c-import-packed-record-layout"
@@ -9143,10 +9152,9 @@ let () =
      fields are not supported"
     phase21_records
     "fn read(value FasFunctionPointerRecord) i32 { return value.callback }\n";
-  c_semantic_message "c-import-reserved-field-record-reason"
-    "C declaration `FasReservedFieldRecord` is not supported: reserved field names are \
-     not supported"
-    phase21_records "fn read(value FasReservedFieldRecord) i32 { return value.addr }\n";
+  c_semantic_accept "c-import-keyword-field-record-remains-handle" phase21_records
+    "fn retain(value handle[FasKeywordFieldRecord]) handle[FasKeywordFieldRecord] { \
+     return value }\n";
   semantic_error "addr-handle-c-record-native-still-rejected"
     "handle type argument must be an opaque type"
     "struct NativeRecord { value i32 }\n\
