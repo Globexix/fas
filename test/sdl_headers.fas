@@ -1,0 +1,104 @@
+use "C" <<C
+#include <SDL2/SDL.h>
+#include <stdio.h>
+
+static inline void *fas_surface_pixels(SDL_Surface *surface) {
+    return surface->pixels;
+}
+
+static inline int fas_surface_pitch(SDL_Surface *surface) {
+    return surface->pitch;
+}
+
+static inline int fas_push_user_events(int count) {
+    int pushed = 0;
+    SDL_Event event;
+    SDL_zero(event);
+    event.type = SDL_USEREVENT;
+    while (pushed < count) {
+        if (SDL_PushEvent(&event) != 1) return -1;
+        pushed++;
+    }
+    return pushed;
+}
+
+static inline int fas_count_user_events(void) {
+    int count = 0;
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        if (event.type == SDL_USEREVENT) count++;
+    }
+    return count;
+}
+C
+
+extern "C" {
+fn render_fire(pixels addr, pitch i32) void {
+    stride i32 = pitch / 4
+    for frame i32 = 0; frame < 24; frame += 1 {
+        for x i32 = 0; x < 320; x += 1 {
+            intensity i32 = (x * 17 + frame * 31 + 43) & 255
+            pixels[u32, 199 * stride + x] = bitcast[u32](intensity) * 65793
+        }
+        for y i32 = 198; y >= 0; y -= 1 {
+            for x i32 = 0; x < 320; x += 1 {
+                left_x i32 = x - 1
+                if left_x < 0 { left_x = 0 }
+                right_x i32 = x + 1
+                if right_x > 319 { right_x = 319 }
+                row i32 = (y + 1) * stride
+                left i32 = bitcast[i32](pixels[u32, row + left_x] & 255)
+                center i32 = bitcast[i32](pixels[u32, row + x] & 255)
+                right i32 = bitcast[i32](pixels[u32, row + right_x] & 255)
+                heat i32 = (left + center + right) / 3
+                cooling i32 = (x + y + frame) & 3
+                value i32 = heat - cooling
+                if value < 0 { value = 0 }
+                pixels[u32, y * stride + x] = bitcast[u32](value) * 65793
+            }
+        }
+    }
+    return
+}
+
+fn checksum(pixels addr, pitch i32) u64 {
+    hash u64 = 14695981039346656037
+    for y i32 = 0; y < 200; y += 1 {
+        for byte i32 = 0; byte < 320 * 4; byte += 1 {
+            hash = (hash ^ zext[u64](pixels[u8, y * pitch + byte])) * 1099511628211
+        }
+    }
+    return hash
+}
+
+fn main() i32 {
+    if SDL_Init(32) != 0 { return 1 }
+    window handle[SDL_Window] = SDL_CreateWindow(c"fas-sdl-fire", 0x1fff0000, 0x1fff0000, 320, 200, 0)
+    if window == null {
+        SDL_Quit()
+        return 2
+    }
+    surface handle[SDL_Surface] = SDL_CreateRGBSurface(0, 320, 200, 32, 0, 0, 0, 0)
+    if surface == null {
+        SDL_DestroyWindow(window)
+        SDL_Quit()
+        return 3
+    }
+    pixels addr = fas_surface_pixels(surface)
+    pitch i32 = fas_surface_pitch(surface)
+    render_fire(pixels, pitch)
+    pushed i32 = fas_push_user_events(19)
+    if pushed != 19 {
+        SDL_FreeSurface(surface)
+        SDL_DestroyWindow(window)
+        SDL_Quit()
+        return 4
+    }
+    events i32 = fas_count_user_events()
+    printf(c"%llu %d\n", checksum(pixels, pitch), events)
+    SDL_FreeSurface(surface)
+    SDL_DestroyWindow(window)
+    SDL_Quit()
+    return 0
+}
+}
