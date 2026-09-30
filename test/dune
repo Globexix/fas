@@ -18,5 +18,7 @@
   c_import/phase21_records.h
   c_import/phase22_time.h
   c_import/sizes.h
+  c_import/stat.h
+  c_import/namespaces.h
   c_import/provenance_first.h
   c_import/provenance_second.h))

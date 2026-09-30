@@ -540,8 +540,9 @@ let type_result ?(allow_arrays = false) ~aliases ~records ~enums ~allow_record r
                         (String.index raw ' ' + 1)
                         (String.length raw - String.index raw ' ' - 1)
                     in
-                    if Hashtbl.mem records name then Ok (Ast.Named_type name)
-                    else Error "anonymous records are not supported"
+                    Option.fold ~none:(Error "anonymous records are not supported")
+                      ~some:(fun visible -> Ok (Ast.Named_type visible))
+                      (Option.join (Hashtbl.find_opt records name))
                   else Error "struct and union values are not supported"
               | _ when String.contains raw '(' ->
                   Error "function types are not supported"
@@ -556,8 +557,13 @@ let type_result ?(allow_arrays = false) ~aliases ~records ~enums ~allow_record r
           (String.index pointee ' ' + 1)
           (String.length pointee - String.index pointee ' ' - 1)
       in
-      if Hashtbl.mem records name then Ok (Ast.Handle (Ast.Named_type name))
-      else Error "anonymous record pointers are not supported"
+      match Hashtbl.find_opt records name with
+      | None -> Error "anonymous record pointers are not supported"
+      | Some record ->
+          Ok
+            (Option.fold ~none:Ast.Addr
+               ~some:(fun name -> Ast.Handle (Ast.Named_type name))
+               record)
     else
       match Hashtbl.find_opt aliases pointee with
       | Some (Ok (Ast.Named_type name)) when Hashtbl.mem records name ->
@@ -775,7 +781,7 @@ let map_declarations ?(container = false) ~span declarations =
             (Option.bind (get "id" node) C_import_json.string, record_name node)
           with
           | Some id, Some name ->
-              Hashtbl.replace records name ();
+              Hashtbl.replace records name (Some name);
               Hashtbl.replace record_ids id name;
               Hashtbl.replace record_nodes_by_id id node
           | Some id, None ->
@@ -799,12 +805,58 @@ let map_declarations ?(container = false) ~span declarations =
       | Some "TypedefDecl", Some name, Some id when Hashtbl.mem anonymous_record_ids id
         ->
           let canonical = Option.value ~default:name (Hashtbl.find_opt record_ids id) in
-          Hashtbl.replace records canonical ();
+          Hashtbl.replace records canonical (Some canonical);
           Hashtbl.replace anonymous_record_aliases canonical ();
           Hashtbl.replace record_ids id canonical;
           Hashtbl.replace record_nodes_by_id id (Hashtbl.find record_nodes_by_id id)
       | _ -> ())
     nodes;
+  let same_record_typedef id tag node =
+    record_decl_id node = Some id
+    &&
+    match c_type_name node with
+    | Some raw ->
+        let raw, _ = clean_type raw in
+        raw = "struct " ^ tag || raw = "union " ^ tag
+    | None -> false
+  in
+  let collides_with_ordinary tag id =
+    List.exists
+      (fun node ->
+        let name = record_name node in
+        match string "kind" node with
+        | Some ("FunctionDecl" | "VarDecl") -> name = Some tag
+        | Some "TypedefDecl" -> name = Some tag && not (same_record_typedef id tag node)
+        | Some "EnumDecl" ->
+            List.exists
+              (fun child ->
+                string "kind" child = Some "EnumConstantDecl"
+                && record_name child = Some tag)
+              (children node)
+        | _ -> false)
+      nodes
+  in
+  Hashtbl.iter
+    (fun id node ->
+      match record_name node with
+      | Some tag when collides_with_ordinary tag id ->
+          let alias =
+            List.find_map
+              (fun candidate ->
+                match record_name candidate with
+                | Some name when name <> tag && same_record_typedef id tag candidate ->
+                    Some name
+                | _ -> None)
+              nodes
+          in
+          (match alias with
+          | Some name ->
+              Hashtbl.replace records name (Some name);
+              Hashtbl.replace record_ids id name
+          | None -> Hashtbl.remove record_ids id);
+          Hashtbl.replace records tag alias
+      | _ -> ())
+    record_nodes_by_id;
   List.iter
     (fun node ->
       if string "kind" node = Some "EnumDecl" then
@@ -861,8 +913,9 @@ let map_declarations ?(container = false) ~span declarations =
             (String.index raw ' ' + 1)
             (String.length raw - String.index raw ' ' - 1)
         in
-        if Hashtbl.mem records name then Ok (Ast.Named_type name)
-        else Error "anonymous records are not supported"
+        Option.fold ~none:(Error "anonymous records are not supported")
+          ~some:(fun name -> Ok (Ast.Named_type name))
+          (Option.join (Hashtbl.find_opt records name))
     | None ->
         let result =
           type_result ~allow_arrays:true ~aliases ~records ~enums ~allow_record:true raw
@@ -970,7 +1023,7 @@ let map_declarations ?(container = false) ~span declarations =
     nodes;
   let record_layout node name =
     let tag = Option.value ~default:"struct" (string "tagUsed" node) in
-    let direct = tag ^ " " ^ name in
+    let direct = tag ^ " " ^ Option.value ~default:name (record_name node) in
     match List.find_opt (fun layout -> layout.layout_name = direct) layouts with
     | Some layout -> Some layout
     | None -> (
@@ -1248,8 +1301,8 @@ let map_declarations ?(container = false) ~span declarations =
         [] reason ~keep_unsupported_item:true ())
     record_results;
   Hashtbl.iter
-    (fun name () ->
-      if not (Hashtbl.mem record_definitions name) then
+    (fun name visible ->
+      if visible = Some name && not (Hashtbl.mem record_definitions name) then
         match
           Hashtbl.fold
             (fun id record found ->
@@ -1537,45 +1590,48 @@ let map_declarations ?(container = false) ~span declarations =
   {
     records =
       Hashtbl.fold
-        (fun name () acc ->
-          let node =
-            match Hashtbl.find_opt record_definitions name with
-            | Some node -> Some node
-            | None ->
-                Hashtbl.fold
-                  (fun id record found ->
-                    if found <> None || Hashtbl.find_opt record_ids id <> Some name then
-                      found
-                    else Some record)
-                  record_nodes_by_id None
-          in
-          match node with
-          | None -> acc
-          | Some node ->
-              let spelling =
-                if Hashtbl.mem anonymous_record_aliases name then name
-                else Option.value ~default:"struct" (string "tagUsed" node) ^ " " ^ name
-              in
-              let origin =
-                if Hashtbl.mem anonymous_record_aliases name then
-                  match
-                    List.find_opt
-                      (fun node ->
-                        string "kind" node = Some "TypedefDecl"
-                        && string "name" node = Some name)
-                      nodes
-                  with
-                  | Some alias -> (
-                      match string "fasHeader" alias with
-                      | Some header -> Some header
-                      | None -> fst (declaration_location node))
-                  | None -> fst (declaration_location node)
-                else
-                  match string "fasHeader" node with
-                  | Some header -> Some header
-                  | None -> fst (declaration_location node)
-              in
-              (name, spelling, origin) :: acc)
+        (fun name visible acc ->
+          if visible <> Some name then acc
+          else
+            let node =
+              match Hashtbl.find_opt record_definitions name with
+              | Some node -> Some node
+              | None ->
+                  Hashtbl.fold
+                    (fun id record found ->
+                      if found <> None || Hashtbl.find_opt record_ids id <> Some name
+                      then found
+                      else Some record)
+                    record_nodes_by_id None
+            in
+            match node with
+            | None -> acc
+            | Some node ->
+                let spelling =
+                  if Hashtbl.mem anonymous_record_aliases name then name
+                  else
+                    Option.value ~default:"struct" (string "tagUsed" node) ^ " " ^ name
+                in
+                let origin =
+                  if Hashtbl.mem anonymous_record_aliases name then
+                    match
+                      List.find_opt
+                        (fun node ->
+                          string "kind" node = Some "TypedefDecl"
+                          && string "name" node = Some name)
+                        nodes
+                    with
+                    | Some alias -> (
+                        match string "fasHeader" alias with
+                        | Some header -> Some header
+                        | None -> fst (declaration_location node))
+                    | None -> fst (declaration_location node)
+                  else
+                    match string "fasHeader" node with
+                    | Some header -> Some header
+                    | None -> fst (declaration_location node)
+                in
+                (name, spelling, origin) :: acc)
         records []
       |> List.sort compare;
     record_types;

@@ -8775,6 +8775,66 @@ let () =
   c_semantic_accept "c-import-size-functions" c_sizes
     "fn length() usize { return strlen(c\"fas\") }\n\
      fn allocation(n usize) addr { return malloc(n) }\n";
+  let c_stat = c_import_fixture "stat.h" in
+  let stat_second_parameter imported =
+    List.find_map
+      (function
+        | Ast.Func { name = "stat"; params; _ } ->
+            Option.map
+              (fun (parameter : Ast.param) -> parameter.ty)
+              (List.nth_opt params 1)
+        | _ -> None)
+      imported.C_import.items
+  in
+  incr checks_run;
+  (match stat_second_parameter (snd c_stat) with
+  | Some Ast.Addr -> ()
+  | Some _ ->
+      failwith "stat without a record typedef did not import its pointer as addr"
+  | None -> failwith "sys/stat.h stat() was not imported");
+  c_semantic_accept "c-import-stat-without-typedef" c_stat
+    "fn call_stat(path addr) i32 { return stat(path, null) }\n";
+  let stat_source = fst c_stat in
+  let stat_headers =
+    [
+      C_import.{ spelling = Ast.C_quoted "stat.h"; span = Span.synthetic };
+      C_import.
+        {
+          spelling =
+            Ast.C_fragment
+              { tag = "FAS_STAT_TYPEDEF"; text = "typedef struct stat stat_t;" };
+          span = Span.synthetic;
+        };
+    ]
+  in
+  let stat_declarations, _, _ =
+    expect_ok
+      (C_import.import ~cc:"clang-22" ~debug:false ~keep:false stat_source stat_headers)
+  in
+  let c_stat_typedef =
+    C_import.map_declarations ~span:Span.synthetic stat_declarations
+  in
+  incr checks_run;
+  (match stat_second_parameter c_stat_typedef with
+  | Some (Ast.Handle (Ast.Named_type "stat_t")) -> ()
+  | Some _ -> failwith "stat_t did not become the imported stat() handle type"
+  | None -> failwith "sys/stat.h stat() was not imported with stat_t");
+  c_semantic_accept "c-import-stat-typedef-handle" (stat_source, c_stat_typedef)
+    "fn call_stat(path addr, output handle[stat_t]) i32 {\n\
+     st stat_t\n\
+     return stat(path, output) }\n";
+  let c_namespaces = c_import_fixture "namespaces.h" in
+  c_semantic_accept "c-import-tag-ordinary-collisions" c_namespaces
+    "fn collisions() i32 { return FasTagFunction() + FasTagGlobal + FasTagEnum }\n";
+  List.iter
+    (fun name ->
+      incr checks_run;
+      if
+        List.exists
+          (function Ast.Struct { name = record; _ } -> record = name | _ -> false)
+          (snd c_namespaces).items
+      then failwith ("ordinary C name lost to record tag " ^ name))
+    [ "FasTagFunction"; "FasTagGlobal"; "FasTagEnum" ];
   c_semantic_accept "c-import-enum-values-and-abi" c_matrix
     "fn enum_values() i64 {\n\
      fas_enum_arg(FAS_ENUM_NEG)\n\
