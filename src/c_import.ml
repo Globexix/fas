@@ -243,7 +243,7 @@ let imported_macro_nodes ~cc ~c_flags ~source ~unit_path ~paths ~macro_names =
             Array.of_list
               ([ cc; "-S"; "-emit-llvm"; "-o"; "-" ]
               @ common
-              @ [ "-Wno-implicit-function-declaration"; "-Wno-int-conversion"; probe ])
+              @ [ "-Xclang=-skip-function-bodies"; probe ])
           in
           match Process.run argv with
           | Ok (ir, _) -> Ok (ir, xs)
