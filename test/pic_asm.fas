@@ -1,6 +1,18 @@
-asm fn fas_pic_add(delta u32) u32 {
+extern "C" {
+fn fas_pic_add(delta u32) u32
+}
+use "asm" <<ASSEMBLY
+.text
+.globl fas_pic_add
+.type fas_pic_add,@function
+fas_pic_add:
+
     movq pic_global@GOTPCREL(%rip), %rax
     addl %edi, (%rax)
     movl (%rax), %eax
     ret
-}
+
+.size fas_pic_add, .-fas_pic_add
+.section .note.GNU-stack,"",@progbits
+ASSEMBLY
+

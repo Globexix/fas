@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <limits.h>
+#include <string.h>
 
 struct Token;
 
@@ -22,11 +23,19 @@ extern void asm_noop(void);
 extern uint64_t asm_seven(uint8_t, int16_t, uint32_t, int64_t, size_t, _Bool, uint64_t);
 extern void asm_write(void *);
 extern int32_t fas_verify_assembly(void);
+extern int32_t verify_assembly_table(void);
+extern void *get_assembly_callback(void);
 
 #define CHECK(x) do { if (!(x)) return __LINE__ % 239 + 1; } while (0)
 
 int main(void) {
     CHECK(fas_verify_assembly() == 0);
+    CHECK(verify_assembly_table() == 0);
+    int32_t (*callback)(void);
+    _Static_assert(sizeof callback == sizeof(void *), "callback size");
+    void *address = get_assembly_callback();
+    memcpy(&callback, &address, sizeof callback);
+    CHECK(callback() == 42);
     CHECK(asm_echo_bool(0) == 0 && asm_echo_bool(1) == 1);
     CHECK(asm_echo_u8(0) == 0 && asm_echo_u8(UINT8_MAX) == UINT8_MAX && asm_echo_u8((uint8_t)-1) == UINT8_MAX);
     CHECK(asm_echo_i8(INT8_MIN) == INT8_MIN && asm_echo_i8(INT8_MAX) == INT8_MAX && asm_echo_i8(-1) == -1);

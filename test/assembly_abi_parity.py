@@ -14,6 +14,11 @@ names = [
 ]
 
 for name in names:
+    if name.startswith("asm_") and not any(
+        line.startswith("declare ") and f"@{name}(" in line
+        for line in fas_text.splitlines()
+    ):
+        raise SystemExit(f"assembly function is not an extern declaration: {name}")
     fas_sig = function_signature(fas_text, name)
     clang_sig = function_signature(clang_text, name)
     fas_ret = (fas_sig[0], tuple(attr for attr in fas_sig[1] if attr != "noundef"))

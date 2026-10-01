@@ -1,23 +1,103 @@
-opaque Token
+extern "C" {
+fn add3(a i32, b i32, c i32) i32
+fn asm_echo_bool(x bool) bool
+fn asm_echo_u8(x u8) u8
+fn asm_echo_i8(x i8) i8
+fn asm_echo_u16(x u16) u16
+fn asm_echo_i16(x i16) i16
+fn asm_echo_u32(x u32) u32
+fn asm_echo_i32(x i32) i32
+fn asm_echo_u64(x u64) u64
+fn asm_echo_i64(x i64) i64
+fn asm_echo_usize(x usize) usize
+fn asm_echo_isize(x isize) isize
+fn asm_echo_addr(x addr) addr
+fn asm_echo_handle(x handle[Token]) handle[Token]
+fn asm_noop() void
+fn asm_seven(a u8, b i16, c u32, d i64, e usize, f bool, g u64) u64
+fn asm_write(value addr) void
+}
+use "asm" <<ASSEMBLY
+.text
+.globl add3
+.type add3,@function
+add3:
+ leal (%rdi,%rsi), %eax; addl %edx, %eax; ret 
+.size add3, .-add3
+.globl asm_echo_bool
+.type asm_echo_bool,@function
+asm_echo_bool:
+ movzbl %dil, %eax; ret 
+.size asm_echo_bool, .-asm_echo_bool
+.globl asm_echo_u8
+.type asm_echo_u8,@function
+asm_echo_u8:
+ movzbl %dil, %eax; ret 
+.size asm_echo_u8, .-asm_echo_u8
+.globl asm_echo_i8
+.type asm_echo_i8,@function
+asm_echo_i8:
+ movsbl %dil, %eax; ret 
+.size asm_echo_i8, .-asm_echo_i8
+.globl asm_echo_u16
+.type asm_echo_u16,@function
+asm_echo_u16:
+ movzwl %di, %eax; ret 
+.size asm_echo_u16, .-asm_echo_u16
+.globl asm_echo_i16
+.type asm_echo_i16,@function
+asm_echo_i16:
+ movswl %di, %eax; ret 
+.size asm_echo_i16, .-asm_echo_i16
+.globl asm_echo_u32
+.type asm_echo_u32,@function
+asm_echo_u32:
+ movl %edi, %eax; ret 
+.size asm_echo_u32, .-asm_echo_u32
+.globl asm_echo_i32
+.type asm_echo_i32,@function
+asm_echo_i32:
+ movl %edi, %eax; ret 
+.size asm_echo_i32, .-asm_echo_i32
+.globl asm_echo_u64
+.type asm_echo_u64,@function
+asm_echo_u64:
+ movq %rdi, %rax; ret 
+.size asm_echo_u64, .-asm_echo_u64
+.globl asm_echo_i64
+.type asm_echo_i64,@function
+asm_echo_i64:
+ movq %rdi, %rax; ret 
+.size asm_echo_i64, .-asm_echo_i64
+.globl asm_echo_usize
+.type asm_echo_usize,@function
+asm_echo_usize:
+ movq %rdi, %rax; ret 
+.size asm_echo_usize, .-asm_echo_usize
+.globl asm_echo_isize
+.type asm_echo_isize,@function
+asm_echo_isize:
+ movq %rdi, %rax; ret 
+.size asm_echo_isize, .-asm_echo_isize
+.globl asm_echo_addr
+.type asm_echo_addr,@function
+asm_echo_addr:
+ movq %rdi, %rax; ret 
+.size asm_echo_addr, .-asm_echo_addr
+.globl asm_echo_handle
+.type asm_echo_handle,@function
+asm_echo_handle:
+ movq %rdi, %rax; ret 
+.size asm_echo_handle, .-asm_echo_handle
+.globl asm_noop
+.type asm_noop,@function
+asm_noop:
+ ret 
+.size asm_noop, .-asm_noop
+.globl asm_seven
+.type asm_seven,@function
+asm_seven:
 
-asm fn add3(a i32, b i32, c i32) i32 { leal (%rdi,%rsi), %eax; addl %edx, %eax; ret }
-
-asm fn asm_echo_bool(x bool) bool { movzbl %dil, %eax; ret }
-asm fn asm_echo_u8(x u8) u8 { movzbl %dil, %eax; ret }
-asm fn asm_echo_i8(x i8) i8 { movsbl %dil, %eax; ret }
-asm fn asm_echo_u16(x u16) u16 { movzwl %di, %eax; ret }
-asm fn asm_echo_i16(x i16) i16 { movswl %di, %eax; ret }
-asm fn asm_echo_u32(x u32) u32 { movl %edi, %eax; ret }
-asm fn asm_echo_i32(x i32) i32 { movl %edi, %eax; ret }
-asm fn asm_echo_u64(x u64) u64 { movq %rdi, %rax; ret }
-asm fn asm_echo_i64(x i64) i64 { movq %rdi, %rax; ret }
-asm fn asm_echo_usize(x usize) usize { movq %rdi, %rax; ret }
-asm fn asm_echo_isize(x isize) isize { movq %rdi, %rax; ret }
-asm fn asm_echo_addr(x addr) addr { movq %rdi, %rax; ret }
-asm fn asm_echo_handle(x handle[Token]) handle[Token] { movq %rdi, %rax; ret }
-asm fn asm_noop() void { ret }
-
-asm fn asm_seven(a u8, b i16, c u32, d i64, e usize, f bool, g u64) u64 {
     movq 8(%rsp), %rax
     movzbl %dil, %r10d
     xorq %r10, %rax
@@ -30,11 +110,40 @@ asm fn asm_seven(a u8, b i16, c u32, d i64, e usize, f bool, g u64) u64 {
     movzbl %r9b, %r10d
     xorq %r10, %rax
     ret
-}
 
-asm fn asm_write(value addr) void { movb $73, (%rdi); ret }
+.size asm_seven, .-asm_seven
+.globl asm_write
+.type asm_write,@function
+asm_write:
+ movb $73, (%rdi); ret 
+.size asm_write, .-asm_write
+.section .note.GNU-stack,"",@progbits
+ASSEMBLY
+opaque Token
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 use "C" <<ADD3_CALLER
+extern int add3(int, int, int);
 static int fas_container_add3(void) { return add3(1, 2, 3) != 6; }
 ADD3_CALLER
 
@@ -64,4 +173,13 @@ extern "C" {
         if byte != 73 { return 15 }
         return 0
     }
+}
+
+use "asm" "assembly_unit.S"
+extern "C" { fn table_first() i32
+fn table_second() i32 }
+const assembly_callback addr = &table_first
+extern "C" {
+fn get_assembly_callback() addr { return assembly_callback }
+fn verify_assembly_table() i32 { return table_first() + table_second() - 84 }
 }
