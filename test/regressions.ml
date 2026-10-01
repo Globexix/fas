@@ -10979,4 +10979,16 @@ let () =
   semantic_accept "rotate-count-independent-width"
     "fn f(k u8) u8 { return rotl(k, 256) + rotr(k, -256) }"
 
+let () =
+  semantic_accept "generic-brace-local-index-shadow"
+    "struct Ring[N const usize] { head u32 }\n\
+    \ fn f[N const usize]() u32 { a arr[4,u32] = {4,5,6,7}\n\
+    \ Ring arr[1,u32] = {1}\n\
+    \ return a[Ring[0]] }\n\
+    \ fn g() u32 { return f[4]() }";
+  semantic_message "generic-brace-local-width" "wrong number of array literal elements"
+    "fn f[N const usize]() u32 { a arr[4,u32] = {4,5}\n\
+     return 0 }\n\
+    \ fn g() u32 { return f[4]() }"
+
 let () = Printf.printf "all regression checks: %d passed\n" !checks_run

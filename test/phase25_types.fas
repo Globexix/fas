@@ -4,6 +4,11 @@ C
 struct Ring[N const usize] { head u32
 items arr[N,u32] }
 fn read[N const usize](p addr) u32 { return p[Ring[N]].head }
+fn indexed[N const usize]() u32 {
+  a arr[4,u32] = {4,5,6,7}
+  Ring arr[1,u32] = {1}
+  return a[Ring[0]]
+}
 fn main() i32 {
   r Ring[4] = {37, {1, 2, 3, 4}}
   p addr = &r
@@ -19,5 +24,6 @@ fn main() i32 {
   { Ring arr[1,u32] = {1}
     if a[Ring[0]] != 6 { return 5 } }
   if p[Ring[4]].head != 41 { return 6 }
+  if indexed[4]() != oracle(1) { return 7 }
   return 0
 }

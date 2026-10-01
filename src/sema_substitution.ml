@@ -868,7 +868,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     let* _ = result in
     Ok ()
   and validate_non_dependent_statement c dependent expected_return = function
-    | Ast.Let { name; ty; init; span; _ } ->
+    | Ast.Let { name; ty; init; span; _ } as statement ->
         if type_mentions dependent ty then Ok (name :: dependent)
         else
           let* ty =
@@ -876,15 +876,27 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               span ty
             |> Diag.local_type_error name
           in
-          let* () =
+          if
+            (match ty with Hir.Array _ | Hir.Struct _ -> true | _ -> false)
+            &&
             match init with
-            | None -> Ok ()
             | Some value ->
-                validate_non_dependent_expression c dependent (Some ty) value
-          in
-          let* binding = add_local name ty c span in
-          if Option.is_some init then mark_init binding c;
-          Ok (List.filter (fun dependent_name -> dependent_name <> name) dependent)
+                (not (expression_mentions dependent value))
+                && not (has_generic_arguments value)
+            | None -> false
+          then
+            let* _ = check_stmt c statement in
+            Ok (List.filter (fun dependent_name -> dependent_name <> name) dependent)
+          else
+            let* () =
+              match init with
+              | None -> Ok ()
+              | Some value ->
+                  validate_non_dependent_expression c dependent (Some ty) value
+            in
+            let* binding = add_local name ty c span in
+            if Option.is_some init then mark_init binding c;
+            Ok (List.filter (fun dependent_name -> dependent_name <> name) dependent)
     | Ast.View { name; place; _ } as statement ->
         if expression_mentions dependent place || has_generic_arguments place then
           Ok (name :: dependent)
