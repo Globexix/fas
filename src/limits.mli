@@ -4,7 +4,6 @@ type t = {
   budget_version : budget_version;
   max_tokens : int;
   max_nesting : int;
-  max_asm_bytes : int;
   max_interned_string_bytes : int;
   max_rendered_ir_bytes : int;
   max_specializations : int;

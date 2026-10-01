@@ -132,7 +132,7 @@ type stmt =
   | Expr of expr * Span.t
   | Block of stmt list * Span.t
 
-type func_body = Declaration | Statements of stmt list | Asm of string
+type func_body = Declaration | Statements of stmt list
 
 type func = {
   name : string;

@@ -244,7 +244,7 @@ and count_expanded_generic_param_type_nodes parameter cap total =
 
 and count_expanded_body_type_nodes body cap total =
   match body with
-  | Ast.Declaration | Ast.Asm _ -> total
+  | Ast.Declaration -> total
   | Ast.Statements statements -> count_expanded_stmts_type_nodes statements cap total
 
 and count_expanded_item_type_nodes item cap total =

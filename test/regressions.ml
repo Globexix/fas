@@ -1934,43 +1934,6 @@ let () =
       "define signext i16 @i16_value(i16 signext";
       "define void @empty()";
     ];
-  let opaque_assembly_linkage =
-    llvm_of
-      "fn comment_name() i64 { return 1 }\n\
-       fn Llocal() i64 { return 2 }\n\
-       fn directive_name() i64 { return 3 }\n\
-       asm fn raw_zero() i64 {\n\
-       # comment_name\n\
-       .Llocal:\n\
-       .ascii \"directive_name\"\n\
-       ret\n\
-       }\n"
-  in
-  List.iter
-    (fun name ->
-      let expected = "define internal i64 @" ^ name ^ "()" in
-      if not (contains opaque_assembly_linkage expected) then
-        failwith ("assembly-linkage-opaque: missing `" ^ expected ^ "`"))
-    [ "comment_name"; "Llocal"; "directive_name" ];
-  let explicit_assembly_dependency =
-    "extern \"C\" { fn assembly_helper(x i64) i64 { return x + 1 } }\n\
-     asm fn assembly_call(x i64) i64 {\n\
-     call assembly_helper\n\
-     ret\n\
-     }\n"
-  in
-  let explicit_assembly_program = lower_of explicit_assembly_dependency in
-  let explicit_assembly_llvm = Ir.render explicit_assembly_program in
-  if not (contains explicit_assembly_llvm "define i64 @assembly_helper(i64 %a0)") then
-    failwith "assembly-linkage-explicit: C ABI helper is not externally visible";
-  if not (contains (Ir.raw_assembly explicit_assembly_program) "call assembly_helper")
-  then failwith "assembly-linkage-explicit: raw assembly dependency was not preserved";
-  let repeated_assembly_program = lower_of explicit_assembly_dependency in
-  if
-    explicit_assembly_llvm <> Ir.render repeated_assembly_program
-    || Ir.raw_assembly explicit_assembly_program
-       <> Ir.raw_assembly repeated_assembly_program
-  then failwith "assembly-linkage-determinism: output changed between compiler runs";
   let internal_aggregate_abi =
     llvm_of
       "struct S @align(16) { x i64 y i64 }\n\
@@ -2358,23 +2321,6 @@ let () =
           if not (contains rendered "not a normal definition") then
             failwith "no-inline: external declaration diagnostic changed"
       | Ok _ -> failwith "no-inline: external declaration was accepted");
-  let asm_profile_path = Filename.temp_file "fas-profile-asm-" ".fas" in
-  Fun.protect
-    ~finally:(fun () -> Sys.remove asm_profile_path)
-    (fun () ->
-      let channel = open_out_bin asm_profile_path in
-      output_string channel
-        "asm fn asm_zero() i64 {\n retq\n}\nfn main() i64 { return 0 }\n";
-      close_out channel;
-      let config =
-        cli_run [ "-debug"; "--emit-llvm"; "-no-inline"; "asm_zero"; asm_profile_path ]
-      in
-      match Driver.run config with
-      | Error diagnostics ->
-          let rendered = Diag.render_all ~source:None diagnostics in
-          if not (contains rendered "not a normal definition") then
-            failwith "no-inline: raw assembly diagnostic changed"
-      | Ok _ -> failwith "no-inline: raw assembly was accepted");
   let budget_source_path = Filename.temp_file "fas-budget-source-" ".fas" in
   Fun.protect
     ~finally:(fun () -> Sys.remove budget_source_path)
@@ -9788,29 +9734,6 @@ let () =
     || contains function_address_ir "getelementptr (i8, ptr @fas_callback_result"
     || contains function_address_ir "dso_local"
   then failwith "C function addresses did not lower to plain function relocations";
-  semantic_error "address-of-asm-function-remains-rejected"
-    "function `f` is not a place" "asm fn f() void {}\nfn g() addr { return &f }\n";
-  c_semantic_accept "c-import-qsort-and-atexit-function-addresses" phase21_records
-    "extern \"C\" {\n\
-     fn fas_qsort_compare(left addr, right addr) i32 { return 0 }\n\
-     fn fas_atexit_callback() void { return }\n\
-     }\n\
-     fn fas_sort(values addr) void { qsort(values, 2, 4, &fas_qsort_compare) }\n\
-     fn fas_register() i32 { return atexit(&fas_atexit_callback) }\n";
-  c_semantic_accept "c-import-const-field-record-remains-handle" phase21_records
-    "fn retain(value handle[FasConstFieldRecord]) handle[FasConstFieldRecord] { return \
-     value }\n\
-     fn retain_nested(value handle[FasNestedConstFieldRecord]) \
-     handle[FasNestedConstFieldRecord] { return value }\n";
-  c_semantic_message "c-import-const-field-record-reason"
-    "C declaration `FasConstFieldRecord` is not supported: const fields are not \
-     supported"
-    phase21_records "fn read(value FasConstFieldRecord) i32 { return value.value }\n";
-  c_semantic_message "c-import-nested-const-field-record-reason"
-    "C declaration `FasNestedConstFieldRecord` is not supported: const fields are not \
-     supported"
-    phase21_records
-    "fn read(value FasNestedConstFieldRecord) i32 { return value.inner.value }\n";
   semantic_error "addr-handle-c-record-native-still-rejected"
     "handle type argument must be an opaque type"
     "struct NativeRecord { value i32 }\n\
@@ -10570,4 +10493,8 @@ let () =
       close_out channel;
       let llvm = expect_ok (Driver.run (cli_run [ "--emit-llvm"; assembly_path ])) in
       if contains llvm "movl" then failwith "assembly unit leaked into Fas LLVM");
+  parse_message "removed-asm-function"
+    "asm fn was removed in v0.3; use a use \"asm\" unit and an extern \"C\" declaration"
+    "asm fn old(x i32) i32 { movl $1, %eax; ret }\n";
+  semantic_accept "asm-is-an-ordinary-binding" "fn f() i32 { asm i32 = 7\n return asm }";
   print_endline "C export spelling, omission, diagnostics and header pins: passed"

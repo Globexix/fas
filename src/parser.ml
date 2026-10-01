@@ -1,5 +1,3 @@
-type raw_body = { name : string; text : string }
-
 let ident_char c =
   (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c = '_'
 
@@ -34,12 +32,10 @@ let blank_range buffer text start stop =
     if text.[i] <> '\n' then Bytes.set buffer i ' '
   done
 
-let extract_asm source limits =
+let extract_containers source =
   let text = Source.text source and n = Source.length source in
   let buffer = Bytes.of_string text in
-  let bodies = ref [] in
   let c_containers = ref [] in
-  let total_body_bytes = ref 0 in
   let at_line_start i =
     i = 0
     ||
@@ -113,59 +109,8 @@ let extract_asm source limits =
         blank_range buffer text payload_start after_terminator;
         Ok after_terminator
   in
-  let rec find_body_open i quote line_comment block_comment =
-    if i >= n then None
-    else if line_comment then
-      find_body_open (i + 1) quote (text.[i] <> '\n') block_comment
-    else if block_comment then
-      if i + 1 < n && text.[i] = '*' && text.[i + 1] = '/' then
-        find_body_open (i + 2) quote false false
-      else find_body_open (i + 1) quote false true
-    else
-      match quote with
-      | Some _ when text.[i] = '\\' -> find_body_open (i + 2) quote false false
-      | Some q when text.[i] = q -> find_body_open (i + 1) None false false
-      | Some _ -> find_body_open (i + 1) quote false false
-      | None when i + 1 < n && text.[i] = '/' && text.[i + 1] = '/' ->
-          find_body_open (i + 2) None true false
-      | None when i + 1 < n && text.[i] = '/' && text.[i + 1] = '*' ->
-          find_body_open (i + 2) None false true
-      | None when text.[i] = '#' -> find_body_open (i + 1) None true false
-      | None when text.[i] = '"' || text.[i] = '\'' ->
-          find_body_open (i + 1) (Some text.[i]) false false
-      | None when text.[i] = '{' -> Some i
-      | None -> find_body_open (i + 1) None false false
-  in
-  let matching_body open_pos =
-    let rec scan i depth quote line_comment block_comment =
-      if i >= n then None
-      else if line_comment then
-        scan (i + 1) depth quote (text.[i] <> '\n') block_comment
-      else if block_comment then
-        if i + 1 < n && text.[i] = '*' && text.[i + 1] = '/' then
-          scan (i + 2) depth quote false false
-        else scan (i + 1) depth quote false true
-      else
-        match quote with
-        | Some _ when text.[i] = '\\' -> scan (i + 2) depth quote false false
-        | Some q when text.[i] = q -> scan (i + 1) depth None false false
-        | Some _ -> scan (i + 1) depth quote false false
-        | None when i + 1 < n && text.[i] = '/' && text.[i + 1] = '/' ->
-            scan (i + 2) depth None true false
-        | None when i + 1 < n && text.[i] = '/' && text.[i + 1] = '*' ->
-            scan (i + 2) depth None false true
-        | None when text.[i] = '#' -> scan (i + 1) depth None true false
-        | None when text.[i] = '"' || text.[i] = '\'' ->
-            scan (i + 1) depth (Some text.[i]) false false
-        | None when text.[i] = '{' -> scan (i + 1) (depth + 1) None false false
-        | None when text.[i] = '}' ->
-            if depth = 1 then Some i else scan (i + 1) (depth - 1) None false false
-        | None -> scan (i + 1) depth None false false
-    in
-    scan (open_pos + 1) 1 None false false
-  in
   let rec scan i =
-    if i >= n then Ok (Bytes.to_string buffer, List.rev !bodies, List.rev !c_containers)
+    if i >= n then Ok (Bytes.to_string buffer, List.rev !c_containers)
     else if text.[i] = '"' || text.[i] = '\'' then
       let quote = text.[i] in
       let rec skip j =
@@ -189,62 +134,11 @@ let extract_asm source limits =
       | None -> scan (i + 1)
       | Some (Error message) -> container_error i message
       | Some (Ok tag) -> Result.bind (extract_container i tag) scan
-    else if word_at text i "asm" then
-      let fn_pos = skip_space_comments text (i + 3) in
-      if word_at text fn_pos "fn" then
-        let name_pos = skip_space_comments text (fn_pos + 2) in
-        let name_end =
-          let rec f j = if j < n && ident_char text.[j] then f (j + 1) else j in
-          f name_pos
-        in
-        let name =
-          if name_end = name_pos then "<anonymous>"
-          else String.sub text name_pos (name_end - name_pos)
-        in
-        let open_pos =
-          match find_body_open name_end None false false with None -> n | Some p -> p
-        in
-        if open_pos = n then
-          Error
-            [
-              Diag.error
-                (Source.span source ~start_offset:i ~end_offset:(min n (i + 3)))
-                ("asm fn " ^ name ^ " has no body");
-            ]
-        else
-          match matching_body open_pos with
-          | None ->
-              Error
-                [
-                  Diag.error
-                    (Source.span source ~start_offset:open_pos
-                       ~end_offset:(min n (open_pos + 1)))
-                    ("unterminated asm body for " ^ name);
-                ]
-          | Some close_pos ->
-              let body = String.sub text (open_pos + 1) (close_pos - open_pos - 1) in
-              let body_bytes = String.length body in
-              if body_bytes > limits.Limits.max_asm_bytes then
-                Error
-                  [
-                    Diag.error
-                      (Source.span source ~start_offset:open_pos ~end_offset:close_pos)
-                      "raw asm body exceeds the configured limit";
-                  ]
-              else if !total_body_bytes > limits.Limits.max_asm_bytes - body_bytes then
-                Error
-                  [
-                    Diag.error
-                      (Source.span source ~start_offset:open_pos ~end_offset:close_pos)
-                      "cumulative raw asm bytes exceed the configured limit";
-                  ]
-              else begin
-                total_body_bytes := !total_body_bytes + body_bytes;
-                bodies := { name; text = body } :: !bodies;
-                blank_range buffer text (open_pos + 1) close_pos;
-                scan (close_pos + 1)
-              end
-      else scan (i + 1)
+    else if word_at text i "asm" && word_at text (skip_space_comments text (i + 3)) "fn"
+    then
+      container_error i
+        "asm fn was removed in v0.3; use a use \"asm\" unit and an extern \"C\" \
+         declaration"
     else scan (i + 1)
   in
   scan 0
@@ -253,7 +147,6 @@ module P = struct
   type t = {
     tokens : Token.t array;
     mutable pos : int;
-    bodies : raw_body list;
     c_containers : (int * Ast.c_fragment) list;
     limits : Limits.t;
     mutable depth : int;
@@ -322,8 +215,8 @@ module P = struct
     | ( Token.Kw_fn | Token.Kw_return | Token.Kw_if | Token.Kw_else | Token.Kw_while
       | Token.Kw_break | Token.Kw_continue | Token.Kw_const | Token.Kw_var
       | Token.Kw_struct | Token.Kw_opaque | Token.Kw_extern | Token.Kw_defer
-      | Token.Kw_asm | Token.Kw_use | Token.Kw_for | Token.Kw_switch | Token.Kw_case
-      | Token.Kw_default ) as kind ->
+      | Token.Kw_use | Token.Kw_for | Token.Kw_switch | Token.Kw_case | Token.Kw_default
+        ) as kind ->
         let shown = Token.show kind in
         Ok (String.sub shown 1 (String.length shown - 2))
     | kind ->
@@ -649,10 +542,7 @@ module P = struct
         Ok [ x ]
     | Token.Kw_extern -> extern_block p
     | Token.Kw_fn ->
-        let* x = fn_item p false false in
-        Ok [ x ]
-    | Token.Kw_asm ->
-        let* x = fn_item p true false in
+        let* x = fn_item p false in
         Ok [ x ]
     | Token.At ->
         let s = span p in
@@ -848,44 +738,20 @@ module P = struct
           let* global = global_item p Ast.Export_c in
           ds (global :: acc)
         else
-          let* x = fn_item p false true in
+          let* x = fn_item p true in
           match x with
           | Ast.Func f -> ds (Ast.Func { f with linkage = Ast.External_c } :: acc)
           | _ -> Error [ Diag.error s "invalid extern declaration" ]
       in
       ds []
 
-  and fn_item p asm allow_variadic =
+  and fn_item p allow_variadic =
     let s = span p in
-    let* () = if asm then expected p Token.Kw_asm else Ok () in
     let* () = expected p Token.Kw_fn in
     let* name = ident p in
-    let* generic_params = if asm then Ok [] else generic_params p in
+    let* generic_params = generic_params p in
     let* ps, ret, var = signature p allow_variadic in
-    if asm then (
-      skip_newlines p;
-      let* () = expected p Token.Lbrace in
-      skip_newlines p;
-      let* () = expected p Token.Rbrace in
-      let* () = end_stmt p in
-      let raw =
-        match List.find_opt (fun b -> b.name = name) p.bodies with
-        | None -> ""
-        | Some b -> b.text
-      in
-      Ok
-        (Ast.Func
-           {
-             name;
-             params = ps;
-             ret;
-             body = Ast.Asm raw;
-             linkage = Ast.Internal;
-             variadic = var;
-             generic_params;
-             span = s;
-           }))
-    else if allow_variadic then
+    if allow_variadic then
       if at p Token.Lbrace then
         if var then
           Error
@@ -1444,9 +1310,9 @@ module P = struct
 end
 
 let parse ?(limits = Limits.default) source =
-  match extract_asm source limits with
+  match extract_containers source with
   | Error e -> Error e
-  | Ok (clean, bodies, c_containers) -> (
+  | Ok (clean, c_containers) -> (
       let cleaned = Source.create ~file:(Source.file source) ~text:clean in
       match Lexer.lex ~limits cleaned with
       | Error e -> Error e
@@ -1455,7 +1321,6 @@ let parse ?(limits = Limits.default) source =
             {
               P.tokens = Array.of_list tokens;
               pos = 0;
-              bodies;
               c_containers;
               limits;
               depth = 0;

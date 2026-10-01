@@ -14,7 +14,6 @@ let () =
   assert (Limits.for_budget_version Limits.V0_15 = Limits.default);
   assert (Limits.default.max_tokens = 1_000_000);
   assert (Limits.default.max_nesting = 128);
-  assert (Limits.default.max_asm_bytes = 4_000_000);
   assert (Limits.default.max_interned_string_bytes = 4_000_000);
   assert (Limits.default.max_rendered_ir_bytes = 4_000_000);
   assert (Limits.default.max_specializations = 10_000);
@@ -386,7 +385,6 @@ let () =
       blocks;
       linkage = Ir.Internal;
       variadic = false;
-      asm_body = None;
     }
   in
   let ir_block ?(instrs = []) id terminator =
@@ -851,43 +849,6 @@ let () =
     expect_ok (Parser.parse (source "fn f(p addr) usize { return addr_bits(p) }\n"))
   in
   assert (List.length builtin.Ast.items = 1);
-  let asm =
-    "fn fake() i64 { return 1 }\n\
-     asm fn raw_move(x i64) i64 // comment containing {\n\
-     {\n\
-    \  # brace }\n\
-    \  .ascii \"asm fn fake { }\"\n\
-     }\n"
-  in
-  let asm_program = expect_ok (Parser.parse (source asm)) in
-  assert (List.length asm_program.Ast.items = 2);
-  (match List.nth asm_program.Ast.items 1 with
-  | Ast.Func { body = Ast.Asm text; _ } -> assert (String.length text > 10)
-  | _ -> assert false);
-  let cumulative_asm =
-    source "asm fn first() void {1234}\nasm fn second() void {5678}\n"
-  in
-  ignore
-    (expect_ok
-       (Parser.parse ~limits:{ Limits.default with max_asm_bytes = 8 } cumulative_asm));
-  (match
-     Parser.parse ~limits:{ Limits.default with max_asm_bytes = 7 } cumulative_asm
-   with
-  | Error diagnostics ->
-      assert (
-        contains
-          (Diag.render_all ~source:None diagnostics)
-          "cumulative raw asm bytes exceed the configured limit")
-  | Ok _ -> assert false);
-  (match
-     Parser.parse ~limits:{ Limits.default with max_asm_bytes = 3 } cumulative_asm
-   with
-  | Error diagnostics ->
-      assert (
-        contains
-          (Diag.render_all ~source:None diagnostics)
-          "raw asm body exceeds the configured limit")
-  | Ok _ -> assert false);
   let rendered_module =
     let parsed =
       expect_ok
@@ -1663,101 +1624,6 @@ let () =
     | Some span -> assert (span.Span.file = "test.fas")
     | None -> assert false);
     assert (Ast.item_span_by_name ast_program "missing" = None);
-    let asm_text =
-      "asm fn first() void {1234}\n\
-       asm fn second() void {5678}\n\
-       asm fn third() void {abcd}\n"
-    in
-    let asm_units = expect_ok (Parser.parse (source asm_text)) in
-    assert (
-      Ast.render_program
-        (expect_ok
-           (Parser.parse
-              ~limits:{ Limits.default with max_asm_bytes = 12 }
-              (source asm_text)))
-      = Ast.render_program asm_units);
-    assert (
-      Ast.check_cumulative_asm_bytes
-        ~limits:{ Limits.default with max_asm_bytes = 12 }
-        asm_units
-      = Ok ());
-    (match
-       Ast.check_cumulative_asm_bytes
-         ~limits:{ Limits.default with max_asm_bytes = 11 }
-         asm_units
-     with
-    | Ok () -> assert false
-    | Error diagnostic ->
-        assert (contains diagnostic.Diag.message "max_asm_bytes");
-        assert (contains diagnostic.Diag.message "11");
-        assert (contains diagnostic.Diag.message "0.15");
-        assert (diagnostic.Diag.primary.Span.line = 3));
-    let asm_over_first =
-      Ast.check_cumulative_asm_bytes
-        ~limits:{ Limits.default with max_asm_bytes = 11 }
-        asm_units
-      |> Result.map_error (fun diagnostic ->
-          Diag.render_all ~source:None [ diagnostic ])
-    in
-    let asm_over_second =
-      Ast.check_cumulative_asm_bytes
-        ~limits:{ Limits.default with max_asm_bytes = 11 }
-        asm_units
-      |> Result.map_error (fun diagnostic ->
-          Diag.render_all ~source:None [ diagnostic ])
-    in
-    assert (asm_over_first = asm_over_second);
-    assert (
-      Ast.check_cumulative_asm_bytes
-        ~limits:{ Limits.default with max_asm_bytes = max_int }
-        asm_units
-      = Ok ());
-    expect_diag
-      [ "budget max_asm_bytes must not be negative"; "0.15" ]
-      (Result.map_error
-         (fun diagnostic -> [ diagnostic ])
-         (Ast.check_cumulative_asm_bytes
-            ~limits:{ Limits.default with max_asm_bytes = min_int }
-            asm_units));
-    let asm_unit_a =
-      expect_ok
-        (Parser.parse
-           (Source.create ~file:"asm_a.fas" ~text:"asm fn first() void {1234}\n"))
-    in
-    let asm_unit_b =
-      expect_ok
-        (Parser.parse
-           (Source.create ~file:"asm_b.fas" ~text:"asm fn second() void {5678}\n"))
-    in
-    let asm_combined = { Ast.items = asm_unit_a.Ast.items @ asm_unit_b.Ast.items } in
-    assert (
-      Ast.check_cumulative_asm_bytes
-        ~limits:{ Limits.default with max_asm_bytes = 8 }
-        asm_combined
-      = Ok ());
-    (match
-       Ast.check_cumulative_asm_bytes
-         ~limits:{ Limits.default with max_asm_bytes = 7 }
-         asm_combined
-     with
-    | Ok () -> assert false
-    | Error diagnostic ->
-        assert (contains diagnostic.Diag.message "max_asm_bytes");
-        assert (diagnostic.Diag.primary.Span.file = "asm_b.fas"));
-    let raw_ir =
-      expect_ok
-        (Lower.lower
-           (expect_ok
-              (Sema.check
-                 (expect_ok (Parser.parse (source "asm fn rawbody() void {1234}\n"))))))
-    in
-    assert (
-      Ir.check_raw_asm_bytes ~limits:{ Limits.default with max_asm_bytes = 4 } raw_ir
-      = Ok ());
-    expect_ir_diag
-      [ "max_asm_bytes"; "3"; "0.15"; "at function `rawbody`" ]
-      (Some "rawbody")
-      (Ir.check_raw_asm_bytes ~limits:{ Limits.default with max_asm_bytes = 3 } raw_ir);
     let medium_functions =
       String.concat ""
         (List.init 8 (fun i ->
@@ -1968,41 +1834,7 @@ let () =
         ~limits:{ Limits.default with max_static_data_bytes = 47 }
         static_padded
     in
-    assert (static_padded_first = static_padded_second);
-    let asm_a_path = Filename.temp_file "fas-budget-asm-a-" ".fas" in
-    let asm_b_path = Filename.temp_file "fas-budget-asm-b-" ".fas" in
-    let asm_out_path = Filename.temp_file "fas-budget-asm-out-" ".s" in
-    Fun.protect
-      ~finally:(fun () ->
-        List.iter
-          (fun path -> if Sys.file_exists path then Sys.remove path)
-          [ asm_a_path; asm_b_path; asm_out_path ])
-      (fun () ->
-        let write_budget_file path text =
-          let channel = open_out_bin path in
-          output_string channel text;
-          close_out channel
-        in
-        let big_body = String.make 2_200_000 'x' in
-        write_budget_file asm_a_path
-          (Printf.sprintf "use \"%s\"\nasm fn first() void {%s}\n"
-             (Filename.basename asm_b_path)
-             big_body);
-        write_budget_file asm_b_path ("asm fn second() void {" ^ big_body ^ "}\n");
-        Sys.remove asm_out_path;
-        match
-          Driver.run
-            (expect_cli
-               (Cli.parse [| "fas"; "--emit-asm"; "-o"; asm_out_path; asm_a_path |]))
-        with
-        | Ok _ -> assert false
-        | Error [ diagnostic ] ->
-            assert (contains diagnostic.Diag.message "max_asm_bytes");
-            assert (contains diagnostic.Diag.message "4000000");
-            assert (contains diagnostic.Diag.message "0.15");
-            assert (diagnostic.Diag.primary.Span.file = asm_b_path);
-            assert (not (Sys.file_exists asm_out_path))
-        | Error _ -> assert false)
+    assert (static_padded_first = static_padded_second)
   in
   run_budget_tests ();
   let run_type_node_budget_tests () =

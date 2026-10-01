@@ -79,7 +79,6 @@ type func = {
   blocks : block list;
   linkage : linkage;
   variadic : bool;
-  asm_body : string option;
 }
 
 and block = { id : int; label : string; instrs : instr list; terminator : terminator }
@@ -1581,7 +1580,7 @@ let render_bounded ?(redirect = Fun.id) ~budget m =
         m.globals;
       List.iter
         (fun f ->
-          (if f.blocks = [] || Option.is_some f.asm_body then (
+          (if f.blocks = [] then (
              add "declare ";
              add (extension_name f.ret_extension);
              emit_ty sink f.ret;
@@ -1723,17 +1722,6 @@ let render_debug m =
   with
   | Ok text -> text
   | Error _ -> assert false
-
-let raw_assembly m =
-  m.funcs
-  |> List.filter_map (fun (f : func) ->
-      Option.map
-        (fun raw ->
-          Printf.sprintf
-            "\n.text\n.globl %s\n.type %s,@function\n%s:\n%s\n.size %s, .-%s\n" f.name
-            f.name f.name raw f.name f.name)
-        f.asm_body)
-  |> String.concat "\n"
 
 let count_lowered_nodes m =
   List.fold_left
@@ -1932,34 +1920,6 @@ let check_stack_scratch_bytes ~limits m =
           | Error () -> Error (Some f.name, message f.name)
           | Ok bytes ->
               if bytes > budget - total then Error (Some f.name, message f.name)
-              else go (total + bytes) rest)
-    in
-    go 0 m.funcs
-
-let check_raw_asm_bytes ~limits m =
-  let budget = limits.Limits.max_asm_bytes in
-  if budget < 0 then
-    Error
-      ( None,
-        Printf.sprintf "budget max_asm_bytes must not be negative (profile %s)"
-          (Limits.budget_profile_name limits) )
-  else
-    let rec go total = function
-      | [] -> Ok ()
-      | (f : func) :: rest -> (
-          match f.asm_body with
-          | None -> go total rest
-          | Some raw ->
-              let bytes = String.length raw in
-              if bytes > budget - total then
-                Error
-                  ( Some f.name,
-                    Printf.sprintf
-                      "cumulative raw asm bytes exceed budget max_asm_bytes of %d \
-                       (profile %s) at function `%s`"
-                      budget
-                      (Limits.budget_profile_name limits)
-                      f.name )
               else go (total + bytes) rest)
     in
     go 0 m.funcs

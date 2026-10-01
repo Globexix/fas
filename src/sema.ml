@@ -636,17 +636,6 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                    variadic;
                  }
                   : Hir.func)
-          | Ast.Asm raw ->
-              Ok
-                ({
-                   Hir.name;
-                   params = hir_params params;
-                   ret;
-                   body = Hir.Asm raw;
-                   linkage;
-                   variadic;
-                 }
-                  : Hir.func)
           | Ast.Statements stmts ->
               check_function_body ~name ~diagnostic_name ~description ~span ~params ~ret
                 ~stmts ~linkage ~variadic ~extra_consts:[] ~spec_depth ~spec_trace:trace

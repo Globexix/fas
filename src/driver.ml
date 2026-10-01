@@ -426,20 +426,17 @@ let run_llc config llc ~filetype ~input ~output =
       output;
     |]
 
-let build_assembly config ir llc opt_path asm_path =
+let build_assembly config llc opt_path asm_path =
   let* () = run_llc config llc ~filetype:"asm" ~input:opt_path ~output:asm_path in
   let* generated =
     read_file asm_path
     |> Result.map_error (fun message ->
         [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ])
   in
-  let assembly = generated ^ Ir.raw_assembly ir in
-  write_file asm_path assembly;
-  Ok assembly
+  Ok generated
 
 let emit_tools_unprotected config program ir c_objects redirect =
   let* () = ir_budget program (Ir.check_static_data_bytes ~limits ir) in
-  let* () = ir_budget program (Ir.check_raw_asm_bytes ~limits ir) in
   let* ll_text = render_ir ~redirect ir in
   let ll_path = Filename.temp_file "fas-module-" ".ll" in
   let opt_path = Filename.temp_file "fas-opt-" ".ll" in
@@ -467,10 +464,10 @@ let emit_tools_unprotected config program ir c_objects redirect =
       let* () = verify_llvm opt opt_path in
       match config.emit with
       | Cli.Asm ->
-          let* assembly = build_assembly config ir llc opt_path asm_path in
+          let* assembly = build_assembly config llc opt_path asm_path in
           write_file config.output assembly;
           Ok ""
-      | Cli.Obj when Ir.raw_assembly ir = "" ->
+      | Cli.Obj ->
           let* () =
             if c_objects = [] then
               run_llc config llc ~filetype:"obj" ~input:opt_path ~output:config.output
@@ -494,38 +491,8 @@ let emit_tools_unprotected config program ir c_objects redirect =
                   run_tool cc argv)
           in
           Ok ""
-      | Cli.Obj ->
-          let* _ = build_assembly config ir llc opt_path asm_path in
-          let fas_object =
-            if c_objects = [] then config.output
-            else Filename.temp_file "fas-object-" ".o"
-          in
-          let cleanup_object () =
-            if c_objects <> [] && not config.Cli.keep then remove fas_object
-          in
-          let* () =
-            Fun.protect ~finally:cleanup_object (fun () ->
-                if config.Cli.keep && c_objects <> [] then
-                  prerr_endline ("fas: kept Fas object: " ^ fas_object);
-                let argv = [| cc; "-c"; asm_path; "-o"; fas_object |] in
-                if config.Cli.debug || config.Cli.keep then
-                  prerr_endline
-                    ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
-                let* () = run_tool cc argv in
-                if c_objects = [] then Ok ()
-                else
-                  let argv =
-                    Array.of_list
-                      ((cc :: "-r" :: fas_object :: c_objects) @ [ "-o"; config.output ])
-                  in
-                  if config.Cli.debug || config.Cli.keep then
-                    prerr_endline
-                      ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
-                  run_tool cc argv)
-          in
-          Ok ""
       | Cli.Executable ->
-          let* _ = build_assembly config ir llc opt_path asm_path in
+          let* _ = build_assembly config llc opt_path asm_path in
           let* () = run_tool cc (executable_command config cc asm_path c_objects) in
           Ok ""
       | Cli.Ir | Cli.Llvm | Cli.Header ->
@@ -554,7 +521,7 @@ let apply_no_inline config ir =
               Diag.error Span.synthetic
                 (Printf.sprintf "-no-inline function `%s` was not emitted" name);
             ]
-      | Some f when f.blocks = [] || Option.is_some f.asm_body ->
+      | Some f when f.blocks = [] ->
           Error
             [
               Diag.error Span.synthetic
@@ -842,7 +809,6 @@ let run_unprotected ?header_output config =
                  program.items
           in
           let program = { Ast.items = program.items @ imported.items } in
-          let* () = ast_budget (Ast.check_cumulative_asm_bytes ~limits program) in
           let* () = ast_budget (Ast.check_expanded_nodes ~limits program) in
           let* hir =
             match

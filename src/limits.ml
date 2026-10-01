@@ -4,7 +4,6 @@ type t = {
   budget_version : budget_version;
   max_tokens : int;
   max_nesting : int;
-  max_asm_bytes : int;
   max_interned_string_bytes : int;
   max_rendered_ir_bytes : int;
   max_specializations : int;
@@ -32,7 +31,6 @@ let for_budget_version version =
         budget_version = version;
         max_tokens = 1_000_000;
         max_nesting = 128;
-        max_asm_bytes = 4_000_000;
         max_interned_string_bytes = 4_000_000;
         max_rendered_ir_bytes = 4_000_000;
         max_specializations = 10_000;

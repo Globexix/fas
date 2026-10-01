@@ -95,7 +95,7 @@ and generic_param =
   | Type_param of { name : string; span : Span.t }
   | Const_param of const_param
 
-and body = Declaration | Statements of stmt list | Asm of string
+and body = Declaration | Statements of stmt list
 and linkage = Internal | External_c
 and global_linkage = Internal_global | Export_c | Import_c | Import_const_c
 and c_fragment = { tag : string; text : string }
@@ -570,10 +570,6 @@ let render_program program =
   and emit_body body =
     match body with
     | Declaration -> ()
-    | Asm raw ->
-        text " {";
-        add_name raw;
-        text "}"
     | Statements xs ->
         text " {\n";
         List.iteri
@@ -819,7 +815,7 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
           List.iter go_generic_param generic_params;
           List.iter go_param params;
           go_ty span ret;
-          match body with Statements xs -> go_stmts xs | Declaration | Asm _ -> ()))
+          match body with Statements xs -> go_stmts xs | Declaration -> ()))
   in
   List.iter go_item program.items;
   (!total, !failed)
@@ -861,33 +857,6 @@ let check_expanded_nodes ~limits program =
                  (profile %s)"
                 limits.Limits.max_ast_nodes
                 (Limits.budget_profile_name limits)))
-
-let check_cumulative_asm_bytes ~limits program =
-  let budget = limits.Limits.max_asm_bytes in
-  if budget < 0 then
-    Error
-      (Diag.error Span.synthetic
-         (Printf.sprintf "budget max_asm_bytes must not be negative (profile %s)"
-            (Limits.budget_profile_name limits)))
-  else
-    let rec go total = function
-      | [] -> Ok ()
-      | item :: rest -> (
-          match item with
-          | Func { body = Asm raw; span; _ } ->
-              let bytes = String.length raw in
-              if bytes > budget - total then
-                Error
-                  (Diag.error span
-                     (Printf.sprintf
-                        "cumulative raw asm bytes exceed budget max_asm_bytes of %d \
-                         (profile %s)"
-                        budget
-                        (Limits.budget_profile_name limits)))
-              else go (total + bytes) rest
-          | _ -> go total rest)
-    in
-    go 0 program.items
 
 let specialization_name_delimiter = "$spec$"
 

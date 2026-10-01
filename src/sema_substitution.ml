@@ -1807,7 +1807,6 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             let* body =
               match body with
               | Ast.Declaration -> Ok Ast.Declaration
-              | Ast.Asm raw -> Ok (Ast.Asm raw)
               | Ast.Statements statements ->
                   let* () =
                     validate_statement_block_names
@@ -1899,7 +1898,6 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let* body =
           match body with
           | Ast.Declaration -> Ok Ast.Declaration
-          | Ast.Asm raw -> Ok (Ast.Asm raw)
           | Ast.Statements statements ->
               let body_value_names =
                 List.map (fun (parameter : Ast.param) -> parameter.name) params

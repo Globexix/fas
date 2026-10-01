@@ -93,8 +93,7 @@ let c_extension = function
       |> ir_extension
   | _ -> Ir.No_extension
 
-let has_c_abi (f : Hir.func) =
-  f.linkage = Hir.External_c || match f.body with Hir.Asm _ -> true | _ -> false
+let has_c_abi (f : Hir.func) = f.linkage = Hir.External_c
 
 let align s t =
   match Hir.layout s.structs t with
@@ -2186,18 +2185,6 @@ let lower_func structs strings functions f =
   in
   let ret_extension = if c_abi then c_extension f.ret else Ir.No_extension in
   match f.body with
-  | Hir.Asm raw ->
-      Ok
-        {
-          Ir.name = f.name;
-          params;
-          ret = ty f.ret;
-          ret_extension;
-          blocks = [];
-          linkage = Ir.External;
-          variadic = f.variadic;
-          asm_body = Some raw;
-        }
   | Hir.Declaration ->
       Ok
         {
@@ -2208,7 +2195,6 @@ let lower_func structs strings functions f =
           blocks = [];
           linkage = Ir.External;
           variadic = f.variadic;
-          asm_body = None;
         }
   | Hir.Statements body ->
       let* () =
@@ -2310,7 +2296,6 @@ let lower_func structs strings functions f =
              else if f.linkage = Hir.Internal then Ir.Internal
              else External);
           variadic = f.variadic;
-          asm_body = None;
         }
 
 let intrinsic_decls funcs =
@@ -2346,7 +2331,6 @@ let intrinsic_decls funcs =
         blocks = [];
         linkage = Ir.External;
         variadic = false;
-        asm_body = None;
       })
   |> List.of_seq
   |> List.sort (fun (a : Ir.func) b -> String.compare a.name b.name)
