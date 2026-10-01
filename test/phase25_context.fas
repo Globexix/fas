@@ -1,0 +1,36 @@
+use "C" <<C
+static unsigned oracle(unsigned lane, int op) {
+  unsigned v = lane + 1;
+  if (op == 0) return v + 37;
+  if (op == 1) return 37 - v;
+  if (op == 2) return (lane & 1) ? v : 0;
+  return v;
+}
+C
+const V vec[4,u32] = {1, 2, 3, 4}
+const M vec[4,bool] = {true, false, true, false}
+const A vec[4,u32] = add_sat(V, splat(37))
+const B vec[4,u32] = sub_sat(splat(37), V)
+const C vec[4,u32] = select(M, splat(0), V)
+const D vec[4,u32] = false ? splat(0) : V
+fn branch(ok bool, v vec[4,u32]) vec[4,u32] { return ok ? splat(0) : v }
+fn main() i32 {
+  v vec[4,u32] = {1, 2, 3, 4}
+  m vec[4,bool] = {true, false, true, false}
+  a vec[4,u32] = add_sat(v, splat(37))
+  b vec[4,u32] = sub_sat(splat(37), v)
+  c vec[4,u32] = select(m, splat(0), v)
+  d vec[4,u32] = branch(false, v)
+  equal vec[4,bool] = v == {1, 2, 3, 4}
+  reverse vec[4,bool] = {1, 2, 3, 4} == v
+  if !all(equal) || !all(reverse) { return 1 }
+  i u32 = 0
+  while i < 4 {
+    if a[i] != oracle(i, 0) || A[i] != oracle(i, 0) { return 2 }
+    if b[i] != oracle(i, 1) || B[i] != oracle(i, 1) { return 3 }
+    if c[i] != oracle(i, 2) || C[i] != oracle(i, 2) { return 4 }
+    if d[i] != oracle(i, 3) || D[i] != oracle(i, 3) { return 5 }
+    i += 1
+  }
+  return 0
+}

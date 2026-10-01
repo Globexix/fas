@@ -10673,3 +10673,29 @@ let () =
   semantic_message "bitcast-literal-equal-bits"
     "illegal cast for source and destination widths"
     "fn f() u64 { return bitcast[u64](1) }\n"
+
+let () =
+  semantic_accept "vector-peer-context-all-slots"
+    "fn f(v vec[4,u32], m vec[4,bool], ok bool) vec[4,u32] {\n\
+     a vec[4,u32] = add_sat(v, splat(37)) + sub_sat(splat(37), v)\n\
+     b vec[4,u32] = mul_hi(v, {1, 2, 3, 4})\n\
+     c vec[4,bool] = v == {1, 2, 3, 4}\n\
+     d vec[4,bool] = {1, 2, 3, 4} == v\n\
+     e vec[4,u32] = select(m, splat(0), v)\n\
+     g vec[4,u32] = select(m, v, {1, 2, 3, 4})\n\
+     h vec[4,u32] = shuffle(splat(0), v, (vec[4,u8]){0, 1, 2, 3})\n\
+     i vec[4,u32] = ok ? splat(0) : v\n\
+     j vec[4,u32] = ok ? v : {1, 2, 3, 4}\n\
+     return a + b + e + g + h + i + j }\n";
+  semantic_message "vector-peer-no-typed-peer" "splat requires a vector type context"
+    "fn f() void { add_sat(splat(1), splat(2))\nreturn }\n";
+  semantic_message "vector-peer-scalar-peer" "splat requires a vector type context"
+    "fn f(k u32) void { add_sat(k, splat(2))\nreturn }\n";
+  semantic_message "vector-peer-wrong-width" "wrong number of vector literal lanes"
+    "fn f(v vec[4,u32]) vec[4,bool] { return v == {1, 2} }\n";
+  semantic_accept "vector-peer-folding-reverse-arms"
+    "const V vec[4,u32] = {1, 2, 3, 4}\n\
+     const A vec[4,u32] = select((vec[4,bool]){true, false, true, false}, splat(0), V)\n\
+     const B vec[4,u32] = true ? splat(0) : V\n\
+     const D vec[4,u32] = false ? {0, 0, 0, 0} : V\n\
+     fn f() u32 { return A[1] + B[2] + D[3] }\n"

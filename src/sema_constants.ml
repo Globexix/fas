@@ -49,7 +49,7 @@ let rec unresolved_shape_of expression =
         right,
         _ ) ->
       combined left right
-  | Ast.Splat (_, _) -> Some Unresolved_vector
+  | Ast.Splat (_, _) | Ast.Array_lit _ -> Some Unresolved_vector
   | _ -> None
 
 let rec unresolved_vector_elements expression =
@@ -603,6 +603,17 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = [])
     vector_const_expr ~structs ~named_types ~arrays ~array_lengths ~globals ?resolve
       consts ~check_only
   in
+  let pair left right =
+    match (unresolved_shape_of left, unresolved_shape_of right) with
+    | Some _, None ->
+        let* rt, rv = evaluate expected right in
+        let* lt, lv = evaluate (Some rt) left in
+        Ok (lt, lv, rt, rv)
+    | _ ->
+        let* lt, lv = evaluate expected left in
+        let* rt, rv = evaluate (Some lt) right in
+        Ok (lt, lv, rt, rv)
+  in
   match expression with
   | Ast.Ident (name, span) -> (
       match lookup name arrays with
@@ -885,8 +896,7 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = [])
               else 0L)
             idx_values )
   | Ast.Call (Ast.Ident (name, _), [ a; b; sel ], span) when name = "shuffle" ->
-      let* at, avalues = evaluate expected a in
-      let* bt, bvalues = evaluate (Some at) b in
+      let* at, avalues, bt, bvalues = pair a b in
       let* () =
         if at = bt then Ok ()
         else error span "builtin arguments must have the same type"
@@ -944,8 +954,7 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = [])
       | _ -> error span (Printf.sprintf "%s values must be a vector" name))
   | Ast.Call (Ast.Ident (name, _), [ m; y; z ], span) when name = "select" ->
       let* mask_ty, mask_values = evaluate None m in
-      let* yes_ty, yes_values = evaluate expected y in
-      let* no_ty, no_values = evaluate (Some yes_ty) z in
+      let* yes_ty, yes_values, no_ty, no_values = pair y z in
       let* lanes =
         match mask_ty with
         | Hir.Vec (n, Hir.Bool) -> Ok n
@@ -968,17 +977,7 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = [])
             (List.combine yes_values no_values) )
   | Ast.Call (Ast.Ident (name, _), [ left; right ], span)
     when List.mem name [ "add_sat"; "sub_sat"; "mul_hi" ] ->
-      let* left_ty, left_values, right_ty, right_values =
-        match (unresolved_shape_of left, unresolved_shape_of right) with
-        | Some _, None ->
-            let* right_ty, right_values = evaluate expected right in
-            let* left_ty, left_values = evaluate (Some right_ty) left in
-            Ok (left_ty, left_values, right_ty, right_values)
-        | _ ->
-            let* left_ty, left_values = evaluate expected left in
-            let* right_ty, right_values = evaluate (Some left_ty) right in
-            Ok (left_ty, left_values, right_ty, right_values)
-      in
+      let* left_ty, left_values, right_ty, right_values = pair left right in
       let* () =
         if left_ty = right_ty then Ok ()
         else error span "builtin arguments must have the same type"
@@ -994,6 +993,19 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = [])
             (fun a b -> lane_mask (Hir.Int kind) (sat_or_mulhi name kind a b))
             left_values right_values )
   | Ast.Ternary (condition, yes, no, span) ->
+      let* expected =
+        if
+          expected = None
+          && unresolved_shape_of yes = Some Unresolved_vector
+          && unresolved_shape_of no = None
+        then
+          let* peer, _ =
+            vector_const_expr ~structs ~named_types ~arrays ~array_lengths ~globals
+              ?resolve consts None ~check_only:true no
+          in
+          Ok (match peer with Hir.Vec _ -> Some peer | _ -> None)
+        else Ok expected
+      in
       let* condition_ty, condition_value =
         const_expr ~structs ~named_types ~arrays ~array_lengths ~globals ?resolve consts
           None ~check_only condition

@@ -206,7 +206,7 @@ let rec unresolved_shape_of expression =
         right,
         _ ) ->
       combined left right
-  | Ast.Splat (_, _) -> Some Unresolved_vector
+  | Ast.Splat (_, _) | Ast.Array_lit _ -> Some Unresolved_vector
   | _ -> None
 
 let rec unresolved_vector_elements expression =
@@ -796,6 +796,17 @@ and check_expr (c : context) expected expression =
           | Hir.EInt (value, _, _) -> Some (value <> 0L)
           | _ -> None
         in
+        let* expected =
+          if
+            expected = None
+            && unresolved_shape_of a = Some Unresolved_vector
+            && unresolved_shape_of b = None
+          then (
+            let* peer = check_expr c None b in
+            Sema_flow.restore c.flow before_arms;
+            Ok (match Hir.expr_ty peer with Hir.Vec _ as ty -> Some ty | _ -> None))
+          else Ok expected
+        in
         let* ta =
           with_dead_check c (condition = Some false) (fun () -> check_expr c expected a)
         in
@@ -838,11 +849,14 @@ and check_expr (c : context) expected expression =
       | _ -> error s "aggregate literal requires an array, struct, or vector type")
 
 and check_same_operands c left right =
-  let literal expression = unresolved_shape_of expression = Some Unresolved_int in
+  let contextual expression = Option.is_some (unresolved_shape_of expression) in
   let hint peer expression =
-    if literal expression then Some (Hir.expr_ty peer) else None
+    match (unresolved_shape_of expression, Hir.expr_ty peer) with
+    | Some Unresolved_int, (Hir.Int _ as ty) -> Some ty
+    | Some Unresolved_vector, (Hir.Vec _ as ty) -> Some ty
+    | _ -> None
   in
-  if literal left && not (literal right) then
+  if contextual left && not (contextual right) then
     let* right = check_expr c None right in
     let* left = check_expr c (hint right left) left in
     Ok (left, right)
