@@ -412,16 +412,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(arrays = [])
       let* dt = source_ty_with_values named_types consts s dst in
       let scalar_source () =
         const_expr ~structs ~named_types ~arrays ~array_lengths ~globals ?resolve consts
-          ~check_only ~validate_dead
-          (if
-             k = Ast.Bitcast
-             &&
-             match e with
-             | Ast.Int_lit _ | Ast.Unary (Ast.Neg, Ast.Int_lit _, _) -> true
-             | _ -> false
-           then Some dt
-           else None)
-          e
+          ~check_only ~validate_dead None e
       in
       let* st, v, reshaped =
         match scalar_source () with
@@ -1030,19 +1021,9 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = [])
         match evaluate None value with
         | Ok result -> Ok result
         | Error _ ->
-            let context =
-              if
-                kind = Ast.Bitcast
-                &&
-                match value with
-                | Ast.Int_lit _ | Ast.Unary (Ast.Neg, Ast.Int_lit _, _) -> true
-                | _ -> false
-              then Some destination
-              else None
-            in
             let* source, value =
               const_expr ~structs ~named_types ~arrays ~array_lengths ~globals ?resolve
-                consts context ~check_only value
+                consts None ~check_only value
             in
             Ok (source, [ value ])
       in

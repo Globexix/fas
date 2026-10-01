@@ -719,18 +719,7 @@ and check_expr (c : context) expected expression =
       error s "generic specialization is not available in this context"
   | Ast.Cast (k, t, e, s) ->
       let* t = source_ty_in_context c s t in
-      let* x =
-        check_expr c
-          (if
-             k = Ast.Bitcast
-             &&
-             match e with
-             | Ast.Int_lit _ | Ast.Unary (Ast.Neg, Ast.Int_lit _, _) -> true
-             | _ -> false
-           then Some t
-           else None)
-          e
-      in
+      let* x = check_expr c None e in
       let from = Hir.expr_ty x in
       if cast_legal k from t then Ok (Hir.Cast (k, x, t, s))
       else error s "illegal cast for source and destination widths"

@@ -7530,10 +7530,10 @@ let () =
     not (contains constant_bool_pack "<i1 0, i1 0, i1 1, i1 1, i1 0, i1 0, i1 1, i1 1>")
   then failwith "constant-bool-pack: expected packed value bits";
   semantic_error "constant-bitcast-literal-parity"
-    "integer literal is out of range for vec[8, bool]"
+    "illegal cast for source and destination widths"
     "const P vec[8,bool] = bitcast[vec[8,bool]](204)\nfn main() i32 { return 0 }\n";
   semantic_error "runtime-bitcast-literal-parity"
-    "integer literal is out of range for vec[8, bool]"
+    "illegal cast for source and destination widths"
     "fn f() vec[8,bool] { return bitcast[vec[8,bool]](204) }\n";
   let generic_cast_path =
     llvm_of
@@ -10664,3 +10664,12 @@ let () =
     "builtin arguments must have the same type"
     "fn f(a vec[4,u8], b vec[4,u32]) vec[4,u8] { return shuffle(a, b, (vec[4,u8]){0, \
      1, 2, 3}) }\n"
+
+let () =
+  semantic_accept "bitcast-literal-default-i32"
+    "const V vec[4,u8] = bitcast[vec[4,u8]](0x00010203)\n\
+     const W vec[2,u16] = bitcast[vec[2,u16]](-1)\n\
+     fn f() u8 { return bitcast[vec[4,u8]](0x00010203)[0] + V[1] }\n";
+  semantic_message "bitcast-literal-equal-bits"
+    "illegal cast for source and destination widths"
+    "fn f() u64 { return bitcast[u64](1) }\n"

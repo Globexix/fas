@@ -1,0 +1,22 @@
+use "C" <<C
+#include <string.h>
+static unsigned byte(unsigned lane) { int value = 0x00010203; unsigned char bytes[4]; memcpy(bytes, &value, 4); return bytes[lane]; }
+static unsigned word(unsigned lane) { int value = -1; unsigned short words[2]; memcpy(words, &value, 4); return words[lane]; }
+C
+const V vec[4,u8] = bitcast[vec[4,u8]](0x00010203)
+const W vec[2,u16] = bitcast[vec[2,u16]](-1)
+fn main() i32 {
+  v vec[4,u8] = bitcast[vec[4,u8]](0x00010203)
+  w vec[2,u16] = bitcast[vec[2,u16]](-1)
+  i u32 = 0
+  while i < 4 {
+    if zext[u32](v[i]) != byte(i) || zext[u32](V[i]) != byte(i) { return 1 }
+    i += 1
+  }
+  i = 0
+  while i < 2 {
+    if zext[u32](w[i]) != word(i) || zext[u32](W[i]) != word(i) { return 2 }
+    i += 1
+  }
+  return 0
+}
