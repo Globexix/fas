@@ -262,7 +262,7 @@ let declarations ?(reserved = []) records (program : program) =
   (String.concat "" (List.rev !lines @ decls), List.sort_uniq compare !headers, errors)
 
 let guard name =
-  String.uppercase_ascii name
+  String.uppercase_ascii (Filename.remove_extension (Filename.basename name))
   |> String.map (fun c ->
       if (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') then c else '_')
 

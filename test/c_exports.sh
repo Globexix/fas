@@ -37,6 +37,7 @@ for header_source in header.c kept.c; do
     "$CXX" -x c++ -std=c++17 -Wall -Wextra -Werror -I"$EXPORT_TMP/headers" -fsyntax-only "$EXPORT_TMP/$header_source"
 done
 "$OCAML_FAS" --emit-llvm "$ROOT/test/c_exports/library.fas" >"$EXPORT_TMP/library.ll"
+grep -Fx '#ifndef FAS_API_H' "$EXPORT_TMP/headers/api.h" >/dev/null
 "$LLVM_OPT" -passes=verify "$EXPORT_TMP/library.ll" -disable-output
 "$LLVM_OPT" -passes='default<O2>' -verify-each "$EXPORT_TMP/library.ll" -S -o "$EXPORT_TMP/library-o2.ll"
 "$LLVM_OPT" -passes=verify "$EXPORT_TMP/library-o2.ll" -disable-output

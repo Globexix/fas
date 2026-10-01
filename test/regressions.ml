@@ -10101,8 +10101,8 @@ let () =
   in
   assert (
     header
-    = "#ifndef FAS_MY_API_H_H\n\
-       #define FAS_MY_API_H_H\n\
+    = "#ifndef FAS_MY_API_H\n\
+       #define FAS_MY_API_H\n\
        #include <api.h>\n\
        #ifdef __cplusplus\n\
        extern \"C\" {\n\
@@ -10117,8 +10117,8 @@ let () =
   in
   assert (
     plain_header
-    = "#ifndef FAS_PLAIN_H_H\n\
-       #define FAS_PLAIN_H_H\n\
+    = "#ifndef FAS_PLAIN_H\n\
+       #define FAS_PLAIN_H\n\
        #ifdef __cplusplus\n\
        extern \"C\" {\n\
        #endif\n\
@@ -10141,8 +10141,8 @@ let () =
   in
   assert (
     scalar_header
-    = "#ifndef FAS_SCALARS_H_H\n\
-       #define FAS_SCALARS_H_H\n\
+    = "#ifndef FAS_SCALARS_H\n\
+       #define FAS_SCALARS_H\n\
        #include <stdbool.h>\n\
        #include <stdint.h>\n\
        #include <stddef.h>\n\
@@ -10165,8 +10165,8 @@ let () =
     struct_header
     = String.concat "\n"
         [
-          "#ifndef FAS_PAIR_H_H";
-          "#define FAS_PAIR_H_H";
+          "#ifndef FAS_PAIR_H";
+          "#define FAS_PAIR_H";
           "#include <stdalign.h>";
           "#include <assert.h>";
           "#include <stdint.h>";

@@ -2659,3 +2659,8 @@ let () =
   run_cross_budget_tests ();
   run_phase_invariant_tests ();
   print_endline "frontend unit tests: ok"
+
+let () =
+  assert (C_exports.guard "checksum.h" = "CHECKSUM");
+  assert (C_exports.guard "/tmp/path/my-api.h" = "MY_API");
+  assert (C_exports.guard "checksum" = "CHECKSUM")
