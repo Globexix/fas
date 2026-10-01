@@ -6012,10 +6012,19 @@ let () =
            [
              {
                Hir.name = "S";
-               fields = [ { Hir.name = "x"; ty = Hir.Opaque "X"; offset = 0 } ];
+               fields =
+                 [
+                   {
+                     Hir.name = "x";
+                     ty = Hir.Opaque "X";
+                     offset = 0;
+                     unsupported_reason = None;
+                   };
+                 ];
                size = 8;
                align = 8;
                is_union = false;
+               byte_storage = false;
              };
            ];
          consts = [];
@@ -6035,29 +6044,48 @@ let () =
       Hir.name = "Overlap";
       fields =
         [
-          { Hir.name = "a"; ty = Hir.Int Hir.U64; offset = 0 };
-          { Hir.name = "b"; ty = Hir.Int Hir.U8; offset = 4 };
+          {
+            Hir.name = "a";
+            ty = Hir.Int Hir.U64;
+            offset = 0;
+            unsupported_reason = None;
+          };
+          { Hir.name = "b"; ty = Hir.Int Hir.U8; offset = 4; unsupported_reason = None };
         ];
       size = 8;
       align = 8;
       is_union = false;
+      byte_storage = false;
     };
   lower_struct_error "layout-invariant-size" "size is smaller than its fields"
     {
       Hir.name = "Short";
-      fields = [ { Hir.name = "x"; ty = Hir.Int Hir.U64; offset = 0 } ];
+      fields =
+        [
+          {
+            Hir.name = "x";
+            ty = Hir.Int Hir.U64;
+            offset = 0;
+            unsupported_reason = None;
+          };
+        ];
       size = 4;
       align = 8;
       is_union = false;
+      byte_storage = false;
     };
   lower_struct_error "layout-invariant-alignment"
     "alignment must be a positive power of two"
     {
       Hir.name = "BadAlign";
-      fields = [ { Hir.name = "x"; ty = Hir.Int Hir.U8; offset = 0 } ];
+      fields =
+        [
+          { Hir.name = "x"; ty = Hir.Int Hir.U8; offset = 0; unsupported_reason = None };
+        ];
       size = 3;
       align = 3;
       is_union = false;
+      byte_storage = false;
     };
 
   (match
@@ -8080,6 +8108,46 @@ let () =
     "struct S { left i32 right i32 }\n\
      fn f() i32 { value S = {29, 31}\n\
      return value.left + value.right }\n";
+  semantic_accept "construction-empty-array-zero"
+    "fn f() u8 { values arr[5,u8] = {}\nreturn values[4] }\n";
+  semantic_accept "construction-empty-nested-zero"
+    "fn f() i32 { values arr[2,arr[2,i32]] = {{}, {1, 2}}\n\
+     return values[0][1] + values[1][1] }\n";
+  semantic_error "construction-empty-scalar"
+    "construction needs an array, struct or vector type"
+    "fn f() void { value i32 = {}\nreturn }\n";
+  semantic_error "construction-empty-array-nonzero-count"
+    "wrong number of array literal elements"
+    "fn f() void { values arr[5,u8] = {0}\nreturn }\n";
+  let empty_aggregate_llvm =
+    llvm_of
+      "struct Pair { left i32 right i32 }\n\
+       var EmptyGlobal arr[5,u8] = {}\n\
+       const EmptyConst arr[5,u8] = {}\n\
+       fn f() i32 { scratch arr[8,i32]\n\
+       scratch[4] = 71\n\
+       chars arr[5,u8] = {}\n\
+       nested arr[2,arr[2,i32]] = {{}, {1, 2}}\n\
+       pair Pair = {}\n\
+       return zext[i32](chars[4]) + nested[0][0] + pair.left }\n"
+  in
+  if
+    (not
+       (contains empty_aggregate_llvm
+          "@EmptyGlobal = internal global [5 x i8] zeroinitializer"))
+    || (not
+          (contains empty_aggregate_llvm
+             "@EmptyConst = private unnamed_addr constant [5 x i8] zeroinitializer"))
+    || (not (contains empty_aggregate_llvm "store [5 x i8] zeroinitializer"))
+    || not (contains empty_aggregate_llvm "store [2 x i32] zeroinitializer")
+  then failwith "empty aggregate initializers did not share zero storage lowering";
+  let empty_exported_global_llvm =
+    llvm_of "extern \"C\" { var screens arr[5,addr] = {} }\n"
+  in
+  if
+    not
+      (contains empty_exported_global_llvm "@screens = global [40 x i8] zeroinitializer")
+  then failwith "empty exported aggregate did not emit a zero definition";
   semantic_accept "construction-vector-value"
     "fn f() u32 { values vec[2,u32] = (vec[2,u32]){37, 41}\n\
      return values[0] + values[1] }\n";
@@ -9204,6 +9272,64 @@ let () =
     "fn anonymous() i32 { value FasAnonymous = (FasAnonymous){ 1 }\n\
      return value.field }\n";
   let phase21_records = c_import_fixture "phase21_records.h" in
+  let collision_header =
+    Filename.concat (Filename.dirname (fst phase21_records)) "phase21_records.h"
+  in
+  let collision_source =
+    Filename.concat (Filename.dirname collision_header) "probe.fas"
+  in
+  let collision_request =
+    C_import.
+      {
+        spelling = Ast.C_quoted (Filename.basename collision_header);
+        span = Span.synthetic;
+      }
+  in
+  let collision_declarations, _, _ =
+    expect_ok
+      (C_import.import ~cc:"clang-22" ~debug:false ~keep:false collision_source
+         [ collision_request ])
+  in
+  let rec duplicate_flattened_field_name active = function
+    | C_import_json.Arr values ->
+        C_import_json.Arr (List.map (duplicate_flattened_field_name active) values)
+    | C_import_json.Obj fields ->
+        let kind =
+          match List.assoc_opt "kind" fields with
+          | Some (C_import_json.Str kind) -> Some kind
+          | _ -> None
+        in
+        let target_record =
+          kind = Some "RecordDecl"
+          && List.assoc_opt "name" fields
+             = Some (C_import_json.Str "FasAnonymousCollisionRecord")
+        in
+        let active = active || target_record in
+        let fields =
+          List.map
+            (fun (key, value) ->
+              if
+                key = "name" && active && kind = Some "FieldDecl"
+                && value = C_import_json.Str "second"
+              then (key, C_import_json.Str "first")
+              else (key, duplicate_flattened_field_name active value))
+            fields
+        in
+        C_import_json.Obj fields
+    | value -> value
+  in
+  let collision_declarations =
+    List.map (duplicate_flattened_field_name false) collision_declarations
+  in
+  let collision_imported =
+    C_import.map_declarations ~span:Span.synthetic collision_declarations
+  in
+  let collision_fixture = (collision_source, collision_imported) in
+  c_semantic_message "c-import-anonymous-member-name-collision"
+    "C declaration `FasAnonymousCollisionRecord` is not supported: anonymous member \
+     field names collide"
+    collision_fixture
+    "fn read(value FasAnonymousCollisionRecord) i32 { return value.first }\n";
   let phase23_container_union =
     c_import_container "phase23-union"
       "struct FasContainerNested { unsigned short first; unsigned int second; };\n\
@@ -9305,8 +9431,7 @@ let () =
       ("FasPackedRecord", "record layout differs from C");
       ("FasBitfieldRecord", "bit-fields are not supported");
       ("FasFlexibleRecord", "flexible array members are not supported");
-      ("FasAnonymousMemberRecord", "anonymous members are not supported");
-      ("FasFloatRecord", "floating-point fields are not supported");
+      ("FasAnonymousUnsupportedRecord", "transparent unions are not supported");
       ("FasConstFieldRecord", "const fields are not supported");
       ("FasNestedConstFieldRecord", "const fields are not supported");
     ];
@@ -9338,6 +9463,15 @@ let () =
           ("FasSelfRecord", 16, 8, [ ("next", 0); ("value", 8) ]);
           ("FasAlignedRecord", 16, 16, [ ("value", 0) ]);
           ("FasUnionRecord", 4, 4, [ ("value", 0); ("byte", 0) ]);
+          ("FasAnonymousMemberRecord", 4, 4, [ ("integer", 0); ("byte", 0) ]);
+          ( "FasAnonymousNestedRecord",
+            12,
+            4,
+            [ ("outer", 0); ("nested", 4); ("raw", 4); ("tail", 8) ] );
+          ("FasAnonymousStructUnion", 4, 4, [ ("low", 0); ("high", 2); ("word", 0) ]);
+          ("FasFloatRecord", 12, 4, [ ("before", 0); ("value", 4); ("after", 8) ]);
+          ("FasNestedFloatRecord", 20, 4, [ ("before", 0); ("inner", 4); ("after", 16) ]);
+          ("FasFloatArrayRecord", 64, 8, [ ("before", 0); ("data", 8); ("after", 56) ]);
         ];
       if not (layout "FasUnionRecord").is_union then
         failwith "imported union lost its union layout"
@@ -9506,10 +9640,16 @@ let () =
     "C declaration `fas_union_by_value` is not supported: struct and union values are \
      not supported"
     phase21_records "fn probe() i32 { return fas_union_by_value(null) }\n";
-  c_semantic_message "c-import-float-union-field"
-    "C declaration `FasFloatUnion` is not supported: floating-point fields are not \
-     supported"
-    phase21_records "fn read_float(value FasFloatUnion) u32 { return value.bits }\n";
+  c_semantic_accept "c-import-float-union-field" phase21_records
+    "fn read_bits(value handle[FasFloatUnion]) u32 {\n\
+     raw addr = handle_addr(value)\n\
+     raw[FasFloatUnion].bits = 9\n\
+     return raw[FasFloatUnion].bits }\n";
+  c_semantic_message "c-import-float-union-member"
+    "floating-point fields are not supported until v0.5" phase21_records
+    "fn read_float(value handle[FasFloatUnion]) u32 {\n\
+     raw addr = handle_addr(value)\n\
+     return raw[FasFloatUnion].value[0] }\n";
   c_semantic_message "c-import-bitfield-union-member"
     "C declaration `FasBitfieldUnion` is not supported: bit-fields are not supported"
     phase21_records "fn read_bits(value FasBitfieldUnion) u32 { return value.word }\n";
@@ -9522,15 +9662,93 @@ let () =
     "C declaration `FasFlexibleRecord` is not supported: flexible array members are \
      not supported"
     phase21_records "fn read(value FasFlexibleRecord) i32 { return value.length }\n";
-  c_semantic_message "c-import-anonymous-member-record-reason"
-    "C declaration `FasAnonymousMemberRecord` is not supported: anonymous members are \
-     not supported"
+  c_semantic_accept "c-import-anonymous-members" phase21_records
+    "fn write(value handle[FasAnonymousMemberRecord]) i32 {\n\
+     raw addr = handle_addr(value)\n\
+     raw[FasAnonymousMemberRecord].integer = 18\n\
+     raw[FasAnonymousMemberRecord].byte = 7\n\
+     return raw[FasAnonymousMemberRecord].integer }\n\
+     fn nested(value handle[FasAnonymousNestedRecord]) u32 {\n\
+     raw addr = handle_addr(value)\n\
+     raw[FasAnonymousNestedRecord].nested = 21\n\
+     raw[FasAnonymousNestedRecord].tail = 8\n\
+     return raw[FasAnonymousNestedRecord].nested + raw[FasAnonymousNestedRecord].tail }\n\
+     fn union_struct(value handle[FasAnonymousStructUnion]) u16 {\n\
+     raw addr = handle_addr(value)\n\
+     raw[FasAnonymousStructUnion].high = 12\n\
+     return raw[FasAnonymousStructUnion].high }\n";
+  c_semantic_message "c-import-anonymous-unsupported-reason"
+    "C declaration `FasAnonymousUnsupportedRecord` is not supported: transparent \
+     unions are not supported"
     phase21_records
-    "fn read(value FasAnonymousMemberRecord) i32 { return value.integer }\n";
-  c_semantic_message "c-import-float-field-record-reason"
-    "C declaration `FasFloatRecord` is not supported: floating-point fields are not \
-     supported"
-    phase21_records "fn read(value FasFloatRecord) i32 { return value.value }\n";
+    "fn read(value FasAnonymousUnsupportedRecord) i32 { return value.value }\n";
+  c_semantic_accept "c-import-float-fields-store-only" phase21_records
+    "fn surrounding(value handle[FasFloatRecord]) i32 {\n\
+     raw addr = handle_addr(value)\n\
+     return raw[FasFloatRecord].before + raw[FasFloatRecord].after }\n\
+     fn nested(value handle[FasNestedFloatRecord]) i32 {\n\
+     raw addr = handle_addr(value)\n\
+     return raw[FasNestedFloatRecord].inner.after }\n\
+     fn array_surrounding(value handle[FasFloatArrayRecord]) i32 {\n\
+     raw addr = handle_addr(value)\n\
+     return raw[FasFloatArrayRecord].after }\n";
+  c_semantic_accept "c-import-empty-zero-union" phase21_records
+    "fn zero() i32 { value FasUnionRecord = {}\nreturn value.value }\n";
+  c_semantic_accept "c-import-empty-zero-storage-float-record" phase21_records
+    "fn zero() i32 { value FasFloatRecord = {}\nreturn value.after }\n";
+  c_semantic_accept "c-import-empty-zero-union-global" phase21_records
+    "extern \"C\" { var empty_union FasUnionRecord = {} }\n";
+  c_semantic_accept "c-import-empty-zero-storage-float-record-global" phase21_records
+    "extern \"C\" { var empty_float FasFloatRecord = {} }\n";
+  c_semantic_accept "c-import-empty-zero-nested-record-array-global" phase21_records
+    "extern \"C\" { var empty_records arr[4,FasNestedRecord] = {} }\n";
+  c_semantic_message "c-import-float-field-read"
+    "floating-point fields are not supported until v0.5" phase21_records
+    "fn read(value handle[FasFloatRecord]) i32 {\n\
+     raw addr = handle_addr(value)\n\
+     return raw[FasFloatRecord].value[0] }\n";
+  c_semantic_message "c-import-float-field-write"
+    "floating-point fields are not supported until v0.5" phase21_records
+    "fn write(value handle[FasFloatRecord]) void {\n\
+     raw addr = handle_addr(value)\n\
+     raw[FasFloatRecord].value[0] = 1\n\
+     return }\n";
+  c_semantic_message "c-import-float-field-address"
+    "floating-point fields are not supported until v0.5" phase21_records
+    "fn address(value handle[FasFloatRecord]) addr {\n\
+     raw addr = handle_addr(value)\n\
+     return &raw[FasFloatRecord].value }\n";
+  c_semantic_message "c-import-nested-float-field-select"
+    "floating-point fields are not supported until v0.5" phase21_records
+    "fn read(value handle[FasNestedFloatRecord]) i32 {\n\
+     raw addr = handle_addr(value)\n\
+     return raw[FasNestedFloatRecord].inner.value[0] }\n";
+  c_semantic_message "c-import-float-array-field-read"
+    "floating-point fields are not supported until v0.5" phase21_records
+    "fn read(value handle[FasFloatArrayRecord]) i32 {\n\
+     raw addr = handle_addr(value)\n\
+     return raw[FasFloatArrayRecord].data[0] }\n";
+  c_semantic_message "c-import-float-field-initializer"
+    "floating-point fields are not supported until v0.5" phase21_records
+    "fn initialize() i32 { value FasFloatRecord = {1, 2, 3}\n return value.after }\n";
+  let storage_only_llvm =
+    match
+      c_semantic_result phase21_records
+        "fn surrounding(value handle[FasFloatRecord]) i32 {\n\
+         raw addr = handle_addr(value)\n\
+         return raw[FasFloatRecord].before + raw[FasFloatRecord].after }\n\
+         fn nested(value handle[FasNestedFloatRecord]) i32 {\n\
+         raw addr = handle_addr(value)\n\
+         return raw[FasNestedFloatRecord].inner.after }\n\
+         fn array_surrounding(value handle[FasFloatArrayRecord]) i32 {\n\
+         raw addr = handle_addr(value)\n\
+         return raw[FasFloatArrayRecord].after }\n"
+    with
+    | Ok program -> Ir.render (expect_ok (Lower.lower program))
+    | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+  in
+  if contains storage_only_llvm "float" || contains storage_only_llvm "double" then
+    failwith "storage-only C float fields emitted LLVM floating-point types";
   c_semantic_accept "c-import-function-pointer-field-record" phase21_records
     "fn read(value addr) addr { return value[FasFunctionPointerRecord].callback }\n";
   let keyword_fields, _ = require_struct "FasKeywordFieldRecord" in
