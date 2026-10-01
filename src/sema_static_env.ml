@@ -108,6 +108,8 @@ let address_value c ty expression =
         match ty with
         | Hir.Struct structure -> (
             match Sema_types.field_info c.structs structure field with
+            | Some { unsupported_reason = Some reason; _ } ->
+                error (Ast.expr_span base) reason
             | Some field -> Ok (name, field.ty, previous + field.offset)
             | None -> error span "unknown field")
         | _ ->

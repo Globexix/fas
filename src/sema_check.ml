@@ -840,61 +840,78 @@ and check_expr (c : context) expected expression =
 
 and check_initializer c expected expression =
   let aggregate_entries ty entries span =
-    let* typed_entries =
-      match ty with
-      | Hir.Array (length, element) ->
-          if List.length entries <> length then
-            error span "wrong number of array literal elements"
-          else Ok (List.map (fun entry -> (element, entry)) entries)
-      | Hir.Struct name -> (
-          match
-            List.find_opt
-              (fun (definition : Hir.struct_def) -> definition.name = name)
-              c.structs
-          with
-          | None -> error span (Printf.sprintf "unknown struct `%s`" name)
-          | Some definition ->
-              if definition.is_union then
-                match (definition.fields, entries) with
-                | field :: _, [ entry ] -> Ok [ (field.ty, entry) ]
-                | _ -> error span "wrong number of struct literal fields"
-              else if List.length entries <> List.length definition.fields then
-                error span "wrong number of struct literal fields"
-              else
-                Ok
-                  (List.map2
-                     (fun (field : Hir.field) entry -> (field.ty, entry))
-                     definition.fields entries))
-      | _ -> error span "construction needs an array, struct or vector type"
-    in
-    let rec check acc = function
-      | [] -> Ok (List.rev acc)
-      | (entry_ty, entry) :: rest ->
-          let* initialized = check_initializer c entry_ty entry in
-          let* () =
-            let actual =
-              match initialized with
-              | `Value value -> Hir.expr_ty value
-              | `Aggregate (ty, _, _) -> ty
-            in
-            if
-              (match initialized with `Value _ -> true | `Aggregate _ -> false)
-              && aggregate_value_type entry_ty && aggregate_value_type actual
-            then
-              error (Ast.expr_span entry)
-                "aggregate value initialization is not supported; use `copy(dst, src)`"
-            else ensure_expected actual entry_ty (Ast.expr_span entry)
-          in
-          let child =
-            match initialized with
-            | `Value value -> Hir.Init_value value
-            | `Aggregate (ty, children, child_span) ->
-                Hir.Init_aggregate (ty, children, child_span)
-          in
-          check (child :: acc) rest
-    in
-    let* entries = check [] typed_entries in
-    Ok (`Aggregate (ty, entries, span))
+    match (ty, entries) with
+    | (Hir.Array _ | Hir.Struct _), [] -> Ok (`Aggregate (ty, [], span))
+    | _ ->
+        let* typed_entries =
+          match ty with
+          | Hir.Array (length, element) ->
+              if List.length entries <> length then
+                error span "wrong number of array literal elements"
+              else Ok (List.map (fun entry -> (element, entry)) entries)
+          | Hir.Struct name -> (
+              match
+                List.find_opt
+                  (fun (definition : Hir.struct_def) -> definition.name = name)
+                  c.structs
+              with
+              | None -> error span (Printf.sprintf "unknown struct `%s`" name)
+              | Some definition ->
+                  if definition.is_union then
+                    match (definition.fields, entries) with
+                    | { unsupported_reason = Some reason; _ } :: _, _ ->
+                        error span reason
+                    | field :: _, [ entry ] -> Ok [ (field.ty, entry) ]
+                    | _ -> error span "wrong number of struct literal fields"
+                  else if List.length entries <> List.length definition.fields then
+                    error span "wrong number of struct literal fields"
+                  else if
+                    List.exists
+                      (fun (field : Hir.field) ->
+                        Option.is_some field.unsupported_reason)
+                      definition.fields
+                  then
+                    error span
+                      (List.find_map
+                         (fun (field : Hir.field) -> field.unsupported_reason)
+                         definition.fields
+                      |> Option.get)
+                  else
+                    Ok
+                      (List.map2
+                         (fun (field : Hir.field) entry -> (field.ty, entry))
+                         definition.fields entries))
+          | _ -> error span "construction needs an array, struct or vector type"
+        in
+        let rec check acc = function
+          | [] -> Ok (List.rev acc)
+          | (entry_ty, entry) :: rest ->
+              let* initialized = check_initializer c entry_ty entry in
+              let* () =
+                let actual =
+                  match initialized with
+                  | `Value value -> Hir.expr_ty value
+                  | `Aggregate (ty, _, _) -> ty
+                in
+                if
+                  (match initialized with `Value _ -> true | `Aggregate _ -> false)
+                  && aggregate_value_type entry_ty && aggregate_value_type actual
+                then
+                  error (Ast.expr_span entry)
+                    "aggregate value initialization is not supported; use `copy(dst, \
+                     src)`"
+                else ensure_expected actual entry_ty (Ast.expr_span entry)
+              in
+              let child =
+                match initialized with
+                | `Value value -> Hir.Init_value value
+                | `Aggregate (ty, children, child_span) ->
+                    Hir.Init_aggregate (ty, children, child_span)
+              in
+              check (child :: acc) rest
+        in
+        let* entries = check [] typed_entries in
+        Ok (`Aggregate (ty, entries, span))
   in
   match expression with
   | Ast.Array_lit (entries, span) -> (

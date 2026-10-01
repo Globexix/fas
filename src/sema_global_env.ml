@@ -45,6 +45,7 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~consts ~arrays
         else Ok (Hir.Global_vector values)
     | Hir.Array (length, element) -> (
         match array_items with
+        | Some [] -> Ok (Hir.Global_array [])
         | Some items when List.length items = length ->
             map (fun xs -> Hir.Global_array xs) element items
         | Some _ -> error span "wrong number of array literal elements"
@@ -66,18 +67,29 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~consts ~arrays
               (fun (definition : Hir.struct_def) -> definition.name = name)
               structs )
         with
-        | Some [ item ], Some { Hir.is_union = true; fields = field :: _; _ } ->
-            let* value = value span field.ty item in
-            Ok (Hir.Global_struct [ value ])
+        | Some [], Some _ -> Ok (Hir.Global_struct [])
+        | Some [ item ], Some { Hir.is_union = true; fields = field :: _; _ } -> (
+            match field.unsupported_reason with
+            | Some reason -> error (Ast.expr_span item) reason
+            | None ->
+                let* value = value span field.ty item in
+                Ok (Hir.Global_struct [ value ]))
         | Some items, Some definition
           when (not definition.is_union)
-               && List.length items = List.length definition.fields ->
-            let* values =
-              Result_list.map
-                (fun ((field : Hir.field), item) -> value span field.ty item)
-                (List.combine definition.fields items)
-            in
-            Ok (Hir.Global_struct values)
+               && List.length items = List.length definition.fields -> (
+            match
+              List.find_opt
+                (fun (field : Hir.field) -> Option.is_some field.unsupported_reason)
+                definition.fields
+            with
+            | Some { unsupported_reason = Some reason; _ } -> error span reason
+            | _ ->
+                let* values =
+                  Result_list.map
+                    (fun ((field : Hir.field), item) -> value span field.ty item)
+                    (List.combine definition.fields items)
+                in
+                Ok (Hir.Global_struct values))
         | Some _, Some _ -> error span "wrong number of struct literal fields"
         | _, None -> error span (Printf.sprintf "unknown struct `%s`" name)
         | _ -> error span "global initializer must be a constant expression")
