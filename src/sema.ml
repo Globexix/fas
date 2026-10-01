@@ -219,6 +219,41 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
   in
   let* named_types = collect_named_types String_set.empty [] program.Ast.items in
   let named_types = add_c_records (add_c_types named_types) in
+  let struct_layout_metadata items =
+    let structs =
+      List.filter_map
+        (function Ast.Struct { name; fields; _ } -> Some (name, fields) | _ -> None)
+        items
+    in
+    let field_offsets =
+      List.filter_map
+        (fun (name, fields) ->
+          let offsets =
+            List.filter_map
+              (fun (field : Ast.field) ->
+                Option.map (fun offset -> (field.name, offset)) field.offset)
+              fields
+          in
+          if offsets = [] then None else Some (name, offsets))
+        structs
+    and field_reasons =
+      List.filter_map
+        (fun (name, fields) ->
+          let reasons =
+            List.filter_map
+              (fun (field : Ast.field) ->
+                Option.map (fun reason -> (field.name, reason)) field.unsupported_reason)
+              fields
+          in
+          if reasons = [] then None else Some (name, reasons))
+        structs
+    in
+    let byte_storage = List.map fst field_offsets in
+    (field_offsets, field_reasons, byte_storage)
+  in
+  let base_field_offsets, base_field_reasons, base_byte_storage =
+    struct_layout_metadata program.Ast.items
+  in
   let* () =
     Result_list.iter
       (function
@@ -253,7 +288,8 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       program.Ast.items
   in
   let base_struct_cache =
-    Hir.struct_layout_cache ~unions:base_union_names base_structs_src
+    Hir.struct_layout_cache ~unions:base_union_names ~field_offsets:base_field_offsets
+      ~field_reasons:base_field_reasons ~byte_storage:base_byte_storage base_structs_src
   in
   let base_structs =
     List.filter_map
@@ -291,6 +327,9 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       (function Ast.Struct { name; is_union = true; _ } -> Some name | _ -> None)
       program.Ast.items
   in
+  let field_offsets, field_reasons, byte_storage =
+    struct_layout_metadata program.Ast.items
+  in
   let rec collect_structs named_types acc = function
     | [] -> Ok (List.rev acc)
     | Ast.Struct { generic_params = _ :: _; align; span; _ } :: rest ->
@@ -324,7 +363,10 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
   in
   let* structs_src = collect_structs named_types [] program.Ast.items in
   let build structs_src =
-    let cache = Hir.struct_layout_cache ~unions:union_names structs_src in
+    let cache =
+      Hir.struct_layout_cache ~unions:union_names ~field_offsets ~field_reasons
+        ~byte_storage structs_src
+    in
     let rec go acc = function
       | [] -> Ok (List.rev acc)
       | (name, _, _) :: xs ->

@@ -17,7 +17,27 @@ union FasBitfieldUnion { unsigned int value : 3; unsigned int word; };
 struct FasBitfieldRecord { unsigned int value : 3; };
 struct FasFlexibleRecord { int length; unsigned char data[]; };
 struct FasAnonymousMemberRecord { union { int integer; unsigned char byte; }; };
-struct FasFloatRecord { float value; };
+struct FasAnonymousNestedRecord {
+  struct {
+    int outer;
+    union { unsigned int nested; unsigned char raw[4]; };
+  };
+  unsigned int tail;
+};
+union FasAnonymousStructUnion {
+  struct { unsigned short low; unsigned short high; };
+  unsigned int word;
+};
+struct FasAnonymousCollisionRecord {
+  union { int first; };
+  union { int second; };
+};
+struct FasAnonymousUnsupportedRecord {
+  union __attribute__((transparent_union)) { int value; };
+};
+struct FasFloatRecord { int before; float value; int after; };
+struct FasNestedFloatRecord { int before; struct FasFloatRecord inner; int after; };
+struct FasFloatArrayRecord { int before; double data[6]; int after; };
 typedef int (*FasCallback)(int);
 struct FasFunctionPointerRecord { int (*callback)(int); };
 extern FasCallback fas_callback_global;

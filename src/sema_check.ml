@@ -417,6 +417,7 @@ let rec check_place (c : context) expr =
       match base.expr with
       | Hir.Raw_select (baddr, off, Hir.Struct sn, _) -> (
           match field_info c.structs sn n with
+          | Some { unsupported_reason = Some reason; _ } -> error s reason
           | Some f ->
               Ok
                 {
@@ -440,6 +441,7 @@ let rec check_place (c : context) expr =
           match Hir.expr_ty base.expr with
           | Hir.Struct sn -> (
               match field_info c.structs sn n with
+              | Some { unsupported_reason = Some reason; _ } -> error s reason
               | Some f ->
                   Ok
                     {
@@ -773,6 +775,7 @@ and check_expr (c : context) expected expression =
       match t with
       | Hir.Struct sn -> (
           match field_info c.structs sn n with
+          | Some { unsupported_reason = Some reason; _ } -> error s reason
           | Some f -> Ok (Hir.Offsetof (t, n, f.offset, s))
           | None -> error s (Printf.sprintf "unknown field `%s`" n))
       | _ -> error s "offsetof requires a struct type")
@@ -1671,6 +1674,8 @@ let check_target (c : context) = function
             match Hir.expr_ty base with
             | Hir.Struct sn -> (
                 match field_info c.structs sn n with
+                | Some { unsupported_reason = Some reason; _ } ->
+                    error (Ast.expr_span a) reason
                 | Some f ->
                     Ok
                       {

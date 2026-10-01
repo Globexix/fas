@@ -2345,7 +2345,27 @@ let lower (p : Hir.program) =
           | Error message -> malformed_struct d message
         in
         let* fields, used, natural_align =
-          if d.is_union then
+          if d.byte_storage then
+            let rec validate used natural_align = function
+              | [] -> Ok ([ Ir.Array (d.size, Ir.I8) ], d.size, natural_align)
+              | (field : Hir.field) :: rest ->
+                  let* size = field_size field.ty in
+                  let* align = field_align field.ty in
+                  if field.offset < 0 || field.offset > max_int - size then
+                    malformed_struct d
+                      (Printf.sprintf "field `%s` end offset overflows" field.name)
+                  else if field.offset mod align <> 0 then
+                    malformed_struct d
+                      (Printf.sprintf "field `%s` is not aligned to %d" field.name align)
+                  else
+                    let field_end = field.offset + size in
+                    if field_end > d.size then
+                      malformed_struct d
+                        (Printf.sprintf "field `%s` exceeds its size" field.name)
+                    else validate (max used field_end) (max natural_align align) rest
+            in
+            validate 0 1 d.fields
+          else if d.is_union then
             let rec validate natural_align = function
               | [] -> Ok ([ Ir.Array (d.size, Ir.I8) ], d.size, natural_align)
               | (field : Hir.field) :: rest ->

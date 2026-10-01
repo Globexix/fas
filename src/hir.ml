@@ -11,7 +11,12 @@ type ty =
   | Opaque of string
   | Void
 
-type field = { name : string; ty : ty; offset : int }
+type field = {
+  name : string;
+  ty : ty;
+  offset : int;
+  unsupported_reason : string option;
+}
 
 type struct_def = {
   name : string;
@@ -19,6 +24,7 @@ type struct_def = {
   size : int;
   align : int;
   is_union : bool;
+  byte_storage : bool;
 }
 
 type const_def = { name : string; ty : ty; bits : int64 }
@@ -368,11 +374,29 @@ type struct_layout_cache = {
   target : Target_layout.t;
   decls : (string * (string * ty) list * int option) list;
   unions : string list;
+  field_offsets : (string * (string * int) list) list;
+  field_reasons : (string * (string * string) list) list;
+  byte_storage : string list;
   definitions : (string, struct_def) Hashtbl.t;
 }
 
-let struct_layout_cache ?(target = Target_layout.current) ?(unions = []) decls =
-  { target; decls; unions; definitions = Hashtbl.create (List.length decls) }
+let struct_layout_cache ?(target = Target_layout.current) ?(unions = [])
+    ?(field_offsets = []) ?(field_reasons = []) ?(byte_storage = []) decls =
+  {
+    target;
+    decls;
+    unions;
+    field_offsets;
+    field_reasons;
+    byte_storage;
+    definitions = Hashtbl.create (List.length decls);
+  }
+
+let field_offset cache structure field =
+  Option.bind (List.assoc_opt structure cache.field_offsets) (List.assoc_opt field)
+
+let field_reason cache structure field =
+  Option.bind (List.assoc_opt structure cache.field_reasons) (List.assoc_opt field)
 
 let compute_struct_cached cache name =
   let target = cache.target in
@@ -392,7 +416,14 @@ let compute_struct_cached cache name =
                     let align = max maxa (Option.value ~default:1 explicit) in
                     let* size = Target_layout.round_up_size off align in
                     let definition =
-                      { name = n; fields = List.rev out; size; align; is_union = false }
+                      {
+                        name = n;
+                        fields = List.rev out;
+                        size;
+                        align;
+                        is_union = false;
+                        byte_storage = List.mem n cache.byte_storage;
+                      }
                     in
                     Hashtbl.replace cache.definitions n definition;
                     Ok (definition.fields, definition.size, definition.align)
@@ -404,10 +435,19 @@ let compute_struct_cached cache name =
                           Ok (sz, al)
                       | _ -> field_layout (n :: visiting) fty
                     in
-                    let* next = Target_layout.round_up_size off align in
-                    let* next_offset = add_size next size in
-                    each next_offset (max maxa align)
-                      ({ name = fname; ty = fty; offset = next } :: out)
+                    let* natural_next = Target_layout.round_up_size off align in
+                    let next =
+                      Option.value ~default:natural_next (field_offset cache n fname)
+                    in
+                    let* field_end = add_size next size in
+                    each (max off field_end) (max maxa align)
+                      ({
+                         name = fname;
+                         ty = fty;
+                         offset = next;
+                         unsupported_reason = field_reason cache n fname;
+                       }
+                      :: out)
                       rest
               in
               let union_fields max_size max_align out =
@@ -422,6 +462,7 @@ let compute_struct_cached cache name =
                           size;
                           align;
                           is_union = true;
+                          byte_storage = List.mem n cache.byte_storage;
                         }
                       in
                       Hashtbl.replace cache.definitions n definition;
@@ -434,8 +475,18 @@ let compute_struct_cached cache name =
                             Ok (size, align)
                         | _ -> field_layout (n :: visiting) fty
                       in
-                      go (max max_size size) (max max_align align)
-                        ({ name = fname; ty = fty; offset = 0 } :: out)
+                      let offset =
+                        Option.value ~default:0 (field_offset cache n fname)
+                      in
+                      let* end_offset = add_size offset size in
+                      go (max max_size end_offset) (max max_align align)
+                        ({
+                           name = fname;
+                           ty = fty;
+                           offset;
+                           unsupported_reason = field_reason cache n fname;
+                         }
+                        :: out)
                         rest
                 in
                 go max_size max_align out fields
@@ -460,10 +511,22 @@ let compute_struct_cached cache name =
         Target_layout.vector target n bits
   in
   let* fields, size, align = calc [] name in
-  Ok { name; fields; size; align; is_union = List.mem name cache.unions }
+  Ok
+    {
+      name;
+      fields;
+      size;
+      align;
+      is_union = List.mem name cache.unions;
+      byte_storage = List.mem name cache.byte_storage;
+    }
 
-let compute_struct ?target ?unions decls name =
-  compute_struct_cached (struct_layout_cache ?target ?unions decls) name
+let compute_struct ?target ?unions ?field_offsets ?field_reasons ?byte_storage decls
+    name =
+  compute_struct_cached
+    (struct_layout_cache ?target ?unions ?field_offsets ?field_reasons ?byte_storage
+       decls)
+    name
 
 let render p =
   let one_struct (s : struct_def) =

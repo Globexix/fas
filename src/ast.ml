@@ -80,7 +80,14 @@ and assign_target =
   | Target_select of expr * generic_arg list
   | Target_field of expr * string
 
-and field = { name : string; ty : ty; span : Span.t }
+and field = {
+  name : string;
+  ty : ty;
+  span : Span.t;
+  offset : int option;
+  unsupported_reason : string option;
+}
+
 and param = { name : string; ty : ty; span : Span.t }
 and const_param = { name : string; ty : ty; span : Span.t }
 

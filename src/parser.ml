@@ -747,7 +747,16 @@ module P = struct
             skip_newlines p;
             Ok ())
         in
-        fields (({ Ast.name = n; ty = t; span = fs } : Ast.field) :: acc)
+        fields
+          (({
+              Ast.name = n;
+              ty = t;
+              span = fs;
+              offset = None;
+              unsupported_reason = None;
+            }
+             : Ast.field)
+          :: acc)
     in
     let* fs = fields [] in
     let* () = expected p Token.Rbrace in

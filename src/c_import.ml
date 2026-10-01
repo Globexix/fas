@@ -650,6 +650,37 @@ let type_error raw =
     then Some "floating-point types are not supported"
     else None
 
+let floating_storage_bytes raw =
+  let raw, _ = clean_type raw in
+  let first_array = String.index_opt raw '[' in
+  let element_type =
+    match first_array with None -> raw | Some index -> trim (String.sub raw 0 index)
+  in
+  let element_size =
+    match element_type with
+    | "float" -> Some 4
+    | "double" -> Some 8
+    | "long double" -> Some 16
+    | _ -> None
+  in
+  Option.bind element_size (fun element_size ->
+      let rec dimensions index size =
+        if index = String.length raw then Some size
+        else if raw.[index] = ' ' then dimensions (index + 1) size
+        else if raw.[index] <> '[' then None
+        else
+          match String.index_from_opt raw index ']' with
+          | None -> None
+          | Some close ->
+              let length = trim (String.sub raw (index + 1) (close - index - 1)) in
+              Option.bind (int_of_string_opt length) (fun length ->
+                  if length < 0 || (length <> 0 && size > max_int / length) then None
+                  else dimensions (close + 1) (size * length))
+      in
+      match first_array with
+      | None -> Some element_size
+      | Some index -> dimensions index element_size)
+
 let declaration_location node =
   match get "loc" node with
   | Some location ->
@@ -926,6 +957,9 @@ type clang_layout = {
   size : int;
   align : int;
   offsets : (string * int) list;
+  members : (string * int) list;
+  direct_members : (string * int) list;
+  direct_offsets : (string * int) list;
 }
 
 let clang_layouts text =
@@ -986,6 +1020,49 @@ let clang_layouts text =
             | Some size, Some align ->
                 let header_at = Option.get (index header lines) in
                 let summary_at = Option.get (index summary lines) in
+                let members =
+                  List.mapi (fun i line -> (i, line)) lines
+                  |> List.filter_map (fun (i, line) ->
+                      if i <= header_at || i >= summary_at then None
+                      else
+                        match String.index_opt line '|' with
+                        | None -> None
+                        | Some bar ->
+                            let left = trim (String.sub line 0 bar) in
+                            let right =
+                              String.sub line (bar + 1) (String.length line - bar - 1)
+                            in
+                            let body = trim right in
+                            if String.length right - String.length body < 3 then None
+                            else
+                              Option.map
+                                (fun offset -> (body, offset))
+                                (int_of_string_opt left))
+                in
+                let direct_members =
+                  List.mapi (fun i line -> (i, line)) lines
+                  |> List.filter_map (fun (i, line) ->
+                      if i <= header_at || i >= summary_at then None
+                      else
+                        match String.index_opt line '|' with
+                        | None -> None
+                        | Some bar ->
+                            let left = trim (String.sub line 0 bar) in
+                            let right =
+                              String.sub line (bar + 1) (String.length line - bar - 1)
+                            in
+                            let rec indentation count =
+                              if count < String.length right && right.[count] = ' ' then
+                                indentation (count + 1)
+                              else count
+                            in
+                            let body = trim right in
+                            if indentation 0 <> 3 then None
+                            else
+                              Option.map
+                                (fun offset -> (body, offset))
+                                (int_of_string_opt left))
+                in
                 let offsets =
                   List.mapi (fun i line -> (i, line)) lines
                   |> List.filter_map (fun (i, line) ->
@@ -1013,7 +1090,27 @@ let clang_layouts text =
                               Option.bind (int_of_string_opt left) (fun offset ->
                                   Option.map (fun field -> (field, offset)) field))
                 in
-                { layout_name = name; size; align; offsets } :: acc
+                let direct_offsets =
+                  List.filter_map
+                    (fun (body, offset) ->
+                      match
+                        List.rev
+                          (String.split_on_char ' ' body |> List.filter (( <> ) ""))
+                      with
+                      | field :: _ -> Some (field, offset)
+                      | [] -> None)
+                    direct_members
+                in
+                {
+                  layout_name = name;
+                  size;
+                  align;
+                  offsets;
+                  members;
+                  direct_members;
+                  direct_offsets;
+                }
+                :: acc
             | _ -> acc)
         | _ -> acc)
   in
@@ -1311,34 +1408,94 @@ let map_declarations ?(container = false) ~span declarations =
               (Hashtbl.find_opt record_ids id)
         | None -> ())
     nodes;
-  let record_layout node name =
+  let rec record_layout ?anonymous_field node name =
     let tag = Option.value ~default:"struct" (string "tagUsed" node) in
     let direct = tag ^ " " ^ Option.value ~default:name (record_name node) in
     match List.find_opt (fun layout -> layout.layout_name = direct) layouts with
     | Some layout -> Some layout
     | None -> (
-        let loc =
-          Option.map
-            (fun loc -> Option.value ~default:loc (get "expansionLoc" loc))
-            (get "loc" node)
-        in
-        match loc with
-        | None -> None
-        | Some loc -> (
-            let file = string "file" loc in
-            let number = function
-              | C_import_json.Num value -> int_of_string_opt value
-              | _ -> None
+        match anonymous_record_layout anonymous_field with
+        | Some _ as layout -> layout
+        | None ->
+            let loc =
+              Option.map
+                (fun loc -> Option.value ~default:loc (get "expansionLoc" loc))
+                (get "loc" node)
             in
-            let line = Option.bind (get "line" loc) number in
-            let col = Option.bind (get "col" loc) number in
-            match (file, line, col) with
-            | Some file, Some line, Some col ->
-                let spelling =
-                  Printf.sprintf "%s (unnamed at %s:%d:%d)" tag file line col
+            Option.bind loc (fun loc ->
+                let file = string "file" loc in
+                let number = function
+                  | C_import_json.Num value -> int_of_string_opt value
+                  | _ -> None
                 in
-                List.find_opt (fun layout -> layout.layout_name = spelling) layouts
-            | _ -> None))
+                let line = Option.bind (get "line" loc) number in
+                let col = Option.bind (get "col" loc) number in
+                match (file, line, col) with
+                | Some file, Some line, Some col ->
+                    let spellings =
+                      [
+                        Printf.sprintf "%s %s::(unnamed at %s:%d:%d)" tag name file line
+                          col;
+                        Printf.sprintf "%s (unnamed at %s:%d:%d)" tag file line col;
+                      ]
+                    in
+                    List.find_opt
+                      (fun layout -> List.mem layout.layout_name spellings)
+                      layouts
+                | _ -> None))
+  and anonymous_record_layout = function
+    | None -> None
+    | Some field ->
+        Option.bind (c_type_name field) (fun raw ->
+            if Option.is_none (find_text raw "::(anonymous " 0) then None
+            else
+              let rec replace_anonymous text =
+                let marker = "(anonymous " in
+                match find_text text marker 0 with
+                | None -> text
+                | Some at ->
+                    String.sub text 0 at ^ "(unnamed "
+                    ^ replace_anonymous
+                        (String.sub text
+                           (at + String.length marker)
+                           (String.length text - at - String.length marker))
+              in
+              let spelling = replace_anonymous raw in
+              List.find_opt (fun layout -> layout.layout_name = spelling) layouts)
+  in
+  let layout_member_offset layout field field_index =
+    match record_name field with
+    | Some name -> (
+        match List.assoc_opt name layout.direct_offsets with
+        | Some _ as found -> found
+        | None -> Option.map snd (List.nth_opt layout.direct_members field_index))
+    | None ->
+        let found =
+          Option.bind (c_type_name field) (fun raw ->
+              List.find_map
+                (fun (member, offset) -> if member = raw then Some offset else None)
+                layout.members)
+        in
+        found
+  in
+  let field_storage_type field =
+    c_type_spellings field
+    |> List.find_map (fun raw ->
+        Option.map
+          (fun size -> Ast.Array (string_of_int size, Ast.Int Ast.U8))
+          (floating_storage_bytes raw))
+  in
+  let source_offset node =
+    let loc =
+      Option.map
+        (fun loc -> Option.value ~default:loc (get "expansionLoc" loc))
+        (get "loc" node)
+    in
+    Option.bind loc (fun loc ->
+        Option.bind (get "offset" loc) (function
+          | C_import_json.Num value -> int_of_string_opt value
+          | C_import_json.Str value -> int_of_string_opt value
+          | _ -> None))
   in
   let records_by_name =
     Hashtbl.fold (fun name node acc -> (name, node) :: acc) record_definitions []
@@ -1347,51 +1504,146 @@ let map_declarations ?(container = false) ~span declarations =
   let raw_records =
     List.map
       (fun (name, node) ->
-        let fields =
-          children node
-          |> List.filter (fun child -> string "kind" child = Some "FieldDecl")
+        let unsupported = ref None
+        and blocked = ref false
+        and has_anonymous = ref false in
+        let reject reason =
+          if Option.is_none !unsupported then unsupported := Some reason
         in
-        let unsupported = ref None and blocked = ref false in
-        let fields =
-          List.filter_map
-            (fun field ->
+        let rec fields ?anonymous_field base record =
+          let record_fields =
+            children record
+            |> List.filter (fun child -> string "kind" child = Some "FieldDecl")
+            |> List.mapi (fun index field -> (index, field))
+          in
+          let layout = record_layout ?anonymous_field record name in
+          List.concat_map
+            (fun (field_index, field) ->
               let field_name = record_name field in
               let raw = c_type_name field in
-              let reason =
-                if top_level_const field then (
-                  blocked := true;
-                  None)
-                else if field_name = None then
-                  Some "anonymous members are not supported"
-                else if get "isBitfield" field = Some (C_import_json.Bool true) then
-                  Some "bit-fields are not supported"
-                else
-                  match raw with
-                  | None -> Some "field has no C type"
-                  | Some raw -> (
+              if top_level_const field then (
+                blocked := true;
+                [])
+              else if get "isBitfield" field = Some (C_import_json.Bool true) then (
+                reject "bit-fields are not supported";
+                [])
+              else
+                match field_name with
+                | None -> (
+                    let nested =
                       match
-                        type_result ~allow_arrays:true ~aliases ~records ~enums
-                          ~allow_record:true raw
+                        Option.bind (record_decl_id field)
+                          (Hashtbl.find_opt record_nodes_by_id)
                       with
-                      | Ok _ -> None
-                      | Error "arrays of unknown size are not supported" ->
-                          Some "flexible array members are not supported"
-                      | Error "floating-point types are not supported" ->
-                          Some "floating-point fields are not supported"
-                      | Error "function pointers are not supported" ->
-                          Some "function-pointer fields are not supported"
-                      | Error reason -> Some reason)
-              in
-              (match reason with
-              | Some reason -> unsupported := Some reason
-              | None -> ());
-              match (field_name, raw, reason) with
-              | Some field_name, Some _, None -> (
-                  match as_type ~allow_arrays:true ~allow_record:true field with
-                  | Ok ty -> Some ({ Ast.name = field_name; ty; span } : Ast.field)
-                  | Error _ -> None)
-              | _ -> None)
-            fields
+                      | Some nested -> Some nested
+                      | None ->
+                          let offset = source_offset field in
+                          children record
+                          |> List.find_opt (fun child ->
+                              string "kind" child = Some "RecordDecl"
+                              && record_name child = None
+                              && source_offset child = offset)
+                    in
+                    match nested with
+                    | Some nested when record_name nested = None -> (
+                        has_anonymous := true;
+                        let nested_layout =
+                          Option.bind layout (fun layout ->
+                              Option.map
+                                (fun offset -> (layout, offset))
+                                (layout_member_offset layout field field_index))
+                        in
+                        match nested_layout with
+                        | None ->
+                            reject "anonymous member layout is not available";
+                            []
+                        | Some (_, relative) ->
+                            if relative < 0 || base > max_int - relative then (
+                              reject "anonymous member layout is not representable";
+                              [])
+                            else
+                              let transparent =
+                                string "tagUsed" nested = Some "union"
+                                && List.exists
+                                     (fun child ->
+                                       string "kind" child = Some "TransparentUnionAttr")
+                                     (children nested)
+                              in
+                              if transparent then (
+                                reject "transparent unions are not supported";
+                                [])
+                              else
+                                fields ~anonymous_field:field (base + relative) nested)
+                    | _ ->
+                        reject "anonymous member type is not supported";
+                        [])
+                | Some field_name -> (
+                    let reason, ty =
+                      match raw with
+                      | None -> (Some "field has no C type", None)
+                      | Some raw -> (
+                          match
+                            type_result ~allow_arrays:true ~aliases ~records ~enums
+                              ~allow_record:true raw
+                          with
+                          | Ok ty -> (None, Some ty)
+                          | Error "floating-point types are not supported" -> (
+                              match field_storage_type field with
+                              | Some ty ->
+                                  ( Some
+                                      "floating-point fields are not supported until \
+                                       v0.5",
+                                    Some ty )
+                              | None ->
+                                  (Some "floating-point fields are not supported", None)
+                              )
+                          | Error "arrays of unknown size are not supported" ->
+                              (Some "flexible array members are not supported", None)
+                          | Error "function pointers are not supported" ->
+                              (Some "function-pointer fields are not supported", None)
+                          | Error reason -> (Some reason, None))
+                    in
+                    (match reason with
+                    | Some reason
+                      when reason
+                           <> "floating-point fields are not supported until v0.5" ->
+                        reject reason
+                    | _ -> ());
+                    match
+                      ( ty,
+                        Option.bind layout (fun layout ->
+                            layout_member_offset layout field field_index) )
+                    with
+                    | Some ty, Some relative
+                      when relative >= 0 && base <= max_int - relative ->
+                        [
+                          {
+                            Ast.name = field_name;
+                            ty;
+                            span;
+                            offset = Some (base + relative);
+                            unsupported_reason = reason;
+                          };
+                        ]
+                    | Some _, _ ->
+                        reject "record field layout is not available";
+                        []
+                    | None, _ -> []))
+            record_fields
+        in
+        let fields = fields 0 node in
+        let field_names = List.map (fun (field : Ast.field) -> field.name) fields in
+        if List.length (List.sort_uniq compare field_names) <> List.length field_names
+        then unsupported := Some "anonymous member field names collide";
+        let special_layout =
+          !has_anonymous
+          || List.exists
+               (fun (field : Ast.field) -> Option.is_some field.unsupported_reason)
+               fields
+        in
+        let fields =
+          if special_layout then fields
+          else List.map (fun (field : Ast.field) -> { field with offset = None }) fields
         in
         let reason =
           if
@@ -1472,17 +1724,46 @@ let map_declarations ?(container = false) ~span declarations =
     List.filter_map candidate_fields raw_records
     |> List.map (fun (name, fields) -> (name, fields, None))
   in
+  let field_offsets =
+    List.filter_map
+      (fun (name, _, fields, _, _, _) ->
+        let offsets =
+          List.filter_map
+            (fun (field : Ast.field) ->
+              Option.map (fun offset -> (field.name, offset)) field.offset)
+            fields
+        in
+        if offsets = [] then None else Some (name, offsets))
+      raw_records
+  and field_reasons =
+    List.filter_map
+      (fun (name, _, fields, _, _, _) ->
+        let reasons =
+          List.filter_map
+            (fun (field : Ast.field) ->
+              Option.map (fun reason -> (field.name, reason)) field.unsupported_reason)
+            fields
+        in
+        if reasons = [] then None else Some (name, reasons))
+      raw_records
+  in
+  let byte_storage = List.map fst field_offsets in
   let union_names =
     List.filter_map
       (fun (name, node, _, _, _, _) ->
         if string "tagUsed" node = Some "union" then Some name else None)
       raw_records
   in
-  let natural_cache = Hir.struct_layout_cache ~unions:union_names natural in
+  let natural_cache =
+    Hir.struct_layout_cache ~unions:union_names ~field_offsets ~field_reasons
+      ~byte_storage natural
+  in
   let alignments =
     List.filter_map
       (fun (name, node, _, layout, reason, blocked) ->
         if Option.is_some reason || blocked then None
+        else if List.mem_assoc name field_offsets then
+          Option.map (fun layout -> (name, Some layout.align)) layout
         else
           match (layout, Hir.compute_struct_cached natural_cache name) with
           | Some layout, Ok natural
@@ -1501,7 +1782,10 @@ let map_declarations ?(container = false) ~span declarations =
         (name, fields, align))
       (List.filter_map candidate_fields raw_records)
   in
-  let layouts_cache = Hir.struct_layout_cache ~unions:union_names struct_declarations in
+  let layouts_cache =
+    Hir.struct_layout_cache ~unions:union_names ~field_offsets ~field_reasons
+      ~byte_storage struct_declarations
+  in
   let record_results =
     List.map
       (fun (name, node, fields, layout, reason, blocked) ->
@@ -1513,7 +1797,11 @@ let map_declarations ?(container = false) ~span declarations =
               when clang.size = fas.size && clang.align = fas.align
                    && List.for_all
                         (fun (field : Hir.field) ->
-                          List.assoc_opt field.name clang.offsets = Some field.offset)
+                          let offsets =
+                            Option.value ~default:clang.direct_offsets
+                              (List.assoc_opt name field_offsets)
+                          in
+                          List.assoc_opt field.name offsets = Some field.offset)
                         fas.fields ->
                 None
             | _ -> Some "record layout differs from C"
