@@ -365,7 +365,8 @@ let rec check_place (c : context) expr =
                 in
                 Ok
                   {
-                    expr = Hir.Index (base.expr, checked_index, e, s);
+                    expr =
+                      Hir.Index (base.expr, Hir.EInt (value, ty, Ast.expr_span i), e, s);
                     root = base.root;
                     path;
                   }
@@ -865,7 +866,26 @@ and check_same_operands c left right =
     let* right = check_expr c (hint left right) right in
     Ok (left, right)
 
-and check_initializer c expected expression =
+and check_initializer ?(constant = false) c expected expression =
+  let vector_value () =
+    let* value = check_expr c (Some expected) expression in
+    if not constant then Ok (`Value value)
+    else
+      let consts =
+        List.filter (fun (name, _, _) -> Option.is_none (lookup_local name c)) c.consts
+      in
+      let arrays =
+        List.filter (fun (name, _, _) -> Option.is_none (lookup_local name c)) c.arrays
+      in
+      match
+        vector_const_expr ~structs:c.structs ~named_types:c.named_types ~arrays consts
+          (Some expected) expression
+      with
+      | Ok (actual, lanes)
+        when Hir.ty_equal actual expected && Hir.ty_equal actual (Hir.expr_ty value) ->
+          Ok (`Value (Hir.EVector (lanes, expected, Ast.expr_span expression)))
+      | _ -> Ok (`Value value)
+  in
   let aggregate_entries ty entries span =
     match (ty, entries) with
     | (Hir.Array _ | Hir.Struct _), [] -> Ok (`Aggregate (ty, [], span))
@@ -913,7 +933,7 @@ and check_initializer c expected expression =
         let rec check acc = function
           | [] -> Ok (List.rev acc)
           | (entry_ty, entry) :: rest ->
-              let* initialized = check_initializer c entry_ty entry in
+              let* initialized = check_initializer ~constant:true c entry_ty entry in
               let* () =
                 let actual =
                   match initialized with
@@ -943,24 +963,49 @@ and check_initializer c expected expression =
   match expression with
   | Ast.Array_lit (entries, span) -> (
       match expected with
-      | Hir.Vec _ ->
-          let* value = check_expr c (Some expected) expression in
-          Ok (`Value value)
+      | Hir.Vec _ -> vector_value ()
       | _ -> aggregate_entries expected entries span)
   | Ast.Struct_lit (source_type, entries, span) -> (
       let* source_type = source_ty_in_context c span source_type in
       match source_type with
-      | Hir.Vec _ ->
-          let* value = check_expr c (Some expected) expression in
-          Ok (`Value value)
+      | Hir.Vec _ -> vector_value ()
       | Hir.Array _ | Hir.Struct _ ->
           if not (Hir.ty_equal source_type expected) then
             error span "aggregate construction type does not match destination"
           else aggregate_entries expected entries span
       | _ -> error span "construction needs an array, struct or vector type")
+  | _ when match expected with Hir.Vec _ -> true | _ -> false -> vector_value ()
   | _ ->
       let* value = check_expr c (Some expected) expression in
-      Ok (`Value value)
+      if not constant then Ok (`Value value)
+      else
+        let consts =
+          List.filter
+            (fun (name, _, _) -> Option.is_none (lookup_local name c))
+            c.consts
+        in
+        let arrays =
+          List.filter
+            (fun (name, _, _) -> Option.is_none (lookup_local name c))
+            c.arrays
+        in
+        let value =
+          match expected with
+          | Hir.Bool | Hir.Int _ -> (
+              match
+                const_expr ~structs:c.structs ~named_types:c.named_types ~arrays consts
+                  (Some expected) ~validate_dead:false expression
+              with
+              | Ok (actual, bits)
+                when Hir.ty_equal actual expected
+                     && Hir.ty_equal actual (Hir.expr_ty value) ->
+                  if expected = Hir.Bool then
+                    Hir.EBool (bits <> 0L, Ast.expr_span expression)
+                  else Hir.EInt (bits, expected, Ast.expr_span expression)
+              | _ -> value)
+          | _ -> value
+        in
+        Ok (`Value value)
 
 and generic_const_argument span = function
   | Ast.Const_arg expression -> Ok expression

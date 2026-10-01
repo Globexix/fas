@@ -7,6 +7,7 @@ type block_state = {
 type loop = { break_to : int; continue_to : int; keep_scopes : int }
 
 type state = {
+  literal_globals : Hir.global list ref;
   mutable next_value : int;
   mutable next_block : int;
   blocks : block_state Queue.t;
@@ -425,6 +426,48 @@ let normalize_index_type s index_ty span value =
 
 let normalize_index s expression value =
   normalize_index_type s (Hir.expr_ty expression) (Hir.expr_span expression) value
+
+let rec static_address structs = function
+  | Hir.Global (name, _, _) | Hir.Const_array (name, _, _) -> Some (name, 0)
+  | Hir.Field (base, _, _, offset, _) ->
+      Option.map
+        (fun (name, previous) -> (name, previous + offset))
+        (static_address structs base)
+  | Hir.Index (base, Hir.EInt (index, _, _), element, _) -> (
+      match Hir.layout structs element with
+      | Ok (size, _) ->
+          Option.map
+            (fun (name, offset) -> (name, offset + (Int64.to_int index * size)))
+            (static_address structs base)
+      | Error _ -> None)
+  | _ -> None
+
+let rec constant_construction structs = function
+  | Hir.Init_zero (zero, _) -> Some (Hir.Global_zero zero)
+  | Hir.Init_value (Hir.EInt (value, _, _)) -> Some (Hir.Global_int value)
+  | Hir.Init_value (Hir.EBool (value, _)) -> Some (Hir.Global_bool value)
+  | Hir.Init_value (Hir.Null _) -> Some Hir.Global_null
+  | Hir.Init_value (Hir.EString (id, _)) ->
+      Some (Hir.Global_address (".str." ^ string_of_int id, 0))
+  | Hir.Init_value (Hir.Function_address (name, _)) ->
+      Some (Hir.Global_address (name, 0))
+  | Hir.Init_value (Hir.Address (place, _, _)) ->
+      Option.map
+        (fun (name, offset) -> Hir.Global_address (name, offset))
+        (static_address structs place)
+  | Hir.Init_value (Hir.Call (Hir.Builtin (Hir.Handle_from_addr _), [ value ], _, _)) ->
+      constant_construction structs (Hir.Init_value value)
+  | Hir.Init_value (Hir.EVector (values, _, _)) -> Some (Hir.Global_vector values)
+  | Hir.Init_aggregate (aggregate_ty, entries, _) ->
+      let entries = List.map (constant_construction structs) entries in
+      if List.for_all Option.is_some entries then
+        let values = List.map Option.get entries in
+        Some
+          (match aggregate_ty with
+          | Hir.Array _ -> Hir.Global_array values
+          | _ -> Hir.Global_struct values)
+      else None
+  | _ -> None
 
 let rec expr s = function
   | Hir.EInt (v, t, _) -> Ok (Ir.Const (ty t, v))
@@ -1884,7 +1927,32 @@ and stmt s = function
           Ok ()
       | [] -> error sp "continue outside loop")
 
-and construct_into s destination = function
+and construct_into s destination construction =
+  let literal_ty =
+    match construction with Hir.Init_aggregate (t, _, _) -> Some t | _ -> None
+  in
+  match
+    Option.bind literal_ty (fun t ->
+        Option.map
+          (fun value -> (t, value))
+          (constant_construction s.structs construction))
+  with
+  | Some (t, value) when copy_leaf_count s.structs t > 16 ->
+      let name = ".literal." ^ string_of_int (List.length !(s.literal_globals)) in
+      s.literal_globals :=
+        {
+          Hir.name;
+          ty = t;
+          init_value = Some value;
+          readonly = true;
+          linkage = Ast.Internal_global;
+        }
+        :: !(s.literal_globals);
+      let* source = address s (Hir.Global (name, t, Span.synthetic)) in
+      copy_place s Span.synthetic t destination source
+  | _ -> construct_entries s destination construction
+
+and construct_entries s destination = function
   | Hir.Init_value expression ->
       let* value = expr s expression in
       let value_ty = Hir.expr_ty expression in
@@ -2164,7 +2232,7 @@ and lower_switch s e arms default span =
   if not falls_through then s.current.term := Some Ir.Unreachable;
   Ok ()
 
-let lower_func structs strings functions f =
+let lower_func literal_globals structs strings functions f =
   let c_abi = has_c_abi f in
   let* () =
     Result_list.iter
@@ -2211,6 +2279,7 @@ let lower_func structs strings functions f =
       Queue.add entry blocks;
       let s =
         {
+          literal_globals;
           next_value = 0;
           next_block = 1;
           blocks;
@@ -2335,6 +2404,112 @@ let intrinsic_decls funcs =
   |> List.of_seq
   |> List.sort (fun (a : Ir.func) b -> String.compare a.name b.name)
 
+let global_storage structs (global : Hir.global) =
+  match Hir.layout structs global.ty with
+  | Error message ->
+      error Span.synthetic
+        (Printf.sprintf "internal error: global %s has no layout: %s" global.name
+           message)
+  | Ok (size, align) -> (
+      let data = Bytes.make size (Char.chr 0) in
+      let pointers = ref [] in
+      let object_size ty = fst (Result.get_ok (Hir.layout structs ty)) in
+      let set offset value =
+        if offset < 0 || offset >= size then
+          failwith "initializer exceeds global storage";
+        Bytes.set data offset (Char.chr (value land 255))
+      in
+      let write_integer offset width value =
+        for index = 0 to width - 1 do
+          set (offset + index)
+            (Int64.to_int (Int64.shift_right_logical value (index * 8)))
+        done
+      in
+      let rec write offset ty = function
+        | Hir.Global_array [] | Hir.Global_struct [] -> ()
+        | Hir.Global_zero zero ->
+            if not (Hir.ty_equal zero.zero_ty ty) then
+              failwith "zero initializer type mismatch"
+        | Hir.Global_int value -> write_integer offset (object_size ty) value
+        | Hir.Global_bool value -> set offset (if value then 1 else 0)
+        | Hir.Global_null -> ()
+        | Hir.Global_address (symbol, displacement) ->
+            pointers := (offset, symbol, displacement) :: !pointers
+        | Hir.Global_vector values when ty = Hir.Vec (List.length values, Hir.Bool) ->
+            List.iteri
+              (fun index value ->
+                if value <> 0L then
+                  let byte = offset + (index / 8) in
+                  set byte (Char.code (Bytes.get data byte) lor (1 lsl (index mod 8))))
+              values
+        | Hir.Global_vector _
+          when match ty with Hir.Vec (_, Hir.Bool) -> true | _ -> false ->
+            failwith "vector initializer lane mismatch"
+        | Hir.Global_vector values ->
+            let width =
+              match ty with
+              | Hir.Vec (lanes, element) when lanes = List.length values ->
+                  object_size element
+              | _ -> failwith "vector initializer type or lane mismatch"
+            in
+            List.iteri
+              (fun index value -> write_integer (offset + (index * width)) width value)
+              values
+        | Hir.Global_array values ->
+            let element, width =
+              match ty with
+              | Hir.Array (length, element) when length = List.length values ->
+                  (element, object_size element)
+              | _ -> failwith "array initializer type or length mismatch"
+            in
+            List.iteri
+              (fun index value -> write (offset + (index * width)) element value)
+              values
+        | Hir.Global_struct values -> (
+            match ty with
+            | Hir.Struct name ->
+                let definition =
+                  List.find_opt
+                    (fun (definition : Hir.struct_def) -> definition.name = name)
+                    structs
+                  |> Option.get
+                in
+                if definition.is_union then
+                  match (definition.fields, values) with
+                  | field :: _, value :: _ ->
+                      write (offset + field.offset) field.ty value
+                  | _ -> failwith "union initializer type mismatch"
+                else
+                  List.iter2
+                    (fun (field : Hir.field) value ->
+                      write (offset + field.offset) field.ty value)
+                    definition.fields values
+            | _ -> failwith "struct initializer type mismatch")
+      in
+      try
+        let bytes =
+          match global.init_value with
+          | None -> None
+          | Some value ->
+              write 0 global.ty value;
+              Some (Bytes.to_string data)
+        in
+        Ok
+          (Ir.Storage_global
+             {
+               name = global.name;
+               storage_ty = ty global.ty;
+               size;
+               bytes;
+               pointers = List.rev !pointers;
+               readonly = global.readonly;
+               align;
+               linkage = global.linkage;
+             })
+      with Failure message | Invalid_argument message ->
+        error Span.synthetic
+          (Printf.sprintf "internal error: global %s: %s" global.name message))
+
 let lower (p : Hir.program) =
   let* () =
     match Target_layout.pointer_integer_bits Target_layout.current with
@@ -2367,9 +2542,11 @@ let lower (p : Hir.program) =
       (Printf.sprintf "internal error: struct `%s` has malformed layout: %s" d.name
          message)
   in
+  let literal_globals = ref [] in
   let* funcs =
     Result_list.map
-      (fun (f : Hir.func) -> lower_func p.Hir.structs p.strings p.funcs f)
+      (fun (f : Hir.func) ->
+        lower_func literal_globals p.Hir.structs p.strings p.funcs f)
       p.funcs
   in
   let* structs =
@@ -2477,114 +2654,9 @@ let lower (p : Hir.program) =
               (Ir.Array_global { name = a.name; elem_ty = Ir.I8; elems = []; align = 1 }))
       p.const_arrays
   in
-  let global_storage (global : Hir.global) =
-    match Hir.layout p.structs global.ty with
-    | Error message ->
-        error Span.synthetic
-          (Printf.sprintf "internal error: global %s has no layout: %s" global.name
-             message)
-    | Ok (size, align) -> (
-        let data = Bytes.make size (Char.chr 0) in
-        let pointers = ref [] in
-        let object_size ty = fst (Result.get_ok (Hir.layout p.structs ty)) in
-        let set offset value =
-          if offset < 0 || offset >= size then
-            failwith "initializer exceeds global storage";
-          Bytes.set data offset (Char.chr (value land 255))
-        in
-        let write_integer offset width value =
-          for index = 0 to width - 1 do
-            set (offset + index)
-              (Int64.to_int (Int64.shift_right_logical value (index * 8)))
-          done
-        in
-        let rec write offset ty = function
-          | Hir.Global_array [] | Hir.Global_struct [] -> ()
-          | Hir.Global_zero zero ->
-              if not (Hir.ty_equal zero.zero_ty ty) then
-                failwith "zero initializer type mismatch"
-          | Hir.Global_int value -> write_integer offset (object_size ty) value
-          | Hir.Global_bool value -> set offset (if value then 1 else 0)
-          | Hir.Global_null -> ()
-          | Hir.Global_address (symbol, displacement) ->
-              pointers := (offset, symbol, displacement) :: !pointers
-          | Hir.Global_vector values when ty = Hir.Vec (List.length values, Hir.Bool) ->
-              List.iteri
-                (fun index value ->
-                  if value <> 0L then
-                    let byte = offset + (index / 8) in
-                    set byte (Char.code (Bytes.get data byte) lor (1 lsl (index mod 8))))
-                values
-          | Hir.Global_vector _
-            when match ty with Hir.Vec (_, Hir.Bool) -> true | _ -> false ->
-              failwith "vector initializer lane mismatch"
-          | Hir.Global_vector values ->
-              let width =
-                match ty with
-                | Hir.Vec (lanes, element) when lanes = List.length values ->
-                    object_size element
-                | _ -> failwith "vector initializer type or lane mismatch"
-              in
-              List.iteri
-                (fun index value ->
-                  write_integer (offset + (index * width)) width value)
-                values
-          | Hir.Global_array values ->
-              let element, width =
-                match ty with
-                | Hir.Array (length, element) when length = List.length values ->
-                    (element, object_size element)
-                | _ -> failwith "array initializer type or length mismatch"
-              in
-              List.iteri
-                (fun index value -> write (offset + (index * width)) element value)
-                values
-          | Hir.Global_struct values -> (
-              match ty with
-              | Hir.Struct name ->
-                  let definition =
-                    List.find_opt
-                      (fun (definition : Hir.struct_def) -> definition.name = name)
-                      p.structs
-                    |> Option.get
-                  in
-                  if definition.is_union then
-                    match (definition.fields, values) with
-                    | field :: _, value :: _ ->
-                        write (offset + field.offset) field.ty value
-                    | _ -> failwith "union initializer type mismatch"
-                  else
-                    List.iter2
-                      (fun (field : Hir.field) value ->
-                        write (offset + field.offset) field.ty value)
-                      definition.fields values
-              | _ -> failwith "struct initializer type mismatch")
-        in
-        try
-          let bytes =
-            match global.init_value with
-            | None -> None
-            | Some value ->
-                write 0 global.ty value;
-                Some (Bytes.to_string data)
-          in
-          Ok
-            (Ir.Storage_global
-               {
-                 name = global.name;
-                 storage_ty = ty global.ty;
-                 size;
-                 bytes;
-                 pointers = List.rev !pointers;
-                 readonly = global.readonly;
-                 align;
-                 linkage = global.linkage;
-               })
-        with Failure message | Invalid_argument message ->
-          error Span.synthetic
-            (Printf.sprintf "internal error: global %s: %s" global.name message))
+  let* storage_globals =
+    Result_list.map (global_storage p.structs) (p.globals @ List.rev !literal_globals)
   in
-  let* storage_globals = Result_list.map global_storage p.globals in
   let module_ =
     {
       Ir.target_triple = Target_layout.current.triple;

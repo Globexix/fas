@@ -1,0 +1,27 @@
+use "C" <<C
+static unsigned oracle(unsigned i) { return (i + 1u) * 3u; }
+static int inspect(const unsigned char *p) { return p[0] == 65 && p[1] == 0; }
+C
+struct S { b bool
+v vec[4,u32]
+p addr
+a arr[3,u32] }
+var G arr[3,u32] = {7,8,9}
+fn main() i32 {
+  a arr[4,S] = {{true,{1+2,2*3,9,12},c"A",{7,8,9}}, {true,{3,6,9,12},&G[1+1],{7,8,9}}, {true,{3,6,9,12},&inspect,{7,8,9}}, {true,{3,6,9,12},null,{7,8,9}}}
+  i usize = 0
+  while i < 4 {
+    if !a[i].b || a[i].a[2] != 9 { return 1 }
+    j u32 = 0
+    while j < 4 { if a[i].v[j] != oracle(j) { return 2 }
+      j += 1 }
+    i += 1
+  }
+  if inspect(a[0].p) != 1 || a[1].p[u32] != 9 || a[2].p != &inspect || a[3].p != null { return 3 }
+  k u32 = 41
+  mixed arr[20,u32] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,k}
+  if mixed[19] != 41 { return 4 }
+  const_shadow u32 = 13
+  shadow arr[20,u32] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,const_shadow}
+  return shadow[19] == 13 ? 0 : 5
+}

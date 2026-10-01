@@ -10445,6 +10445,17 @@ let () =
      1\n\
      ]))\n\
      }\n";
+  let literal =
+    "fn main() i32 { a arr[20,u32] = {"
+    ^ String.concat "," (List.init 20 (fun i -> string_of_int i ^ " + 1"))
+    ^ "}\n return a[19] == 20 ? 0 : 1 }"
+  in
+  semantic_accept "constant-local-literal-expressions" literal;
+  if not (contains (llvm_of literal) "@.literal.") then
+    failwith "constant local literal must use immutable storage";
+  semantic_message "constant-local-literal-width"
+    "wrong number of array literal elements"
+    "fn main() i32 { a arr[20,u32] = {1,2}\n return 0 }";
   semantic_accept "large-zero-array-loop"
     "fn main() i32 { a arr[65536,u32] = {}\n\
     \ i usize = 0\n\
