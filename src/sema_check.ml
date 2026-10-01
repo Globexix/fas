@@ -8,6 +8,11 @@ open Sema_context
 let error span message = Error [ Diag.error span message ]
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 
+let aggregate_construction ty entries span =
+  match entries with
+  | [] -> Hir.Init_zero (Hir.zero_initializer ty, span)
+  | _ -> Hir.Init_aggregate (ty, entries, span)
+
 let c_unsupported c span name =
   Option.map
     (fun reason ->
@@ -906,7 +911,7 @@ and check_initializer c expected expression =
                 match initialized with
                 | `Value value -> Hir.Init_value value
                 | `Aggregate (ty, children, child_span) ->
-                    Hir.Init_aggregate (ty, children, child_span)
+                    aggregate_construction ty children child_span
               in
               check (child :: acc) rest
         in
@@ -1866,7 +1871,7 @@ and check_stmt (c : context) = function
       | Some (`Aggregate (ty, entries, construction_span)) ->
           Ok
             (Hir.Let_construct
-               (binding, Hir.Init_aggregate (ty, entries, construction_span), span)))
+               (binding, aggregate_construction ty entries construction_span, span)))
   | Ast.View { name; place; span } ->
       let* () = ensure_new_local name c span in
       let* place_info = check_place c place in

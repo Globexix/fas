@@ -29,6 +29,15 @@ type struct_def = {
 
 type const_def = { name : string; ty : ty; bits : int64 }
 type const_arr_def = { name : string; ty : ty; elems : int64 list }
+type zero_initializer = { zero_ty : ty }
+
+let zero_initializer zero_ty = { zero_ty }
+
+let zero_integer_array_values { zero_ty } =
+  match zero_ty with
+  | Array (length, (Bool | Int _)) -> Some (List.init length (fun _ -> 0L))
+  | _ -> None
+
 type func_sig = { params : (string * ty) list; ret : ty; variadic : bool }
 type local = { name : string; ty : ty; id : int }
 type linkage = Internal | External_c
@@ -93,6 +102,7 @@ type expr =
 
 type construction =
   | Init_value of expr
+  | Init_zero of zero_initializer * Span.t
   | Init_aggregate of ty * construction list * Span.t
 
 type assign_target =
@@ -134,6 +144,7 @@ type func = {
 }
 
 type global_initializer =
+  | Global_zero of zero_initializer
   | Global_int of int64
   | Global_bool of bool
   | Global_null

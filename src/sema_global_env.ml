@@ -45,7 +45,7 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~consts ~arrays
         else Ok (Hir.Global_vector values)
     | Hir.Array (length, element) -> (
         match array_items with
-        | Some [] -> Ok (Hir.Global_array [])
+        | Some [] -> Ok (Hir.Global_zero (Hir.zero_initializer ty))
         | Some items when List.length items = length ->
             map (fun xs -> Hir.Global_array xs) element items
         | Some _ -> error span "wrong number of array literal elements"
@@ -67,7 +67,7 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~consts ~arrays
               (fun (definition : Hir.struct_def) -> definition.name = name)
               structs )
         with
-        | Some [], Some _ -> Ok (Hir.Global_struct [])
+        | Some [], Some _ -> Ok (Hir.Global_zero (Hir.zero_initializer ty))
         | Some [ item ], Some { Hir.is_union = true; fields = field :: _; _ } -> (
             match field.unsupported_reason with
             | Some reason -> error (Ast.expr_span item) reason
