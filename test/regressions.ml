@@ -10719,3 +10719,31 @@ let () =
     "shuffle indices must be a compile-time constant integer vector"
     "const V vec[4,u32] = {1, 2, 3, 4}\n\
      const R vec[2,u32] = shuffle(V, V, {0, missing})\n"
+
+let () =
+  let dir = Filename.dirname (fst (c_import_fixture "phase25_after_container.h")) in
+  let file = Filename.concat dir "phase25_containers.fas" in
+  let span = Span.make ~file ~start_offset:0 ~end_offset:0 ~line:30 ~column:1 in
+  let requests =
+    C_import.
+      [
+        {
+          spelling =
+            Ast.C_fragment
+              { tag = "C"; text = "typedef struct { int before; } Phase25Before;\n" };
+          span;
+        };
+        { spelling = Ast.C_quoted "phase25_after_container.h"; span };
+      ]
+  in
+  let nodes, _, _ =
+    expect_ok (C_import.import ~cc:"clang-22" ~debug:false ~keep:false file requests)
+  in
+  let fixture = (file, C_import.map_declarations ~span nodes) in
+  c_semantic_accept "c-import-anonymous-header-after-container" fixture
+    "fn f() i32 { a Phase25After = {}\n\
+     b Phase25Before = {}\n\
+     return a.after + b.before }\n";
+  c_semantic_message "c-import-anonymous-header-after-container-field"
+    "unknown field `missing`" fixture
+    "fn f() i32 { a Phase25After = {}\nreturn a.missing }\n"

@@ -228,6 +228,13 @@ and object_value ?(location = false) i =
         if List.mem_assoc key fields then fields
         else Option.fold ~none:fields ~some:(fun v -> (key, v) :: fields) value
       in
+      let inherited_presumed_file =
+        if List.mem_assoc "file" fields then None else inherited_presumed_file
+      in
+      let inherited_presumed_line =
+        if List.mem_assoc "file" fields || List.mem_assoc "line" fields then None
+        else inherited_presumed_line
+      in
       fields
       |> add_if_missing "file" (Option.map (fun v -> Str v) inherited_file)
       |> add_if_missing "line" (Option.map (fun v -> Num v) inherited_line)
