@@ -10580,3 +10580,18 @@ let () =
           ()
       | _ -> failwith "assembly missing file diagnostic changed");
   print_endline "C export spelling, omission, diagnostics and header pins: passed"
+
+let () =
+  let fixture =
+    c_import_container "phase25-anonymous"
+      "typedef struct { int id; union { int x; unsigned y; }; } user_t;\n\
+       typedef union { unsigned word; unsigned char bytes[4]; } word_t;\n\
+       extern user_t users[2];\n"
+  in
+  c_semantic_accept "c-import-container-anonymous-typedef-records" fixture
+    "fn f() i32 { u user_t = {3, 7, 7}\n\
+     w word_t = {9}\n\
+     users[1].id = u.id\n\
+     return users[1].id + u.x + bitcast[i32](w.word) }\n";
+  c_semantic_message "c-import-container-anonymous-typedef-field-error"
+    "unknown field `missing`" fixture "fn f() i32 { u user_t = {}\nreturn u.missing }\n"

@@ -13,6 +13,8 @@ type input = {
   mutable size : int;
   mutable last_file : string option;
   mutable last_line : string option;
+  mutable presumed_file : string option;
+  mutable presumed_line : string option;
 }
 
 let refill i =
@@ -91,16 +93,23 @@ let read_string i =
   loop ()
 
 let record_location_value i field value =
-  if field = "file" then i.last_file <- Some value
-  else if field = "line" then i.last_line <- Some value
+  if field = "file" then (
+    i.last_file <- Some value;
+    i.presumed_file <- None;
+    i.presumed_line <- None)
+  else if field = "line" then (
+    i.last_line <- Some value;
+    i.presumed_line <- None)
+  else if field = "presumedFile" then i.presumed_file <- Some value
+  else if field = "presumedLine" then i.presumed_line <- Some value
 
 let rec skip_value ?(location = false) ?(range = false) ?(field = "") i =
   space i;
   match take i with
   | '"' ->
       let value = read_string i in
-      if location && (field = "file" || field = "line") then
-        record_location_value i field value
+      if location && List.mem field [ "file"; "line"; "presumedFile"; "presumedLine" ]
+      then record_location_value i field value
   | '{' ->
       let rec fields () =
         space i;
@@ -112,7 +121,8 @@ let rec skip_value ?(location = false) ?(range = false) ?(field = "") i =
           let child_location =
             List.mem key [ "loc"; "expansionLoc"; "spellingLoc" ]
             || (range && List.mem key [ "begin"; "end" ])
-            || (location && List.mem key [ "file"; "line" ])
+            || location
+               && List.mem key [ "file"; "line"; "presumedFile"; "presumedLine" ]
           in
           skip_value ~location:child_location ~range:(key = "range") ~field:key i;
           space i;
@@ -145,8 +155,8 @@ let rec skip_value ?(location = false) ?(range = false) ?(field = "") i =
         Buffer.add_char b (take i)
       done;
       let value = Buffer.contents b in
-      if location && (field = "file" || field = "line") then
-        record_location_value i field value
+      if location && List.mem field [ "file"; "line"; "presumedFile"; "presumedLine" ]
+      then record_location_value i field value
 
 let supported = function
   | "FunctionDecl" | "VarDecl" | "TypedefDecl" | "EnumDecl" | "RecordDecl" -> true
@@ -158,7 +168,7 @@ let keep_field = function
   | "kind" | "id" | "decl" | "name" | "type" | "loc" | "value" | "storageClass"
   | "inline" | "tagUsed" | "completeDefinition" | "fixedUnderlyingType" | "isBitfield"
   | "isImplicit" | "inner" | "qualType" | "desugaredQualType" | "file" | "line" | "col"
-  | "expansionLoc" | "spellingLoc" ->
+  | "expansionLoc" | "spellingLoc" | "presumedFile" | "presumedLine" ->
       true
   | _ -> false
 
@@ -209,6 +219,8 @@ and array_value i =
 
 and object_value ?(location = false) i =
   let inherited_file = i.last_file and inherited_line = i.last_line in
+  let inherited_presumed_file = i.presumed_file
+  and inherited_presumed_line = i.presumed_line in
   let location_fields fields =
     if not location then fields
     else
@@ -219,6 +231,10 @@ and object_value ?(location = false) i =
       fields
       |> add_if_missing "file" (Option.map (fun v -> Str v) inherited_file)
       |> add_if_missing "line" (Option.map (fun v -> Num v) inherited_line)
+      |> add_if_missing "presumedFile"
+           (Option.map (fun v -> Str v) inherited_presumed_file)
+      |> add_if_missing "presumedLine"
+           (Option.map (fun v -> Num v) inherited_presumed_line)
   in
   expect i '{';
   space i;
@@ -242,8 +258,10 @@ and object_value ?(location = false) i =
         else Some (json ~location:child_location i)
       in
       (match (location, key, value) with
-      | true, ("file" | "line"), Some (Str value) -> record_location_value i key value
-      | true, "line", Some (Num value) -> record_location_value i key value
+      | true, ("file" | "line" | "presumedFile" | "presumedLine"), Some (Str value) ->
+          record_location_value i key value
+      | true, ("line" | "presumedLine"), Some (Num value) ->
+          record_location_value i key value
       | _ -> ());
       let kind =
         if key = "kind" then Option.value ~default:kind (Option.bind value string)
@@ -323,6 +341,8 @@ let declarations channel =
       size = 0;
       last_file = None;
       last_line = None;
+      presumed_file = None;
+      presumed_line = None;
     }
   in
   expect i '{';

@@ -1423,12 +1423,22 @@ let map_declarations ?(container = false) ~span declarations =
                 (get "loc" node)
             in
             Option.bind loc (fun loc ->
-                let file = string "file" loc in
+                let file =
+                  match string "presumedFile" loc with
+                  | Some _ as file -> file
+                  | None -> string "file" loc
+                in
                 let number = function
                   | C_import_json.Num value -> int_of_string_opt value
                   | _ -> None
                 in
-                let line = Option.bind (get "line" loc) number in
+                let line =
+                  Option.bind
+                    (match get "presumedLine" loc with
+                    | Some _ as line -> line
+                    | None -> get "line" loc)
+                    number
+                in
                 let col = Option.bind (get "col" loc) number in
                 match (file, line, col) with
                 | Some file, Some line, Some col ->
@@ -1440,7 +1450,12 @@ let map_declarations ?(container = false) ~span declarations =
                       ]
                     in
                     List.find_opt
-                      (fun layout -> List.mem layout.layout_name spellings)
+                      (fun layout ->
+                        List.mem layout.layout_name spellings
+                        || String.ends_with
+                             ~suffix:
+                               (Printf.sprintf "::(unnamed at %s:%d:%d)" file line col)
+                             layout.layout_name)
                       layouts
                 | _ -> None))
   and anonymous_record_layout = function
@@ -1469,14 +1484,16 @@ let map_declarations ?(container = false) ~span declarations =
         match List.assoc_opt name layout.direct_offsets with
         | Some _ as found -> found
         | None -> Option.map snd (List.nth_opt layout.direct_members field_index))
-    | None ->
+    | None -> (
         let found =
           Option.bind (c_type_name field) (fun raw ->
               List.find_map
                 (fun (member, offset) -> if member = raw then Some offset else None)
                 layout.members)
         in
-        found
+        match found with
+        | Some _ -> found
+        | None -> Option.map snd (List.nth_opt layout.direct_members field_index))
   in
   let field_storage_type field =
     c_type_spellings field
