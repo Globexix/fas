@@ -10520,4 +10520,37 @@ let () =
      1\n\
      ]))\n\
      }\n";
+  semantic_accept "large-zero-array-loop"
+    "fn main() i32 { a arr[65536,u32] = {}\n\
+    \ i usize = 0\n\
+    \ s u32 = 0\n\
+    \ while i < 4 { s = s + a[i]\n\
+    \ i = i + 1 }\n\
+    \ return bitcast[i32](s) }";
+  semantic_message "partial-array-loop-uninitialized" "use of uninitialized local `a`"
+    "fn main() i32 { a arr[65536,u32]\n\
+    \ a[0] = 0\n\
+    \ i usize = 0\n\
+    \ while i < 4 { x u32 = a[1]\n\
+    \ i = i + 1 }\n\
+    \ return 0 }";
+  let large_path = Filename.temp_file "fas-large-zero-" ".fas" in
+  let large_output = Filename.temp_file "fas-large-zero-" ".exe" in
+  Fun.protect
+    ~finally:(fun () ->
+      Sys.remove large_path;
+      Sys.remove large_output)
+    (fun () ->
+      let channel = open_out_bin large_path in
+      output_string channel
+        "fn main() i32 { a arr[65536,u32] = {}\n\
+        \ i usize = 0\n\
+        \ s u32 = 0\n\
+        \ while i < 4 { s = s + a[i]\n\
+        \ i = i + 1 }\n\
+        \ return bitcast[i32](s) }";
+      close_out channel;
+      ignore
+        (expect_ok (Driver.run (cli_run [ "-O2"; "-o"; large_output; large_path ])));
+      if Sys.command large_output <> 0 then failwith "large zero initialization value");
   print_endline "C export spelling, omission, diagnostics and header pins: passed"

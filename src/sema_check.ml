@@ -9,9 +9,14 @@ let error span message = Error [ Diag.error span message ]
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 
 let aggregate_construction ty entries span =
-  match entries with
-  | [] -> Hir.Init_zero (Hir.zero_initializer ty, span)
-  | _ -> Hir.Init_aggregate (ty, entries, span)
+  let rec zero = function
+    | Hir.Init_zero _ -> true
+    | Hir.Init_value (Hir.EInt (0L, _, _) | Hir.EBool (false, _) | Hir.Null _) -> true
+    | Hir.Init_aggregate (_, children, _) -> List.for_all zero children
+    | _ -> false
+  in
+  if List.for_all zero entries then Hir.Init_zero (Hir.zero_initializer ty, span)
+  else Hir.Init_aggregate (ty, entries, span)
 
 let c_unsupported c span name =
   Option.map

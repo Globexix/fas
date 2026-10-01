@@ -1894,8 +1894,54 @@ and construct_into s destination = function
   | Hir.Init_zero (zero, span) -> (
       match zero.zero_ty with
       | (Hir.Array _ | Hir.Struct _) as aggregate_ty ->
-          let* alignment = align s aggregate_ty in
-          store_value s aggregate_ty (Ir.Zero (ty aggregate_ty)) destination alignment
+          let* size, _ =
+            match Hir.layout s.structs aggregate_ty with
+            | Ok layout -> Ok layout
+            | Error message -> error span ("internal error: " ^ message)
+          in
+          if size <= 256 then
+            let* alignment = align s aggregate_ty in
+            store_value s aggregate_ty (Ir.Zero (ty aggregate_ty)) destination alignment
+          else
+            let preheader = s.current.id in
+            let head = fresh_block s
+            and body = fresh_block s
+            and exit = fresh_block s in
+            let index = fresh s and next = fresh s in
+            s.current.term := Some (Ir.Br head.id);
+            s.current <- head;
+            emit s
+              (Ir.Phi
+                 ( index,
+                   Ir.I64,
+                   [
+                     (Ir.Const (Ir.I64, 0L), preheader);
+                     (Ir.Local (next, Ir.I64), body.id);
+                   ] ));
+            let condition = fresh s in
+            emit s
+              (Ir.Cmp
+                 ( condition,
+                   Ir.Ult,
+                   Ir.I64,
+                   Ir.Local (index, Ir.I64),
+                   Ir.Const (Ir.I64, Int64.of_int size) ));
+            s.current.term :=
+              Some (Ir.CondBr (Ir.Local (condition, Ir.I1), body.id, exit.id));
+            s.current <- body;
+            let pointer = fresh s in
+            emit s
+              (Ir.Gep
+                 (pointer, Ir.I8, destination, [ Ir.Index (Ir.Local (index, Ir.I64)) ]));
+            emit s
+              (Ir.Store
+                 (Ir.I8, Ir.Const (Ir.I8, 0L), Ir.Local (pointer, Ir.Pointer Ir.I8), 1));
+            emit s
+              (Ir.Bin
+                 (next, Ir.Add, Ir.I64, Ir.Local (index, Ir.I64), Ir.Const (Ir.I64, 1L)));
+            s.current.term := Some (Ir.Br head.id);
+            s.current <- exit;
+            Ok ()
       | _ -> error span "internal error: zero initializer requires an array or struct")
   | Hir.Init_aggregate (Hir.Array (length, element_ty), elements, span) ->
       if List.length elements <> length then
