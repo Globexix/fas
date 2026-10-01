@@ -19,6 +19,10 @@ let collect ?(global_names = []) ?(array_lengths = []) ~source_obj ~structs ~nam
         else
           let* t = source_obj span ty in
           match (t, value) with
+          | Hir.Array (n, (Hir.Bool | Hir.Int _)), Ast.Array_lit ([], _) ->
+              arrays := (name, t, List.init n (fun _ -> 0L)) :: !arrays;
+              arrays_names := String_set.add name !arrays_names;
+              Ok ()
           | Hir.Array (n, elem), Ast.Array_lit (xs, _) ->
               if List.length xs <> n then error span "const array length mismatch"
               else

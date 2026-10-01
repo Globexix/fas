@@ -1891,6 +1891,9 @@ and construct_into s destination = function
       let value_ty = Hir.expr_ty expression in
       let* alignment = align s value_ty in
       store_value s value_ty value destination alignment
+  | Hir.Init_aggregate (((Hir.Array _ | Hir.Struct _) as aggregate_ty), [], _) ->
+      let* alignment = align s aggregate_ty in
+      store_value s aggregate_ty (Ir.Zero (ty aggregate_ty)) destination alignment
   | Hir.Init_aggregate (Hir.Array (length, element_ty), elements, span) ->
       if List.length elements <> length then
         error span "internal error: array construction arity"
@@ -2463,6 +2466,7 @@ let lower (p : Hir.program) =
           done
         in
         let rec write offset ty = function
+          | Hir.Global_array [] | Hir.Global_struct [] -> ()
           | Hir.Global_int value -> write_integer offset (object_size ty) value
           | Hir.Global_bool value -> set offset (if value then 1 else 0)
           | Hir.Global_null -> ()

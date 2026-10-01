@@ -1499,15 +1499,17 @@ let render_bounded ?(redirect = Fun.id) ~budget m =
               add (string_of_int (List.length elems));
               add " x ";
               emit_ty sink elem_ty;
-              add "] [";
-              List.iteri
-                (fun i v ->
-                  if i > 0 then add ", ";
-                  emit_ty sink elem_ty;
-                  add " ";
-                  add (Int64.to_string v))
-                elems;
-              add "], align ";
+              if List.for_all (( = ) 0L) elems then add "] zeroinitializer, align "
+              else (
+                add "] [";
+                List.iteri
+                  (fun i v ->
+                    if i > 0 then add ", ";
+                    emit_ty sink elem_ty;
+                    add " ";
+                    add (Int64.to_string v))
+                  elems;
+                add "], align ");
               add (string_of_int align);
               newline ()
           | Storage_global { name; size; bytes; pointers; readonly; align; linkage; _ }

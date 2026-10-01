@@ -18,7 +18,35 @@ void fas_union_check_table(const union FasPhase23Union *table) {
   printf("%u %u %u %u\n", table[0].word, (unsigned)table[0].bytes[4],
          table[1].word, (unsigned)table[1].bytes[4]);
 }
+
+void fas_union_fill_anonymous(struct FasPhase23Anonymous *value) {
+  value->word = 0x01020304u;
+}
+
+void fas_union_report_anonymous(uint32_t word, uint32_t high) {
+  printf("anonymous %u %u\n", word, high);
+}
+
+static int fas_all_zero(const uint8_t *bytes, size_t count) {
+  for (size_t i = 0; i < count; ++i) if (bytes[i] != 0) return 0;
+  return 1;
+}
+
+void fas_union_check_zero_global(void) {
+  printf("global zero %d\n", fas_all_zero((const uint8_t *)fas_zero_screens,
+                                          sizeof(fas_zero_screens)));
+}
+
+void fas_union_check_zero_local(const uint8_t *bytes) {
+  printf("local zero %d\n", fas_all_zero(bytes, 5));
+}
+
+void fas_union_check_zero_union(const union FasPhase23Union *value) {
+  printf("union zero %d\n", fas_all_zero(value->bytes, sizeof(value->bytes)));
+}
 UNION_IMPL
+
+extern "C" { var fas_zero_screens arr[5,addr] = {} }
 
 const fas_phase23_table arr[2, FasPhase23Union] = {
   {0x11223344}, {0x55667788}
@@ -31,5 +59,18 @@ fn main() i32 {
   value.word = 0x76543210
   fas_union_read_after_write(&value)
   fas_union_check_table(&fas_phase23_table[0])
+  anon FasPhase23Anonymous
+  fas_union_fill_anonymous(&anon)
+  fas_union_report_anonymous(anon.word, zext[u32](anon.bytes[3]))
+  anon.bytes[0] = 170
+  anon.bytes[3] = 187
+  fas_union_report_anonymous(anon.word, zext[u32](anon.bytes[3]))
+  fas_union_check_zero_global()
+  scratch arr[16,u8]
+  scratch[3] = 11
+  chars arr[5,u8] = {}
+  fas_union_check_zero_local(&chars[0])
+  zero_union FasPhase23Union = {}
+  fas_union_check_zero_union(&zero_union)
   return 0
 }
