@@ -16,6 +16,44 @@ let error ?(issue = General) ?(notes = []) ?(hints = []) primary message =
 let warning ?(notes = []) ?(hints = []) primary message =
   { severity = Warning; issue = General; primary; message; notes; hints }
 
+let local_declaration_message name =
+  if List.mem name [ "let"; "auto"; "mut" ] then
+    Some
+      (Printf.sprintf
+         "locals are declared as `name Type = value`; `%s` is not a Fas keyword" name)
+  else if
+    List.mem name
+      [ "int"; "char"; "short"; "long"; "unsigned"; "signed"; "float"; "double" ]
+  then
+    Some
+      (Printf.sprintf
+         "`%s` is not a Fas type; locals are declared as `name Type = value`, e.g. `x \
+          i32`"
+         name)
+  else None
+
+let local_type_error name result =
+  Result.map_error
+    (List.map (fun diagnostic ->
+         let prefix = "unknown type `" in
+         if not (String.starts_with ~prefix diagnostic.message) then diagnostic
+         else
+           let message =
+             match local_declaration_message name with
+             | Some message -> message
+             | None when Names.parser_type_name name ->
+                 let other =
+                   String.sub diagnostic.message (String.length prefix)
+                     (String.length diagnostic.message - String.length prefix - 1)
+                 in
+                 Printf.sprintf
+                   "locals are declared as `name Type = value`; write `%s %s`" other
+                   name
+             | None -> diagnostic.message
+           in
+           { diagnostic with message }))
+    result
+
 let render_one ~source diagnostic =
   let level = if diagnostic.severity = Warning then "warning" else "error" in
   let location = Span.to_string diagnostic.primary in

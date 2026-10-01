@@ -8452,7 +8452,8 @@ let () =
   semantic_message "global-opaque-object"
     "opaque type `Token` may only be used behind a pointer"
     "opaque Token\nvar Value Token\n";
-  parse_message "global-local-var" "expected an expression, found `var`"
+  parse_message "global-local-var"
+    "`var` declares globals; locals are declared as `name Type = value`"
     "fn run() void { var Value i32\nreturn }\n";
 
   let c_matrix = c_import_fixture "matrix.h" in
@@ -10846,3 +10847,76 @@ let () =
     \ fn g() void { i arr[1,u32] = {0}\n\
     \ f[i[0]]()\n\
     \ return }"
+
+let () =
+  let pin body token expected generic =
+    let header =
+      if generic then "fn f[N const usize]() void { " else "fn f() void { "
+    in
+    let text =
+      header ^ body ^ "\nreturn }"
+      ^ if generic then "\nfn g() void { f[4]()\nreturn }" else ""
+    in
+    let result =
+      match Parser.parse (source text) with
+      | Error diagnostics -> Error diagnostics
+      | Ok program -> Sema.check program
+    in
+    incr checks_run;
+    match result with
+    | Error [ diagnostic ] ->
+        let offset = String.length header + List.hd (positions body token) in
+        if
+          diagnostic.Diag.message <> expected
+          || diagnostic.primary.start_offset <> offset
+          || diagnostic.primary.end_offset <> offset + String.length token
+        then
+          failwith
+            ("declaration diagnostic/span: " ^ body ^ ": "
+            ^ Diag.render_all ~source:None [ diagnostic ])
+    | _ -> failwith ("expected declaration rejection: " ^ body)
+  in
+  List.iter
+    (fun generic ->
+      List.iter
+        (fun word ->
+          pin (word ^ " x = 5") word
+            ("locals are declared as `name Type = value`; `" ^ word
+           ^ "` is not a Fas keyword")
+            generic)
+        [ "let"; "auto"; "mut" ];
+      List.iter
+        (fun word ->
+          pin (word ^ " x = 5") word
+            ("`" ^ word
+           ^ "` is not a Fas type; locals are declared as `name Type = value`, e.g. `x \
+              i32`")
+            generic)
+        [ "int"; "char"; "short"; "long"; "unsigned"; "signed"; "float"; "double" ];
+      pin "u32 x = 5" "u32" "locals are declared as `name Type = value`; write `x u32`"
+        generic;
+      pin "var x i32 = 5" "var"
+        "`var` declares globals; locals are declared as `name Type = value`" generic;
+      pin "x := 5" ":" "locals are declared as `name Type = value`; Fas has no `:=`"
+        generic;
+      pin "x++" "+" "Fas has no `++`; write `x += 1`" generic;
+      pin "x--" "-" "Fas has no `--`; write `x -= 1`" generic)
+    [ false; true ];
+  List.iter
+    (fun word ->
+      semantic_accept
+        ("declaration-word-binding-" ^ word)
+        ("fn f() i32 { " ^ word ^ " i32 = 5\n return " ^ word ^ " }");
+      semantic_accept
+        ("declaration-word-valid-user-type-" ^ word)
+        ("struct x { value i32 }\n fn f() i32 { " ^ word ^ " x = {5}\n return " ^ word
+       ^ ".value }");
+      semantic_accept
+        ("declaration-word-generic-binding-" ^ word)
+        ("fn f[T](value T) T { " ^ word ^ " T = value\n return " ^ word
+       ^ " }\n fn g() i32 { return f[i32](5) }"))
+    [ "let"; "auto"; "mut" ];
+  semantic_accept "separated-plus-unary-keeps-syntax"
+    "fn f(x i32) i32 { return x + -1 }";
+  pin "for var x i32 = 0; x < 4; x += 1 {}" "var"
+    "`var` declares globals; locals are declared as `name Type = value`" false

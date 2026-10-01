@@ -817,6 +817,12 @@ module P = struct
         Error [ Diag.error (span p) "assembly unit must be at top level" ]
     | Token.Kw_use when List.mem_assoc (span p).Span.start_offset p.c_containers ->
         Error [ Diag.error (span p) "C container must be at top level" ]
+    | Token.Kw_var ->
+        Error
+          [
+            Diag.error (span p)
+              "`var` declares globals; locals are declared as `name Type = value`";
+          ]
     | Token.Ident "view" -> view_statement p true
     | Token.Kw_return ->
         let s = span p in
@@ -939,7 +945,13 @@ module P = struct
   and assignment_or_expr p = assignment_or_expr_with_end p true
 
   and for_clause p =
-    if at p (Token.Ident "view") then view_statement p false
+    if at p Token.Kw_var then
+      Error
+        [
+          Diag.error (span p)
+            "`var` declares globals; locals are declared as `name Type = value`";
+        ]
+    else if at p (Token.Ident "view") then view_statement p false
     else if starts_type p then declaration_with_end p false
     else assignment_or_expr_with_end p false
 
@@ -1145,6 +1157,25 @@ module P = struct
           ignore (bump p);
           let* args = select_payloads p in
           go (Ast.Select (e, args, s))
+      | Token.Colon when (peek_n p 1).kind = Token.Assign ->
+          Error
+            [
+              Diag.error (span p)
+                "locals are declared as `name Type = value`; Fas has no `:=`";
+            ]
+      | (Token.Plus | Token.Minus) as op
+        when (peek_n p 1).kind = op
+             && (peek p).span.Span.end_offset = (peek_n p 1).span.Span.start_offset ->
+          let name = match e with Ast.Ident (name, _) -> name | _ -> "x" in
+          let operator, assignment =
+            if op = Token.Plus then ("++", "+=") else ("--", "-=")
+          in
+          Error
+            [
+              Diag.error (span p)
+                (Printf.sprintf "Fas has no `%s`; write `%s %s 1`" operator name
+                   assignment);
+            ]
       | Token.Dot ->
           let s = span p in
           ignore (bump p);

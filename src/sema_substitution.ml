@@ -375,11 +375,14 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         validate_expression_names value_names type_names base
   and validate_statement_names value_names type_names scope_names = function
     | Ast.Let { name; ty; init; span; _ } ->
-        let* () = validate_binding_name span name in
         if String_set.mem name scope_names then
           error span (Printf.sprintf "duplicate local `%s`" name)
         else
-          let* () = validate_type_names value_names type_names span ty in
+          let* () =
+            Diag.local_type_error name
+              (validate_type_names value_names type_names span ty)
+          in
+          let* () = validate_binding_name span name in
           let* () =
             match init with
             | None -> Ok ()
@@ -871,6 +874,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           let* ty =
             source_ty_with_values ~globals:global_names eval_named_types eval_consts
               span ty
+            |> Diag.local_type_error name
           in
           let* () =
             match init with
@@ -1629,7 +1633,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       match statement with
       | Ast.Let { name; ty; init; span } ->
           let* ty =
-            resolve_ty ~values ~defer_const_structs substitutions depth span ty
+            Diag.local_type_error name
+              (resolve_ty ~values ~defer_const_structs substitutions depth span ty)
           in
           let* init =
             match init with
