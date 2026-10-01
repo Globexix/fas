@@ -10497,4 +10497,86 @@ let () =
     "asm fn was removed in v0.3; use a use \"asm\" unit and an extern \"C\" declaration"
     "asm fn old(x i32) i32 { movl $1, %eax; ret }\n";
   semantic_accept "asm-is-an-ordinary-binding" "fn f() i32 { asm i32 = 7\n return asm }";
+  parse_message "assembly-unit-missing-terminator"
+    "C container is missing terminator `END`" "use \"asm\" <<END\n.text\n";
+  parse_message "assembly-unit-nested-container" "assembly unit must be at top level"
+    "fn f() void {\nuse \"asm\" <<END\n.text\nEND\n}\n";
+  parse_message "assembly-unit-nested-path" "assembly unit must be at top level"
+    "fn f() void { use \"asm\" \"file.s\" }\n";
+  let assembly_root = Filename.temp_file "fas-assembly-pins-" ".fas" in
+  let assembly_dependency = assembly_root ^ ".dependency.fas" in
+  let assembly_cpp = assembly_root ^ ".S" in
+  let assembly_plain = assembly_root ^ ".s" in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter Sys.remove
+        [ assembly_root; assembly_dependency; assembly_cpp; assembly_plain ])
+    (fun () ->
+      let write path text =
+        let channel = open_out_bin path in
+        output_string channel text;
+        close_out channel
+      in
+      write assembly_cpp
+        "#if VALUE != 42\n\
+         #error missing preprocessor flag\n\
+         #endif\n\
+         .text\n\
+         .globl unit_cpp\n\
+         unit_cpp: movl $VALUE, %eax; ret\n\
+         .section .note.GNU-stack,\"\",@progbits\n";
+      write assembly_plain
+        ".set VALUE, 41\n\
+         .text\n\
+         .globl unit_plain\n\
+         unit_plain: movl $VALUE, %eax; ret\n\
+         .section .note.GNU-stack,\"\",@progbits\n";
+      write assembly_dependency
+        (Printf.sprintf "use \"asm\" %S\n" (Filename.basename assembly_plain));
+      write assembly_root
+        (Printf.sprintf
+           "use \"asm\" %S\n\
+            use %S\n\
+            extern \"C\" { fn unit_cpp() i32\n\
+            fn unit_plain() i32 }\n\
+            fn main() i32 { return unit_cpp() + unit_plain() - 83 }\n"
+           (Filename.basename assembly_cpp)
+           (Filename.basename assembly_dependency));
+      ignore
+        (expect_ok (Driver.run (cli_run [ "--emit-ir"; "-DVALUE=42"; assembly_root ])));
+      write assembly_root
+        (Printf.sprintf "use \"asm\" %S\nfn f() void {}\n"
+           (Filename.basename assembly_plain));
+      ignore
+        (expect_ok (Driver.run (cli_run [ "--emit-ir"; "-DVALUE=42"; assembly_root ])));
+      write assembly_root
+        "use \"asm\" <<END\n.text\ninvalid_opcode %rax\nEND\nfn f() void {}\n";
+      (match Driver.run (cli_run [ "--emit-ir"; assembly_root ]) with
+      | Error [ diagnostic ]
+        when diagnostic.Diag.message
+             = "C compilation failed: invalid instruction mnemonic 'invalid_opcode'"
+             && diagnostic.primary.Span.file = assembly_root
+             && diagnostic.primary.Span.line = 3 ->
+          ()
+      | _ -> failwith "assembly container error location or text changed");
+      write assembly_cpp "invalid_opcode %rax\n";
+      write assembly_root
+        (Printf.sprintf "\nuse \"asm\" %S\n" (Filename.basename assembly_cpp));
+      (match Driver.run (cli_run [ "--emit-ir"; assembly_root ]) with
+      | Error [ diagnostic ]
+        when diagnostic.primary.Span.file = assembly_root
+             && diagnostic.primary.Span.line = 2 ->
+          ()
+      | _ -> failwith "assembly .S error location changed");
+      write assembly_root
+        (Printf.sprintf "use \"asm\" %S\nfn f() void {}\n" assembly_plain);
+      ignore (expect_ok (Driver.run (cli_run [ "--emit-ir"; assembly_root ])));
+      let missing = assembly_root ^ ".missing.S" in
+      write assembly_root
+        (Printf.sprintf "use \"asm\" %S\n" (Filename.basename missing));
+      match Driver.run (cli_run [ "--emit-ir"; assembly_root ]) with
+      | Error [ diagnostic ]
+        when diagnostic.Diag.message = missing ^ ": No such file or directory" ->
+          ()
+      | _ -> failwith "assembly missing file diagnostic changed");
   print_endline "C export spelling, omission, diagnostics and header pins: passed"

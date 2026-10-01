@@ -757,7 +757,11 @@ let run_unprotected ?header_output config =
                             (Printf.sprintf "#line %d %S\n%s\n" (span.Span.line + 1)
                                source fragment.text)
                       | Ast.C_quoted path ->
-                          let path = Filename.concat (Filename.dirname source) path in
+                          let path =
+                            if Filename.is_relative path then
+                              Filename.concat (Filename.dirname source) path
+                            else path
+                          in
                           let* text =
                             match read_file path with
                             | Ok text -> Ok text
