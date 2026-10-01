@@ -606,7 +606,11 @@ let compile_c_units config cc units adapters prelude artifacts =
               compile (object_path :: acc) rest
           | Error failure ->
               remove object_path;
-              Error [ C_import.compilation_error unit.use_span failure.stderr ])
+              let prefix =
+                if Option.is_some unit.assembly then "assembly failed"
+                else "C compilation failed"
+              in
+              Error [ C_import.compilation_error ~prefix unit.use_span failure.stderr ])
   in
   compile [] units
 

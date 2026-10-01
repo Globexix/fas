@@ -10556,7 +10556,7 @@ let () =
       (match Driver.run (cli_run [ "--emit-ir"; assembly_root ]) with
       | Error [ diagnostic ]
         when diagnostic.Diag.message
-             = "C compilation failed: invalid instruction mnemonic 'invalid_opcode'"
+             = "assembly failed: invalid instruction mnemonic 'invalid_opcode'"
              && diagnostic.primary.Span.file = assembly_root
              && diagnostic.primary.Span.line = 3 ->
           ()

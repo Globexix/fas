@@ -78,7 +78,7 @@ let error_location line =
                     (fun column -> (file, line, column))
                     (int_of_string_opt column))))
 
-let compilation_error fallback output =
+let compilation_error ?(prefix = "C compilation failed") fallback output =
   let line = Option.value ~default:(String.trim output) (first_error output) in
   let message =
     match find_text line "error:" 0 with
@@ -94,8 +94,7 @@ let compilation_error fallback output =
         (fallback, [ Printf.sprintf "%s:%d:%d" file line column ])
     | None -> (fallback, [])
   in
-  Diag.error ~notes span
-    (if message = "" then "C compilation failed" else "C compilation failed: " ^ message)
+  Diag.error ~notes span (if message = "" then prefix else prefix ^ ": " ^ message)
 
 let unit_line unit_path output =
   match find_text output (unit_path ^ ":") 0 with
