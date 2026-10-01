@@ -10699,3 +10699,23 @@ let () =
      const B vec[4,u32] = true ? splat(0) : V\n\
      const D vec[4,u32] = false ? {0, 0, 0, 0} : V\n\
      fn f() u32 { return A[1] + B[2] + D[3] }\n"
+
+let () =
+  semantic_accept "shuffle-brace-width-and-peer"
+    "const V vec[4,u32] = {1, 2, 3, 4}\n\
+     const R vec[2,u32] = shuffle(V, V, {7, 0})\n\
+     fn f(v vec[4,u32]) vec[6,u32] { return shuffle(v, splat(0), {3, 2, 1, 0, 4, 7}) }\n";
+  List.iter
+    (fun selector ->
+      semantic_message
+        ("shuffle-brace-range-" ^ selector)
+        "shuffle index out of range"
+        ("fn f(v vec[4,u32]) vec[1,u32] { return shuffle(v, v, {" ^ selector ^ "}) }\n"))
+    [ "-1"; "8" ];
+  semantic_message "shuffle-brace-nonconstant"
+    "shuffle indices must be a compile-time constant integer vector"
+    "fn f(v vec[4,u32], i u32) vec[2,u32] { return shuffle(v, v, {0, i}) }\n";
+  semantic_message "shuffle-brace-const-nonconstant"
+    "shuffle indices must be a compile-time constant integer vector"
+    "const V vec[4,u32] = {1, 2, 3, 4}\n\
+     const R vec[2,u32] = shuffle(V, V, {0, missing})\n"

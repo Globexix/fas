@@ -36,3 +36,5 @@ val resolve_scalar_declarations :
   strict:bool ->
   Ast.item list ->
   (Sema_types.const_values, Diag.t list) result
+
+val shuffle_selector_expression : Ast.expr -> Ast.expr

@@ -1411,7 +1411,8 @@ and check_call c _expected fn args s =
                     ~array_lengths:(static_array_lengths c.top_level_bindings c.globals)
                     ~structs:c.structs ~named_types:c.named_types
                     ~globals:(List.map (fun (name, _, _) -> name) c.globals)
-                    ~arrays:c.arrays visible_consts None (List.nth args 2)
+                    ~arrays:c.arrays visible_consts None
+                    (shuffle_selector_expression (List.nth args 2))
                 with
                 | Ok ((Hir.Vec (m, (Hir.Int _ as sel_elem)) as sty), values) ->
                     let n = match at with Hir.Vec (n, _) -> n | _ -> 0 in

@@ -13,6 +13,12 @@ let ( let* ) result continuation =
 
 let lookup name table = List.find_opt (fun (entry, _, _) -> entry = name) table
 
+let shuffle_selector_expression = function
+  | Ast.Array_lit (entries, span) ->
+      Ast.Struct_lit
+        (Ast.Vec (string_of_int (List.length entries), Ast.Int Ast.I64), entries, span)
+  | expression -> expression
+
 let shuffle_indices_in_range lane_ty n values =
   let signed =
     match lane_ty with
@@ -906,7 +912,12 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = [])
         | Hir.Vec (n, ((Hir.Int _ | Hir.Bool) as e)) -> Ok (n, e)
         | _ -> error span "shuffle operands must be vectors"
       in
-      let* sel_ty, sel_values = evaluate None sel in
+      let* sel_ty, sel_values =
+        match evaluate None (shuffle_selector_expression sel) with
+        | Ok result -> Ok result
+        | Error _ ->
+            error span "shuffle indices must be a compile-time constant integer vector"
+      in
       let* sel_elem =
         match sel_ty with
         | Hir.Vec (_, (Hir.Int _ as e)) -> Ok e
