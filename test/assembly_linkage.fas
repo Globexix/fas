@@ -1,5 +1,7 @@
 opaque Token
 
+asm fn add3(a i32, b i32, c i32) i32 { leal (%rdi,%rsi), %eax; addl %edx, %eax; ret }
+
 asm fn asm_echo_bool(x bool) bool { movzbl %dil, %eax; ret }
 asm fn asm_echo_u8(x u8) u8 { movzbl %dil, %eax; ret }
 asm fn asm_echo_i8(x i8) i8 { movsbl %dil, %eax; ret }
@@ -32,8 +34,13 @@ asm fn asm_seven(a u8, b i16, c u32, d i64, e usize, f bool, g u64) u64 {
 
 asm fn asm_write(value addr) void { movb $73, (%rdi); ret }
 
+use "C" <<ADD3_CALLER
+static int fas_container_add3(void) { return add3(1, 2, 3) != 6; }
+ADD3_CALLER
+
 extern "C" {
     fn fas_verify_assembly() i32 {
+        if fas_container_add3() != 0 { return 16 }
         if asm_echo_bool(false) || !asm_echo_bool(true) { return 1 }
         if asm_echo_u8(0) != 0 || asm_echo_u8(255) != 255 || asm_echo_u8(trunc[u8](-1)) != 255 { return 2 }
         if asm_echo_i8(-128) != -128 || asm_echo_i8(127) != 127 || asm_echo_i8(-1) != -1 { return 3 }

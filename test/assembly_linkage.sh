@@ -9,6 +9,16 @@ OCAML_FAS=${OCAML_FAS:-$ROOT/_build/default/bin/main.exe}
 ASSEMBLY_TMP=$(mktemp -d)
 trap 'rm -rf "$ASSEMBLY_TMP"' EXIT HUP INT TERM
 
+"$OCAML_FAS" --emit-header "$ROOT/test/assembly_linkage.fas" >"$ASSEMBLY_TMP/assembly_linkage.h"
+grep -F 'int32_t add3(int32_t a, int32_t b, int32_t c);' "$ASSEMBLY_TMP/assembly_linkage.h" >/dev/null
+cat >"$ASSEMBLY_TMP/header-c.c" <<'EOF'
+#include "assembly_linkage.h"
+int header_add3(void) { return add3(1, 2, 3) != 6; }
+EOF
+"$CC" -Werror -std=c11 -pedantic -I"$ASSEMBLY_TMP" -c "$ASSEMBLY_TMP/header-c.c" -o "$ASSEMBLY_TMP/header-c.o"
+CXX=${CXX:-clang++}
+"$CXX" -Werror -std=c++17 -pedantic -I"$ASSEMBLY_TMP" -x c++ -c "$ASSEMBLY_TMP/header-c.c" -o "$ASSEMBLY_TMP/header-cpp.o"
+
 "$OCAML_FAS" --emit-llvm "$ROOT/test/assembly_linkage.fas" >"$ASSEMBLY_TMP/linkage.ll"
 "$LLVM_OPT" -passes=verify "$ASSEMBLY_TMP/linkage.ll" -disable-output
 "$LLVM_OPT" -passes='default<O2>' -verify-each "$ASSEMBLY_TMP/linkage.ll" -S -o "$ASSEMBLY_TMP/linkage-o2.ll"

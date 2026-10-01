@@ -107,7 +107,10 @@ let declarations ?(reserved = []) records (program : program) =
       program.globals
     @ List.filter_map
         (fun (f : func) ->
-          if f.linkage = External_c && f.body <> Declaration then
+          if
+            f.body <> Declaration
+            && (f.linkage = External_c || match f.body with Asm _ -> true | _ -> false)
+          then
             Some
               (f.name, f.ret :: List.map (fun (p : local) -> p.ty) f.params, `Function f)
           else None)
