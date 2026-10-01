@@ -372,24 +372,7 @@ module P = struct
         in
         go [])
 
-  and select_payload p =
-    match ((peek p).kind, (peek_n p 1).kind) with
-    | Token.Ident ("true" | "false"), _ ->
-        let* e = expr p in
-        Ok (Ast.Const_arg e)
-    | Token.Ident ("sizeof" | "alignof" | "offsetof"), Token.Lbracket ->
-        let* e = expr p in
-        Ok (Ast.Const_arg e)
-    | Token.Ident name, _ when Names.parser_type_name name ->
-        let* t = ty p in
-        Ok (Ast.Type_arg t)
-    | Token.Ident name, (Token.Comma | Token.Rbracket) ->
-        let s = span p in
-        ignore (bump p);
-        Ok (Ast.Name_arg (name, s))
-    | _ ->
-        let* e = expr p in
-        Ok (Ast.Const_arg e)
+  and select_payload p = generic_arg p
 
   and generic_args p =
     let* () = expected p Token.Lbracket in
@@ -423,8 +406,13 @@ module P = struct
         let* t = ty p in
         Ok (Ast.Type_arg t)
     | Token.Ident _, Token.Lbracket ->
+        let previous = p.pos in
         let* t = ty p in
-        Ok (Ast.Type_arg t)
+        if at p Token.Comma || at p Token.Rbracket then Ok (Ast.Type_or_index t)
+        else (
+          p.pos <- previous;
+          let* e = expr p in
+          Ok (Ast.Const_arg e))
     | _ ->
         let* e = expr p in
         Ok (Ast.Const_arg e)

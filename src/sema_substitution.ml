@@ -95,6 +95,22 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       program.Ast.items
   in
   let generic_type_names = ref [] in
+  let local_values = ref String_set.empty in
+  let with_local_values names f =
+    let previous = !local_values in
+    local_values := names;
+    let result = f () in
+    local_values := previous;
+    result
+  in
+  let bind_argument = function
+    | Ast.Type_or_index (Ast.Applied_type (name, _, _) as ty)
+      when String_set.mem name !local_values
+           || not (List.mem_assoc name struct_templates) ->
+        Ast.Const_arg (Ast.index_expression ty)
+    | Ast.Type_or_index ty -> Ast.Type_arg ty
+    | argument -> argument
+  in
   let type_param_names generic_params =
     List.filter_map
       (function Ast.Type_param { name; _ } -> Some name | Ast.Const_param _ -> None)
@@ -136,7 +152,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Named_type name -> List.mem name names
     | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Addr -> false
   and generic_argument_mentions names = function
-    | Ast.Type_arg ty -> type_mentions names ty
+    | Ast.Type_arg ty | Ast.Type_or_index ty -> type_mentions names ty
     | Ast.Const_arg expression -> expression_mentions names expression
     | Ast.Name_arg (name, _) -> List.mem name names
   and expression_mentions names = function
@@ -202,7 +218,13 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             arguments
     | Ast.Bool | Ast.Void | Ast.Int _ -> Ok ()
   and validate_generic_argument_names value_names type_names fallback_span = function
-    | Ast.Type_arg ty -> validate_type_names value_names type_names fallback_span ty
+    | Ast.Type_or_index (Ast.Applied_type (name, _, _) as ty) -> (
+        match nearest_kind value_names type_names name with
+        | Some (`Type _) -> validate_type_names value_names type_names fallback_span ty
+        | _ ->
+            validate_expression_names value_names type_names (Ast.index_expression ty))
+    | Ast.Type_arg ty | Ast.Type_or_index ty ->
+        validate_type_names value_names type_names fallback_span ty
     | Ast.Const_arg expression ->
         validate_expression_names value_names type_names expression
     | Ast.Name_arg (name, span) ->
@@ -279,7 +301,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 Result_list.iter
                   (fun (parameter, argument) ->
                     match (parameter, argument) with
-                    | Ast.Type_param _, Ast.Type_arg _ -> Ok ()
+                    | Ast.Type_param _, (Ast.Type_arg _ | Ast.Type_or_index _) -> Ok ()
                     | Ast.Type_param _, Ast.Name_arg (argument_name, argument_span) -> (
                         match nearest_kind value_names type_names argument_name with
                         | Some (`Type _) -> Ok ()
@@ -292,7 +314,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                         | Some (`Value _) -> Ok ()
                         | Some _ -> error argument_span "expected a const argument"
                         | None -> Ok ())
-                    | Ast.Const_param _, Ast.Type_arg (Ast.Applied_type _) -> Ok ()
+                    | ( Ast.Const_param _,
+                        (Ast.Type_arg (Ast.Applied_type _) | Ast.Type_or_index _) ) ->
+                        Ok ()
                     | Ast.Type_param _, _ ->
                         error application_span "expected a type argument"
                     | Ast.Const_param _, _ ->
@@ -528,6 +552,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       limits;
     }
   in
+  let rec has_generic_type = function
+    | Ast.Applied_type _ -> true
+    | Ast.Array (_, ty) | Ast.Vec (_, ty) | Ast.Handle ty -> has_generic_type ty
+    | _ -> false
+  in
   let rec has_generic_arguments = function
     | Ast.Generic_args _ -> true
     | Ast.Unary (_, expression, _)
@@ -540,19 +569,23 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Select (base, args, _) ->
         has_generic_arguments base
         || List.exists
-             (function Ast.Const_arg e -> has_generic_arguments e | _ -> false)
+             (function
+               | Ast.Const_arg e -> has_generic_arguments e
+               | Ast.Type_arg ty | Ast.Type_or_index ty -> has_generic_type ty
+               | Ast.Name_arg _ -> false)
              args
     | Ast.Call (callee, arguments, _) ->
         has_generic_arguments callee || List.exists has_generic_arguments arguments
-    | Ast.Cast (_, _, expression, _) -> has_generic_arguments expression
-    | Ast.Handle_from_addr (_, expression, _) -> has_generic_arguments expression
+    | Ast.Cast (_, ty, expression, _) | Ast.Handle_from_addr (ty, expression, _) ->
+        has_generic_type ty || has_generic_arguments expression
+    | Ast.Sizeof (ty, _) | Ast.Alignof (ty, _) | Ast.Offsetof (ty, _, _) ->
+        has_generic_type ty
     | Ast.Ternary (condition, yes, no, _) ->
         has_generic_arguments condition
         || has_generic_arguments yes || has_generic_arguments no
     | Ast.Array_lit (values, _) | Ast.Struct_lit (_, values, _) ->
         List.exists has_generic_arguments values
-    | Ast.Sizeof _ | Ast.Alignof _ | Ast.Offsetof _ | Ast.Ident _ | Ast.Int_lit _
-    | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ ->
+    | Ast.Ident _ | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ ->
         false
   in
   let rec substitute_validation_type substitutions = function
@@ -569,7 +602,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           ( name,
             List.map
               (function
-                | Ast.Type_arg ty ->
+                | Ast.Type_arg ty | Ast.Type_or_index ty ->
                     Ast.Type_arg (substitute_validation_type substitutions ty)
                 | argument -> argument)
               arguments,
@@ -600,7 +633,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               match arg with
               | Ast.Const_arg expression ->
                   validate_non_dependent_expression c dependent None expression
-              | Ast.Type_arg _ | Ast.Name_arg _ -> Ok ())
+              | Ast.Type_arg _ | Ast.Type_or_index _ | Ast.Name_arg _ -> Ok ())
             args
       | Ast.Call (Ast.Ident (name, _), arguments, span) -> (
           match List.assoc_opt name validation_signatures with
@@ -746,18 +779,19 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             (function
               | Ast.Const_arg value ->
                   validate_non_dependent_expression c dependent None value
-              | Ast.Type_arg _ | Ast.Name_arg _ -> Ok ())
+              | Ast.Type_arg _ | Ast.Type_or_index _ | Ast.Name_arg _ -> Ok ())
             arguments
       | Ast.Generic_args (_, arguments, _) ->
           Result_list.iter
             (function
               | Ast.Const_arg value ->
                   validate_non_dependent_expression c dependent None value
-              | Ast.Type_arg _ | Ast.Name_arg _ -> Ok ())
+              | Ast.Type_arg _ | Ast.Type_or_index _ | Ast.Name_arg _ -> Ok ())
             arguments
       | Ast.Cast (kind, destination, value, span) ->
           let* () =
-            if type_mentions dependent destination then Ok ()
+            if type_mentions dependent destination || has_generic_type destination then
+              Ok ()
             else
               let* destination =
                 source_ty_with_values ~globals:global_names eval_named_types eval_consts
@@ -779,7 +813,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           validate_non_dependent_expression c dependent None value
       | Ast.Handle_from_addr (destination, value, span) ->
           let* () =
-            if type_mentions dependent destination then Ok ()
+            if type_mentions dependent destination || has_generic_type destination then
+              Ok ()
             else
               handle_target eval_named_types destination
               |> Result.map_error (fun message -> [ Diag.error span message ])
@@ -1030,6 +1065,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             then Ok (Ast.Named_type name)
             else error span (Printf.sprintf "unknown type `%s`" name))
     | Ast.Applied_type (name, arguments, application_span) -> (
+        let arguments = List.map bind_argument arguments in
         match List.assoc_opt name struct_templates with
         | None ->
             if String_set.mem name struct_names then
@@ -1046,7 +1082,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 | Ast.Type_param _ :: params, argument :: arguments ->
                     let* ty =
                       match argument with
-                      | Ast.Type_arg ty ->
+                      | Ast.Type_arg ty | Ast.Type_or_index ty ->
                           resolve_ty ~values ~defer_const_structs substitutions depth
                             span ty
                       | Ast.Name_arg (name, _) ->
@@ -1085,7 +1121,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                     argument :: arguments ) ->
                     let* argument =
                       match argument with
-                      | Ast.Type_arg ty ->
+                      | Ast.Type_arg ty | Ast.Type_or_index ty ->
                           resolve_ty ~values ~defer_const_structs substitutions depth
                             span ty
                       | Ast.Name_arg (name, _) ->
@@ -1206,8 +1242,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span)
       when name = "volatile_load" || name = "volatile_store"
            || List.mem name simd_memory_names ->
-        let resolve_argument = function
-          | Ast.Type_arg ty ->
+        let resolve_argument argument =
+          match bind_argument argument with
+          | Ast.Type_arg ty | Ast.Type_or_index ty ->
               let* ty =
                 resolve_ty ~values ~defer_const_structs substitutions depth span ty
               in
@@ -1229,6 +1266,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Generic_args (Ast.Ident ("copy", _), _, span) ->
         error span "copy takes no type arguments"
     | Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span) -> (
+        let arguments = List.map bind_argument arguments in
         match List.assoc_opt name function_templates with
         | None ->
             if String_set.mem name function_names then
@@ -1259,7 +1297,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                     argument :: arguments ) ->
                     let* argument =
                       match argument with
-                      | Ast.Type_arg ty ->
+                      | Ast.Type_arg ty | Ast.Type_or_index ty ->
                           resolve_ty ~values ~defer_const_structs substitutions depth
                             span ty
                       | Ast.Name_arg (name, _) ->
@@ -1489,8 +1527,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let* args =
           Result_list.map
             (fun arg ->
-              match arg with
-              | Ast.Type_arg ty ->
+              match bind_argument arg with
+              | Ast.Type_arg ty | Ast.Type_or_index ty ->
                   let* ty =
                     resolve_ty ~values ~defer_const_structs substitutions depth span ty
                   in
@@ -1562,8 +1600,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let* args =
           Result_list.map
             (fun arg ->
-              match arg with
-              | Ast.Type_arg ty ->
+              match bind_argument arg with
+              | Ast.Type_arg ty | Ast.Type_or_index ty ->
                   let* ty =
                     resolve_ty ~values ~defer_const_structs substitutions depth
                       (Ast.expr_span base) ty
@@ -1585,185 +1623,218 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         in
         Ok (Ast.Target_field (base, name))
   and resolve_stmt ?(values = []) ?(shadowed_constants = [])
-      ?(defer_const_structs = false) substitutions depth = function
-    | Ast.Let { name; ty; init; span } ->
-        let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
-        let* init =
-          match init with
-          | None -> Ok None
-          | Some expression ->
-              let* expression =
-                resolve_expr ~values ~defer_const_structs substitutions depth expression
+      ?(defer_const_structs = false) substitutions depth statement =
+    let previous = !local_values in
+    let result =
+      match statement with
+      | Ast.Let { name; ty; init; span } ->
+          let* ty =
+            resolve_ty ~values ~defer_const_structs substitutions depth span ty
+          in
+          let* init =
+            match init with
+            | None -> Ok None
+            | Some expression ->
+                let* expression =
+                  resolve_expr ~values ~defer_const_structs substitutions depth
+                    expression
+                in
+                Ok (Some expression)
+          in
+          local_values := String_set.add name !local_values;
+          Ok (Ast.Let { name; ty; init; span })
+      | Ast.View { name; place; span } ->
+          let* place =
+            resolve_expr ~values ~defer_const_structs substitutions depth place
+          in
+          local_values := String_set.add name !local_values;
+          Ok (Ast.View { name; place; span })
+      | Ast.Assign (target, expression, span) ->
+          let* target =
+            resolve_target ~values ~defer_const_structs substitutions depth target
+          in
+          let* expression =
+            resolve_expr ~values ~defer_const_structs substitutions depth expression
+          in
+          Ok (Ast.Assign (target, expression, span))
+      | Ast.Compound_assign (target, op, expression, span) ->
+          let* target =
+            resolve_target ~values ~defer_const_structs substitutions depth target
+          in
+          let* expression =
+            resolve_expr ~values ~defer_const_structs substitutions depth expression
+          in
+          Ok (Ast.Compound_assign (target, op, expression, span))
+      | Ast.Return (expression, span) ->
+          let* expression =
+            match expression with
+            | None -> Ok None
+            | Some expression ->
+                let* expression =
+                  resolve_expr ~values ~defer_const_structs substitutions depth
+                    expression
+                in
+                Ok (Some expression)
+          in
+          Ok (Ast.Return (expression, span))
+      | Ast.If (condition, yes, no, span) -> (
+          let unresolved_condition = condition in
+          let* condition =
+            resolve_expr ~values ~defer_const_structs substitutions depth condition
+          in
+          let resolve =
+            resolve_stmt ~values ~shadowed_constants ~defer_const_structs substitutions
+              depth
+          in
+          let specialization_values =
+            List.filter
+              (fun (name, _, _) -> not (List.mem name shadowed_constants))
+              values
+          in
+          let constant_environment =
+            List.filter
+              (fun (name, _, _) -> not (List.mem name shadowed_constants))
+              (values @ eval_consts)
+          in
+          let specialization_names =
+            List.map (fun (name, _, _) -> name) specialization_values
+          in
+          let known_condition =
+            if not (expression_mentions specialization_names unresolved_condition) then
+              None
+            else
+              match
+                const_expr ~structs:eval_structs ~named_types:eval_named_types
+                  ~globals:global_names
+                  ~array_lengths:
+                    (array_lengths
+                    @ static_array_lengths top_level_bindings eval_globals)
+                  ~arrays:eval_arrays constant_environment None condition
+              with
+              | Ok (_, value) -> Some (value <> 0L)
+              | Error _ -> None
+          in
+          match known_condition with
+          | Some false ->
+              let* no =
+                match no with
+                | None -> Ok []
+                | Some statements ->
+                    with_local_values !local_values (fun () ->
+                        Result_list.map resolve statements)
               in
-              Ok (Some expression)
-        in
-        Ok (Ast.Let { name; ty; init; span })
-    | Ast.View { name; place; span } ->
-        let* place =
-          resolve_expr ~values ~defer_const_structs substitutions depth place
-        in
-        Ok (Ast.View { name; place; span })
-    | Ast.Assign (target, expression, span) ->
-        let* target =
-          resolve_target ~values ~defer_const_structs substitutions depth target
-        in
-        let* expression =
-          resolve_expr ~values ~defer_const_structs substitutions depth expression
-        in
-        Ok (Ast.Assign (target, expression, span))
-    | Ast.Compound_assign (target, op, expression, span) ->
-        let* target =
-          resolve_target ~values ~defer_const_structs substitutions depth target
-        in
-        let* expression =
-          resolve_expr ~values ~defer_const_structs substitutions depth expression
-        in
-        Ok (Ast.Compound_assign (target, op, expression, span))
-    | Ast.Return (expression, span) ->
-        let* expression =
-          match expression with
-          | None -> Ok None
-          | Some expression ->
-              let* expression =
-                resolve_expr ~values ~defer_const_structs substitutions depth expression
+              Ok (Ast.Block (no, span))
+          | Some true ->
+              let* yes =
+                with_local_values !local_values (fun () -> Result_list.map resolve yes)
               in
-              Ok (Some expression)
-        in
-        Ok (Ast.Return (expression, span))
-    | Ast.If (condition, yes, no, span) -> (
-        let unresolved_condition = condition in
-        let* condition =
-          resolve_expr ~values ~defer_const_structs substitutions depth condition
-        in
-        let resolve =
-          resolve_stmt ~values ~shadowed_constants ~defer_const_structs substitutions
-            depth
-        in
-        let specialization_values =
-          List.filter
-            (fun (name, _, _) -> not (List.mem name shadowed_constants))
-            values
-        in
-        let constant_environment =
-          List.filter
-            (fun (name, _, _) -> not (List.mem name shadowed_constants))
-            (values @ eval_consts)
-        in
-        let specialization_names =
-          List.map (fun (name, _, _) -> name) specialization_values
-        in
-        let known_condition =
-          if not (expression_mentions specialization_names unresolved_condition) then
-            None
-          else
-            match
-              const_expr ~structs:eval_structs ~named_types:eval_named_types
-                ~globals:global_names
-                ~array_lengths:
-                  (array_lengths @ static_array_lengths top_level_bindings eval_globals)
-                ~arrays:eval_arrays constant_environment None condition
-            with
-            | Ok (_, value) -> Some (value <> 0L)
-            | Error _ -> None
-        in
-        match known_condition with
-        | Some false ->
-            let* no =
-              match no with
-              | None -> Ok []
-              | Some statements -> Result_list.map resolve statements
-            in
-            Ok (Ast.Block (no, span))
-        | Some true ->
-            let* yes = Result_list.map resolve yes in
-            Ok (Ast.Block (yes, span))
-        | None ->
-            let* yes = Result_list.map resolve yes in
-            let* no =
-              match no with
-              | None -> Ok None
-              | Some statements ->
-                  let* statements = Result_list.map resolve statements in
-                  Ok (Some statements)
-            in
-            Ok (Ast.If (condition, yes, no, span)))
-    | Ast.While (condition, body, span) ->
-        let* condition =
-          resolve_expr ~values ~defer_const_structs substitutions depth condition
-        in
-        let* body =
-          Result_list.map
-            (resolve_stmt ~values ~shadowed_constants ~defer_const_structs substitutions
-               depth)
-            body
-        in
-        Ok (Ast.While (condition, body, span))
-    | (Ast.Break _ | Ast.Continue _) as statement -> Ok statement
-    | Ast.Defer (body, span) ->
-        let* body =
-          Result_list.map
-            (resolve_stmt ~values ~shadowed_constants ~defer_const_structs substitutions
-               depth)
-            body
-        in
-        Ok (Ast.Defer (body, span))
-    | Ast.Expr_stmt (expression, span) ->
-        let* expression =
-          resolve_expr ~values ~defer_const_structs substitutions depth expression
-        in
-        Ok (Ast.Expr_stmt (expression, span))
-    | Ast.Block (body, span) ->
-        let* body =
-          Result_list.map
-            (resolve_stmt ~values ~shadowed_constants ~defer_const_structs substitutions
-               depth)
-            body
-        in
-        Ok (Ast.Block (body, span))
-    | Ast.For (init, condition, step, body, span) ->
-        let resolve_optional resolve = function
-          | None -> Ok None
-          | Some value ->
-              let* value = resolve value in
-              Ok (Some value)
-        in
-        let resolve_stmt =
-          resolve_stmt ~values ~shadowed_constants ~defer_const_structs substitutions
-            depth
-        in
-        let resolve_expr =
-          resolve_expr ~values ~defer_const_structs substitutions depth
-        in
-        let* init = resolve_optional resolve_stmt init in
-        let* condition = resolve_optional resolve_expr condition in
-        let* step = resolve_optional resolve_stmt step in
-        let* body = Result_list.map resolve_stmt body in
-        Ok (Ast.For (init, condition, step, body, span))
-    | Ast.Switch (expression, cases, default, span) ->
-        let resolve_expr =
-          resolve_expr ~values ~defer_const_structs substitutions depth
-        in
-        let resolve_stmt =
-          resolve_stmt ~values ~shadowed_constants ~defer_const_structs substitutions
-            depth
-        in
-        let* expression = resolve_expr expression in
-        let* cases =
-          Result_list.map
-            (fun (value, body) ->
-              let* value = resolve_expr value in
-              let* body = Result_list.map resolve_stmt body in
-              Ok (value, body))
-            cases
-        in
-        let* default =
-          match default with
-          | None -> Ok None
-          | Some body ->
-              let* body = Result_list.map resolve_stmt body in
-              Ok (Some body)
-        in
-        Ok (Ast.Switch (expression, cases, default, span))
+              Ok (Ast.Block (yes, span))
+          | None ->
+              let* yes =
+                with_local_values !local_values (fun () -> Result_list.map resolve yes)
+              in
+              let* no =
+                match no with
+                | None -> Ok None
+                | Some statements ->
+                    let* statements =
+                      with_local_values !local_values (fun () ->
+                          Result_list.map resolve statements)
+                    in
+                    Ok (Some statements)
+              in
+              Ok (Ast.If (condition, yes, no, span)))
+      | Ast.While (condition, body, span) ->
+          let* condition =
+            resolve_expr ~values ~defer_const_structs substitutions depth condition
+          in
+          let* body =
+            Result_list.map
+              (resolve_stmt ~values ~shadowed_constants ~defer_const_structs
+                 substitutions depth)
+              body
+          in
+          Ok (Ast.While (condition, body, span))
+      | (Ast.Break _ | Ast.Continue _) as statement -> Ok statement
+      | Ast.Defer (body, span) ->
+          let* body =
+            Result_list.map
+              (resolve_stmt ~values ~shadowed_constants ~defer_const_structs
+                 substitutions depth)
+              body
+          in
+          Ok (Ast.Defer (body, span))
+      | Ast.Expr_stmt (expression, span) ->
+          let* expression =
+            resolve_expr ~values ~defer_const_structs substitutions depth expression
+          in
+          Ok (Ast.Expr_stmt (expression, span))
+      | Ast.Block (body, span) ->
+          let* body =
+            Result_list.map
+              (resolve_stmt ~values ~shadowed_constants ~defer_const_structs
+                 substitutions depth)
+              body
+          in
+          Ok (Ast.Block (body, span))
+      | Ast.For (init, condition, step, body, span) ->
+          let resolve_optional resolve = function
+            | None -> Ok None
+            | Some value ->
+                let* value = resolve value in
+                Ok (Some value)
+          in
+          let resolve_stmt =
+            resolve_stmt ~values ~shadowed_constants ~defer_const_structs substitutions
+              depth
+          in
+          let resolve_expr =
+            resolve_expr ~values ~defer_const_structs substitutions depth
+          in
+          let* init = resolve_optional resolve_stmt init in
+          let* condition = resolve_optional resolve_expr condition in
+          let* step = resolve_optional resolve_stmt step in
+          let* body =
+            with_local_values !local_values (fun () ->
+                Result_list.map resolve_stmt body)
+          in
+          Ok (Ast.For (init, condition, step, body, span))
+      | Ast.Switch (expression, cases, default, span) ->
+          let resolve_expr =
+            resolve_expr ~values ~defer_const_structs substitutions depth
+          in
+          let resolve_stmt =
+            resolve_stmt ~values ~shadowed_constants ~defer_const_structs substitutions
+              depth
+          in
+          let* expression = resolve_expr expression in
+          let* cases =
+            Result_list.map
+              (fun (value, body) ->
+                let* value = resolve_expr value in
+                let* body =
+                  with_local_values !local_values (fun () ->
+                      Result_list.map resolve_stmt body)
+                in
+                Ok (value, body))
+              cases
+          in
+          let* default =
+            match default with
+            | None -> Ok None
+            | Some body ->
+                let* body =
+                  with_local_values !local_values (fun () ->
+                      Result_list.map resolve_stmt body)
+                in
+                Ok (Some body)
+          in
+          Ok (Ast.Switch (expression, cases, default, span))
+    in
+    (match statement with
+    | Ast.Let _ | Ast.View _ -> ()
+    | _ -> local_values := previous);
+    result
   and resolve_function ?(values = []) substitutions depth specialization_name = function
     | Ast.Func ({ params; ret; body; generic_params; span; _ } as item) ->
         with_generic_type_names (type_param_names generic_params) (fun () ->
@@ -1777,6 +1848,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                   (const_params generic_params)
               |> String_set.of_list
             in
+            let previous_local_values = !local_values in
+            local_values := body_value_names;
             let defer_const_structs = values = [] && has_const_params generic_params in
             let* params =
               Result_list.map
@@ -1831,6 +1904,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                   in
                   Ok (Ast.Statements statements)
             in
+            local_values := previous_local_values;
             Ok
               (Ast.Func
                  {
@@ -1908,7 +1982,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                   statements
               in
               let* statements =
-                Result_list.map (resolve_stmt ~defer_const_structs [] 0) statements
+                with_local_values body_value_names (fun () ->
+                    Result_list.map (resolve_stmt ~defer_const_structs [] 0) statements)
               in
               Ok (Ast.Statements statements)
         in

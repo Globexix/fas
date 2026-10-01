@@ -248,11 +248,12 @@ let select_value_arg span payload =
   match payload with
   | Ast.Const_arg e -> Ok e
   | Ast.Name_arg (name, name_span) -> Ok (Ast.Ident (name, name_span))
+  | Ast.Type_or_index t -> Ok (Ast.index_expression t)
   | Ast.Type_arg _ -> error span "index payload must be a value expression"
 
 let select_type_arg named_types span payload =
   match payload with
-  | Ast.Type_arg t -> source_ty_diag named_types span t
+  | Ast.Type_arg t | Ast.Type_or_index t -> source_ty_diag named_types span t
   | Ast.Name_arg (name, name_span) ->
       source_ty_diag named_types name_span (Ast.Named_type name)
   | Ast.Const_arg e -> error (Ast.expr_span e) "raw selection requires a type argument"
@@ -1010,6 +1011,7 @@ and check_initializer ?(constant = false) c expected expression =
 and generic_const_argument span = function
   | Ast.Const_arg expression -> Ok expression
   | Ast.Name_arg (name, span) -> Ok (Ast.Ident (name, span))
+  | Ast.Type_or_index ty -> Ok (Ast.index_expression ty)
   | Ast.Type_arg (Ast.Applied_type (name, [ argument ], _)) ->
       let* index = generic_const_argument span argument in
       Ok (Ast.Select (Ast.Ident (name, span), [ Ast.Const_arg index ], span))

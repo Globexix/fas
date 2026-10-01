@@ -10758,3 +10758,91 @@ let () =
   c_semantic_message "c-import-anonymous-header-after-container-field"
     "unknown field `missing`" fixture
     "fn f() i32 { a Phase25After = {}\nreturn a.missing }\n"
+
+let () =
+  let prefix = "struct Ring[N const usize] { head u32\nitems arr[N,u32] }\n" in
+  semantic_accept "generic-struct-raw-type-slots"
+    (prefix
+   ^ "fn f[N const usize](p addr) u32 { view r = p[Ring[N], 0]\n\
+     \ return r.head }\n\
+     \ fn g(p addr) u32 { return p[Ring[4]].head + f[4](p) }\n\
+     \ fn h[T](p addr) u32 { return p[T].head }\n\
+     \ fn j(p addr) u32 { return h[Ring[4]](p) }\n");
+  semantic_accept "aggregate-raw-type-slots"
+    "fn f(p addr) u32 { view a = p[arr[4,u32]]\n\
+    \ view v = p[vec[4,u32], 1]\n\
+    \ return a[0] + v[0] }\n";
+  semantic_accept "nested-index-and-type-shadow"
+    (prefix
+   ^ "fn f() u32 { a arr[4,u32] = {}\n\
+     \ Ring arr[1,u32] = {1}\n\
+     \ return a[Ring[0]] + a[Ring[0] + 1] }\n");
+  semantic_accept "generic-nested-index-shadow"
+    (prefix
+   ^ "fn f[N const usize](p addr) u32 { view a = p[arr[4,u32]]\n\
+     \ view Ring = p[arr[1,u32]]\n\
+     \ return a[Ring[0]] }\n\
+     \ fn g(p addr) u32 { return f[4](p) }");
+  semantic_message "nested-index-bounds" "array index is out of bounds"
+    "fn f() u32 { a arr[4,u32] = {}\n i arr[1,u32] = {0}\n return a[i[1]] }";
+  semantic_message "nested-index-noninteger" "array index must be an integer"
+    "fn f() u32 { a arr[4,u32] = {}\n i arr[1,bool] = {true}\n return a[i[0]] }";
+  List.iter
+    (fun ty ->
+      let body call = prefix ^ "fn f(p addr) void { " ^ call ^ "\nreturn }" in
+      List.iter
+        (fun name ->
+          let args = if name = "volatile_load" then "p" else "p, 0" in
+          semantic_message
+            ("generic-slot-" ^ name ^ "-" ^ ty)
+            "volatile access type must be a scalar integer, bool, addr, handle[T], \
+             vec[N, integer], or vec[N, bool]"
+            (body (name ^ "[" ^ ty ^ "](" ^ args ^ ")")))
+        [ "volatile_load"; "volatile_store" ];
+      List.iter
+        (fun name ->
+          semantic_message
+            ("generic-slot-" ^ name ^ "-" ^ ty)
+            "SIMD memory element type must be a scalar integer or bool"
+            (body (name ^ "[" ^ ty ^ "](p, 0, 0, 0)")))
+        [
+          "masked_load";
+          "masked_store";
+          "gather";
+          "scatter";
+          "gather_bytes";
+          "scatter_bytes";
+        ];
+      semantic_message ("generic-slot-handle-" ^ ty)
+        "handle type argument must be an opaque type"
+        (body ("handle_from_addr[" ^ ty ^ "](p)"));
+      List.iter
+        (fun name ->
+          semantic_message
+            ("generic-slot-conversion-" ^ name ^ "-" ^ ty)
+            "illegal cast for source and destination widths"
+            (body (name ^ "[" ^ ty ^ "](1)")))
+        [ "bitcast"; "zext"; "sext"; "trunc" ])
+    [ "Ring[4]"; "arr[4,u32]" ];
+  semantic_accept "vector-volatile-type-slot"
+    "fn f(p addr) void { volatile_store[vec[4,u32]](p, splat(7))\n\
+    \ volatile_load[vec[4,u32]](p)\n\
+     return }";
+  semantic_accept "vector-conversion-type-slot"
+    "fn f() vec[4,u8] { return bitcast[vec[4,u8]](0x00010203) }";
+  semantic_accept "aggregate-explicit-call-type-slots"
+    (prefix
+   ^ "fn f[T](p addr) usize { return sizeof[T] }\n\
+     \ fn g(p addr) usize { return f[Ring[4]](p) + f[arr[4,u32]](p) + f[vec[4,u32]](p) \
+      }")
+
+let () =
+  semantic_accept "generic-raw-independent-struct-instance"
+    "struct Ring[N const usize] { head u32 }\n\
+    \ fn f[N const usize](p addr) u32 { return p[Ring[4]].head }\n\
+    \ fn g(p addr) u32 { return f[4](p) }";
+  semantic_message "generic-type-slot-value-index" "expected a type argument"
+    "fn f[T]() void { return }\n\
+    \ fn g() void { i arr[1,u32] = {0}\n\
+    \ f[i[0]]()\n\
+    \ return }"

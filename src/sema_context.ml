@@ -92,7 +92,7 @@ let rec count_expanded_type_nodes ty cap total =
             if total >= cap then cap
             else
               match argument with
-              | Ast.Type_arg argument_ty ->
+              | Ast.Type_arg argument_ty | Ast.Type_or_index argument_ty ->
                   count_expanded_type_nodes argument_ty cap total
               | Ast.Const_arg _ | Ast.Name_arg _ -> total)
           total arguments
@@ -152,7 +152,7 @@ and count_expanded_arg_type_nodes argument cap total =
   if total >= cap then cap
   else
     match argument with
-    | Ast.Type_arg ty -> count_expanded_type_nodes ty cap total
+    | Ast.Type_arg ty | Ast.Type_or_index ty -> count_expanded_type_nodes ty cap total
     | Ast.Const_arg expression -> count_expanded_expr_type_nodes expression cap total
     | Ast.Name_arg _ -> total
 

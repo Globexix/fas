@@ -145,7 +145,7 @@ let rec diagnostic_type_of_ast specializations = function
       let arguments =
         List.map
           (function
-            | Ast.Type_arg ty ->
+            | Ast.Type_arg ty | Ast.Type_or_index ty ->
                 Diagnostic_type_argument (diagnostic_type_of_ast specializations ty)
             | Ast.Const_arg expression ->
                 Diagnostic_source_const_argument (Ast.expr_name expression)

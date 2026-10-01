@@ -10,7 +10,12 @@ type ty =
   | Void
 
 and int_kind = U8 | U16 | U32 | U64 | I8 | I16 | I32 | I64 | Usize | Isize
-and generic_arg = Type_arg of ty | Const_arg of expr | Name_arg of string * Span.t
+
+and generic_arg =
+  | Type_arg of ty
+  | Type_or_index of ty
+  | Const_arg of expr
+  | Name_arg of string * Span.t
 
 and expr =
   | Int_lit of string * Span.t
@@ -157,6 +162,16 @@ let expr_span = function
   | Struct_lit (_, _, s) ->
       s
 
+let rec index_expression = function
+  | Named_type name -> Ident (name, Span.synthetic)
+  | Applied_type (name, arguments, span) ->
+      Select (Ident (name, span), List.map index_argument arguments, span)
+  | _ -> failwith "internal error: ambiguous index requires a named type application"
+
+and index_argument = function
+  | Type_or_index ty -> Const_arg (index_expression ty)
+  | argument -> argument
+
 let stmt_span = function
   | Let { span; _ }
   | View { span; _ }
@@ -196,7 +211,7 @@ let rec type_name = function
   | Void -> "void"
 
 and generic_arg_name = function
-  | Type_arg t -> type_name t
+  | Type_arg t | Type_or_index t -> type_name t
   | Const_arg e -> expr_name e
   | Name_arg (name, _) -> name
 
@@ -326,7 +341,7 @@ let render_program program =
         text "]"
     | Void -> text "void"
   and emit_generic_arg = function
-    | Type_arg ty -> emit_ty ty
+    | Type_arg ty | Type_or_index ty -> emit_ty ty
     | Const_arg e -> emit_expr e
     | Name_arg (name, _) -> add_name name
   and emit_generic_param = function
@@ -408,7 +423,7 @@ let render_program program =
           (fun i arg ->
             if i > 0 then text ", ";
             match arg with
-            | Type_arg ty -> emit_ty ty
+            | Type_arg ty | Type_or_index ty -> emit_ty ty
             | Const_arg e -> emit_expr e
             | Name_arg (name, _) -> add_name name)
           args;
@@ -686,7 +701,7 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
           count span;
           List.iter (go_generic_arg span) args
   and go_generic_arg at = function
-    | Type_arg inner ->
+    | Type_arg inner | Type_or_index inner ->
         count at;
         go_ty at inner
     | Const_arg e ->
