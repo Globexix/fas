@@ -1,0 +1,18 @@
+use "C" <<SDL_EVENT
+#include <SDL2/SDL.h>
+#include <stdio.h>
+SDL_EVENT
+
+fn main() i32 {
+  if SDL_Init(SDL_INIT_EVENTS) != 0 { return 1 }
+  event SDL_Event = {}
+  event.type = bitcast[u32](SDL_USEREVENT)
+  event.user.code = 7
+  pushed i32 = SDL_PushEvent(&event)
+  received SDL_Event = {}
+  polled i32 = SDL_PollEvent(&received)
+  printf(c"%llu %d %d\n", sizeof[SDL_Event], pushed, received.user.code)
+  SDL_Quit()
+  if pushed != 1 || polled != 1 || received.user.code != 7 { return 2 }
+  return 0
+}

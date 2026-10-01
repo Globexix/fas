@@ -30,7 +30,27 @@ for level in 0 2; do
 done
 
 if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists sdl2; then
-  echo "c_unions: SDL2 SDL_Event coverage blocked by anonymous-member flattening"
+  SDL_CFLAGS=$(pkg-config --cflags sdl2)
+  SDL_LIBS=$(pkg-config --libs sdl2)
+  "$CC" -Werror -std=c17 "$ROOT/test/c_unions_sdl_oracle.c" $SDL_CFLAGS \
+    $SDL_LIBS -o "$TMP/sdl-oracle"
+  "$OCAML_FAS" --emit-llvm $SDL_CFLAGS "$ROOT/test/c_unions_sdl.fas" \
+    >"$TMP/sdl.ll"
+  "$LLVM_OPT" -passes=verify "$TMP/sdl.ll" -disable-output
+  for level in 0 2; do
+    "$LLVM_OPT" -S "-passes=default<O$level>" "$TMP/sdl.ll" \
+      -o "$TMP/sdl.O$level.ll"
+    "$LLVM_OPT" -passes=verify "$TMP/sdl.O$level.ll" -disable-output
+    "$OCAML_FAS" -O"$level" "$ROOT/test/c_unions_sdl.fas" \
+      -o "$TMP/sdl.O$level" $SDL_CFLAGS $SDL_LIBS
+    SDL_VIDEODRIVER=dummy timeout 30 "$TMP/sdl-oracle" >"$TMP/sdl.oracle.out" \
+      || fail "SDL C oracle failed"
+    SDL_VIDEODRIVER=dummy timeout 30 "$TMP/sdl.O$level" \
+      >"$TMP/sdl.O$level.out" || fail "SDL Fas O$level execution failed"
+    cmp -s "$TMP/sdl.O$level.out" "$TMP/sdl.oracle.out" \
+      || fail "SDL Fas and C outputs differ at O$level"
+  done
+  echo "c_unions: SDL_Event O0/O2 push/poll code 7 matches C oracle"
 else
   echo "c_unions: SDL2 unavailable; SDL_Event round trip skipped"
 fi
