@@ -1,0 +1,18 @@
+use "C" <<C
+static unsigned oracle(unsigned lane) { return 3u - lane; }
+C
+struct S { v vec[4,u32] }
+const V vec[4,u32] = {3, 2, 1, 0}
+var W vec[4,u32] = {3, 2, 1, 0}
+const T S = {{3, 2, 1, 0}}
+const A arr[2,vec[4,u32]] = {{3, 2, 1, 0}, {3, 2, 1, 0}}
+fn main() i32 {
+  v vec[4,u32] = {3, 2, 1, 0}
+  i u32 = 0
+  while i < 4 {
+    expected u32 = oracle(i)
+    if V[i] != expected || W[i] != expected || T.v[i] != expected || A[1][i] != expected || v[i] != expected { return 1 }
+    i += 1
+  }
+  return 0
+}

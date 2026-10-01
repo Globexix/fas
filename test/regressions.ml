@@ -10607,3 +10607,14 @@ let () =
     "fn f() i32 { return counter }\n";
   c_semantic_message "c-import-self-macro-global-type"
     "type mismatch: expected u8, got i32" fixture "fn f() u8 { return counter }\n"
+
+let () =
+  semantic_accept "brace-vector-static-contexts"
+    "struct S { v vec[4,u32] }\n\
+     const V vec[4,u32] = {3, 2, 1, 0}\n\
+     var W vec[4,u32] = {4, 5, 6, 7}\n\
+     const T S = {{8, 9, 10, 11}}\n\
+     const A arr[2,vec[4,u32]] = {{12, 13, 14, 15}, {16, 17, 18, 19}}\n\
+     fn f() u32 { return V[0] + W[1] + T.v[2] + A[1][3] }\n";
+  semantic_message "brace-vector-constant-width" "wrong number of vector literal lanes"
+    "const V vec[4,u32] = {1, 2}\n"

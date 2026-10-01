@@ -617,8 +617,16 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(arrays = [])
       match lookup name arrays with
       | Some (_, (Hir.Vec _ as ty), values) -> Ok (ty, values)
       | _ -> error span "constant expression requires a known vector constant")
-  | Ast.Struct_lit (source_type, elements, span) -> (
-      let* vector_ty = source_ty_with_values named_types consts span source_type in
+  | Ast.Struct_lit (_, elements, span) | Ast.Array_lit (elements, span) -> (
+      let* vector_ty =
+        match expression with
+        | Ast.Struct_lit (source_type, _, _) ->
+            source_ty_with_values named_types consts span source_type
+        | _ -> (
+            match expected with
+            | Some (Hir.Vec _ as ty) -> Ok ty
+            | _ -> error span "expression is not a compile-time vector constant")
+      in
       match vector_ty with
       | Hir.Vec (lanes, element_ty) ->
           if List.length elements <> lanes then

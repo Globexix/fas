@@ -23,7 +23,7 @@ let rec symbolic_expression names = function
 
 let names items =
   let rec address_type seen = function
-    | Ast.Addr | Ast.Handle _ -> true
+    | Ast.Addr | Ast.Handle _ | Ast.Vec _ -> true
     | Ast.Array (_, element) -> address_type seen element
     | Ast.Named_type name when not (List.mem name seen) ->
         List.exists
