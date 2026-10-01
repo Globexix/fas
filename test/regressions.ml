@@ -10618,3 +10618,49 @@ let () =
      fn f() u32 { return V[0] + W[1] + T.v[2] + A[1][3] }\n";
   semantic_message "brace-vector-constant-width" "wrong number of vector literal lanes"
     "const V vec[4,u32] = {1, 2}\n"
+
+let () =
+  List.iter
+    (fun name ->
+      semantic_accept
+        ("builtin-peer-literal-" ^ name)
+        ("fn f(k u32) u32 { return " ^ name ^ "(k, 2) + " ^ name ^ "(2, k) }\n");
+      semantic_message
+        ("builtin-peer-range-" ^ name)
+        "integer literal is out of range for u8"
+        ("fn f(k u8) u8 { return " ^ name ^ "(k, 256) }\n"))
+    [ "add_sat"; "sub_sat"; "mul_hi" ];
+  semantic_accept "builtin-peer-default-literals"
+    "fn f() i32 { return add_sat(1, 2) + sub_sat(3, 1) + mul_hi(4, 5) }\n";
+  semantic_accept "builtin-store-literal-context"
+    "fn f(p addr, m vec[4,bool]) void { volatile_store[u32](p, 37)\n\
+     masked_store[u32](p, m, splat(41))\n\
+     return }\n"
+
+let () =
+  List.iter
+    (fun name ->
+      semantic_accept
+        ("builtin-rotate-literal-" ^ name)
+        ("fn f(k u32, v vec[4,u32]) u32 { return " ^ name ^ "(k, 1) + " ^ name
+       ^ "(v, 1)[0] }\n"))
+    [ "rotl"; "rotr" ];
+  semantic_accept "builtin-vector-typed-operands"
+    "fn f(v vec[4,u32], m vec[4,bool], p addr) u32 {\n\
+     w vec[4,u32] = {1, 2, 3, 4}\n\
+     x vec[4,u32] = add_sat(v, w) + sub_sat(v, w) + mul_hi(v, w)\n\
+     y vec[4,u32] = select(m, x, w)\n\
+     z vec[4,u32] = shuffle(y, w, (vec[4,u8]){0, 1, 2, 3})\n\
+     volatile_store[vec[4,u32]](p, z)\n\
+     masked_store[u32](p, m, z)\n\
+     return z[0] }\n";
+  semantic_message "builtin-store-literal-range"
+    "integer literal is out of range for u8"
+    "fn f(p addr) void { volatile_store[u8](p, 256)\nreturn }\n";
+  semantic_message "builtin-select-type-mismatch"
+    "builtin arguments must have the same type"
+    "fn f(m vec[4,bool], a vec[4,u8], b vec[4,u32]) vec[4,u8] { return select(m, a, b) }\n";
+  semantic_message "builtin-shuffle-type-mismatch"
+    "builtin arguments must have the same type"
+    "fn f(a vec[4,u8], b vec[4,u32]) vec[4,u8] { return shuffle(a, b, (vec[4,u8]){0, \
+     1, 2, 3}) }\n"

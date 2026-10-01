@@ -848,6 +848,20 @@ and check_expr (c : context) expected expression =
       | Hir.Opaque n -> error s (Printf.sprintf "opaque type `%s` is not a struct" n)
       | _ -> error s "aggregate literal requires an array, struct, or vector type")
 
+and check_same_operands c left right =
+  let literal expression = unresolved_shape_of expression = Some Unresolved_int in
+  let hint peer expression =
+    if literal expression then Some (Hir.expr_ty peer) else None
+  in
+  if literal left && not (literal right) then
+    let* right = check_expr c None right in
+    let* left = check_expr c (hint right left) left in
+    Ok (left, right)
+  else
+    let* left = check_expr c None left in
+    let* right = check_expr c (hint left right) right in
+    Ok (left, right)
+
 and check_initializer c expected expression =
   let aggregate_entries ty entries span =
     match (ty, entries) with
@@ -1299,8 +1313,9 @@ and check_call c _expected fn args s =
             if List.length args <> 2 then
               error s (Printf.sprintf "builtin `%s` expects two arguments" name)
             else
-              let* a = check_expr c None (List.hd args) in
-              let* b2 = check_expr c None (List.hd (List.tl args)) in
+              let* a, b2 =
+                check_same_operands c (List.hd args) (List.hd (List.tl args))
+              in
               let valid_operand =
                 is_int (Hir.expr_ty a)
                 ||
@@ -1354,8 +1369,7 @@ and check_call c _expected fn args s =
               error s (Printf.sprintf "builtin `%s` expects three arguments" name)
             else
               let* m = check_expr c None (List.nth args 0) in
-              let* y = check_expr c None (List.nth args 1) in
-              let* z = check_expr c None (List.nth args 2) in
+              let* y, z = check_same_operands c (List.nth args 1) (List.nth args 2) in
               let mask_lanes =
                 match Hir.expr_ty m with Hir.Vec (n, Hir.Bool) -> Some n | _ -> None
               in
@@ -1375,8 +1389,7 @@ and check_call c _expected fn args s =
             if List.length args <> 3 then
               error s (Printf.sprintf "builtin `%s` expects three arguments" name)
             else
-              let* a = check_expr c None (List.nth args 0) in
-              let* b2 = check_expr c None (List.nth args 1) in
+              let* a, b2 = check_same_operands c (List.nth args 0) (List.nth args 1) in
               let at = Hir.expr_ty a in
               let ok_vec =
                 match at with Hir.Vec (_, (Hir.Int _ | Hir.Bool)) -> true | _ -> false

@@ -1,0 +1,17 @@
+use "C" <<C
+static unsigned oracle(unsigned a, unsigned b, int op) {
+  if (op == 0) { unsigned long long sum = (unsigned long long)a + b; return sum > 0xffffffffu ? 0xffffffffu : sum; }
+  if (op == 1) return a < b ? 0 : a - b;
+  return ((unsigned long long)a * b) >> 32;
+}
+C
+fn main() i32 {
+  k u32 = 0xfffffff0
+  if add_sat(k, 37) != oracle(k, 37, 0) { return 1 }
+  if add_sat(37, k) != oracle(37, k, 0) { return 2 }
+  if sub_sat(k, 37) != oracle(k, 37, 1) { return 3 }
+  if sub_sat(37, k) != oracle(37, k, 1) { return 4 }
+  if mul_hi(k, 37) != oracle(k, 37, 2) { return 5 }
+  if mul_hi(37, k) != oracle(37, k, 2) { return 6 }
+  return 0
+}
