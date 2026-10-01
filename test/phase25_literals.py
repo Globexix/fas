@@ -16,7 +16,6 @@ with tempfile.TemporaryDirectory() as directory:
                           'if a[i] != trunc[u32](i + 1) { return 1 }\n i += 1 }\n return 0 }'.replace('sizeof[a]', f'{size * 4}'))
         ir = root / 'large.ll'
         ir.write_bytes(subprocess.check_output([compiler, '--emit-llvm', str(source)], timeout=5))
-        assert b'@.literal.' in ir.read_bytes()
         subprocess.run([opt, '-passes=verify', str(ir), '-disable-output'], check=True)
         for level in (0, 2):
             optimized = root / 'optimized.ll'
@@ -28,3 +27,4 @@ with tempfile.TemporaryDirectory() as directory:
             print(f'phase25_literals: {size} entries O{level}: {elapsed:.3f}s', flush=True)
             assert elapsed < 1, elapsed
             subprocess.run([str(root / 'large')], check=True)
+        assert b'@.literal.' in ir.read_bytes()

@@ -10920,3 +10920,63 @@ let () =
     "fn f(x i32) i32 { return x + -1 }";
   pin "for var x i32 = 0; x < 4; x += 1 {}" "var"
     "`var` declares globals; locals are declared as `name Type = value`" false
+
+let () =
+  List.iter
+    (fun name ->
+      semantic_message ("vector-type-slot-" ^ name)
+        "SIMD memory element type must be a scalar integer or bool"
+        ("fn f(p addr) void { " ^ name ^ "[vec[4,u32]](p, 0, 0, 0)\nreturn }"))
+    [
+      "masked_load";
+      "masked_store";
+      "gather";
+      "scatter";
+      "gather_bytes";
+      "scatter_bytes";
+    ];
+  semantic_message "vector-handle-type-slot"
+    "handle type argument must be an opaque type"
+    "fn f(p addr) void { handle_from_addr[vec[4,u32]](p)\nreturn }";
+  List.iter
+    (fun name ->
+      semantic_message
+        ("vector-conversion-rejection-" ^ name)
+        "illegal cast for source and destination widths"
+        ("fn f() void { " ^ name ^ "[vec[4,u32]](1)\nreturn }"))
+    [ "zext"; "sext"; "trunc" ];
+  List.iter
+    (fun name ->
+      semantic_accept
+        ("peer-vector-constructor-" ^ name)
+        ("fn f(v vec[4,u32]) vec[4,u32] { return " ^ name ^ "(v, splat(2)) + " ^ name
+       ^ "({1,2,3,4}, v) }");
+      semantic_message ("peer-vector-range-" ^ name)
+        "integer literal is out of range for u8"
+        ("fn f(v vec[4,u8]) vec[4,u8] { return " ^ name ^ "(v, splat(256)) }"))
+    [ "add_sat"; "sub_sat"; "mul_hi" ];
+  List.iter
+    (fun name ->
+      semantic_message ("peer-rotate-range-" ^ name)
+        "integer literal is out of range for i32"
+        ("fn f(k u8) u8 { return " ^ name ^ "(k, 4294967296) }"))
+    [ "rotl"; "rotr" ];
+  semantic_message "peer-masked-store-range" "integer literal is out of range for u8"
+    "fn f(p addr, m vec[4,bool]) void { masked_store[u8](p, m, splat(256))\nreturn }";
+  semantic_message "peer-shuffle-constructor-range"
+    "integer literal is out of range for u8"
+    "fn f(v vec[4,u8]) vec[4,u8] { return shuffle(v, splat(256), {0,1,2,3}) }";
+  semantic_message "peer-select-constructor-range"
+    "integer literal is out of range for u8"
+    "fn f(m vec[4,bool], v vec[4,u8]) vec[4,u8] { return select(m, v, splat(256)) }";
+  semantic_accept "generic-index-arithmetic"
+    "fn f[N const usize](p addr) u32 { view a = p[arr[4,u32]]\n\
+    \ view i = p[arr[1,u32]]\n\
+    \ return a[i[0] + 1] }\n\
+    \ fn g(p addr) u32 { return f[4](p) }"
+
+let () =
+  semantic_accept "rotate-count-independent-width"
+    "fn f(k u8) u8 { return rotl(k, 256) + rotr(k, -256) }"
+
+let () = Printf.printf "all regression checks: %d passed\n" !checks_run

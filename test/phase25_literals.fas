@@ -18,6 +18,8 @@ fn main() i32 {
     i += 1
   }
   if inspect(a[0].p) != 1 || a[1].p[u32] != 9 || a[2].p != &inspect || a[3].p != null { return 3 }
+  flags arr[20,vec[4,bool]] = {{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)},{true,false,trunc[bool](3),trunc[bool](2)}}
+  if !flags[19][0] || flags[19][1] || !flags[19][2] || flags[19][3] { return 7 }
   k u32 = 41
   mixed arr[20,u32] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,k}
   if mixed[19] != 41 { return 4 }
