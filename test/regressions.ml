@@ -45,7 +45,7 @@ let c_import_fixture file =
   in
   (source, C_import.map_declarations ~span:Span.synthetic declarations)
 
-let c_import_container name fragment_text =
+let c_import_container ?(macro_names = []) name fragment_text =
   let source = Filename.temp_file ("fas-" ^ name ^ "-") ".fas" in
   let span = Span.make ~file:source ~start_offset:0 ~end_offset:0 ~line:1 ~column:1 in
   let request =
@@ -56,7 +56,8 @@ let c_import_container name fragment_text =
     (fun () ->
       let declarations, _, _ =
         expect_ok
-          (C_import.import ~cc:"clang-22" ~debug:false ~keep:false source [ request ])
+          (C_import.import ~cc:"clang-22" ~debug:false ~keep:false ~macro_names source
+             [ request ])
       in
       (source, C_import.map_declarations ~span declarations))
 
@@ -9883,10 +9884,11 @@ let () =
       "FAS_MACRO_STRING";
       "FAS_MACRO_FUNCTION";
       "FAS_MACRO_ERRNO";
-      "stdout";
       "FAS_MACRO_POINTER";
       "FAS_MACRO_EMPTY";
     ];
+  c_semantic_accept "c-import-stdio-self-macro" c_macros
+    "fn probe() i32 { return fputs(c\"hello\", stdout) }\n";
   c_semantic_message "c-import-reserved-macro"
     "C declaration `addr` is not supported: name is reserved in Fas; call it through a \
      C container function with another name"
@@ -10595,3 +10597,13 @@ let () =
      return users[1].id + u.x + bitcast[i32](w.word) }\n";
   c_semantic_message "c-import-container-anonymous-typedef-field-error"
     "unknown field `missing`" fixture "fn f() i32 { u user_t = {}\nreturn u.missing }\n"
+
+let () =
+  let fixture =
+    c_import_container ~macro_names:[ "counter" ] "phase25-self-macro"
+      "extern int counter;\n#define counter counter\n"
+  in
+  c_semantic_accept "c-import-self-macro-preserves-global" fixture
+    "fn f() i32 { return counter }\n";
+  c_semantic_message "c-import-self-macro-global-type"
+    "type mismatch: expected u8, got i32" fixture "fn f() u8 { return counter }\n"

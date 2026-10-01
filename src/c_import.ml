@@ -1136,7 +1136,7 @@ let map_declarations ?(container = false) ~span declarations =
     List.filter_map
       (fun node ->
         match string "kind" node with
-        | Some ("FasIntegerMacro" | "FasInvisibleMacro") -> string "name" node
+        | Some "FasIntegerMacro" -> string "name" node
         | _ -> None)
       nodes
   in
