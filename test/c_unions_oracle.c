@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include "c_unions.h"
 
-void *fas_zero_screens[5] = {0};
+void *screens[5] = {0};
 
 int main(void) {
   union FasPhase23Union value = {0};
@@ -21,8 +21,8 @@ int main(void) {
   printf("anonymous %u %u\n", anonymous.word,
          (unsigned)anonymous.bytes[3]);
   int global_zero = 1;
-  const unsigned char *global_bytes = (const unsigned char *)fas_zero_screens;
-  for (unsigned i = 0; i < sizeof(fas_zero_screens); ++i)
+  const unsigned char *global_bytes = (const unsigned char *)screens;
+  for (unsigned i = 0; i < sizeof(screens); ++i)
     if (global_bytes[i] != 0) global_zero = 0;
   printf("global zero %d\n", global_zero);
   uint8_t scratch[16] = {0};

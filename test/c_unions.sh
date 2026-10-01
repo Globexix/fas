@@ -21,6 +21,10 @@ for level in 0 2; do
     -o "$TMP/program.O$level.ll"
   "$LLVM_OPT" -passes=verify "$TMP/program.O$level.ll" -disable-output
   "$OCAML_FAS" -O"$level" "$ROOT/test/c_unions.fas" -o "$TMP/fas.O$level"
+  if [ "$level" -eq 0 ]; then
+    nm "$TMP/fas.O$level" | awk '$2 == "B" && $3 == "screens" { found = 1 } END { exit !found }' \
+      || fail "exported zero global is not defined in BSS"
+  fi
   timeout 30 "$TMP/fas.O$level" >"$TMP/fas.O$level.out" \
     || fail "Fas O$level execution failed"
   timeout 30 "$TMP/oracle" >"$TMP/oracle.out" \

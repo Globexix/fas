@@ -12,7 +12,7 @@ struct FasPhase23Anonymous {
   };
 };
 
-extern void *fas_zero_screens[5];
+extern void *screens[5];
 
 void fas_union_fill(union FasPhase23Union *value);
 void fas_union_report(uint32_t word, uint8_t high);
