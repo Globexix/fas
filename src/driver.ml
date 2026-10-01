@@ -273,13 +273,14 @@ let load_program ~limits root =
             List.filter (function Ast.Use _ -> false | _ -> true) program.Ast.items)
           files
       in
-      let c_imports =
+      let imports language =
         List.filter_map
           (fun (path, program) ->
             let headers =
               List.filter_map
                 (function
-                  | Ast.Use { c_header = Some spelling; span; _ } ->
+                  | Ast.Use { path = language_name; c_header = Some spelling; span }
+                    when language_name = language ->
                       Some C_import.{ spelling; span }
                   | _ -> None)
                 program.Ast.items
@@ -290,7 +291,11 @@ let load_program ~limits root =
       let chains =
         Hashtbl.fold (fun path chain acc -> (path, chain) :: acc) chains []
       in
-      Ok ({ Ast.items }, List.map (fun (path, chain) -> (path, chain)) chains, c_imports)
+      Ok
+        ( { Ast.items },
+          List.map (fun (path, chain) -> (path, chain)) chains,
+          imports "C",
+          imports "asm" )
 
 let write_file path text =
   let channel = open_out_bin path in
@@ -563,6 +568,7 @@ type imported_c_unit = {
   unit_path : string;
   use_span : Span.t;
   has_fragments : bool;
+  assembly : string option;
   static_functions : C_import.static_function list;
   c_names : string list;
 }
@@ -589,9 +595,10 @@ let compile_c_units config cc units adapters prelude artifacts =
                   && Option.is_some (C_import.find_text prelude (line ^ "\n") 0)))
             |> String.concat "\n"
           in
-          write_file unit.unit_path (prelude ^ original);
+          if Option.is_none unit.assembly then
+            write_file unit.unit_path (prelude ^ original);
           let object_path =
-            if config.Cli.emit = Cli.Header then ""
+            if config.Cli.emit = Cli.Header && Option.is_none unit.assembly then ""
             else Filename.temp_file "fas-c-object-" ".o"
           in
           let argv =
@@ -603,14 +610,28 @@ let compile_c_units config cc units adapters prelude artifacts =
                  llc_opt config.Cli.optimization;
                ]
               @ config.Cli.c_flags
+              @ (if Option.is_some unit.assembly then
+                   [ "-iquote"; Filename.dirname unit.source ]
+                 else [])
               @
-              if config.Cli.emit = Cli.Header then [ "-fsyntax-only"; unit.unit_path ]
+              if config.Cli.emit = Cli.Header && Option.is_none unit.assembly then
+                [ "-fsyntax-only"; unit.unit_path ]
+              else if Option.is_some unit.assembly then
+                [
+                  "-x";
+                  Option.get unit.assembly;
+                  "-c";
+                  unit.unit_path;
+                  "-o";
+                  object_path;
+                ]
               else [ "-c"; unit.unit_path; "-o"; object_path ])
           in
           if config.Cli.debug || config.Cli.keep then
             prerr_endline ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
           match Process.run argv with
-          | Ok _ when config.Cli.emit = Cli.Header -> compile acc rest
+          | Ok _ when config.Cli.emit = Cli.Header && Option.is_none unit.assembly ->
+              compile acc rest
           | Ok _ ->
               artifacts := object_path :: !artifacts;
               if config.Cli.keep then
@@ -665,7 +686,8 @@ let add_static_adapters units referenced_names ir =
       let adapters =
         List.filter (fun adapter -> adapter.C_import.file = unit.source) adapters
       in
-      if adapters <> [] then C_import.append_adapters unit.unit_path adapters)
+      if adapters <> [] && Option.is_none unit.assembly then
+        C_import.append_adapters unit.unit_path adapters)
     units;
   let redirects =
     List.map
@@ -684,7 +706,7 @@ let run_unprotected ?header_output config =
     (fun () ->
       match load_program ~limits config.Cli.input with
       | Error diagnostics -> Error diagnostics
-      | Ok (program, chains, c_imports) -> (
+      | Ok (program, chains, c_imports, assembly_imports) -> (
           let _, _, cc = tools () in
           let imported = ref [] in
           let c_units = ref [] in
@@ -718,6 +740,7 @@ let run_unprotected ?header_output config =
                   c_units :=
                     {
                       source;
+                      assembly = None;
                       unit_path = List.hd artifacts;
                       use_span = (List.hd headers).C_import.span;
                       has_fragments =
@@ -751,6 +774,66 @@ let run_unprotected ?header_output config =
                   import rest
             in
             import c_imports
+          in
+          let* () =
+            Result_list.iter
+              (fun (source, headers) ->
+                let unit_path = Filename.temp_file "fas-assembly-unit-" ".S" in
+                c_artifacts := unit_path :: !c_artifacts;
+                let* texts =
+                  Result_list.map
+                    (fun (header : C_import.header) ->
+                      let span = header.C_import.span in
+                      match header.C_import.spelling with
+                      | Ast.C_fragment fragment ->
+                          Ok
+                            (Printf.sprintf "#line %d %S\n%s\n" (span.Span.line + 1)
+                               source fragment.text)
+                      | Ast.C_quoted path ->
+                          let path = Filename.concat (Filename.dirname source) path in
+                          let* text =
+                            match read_file path with
+                            | Ok text -> Ok text
+                            | Error message -> Error [ Diag.error span message ]
+                          in
+                          if Filename.check_suffix path ".s" then
+                            Ok (Printf.sprintf ".include %S\n" path)
+                          else
+                            Ok
+                              (Printf.sprintf "#line %d %S\n%s\n" span.Span.line source
+                                 text)
+                      | Ast.C_system _ ->
+                          Error
+                            [
+                              Diag.error span
+                                "assembly unit requires a quoted path or container";
+                            ])
+                    headers
+                in
+                write_file unit_path (String.concat "" texts);
+                c_units :=
+                  {
+                    source;
+                    unit_path;
+                    assembly =
+                      Some
+                        (if
+                           List.for_all
+                             (fun (header : C_import.header) ->
+                               match header.spelling with
+                               | Ast.C_quoted path -> Filename.check_suffix path ".s"
+                               | _ -> false)
+                             headers
+                         then "assembler"
+                         else "assembler-with-cpp");
+                    use_span = (List.hd headers).C_import.span;
+                    has_fragments = true;
+                    static_functions = [];
+                    c_names = [];
+                  }
+                  :: !c_units;
+                Ok ())
+              assembly_imports
           in
           let* imported =
             C_import.merge_imports (List.rev !imported)

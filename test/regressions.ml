@@ -10553,4 +10553,21 @@ let () =
       ignore
         (expect_ok (Driver.run (cli_run [ "-O2"; "-o"; large_output; large_path ])));
       if Sys.command large_output <> 0 then failwith "large zero initialization value");
+  let assembly_path = Filename.temp_file "fas-assembly-unit-" ".fas" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove assembly_path)
+    (fun () ->
+      let channel = open_out_bin assembly_path in
+      output_string channel
+        "use \"asm\" <<ASM\n\
+         .text\n\
+         .globl unit_answer\n\
+         unit_answer: movl $42, %eax; ret\n\
+         .section .note.GNU-stack,\"\",@progbits\n\
+         ASM\n\
+         extern \"C\" { fn unit_answer() i32 }\n\
+         fn main() i32 { return unit_answer() - 42 }\n";
+      close_out channel;
+      let llvm = expect_ok (Driver.run (cli_run [ "--emit-llvm"; assembly_path ])) in
+      if contains llvm "movl" then failwith "assembly unit leaked into Fas LLVM");
   print_endline "C export spelling, omission, diagnostics and header pins: passed"

@@ -60,9 +60,14 @@ let extract_asm source limits =
       if end_pos > i && text.[end_pos - 1] = '\r' then end_pos - 1 else end_pos
     in
     let j = skip_while stop (fun c -> c = ' ' || c = '\t') (i + 3) in
-    if j + 3 > stop || String.sub text j 3 <> "\"C\"" then None
+    let width =
+      if j + 3 <= stop && String.sub text j 3 = "\"C\"" then 3
+      else if j + 5 <= stop && String.sub text j 5 = "\"asm\"" then 5
+      else 0
+    in
+    if width = 0 then None
     else
-      let j = skip_while stop (fun c -> c = ' ' || c = '\t') (j + 3) in
+      let j = skip_while stop (fun c -> c = ' ' || c = '\t') (j + width) in
       if j + 2 > stop || String.sub text j 2 <> "<<" then None
       else
         let tag_start = j + 2 in
@@ -623,7 +628,7 @@ module P = struct
         let s = span p in
         ignore (bump p);
         let* path = string p in
-        if path = "C" then
+        if path = "C" || path = "asm" then
           let* header = c_header p s in
           let* () = end_stmt p in
           Ok [ Ast.Use { path; c_header = Some header; span = s } ]
@@ -954,6 +959,8 @@ module P = struct
 
   and stmt p =
     match (peek p).kind with
+    | Token.Kw_use when (peek_n p 1).kind = Token.String "asm" ->
+        Error [ Diag.error (span p) "assembly unit must be at top level" ]
     | Token.Kw_use when List.mem_assoc (span p).Span.start_offset p.c_containers ->
         Error [ Diag.error (span p) "C container must be at top level" ]
     | Token.Ident "view" -> view_statement p true
