@@ -79,7 +79,7 @@ def var(name, ty, w, signed, bits):
     h = hexlit(bits, w)
     if signed:
         mid = "u64" if w == 64 else "u%d" % w
-        return "  %s %s = bitcast[%s](bitcast[%s](%s))\n" % (name, ty, ty, mid, h)
+        return "  %s_bits %s = %s\n  %s %s = bitcast[%s](%s_bits)\n" % (name, mid, h, name, ty, ty, name)
     return "  %s %s = %s\n" % (name, ty, h)
 
 body = []
