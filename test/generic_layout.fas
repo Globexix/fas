@@ -1,0 +1,26 @@
+use "C" "generic_layout_oracle.h"
+
+struct Sized[T, N const usize] { data arr[N, T] }
+fn take[N const usize]() usize { return N }
+
+struct Bytes[N const usize] { data arr[N, u8] }
+const WIDTH usize = sizeof[Box[u16]]
+struct Holder { value Bytes[WIDTH] }
+struct Box[T] { value T }
+
+struct LayoutBox[T, N const usize] { lead u8 payload arr[N, T] }
+struct Envelope[T, N const usize] { prefix u8 box LayoutBox[T, N] tail u32 }
+
+fn main() i32 {
+  if take[sizeof[Sized[u8, 2]]]() != oracle_size_u8_2() { return 1 }
+  if sizeof[Sized[u16, 2]] != oracle_size_u16_2() { return 2 }
+  if sizeof[Holder] != oracle_holder_size() { return 3 }
+  if sizeof[LayoutBox[u16, 2]] != oracle_layout_box_size() { return 4 }
+  if alignof[LayoutBox[u64, 2]] != oracle_layout_box_align() { return 5 }
+  if offsetof[LayoutBox[u16, 2], payload] != oracle_payload_offset() { return 6 }
+  if sizeof[LayoutBox[LayoutBox[u16, 1], 2]] != oracle_nested_size() { return 7 }
+  if sizeof[Envelope[u16, 2]] != oracle_envelope_size() { return 8 }
+  if offsetof[Envelope[u16, 2], box] != oracle_envelope_box_offset() { return 9 }
+  if offsetof[Envelope[u16, 2], tail] != oracle_envelope_tail_offset() { return 10 }
+  return 0
+}

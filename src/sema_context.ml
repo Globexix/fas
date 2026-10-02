@@ -46,6 +46,7 @@ let create_string_pool limits =
 
 type context = {
   structs : Hir.struct_def list;
+  generic_structs : Ast.item list;
   named_types : (string * named_type_kind) list;
   consts : (string * Hir.ty * int64) list;
   arrays : (string * Hir.ty * int64 list) list;

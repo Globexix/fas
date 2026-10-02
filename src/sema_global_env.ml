@@ -5,8 +5,8 @@ let error span message = Error [ Diag.error span message ]
 let ( let* ) result next =
   match result with Ok value -> next value | Error _ as e -> e
 
-let collect ~array_lengths ~source_obj ~structs ~named_types ~consts ~arrays
-    ~global_names ~address_value ~readonly_names items =
+let collect ~array_lengths ~source_obj ~structs ~named_types ~generic_structs ~consts
+    ~arrays ~global_names ~address_value ~readonly_names items =
   let rec value span ty expression =
     let array_items, struct_items =
       match expression with
@@ -24,8 +24,8 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~consts ~arrays
         address_value ty expression
     | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ ->
         let* actual, bits =
-          const_expr ~array_lengths ~structs ~named_types ~arrays ~globals:global_names
-            consts (Some ty) expression
+          const_expr ~array_lengths ~structs ~named_types ~generic_structs ~arrays
+            ~globals:global_names consts (Some ty) expression
         in
         if not (Hir.ty_equal actual ty) then
           error span "constant initializer type mismatch"
@@ -37,8 +37,8 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~consts ~arrays
             | _ -> Hir.Global_int bits)
     | Hir.Vec _ ->
         let* actual, values =
-          vector_const_expr ~array_lengths ~structs ~named_types ~arrays
-            ~globals:global_names consts (Some ty) expression
+          vector_const_expr ~array_lengths ~structs ~named_types ~generic_structs
+            ~arrays ~globals:global_names consts (Some ty) expression
         in
         if not (Hir.ty_equal actual ty) then
           error span "constant initializer type mismatch"

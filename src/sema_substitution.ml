@@ -24,6 +24,17 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Some (structs, named_types, consts, arrays) ->
         (structs, named_types, consts, arrays)
   in
+  let generic_structs =
+    List.filter (function Ast.Struct _ -> true | _ -> false) program.Ast.items
+  in
+  let preserve_layout_queries = ref false in
+  let with_preserved_layout_queries f =
+    let previous = !preserve_layout_queries in
+    preserve_layout_queries := true;
+    let result = f () in
+    preserve_layout_queries := previous;
+    result
+  in
   let struct_templates =
     List.filter_map
       (function
@@ -563,6 +574,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   let make_legality_context ret_ty =
     {
       structs = eval_structs;
+      generic_structs;
       named_types = eval_named_types;
       consts = eval_consts;
       arrays = eval_arrays;
@@ -737,7 +749,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                       in
                       let* actual_ty, value =
                         const_expr ~structs:eval_structs ~named_types:eval_named_types
-                          ~globals:global_names
+                          ~generic_structs ~globals:global_names
                           ~array_lengths:
                             (array_lengths
                             @ static_array_lengths top_level_bindings eval_globals)
@@ -1200,7 +1212,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                     let* const_ty = source_ty_diag [] parameter.span parameter.ty in
                     let* actual_ty, value =
                       const_expr ~structs:eval_structs ~named_types:eval_named_types
-                        ~globals:global_names
+                        ~generic_structs ~globals:global_names
                         ~array_lengths:
                           (array_lengths
                           @ static_array_lengths top_level_bindings eval_globals)
@@ -1411,7 +1423,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                           in
                           let* actual_ty, value =
                             const_expr ~structs:eval_structs ~globals:global_names
-                              ~named_types:eval_named_types
+                              ~generic_structs ~named_types:eval_named_types
                               ~array_lengths:
                                 (array_lengths
                                 @ static_array_lengths top_level_bindings eval_globals)
@@ -1616,14 +1628,44 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         in
         Ok (Ast.Addr_of (expression, span))
     | Ast.Sizeof (ty, span) ->
-        let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
-        Ok (Ast.Sizeof (ty, span))
+        if has_generic_type ty && !preserve_layout_queries then
+          Ok (Ast.Sizeof (ty, span))
+        else if has_generic_type ty then
+          let* _ =
+            resolve_ty ~values ~defer_const_structs substitutions depth span ty
+          in
+          Ok (Ast.Sizeof (ty, span))
+        else
+          let* ty =
+            resolve_ty ~values ~defer_const_structs substitutions depth span ty
+          in
+          Ok (Ast.Sizeof (ty, span))
     | Ast.Alignof (ty, span) ->
-        let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
-        Ok (Ast.Alignof (ty, span))
+        if has_generic_type ty && !preserve_layout_queries then
+          Ok (Ast.Alignof (ty, span))
+        else if has_generic_type ty then
+          let* _ =
+            resolve_ty ~values ~defer_const_structs substitutions depth span ty
+          in
+          Ok (Ast.Alignof (ty, span))
+        else
+          let* ty =
+            resolve_ty ~values ~defer_const_structs substitutions depth span ty
+          in
+          Ok (Ast.Alignof (ty, span))
     | Ast.Offsetof (ty, field, span) ->
-        let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
-        Ok (Ast.Offsetof (ty, field, span))
+        if has_generic_type ty && !preserve_layout_queries then
+          Ok (Ast.Offsetof (ty, field, span))
+        else if has_generic_type ty then
+          let* _ =
+            resolve_ty ~values ~defer_const_structs substitutions depth span ty
+          in
+          Ok (Ast.Offsetof (ty, field, span))
+        else
+          let* ty =
+            resolve_ty ~values ~defer_const_structs substitutions depth span ty
+          in
+          Ok (Ast.Offsetof (ty, field, span))
     | Ast.Splat (expression, span) ->
         let* expression =
           resolve_expr ~values ~defer_const_structs substitutions depth expression
@@ -1769,7 +1811,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             else
               match
                 const_expr ~structs:eval_structs ~named_types:eval_named_types
-                  ~globals:global_names
+                  ~generic_structs ~globals:global_names
                   ~array_lengths:
                     (array_lengths
                     @ static_array_lengths top_level_bindings eval_globals)
@@ -1995,7 +2037,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Opaque _ as item -> Ok item
     | Ast.Const ({ ty; value; span; _ } as item) ->
         let* ty = resolve_ty ~values:eval_consts [] 0 span ty in
-        let* value = resolve_expr [] 0 value in
+        let* value =
+          with_preserved_layout_queries (fun () -> resolve_expr [] 0 value)
+        in
         Ok (Ast.Const { item with ty; value })
     | Ast.Global ({ ty; init; span; _ } as item) ->
         let* ty = resolve_ty ~values:eval_consts [] 0 span ty in
@@ -2003,7 +2047,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           match init with
           | None -> Ok None
           | Some value ->
-              let* value = resolve_expr [] 0 value in
+              let* value =
+                with_preserved_layout_queries (fun () -> resolve_expr [] 0 value)
+              in
               Ok (Some value)
         in
         Ok (Ast.Global { item with ty; init })

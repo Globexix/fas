@@ -10061,6 +10061,11 @@ let () =
      const M usize = len(A)\n\
      const A arr[N,u8] = {1}\n\
      const B arr[M,u8] = {2}\n";
+  semantic_message "generic-layout-query-cycle"
+    "cyclic constant dependency involving `WIDTH`"
+    "const WIDTH usize = sizeof[Bytes[WIDTH]]\n\
+     struct Bytes[N const usize] { data arr[N, u8] }\n\
+     fn test() usize { return WIDTH }\n";
   parse_message "static-size-direct-len-cycle" "expected `,`, found `(`"
     "const A arr[len(B),u8] = {1}\nconst B arr[len(A),u8] = {2}\n";
   Printf.printf "regression checks: %d passed\n" !checks_run

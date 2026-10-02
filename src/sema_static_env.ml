@@ -122,8 +122,8 @@ let address_value c ty expression =
           Sema_constants.const_expr
             ~array_lengths:
               (Sema_context.static_array_lengths c.top_level_bindings c.globals)
-            ~structs:c.structs ~named_types:c.named_types ~arrays:c.arrays c.consts None
-            index
+            ~structs:c.structs ~named_types:c.named_types
+            ~generic_structs:c.generic_structs ~arrays:c.arrays c.consts None index
         in
         match ty with
         | Hir.Array (length, element) when Sema_numeric.is_int index_ty ->

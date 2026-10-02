@@ -283,6 +283,17 @@ let normalize_offset_expr structs span (e : Hir.expr) =
       else Ok (Hir.Cast (Ast.Trunc, e, Hir.Int Hir.Usize, span))
   | _ -> error span "offset must be an integer"
 
+let query_layout_in_context (c : context) span ty =
+  let globals = List.map (fun (name, _, _) -> name) c.globals in
+  let evaluate consts expression expected =
+    const_expr
+      ~array_lengths:(static_array_lengths c.top_level_bindings c.globals)
+      ~structs:c.structs ~named_types:c.named_types ~generic_structs:c.generic_structs
+      ~arrays:c.arrays ~globals consts expected expression
+  in
+  query_layout ~structs:c.structs ~named_types:c.named_types
+    ~generic_structs:c.generic_structs ~globals ~evaluate c.consts span ty
+
 let rec check_place (c : context) expr =
   let visible_consts =
     List.filter (fun (name, _, _) -> Option.is_none (lookup_local name c)) c.consts
@@ -291,7 +302,8 @@ let rec check_place (c : context) expr =
     match
       const_expr
         ~array_lengths:(static_array_lengths c.top_level_bindings c.globals)
-        ~structs:c.structs ~named_types:c.named_types ~arrays:c.arrays
+        ~structs:c.structs ~named_types:c.named_types ~generic_structs:c.generic_structs
+        ~arrays:c.arrays
         ~globals:(List.map (fun (name, _, _) -> name) c.globals)
         visible_consts None ~validate_dead:false source
     with
@@ -764,18 +776,18 @@ and check_expr (c : context) expected expression =
             (Hir.Address (place.expr, address_type_for_expected c expected place.expr, s))
       | _ -> error s "cannot take the address of this expression")
   | Ast.Sizeof (t, s) ->
-      let* t = source_ty_in_context c s t in
-      let* size, _ = layout_diag s c.structs t in
+      let* t, structs = query_layout_in_context c s t in
+      let* size, _ = layout_diag s structs t in
       Ok (Hir.Sizeof (t, size, s))
   | Ast.Alignof (t, s) ->
-      let* t = source_ty_in_context c s t in
-      let* _, a = layout_diag s c.structs t in
+      let* t, structs = query_layout_in_context c s t in
+      let* _, a = layout_diag s structs t in
       Ok (Hir.Alignof (t, a, s))
   | Ast.Offsetof (t, n, s) -> (
-      let* t = source_ty_in_context c s t in
+      let* t, structs = query_layout_in_context c s t in
       match t with
       | Hir.Struct sn -> (
-          match field_info c.structs sn n with
+          match field_info structs sn n with
           | Some { unsupported_reason = Some reason; _ } -> error s reason
           | Some f -> Ok (Hir.Offsetof (t, n, f.offset, s))
           | None -> error s (Printf.sprintf "unknown field `%s`" n))
@@ -879,8 +891,8 @@ and check_initializer ?(constant = false) c expected expression =
         List.filter (fun (name, _, _) -> Option.is_none (lookup_local name c)) c.arrays
       in
       match
-        vector_const_expr ~structs:c.structs ~named_types:c.named_types ~arrays consts
-          (Some expected) expression
+        vector_const_expr ~structs:c.structs ~named_types:c.named_types
+          ~generic_structs:c.generic_structs ~arrays consts (Some expected) expression
       with
       | Ok (actual, lanes)
         when Hir.ty_equal actual expected && Hir.ty_equal actual (Hir.expr_ty value) ->
@@ -994,8 +1006,9 @@ and check_initializer ?(constant = false) c expected expression =
           match expected with
           | Hir.Bool | Hir.Int _ -> (
               match
-                const_expr ~structs:c.structs ~named_types:c.named_types ~arrays consts
-                  (Some expected) ~validate_dead:false expression
+                const_expr ~structs:c.structs ~named_types:c.named_types
+                  ~generic_structs:c.generic_structs ~arrays consts (Some expected)
+                  ~validate_dead:false expression
               with
               | Ok (actual, bits)
                 when Hir.ty_equal actual expected
@@ -1208,6 +1221,7 @@ and check_call c _expected fn args s =
                           ~array_lengths:
                             (static_array_lengths c.top_level_bindings c.globals)
                           ~structs:c.structs ~named_types:c.named_types
+                          ~generic_structs:c.generic_structs
                           ~globals:(List.map (fun (name, _, _) -> name) c.globals)
                           ~arrays:c.arrays c.consts (Some ct) a
                       in
@@ -1457,6 +1471,7 @@ and check_call c _expected fn args s =
                   vector_const_expr
                     ~array_lengths:(static_array_lengths c.top_level_bindings c.globals)
                     ~structs:c.structs ~named_types:c.named_types
+                    ~generic_structs:c.generic_structs
                     ~globals:(List.map (fun (name, _, _) -> name) c.globals)
                     ~arrays:c.arrays visible_consts None
                     (shuffle_selector_expression (List.nth args 2))
@@ -2240,6 +2255,7 @@ and check_stmt (c : context) = function
                 const_expr
                   ~array_lengths:(static_array_lengths c.top_level_bindings c.globals)
                   ~structs:c.structs ~named_types:c.named_types
+                  ~generic_structs:c.generic_structs
                   ~globals:(List.map (fun (name, _, _) -> name) c.globals)
                   ~arrays:c.arrays c.consts (Some et) k
                 |> Result.map_error (function
