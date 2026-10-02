@@ -1183,6 +1183,33 @@ let () =
     "aggregate result cannot be returned by value; pass destination storage as `addr` \
      or `handle[T]`"
     "fn f() arr[4,u32] { value arr[4,u32]\nreturn value }\n";
+  let generic_aggregate_parameter_error =
+    "aggregate parameter `x` cannot be passed by value; pass `&x` as `addr` or \
+     `handle[T]`"
+  in
+  semantic_error "generic-array-parameter-by-value" generic_aggregate_parameter_error
+    "fn take[N const usize](x arr[N,u8]) void { return }\n";
+  semantic_error "generic-struct-parameter-by-value"
+    "aggregate parameter `r` cannot be passed by value; pass `&x` as `addr` or \
+     `handle[T]`"
+    "struct Ring[N const usize] { data arr[N,u8] }\n\
+     fn take[N const usize](r Ring[N]) void { return }\n";
+  semantic_error "generic-known-struct-parameter-by-value"
+    "aggregate parameter `value` cannot be passed by value; pass `&x` as `addr` or \
+     `handle[T]`"
+    "struct S { value i32 }\nfn take[N const usize](value S) void { return }\n";
+  semantic_error "generic-array-result-by-value"
+    "aggregate result cannot be returned by value; pass destination storage as `addr` \
+     or `handle[T]`"
+    "fn make[N const usize]() arr[N,u8] { value arr[N,u8]\nreturn value }\n";
+  semantic_error "generic-struct-result-by-value"
+    "aggregate result cannot be returned by value; pass destination storage as `addr` \
+     or `handle[T]`"
+    "struct Ring[N const usize] { data arr[N,u8] }\n\
+     fn make[N const usize]() Ring[N] { value Ring[N]\n\
+     return value }\n";
+  semantic_accept "generic-bare-parameter-definition"
+    "fn identity[T](value T) T { return value }\n";
   semantic_error "aggregate-declaration-copy"
     "aggregate value initialization is not supported; use `copy(dst, src)`"
     "struct S { x i64 }\nfn f() void { s S = (S){1}\n t S = s\nreturn }\n";
@@ -5573,22 +5600,16 @@ let () =
     || contains const_generic_function_type_llvm "@aggregate_metrics("
   then failwith "const-generic-function-type-template: template reached LLVM output";
   semantic_error "const-generic-function-type-mismatch"
-    "aggregate arguments cannot be passed by value; pass `&x` as `addr` or `handle[T]`"
-    "fn identity[N const usize](value arr[N, u8]) arr[N, u8] { return value }\n\
-     fn test() i64 { value arr[3,u8] = {1, 2, 3}\n\
-    \ identity[4](value)\n\
-    \ return 0 }\n";
+    "aggregate parameter `value` cannot be passed by value; pass `&x` as `addr` or \
+     `handle[T]`"
+    "fn identity[N const usize](value arr[N, u8]) arr[N, u8] { return value }\n";
   semantic_error "const-generic-function-negative-length" "negative aggregate length"
-    "fn identity[N const isize](value arr[N, u8]) arr[N, u8] { return value }\n\
-     fn test() i64 { value arr[1,u8] = {1}\n\
-    \ identity[-1](value)\n\
-    \ return 0 }\n";
+    "fn size[N const isize]() usize { return sizeof[arr[N,u8]] }\n\
+     fn test() usize { return size[-1]() }\n";
   semantic_error "const-generic-function-machine-length"
     "aggregate length is not a machine integer"
-    "fn identity[N const u64](value arr[N, u8]) arr[N, u8] { return value }\n\
-     fn test() i64 { value arr[1,u8] = {1}\n\
-    \ identity[18446744073709551615](value)\n\
-    \ return 0 }\n";
+    "fn size[N const u64]() usize { return sizeof[arr[N,u8]] }\n\
+     fn test() usize { return size[18446744073709551615]() }\n";
   let const_array_len_generic_llvm =
     llvm_of
       "const DATA arr[3, u8] = { 10, 20, 30 }\n\

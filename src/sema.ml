@@ -73,6 +73,26 @@ let aggregate_result_error span =
     "aggregate result cannot be returned by value; pass destination storage as `addr` \
      or `handle[T]`"
 
+let always_aggregate_type named_types generic_params ty =
+  let generic_type_names =
+    List.filter_map
+      (function Ast.Type_param { name; _ } -> Some name | _ -> None)
+      generic_params
+  in
+  let rec is_aggregate = function
+    | Ast.Array _ -> true
+    | Ast.Named_type name when List.mem name generic_type_names -> false
+    | Ast.Named_type name -> (
+        match List.assoc_opt name named_types with
+        | Some Struct_name | Some (C_record_name (_, None)) -> true
+        | Some (Alias_name ty) -> is_aggregate ty
+        | _ -> false)
+    | Ast.Applied_type (name, _, _) ->
+        List.assoc_opt name named_types = Some Generic_struct_name
+    | _ -> false
+  in
+  is_aggregate ty
+
 let validate_native_aggregate_signature span params converted ret =
   let rec validate_params params converted =
     match (params, converted) with
@@ -530,6 +550,22 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                 else Ok ()
               in
               let* () = validate_generic_params named_types generic_params in
+              let* () =
+                if generic_params = [] then Ok ()
+                else
+                  match
+                    List.find_opt
+                      (fun (parameter : Ast.param) ->
+                        always_aggregate_type named_types generic_params parameter.ty)
+                      params
+                  with
+                  | Some parameter ->
+                      aggregate_parameter_error parameter.span parameter.name
+                  | None ->
+                      if always_aggregate_type named_types generic_params ret then
+                        aggregate_result_error span
+                      else Ok ()
+              in
               if variadic && linkage <> Ast.External_c then
                 error span "variadic functions require extern \"C\""
               else if generic_params <> [] then Ok ()
