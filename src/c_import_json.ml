@@ -168,6 +168,7 @@ let keep_field = function
   | "kind" | "id" | "decl" | "name" | "type" | "loc" | "value" | "storageClass"
   | "inline" | "tagUsed" | "completeDefinition" | "fixedUnderlyingType" | "isBitfield"
   | "isImplicit" | "inner" | "qualType" | "desugaredQualType" | "file" | "line" | "col"
+  | "typeAliasDeclId" | "qualifiers" | "size" | "cc" | "variadic" | "offset"
   | "expansionLoc" | "spellingLoc" | "presumedFile" | "presumedLine" ->
       true
   | _ -> false

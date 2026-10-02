@@ -6,6 +6,7 @@ type static_function = {
   parameter_types : string list;
   variadic : bool;
   void_result : bool;
+  return_function_pointer : bool;
   signature : string;
   span : Span.t;
 }
@@ -286,7 +287,8 @@ let imported_macro_nodes ~cc ~c_flags ~source ~unit_path ~paths ~macro_names =
                           Option.bind (macro_type id) (fun (c_ty, bits, unsigned) ->
                               if width <> bits then None
                               else
-                                Some (name, c_ty, fas_macro_value bits unsigned literal))))
+                                Some
+                                  (name, c_ty, id, fas_macro_value bits unsigned literal))))
               | _ -> None
             in
             let imported =
@@ -299,16 +301,17 @@ let imported_macro_nodes ~cc ~c_flags ~source ~unit_path ~paths ~macro_names =
                 :: extra)
             in
             List.map
-              (fun (name, ty, value) ->
+              (fun (name, ty, code, value) ->
                 node "FasIntegerMacro" name
                   [
                     ("macroType", C_import_json.Str ty);
+                    ("macroTypeCode", C_import_json.Str (string_of_int code));
                     ("value", C_import_json.Str value);
                   ])
               imported
             @ List.filter_map
                 (fun (name, _) ->
-                  if List.exists (fun (n, _, _) -> n = name) imported then None
+                  if List.exists (fun (n, _, _, _) -> n = name) imported then None
                   else Some (node "FasInvisibleMacro" name []))
                 definitions)
           probed
@@ -411,16 +414,284 @@ let imported_enum_nodes ~cc ~c_flags ~source ~unit_path ~paths declarations =
               (fun (_, code) ->
                 Option.bind (int_of_string_opt code) (fun code ->
                     Option.map
-                      (fun (underlying, _, _) ->
+                      (fun _ ->
                         C_import_json.Obj
                           [
                             ("kind", C_import_json.Str "FasEnumType");
                             ("enumId", C_import_json.Str id);
-                            ("underlyingType", C_import_json.Str underlying);
+                            ("underlyingCode", C_import_json.Str (string_of_int code));
                           ])
                       (macro_type code))))
           (List.mapi (fun i candidate -> (i, candidate)) candidates))
       (run candidates)
+
+type builtin_info = Integer of Ast.ty | Unsupported_integer | Floating of int
+
+let builtin_info_of_name = function
+  | "_Bool" | "bool" -> Some (Integer Ast.Bool)
+  | "void" -> Some (Integer Ast.Void)
+  | "char" | "signed char" -> Some (Integer (Ast.Int Ast.I8))
+  | "unsigned char" -> Some (Integer (Ast.Int Ast.U8))
+  | "short" -> Some (Integer (Ast.Int Ast.I16))
+  | "unsigned short" -> Some (Integer (Ast.Int Ast.U16))
+  | "int" -> Some (Integer (Ast.Int Ast.I32))
+  | "unsigned int" -> Some (Integer (Ast.Int Ast.U32))
+  | "long" | "long long" -> Some (Integer (Ast.Int Ast.I64))
+  | "unsigned long" | "unsigned long long" -> Some (Integer (Ast.Int Ast.U64))
+  | "__int128" | "unsigned __int128" -> Some Unsupported_integer
+  | "float" | "double" | "long double" | "__fp16" | "_Float16" | "_Float128"
+  | "__float128" | "__bf16" ->
+      Some (Floating 0)
+  | _ -> None
+
+let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declarations =
+  let field key node = C_import_json.field key node in
+  let string key node = Option.bind (field key node) C_import_json.string in
+  let children node =
+    Option.fold ~none:[] ~some:C_import_json.array (field "inner" node)
+  in
+  let id node = string "id" node in
+  let name node = string "name" node in
+  let kind node = string "kind" node in
+  let source_offset node =
+    let loc =
+      Option.map
+        (fun loc -> Option.value ~default:loc (field "expansionLoc" loc))
+        (field "loc" node)
+    in
+    Option.bind loc (fun loc ->
+        Option.bind (field "offset" loc) (function
+          | C_import_json.Num value -> int_of_string_opt value
+          | C_import_json.Str value -> int_of_string_opt value
+          | _ -> None))
+  in
+  let source_key node =
+    let loc =
+      Option.map
+        (fun loc -> Option.value ~default:loc (field "expansionLoc" loc))
+        (field "loc" node)
+    in
+    let file =
+      Option.bind loc (fun loc ->
+          match string "presumedFile" loc with
+          | Some _ as file -> file
+          | None -> string "file" loc)
+    in
+    Option.bind file (fun file ->
+        Option.map
+          (fun offset -> "field:" ^ file ^ ":" ^ string_of_int offset)
+          (source_offset node))
+  in
+  let rec direct_record_id node =
+    match kind node with
+    | Some "RecordType" -> Option.bind (field "decl" node) (string "id")
+    | Some
+        ( "ElaboratedType" | "AttributedType" | "ParenType" | "TypedefType" | "QualType"
+        | "MacroQualifiedType" ) ->
+        children node |> List.find_map direct_record_id
+    | _ -> children node |> List.find_map direct_record_id
+  in
+  let rec collect_records node =
+    (if kind node = Some "RecordDecl" then [ node ] else [])
+    @ List.concat_map collect_records (children node)
+  in
+  let rec flatten node = node :: List.concat_map flatten (children node) in
+  let all_nodes = List.concat_map flatten declarations in
+  let top_declarations =
+    List.filter
+      (fun node ->
+        List.mem (kind node)
+          [ Some "FunctionDecl"; Some "VarDecl"; Some "EnumConstantDecl" ]
+        && Option.is_some (name node)
+        && field "isImplicit" node <> Some (C_import_json.Bool true))
+      all_nodes
+  in
+  let alias_names_by_record = Hashtbl.create 32 in
+  List.iter
+    (fun node ->
+      if kind node = Some "TypedefDecl" then
+        match (name node, direct_record_id node) with
+        | Some alias, Some record_id ->
+            Hashtbl.replace alias_names_by_record record_id
+              (alias
+              :: Option.value ~default:[]
+                   (Hashtbl.find_opt alias_names_by_record record_id))
+        | _ -> ())
+    declarations;
+  let roots = List.concat_map collect_records declarations in
+  let probes = Hashtbl.create (List.length top_declarations + 64) in
+  let add_probe target expression =
+    Option.iter (fun target -> Hashtbl.replace probes target expression) target
+  in
+  List.iter
+    (fun node ->
+      let c_name = Option.value ~default:"" (name node) in
+      add_probe (Some ("decl:" ^ c_name)) c_name)
+    top_declarations;
+  let collision_names = Hashtbl.create 16 in
+  List.iter
+    (fun root ->
+      if field "completeDefinition" root = Some (C_import_json.Bool true) then
+        let root_id = id root in
+        let base =
+          match (string "tagUsed" root, name root, root_id) with
+          | Some tag, Some record_name, _ -> Some (tag ^ " " ^ record_name, record_name)
+          | _, None, Some id -> (
+              match Hashtbl.find_opt alias_names_by_record id with
+              | Some (alias :: _) -> Some (alias, alias)
+              | _ -> None)
+          | _ -> None
+        in
+        Option.iter
+          (fun (base_type, root_name) ->
+            let fields = ref [] in
+            let rec collect record =
+              let nested_records =
+                children record
+                |> List.filter (fun child -> kind child = Some "RecordDecl")
+              in
+              children record
+              |> List.iter (fun child ->
+                  if kind child = Some "FieldDecl" then
+                    match name child with
+                    | Some field_name
+                      when field "isBitfield" child <> Some (C_import_json.Bool true) ->
+                        Option.iter
+                          (fun target ->
+                            fields :=
+                              ( field_name,
+                                target,
+                                "((" ^ base_type ^ " *)0)->" ^ field_name )
+                              :: !fields)
+                          (source_key child)
+                    | None ->
+                        Option.iter collect
+                          (List.find_opt
+                             (fun nested -> source_offset nested = source_offset child)
+                             nested_records)
+                    | _ -> ())
+            in
+            collect root;
+            let by_name = Hashtbl.create 16 in
+            List.iter
+              (fun (field_name, _, _) ->
+                Hashtbl.replace by_name field_name
+                  (1 + Option.value ~default:0 (Hashtbl.find_opt by_name field_name)))
+              !fields;
+            let duplicates =
+              Hashtbl.fold
+                (fun field_name count acc ->
+                  if count > 1 then field_name :: acc else acc)
+                by_name []
+            in
+            if duplicates <> [] then Hashtbl.replace collision_names root_name ();
+            List.iter
+              (fun (field_name, target, expression) ->
+                if not (List.mem field_name duplicates) then
+                  add_probe (Some target) expression)
+              !fields)
+          base)
+    roots;
+  let candidates =
+    Hashtbl.fold (fun target expression acc -> (target, expression) :: acc) probes []
+  in
+  let prefix = "__fas_type_probe_" ^ Digest.to_hex (Digest.string unit_path) ^ "_" in
+  let indexed =
+    List.mapi (fun index (target, expression) -> (index, target, expression)) candidates
+  in
+  let append_type_probes () =
+    let out = open_out_gen [ Open_append; Open_binary ] 0o600 unit_path in
+    Fun.protect
+      ~finally:(fun () -> close_out_noerr out)
+      (fun () ->
+        List.iter
+          (fun (index, _, expression) ->
+            Printf.fprintf out "typedef __typeof__(%s) %s%d;\n" expression prefix index)
+          indexed)
+  in
+  let common =
+    [ "-x"; "c"; "--target=x86_64-unknown-linux-gnu" ]
+    @ c_flags
+    @ [ "-iquote"; Filename.dirname source ]
+  in
+  append_type_probes ();
+  let ast_path = Filename.temp_file "fas-c-type-probe-" ".json" in
+  paths := ast_path :: !paths;
+  let ast_argv =
+    Array.of_list
+      ([
+         cc;
+         "-fsyntax-only";
+         "-Xclang";
+         "-ast-dump=json";
+         "-Xclang";
+         "-skip-function-bodies";
+       ]
+      @ common @ [ unit_path ])
+  in
+  match Process.run_to_file ast_argv ast_path with
+  | Error failure -> Error failure.stderr
+  | Ok _ ->
+      let ast_channel = open_in_bin ast_path in
+      let ast_nodes =
+        Fun.protect
+          ~finally:(fun () -> close_in_noerr ast_channel)
+          (fun () -> C_import_json.declarations ast_channel)
+      in
+      let declarations =
+        List.filter
+          (fun node ->
+            not
+              (kind node = Some "TypedefDecl"
+              && Option.fold ~none:false ~some:(String.starts_with ~prefix) (name node)
+              ))
+          ast_nodes
+      in
+      let is_type_node node =
+        Option.fold ~none:false ~some:(String.ends_with ~suffix:"Type") (kind node)
+      in
+      let probe_types =
+        List.filter_map
+          (fun node ->
+            match (kind node, name node) with
+            | Some "TypedefDecl", Some probe_name
+              when String.starts_with ~prefix probe_name ->
+                let index =
+                  String.sub probe_name (String.length prefix)
+                    (String.length probe_name - String.length prefix)
+                in
+                Option.bind (int_of_string_opt index) (fun index ->
+                    match
+                      ( List.nth_opt indexed index,
+                        List.find_opt is_type_node (children node) )
+                    with
+                    | Some (_, target, _), Some type_of_expr ->
+                        Option.map
+                          (fun tree ->
+                            C_import_json.Obj
+                              [
+                                ("kind", C_import_json.Str "FasTypeProbe");
+                                ("target", C_import_json.Str target);
+                                ("tree", tree);
+                              ])
+                          (List.find_opt is_type_node
+                             (List.rev (children type_of_expr)))
+                    | _ -> None)
+            | _ -> None)
+          ast_nodes
+      in
+      Ok
+        (declarations @ probe_types
+        @ List.map
+            (fun record_name ->
+              C_import_json.Obj
+                [
+                  ("kind", C_import_json.Str "FasTypeCollision");
+                  ("name", C_import_json.Str record_name);
+                ])
+            (Hashtbl.fold
+               (fun record_name () acc -> record_name :: acc)
+               collision_names []))
 
 let imported_typedef_layout_nodes ~cc ~c_flags ~source ~unit_path ~paths declarations =
   let field name node = C_import_json.field name node in
@@ -607,7 +878,7 @@ let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) ?(macro_names = []
                   in
                   if !depth = 1 then root := path;
                   Hashtbl.replace origins path !root));
-            let declarations =
+            let annotate_declarations declarations =
               List.map
                 (fun node ->
                   let open C_import_json in
@@ -620,84 +891,98 @@ let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) ?(macro_names = []
                   | _ -> node)
                 declarations
             in
-            let layout_argv =
-              Array.of_list
-                ([
-                   cc;
-                   "-x";
-                   "c";
-                   "-fsyntax-only";
-                   "-Xclang";
-                   "-skip-function-bodies";
-                   "-Xclang";
-                   "-fdump-record-layouts-complete";
-                   "--target=x86_64-unknown-linux-gnu";
-                 ]
-                @ c_flags
-                @ [ "-iquote"; Filename.dirname source; unit_path ])
-            in
-            if debug || keep then
-              prerr_endline
-                ("fas: Clang layout command: "
-                ^ String.concat " " (Array.to_list layout_argv));
-            match Process.run layout_argv with
-            | Error failure ->
-                Error [ compilation_error (List.hd headers).span failure.stderr ]
-            | Ok (layouts, _) -> (
-                match
-                  imported_enum_nodes ~cc ~c_flags ~source ~unit_path ~paths:macro_paths
-                    declarations
-                with
-                | Error message ->
-                    Error
-                      [
-                        Diag.error (List.hd headers).span
-                          ("internal error: C enum type import failed: " ^ message);
-                      ]
-                | Ok enum_types -> (
+            let declarations = annotate_declarations declarations in
+            match
+              imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path
+                ~paths:macro_paths declarations
+            with
+            | Error message ->
+                Error
+                  [
+                    Diag.error (List.hd headers).span
+                      ("internal error: C structured type import failed: " ^ message);
+                  ]
+            | Ok structured_declarations -> (
+                let declarations = annotate_declarations structured_declarations in
+                let layout_argv =
+                  Array.of_list
+                    ([
+                       cc;
+                       "-x";
+                       "c";
+                       "-fsyntax-only";
+                       "-Xclang";
+                       "-skip-function-bodies";
+                       "-Xclang";
+                       "-fdump-record-layouts-complete";
+                       "--target=x86_64-unknown-linux-gnu";
+                     ]
+                    @ c_flags
+                    @ [ "-iquote"; Filename.dirname source; unit_path ])
+                in
+                if debug || keep then
+                  prerr_endline
+                    ("fas: Clang layout command: "
+                    ^ String.concat " " (Array.to_list layout_argv));
+                match Process.run layout_argv with
+                | Error failure ->
+                    Error [ compilation_error (List.hd headers).span failure.stderr ]
+                | Ok (layouts, _) -> (
                     match
-                      imported_typedef_layout_nodes ~cc ~c_flags ~source ~unit_path
+                      imported_enum_nodes ~cc ~c_flags ~source ~unit_path
                         ~paths:macro_paths declarations
                     with
                     | Error message ->
                         Error
                           [
                             Diag.error (List.hd headers).span
-                              ("internal error: C typedef layout import failed: "
-                             ^ message);
+                              ("internal error: C enum type import failed: " ^ message);
                           ]
-                    | Ok typedef_layouts -> (
-                        let macro_names =
-                          List.filter
-                            (fun name ->
-                              not (List.exists (has_c_name name) declarations))
-                            macro_names
-                        in
+                    | Ok enum_types -> (
                         match
-                          imported_macro_nodes ~cc ~c_flags ~source ~unit_path
-                            ~paths:macro_paths ~macro_names
+                          imported_typedef_layout_nodes ~cc ~c_flags ~source ~unit_path
+                            ~paths:macro_paths declarations
                         with
                         | Error message ->
                             Error
                               [
                                 Diag.error (List.hd headers).span
-                                  ("internal error: C macro import failed: " ^ message);
+                                  ("internal error: C typedef layout import failed: "
+                                 ^ message);
                               ]
-                        | Ok macros ->
-                            completed := true;
-                            Ok
-                              ( declarations @ enum_types @ typedef_layouts
-                                @ C_import_json.Obj
-                                    [
-                                      ("kind", C_import_json.Str "FasLayoutDump");
-                                      ("value", C_import_json.Str layouts);
-                                    ]
-                                  :: macros,
-                                (if keep then
-                                   Some (unit_path :: List.rev !fragment_paths)
-                                 else None),
-                                if retain then unit_path :: List.rev !fragment_paths
-                                else [] ))))
+                        | Ok typedef_layouts -> (
+                            let macro_names =
+                              List.filter
+                                (fun name ->
+                                  not (List.exists (has_c_name name) declarations))
+                                macro_names
+                            in
+                            match
+                              imported_macro_nodes ~cc ~c_flags ~source ~unit_path
+                                ~paths:macro_paths ~macro_names
+                            with
+                            | Error message ->
+                                Error
+                                  [
+                                    Diag.error (List.hd headers).span
+                                      ("internal error: C macro import failed: "
+                                     ^ message);
+                                  ]
+                            | Ok macros ->
+                                completed := true;
+                                Ok
+                                  ( declarations @ enum_types @ typedef_layouts
+                                    @ C_import_json.Obj
+                                        [
+                                          ("kind", C_import_json.Str "FasLayoutDump");
+                                          ("value", C_import_json.Str layouts);
+                                        ]
+                                      :: macros,
+                                    (if keep then
+                                       Some (unit_path :: List.rev !fragment_paths)
+                                     else None),
+                                    if retain then unit_path :: List.rev !fragment_paths
+                                    else [] )))))
           with Failure message ->
             Error
               [
@@ -728,83 +1013,8 @@ let rec trim value =
         | ' ' | '\t' | '\n' | '\r' -> trim (String.sub value 0 last)
         | _ -> value)
 
-let qualifiers = [ "const"; "volatile"; "restrict"; "__restrict"; "__restrict__" ]
-
-let clean_type value =
-  let length = String.length value in
-  let output = Buffer.create length in
-  let found = ref [] in
-  let is_ident = function
-    | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' -> true
-    | _ -> false
-  in
-  let rec scan index =
-    if index < length then
-      if is_ident value.[index] then (
-        let finish = ref (index + 1) in
-        while !finish < length && is_ident value.[!finish] do
-          incr finish
-        done;
-        let word = String.sub value index (!finish - index) in
-        if List.mem word qualifiers then found := word :: !found
-        else Buffer.add_string output word;
-        scan !finish)
-      else (
-        Buffer.add_char output value.[index];
-        scan (index + 1))
-  in
-  scan 0;
-  let raw = Buffer.contents output in
-  let normalized = Buffer.create (String.length raw) in
-  let space = ref false in
-  String.iter
-    (fun char ->
-      if char = ' ' || char = '\t' || char = '\n' || char = '\r' then
-        space := Buffer.length normalized > 0
-      else (
-        if !space then Buffer.add_char normalized ' ';
-        Buffer.add_char normalized char;
-        space := false))
-    raw;
-  (Buffer.contents normalized, List.sort_uniq compare !found)
-
-let int_type = function
-  | "_Bool" | "bool" -> Some Ast.Bool
-  | "__size_t" -> Some (Ast.Int Ast.Usize)
-  | "char" | "signed char" -> Some (Ast.Int Ast.I8)
-  | "unsigned char" -> Some (Ast.Int Ast.U8)
-  | "short" | "short int" | "signed short" | "signed short int" ->
-      Some (Ast.Int Ast.I16)
-  | "unsigned short" | "unsigned short int" -> Some (Ast.Int Ast.U16)
-  | "int" | "signed" | "signed int" -> Some (Ast.Int Ast.I32)
-  | "unsigned" | "unsigned int" -> Some (Ast.Int Ast.U32)
-  | "long" | "long int" | "signed long" | "signed long int" | "long long"
-  | "long long int" | "signed long long" | "signed long long int" ->
-      Some (Ast.Int Ast.I64)
-  | "unsigned long" | "unsigned long int" | "unsigned long long"
-  | "unsigned long long int" ->
-      Some (Ast.Int Ast.U64)
-  | _ -> None
-
-let has text part =
-  let value = String.lowercase_ascii text in
-  let n = String.length value and m = String.length part in
-  let rec find i = i + m <= n && (String.sub value i m = part || find (i + 1)) in
-  find 0
-
-let has_type_identifier raw name =
-  String.map
-    (function ('a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_') as c -> c | _ -> ' ')
-    raw
-  |> String.split_on_char ' ' |> List.mem name
-
+let builtin_integer_type = function Integer ty -> Some ty | _ -> None
 let c_type_name node = Option.bind (get "type" node) (string "qualType")
-
-let c_desugared_type_name node =
-  Option.bind (get "type" node) (fun ty ->
-      match string "desugaredQualType" ty with
-      | Some _ as raw -> raw
-      | None -> string "qualType" ty)
 
 let function_result_spelling raw =
   match find_text raw "(*(" 0 with
@@ -842,349 +1052,263 @@ let c_named_type raw name =
           ^ name
           ^ String.sub raw close (String.length raw - close))
 
-let c_type_spellings node =
-  match get "type" node with
-  | None -> []
-  | Some ty ->
-      List.filter_map (fun key -> string key ty) [ "qualType"; "desugaredQualType" ]
-
-let c_qualifiers node =
-  c_type_spellings node
-  |> List.concat_map (fun raw -> snd (clean_type raw))
-  |> List.sort_uniq compare
-
-let top_level_const node =
-  let is_const raw =
-    let from =
-      match String.rindex_opt raw '*' with Some index -> index + 1 | None -> 0
-    in
-    let suffix = String.sub raw from (String.length raw - from) in
-    List.mem "const" (snd (clean_type suffix))
-  in
-  List.exists is_const (c_type_spellings node)
-
-let type_error raw =
-  if has_type_identifier raw "__int128" then Some "`__int128` has no Fas type"
-  else if has_type_identifier (String.lowercase_ascii raw) "_bitint" then
-    Some "`_BitInt` has no Fas type"
-  else
-    let tokens =
-      String.map
-        (function ('a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_') as c -> c | _ -> ' ')
-        (String.lowercase_ascii raw)
-      |> String.split_on_char ' '
-    in
-    if
-      List.exists
-        (fun token ->
-          List.mem token
-            [
-              "float";
-              "double";
-              "__fp16";
-              "_float16";
-              "_float32";
-              "_float64";
-              "_float128";
-              "_float32x";
-              "_float64x";
-              "__float128";
-              "__bf16";
-              "__ibm128";
-              "_decimal32";
-              "_decimal64";
-              "_decimal128";
-            ])
-        tokens
-    then Some "floating-point types are not supported"
-    else None
-
-let floating_storage_bytes raw =
-  let raw, _ = clean_type raw in
-  let first_array = String.index_opt raw '[' in
-  let element_type =
-    match first_array with None -> raw | Some index -> trim (String.sub raw 0 index)
-  in
-  let element_size =
-    match element_type with
-    | "float" -> Some 4
-    | "double" -> Some 8
-    | "long double" -> Some 16
-    | _ -> None
-  in
-  Option.bind element_size (fun element_size ->
-      let rec dimensions index size =
-        if index = String.length raw then Some size
-        else if raw.[index] = ' ' then dimensions (index + 1) size
-        else if raw.[index] <> '[' then None
-        else
-          match String.index_from_opt raw index ']' with
-          | None -> None
-          | Some close ->
-              let length = trim (String.sub raw (index + 1) (close - index - 1)) in
-              Option.bind (int_of_string_opt length) (fun length ->
-                  if length < 0 || (length <> 0 && size > max_int / length) then None
-                  else dimensions (close + 1) (size * length))
-      in
-      match first_array with
-      | None -> Some element_size
-      | Some index -> dimensions index element_size)
-
-let declaration_location node =
-  match get "loc" node with
-  | Some location ->
-      let location = Option.value ~default:location (get "expansionLoc" location) in
-      let number = function
-        | Some (C_import_json.Num value) -> int_of_string_opt value
-        | Some (C_import_json.Str value) -> int_of_string_opt value
-        | _ -> None
-      in
-      (string "file" location, number (get "line" location))
-  | None -> (None, None)
-
-let add_one_decimal value =
-  let length = String.length value in
-  let negative = length > 0 && value.[0] = '-' in
-  let digits = if negative then String.sub value 1 (length - 1) else value in
-  let change_digit digits decrement =
-    let bytes = Bytes.of_string digits in
-    let index = ref (Bytes.length bytes - 1) in
-    let carry = ref true in
-    while !index >= 0 && !carry do
-      let digit = Char.code (Bytes.get bytes !index) - Char.code '0' in
-      let next = if decrement then digit - 1 else digit + 1 in
-      if next < 0 then Bytes.set bytes !index '9'
-      else if next > 9 then Bytes.set bytes !index '0'
-      else (
-        Bytes.set bytes !index (Char.chr (Char.code '0' + next));
-        carry := false);
-      decr index
-    done;
-    if !carry && not decrement then "1" ^ Bytes.to_string bytes
-    else
-      let result = Bytes.to_string bytes in
-      let first = ref 0 in
-      while !first + 1 < String.length result && result.[!first] = '0' do
-        incr first
-      done;
-      String.sub result !first (String.length result - !first)
-  in
-  if negative then
-    let magnitude = change_digit digits true in
-    if magnitude = "0" then "0" else "-" ^ magnitude
-  else change_digit digits false
-
-let rec enum_decl_id node =
-  match string "kind" node with
-  | Some "EnumType" -> Option.bind (get "decl" node) (string "id")
-  | _ -> List.find_map enum_decl_id (children node)
-
-let rec record_decl_id node =
-  match string "kind" node with
-  | Some "RecordType" -> Option.bind (get "decl" node) (string "id")
-  | _ -> List.find_map record_decl_id (children node)
-
-let direct_record_decl_id node =
-  let rec direct = function
-    | node -> (
-        match string "kind" node with
-        | Some "RecordType" -> Option.bind (get "decl" node) (string "id")
-        | Some ("ElaboratedType" | "AttributedType" | "ParenType" | "TypedefType") ->
-            children node |> List.find_map direct
-        | _ -> None)
-  in
+let type_node node =
   children node
-  |> List.find_map (fun child ->
-      match string "kind" child with
-      | Some kind when String.ends_with ~suffix:"Type" kind -> direct child
-      | _ -> None)
+  |> List.find_opt (fun child ->
+      Option.fold ~none:false
+        ~some:(String.ends_with ~suffix:"Type")
+        (string "kind" child))
+
+let type_node_id node = Option.bind (get "decl" node) (string "id")
 
 let record_name node =
   match string "name" node with Some name when name <> "" -> Some name | _ -> None
 
-let type_result ?(allow_arrays = false) ~aliases ~records ~enums ~allow_record raw =
-  let raw, quals = clean_type raw in
+let rec type_qualifiers node =
+  let own =
+    Option.value ~default:"" (string "qualifiers" node)
+    |> String.map (function
+      | ('a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_') as c -> c
+      | _ -> ' ')
+    |> String.split_on_char ' '
+    |> List.filter (( <> ) "")
+  in
+  own @ List.concat_map type_qualifiers (children node)
+
+let rec type_has_address_space node =
+  let own =
+    Option.fold ~none:false
+      ~some:(String.starts_with ~prefix:"__attribute__((address_space(")
+      (string "qualifiers" node)
+  in
+  own || List.exists type_has_address_space (children node)
+
+let rec type_has_vector node =
+  List.mem (string "kind" node)
+    [ Some "VectorType"; Some "ExtVectorType"; Some "DependentSizedExtVectorType" ]
+  || List.exists type_has_vector (children node)
+
+let rec type_has_function ~alias_type_node seen node =
+  match string "kind" node with
+  | Some ("FunctionProtoType" | "FunctionNoProtoType") -> true
+  | Some "TypedefType" -> (
+      match type_node_id node with
+      | Some id when not (List.mem id seen) ->
+          Option.fold ~none:false
+            ~some:(type_has_function ~alias_type_node (id :: seen))
+            (alias_type_node id)
+      | _ -> false)
+  | _ -> List.exists (type_has_function ~alias_type_node seen) (children node)
+
+let rec direct_record_decl_id node =
+  match string "kind" node with
+  | Some "RecordType" -> type_node_id node
+  | Some
+      ( "ElaboratedType" | "ParenType" | "MacroQualifiedType" | "AttributedType"
+      | "TypeOfType" | "TypeOfExprType" | "PredefinedSugarType" ) ->
+      List.find_map direct_record_decl_id (children node)
+  | _ -> None
+
+let record_decl_id node =
+  let rec find tree =
+    match string "kind" tree with
+    | Some "RecordType" -> type_node_id tree
+    | _ -> List.find_map find (children tree)
+  in
+  Option.bind (type_node node) find
+
+let rec enum_decl_id node =
+  match string "kind" node with
+  | Some "EnumType" -> type_node_id node
+  | _ -> List.find_map enum_decl_id (children node)
+
+let add_one_decimal value =
+  let negative = String.starts_with ~prefix:"-" value in
+  let digits =
+    if negative then String.sub value 1 (String.length value - 1) else value
+  in
+  let adjust amount =
+    let chars = Bytes.of_string digits in
+    let carry = ref amount in
+    let index = ref (Bytes.length chars - 1) in
+    while !index >= 0 && !carry <> 0 do
+      let digit = Char.code (Bytes.get chars !index) - Char.code '0' in
+      let next = digit + !carry in
+      if next >= 10 then (
+        Bytes.set chars !index (Char.chr (Char.code '0' + next - 10));
+        carry := 1)
+      else if next < 0 then (
+        Bytes.set chars !index (Char.chr (Char.code '0' + next + 10));
+        carry := -1)
+      else (
+        Bytes.set chars !index (Char.chr (Char.code '0' + next));
+        carry := 0);
+      decr index
+    done;
+    if !carry > 0 then "1" ^ Bytes.to_string chars
+    else if !carry < 0 then Bytes.to_string chars
+    else Bytes.to_string chars
+  in
+  if negative then
+    let next = adjust (-1) |> String.trim in
+    if String.for_all (( = ) '0') next then "0" else "-" ^ next
+  else adjust 1
+
+let type_result ?(allow_arrays = false) ~alias_name ~alias_type_node ~resolve_alias
+    ~record_ids ~record_nodes_by_id ~enum_types ~allow_record ctype =
+  let child_type node =
+    children node
+    |> List.find_opt (fun child ->
+        Option.fold ~none:false
+          ~some:(String.ends_with ~suffix:"Type")
+          (string "kind" child))
+  in
   let rec record_value = function
     | Ast.Named_type _ -> true
-    | Ast.Array (_, element) -> record_value element
+    | Ast.Array (_, ty) -> record_value ty
     | _ -> false
   in
-  let rec resolve seen raw =
-    let raw = trim raw in
-    match Hashtbl.find_opt aliases raw with
-    | Some (Ok (Ast.Array _)) when not allow_arrays ->
-        Error "array types are not supported by value"
-    | Some (Ok ty) when (not allow_record) && record_value ty ->
-        Error "struct and union values are not supported"
-    | Some result when not (List.mem raw seen) -> result
-    | Some _ -> Error "recursive C typedef is not supported"
-    | None -> parse seen raw
-  and parse seen raw =
-    let function_pointer_array () =
-      match find_text raw "(*" 0 with
-      | None -> None
-      | Some start ->
-          let rec dimensions index acc =
-            if index = String.length raw then None
-            else
-              match raw.[index] with
-              | ' ' | '\t' -> dimensions (index + 1) acc
-              | ')' ->
-                  if acc = [] then None
-                  else
-                    Some
-                      (List.fold_right
-                         (fun length ty -> Ast.Array (length, ty))
-                         (List.rev acc) Ast.Addr)
-              | '[' -> (
-                  match String.index_from_opt raw (index + 1) ']' with
-                  | None -> None
-                  | Some close ->
-                      let length =
-                        trim (String.sub raw (index + 1) (close - index - 1))
-                      in
-                      if Option.is_none (int_of_string_opt length) then None
-                      else dimensions (close + 1) (length :: acc))
-              | _ -> None
-          in
-          dimensions (start + 2) []
-    in
-    match function_pointer_array () with
-    | Some ty -> Ok ty
-    | None when has raw "(*" || has raw "(^" -> Ok Ast.Addr
-    | None when raw = "void" -> Ok Ast.Void
-    | None
-      when List.exists (has_type_identifier raw)
-             [
-               "vector_size";
-               "__vector_size__";
-               "ext_vector_type";
-               "__ext_vector_type__";
-             ]
-           || String.contains raw '<' ->
-        Error "vector types are not supported by value"
-    | None when List.exists (has_type_identifier raw) [ "address_space"; "addrspace" ]
-      ->
-        Error "C address spaces are not supported"
-    | None
-      when List.exists (has_type_identifier raw)
-             [
-               "stdcall";
-               "fastcall";
-               "vectorcall";
-               "ms_abi";
-               "regcall";
-               "preserve_most";
-               "preserve_all";
-               "swiftcall";
-               "aarch64_vector_pcs";
-             ] ->
-        Error "non-default calling conventions are not supported"
-    | None when String.contains raw '[' ->
-        if not allow_arrays then Error "array types are not supported by value"
-        else
-          let first = String.index raw '[' in
-          let element = trim (String.sub raw 0 first) in
-          let rec dimensions index =
-            if index = String.length raw then resolve seen element
-            else if raw.[index] = ' ' then dimensions (index + 1)
-            else if raw.[index] <> '[' then
-              Error "array types are not supported by value"
-            else
-              match String.index_from_opt raw index ']' with
-              | None -> Error "array types are not supported by value"
-              | Some finish -> (
-                  let length = trim (String.sub raw (index + 1) (finish - index - 1)) in
-                  if length = "" then Error "arrays of unknown size are not supported"
-                  else
-                    match int_of_string_opt length with
-                    | Some size when size >= 0 ->
-                        Result.map
-                          (fun ty -> Ast.Array (length, ty))
-                          (dimensions (finish + 1))
-                    | _ -> Error "array types are not supported by value")
-          in
-          dimensions first
-    | None -> (
-        let stars =
-          String.fold_left (fun count c -> if c = '*' then count + 1 else count) 0 raw
-        in
-        if stars > 0 then
-          let pointee =
-            match String.index_opt raw '*' with
-            | None -> raw
-            | Some index -> trim (String.sub raw 0 index)
-          in
-          if stars > 1 then Ok Ast.Addr
-          else if pointee = "void" || Option.is_some (int_type pointee) then Ok Ast.Addr
-          else if Option.is_some (type_error pointee) then Ok Ast.Addr
-          else match_record_pointer seen pointee
-        else
-          match type_error raw with
-          | Some reason -> Error reason
-          | None -> (
-              match int_type raw with
-              | Some ty -> Ok ty
-              | None -> (
-                  match raw with
-                  | "void" -> Ok Ast.Void
-                  | _ when String.starts_with ~prefix:"enum " raw ->
-                      let name = String.sub raw 5 (String.length raw - 5) in
-                      Option.fold ~none:(Error "enum representation is not supported")
-                        ~some:(fun underlying -> resolve seen underlying)
-                        (Hashtbl.find_opt enums name)
-                  | _
-                    when String.starts_with ~prefix:"struct " raw
-                         || String.starts_with ~prefix:"union " raw ->
-                      if allow_record then
-                        let name =
-                          String.sub raw
-                            (String.index raw ' ' + 1)
-                            (String.length raw - String.index raw ' ' - 1)
-                        in
-                        Option.fold ~none:(Error "anonymous records are not supported")
-                          ~some:(fun visible -> Ok (Ast.Named_type visible))
-                          (Option.join (Hashtbl.find_opt records name))
-                      else Error "struct and union values are not supported"
-                  | _ when String.contains raw '(' ->
-                      Error "function types are not supported"
-                  | _ -> Error ("unsupported C type " ^ raw))))
-  and match_record_pointer seen pointee =
-    if
-      String.starts_with ~prefix:"struct " pointee
-      || String.starts_with ~prefix:"union " pointee
-    then
-      let name =
-        String.sub pointee
-          (String.index pointee ' ' + 1)
-          (String.length pointee - String.index pointee ' ' - 1)
-      in
-      match Hashtbl.find_opt records name with
-      | None -> Error "anonymous record pointers are not supported"
-      | Some record ->
-          Ok
-            (Option.fold ~none:Ast.Addr
-               ~some:(fun name -> Ast.Handle (Ast.Named_type name))
-               record)
+  let contains_array = function Ast.Array _ -> true | _ -> false in
+  let rec resolve seen node =
+    if type_has_address_space node then Error "C address spaces are not supported"
+    else if type_has_vector node then Error "vector types are not supported by value"
     else
-      match Hashtbl.find_opt aliases pointee with
-      | Some (Ok (Ast.Named_type name)) when Hashtbl.mem records name ->
-          Ok (Ast.Handle (Ast.Named_type name))
-      | Some (Ok (Ast.Void | Ast.Bool | Ast.Int _ | Ast.Addr | Ast.Handle _)) ->
-          Ok Ast.Addr
-      | Some (Ok (Ast.Array _)) -> Ok Ast.Addr
-      | Some (Ok _) -> Error "pointer target type is not supported"
-      | Some (Error reason) -> Error reason
-      | None -> (
-          match resolve seen pointee with
-          | Ok (Ast.Named_type name) when Hashtbl.mem records name ->
-              Ok (Ast.Handle (Ast.Named_type name))
-          | Ok (Ast.Handle _ | Ast.Bool | Ast.Int _ | Ast.Addr) -> Ok Ast.Addr
-          | Ok _ -> Error "pointer target type is not supported"
-          | Error reason -> Error reason)
+      match string "kind" node with
+      | Some "QualType" ->
+          Option.fold ~none:(Error "unsupported C type") ~some:(resolve seen)
+            (child_type node)
+      | Some "TypedefType" -> (
+          match type_node_id node with
+          | Some id when not (List.mem id seen) -> (
+              match alias_name id with
+              | Some name -> resolve_alias name
+              | None -> Error "typedef has no canonical type")
+          | Some _ -> Error "recursive C typedef is not supported"
+          | None -> Error "typedef has no canonical type")
+      | Some "PredefinedSugarType" -> (
+          match Option.bind (get "type" node) (string "qualType") with
+          | Some "__size_t" -> Ok (Ast.Int Ast.Usize)
+          | Some "__ptrdiff_t" -> Ok (Ast.Int Ast.Isize)
+          | _ ->
+              Option.fold ~none:(Error "unsupported C type") ~some:(resolve seen)
+                (child_type node))
+      | Some
+          ( "ElaboratedType" | "ParenType" | "MacroQualifiedType" | "AdjustedType"
+          | "DecayedType" | "AttributedType" | "TypeOfType" | "TypeOfExprType" ) ->
+          let children =
+            children node
+            |> List.filter (fun child ->
+                Option.fold ~none:false
+                  ~some:(String.ends_with ~suffix:"Type")
+                  (string "kind" child))
+          in
+          Option.fold ~none:(Error "unsupported C type") ~some:(resolve seen)
+            (List.find_opt (fun _ -> true) (List.rev children))
+      | Some "BuiltinType" -> (
+          match
+            Option.bind (get "type" node) (fun ty ->
+                Option.bind (string "qualType" ty) builtin_info_of_name)
+          with
+          | None -> Error "unsupported C builtin type"
+          | Some (Integer ty) -> Ok ty
+          | Some Unsupported_integer -> Error "`__int128` has no Fas type"
+          | Some (Floating _) -> Error "floating-point types are not supported")
+      | Some "BitIntType" -> Error "`_BitInt` has no Fas type"
+      | Some "EnumType" -> (
+          match type_node_id node with
+          | Some id ->
+              Option.value ~default:(Error "enum representation is not supported")
+                (Hashtbl.find_opt enum_types id)
+          | None -> Error "enum representation is not supported")
+      | Some "RecordType" -> (
+          match type_node_id node with
+          | Some id ->
+              Option.fold ~none:(Error "anonymous records are not supported")
+                ~some:(fun name -> Ok (Ast.Named_type name))
+                (Hashtbl.find_opt record_ids id)
+          | None -> Error "anonymous records are not supported")
+      | Some ("PointerType" | "BlockPointerType" | "ObjCObjectPointerType") -> (
+          let pointee = child_type node in
+          match pointee with
+          | None -> Error "pointer target type is not supported"
+          | Some pointee when type_has_function ~alias_type_node [] pointee ->
+              Ok Ast.Addr
+          | Some pointee when type_has_address_space pointee ->
+              Error "C address spaces are not supported"
+          | Some pointee when type_has_vector pointee ->
+              Error "vector types are not supported by value"
+          | Some pointee ->
+              let rec target seen node =
+                match string "kind" node with
+                | Some "QualType" ->
+                    Option.fold ~none:(Error "pointer target type is not supported")
+                      ~some:(target seen) (child_type node)
+                | Some "TypedefType" -> (
+                    match type_node_id node with
+                    | Some id when not (List.mem id seen) ->
+                        Option.fold ~none:(Error "pointer target type is not supported")
+                          ~some:(target (id :: seen))
+                          (alias_type_node id)
+                    | _ -> Error "recursive C typedef is not supported")
+                | Some "RecordType" -> (
+                    match type_node_id node with
+                    | Some id -> (
+                        match Hashtbl.find_opt record_ids id with
+                        | Some name -> Ok (Ast.Handle (Ast.Named_type name))
+                        | None ->
+                            Option.fold
+                              ~none:
+                                (Error "anonymous record pointers are not supported")
+                              ~some:(fun record ->
+                                if Option.is_some (record_name record) then Ok Ast.Addr
+                                else Error "anonymous record pointers are not supported")
+                              (Hashtbl.find_opt record_nodes_by_id id))
+                    | None -> Error "anonymous record pointers are not supported")
+                | Some
+                    ( "BuiltinType" | "BitIntType" | "EnumType" | "PointerType"
+                    | "BlockPointerType" | "ConstantArrayType" | "IncompleteArrayType"
+                    | "VariableArrayType" | "DependentSizedArrayType" ) ->
+                    Ok Ast.Addr
+                | Some ("FunctionProtoType" | "FunctionNoProtoType") -> Ok Ast.Addr
+                | Some
+                    ( "ElaboratedType" | "ParenType" | "MacroQualifiedType"
+                    | "AttributedType" | "TypeOfType" | "TypeOfExprType"
+                    | "PredefinedSugarType" ) ->
+                    Option.fold ~none:(Error "pointer target type is not supported")
+                      ~some:(target seen) (child_type node)
+                | _ -> Error "pointer target type is not supported"
+              in
+              target [] pointee)
+      | Some "ConstantArrayType" -> (
+          let size =
+            match get "size" node with
+            | Some (C_import_json.Num value) -> int_of_string_opt value
+            | Some (C_import_json.Str value) -> int_of_string_opt value
+            | _ -> None
+          in
+          match (size, child_type node) with
+          | Some size, Some element when size >= 0 ->
+              Result.map
+                (fun ty -> Ast.Array (string_of_int size, ty))
+                (resolve seen element)
+          | _ -> Error "array types are not supported by value")
+      | Some "IncompleteArrayType" -> Error "arrays of unknown size are not supported"
+      | Some ("VariableArrayType" | "DependentSizedArrayType") ->
+          Error "array types are not supported by value"
+      | Some ("FunctionProtoType" | "FunctionNoProtoType") ->
+          Error "function types are not supported"
+      | _ ->
+          Error
+            ("unsupported C type "
+            ^ Option.value ~default:""
+                (Option.bind (get "type" node) (string "qualType")))
   in
-  let _ = quals in
-  resolve [] raw
+  match resolve [] ctype with
+  | Ok ty when (not allow_arrays) && contains_array ty ->
+      Error "array types are not supported by value"
+  | Ok ty when (not allow_record) && record_value ty ->
+      Error "struct and union values are not supported"
+  | result -> result
 
 type mapped = {
   items : Ast.item list;
@@ -1224,7 +1348,7 @@ let make_adapter ~occupied source (static : static_function) =
     let call = static.name ^ "(" ^ String.concat ", " call_args ^ ")" in
     let body = if static.void_result then call ^ ";" else "return " ^ call ^ ";" in
     let return_type, return_typedef =
-      if Option.is_some (find_text static.return_type "(*" 0) then
+      if static.return_function_pointer then
         let alias = symbol ^ "_result" in
         (alias, "typedef " ^ c_named_type static.return_type alias ^ ";\n")
       else (static.return_type, "")
@@ -1449,21 +1573,64 @@ let map_declarations ?(container = false) ~span declarations =
             | _ -> ())
         | _ -> ())
     declarations;
+  let structured_nodes =
+    List.filter
+      (fun node ->
+        List.mem (string "kind" node)
+          [ Some "FasTypeProbe"; Some "FasTypeCollision"; Some "FasEnumType" ])
+      declarations
+  in
+  let structured_types = Hashtbl.create 128 and colliding_records = Hashtbl.create 16 in
+  List.iter
+    (fun node ->
+      match string "kind" node with
+      | Some "FasTypeProbe" -> (
+          match (string "target" node, get "tree" node) with
+          | Some target, Some tree -> Hashtbl.replace structured_types target tree
+          | _ -> ())
+      | Some "FasTypeCollision" ->
+          Option.iter
+            (fun name -> Hashtbl.replace colliding_records name ())
+            (string "name" node)
+      | _ -> ())
+    structured_nodes;
   let nodes =
     C_import_json.array (C_import_json.Arr declarations)
     |> List.filter (fun node ->
         not
           (List.mem (string "kind" node)
-             [ Some "FasLayoutDump"; Some "FasTypedefLayout" ]))
+             [
+               Some "FasLayoutDump";
+               Some "FasTypedefLayout";
+               Some "FasTypeProbe";
+               Some "FasTypeCollision";
+               Some "FasEnumType";
+             ]))
   in
   let enum_probe_types = Hashtbl.create 32 in
   List.iter
     (fun node ->
       if string "kind" node = Some "FasEnumType" then
-        match (string "enumId" node, string "underlyingType" node) with
-        | Some id, Some underlying -> Hashtbl.replace enum_probe_types id underlying
+        match (string "enumId" node, string "underlyingCode" node) with
+        | Some id, Some code ->
+            Option.iter
+              (fun ty -> Hashtbl.replace enum_probe_types id (Ok ty))
+              (Option.bind (int_of_string_opt code) (fun code ->
+                   Option.bind (macro_type code) (fun (_, bits, unsigned) ->
+                       if code = 11 then Some Ast.Bool
+                       else
+                         match (bits, unsigned) with
+                         | 8, false -> Some (Ast.Int Ast.I8)
+                         | 8, true -> Some (Ast.Int Ast.U8)
+                         | 16, false -> Some (Ast.Int Ast.I16)
+                         | 16, true -> Some (Ast.Int Ast.U16)
+                         | 32, false -> Some (Ast.Int Ast.I32)
+                         | 32, true -> Some (Ast.Int Ast.U32)
+                         | 64, false -> Some (Ast.Int Ast.I64)
+                         | 64, true -> Some (Ast.Int Ast.U64)
+                         | _ -> None)))
         | _ -> ())
-    nodes;
+    structured_nodes;
   let integer_width = function
     | Ast.Int (Ast.I8 | Ast.U8) -> Some 8
     | Ast.Int (Ast.I16 | Ast.U16) -> Some 16
@@ -1472,37 +1639,61 @@ let map_declarations ?(container = false) ~span declarations =
     | _ -> None
   in
   let enum_constant_type node =
+    let rec builtin_type seen tree =
+      match string "kind" tree with
+      | Some "BuiltinType" ->
+          Option.bind
+            (Option.bind (get "type" tree) (fun ty ->
+                 Option.bind (string "qualType" ty) builtin_info_of_name))
+            builtin_integer_type
+      | Some "TypedefType" -> (
+          match type_node_id tree with
+          | Some id when not (List.mem id seen) ->
+              List.find_map
+                (fun alias ->
+                  if
+                    string "kind" alias = Some "TypedefDecl"
+                    && string "id" alias = Some id
+                  then Option.bind (type_node alias) (builtin_type (id :: seen))
+                  else None)
+                nodes
+          | _ -> None)
+      | Some
+          ( "QualType" | "ElaboratedType" | "ParenType" | "MacroQualifiedType"
+          | "AttributedType" | "TypeOfType" | "TypeOfExprType" | "PredefinedSugarType"
+            ) ->
+          Option.bind (type_node tree) (builtin_type seen)
+      | _ -> None
+    in
     let constants =
       children node
-      |> List.filter_map (fun child ->
-          if string "kind" child = Some "EnumConstantDecl" then c_type_name child
-          else None)
+      |> List.filter (fun child -> string "kind" child = Some "EnumConstantDecl")
     in
     let typed_constants =
       List.filter_map
-        (fun raw -> Option.map (fun ty -> (ty, raw)) (int_type raw))
+        (fun child ->
+          Option.bind (record_name child) (fun name ->
+              Option.bind
+                (Hashtbl.find_opt structured_types ("decl:" ^ name))
+                (builtin_type [])))
         constants
     in
-    if constants = [] || List.length typed_constants <> List.length constants then None
-    else
-      match List.map fst typed_constants |> List.sort_uniq compare with
-      | [ constant_type ] ->
-          List.find_map
-            (fun (ty, raw) -> if ty = constant_type then Some (ty, raw) else None)
-            typed_constants
-      | _ -> None
+    match typed_constants with
+    | first :: rest
+      when List.length typed_constants = List.length constants
+           && List.for_all (( = ) first) rest ->
+        Some first
+    | _ -> None
   in
   let enum_representation node underlying previous =
-    match enum_constant_type node with
-    | Some (constant_type, constants) -> (
-        match
-          (integer_width constant_type, Option.bind (int_type underlying) integer_width)
-        with
+    match (enum_constant_type node, underlying) with
+    | Some constant_type, Ok underlying_type -> (
+        match (integer_width constant_type, integer_width underlying_type) with
         | Some constant_width, Some underlying_width
           when constant_width = underlying_width ->
-            constants
+            Ok constant_type
         | _ -> underlying)
-    | None -> Option.value ~default:underlying previous
+    | _ -> Option.value ~default:underlying previous
   in
   let macro_shadow_names =
     List.filter_map
@@ -1532,7 +1723,9 @@ let map_declarations ?(container = false) ~span declarations =
   and enums = Hashtbl.create 32
   and enum_id_types = Hashtbl.create 32
   and enum_id_names = Hashtbl.create 32
-  and alias_nodes = Hashtbl.create 64 in
+  and alias_nodes = Hashtbl.create 64
+  and alias_nodes_by_id = Hashtbl.create 64
+  and alias_names_by_id = Hashtbl.create 64 in
   List.iter
     (fun node ->
       match string "kind" node with
@@ -1548,29 +1741,35 @@ let map_declarations ?(container = false) ~span declarations =
               Hashtbl.replace anonymous_record_ids id ();
               Hashtbl.replace record_nodes_by_id id node
           | None, _ -> ())
-      | Some "EnumDecl" -> (
-          match string "id" node with
-          | Some id ->
-              Option.iter (Hashtbl.replace enum_id_names id) (record_name node);
-              Option.iter
-                (fun underlying ->
-                  let previous =
-                    match Hashtbl.find_opt enum_id_types id with
-                    | Some _ as previous -> previous
-                    | None -> Option.bind (record_name node) (Hashtbl.find_opt enums)
-                  in
-                  let representation = enum_representation node underlying previous in
-                  Hashtbl.replace enum_id_types id representation;
-                  Option.iter
-                    (fun name -> Hashtbl.replace enums name representation)
-                    (record_name node))
-                (Hashtbl.find_opt enum_probe_types id)
+      | Some "TypedefDecl" -> (
+          match (record_name node, get "id" node) with
+          | Some name, Some (C_import_json.Str id) ->
+              Hashtbl.replace alias_nodes name node;
+              Hashtbl.replace alias_nodes_by_id id node;
+              Hashtbl.replace alias_names_by_id id name
           | _ -> ())
-      | Some "TypedefDecl" ->
-          Option.iter
-            (fun name -> Hashtbl.replace alias_nodes name node)
-            (record_name node)
       | _ -> ())
+    nodes;
+  List.iter
+    (fun node ->
+      if string "kind" node = Some "EnumDecl" then
+        match string "id" node with
+        | Some id ->
+            Option.iter (Hashtbl.replace enum_id_names id) (record_name node);
+            Option.iter
+              (fun underlying ->
+                let previous =
+                  match Hashtbl.find_opt enum_id_types id with
+                  | Some _ as previous -> previous
+                  | None -> Option.bind (record_name node) (Hashtbl.find_opt enums)
+                in
+                let representation = enum_representation node underlying previous in
+                Hashtbl.replace enum_id_types id representation;
+                Option.iter
+                  (fun name -> Hashtbl.replace enums name representation)
+                  (record_name node))
+              (Hashtbl.find_opt enum_probe_types id)
+        | None -> ())
     nodes;
   List.iter
     (fun node ->
@@ -1584,7 +1783,7 @@ let map_declarations ?(container = false) ~span declarations =
           Hashtbl.replace record_nodes_by_id id (Hashtbl.find record_nodes_by_id id)
       | _ -> ())
     nodes;
-  let same_record_typedef id _tag node = direct_record_decl_id node = Some id in
+  let same_record_typedef id _tag node = record_decl_id node = Some id in
   let collides_with_ordinary tag id =
     List.exists
       (fun node ->
@@ -1642,16 +1841,23 @@ let map_declarations ?(container = false) ~span declarations =
       | _ -> ())
     nodes;
   let aliases = Hashtbl.create 64 in
+  let aliases_being_resolved = Hashtbl.create 16 in
+  let alias_name id = Hashtbl.find_opt alias_names_by_id id in
+  let alias_type_node id =
+    Option.bind (Hashtbl.find_opt alias_nodes_by_id id) type_node
+  in
   let machine_integer_type = function
     | "size_t" | "uintptr_t" -> Some (Ast.Int Ast.Usize)
     | "ssize_t" | "ptrdiff_t" | "intptr_t" -> Some (Ast.Int Ast.Isize)
     | _ -> None
   in
-  let rec alias stack name =
+  let rec alias name =
     match Hashtbl.find_opt aliases name with
     | Some result -> result
-    | None when List.mem name stack -> Error "recursive C typedef is not supported"
+    | None when Hashtbl.mem aliases_being_resolved name ->
+        Error "recursive C typedef is not supported"
     | None -> (
+        Hashtbl.replace aliases_being_resolved name ();
         match Hashtbl.find_opt typedef_layouts name with
         | Some (size, align) when align > size ->
             let result =
@@ -1660,75 +1866,198 @@ let map_declarations ?(container = false) ~span declarations =
                    "over-aligned typedef `%s` has alignment greater than its size" name)
             in
             Hashtbl.replace aliases name result;
+            Hashtbl.remove aliases_being_resolved name;
             result
-        | _ -> alias_type stack name)
-  and alias_type stack name =
-    match Hashtbl.find_opt aliases name with
-    | Some result -> result
-    | None when Option.is_some (machine_integer_type name) ->
-        let result = Ok (Option.get (machine_integer_type name)) in
-        Hashtbl.replace aliases name result;
-        result
-    | None -> (
-        match Hashtbl.find_opt alias_nodes name with
-        | None -> Error ("unknown C typedef " ^ name)
-        | Some node ->
+        | _ ->
             let result =
-              match direct_record_decl_id node with
-              | Some id -> (
-                  match Hashtbl.find_opt record_ids id with
-                  | Some target when Hashtbl.mem records target ->
-                      Ok (Ast.Named_type target)
-                  | _ ->
+              match machine_integer_type name with
+              | Some ty -> Ok ty
+              | None -> (
+                  match Hashtbl.find_opt alias_nodes name with
+                  | None -> Error ("unknown C typedef " ^ name)
+                  | Some node ->
                       Option.fold ~none:(Error "typedef has no canonical type")
-                        ~some:(resolve_aliases (name :: stack))
-                        (c_type_name node))
-              | None ->
-                  Option.fold ~none:(Error "typedef has no canonical type")
-                    ~some:(resolve_aliases (name :: stack))
-                    (c_type_name node)
+                        ~some:
+                          (type_result ~allow_arrays:true ~alias_name ~alias_type_node
+                             ~resolve_alias:alias ~record_ids ~record_nodes_by_id
+                             ~enum_types:enum_id_types ~allow_record:true)
+                        (type_node node))
             in
             Hashtbl.replace aliases name result;
+            Hashtbl.remove aliases_being_resolved name;
             result)
-  and resolve_aliases stack raw =
-    let raw, _ = clean_type raw in
-    let first_delimiter = function
-      | Some left, Some right -> Some (min left right)
-      | Some index, None | None, Some index -> Some index
-      | None, None -> None
-    in
-    let alias_base =
-      first_delimiter (String.index_opt raw '*', String.index_opt raw '[')
-      |> Option.map (fun index -> trim (String.sub raw 0 index))
-    in
-    Option.iter
-      (fun name ->
-        if Hashtbl.mem alias_nodes name && not (List.mem name stack) then
-          ignore (alias stack name))
-      alias_base;
-    match int_type raw with
-    | Some ty -> Ok ty
-    | None when Option.is_some (type_error raw) -> Error (Option.get (type_error raw))
-    | None when Hashtbl.mem alias_nodes raw -> alias stack raw
-    | None
-      when (String.starts_with ~prefix:"struct " raw
-           || String.starts_with ~prefix:"union " raw)
-           && not (String.contains raw '[') ->
-        let name =
-          String.sub raw
-            (String.index raw ' ' + 1)
-            (String.length raw - String.index raw ' ' - 1)
-        in
-        Option.fold ~none:(Error "anonymous records are not supported")
-          ~some:(fun name -> Ok (Ast.Named_type name))
-          (Option.join (Hashtbl.find_opt records name))
-    | None ->
-        let result =
-          type_result ~allow_arrays:true ~aliases ~records ~enums ~allow_record:true raw
-        in
-        result
   in
-  Hashtbl.iter (fun name _ -> ignore (alias [] name)) alias_nodes;
+  let source_location_key node =
+    let loc =
+      Option.map
+        (fun loc -> Option.value ~default:loc (get "expansionLoc" loc))
+        (get "loc" node)
+    in
+    let file =
+      Option.bind loc (fun loc ->
+          match string "presumedFile" loc with
+          | Some _ as file -> file
+          | None -> string "file" loc)
+    in
+    let offset =
+      Option.bind loc (fun loc ->
+          Option.bind (get "offset" loc) (function
+            | C_import_json.Num value -> int_of_string_opt value
+            | C_import_json.Str value -> int_of_string_opt value
+            | _ -> None))
+    in
+    Option.bind file (fun file ->
+        Option.map (fun offset -> "field:" ^ file ^ ":" ^ string_of_int offset) offset)
+  in
+  let type_tree node =
+    match string "kind" node with
+    | Some "TypedefDecl" -> type_node node
+    | Some ("FunctionDecl" | "VarDecl" | "EnumConstantDecl") ->
+        Option.bind (record_name node) (fun name ->
+            Hashtbl.find_opt structured_types ("decl:" ^ name))
+    | Some "FieldDecl" -> (
+        let key = source_location_key node in
+        match Option.bind key (Hashtbl.find_opt structured_types) with
+        | Some _ as tree -> tree
+        | None ->
+            Option.bind (get "type" node) (fun ty ->
+                Option.bind (string "typeAliasDeclId" ty) alias_type_node))
+    | _ -> (
+        let direct =
+          Option.bind
+            (Option.bind (get "id" node) C_import_json.string)
+            (Hashtbl.find_opt structured_types)
+        in
+        match direct with
+        | Some _ -> direct
+        | None ->
+            Option.bind (get "type" node) (fun ty ->
+                Option.bind (string "typeAliasDeclId" ty) alias_type_node))
+  in
+  let rec qualifiers_in_type seen node =
+    let own = type_qualifiers node |> List.filter (( <> ) "") in
+    let nested =
+      match string "kind" node with
+      | Some "TypedefType" -> (
+          match type_node_id node with
+          | Some id when not (List.mem id seen) ->
+              Option.fold ~none:[]
+                ~some:(qualifiers_in_type (id :: seen))
+                (alias_type_node id)
+          | _ -> [])
+      | _ -> List.concat_map (qualifiers_in_type seen) (children node)
+    in
+    own @ nested
+  in
+  let c_qualifiers node =
+    Option.fold ~none:[] ~some:(qualifiers_in_type []) (type_tree node)
+    |> List.sort_uniq compare
+  in
+  let rec top_level_const seen node =
+    match string "kind" node with
+    | Some "QualType" ->
+        let own_const =
+          Option.fold ~none:false
+            ~some:(fun value ->
+              String.map
+                (function
+                  | ('a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_') as c -> c | _ -> ' ')
+                value
+              |> String.split_on_char ' ' |> List.mem "const")
+            (string "qualifiers" node)
+        in
+        own_const
+        || Option.fold ~none:false
+             ~some:(fun child ->
+               if string "kind" child = Some "ConstantArrayType" then
+                 top_level_const seen child
+               else false)
+             (type_node node)
+    | Some "TypedefType" -> (
+        match type_node_id node with
+        | Some id when not (List.mem id seen) ->
+            Option.fold ~none:false
+              ~some:(top_level_const (id :: seen))
+              (alias_type_node id)
+        | _ -> false)
+    | Some
+        ( "ElaboratedType" | "ParenType" | "MacroQualifiedType" | "AdjustedType"
+        | "DecayedType" | "AttributedType" | "TypeOfType" | "TypeOfExprType"
+        | "PredefinedSugarType" ) ->
+        Option.fold ~none:false ~some:(top_level_const seen) (type_node node)
+    | Some "ConstantArrayType" ->
+        Option.fold ~none:false ~some:(top_level_const seen) (type_node node)
+    | _ -> false
+  in
+  let top_level_const_node node =
+    Option.fold ~none:false ~some:(top_level_const []) (type_tree node)
+  in
+  let parse_type ?(allow_arrays = false) ~allow_record tree =
+    type_result ~allow_arrays ~alias_name ~alias_type_node ~resolve_alias:alias
+      ~record_ids ~record_nodes_by_id ~enum_types:enum_id_types ~allow_record tree
+  in
+  let rec contains_function_type seen node =
+    match string "kind" node with
+    | Some ("FunctionProtoType" | "FunctionNoProtoType") -> true
+    | Some "TypedefType" -> (
+        match type_node_id node with
+        | Some id when not (List.mem id seen) ->
+            Option.fold ~none:false
+              ~some:(contains_function_type (id :: seen))
+              (alias_type_node id)
+        | _ -> false)
+    | _ -> List.exists (contains_function_type seen) (children node)
+  in
+  let rec function_pointer_type seen node =
+    match string "kind" node with
+    | Some "PointerType" ->
+        Option.fold ~none:false ~some:(contains_function_type []) (type_node node)
+    | Some "TypedefType" -> (
+        match type_node_id node with
+        | Some id when not (List.mem id seen) ->
+            Option.fold ~none:false
+              ~some:(function_pointer_type (id :: seen))
+              (alias_type_node id)
+        | _ -> false)
+    | Some
+        ( "QualType" | "ElaboratedType" | "ParenType" | "MacroQualifiedType"
+        | "AttributedType" | "TypeOfType" | "TypeOfExprType" | "PredefinedSugarType" )
+      ->
+        Option.fold ~none:false ~some:(function_pointer_type seen) (type_node node)
+    | _ -> false
+  in
+  let rec record_id_in_type seen node =
+    match string "kind" node with
+    | Some "RecordType" -> type_node_id node
+    | Some "TypedefType" -> (
+        match type_node_id node with
+        | Some id when not (List.mem id seen) ->
+            Option.bind (alias_type_node id) (record_id_in_type (id :: seen))
+        | _ -> None)
+    | _ -> List.find_map (record_id_in_type seen) (children node)
+  in
+  let record_decl_id node = Option.bind (type_tree node) (record_id_in_type []) in
+  let declaration_location node =
+    let loc =
+      Option.map
+        (fun loc -> Option.value ~default:loc (get "expansionLoc" loc))
+        (get "loc" node)
+    in
+    let loc_value key fallback =
+      Option.bind loc (fun loc ->
+          match get key loc with Some _ as value -> value | None -> get fallback loc)
+    in
+    let number = function
+      | C_import_json.Num value -> int_of_string_opt value
+      | C_import_json.Str value -> int_of_string_opt value
+      | _ -> None
+    in
+    ( (match Option.bind loc (string "presumedFile") with
+      | Some _ as file -> file
+      | None -> Option.bind loc (string "file")),
+      Option.bind (loc_value "presumedLine" "line") number )
+  in
+  Hashtbl.iter (fun name _ -> ignore (alias name)) alias_nodes;
   let typed_aliases =
     Hashtbl.fold
       (fun name result acc ->
@@ -1770,6 +2099,13 @@ let map_declarations ?(container = false) ~span declarations =
       if Option.is_some reason && not keep_unsupported_item then None else item
     in
     let declaration_file, line = origin in
+    let obligations =
+      if Option.is_some (find_text spelling "restrict" 0) then
+        List.map
+          (function "__restrict" | "__restrict__" -> "restrict" | q -> q)
+          obligations
+      else obligations
+    in
     let qualifier_text = List.sort_uniq compare obligations |> String.concat "," in
     let reason_text =
       Option.fold ~none:"" ~some:(fun r -> " unsupported=" ^ r) reason
@@ -1809,18 +2145,9 @@ let map_declarations ?(container = false) ~span declarations =
   in
   let quals node = c_qualifiers node in
   let as_type ?(allow_arrays = false) ~allow_record node =
-    match c_type_name node with
-    | None -> Error "declaration has no C type"
-    | Some raw -> (
-        match type_result ~allow_arrays ~aliases ~records ~enums ~allow_record raw with
-        | Ok _ as result -> result
-        | Error "function types are not supported" as original -> (
-            match c_desugared_type_name node with
-            | Some canonical when canonical <> raw ->
-                type_result ~allow_arrays ~aliases ~records ~enums ~allow_record
-                  canonical
-            | _ -> original)
-        | Error reason -> Error reason)
+    match type_tree node with
+    | None -> Error "declaration has no structural C type"
+    | Some tree -> parse_type ~allow_arrays ~allow_record tree
   in
   let record_definitions = Hashtbl.create 64 in
   List.iter
@@ -1836,10 +2163,45 @@ let map_declarations ?(container = false) ~span declarations =
               (Hashtbl.find_opt record_ids id)
         | None -> ())
     nodes;
-  let rec record_layout ?anonymous_field node name =
+  let anonymous_record_layout node =
+    let loc =
+      Option.map
+        (fun loc -> Option.value ~default:loc (get "expansionLoc" loc))
+        (get "loc" node)
+    in
+    Option.bind loc (fun loc ->
+        let file =
+          match string "presumedFile" loc with
+          | Some _ as file -> file
+          | None -> string "file" loc
+        in
+        let number = function
+          | C_import_json.Num value -> int_of_string_opt value
+          | C_import_json.Str value -> int_of_string_opt value
+          | _ -> None
+        in
+        let line =
+          Option.bind
+            (match get "presumedLine" loc with
+            | Some _ as line -> line
+            | None -> get "line" loc)
+            number
+        and col = Option.bind (get "col" loc) number in
+        match (file, line, col) with
+        | Some file, Some line, Some col ->
+            let tag = Option.value ~default:"struct" (string "tagUsed" node) in
+            let name = Printf.sprintf "%s (unnamed at %s:%d:%d)" tag file line col in
+            let suffix = Printf.sprintf "::(unnamed at %s:%d:%d)" file line col in
+            List.find_opt
+              (fun layout ->
+                layout.layout_name = name || String.ends_with ~suffix layout.layout_name)
+              layouts
+        | _ -> None)
+  in
+  let record_layout ?anonymous_record node name =
     let tag = Option.value ~default:"struct" (string "tagUsed" node) in
     let direct = tag ^ " " ^ Option.value ~default:name (record_name node) in
-    match anonymous_record_layout anonymous_field with
+    match Option.bind anonymous_record anonymous_record_layout with
     | Some _ as layout -> layout
     | None -> (
         match List.find_opt (fun layout -> layout.layout_name = direct) layouts with
@@ -1886,25 +2248,6 @@ let map_declarations ?(container = false) ~span declarations =
                              layout.layout_name)
                       layouts
                 | _ -> None))
-  and anonymous_record_layout = function
-    | None -> None
-    | Some field ->
-        Option.bind (c_type_name field) (fun raw ->
-            if Option.is_none (find_text raw "::(anonymous " 0) then None
-            else
-              let rec replace_anonymous text =
-                let marker = "(anonymous " in
-                match find_text text marker 0 with
-                | None -> text
-                | Some at ->
-                    String.sub text 0 at ^ "(unnamed "
-                    ^ replace_anonymous
-                        (String.sub text
-                           (at + String.length marker)
-                           (String.length text - at - String.length marker))
-              in
-              let spelling = replace_anonymous raw in
-              List.find_opt (fun layout -> layout.layout_name = spelling) layouts)
   in
   let layout_member_offset layout field field_index =
     match record_name field with
@@ -1912,57 +2255,40 @@ let map_declarations ?(container = false) ~span declarations =
         match List.assoc_opt name layout.direct_offsets with
         | Some _ as found -> found
         | None -> Option.map snd (List.nth_opt layout.direct_members field_index))
-    | None -> (
-        let found =
-          Option.bind (c_type_name field) (fun raw ->
-              List.find_map
-                (fun (member, offset) -> if member = raw then Some offset else None)
-                layout.members)
-        in
-        match found with
-        | Some _ -> found
-        | None -> Option.map snd (List.nth_opt layout.direct_members field_index))
+    | None -> Option.map snd (List.nth_opt layout.direct_members field_index)
   in
   let field_storage_type field =
-    let rec floating_bytes seen raw =
-      let raw, _ = clean_type raw in
-      let array_at = String.index_opt raw '[' in
-      let base =
-        match array_at with None -> raw | Some index -> trim (String.sub raw 0 index)
-      in
-      let base_bytes =
-        match Hashtbl.find_opt alias_nodes base with
-        | Some node when not (List.mem base seen) ->
-            Option.bind (c_type_name node) (floating_bytes (base :: seen))
-        | _ -> floating_storage_bytes base
-      in
-      Option.bind base_bytes (fun bytes ->
-          match array_at with
-          | None -> Some bytes
-          | Some index ->
-              let rec dimensions index size =
-                if index = String.length raw then Some size
-                else if raw.[index] = ' ' then dimensions (index + 1) size
-                else if raw.[index] <> '[' then None
-                else
-                  match String.index_from_opt raw index ']' with
-                  | None -> None
-                  | Some close ->
-                      let length =
-                        trim (String.sub raw (index + 1) (close - index - 1))
-                      in
-                      Option.bind (int_of_string_opt length) (fun length ->
-                          if length < 0 || (length <> 0 && size > max_int / length) then
-                            None
-                          else dimensions (close + 1) (size * length))
-              in
-              dimensions index bytes)
+    let rec storage seen count node =
+      match string "kind" node with
+      | Some "TypedefType" -> (
+          match type_node_id node with
+          | Some id when not (List.mem id seen) ->
+              Option.bind (alias_type_node id) (storage (id :: seen) count)
+          | _ -> None)
+      | Some "QualType" -> Option.bind (type_node node) (storage seen count)
+      | Some "ConstantArrayType" ->
+          let size =
+            match get "size" node with
+            | Some (C_import_json.Num value) -> int_of_string_opt value
+            | Some (C_import_json.Str value) -> int_of_string_opt value
+            | _ -> None
+          in
+          Option.bind size (fun size ->
+              if size < 0 || (size <> 0 && count > max_int / size) then None
+              else Option.bind (type_node node) (storage seen (count * size)))
+      | Some "BuiltinType" -> (
+          match
+            Option.bind (get "type" node) (fun ty ->
+                Option.bind (string "qualType" ty) builtin_info_of_name)
+          with
+          | Some (Floating bits) ->
+              let bytes = (bits + 7) / 8 in
+              if bytes <> 0 && count > max_int / bytes then None
+              else Some (Ast.Array (string_of_int (count * bytes), Ast.Int Ast.U8))
+          | _ -> None)
+      | _ -> None
     in
-    c_type_spellings field
-    |> List.find_map (fun raw ->
-        Option.map
-          (fun size -> Ast.Array (string_of_int size, Ast.Int Ast.U8))
-          (floating_bytes [] raw))
+    Option.bind (type_tree field) (storage [] 1)
   in
   let source_offset node =
     let loc =
@@ -1987,18 +2313,17 @@ let map_declarations ?(container = false) ~span declarations =
         let reject reason =
           if Option.is_none !unsupported then unsupported := Some reason
         in
-        let rec fields ?anonymous_field base record =
+        let rec fields ?anonymous_record base record =
           let record_fields =
             children record
             |> List.filter (fun child -> string "kind" child = Some "FieldDecl")
             |> List.mapi (fun index field -> (index, field))
           in
-          let layout = record_layout ?anonymous_field record name in
+          let layout = record_layout ?anonymous_record record name in
           List.concat_map
             (fun (field_index, field) ->
               let field_name = record_name field in
-              let raw = c_type_name field in
-              if top_level_const field then (
+              if top_level_const_node field then (
                 blocked := true;
                 [])
               else if get "isBitfield" field = Some (C_import_json.Bool true) then (
@@ -2049,18 +2374,18 @@ let map_declarations ?(container = false) ~span declarations =
                                 reject "transparent unions are not supported";
                                 [])
                               else
-                                fields ~anonymous_field:field (base + relative) nested)
+                                fields ~anonymous_record:nested (base + relative) nested
+                        )
                     | _ ->
                         reject "anonymous member type is not supported";
                         [])
                 | Some field_name -> (
                     let reason, ty =
-                      match raw with
-                      | None -> (Some "field has no C type", None)
-                      | Some raw -> (
+                      match type_tree field with
+                      | None -> (Some "field has no structural C type", None)
+                      | Some tree -> (
                           match
-                            type_result ~allow_arrays:true ~aliases ~records ~enums
-                              ~allow_record:true raw
+                            parse_type ~allow_arrays:true ~allow_record:true tree
                           with
                           | Ok ty -> (None, Some ty)
                           | Error "floating-point types are not supported" -> (
@@ -2332,19 +2657,26 @@ let map_declarations ?(container = false) ~span declarations =
               ^ String.concat ", "
                   (List.map
                      (fun (field : Ast.field) ->
-                       let c_type =
+                       let c_field =
                          children node
                          |> List.find_opt (fun child ->
                              string "kind" child = Some "FieldDecl"
                              && record_name child = Some field.name)
-                         |> fun field -> Option.bind field c_type_name
+                       in
+                       let c_type = Option.bind c_field c_type_name in
+                       let is_function_pointer =
+                         Option.fold ~none:false
+                           ~some:(fun field ->
+                             Option.fold ~none:false ~some:(function_pointer_type [])
+                               (type_tree field))
+                           c_field
                        in
                        field.name ^ " " ^ Ast.type_name field.ty
                        ^ (if is_union then " @0" else "")
                        ^ Option.fold ~none:""
                            ~some:(fun raw -> " (C " ^ raw ^ ")")
-                           (match c_type with
-                           | Some raw when has raw "(*" || has raw "(^" -> Some raw
+                           (match (c_type, is_function_pointer) with
+                           | Some raw, true -> Some raw
                            | _ -> None))
                      fields)
               ^ "}" )
@@ -2380,35 +2712,60 @@ let map_declarations ?(container = false) ~span declarations =
               ("opaque " ^ name) (Some item) (origin node) [] None ())
     records;
   let function_type node =
-    match c_type_name node with
-    | None -> Error "function declaration has no C type"
-    | Some raw
-      when List.exists (has_type_identifier raw)
-             [
-               "stdcall";
-               "fastcall";
-               "vectorcall";
-               "ms_abi";
-               "regcall";
-               "preserve_most";
-               "preserve_all";
-               "swiftcall";
-               "aarch64_vector_pcs";
-             ] ->
-        Error "non-default calling conventions are not supported"
-    | Some raw
-      when List.exists (has_type_identifier raw) [ "address_space"; "addrspace" ] ->
-        Error "C address spaces are not supported"
-    | Some raw -> (
-        match String.index_opt raw '(' with
-        | None -> Error "function declaration has no parameter list"
-        | Some index ->
-            let ret = c_function_result raw (String.sub raw 0 index) in
-            type_result ~aliases ~records ~enums ~allow_record:false ret)
+    match type_tree node with
+    | None -> Error "function declaration has no structural C type"
+    | Some tree -> (
+        let tree =
+          if string "kind" tree = Some "AttributedType" then
+            Option.value ~default:tree (type_node tree)
+          else tree
+        in
+        match string "kind" tree with
+        | Some ("FunctionProtoType" | "FunctionNoProtoType") -> (
+            let calling_convention = string "cc" tree in
+            if
+              Option.fold ~none:false
+                ~some:(fun cc -> cc <> "cdecl" && cc <> "CC_C")
+                calling_convention
+            then Error "non-default calling conventions are not supported"
+            else if type_has_address_space tree then
+              Error "C address spaces are not supported"
+            else
+              let type_children =
+                children tree
+                |> List.filter (fun child ->
+                    Option.fold ~none:false
+                      ~some:(String.ends_with ~suffix:"Type")
+                      (string "kind" child))
+              in
+              match type_children with
+              | [] -> Error "function result type is not available"
+              | result_node :: parameter_nodes -> (
+                  match parse_type ~allow_record:false result_node with
+                  | Error reason -> Error reason
+                  | Ok result ->
+                      let rec parse_parameters acc = function
+                        | [] -> Ok (List.rev acc)
+                        | parameter :: rest -> (
+                            match parse_type ~allow_record:false parameter with
+                            | Error reason -> Error reason
+                            | Ok ty ->
+                                parse_parameters
+                                  ((ty, type_qualifiers parameter) :: acc)
+                                  rest)
+                      in
+                      Result.map
+                        (fun parameters ->
+                          let variadic =
+                            get "variadic" tree = Some (C_import_json.Bool true)
+                          in
+                          (result, parameters, variadic))
+                        (parse_parameters [] parameter_nodes)))
+        | _ -> Error "function declaration has no structural function type")
   in
   Hashtbl.iter
-    (fun name underlying ->
-      match type_result ~aliases ~records ~enums ~allow_record:false underlying with
+    (fun name result ->
+      match result with
       | Ok ty ->
           if not (Hashtbl.mem alias_nodes name) then
             let signature = "enum " ^ name ^ " as " ^ Ast.type_name ty in
@@ -2417,8 +2774,8 @@ let map_declarations ?(container = false) ~span declarations =
     enums;
   let enum_aliases =
     Hashtbl.fold
-      (fun name underlying acc ->
-        match type_result ~aliases ~records ~enums ~allow_record:false underlying with
+      (fun name result acc ->
+        match result with
         | Ok ty
           when (not (List.mem_assoc name typed_aliases))
                && not (Names.reserved_binding_name name) ->
@@ -2432,23 +2789,43 @@ let map_declarations ?(container = false) ~span declarations =
       let kind = string "kind" node in
       match (kind, name) with
       | Some "FasIntegerMacro", name when name <> "" -> (
-          let macro_type = string "macroType" node and value = string "value" node in
-          match (macro_type, value, int_type (Option.value ~default:"" macro_type)) with
-          | Some _, Some value, Some ty ->
-              let macro_span = span in
-              let expression =
-                if String.starts_with ~prefix:"-" value then
-                  Ast.Unary
-                    ( Ast.Neg,
-                      Ast.Int_lit
-                        (String.sub value 1 (String.length value - 1), macro_span),
-                      macro_span )
-                else Ast.Int_lit (value, macro_span)
+          let macro_code =
+            Option.bind (string "macroTypeCode" node) int_of_string_opt
+          in
+          let value = string "value" node in
+          match (Option.bind macro_code macro_type, value) with
+          | Some (_, bits, unsigned), Some value ->
+              let ty =
+                match (bits, unsigned, macro_code) with
+                | _, _, Some 11 -> Some Ast.Bool
+                | 8, false, _ -> Some (Ast.Int Ast.I8)
+                | 8, true, _ -> Some (Ast.Int Ast.U8)
+                | 16, false, _ -> Some (Ast.Int Ast.I16)
+                | 16, true, _ -> Some (Ast.Int Ast.U16)
+                | 32, false, _ -> Some (Ast.Int Ast.I32)
+                | 32, true, _ -> Some (Ast.Int Ast.U32)
+                | 64, false, _ -> Some (Ast.Int Ast.I64)
+                | 64, true, _ -> Some (Ast.Int Ast.U64)
+                | _ -> None
               in
-              add_item name ("macro " ^ name)
-                ("macro " ^ Ast.type_name ty ^ " " ^ value)
-                (Some (Ast.Const { name; ty; value = expression; span = macro_span }))
-                (None, None) [] None ()
+              Option.iter
+                (fun ty ->
+                  let macro_span = span in
+                  let expression =
+                    if String.starts_with ~prefix:"-" value then
+                      Ast.Unary
+                        ( Ast.Neg,
+                          Ast.Int_lit
+                            (String.sub value 1 (String.length value - 1), macro_span),
+                          macro_span )
+                    else Ast.Int_lit (value, macro_span)
+                  in
+                  add_item name ("macro " ^ name)
+                    ("macro " ^ Ast.type_name ty ^ " " ^ value)
+                    (Some
+                       (Ast.Const { name; ty; value = expression; span = macro_span }))
+                    (None, None) [] None ())
+                ty
           | _ -> ())
       | Some "RecordDecl", _ -> ()
       | Some "EnumDecl", _ ->
@@ -2462,7 +2839,7 @@ let map_declarations ?(container = false) ~span declarations =
                         (Option.value ~default:"" (record_name child))
                         macro_shadow_names)
               then
-                match (string "name" child, c_type_name child) with
+                match (string "name" child, type_tree child) with
                 | Some constant, Some _ -> (
                     let constant_type = as_type ~allow_record:false child in
                     let explicit_value =
@@ -2525,29 +2902,42 @@ let map_declarations ?(container = false) ~span declarations =
       | Some "FunctionDecl", _ ->
           let origin = origin node in
           let is_static = string "storageClass" node = Some "static" in
-          let parameters =
+          let parameter_nodes =
             children node
             |> List.filter (fun child -> string "kind" child = Some "ParmVarDecl")
-            |> List.mapi (fun index parameter ->
-                ( Option.value
-                    ~default:("arg" ^ string_of_int index)
-                    (string "name" parameter),
-                  as_type ~allow_record:false parameter,
-                  quals parameter ))
           in
+          let function_info = function_type node in
           let variadic =
-            Option.fold ~none:false ~some:(fun raw -> has raw "...") (c_type_name node)
+            match function_info with
+            | Ok (_, _, variadic) -> variadic
+            | Error _ -> false
+          in
+          let parameters =
+            match function_info with
+            | Ok (_, parameter_types, _)
+              when List.length parameter_nodes = List.length parameter_types ->
+                List.mapi
+                  (fun index (parameter, (ty, qualifiers)) ->
+                    ( Option.value
+                        ~default:("arg" ^ string_of_int index)
+                        (string "name" parameter),
+                      Ok ty,
+                      qualifiers ))
+                  (List.combine parameter_nodes parameter_types)
+            | _ -> []
           in
           let signature =
-            match function_type node with
+            match function_info with
             | Error reason -> Error reason
-            | Ok ret ->
-                let rec types acc = function
+            | Ok (_, _, _) when List.length parameter_nodes <> List.length parameters ->
+                Error "function parameter types are not available"
+            | Ok (ret, _, _) ->
+                let rec values acc = function
                   | [] -> Ok (List.rev acc)
+                  | (name, Ok ty, _) :: rest -> values ((name, ty) :: acc) rest
                   | (_, Error reason, _) :: _ -> Error reason
-                  | (name, Ok ty, _) :: rest -> types ((name, ty) :: acc) rest
                 in
-                Result.map (fun params -> (params, ret)) (types [] parameters)
+                Result.map (fun params -> (params, ret)) (values [] parameters)
           in
           let signature_name =
             match signature with
@@ -2561,16 +2951,25 @@ let map_declarations ?(container = false) ~span declarations =
           let reason =
             match signature with Ok _ -> None | Error reason -> Some reason
           in
-          (match (is_static, signature, c_type_name node) with
-          | true, Ok (_, ret), Some c_signature -> (
+          (match (is_static, signature, c_type_name node, type_tree node) with
+          | true, Ok (_, ret), Some c_signature, Some function_tree -> (
               match String.index_opt c_signature '(' with
               | Some open_paren ->
                   let parameter_types =
-                    children node
-                    |> List.filter (fun child ->
-                        string "kind" child = Some "ParmVarDecl")
+                    parameter_nodes
                     |> List.filter_map (fun child ->
                         Option.bind (get "type" child) (string "qualType"))
+                  in
+                  let result_type =
+                    match
+                      children function_tree
+                      |> List.filter (fun child ->
+                          Option.fold ~none:false
+                            ~some:(String.ends_with ~suffix:"Type")
+                            (string "kind" child))
+                    with
+                    | result :: _ -> Some result
+                    | [] -> None
                   in
                   Hashtbl.replace static_functions name
                     {
@@ -2581,6 +2980,9 @@ let map_declarations ?(container = false) ~span declarations =
                       parameter_types;
                       variadic;
                       void_result = ret = Ast.Void;
+                      return_function_pointer =
+                        Option.fold ~none:false ~some:(function_pointer_type [])
+                          result_type;
                       signature = signature_name;
                       span;
                     }
@@ -2622,18 +3024,27 @@ let map_declarations ?(container = false) ~span declarations =
                 Error "struct and union values are not supported"
             | result -> result
           in
+          let rec incomplete_element seen tree =
+            match string "kind" tree with
+            | Some "IncompleteArrayType" ->
+                Option.bind (type_node tree) (fun element ->
+                    match parse_type ~allow_arrays:true ~allow_record:true element with
+                    | Ok ty -> Some ty
+                    | Error _ -> None)
+            | Some "TypedefType" -> (
+                match type_node_id tree with
+                | Some id when not (List.mem id seen) ->
+                    Option.bind (alias_type_node id) (incomplete_element (id :: seen))
+                | _ -> None)
+            | Some
+                ( "QualType" | "ElaboratedType" | "ParenType" | "MacroQualifiedType"
+                | "AttributedType" | "TypeOfType" | "TypeOfExprType"
+                | "PredefinedSugarType" ) ->
+                Option.bind (type_node tree) (incomplete_element seen)
+            | _ -> None
+          in
           let incomplete_element =
-            Option.bind (c_desugared_type_name node) (fun raw ->
-                let raw = trim raw in
-                if String.ends_with ~suffix:"[]" raw then
-                  let element = trim (String.sub raw 0 (String.length raw - 2)) in
-                  match
-                    type_result ~allow_arrays:true ~aliases ~records ~enums
-                      ~allow_record:true element
-                  with
-                  | Ok ty -> Some ty
-                  | Error _ -> None
-                else None)
+            Option.bind (type_tree node) (incomplete_element [])
           in
           Option.iter (Hashtbl.replace incomplete_arrays name) incomplete_element;
           let storage = string "storageClass" node in
@@ -2655,7 +3066,7 @@ let map_declarations ?(container = false) ~span declarations =
                        ty;
                        init = None;
                        linkage =
-                         (if top_level_const node then Ast.Import_const_c
+                         (if top_level_const_node node then Ast.Import_const_c
                           else Ast.Import_c);
                        span;
                      })
