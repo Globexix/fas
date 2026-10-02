@@ -1,0 +1,29 @@
+use "C" "bool_memory.h"
+
+struct NativeBool { value bool }
+
+var GlobalBool bool
+
+extern "C" {
+  fn bool_memory_paths(raw addr, foreign handle[ForeignBool]) u32 {
+    local bool = false
+    (&local)[u8] = 2
+    items arr[2,bool] = {false, false}
+    (&items[1])[u8] = 2
+    native NativeBool = {false}
+    (&native.value)[u8] = 2
+    (&GlobalBool)[u8] = 2
+    view viewed = raw[bool]
+    foreign_raw addr = handle_addr(foreign)
+    score u32 = 0
+    if local && !(!local) && local == true && zext[u8](local) == 1 { score += 1 }
+    if items[1] && !(!items[1]) && items[1] == true && zext[u8](items[1]) == 1 { score += 1 }
+    if native.value && !(!native.value) && native.value == true && zext[u8](native.value) == 1 { score += 1 }
+    if GlobalBool && !(!GlobalBool) && GlobalBool == true && zext[u8](GlobalBool) == 1 { score += 1 }
+    if raw[bool] && !(!raw[bool]) && raw[bool] == true && zext[u8](raw[bool]) == 1 { score += 1 }
+    if raw[bool, 0] && !(!raw[bool, 0]) && raw[bool, 0] == true && zext[u8](raw[bool, 0]) == 1 { score += 1 }
+    if viewed && !(!viewed) && viewed == true && zext[u8](viewed) == 1 { score += 1 }
+    if foreign_raw[ForeignBool].value && !(!foreign_raw[ForeignBool].value) && foreign_raw[ForeignBool].value == true && zext[u8](foreign_raw[ForeignBool].value) == 1 { score += 1 }
+    return score
+  }
+}

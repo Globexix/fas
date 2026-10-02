@@ -4,15 +4,15 @@
 void *screens[5] = {0};
 
 int main(void) {
-  union FasPhase23Union value = {0};
-  const union FasPhase23Union table[2] = {{0x11223344}, {0x55667788}};
+  union FasImportedUnion value = {0};
+  const union FasImportedUnion table[2] = {{0x11223344}, {0x55667788}};
   for (unsigned i = 0; i < 8; ++i) value.bytes[i] = (uint8_t)(i + 1);
   printf("%u %u\n", value.word, (unsigned)value.bytes[7]);
   value.word = 0x76543210;
   printf("%u %u\n", (unsigned)value.bytes[0], (unsigned)value.bytes[3]);
   printf("%u %u %u %u\n", table[0].word, (unsigned)table[0].bytes[4],
          table[1].word, (unsigned)table[1].bytes[4]);
-  struct FasPhase23Anonymous anonymous = {0};
+  struct FasAnonymousImportedRecord anonymous = {0};
   anonymous.word = 0x01020304u;
   printf("anonymous %u %u\n", anonymous.word,
          (unsigned)anonymous.bytes[3]);
@@ -32,7 +32,7 @@ int main(void) {
   for (unsigned i = 0; i < sizeof(chars); ++i)
     if (chars[i] != 0) local_zero = 0;
   printf("local zero %d\n", local_zero);
-  union FasPhase23Union zero_union = {0};
+  union FasImportedUnion zero_union = {0};
   int union_zero = 1;
   for (unsigned i = 0; i < sizeof(zero_union.bytes); ++i)
     if (zero_union.bytes[i] != 0) union_zero = 0;

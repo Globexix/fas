@@ -17,12 +17,12 @@ static inline int fas_compress_buffer(Bytef *dest, uLongf *dest_len,
 ZLIB
 
 fn main() i32 {
-  input_len usize = strlen(c"fas phase22 zlib")
+  input_len usize = strlen(c"fas zlib")
   input addr = malloc(input_len)
   compressed addr = malloc(128)
   restored addr = malloc(128)
   if input == null || compressed == null || restored == null { return 1 }
-  memcpy(input, c"fas phase22 zlib", input_len)
+  memcpy(input, c"fas zlib", input_len)
 
   compressed_len u64 = 128
   if fas_compress_buffer(compressed, &compressed_len, input, bitcast[u64](input_len)) != Z_OK {

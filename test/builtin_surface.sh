@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+OCAML_FAS=${OCAML_FAS:-$ROOT/_build/default/bin/main.exe}
+LLVM_OPT=${LLVM_OPT:-opt-22}
+COMPONENT_TMP=$(mktemp -d)
+trap 'rm -rf "$COMPONENT_TMP"' EXIT HUP INT TERM
+"$OCAML_FAS" --emit-llvm "$ROOT/test/builtin_surface.fas" > "$COMPONENT_TMP/program.ll"
+"$LLVM_OPT" -passes=verify "$COMPONENT_TMP/program.ll" -disable-output
+for level in 0 2; do
+  "$LLVM_OPT" -S "-passes=default<O$level>" "$COMPONENT_TMP/program.ll" -o "$COMPONENT_TMP/optimized.ll"
+  "$LLVM_OPT" -passes=verify "$COMPONENT_TMP/optimized.ll" -disable-output
+  "$OCAML_FAS" -O"$level" "$ROOT/test/builtin_surface.fas" -o "$COMPONENT_TMP/program"
+  "$COMPONENT_TMP/program"
+done
+echo 'builtin_surface: sibling builtin constants and runtime values against C oracle at O0/O2: ok'

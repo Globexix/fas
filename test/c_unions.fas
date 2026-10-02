@@ -2,7 +2,7 @@ use "C" "c_unions.h"
 use "C" <<UNION_IMPL
 #include <stdio.h>
 
-void fas_union_fill(union FasPhase23Union *value) {
+void fas_union_fill(union FasImportedUnion *value) {
   for (unsigned i = 0; i < 8; ++i) value->bytes[i] = (uint8_t)(i + 1);
 }
 
@@ -10,16 +10,16 @@ void fas_union_report(uint32_t word, uint8_t high) {
   printf("%u %u\n", word, (unsigned)high);
 }
 
-void fas_union_read_after_write(const union FasPhase23Union *value) {
+void fas_union_read_after_write(const union FasImportedUnion *value) {
   printf("%u %u\n", (unsigned)value->bytes[0], (unsigned)value->bytes[3]);
 }
 
-void fas_union_check_table(const union FasPhase23Union *table) {
+void fas_union_check_table(const union FasImportedUnion *table) {
   printf("%u %u %u %u\n", table[0].word, (unsigned)table[0].bytes[4],
          table[1].word, (unsigned)table[1].bytes[4]);
 }
 
-void fas_union_fill_anonymous(struct FasPhase23Anonymous *value) {
+void fas_union_fill_anonymous(struct FasAnonymousImportedRecord *value) {
   value->word = 0x01020304u;
 }
 
@@ -41,25 +41,25 @@ void fas_union_check_zero_local(const uint8_t *bytes) {
   printf("local zero %d\n", fas_all_zero(bytes, 5));
 }
 
-void fas_union_check_zero_union(const union FasPhase23Union *value) {
+void fas_union_check_zero_union(const union FasImportedUnion *value) {
   printf("union zero %d\n", fas_all_zero(value->bytes, sizeof(value->bytes)));
 }
 UNION_IMPL
 
 extern "C" { var screens arr[5,addr] = {} }
 
-const fas_phase23_table arr[2, FasPhase23Union] = {
+const fas_union_table arr[2, FasImportedUnion] = {
   {0x11223344}, {0x55667788}
 }
 
 fn main() i32 {
-  value FasPhase23Union = {0}
+  value FasImportedUnion = {0}
   fas_union_fill(&value)
   fas_union_report(value.word, value.bytes[7])
   value.word = 0x76543210
   fas_union_read_after_write(&value)
-  fas_union_check_table(&fas_phase23_table[0])
-  anon FasPhase23Anonymous
+  fas_union_check_table(&fas_union_table[0])
+  anon FasAnonymousImportedRecord
   fas_union_fill_anonymous(&anon)
   fas_union_report_anonymous(anon.word, zext[u32](anon.bytes[3]))
   anon.bytes[0] = 170
@@ -70,7 +70,7 @@ fn main() i32 {
   scratch[3] = 11
   chars arr[5,u8] = {}
   fas_union_check_zero_local(&chars[0])
-  zero_union FasPhase23Union = {}
+  zero_union FasImportedUnion = {}
   fas_union_check_zero_union(&zero_union)
   return 0
 }

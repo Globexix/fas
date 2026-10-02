@@ -1,0 +1,23 @@
+struct RawVectorRecord { prefix u8 values vec[4,u32] }
+
+extern "C" {
+  fn raw_vector_read(p addr) u32 {
+    view values = p[vec[4,u32]]
+    return values[0] + values[1] + values[2] + values[3]
+  }
+  fn raw_vector_write(p addr) u32 {
+    view values = p[vec[4,u32]]
+    values[2] = 77
+    return values[2]
+  }
+  fn record_view_read(p addr) u32 {
+    view record = p[RawVectorRecord]
+    view values = record.values
+    return values[0] + values[1] + values[2] + values[3]
+  }
+  fn record_field_view_write(p addr) u32 {
+    view values = p[RawVectorRecord].values
+    values[1] = 88
+    return values[1]
+  }
+}

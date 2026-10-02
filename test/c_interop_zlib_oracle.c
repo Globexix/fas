@@ -3,7 +3,7 @@
 #include <zlib.h>
 
 int main(void) {
-  const Bytef input[] = "fas phase22 zlib";
+  const Bytef input[] = "fas zlib";
   Bytef compressed[128];
   Bytef restored[128];
   uLongf compressed_len = sizeof(compressed);

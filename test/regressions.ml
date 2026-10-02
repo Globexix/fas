@@ -9207,9 +9207,9 @@ let () =
     "fn probe() i32 { return fas_function_pointer_arg(null) }\n";
   c_semantic_accept "c-import-nested-function-pointer-is-addr" c_matrix
     "fn probe() i32 { return fas_function_pointer_nested(null) }\n";
-  let phase23_raw = c_import_fixture "phase23_raw.h" in
-  let phase23_raw_source, phase23_raw_imported = phase23_raw in
-  c_semantic_accept "c-import-raw-function-pointer-declarators" phase23_raw
+  let raw_declarators = c_import_fixture "raw_declarators.h" in
+  let raw_declarators_source, raw_declarators_imported = raw_declarators in
+  c_semantic_accept "c-import-raw-function-pointer-declarators" raw_declarators
     "fn get_callback() addr { return fas_raw_get() }\n\
      fn call_raw(values addr) i32 {\n\
      return fas_raw_apply(fas_raw_get(), 1) + fas_raw_apply(fas_raw_global, 1) + \
@@ -9220,7 +9220,7 @@ let () =
      List.find_opt
        (function
          | Ast.Func { name = "fas_raw_get"; ret = Ast.Addr; _ } -> true | _ -> false)
-       phase23_raw_imported.items
+       raw_declarators_imported.items
    with
   | Some _ -> ()
   | None -> failwith "raw C function-pointer result did not map to addr");
@@ -9228,7 +9228,7 @@ let () =
      List.find_opt
        (function
          | Ast.Global { name = "fas_raw_global"; ty = Ast.Addr; _ } -> true | _ -> false)
-       phase23_raw_imported.items
+       raw_declarators_imported.items
    with
   | Some _ -> ()
   | None -> failwith "raw C function-pointer global did not map to addr");
@@ -9237,7 +9237,7 @@ let () =
        (function
          | Ast.Struct { name = "FasRawCallbackRecord"; fields; _ } -> Some fields
          | _ -> None)
-       phase23_raw_imported.items
+       raw_declarators_imported.items
    with
   | Some [ { Ast.name = "callback"; ty = Ast.Addr; _ } ] -> ()
   | _ -> failwith "raw C function-pointer field did not map to addr");
@@ -9246,11 +9246,11 @@ let () =
       match
         List.find_opt
           (fun (static : C_import.static_function) -> static.name = name)
-          phase23_raw_imported.static_functions
+          raw_declarators_imported.static_functions
       with
       | None -> failwith ("raw C adapter source was not recorded for " ^ name)
       | Some static -> (
-          match C_import.make_adapter ~occupied:[] phase23_raw_source static with
+          match C_import.make_adapter ~occupied:[] raw_declarators_source static with
           | Ok adapter when contains adapter.code expected -> ()
           | Ok adapter ->
               failwith
@@ -9350,9 +9350,9 @@ let () =
   c_semantic_accept "c-import-anonymous-record-typedef-by-value" c_matrix
     "fn anonymous() i32 { value FasAnonymous = (FasAnonymous){ 1 }\n\
      return value.field }\n";
-  let phase21_records = c_import_fixture "phase21_records.h" in
+  let record_import_cases = c_import_fixture "record_import_cases.h" in
   let collision_header =
-    Filename.concat (Filename.dirname (fst phase21_records)) "phase21_records.h"
+    Filename.concat (Filename.dirname (fst record_import_cases)) "record_import_cases.h"
   in
   let collision_source =
     Filename.concat (Filename.dirname collision_header) "probe.fas"
@@ -9409,14 +9409,14 @@ let () =
      field names collide"
     collision_fixture
     "fn read(value FasAnonymousCollisionRecord) i32 { return value.first }\n";
-  let phase23_container_union =
-    c_import_container "phase23-union"
+  let union_container =
+    c_import_container "union-container"
       "struct FasContainerNested { unsigned short first; unsigned int second; };\n\
        union FasContainerUnion { unsigned int word; unsigned char bytes[8];\n\
        struct FasContainerNested nested; };\n"
   in
-  let phase22_time = c_import_fixture "phase22_time.h" in
-  c_semantic_accept "c-import-record-address-handle-contexts" phase22_time
+  let time_record_handles = c_import_fixture "time_record_handles.h" in
+  c_semantic_accept "c-import-record-address-handle-contexts" time_record_handles
     "fn read_clock() i32 { ts timespec\n\
      return clock_gettime(1, &ts) }\n\
      fn assign_handle() handle[timespec] {\n\
@@ -9439,16 +9439,16 @@ let () =
      fn native_address() addr { ts NativeTimespec\n\
      return &ts }\n";
   c_semantic_message "c-import-record-address-different-handle"
-    "type mismatch: expected handle[timespec], got addr" phase22_time
+    "type mismatch: expected handle[timespec], got addr" time_record_handles
     "fn wrong_record() i32 { ts FasOtherTimespec\nreturn clock_gettime(1, &ts) }\n";
-  let phase21_imported = snd phase21_records in
+  let record_import = snd record_import_cases in
   let imported_struct name =
     List.find_map
       (function
         | Ast.Struct { name = found; fields; align; _ } when found = name ->
             Some (fields, align)
         | _ -> None)
-      phase21_imported.items
+      record_import.items
   in
   let require_struct name =
     match imported_struct name with
@@ -9476,9 +9476,9 @@ let () =
     || List.length
          (List.filter
             (function Ast.Struct { name = "FasAliasRecord"; _ } -> true | _ -> false)
-            phase21_imported.items)
+            record_import.items)
        <> 1
-    || List.assoc_opt "FasAlias" phase21_imported.aliases
+    || List.assoc_opt "FasAlias" record_import.aliases
        <> Some (Ast.Named_type "FasAliasRecord")
   then failwith "tag and typedef did not preserve one C record identity";
   let nested_fields, _ = require_struct "FasNestedRecord" in
@@ -9503,8 +9503,8 @@ let () =
     (fun (name, reason) ->
       if
         imported_struct name <> None
-        || (not (List.mem_assoc name phase21_imported.unsupported))
-        || List.assoc name phase21_imported.unsupported <> reason
+        || (not (List.mem_assoc name record_import.unsupported))
+        || List.assoc name record_import.unsupported <> reason
       then failwith ("unsupported C record reason was not retained for " ^ name))
     [
       ("FasBitfieldRecord", "bit-fields are not supported");
@@ -9513,7 +9513,7 @@ let () =
       ("FasConstFieldRecord", "const fields are not supported");
       ("FasNestedConstFieldRecord", "const fields are not supported");
     ];
-  (match c_semantic_result phase21_records "fn noop() void { return }\n" with
+  (match c_semantic_result record_import_cases "fn noop() void { return }\n" with
   | Ok program ->
       let layout name =
         match
@@ -9555,16 +9555,16 @@ let () =
       if not (layout "FasUnionRecord").is_union then
         failwith "imported union lost its union layout"
   | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics));
-  let phase21_manifest = C_import.manifest_text phase21_imported in
+  let record_manifest = C_import.manifest_text record_import in
   if
     not
-      (contains phase21_manifest
+      (contains record_manifest
          "FasNestedRecord\tstruct FasNestedRecord\tstruct FasNestedRecord {inner \
           FasInnerRecord, values arr[2, i32]}")
   then failwith "C record manifest did not list admitted fields";
   if
     not
-      (contains phase21_manifest
+      (contains record_manifest
          "FasUnionRecord\tunion FasUnionRecord\tunion FasUnionRecord size=4 align=4 \
           {value i32 @0, byte u8 @0}")
   then failwith "C union manifest did not list its layout and fields";
@@ -9573,7 +9573,7 @@ let () =
     List.map (fun (field : Ast.field) -> (field.name, field.ty)) callback_fields
     <> [ ("callback", Ast.Addr) ]
   then failwith "C function-pointer field did not map to addr";
-  if List.assoc_opt "FasCallback" phase21_imported.aliases <> Some Ast.Addr then
+  if List.assoc_opt "FasCallback" record_import.aliases <> Some Ast.Addr then
     failwith "C function-pointer typedef did not map to addr";
   let callback_function name =
     List.find_map
@@ -9581,7 +9581,7 @@ let () =
         | Ast.Func { name = found; params; ret; _ } when found = name ->
             Some (params, ret)
         | _ -> None)
-      phase21_imported.items
+      record_import.items
   in
   (match callback_function "fas_callback_parameter" with
   | Some ([ { ty = Ast.Addr; _ } ], Ast.Int Ast.I32) -> ()
@@ -9594,23 +9594,23 @@ let () =
        (function
          | Ast.Global { name = "fas_callback_global"; ty = Ast.Addr; _ } -> true
          | _ -> false)
-       phase21_imported.items
+       record_import.items
    with
   | Some _ -> ()
   | None -> failwith "C function-pointer global did not map to addr");
   let callback_manifest =
-    phase21_manifest |> String.split_on_char '\n'
+    record_manifest |> String.split_on_char '\n'
     |> List.find_opt (String.starts_with ~prefix:"FasFunctionPointerRecord\t")
   in
   (match callback_manifest with
   | Some line when contains line "callback addr (C int (*)(int))" -> ()
   | _ -> failwith "C manifest omitted the function-pointer field signature");
-  c_semantic_accept "c-import-record-handle-and-field-access" phase21_records
+  c_semantic_accept "c-import-record-handle-and-field-access" record_import_cases
     "fn read(value handle[FasSelfRecord]) i32 {\n\
      return handle_addr(value)[FasSelfRecord].value }\n\
      fn cast(pointer addr) handle[FasTagRecord] {\n\
      return handle_from_addr[FasTagRecord](pointer) }\n";
-  c_semantic_accept "c-import-record-fas-field-names" phase21_records
+  c_semantic_accept "c-import-record-fas-field-names" record_import_cases
     "fn fields(value handle[FasFieldNamesRecord]) i32 {\n\
      raw addr = handle_addr(value)\n\
      raw[FasFieldNamesRecord].handle = 1\n\
@@ -9619,26 +9619,26 @@ let () =
      raw[FasFieldNamesRecord].i32 = 4\n\
      return raw[FasFieldNamesRecord].handle + raw[FasFieldNamesRecord].len + \
      raw[FasFieldNamesRecord].view + raw[FasFieldNamesRecord].i32 }\n";
-  c_semantic_accept "c-import-record-typedef-global-initializer" phase21_records
+  c_semantic_accept "c-import-record-typedef-global-initializer" record_import_cases
     "var AliasValue FasAlias = (FasAlias){7}\n";
-  c_semantic_accept "address-constants-imported-record-handles" phase21_records
+  c_semantic_accept "address-constants-imported-record-handles" record_import_cases
     "var Direct handle[FasSelfRecord] = &fas_address_self\n\
      const Nested arr[1,arr[1,handle[FasInnerRecord]]] = {{&fas_address_nested.inner}}\n\
      var Indexed arr[1,handle[FasSelfRecord]] = {&fas_address_self_array[1]}\n";
   c_semantic_message "address-constants-different-imported-record"
-    "constant initializer type mismatch" phase21_records
+    "constant initializer type mismatch" record_import_cases
     "var P handle[FasTagRecord] = &fas_address_self\n";
   c_semantic_message "address-constants-native-record-handle"
-    "constant initializer type mismatch" phase21_records
+    "constant initializer type mismatch" record_import_cases
     "struct NativeAddressRecord { value i32 }\n\
      var G NativeAddressRecord = {1}\n\
      var P handle[FasSelfRecord] = &G\n";
   c_semantic_message "address-constants-scalar-record-handle"
-    "constant initializer type mismatch" phase21_records
+    "constant initializer type mismatch" record_import_cases
     "var G i32 = 1\nvar P handle[FasSelfRecord] = &G\n";
   let imported_record_addresses =
     match
-      c_semantic_result phase21_records
+      c_semantic_result record_import_cases
         "var Direct handle[FasSelfRecord] = &fas_address_self\n\
          const Nested arr[1,arr[1,handle[FasInnerRecord]]] = \
          {{&fas_address_nested.inner}}\n\
@@ -9656,12 +9656,12 @@ let () =
              "getelementptr (i8, ptr @fas_address_self_array, i64 16)"))
     || contains imported_record_addresses "inbounds"
   then failwith "address-constants-imported-record-handles: invalid relocation";
-  c_semantic_accept "c-import-unsupported-record-remains-handle" phase21_records
+  c_semantic_accept "c-import-unsupported-record-remains-handle" record_import_cases
     "fn retain(value handle[FasUnionRecord]) handle[FasUnionRecord] { return value }\n";
-  c_semantic_accept "c-import-packed-record-layout" phase21_records
+  c_semantic_accept "c-import-packed-record-layout" record_import_cases
     "fn read(value handle[FasPackedRecord]) i32 {\n\
      return handle_addr(value)[FasPackedRecord].word }\n";
-  c_semantic_accept "c-import-union-record" phase21_records
+  c_semantic_accept "c-import-union-record" record_import_cases
     "fn read(value handle[FasUnionRecord]) i32 {\n\
      return handle_addr(value)[FasUnionRecord].value }\n\
      fn local() i32 { value FasUnionRecord = {7}\n\
@@ -9682,7 +9682,7 @@ let () =
      const union_constant FasUnionRecord = {4}\n";
   let container_union_program =
     match
-      c_semantic_result phase23_container_union
+      c_semantic_result union_container
         "fn nested(value handle[FasContainerUnion]) u32 {\n\
          raw addr = handle_addr(value)\n\
          raw[FasContainerUnion].nested.second = 17\n\
@@ -9711,37 +9711,38 @@ let () =
   if
     not
       (contains
-         (C_import.manifest_text (snd phase23_container_union))
+         (C_import.manifest_text (snd union_container))
          "FasContainerUnion\tunion FasContainerUnion\tunion FasContainerUnion size=8 \
           align=4 {word u32 @0, bytes arr[8, u8] @0, nested FasContainerNested @0}")
   then failwith "container union manifest omitted its layout or fields";
   c_semantic_message "c-import-union-by-value-parameter"
     "C declaration `fas_union_by_value` is not supported: struct and union values are \
      not supported"
-    phase21_records "fn probe() i32 { return fas_union_by_value(null) }\n";
-  c_semantic_accept "c-import-float-union-field" phase21_records
+    record_import_cases "fn probe() i32 { return fas_union_by_value(null) }\n";
+  c_semantic_accept "c-import-float-union-field" record_import_cases
     "fn read_bits(value handle[FasFloatUnion]) u32 {\n\
      raw addr = handle_addr(value)\n\
      raw[FasFloatUnion].bits = 9\n\
      return raw[FasFloatUnion].bits }\n";
   c_semantic_message "c-import-float-union-member"
-    "floating-point fields are not supported until v0.5" phase21_records
+    "floating-point fields are not supported until v0.5" record_import_cases
     "fn read_float(value handle[FasFloatUnion]) u32 {\n\
      raw addr = handle_addr(value)\n\
      return raw[FasFloatUnion].value[0] }\n";
   c_semantic_message "c-import-bitfield-union-member"
     "C declaration `FasBitfieldUnion` is not supported: bit-fields are not supported"
-    phase21_records "fn read_bits(value FasBitfieldUnion) u32 { return value.word }\n";
+    record_import_cases
+    "fn read_bits(value FasBitfieldUnion) u32 { return value.word }\n";
   parse_message "native-union-declaration" "expected a top-level item, found `union`"
     "union NativeUnion { value i32 }\n";
   c_semantic_message "c-import-bitfield-record-reason"
     "C declaration `FasBitfieldRecord` is not supported: bit-fields are not supported"
-    phase21_records "fn read(value FasBitfieldRecord) i32 { return value.value }\n";
+    record_import_cases "fn read(value FasBitfieldRecord) i32 { return value.value }\n";
   c_semantic_message "c-import-flexible-record-reason"
     "C declaration `FasFlexibleRecord` is not supported: flexible array members are \
      not supported"
-    phase21_records "fn read(value FasFlexibleRecord) i32 { return value.length }\n";
-  c_semantic_accept "c-import-anonymous-members" phase21_records
+    record_import_cases "fn read(value FasFlexibleRecord) i32 { return value.length }\n";
+  c_semantic_accept "c-import-anonymous-members" record_import_cases
     "fn write(value handle[FasAnonymousMemberRecord]) i32 {\n\
      raw addr = handle_addr(value)\n\
      raw[FasAnonymousMemberRecord].integer = 18\n\
@@ -9759,9 +9760,9 @@ let () =
   c_semantic_message "c-import-anonymous-unsupported-reason"
     "C declaration `FasAnonymousUnsupportedRecord` is not supported: transparent \
      unions are not supported"
-    phase21_records
+    record_import_cases
     "fn read(value FasAnonymousUnsupportedRecord) i32 { return value.value }\n";
-  c_semantic_accept "c-import-float-fields-store-only" phase21_records
+  c_semantic_accept "c-import-float-fields-store-only" record_import_cases
     "fn surrounding(value handle[FasFloatRecord]) i32 {\n\
      raw addr = handle_addr(value)\n\
      return raw[FasFloatRecord].before + raw[FasFloatRecord].after }\n\
@@ -9771,48 +9772,48 @@ let () =
      fn array_surrounding(value handle[FasFloatArrayRecord]) i32 {\n\
      raw addr = handle_addr(value)\n\
      return raw[FasFloatArrayRecord].after }\n";
-  c_semantic_accept "c-import-empty-zero-union" phase21_records
+  c_semantic_accept "c-import-empty-zero-union" record_import_cases
     "fn zero() i32 { value FasUnionRecord = {}\nreturn value.value }\n";
-  c_semantic_accept "c-import-empty-zero-storage-float-record" phase21_records
+  c_semantic_accept "c-import-empty-zero-storage-float-record" record_import_cases
     "fn zero() i32 { value FasFloatRecord = {}\nreturn value.after }\n";
-  c_semantic_accept "c-import-empty-zero-union-global" phase21_records
+  c_semantic_accept "c-import-empty-zero-union-global" record_import_cases
     "extern \"C\" { var empty_union FasUnionRecord = {} }\n";
-  c_semantic_accept "c-import-empty-zero-storage-float-record-global" phase21_records
-    "extern \"C\" { var empty_float FasFloatRecord = {} }\n";
-  c_semantic_accept "c-import-empty-zero-nested-record-array-global" phase21_records
+  c_semantic_accept "c-import-empty-zero-storage-float-record-global"
+    record_import_cases "extern \"C\" { var empty_float FasFloatRecord = {} }\n";
+  c_semantic_accept "c-import-empty-zero-nested-record-array-global" record_import_cases
     "extern \"C\" { var empty_records arr[4,FasNestedRecord] = {} }\n";
   c_semantic_message "c-import-float-field-read"
-    "floating-point fields are not supported until v0.5" phase21_records
+    "floating-point fields are not supported until v0.5" record_import_cases
     "fn read(value handle[FasFloatRecord]) i32 {\n\
      raw addr = handle_addr(value)\n\
      return raw[FasFloatRecord].value[0] }\n";
   c_semantic_message "c-import-float-field-write"
-    "floating-point fields are not supported until v0.5" phase21_records
+    "floating-point fields are not supported until v0.5" record_import_cases
     "fn write(value handle[FasFloatRecord]) void {\n\
      raw addr = handle_addr(value)\n\
      raw[FasFloatRecord].value[0] = 1\n\
      return }\n";
   c_semantic_message "c-import-float-field-address"
-    "floating-point fields are not supported until v0.5" phase21_records
+    "floating-point fields are not supported until v0.5" record_import_cases
     "fn address(value handle[FasFloatRecord]) addr {\n\
      raw addr = handle_addr(value)\n\
      return &raw[FasFloatRecord].value }\n";
   c_semantic_message "c-import-nested-float-field-select"
-    "floating-point fields are not supported until v0.5" phase21_records
+    "floating-point fields are not supported until v0.5" record_import_cases
     "fn read(value handle[FasNestedFloatRecord]) i32 {\n\
      raw addr = handle_addr(value)\n\
      return raw[FasNestedFloatRecord].inner.value[0] }\n";
   c_semantic_message "c-import-float-array-field-read"
-    "floating-point fields are not supported until v0.5" phase21_records
+    "floating-point fields are not supported until v0.5" record_import_cases
     "fn read(value handle[FasFloatArrayRecord]) i32 {\n\
      raw addr = handle_addr(value)\n\
      return raw[FasFloatArrayRecord].data[0] }\n";
   c_semantic_message "c-import-float-field-initializer"
-    "floating-point fields are not supported until v0.5" phase21_records
+    "floating-point fields are not supported until v0.5" record_import_cases
     "fn initialize() i32 { value FasFloatRecord = {1, 2, 3}\n return value.after }\n";
   let storage_only_llvm =
     match
-      c_semantic_result phase21_records
+      c_semantic_result record_import_cases
         "fn surrounding(value handle[FasFloatRecord]) i32 {\n\
          raw addr = handle_addr(value)\n\
          return raw[FasFloatRecord].before + raw[FasFloatRecord].after }\n\
@@ -9828,21 +9829,21 @@ let () =
   in
   if contains storage_only_llvm "float" || contains storage_only_llvm "double" then
     failwith "storage-only C float fields emitted LLVM floating-point types";
-  c_semantic_accept "c-import-function-pointer-field-record" phase21_records
+  c_semantic_accept "c-import-function-pointer-field-record" record_import_cases
     "fn read(value addr) addr { return value[FasFunctionPointerRecord].callback }\n";
   let keyword_fields, _ = require_struct "FasKeywordFieldRecord" in
   if
     List.map (fun (field : Ast.field) -> field.name) keyword_fields
     <> [ "opaque"; "fn"; "var" ]
   then failwith "C keyword-named fields were not imported";
-  c_semantic_accept "c-import-keyword-field-record-access" phase21_records
+  c_semantic_accept "c-import-keyword-field-record-access" record_import_cases
     "fn fields(raw addr) i32 {\n\
      raw[FasKeywordFieldRecord].opaque = 1\n\
      raw[FasKeywordFieldRecord].fn = 2\n\
      raw[FasKeywordFieldRecord].var = 3\n\
      return raw[FasKeywordFieldRecord].opaque + raw[FasKeywordFieldRecord].fn + \
      raw[FasKeywordFieldRecord].var }\n";
-  c_semantic_accept "c-import-keyword-field-record-remains-handle" phase21_records
+  c_semantic_accept "c-import-keyword-field-record-remains-handle" record_import_cases
     "fn retain(value handle[FasKeywordFieldRecord]) handle[FasKeywordFieldRecord] { \
      return value }\n";
   let function_addresses =
@@ -9855,7 +9856,7 @@ let () =
      const FasCallbacks arr[1,FasFunctionPointerRecord] = {{&fas_callback_result}}\n"
   in
   let function_address_ir =
-    match c_semantic_result phase21_records function_addresses with
+    match c_semantic_result record_import_cases function_addresses with
     | Ok program -> Ir.render (expect_ok (Lower.lower program))
     | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
   in
@@ -9872,39 +9873,36 @@ let () =
     "struct NativeRecord { value i32 }\n\
      fn f(pointer addr) handle[NativeRecord] {\n\
      return handle_from_addr[NativeRecord](pointer) }\n";
-  let phase21_definition_header = Filename.temp_file "fas-phase21-definition-" ".h" in
-  let phase21_definition_source =
-    Filename.concat
-      (Filename.dirname phase21_definition_header)
-      "phase21-definition.fas"
+  let definition_header = Filename.temp_file "fas-import-definition-" ".h" in
+  let definition_source =
+    Filename.concat (Filename.dirname definition_header) "import-definition.fas"
   in
   Fun.protect
-    ~finally:(fun () -> Sys.remove phase21_definition_header)
+    ~finally:(fun () -> Sys.remove definition_header)
     (fun () ->
-      let output = open_out_bin phase21_definition_header in
+      let output = open_out_bin definition_header in
       output_string output
-        "extern int fas_phase21_imported_global;\n\
-         int fas_phase21_imported_function(int value);\n\
-         extern int fas_phase21_incomplete[];\n";
+        "extern int fas_imported_global;\n\
+         int fas_imported_function(int value);\n\
+         extern int fas_incomplete[];\n";
       close_out output;
       let imported =
         let span =
-          Span.make ~file:phase21_definition_source ~start_offset:0 ~end_offset:0
-            ~line:1 ~column:1
+          Span.make ~file:definition_source ~start_offset:0 ~end_offset:0 ~line:1
+            ~column:1
         in
         let declarations, _, _ =
           expect_ok
-            (C_import.import ~cc:"clang-22" ~debug:false ~keep:false
-               phase21_definition_source
-               [ C_import.{ spelling = Ast.C_quoted phase21_definition_header; span } ])
+            (C_import.import ~cc:"clang-22" ~debug:false ~keep:false definition_source
+               [ C_import.{ spelling = Ast.C_quoted definition_header; span } ])
         in
         C_import.map_declarations ~span declarations
       in
       let definitions =
-        parse_file phase21_definition_source
-          "extern \"C\" { var fas_phase21_imported_global i32 = 7\n\
-           fn fas_phase21_imported_function(value i32) i32 { return value }\n\
-           var fas_phase21_incomplete arr[3,i32] = {1,2,3} }\n"
+        parse_file definition_source
+          "extern \"C\" { var fas_imported_global i32 = 7\n\
+           fn fas_imported_function(value i32) i32 { return value }\n\
+           var fas_incomplete arr[3,i32] = {1,2,3} }\n"
       in
       let reconciled =
         expect_ok (C_import.reconcile_source definitions.items imported)
@@ -9915,32 +9913,31 @@ let () =
         List.exists
           (function
             | Ast.Global { name; _ } | Ast.Func { name; _ } ->
-                List.mem name
-                  [ "fas_phase21_imported_global"; "fas_phase21_imported_function" ]
+                List.mem name [ "fas_imported_global"; "fas_imported_function" ]
             | _ -> false)
           reconciled.items
-        || List.mem_assoc "fas_phase21_incomplete" reconciled.unsupported
+        || List.mem_assoc "fas_incomplete" reconciled.unsupported
       then failwith "matching C definitions retained conflicting imports";
       let mismatching =
-        parse_file phase21_definition_source
-          "extern \"C\" { fn fas_phase21_imported_function(value u32) i32 {return 0 } }\n"
+        parse_file definition_source
+          "extern \"C\" { fn fas_imported_function(value u32) i32 {return 0 } }\n"
       in
       (match C_import.reconcile_source mismatching.items imported with
       | Error [ diagnostic ]
         when diagnostic.message
-             = "C declaration `fas_phase21_imported_function` has type `fn(i32)->i32`, \
-                but Fas declares `fn(u32)->i32`" ->
+             = "C declaration `fas_imported_function` has type `fn(i32)->i32`, but Fas \
+                declares `fn(u32)->i32`" ->
           ()
       | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
       | Ok _ -> failwith "mismatching imported function definition was accepted");
       let wrong_element =
-        parse_file phase21_definition_source
-          "extern \"C\" { var fas_phase21_incomplete arr[3,u32] = {1,2,3} }\n"
+        parse_file definition_source
+          "extern \"C\" { var fas_incomplete arr[3,u32] = {1,2,3} }\n"
       in
       match C_import.reconcile_source wrong_element.items imported with
       | Error [ diagnostic ]
         when diagnostic.message
-             = "C declaration `fas_phase21_incomplete` has type `arr[?, i32]`, but Fas \
+             = "C declaration `fas_incomplete` has type `arr[?, i32]`, but Fas \
                 declares `arr[?, u32]`" ->
           ()
       | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
@@ -10733,7 +10730,7 @@ let () =
 
 let () =
   let fixture =
-    c_import_container "phase25-anonymous"
+    c_import_container "anonymous-container"
       "typedef struct { int id; union { int x; unsigned y; }; } user_t;\n\
        typedef union { unsigned word; unsigned char bytes[4]; } word_t;\n\
        extern user_t users[2];\n"
@@ -10748,7 +10745,7 @@ let () =
 
 let () =
   let fixture =
-    c_import_container ~macro_names:[ "counter" ] "phase25-self-macro"
+    c_import_container ~macro_names:[ "counter" ] "stdio-self-macro"
       "extern int counter;\n#define counter counter\n"
   in
   c_semantic_accept "c-import-self-macro-preserves-global" fixture
@@ -10869,8 +10866,8 @@ let () =
      const R vec[2,u32] = shuffle(V, V, {0, missing})\n"
 
 let () =
-  let dir = Filename.dirname (fst (c_import_fixture "phase25_after_container.h")) in
-  let file = Filename.concat dir "phase25_containers.fas" in
+  let dir = Filename.dirname (fst (c_import_fixture "container_followup.h")) in
+  let file = Filename.concat dir "container_order_cases.fas" in
   let span = Span.make ~file ~start_offset:0 ~end_offset:0 ~line:30 ~column:1 in
   let requests =
     C_import.
@@ -10878,10 +10875,10 @@ let () =
         {
           spelling =
             Ast.C_fragment
-              { tag = "C"; text = "typedef struct { int before; } Phase25Before;\n" };
+              { tag = "C"; text = "typedef struct { int before; } BeforeContainer;\n" };
           span;
         };
-        { spelling = Ast.C_quoted "phase25_after_container.h"; span };
+        { spelling = Ast.C_quoted "container_followup.h"; span };
       ]
   in
   let nodes, _, _ =
@@ -10889,12 +10886,12 @@ let () =
   in
   let fixture = (file, C_import.map_declarations ~span nodes) in
   c_semantic_accept "c-import-anonymous-header-after-container" fixture
-    "fn f() i32 { a Phase25After = {}\n\
-     b Phase25Before = {}\n\
+    "fn f() i32 { a AfterContainer = {}\n\
+     b BeforeContainer = {}\n\
      return a.after + b.before }\n";
   c_semantic_message "c-import-anonymous-header-after-container-field"
     "unknown field `missing`" fixture
-    "fn f() i32 { a Phase25After = {}\nreturn a.missing }\n"
+    "fn f() i32 { a AfterContainer = {}\nreturn a.missing }\n"
 
 let () =
   let prefix = "struct Ring[N const usize] { head u32\nitems arr[N,u32] }\n" in
