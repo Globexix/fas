@@ -8638,6 +8638,48 @@ let () =
       | columns ->
           failwith ("C manifest columns changed: " ^ String.concat " | " columns))
   | None -> failwith "C manifest omitted the restrict function");
+  let structured_c = c_import_fixture "structured_regressions.h" in
+  let _, structured_imported = structured_c in
+  let structured_manifest name =
+    match
+      List.find_opt
+        (fun line -> String.starts_with ~prefix:(name ^ "\t") line)
+        structured_imported.manifest
+    with
+    | Some line -> String.split_on_char '\t' line
+    | None -> failwith ("C manifest omitted " ^ name)
+  in
+  let check_structured_manifest name spelling signature qualifiers reason =
+    incr checks_run;
+    match structured_manifest name with
+    | [ entry_name; entry_spelling; entry_signature; entry_qualifiers; location ]
+      when entry_name = name && entry_spelling = spelling && entry_signature = signature
+           && entry_qualifiers = qualifiers
+           && contains location "structured_regressions.h:"
+           && contains location reason ->
+        ()
+    | columns ->
+        failwith ("C structured manifest changed: " ^ String.concat " | " columns)
+  in
+  check_structured_manifest "fas_restrict_parameter"
+    "void (int *restrict) fas_restrict_parameter" "fn(addr)->void" "restrict" "";
+  check_structured_manifest "fas_restrict_nested"
+    "void (int *restrict *) fas_restrict_nested" "fn(addr)->void" "restrict" "";
+  check_structured_manifest "fas_restrict_typedef"
+    "void (fas_restrict_pointer) fas_restrict_typedef" "fn(addr)->void" "__restrict" "";
+  check_structured_manifest "fas_read_function_t"
+    "long (void *, char *, unsigned long) fas_read_function_t" "typedef addr" "" "";
+  check_structured_manifest "fas_write_function_t"
+    "long (void *, const char *, unsigned long) fas_write_function_t" "typedef addr"
+    "const" "";
+  check_structured_manifest "fas_complex_double" "_Complex double fas_complex_double"
+    "typedef" "" "unsupported=floating-point types are not supported";
+  c_semantic_accept "c-import-function-type-typedef" structured_c
+    "fn probe() fas_read_function_t { return null }\n";
+  c_semantic_message "c-import-complex-typedef"
+    "C declaration `fas_complex_double` is not supported: floating-point types are not \
+     supported"
+    structured_c "fn probe() fas_complex_double { return 0 }\n";
   let provenance_dir = Filename.dirname c_matrix_source in
   let provenance_headers =
     List.map

@@ -523,10 +523,34 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declar
   let add_probe target expression =
     Option.iter (fun target -> Hashtbl.replace probes target expression) target
   in
+  let has_restrict_qualifier value =
+    String.map
+      (function ('a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_') as c -> c | _ -> ' ')
+      value
+    |> String.split_on_char ' '
+    |> List.exists (fun qualifier ->
+        List.mem qualifier [ "restrict"; "__restrict"; "__restrict__" ])
+  in
   List.iter
     (fun node ->
       let c_name = Option.value ~default:"" (name node) in
       add_probe (Some ("decl:" ^ c_name)) c_name)
+    top_declarations;
+  List.iter
+    (fun node ->
+      match (kind node, name node) with
+      | Some "FunctionDecl", Some function_name ->
+          children node
+          |> List.filter (fun child -> kind child = Some "ParmVarDecl")
+          |> List.iteri (fun index parameter ->
+              Option.iter
+                (fun parameter_type ->
+                  if has_restrict_qualifier parameter_type then
+                    add_probe
+                      (Some (Printf.sprintf "parameter:%s:%d" function_name index))
+                      parameter_type)
+                (Option.bind (field "type" parameter) (string "qualType")))
+      | _ -> ())
     top_declarations;
   let collision_names = Hashtbl.create 16 in
   List.iter
@@ -1064,16 +1088,16 @@ let type_node_id node = Option.bind (get "decl" node) (string "id")
 let record_name node =
   match string "name" node with Some name when name <> "" -> Some name | _ -> None
 
+let type_qualifier_names node =
+  Option.value ~default:"" (string "qualifiers" node)
+  |> String.map (function
+    | ('a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_') as c -> c
+    | _ -> ' ')
+  |> String.split_on_char ' '
+  |> List.filter (( <> ) "")
+
 let rec type_qualifiers node =
-  let own =
-    Option.value ~default:"" (string "qualifiers" node)
-    |> String.map (function
-      | ('a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_') as c -> c
-      | _ -> ' ')
-    |> String.split_on_char ' '
-    |> List.filter (( <> ) "")
-  in
-  own @ List.concat_map type_qualifiers (children node)
+  type_qualifier_names node @ List.concat_map type_qualifiers (children node)
 
 let rec type_has_address_space node =
   let own =
@@ -1213,6 +1237,7 @@ let type_result ?(allow_arrays = false) ~alias_name ~alias_type_node ~resolve_al
           | Some (Integer ty) -> Ok ty
           | Some Unsupported_integer -> Error "`__int128` has no Fas type"
           | Some (Floating _) -> Error "floating-point types are not supported")
+      | Some "ComplexType" -> Error "floating-point types are not supported"
       | Some "BitIntType" -> Error "`_BitInt` has no Fas type"
       | Some "EnumType" -> (
           match type_node_id node with
@@ -1295,8 +1320,7 @@ let type_result ?(allow_arrays = false) ~alias_name ~alias_type_node ~resolve_al
       | Some "IncompleteArrayType" -> Error "arrays of unknown size are not supported"
       | Some ("VariableArrayType" | "DependentSizedArrayType") ->
           Error "array types are not supported by value"
-      | Some ("FunctionProtoType" | "FunctionNoProtoType") ->
-          Error "function types are not supported"
+      | Some ("FunctionProtoType" | "FunctionNoProtoType") -> Ok Ast.Addr
       | _ ->
           Error
             ("unsupported C type "
@@ -1953,6 +1977,96 @@ let map_declarations ?(container = false) ~span declarations =
     Option.fold ~none:[] ~some:(qualifiers_in_type []) (type_tree node)
     |> List.sort_uniq compare
   in
+  let parameter_qualifier_words node =
+    let words value =
+      String.map
+        (function ('a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_') as c -> c | _ -> ' ')
+        value
+      |> String.split_on_char ' '
+    in
+    Option.fold ~none:[]
+      ~some:(fun ty ->
+        [ "qualType" ]
+        |> List.filter_map (fun key -> string key ty)
+        |> List.concat_map words)
+      (get "type" node)
+  in
+  let parameter_spelled_qualifiers node =
+    parameter_qualifier_words node
+    |> List.filter (fun qualifier -> List.mem qualifier [ "const"; "volatile" ])
+  in
+  let parameter_spells_restrict node =
+    parameter_qualifier_words node
+    |> List.exists (fun qualifier ->
+        List.mem qualifier [ "restrict"; "__restrict"; "__restrict__" ])
+  in
+  let function_spells_restrict node =
+    Option.fold ~none:false
+      ~some:(fun function_name ->
+        List.exists
+          (fun declaration ->
+            string "kind" declaration = Some "FunctionDecl"
+            && record_name declaration = Some function_name
+            && List.exists
+                 (fun parameter ->
+                   string "kind" parameter = Some "ParmVarDecl"
+                   && parameter_spells_restrict parameter)
+                 (children declaration))
+          nodes)
+      (record_name node)
+  in
+  let parameter_structural_qualifiers node =
+    Option.fold ~none:[] ~some:(qualifiers_in_type []) (type_tree node)
+  in
+  let parameter_probe_qualifiers function_name index =
+    Option.fold ~none:[] ~some:(qualifiers_in_type [])
+      (Hashtbl.find_opt structured_types
+         (Printf.sprintf "parameter:%s:%d" function_name index))
+    |> List.filter (fun qualifier ->
+        List.mem qualifier [ "restrict"; "__restrict"; "__restrict__" ])
+  in
+  let rec function_type_nodes node =
+    match string "kind" node with
+    | Some ("FunctionProtoType" | "FunctionNoProtoType") ->
+        Some
+          (children node
+          |> List.filter (fun child ->
+              Option.fold ~none:false
+                ~some:(String.ends_with ~suffix:"Type")
+                (string "kind" child)))
+    | Some
+        ( "QualType" | "ElaboratedType" | "ParenType" | "MacroQualifiedType"
+        | "AttributedType" | "TypeOfType" | "TypeOfExprType" ) ->
+        Option.bind (type_node node) function_type_nodes
+    | _ -> None
+  in
+  let function_qualifiers node parameter_nodes =
+    let function_name = Option.value ~default:"" (record_name node) in
+    let source_parameters = List.map parameter_spelled_qualifiers parameter_nodes in
+    let parameter_qualifiers =
+      List.mapi
+        (fun index parameter ->
+          parameter_structural_qualifiers parameter
+          @ parameter_probe_qualifiers function_name index)
+        parameter_nodes
+    in
+    let from_declaration = List.concat parameter_qualifiers in
+    match Option.bind (type_tree node) function_type_nodes with
+    | Some (result :: parameter_types)
+      when List.length parameter_types = List.length parameter_nodes ->
+        let parameter_types =
+          List.map2
+            (fun tree (source, qualifiers) ->
+              qualifiers_in_type [] tree @ qualifiers
+              |> List.filter (fun qualifier ->
+                  qualifier <> "volatile" || List.mem "volatile" source))
+            parameter_types
+            (List.combine source_parameters parameter_qualifiers)
+          |> List.concat
+        in
+        qualifiers_in_type [] result @ parameter_types @ from_declaration
+    | _ -> c_qualifiers node @ from_declaration |> List.sort_uniq compare
+  in
   let rec top_level_const seen node =
     match string "kind" node with
     | Some "QualType" ->
@@ -2087,6 +2201,7 @@ let map_declarations ?(container = false) ~span declarations =
         | Error _ -> ())
     aliases;
   let add_item name spelling signature item origin obligations reason
+      ?(normalize_restrict = Option.is_some (find_text spelling "restrict" 0))
       ?(entity_scope = "") ?(keep_unsupported_item = false) () =
     let reason =
       if Names.reserved_binding_name name then
@@ -2100,7 +2215,7 @@ let map_declarations ?(container = false) ~span declarations =
     in
     let declaration_file, line = origin in
     let obligations =
-      if Option.is_some (find_text spelling "restrict" 0) then
+      if normalize_restrict then
         List.map
           (function "__restrict" | "__restrict__" -> "restrict" | q -> q)
           obligations
@@ -2600,6 +2715,21 @@ let map_declarations ?(container = false) ~span declarations =
         Some "struct and union values are not supported"
     | None -> None
   in
+  let first_record_node name =
+    List.filter
+      (fun node ->
+        string "kind" node = Some "RecordDecl"
+        && Option.bind
+             (Option.bind (get "id" node) C_import_json.string)
+             (fun id -> Hashtbl.find_opt record_ids id)
+           = Some name)
+      nodes
+    |> List.sort (fun left right ->
+        compare (declaration_location left) (declaration_location right))
+    |> function
+    | [] -> None
+    | node :: _ -> Some node
+  in
   let rec type_value_reason = function
     | Ast.Named_type name -> record_value_reason name
     | Ast.Array (_, element) -> type_value_reason element
@@ -2697,13 +2827,7 @@ let map_declarations ?(container = false) ~span declarations =
   Hashtbl.iter
     (fun name visible ->
       if visible = Some name && not (Hashtbl.mem record_definitions name) then
-        match
-          Hashtbl.fold
-            (fun id record found ->
-              if found <> None || Hashtbl.find_opt record_ids id <> Some name then found
-              else Some record)
-            record_nodes_by_id None
-        with
+        match first_record_node name with
         | None -> ()
         | Some node ->
             let item = Ast.Opaque { name; span } in
@@ -2749,10 +2873,7 @@ let map_declarations ?(container = false) ~span declarations =
                         | parameter :: rest -> (
                             match parse_type ~allow_record:false parameter with
                             | Error reason -> Error reason
-                            | Ok ty ->
-                                parse_parameters
-                                  ((ty, type_qualifiers parameter) :: acc)
-                                  rest)
+                            | Ok ty -> parse_parameters ((ty, []) :: acc) rest)
                       in
                       Result.map
                         (fun parameters ->
@@ -3013,8 +3134,10 @@ let map_declarations ?(container = false) ~span declarations =
           add_item name
             (declaration_spelling node name)
             signature_name item origin
-            (quals node @ List.concat_map (fun (_, _, q) -> q) parameters)
+            (function_qualifiers node parameter_nodes
+            @ List.concat_map (fun (_, _, q) -> q) parameters)
             reason
+            ~normalize_restrict:(function_spells_restrict node)
             ~entity_scope:(if is_static then span.Span.file else "")
             ()
       | Some "VarDecl", _ ->
@@ -3101,13 +3224,7 @@ let map_declarations ?(container = false) ~span declarations =
             let node =
               match Hashtbl.find_opt record_definitions name with
               | Some node -> Some node
-              | None ->
-                  Hashtbl.fold
-                    (fun id record found ->
-                      if found <> None || Hashtbl.find_opt record_ids id <> Some name
-                      then found
-                      else Some record)
-                    record_nodes_by_id None
+              | None -> first_record_node name
             in
             match node with
             | None -> acc

@@ -28,4 +28,5 @@
   c_import/macros_conflict_first.h
   c_import/macros_conflict_second.h
   c_import/provenance_first.h
-  c_import/provenance_second.h))
+  c_import/provenance_second.h
+  c_import/structured_regressions.h))
