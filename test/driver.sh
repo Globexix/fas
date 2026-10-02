@@ -151,7 +151,9 @@ done
 if grep -F -- "-no-pie" "$TOOL_LOG" >/dev/null; then fail "executable link disabled PIE"; fi
 grep -F -- "-passes=verify" "$TOOL_LOG" >/dev/null || fail "LLVM verification missing"
 [ "$(grep -c -- "-passes=verify" "$TOOL_LOG")" -ge 8 ] || fail "LLVM was not verified before and after optimization"
-grep -F -- "-verify-each" "$TOOL_LOG" >/dev/null || fail "pass-by-pass verification missing"
+if grep -F -- "-verify-each" "$TOOL_LOG" >/dev/null; then
+  fail "pass-by-pass verification is enabled"
+fi
 grep -F -- "cc " "$TOOL_LOG" >/dev/null || fail "CC override was ignored"
 temps_empty
 

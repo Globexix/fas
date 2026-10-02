@@ -461,7 +461,6 @@ let emit_tools_unprotected config program ir c_objects redirect =
           [|
             opt;
             "-passes=" ^ opt_pass config.optimization;
-            "-verify-each";
             ll_path;
             "-S";
             "-o";
