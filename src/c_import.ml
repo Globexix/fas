@@ -676,7 +676,19 @@ let has text part =
   let rec find i = i + m <= n && (String.sub value i m = part || find (i + 1)) in
   find 0
 
+let has_type_identifier raw name =
+  String.map
+    (function ('a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_') as c -> c | _ -> ' ')
+    raw
+  |> String.split_on_char ' ' |> List.mem name
+
 let c_type_name node = Option.bind (get "type" node) (string "qualType")
+
+let c_desugared_type_name node =
+  Option.bind (get "type" node) (fun ty ->
+      match string "desugaredQualType" ty with
+      | Some _ as raw -> raw
+      | None -> string "qualType" ty)
 
 let function_result_spelling raw =
   match find_text raw "(*(" 0 with
@@ -736,8 +748,9 @@ let top_level_const node =
   List.exists is_const (c_type_spellings node)
 
 let type_error raw =
-  if has raw "__int128" then Some "`__int128` has no Fas type"
-  else if has raw "_bitint" then Some "`_BitInt` has no Fas type"
+  if has_type_identifier raw "__int128" then Some "`__int128` has no Fas type"
+  else if has_type_identifier (String.lowercase_ascii raw) "_bitint" then
+    Some "`_BitInt` has no Fas type"
   else
     let tokens =
       String.map
@@ -876,19 +889,65 @@ let type_result ?(allow_arrays = false) ~aliases ~records ~enums ~allow_record r
     | Some _ -> Error "recursive C typedef is not supported"
     | None -> parse seen raw
   and parse seen raw =
-    match type_error raw with
-    | Some reason -> Error reason
-    | None when raw = "void" -> Ok Ast.Void
+    let function_pointer_array () =
+      match find_text raw "(*" 0 with
+      | None -> None
+      | Some start ->
+          let rec dimensions index acc =
+            if index = String.length raw then None
+            else
+              match raw.[index] with
+              | ' ' | '\t' -> dimensions (index + 1) acc
+              | ')' ->
+                  if acc = [] then None
+                  else
+                    Some
+                      (List.fold_right
+                         (fun length ty -> Ast.Array (length, ty))
+                         (List.rev acc) Ast.Addr)
+              | '[' -> (
+                  match String.index_from_opt raw (index + 1) ']' with
+                  | None -> None
+                  | Some close ->
+                      let length =
+                        trim (String.sub raw (index + 1) (close - index - 1))
+                      in
+                      if Option.is_none (int_of_string_opt length) then None
+                      else dimensions (close + 1) (length :: acc))
+              | _ -> None
+          in
+          dimensions (start + 2) []
+    in
+    match function_pointer_array () with
+    | Some ty -> Ok ty
     | None when has raw "(*" || has raw "(^" -> Ok Ast.Addr
-    | None when has raw "vector_size" || has raw "ext_vector_type" || has raw "<" ->
+    | None when raw = "void" -> Ok Ast.Void
+    | None
+      when List.exists (has_type_identifier raw)
+             [
+               "vector_size";
+               "__vector_size__";
+               "ext_vector_type";
+               "__ext_vector_type__";
+             ]
+           || String.contains raw '<' ->
         Error "vector types are not supported by value"
-    | None when has raw "address_space" || has raw "addrspace" ->
+    | None when List.exists (has_type_identifier raw) [ "address_space"; "addrspace" ]
+      ->
         Error "C address spaces are not supported"
     | None
-      when has raw "stdcall" || has raw "fastcall" || has raw "vectorcall"
-           || has raw "ms_abi" || has raw "regcall" || has raw "preserve_most"
-           || has raw "preserve_all" || has raw "swiftcall"
-           || has raw "aarch64_vector_pcs" ->
+      when List.exists (has_type_identifier raw)
+             [
+               "stdcall";
+               "fastcall";
+               "vectorcall";
+               "ms_abi";
+               "regcall";
+               "preserve_most";
+               "preserve_all";
+               "swiftcall";
+               "aarch64_vector_pcs";
+             ] ->
         Error "non-default calling conventions are not supported"
     | None when String.contains raw '[' ->
         if not allow_arrays then Error "array types are not supported by value"
@@ -927,34 +986,38 @@ let type_result ?(allow_arrays = false) ~aliases ~records ~enums ~allow_record r
           in
           if stars > 1 then Ok Ast.Addr
           else if pointee = "void" || Option.is_some (int_type pointee) then Ok Ast.Addr
+          else if Option.is_some (type_error pointee) then Ok Ast.Addr
           else match_record_pointer seen pointee
         else
-          match int_type raw with
-          | Some ty -> Ok ty
+          match type_error raw with
+          | Some reason -> Error reason
           | None -> (
-              match raw with
-              | "void" -> Ok Ast.Void
-              | _ when String.starts_with ~prefix:"enum " raw ->
-                  let name = String.sub raw 5 (String.length raw - 5) in
-                  Option.fold ~none:(Error "enum representation is not supported")
-                    ~some:(fun underlying -> resolve seen underlying)
-                    (Hashtbl.find_opt enums name)
-              | _
-                when String.starts_with ~prefix:"struct " raw
-                     || String.starts_with ~prefix:"union " raw ->
-                  if allow_record then
-                    let name =
-                      String.sub raw
-                        (String.index raw ' ' + 1)
-                        (String.length raw - String.index raw ' ' - 1)
-                    in
-                    Option.fold ~none:(Error "anonymous records are not supported")
-                      ~some:(fun visible -> Ok (Ast.Named_type visible))
-                      (Option.join (Hashtbl.find_opt records name))
-                  else Error "struct and union values are not supported"
-              | _ when String.contains raw '(' ->
-                  Error "function types are not supported"
-              | _ -> Error ("unsupported C type " ^ raw)))
+              match int_type raw with
+              | Some ty -> Ok ty
+              | None -> (
+                  match raw with
+                  | "void" -> Ok Ast.Void
+                  | _ when String.starts_with ~prefix:"enum " raw ->
+                      let name = String.sub raw 5 (String.length raw - 5) in
+                      Option.fold ~none:(Error "enum representation is not supported")
+                        ~some:(fun underlying -> resolve seen underlying)
+                        (Hashtbl.find_opt enums name)
+                  | _
+                    when String.starts_with ~prefix:"struct " raw
+                         || String.starts_with ~prefix:"union " raw ->
+                      if allow_record then
+                        let name =
+                          String.sub raw
+                            (String.index raw ' ' + 1)
+                            (String.length raw - String.index raw ' ' - 1)
+                        in
+                        Option.fold ~none:(Error "anonymous records are not supported")
+                          ~some:(fun visible -> Ok (Ast.Named_type visible))
+                          (Option.join (Hashtbl.find_opt records name))
+                      else Error "struct and union values are not supported"
+                  | _ when String.contains raw '(' ->
+                      Error "function types are not supported"
+                  | _ -> Error ("unsupported C type " ^ raw))))
   and match_record_pointer seen pointee =
     if
       String.starts_with ~prefix:"struct " pointee
@@ -978,6 +1041,7 @@ let type_result ?(allow_arrays = false) ~aliases ~records ~enums ~allow_record r
           Ok (Ast.Handle (Ast.Named_type name))
       | Some (Ok (Ast.Void | Ast.Bool | Ast.Int _ | Ast.Addr | Ast.Handle _)) ->
           Ok Ast.Addr
+      | Some (Ok (Ast.Array _)) -> Ok Ast.Addr
       | Some (Ok _) -> Error "pointer target type is not supported"
       | Some (Error reason) -> Error reason
       | None -> (
@@ -1409,6 +1473,20 @@ let map_declarations ?(container = false) ~span declarations =
                 result))
   and resolve_aliases stack raw =
     let raw, _ = clean_type raw in
+    let first_delimiter = function
+      | Some left, Some right -> Some (min left right)
+      | Some index, None | None, Some index -> Some index
+      | None, None -> None
+    in
+    let alias_base =
+      first_delimiter (String.index_opt raw '*', String.index_opt raw '[')
+      |> Option.map (fun index -> trim (String.sub raw 0 index))
+    in
+    Option.iter
+      (fun name ->
+        if Hashtbl.mem alias_nodes name && not (List.mem name stack) then
+          ignore (alias stack name))
+      alias_base;
     match int_type raw with
     | Some ty -> Ok ty
     | None when Option.is_some (type_error raw) -> Error (Option.get (type_error raw))
@@ -1504,7 +1582,7 @@ let map_declarations ?(container = false) ~span declarations =
     (file, line)
   in
   let declaration_spelling node name =
-    match c_type_name node with
+    match Option.bind (get "type" node) (string "qualType") with
     | Some raw -> raw ^ " " ^ name
     | None ->
         let tag = Option.value ~default:"record" (string "tagUsed" node) in
@@ -1514,7 +1592,16 @@ let map_declarations ?(container = false) ~span declarations =
   let as_type ?(allow_arrays = false) ~allow_record node =
     match c_type_name node with
     | None -> Error "declaration has no C type"
-    | Some raw -> type_result ~allow_arrays ~aliases ~records ~enums ~allow_record raw
+    | Some raw -> (
+        match type_result ~allow_arrays ~aliases ~records ~enums ~allow_record raw with
+        | Ok _ as result -> result
+        | Error "function types are not supported" as original -> (
+            match c_desugared_type_name node with
+            | Some canonical when canonical <> raw ->
+                type_result ~allow_arrays ~aliases ~records ~enums ~allow_record
+                  canonical
+            | _ -> original)
+        | Error reason -> Error reason)
   in
   let record_definitions = Hashtbl.create 64 in
   List.iter
@@ -1618,11 +1705,45 @@ let map_declarations ?(container = false) ~span declarations =
         | None -> Option.map snd (List.nth_opt layout.direct_members field_index))
   in
   let field_storage_type field =
+    let rec floating_bytes seen raw =
+      let raw, _ = clean_type raw in
+      let array_at = String.index_opt raw '[' in
+      let base =
+        match array_at with None -> raw | Some index -> trim (String.sub raw 0 index)
+      in
+      let base_bytes =
+        match Hashtbl.find_opt alias_nodes base with
+        | Some node when not (List.mem base seen) ->
+            Option.bind (c_type_name node) (floating_bytes (base :: seen))
+        | _ -> floating_storage_bytes base
+      in
+      Option.bind base_bytes (fun bytes ->
+          match array_at with
+          | None -> Some bytes
+          | Some index ->
+              let rec dimensions index size =
+                if index = String.length raw then Some size
+                else if raw.[index] = ' ' then dimensions (index + 1) size
+                else if raw.[index] <> '[' then None
+                else
+                  match String.index_from_opt raw index ']' with
+                  | None -> None
+                  | Some close ->
+                      let length =
+                        trim (String.sub raw (index + 1) (close - index - 1))
+                      in
+                      Option.bind (int_of_string_opt length) (fun length ->
+                          if length < 0 || (length <> 0 && size > max_int / length) then
+                            None
+                          else dimensions (close + 1) (size * length))
+              in
+              dimensions index bytes)
+    in
     c_type_spellings field
     |> List.find_map (fun raw ->
         Option.map
           (fun size -> Ast.Array (string_of_int size, Ast.Int Ast.U8))
-          (floating_storage_bytes raw))
+          (floating_bytes [] raw))
   in
   let source_offset node =
     let loc =
@@ -2043,12 +2164,21 @@ let map_declarations ?(container = false) ~span declarations =
     match c_type_name node with
     | None -> Error "function declaration has no C type"
     | Some raw
-      when has raw "stdcall" || has raw "fastcall" || has raw "vectorcall"
-           || has raw "ms_abi" || has raw "regcall" || has raw "preserve_most"
-           || has raw "preserve_all" || has raw "swiftcall"
-           || has raw "aarch64_vector_pcs" ->
+      when List.exists (has_type_identifier raw)
+             [
+               "stdcall";
+               "fastcall";
+               "vectorcall";
+               "ms_abi";
+               "regcall";
+               "preserve_most";
+               "preserve_all";
+               "swiftcall";
+               "aarch64_vector_pcs";
+             ] ->
         Error "non-default calling conventions are not supported"
-    | Some raw when has raw "address_space" || has raw "addrspace" ->
+    | Some raw
+      when List.exists (has_type_identifier raw) [ "address_space"; "addrspace" ] ->
         Error "C address spaces are not supported"
     | Some raw -> (
         match String.index_opt raw '(' with
@@ -2282,7 +2412,7 @@ let map_declarations ?(container = false) ~span declarations =
             | result -> result
           in
           let incomplete_element =
-            Option.bind (c_type_name node) (fun raw ->
+            Option.bind (c_desugared_type_name node) (fun raw ->
                 let raw = trim raw in
                 if String.ends_with ~suffix:"[]" raw then
                   let element = trim (String.sub raw 0 (String.length raw - 2)) in
