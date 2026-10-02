@@ -325,6 +325,20 @@ let () =
   let tokens = expect_ok (Lexer.lex (source "fn main() i64 { return 0x2a + 1\n }\n")) in
   assert (List.exists (fun token -> token.Token.kind = Token.Kw_fn) tokens);
   assert (List.exists (fun token -> token.Token.kind = Token.Int "0x2a") tokens);
+  List.iter
+    (fun literal ->
+      match Lexer.lex (source literal) with
+      | Error [ diagnostic ] ->
+          assert (diagnostic.Diag.message = "misplaced digit separator `_`")
+      | _ -> failwith ("integer separator should be rejected: " ^ literal))
+    [ "0_x10"; "0x_FF"; "0b_1"; "1_"; "1__2"; "0o_7" ];
+  List.iter
+    (fun (literal, expected) ->
+      match Lexer.lex (source literal) with
+      | Ok [ { Token.kind = Token.Int actual; _ }; { Token.kind = Token.Eof; _ } ] ->
+          assert (actual = expected)
+      | _ -> failwith ("integer separator should be accepted: " ^ literal))
+    [ ("1_000", "1000"); ("0x0100_0193", "0x01000193"); ("0b1010_0000", "0b10100000") ];
   (match Lexer.lex (source "0x") with
   | Ok _ -> assert false
   | Error diagnostics ->

@@ -1,0 +1,10 @@
+const Decimal u64 = 1_000
+const Hex u64 = 0x0100_0193
+const Binary u64 = 0b1010_0000
+
+fn main() i32 {
+  if Decimal != 1000 { return 1 }
+  if Hex != 16777619 { return 2 }
+  if Binary != 160 { return 3 }
+  return 0
+}

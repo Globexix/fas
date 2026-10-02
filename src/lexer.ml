@@ -110,21 +110,15 @@ let lex ?(limits = Limits.default) source =
         in
         let stop = number_end (offset + 1) in
         let raw = String.sub text offset (stop - offset) in
-        let clean = String.concat "" (String.split_on_char '_' raw) in
+        let raw_prefix prefix = String.length raw >= 2 && String.sub raw 0 2 = prefix in
         let radix, digits =
-          if
-            String.length clean >= 2
-            && (String.sub clean 0 2 = "0x" || String.sub clean 0 2 = "0X")
-          then (16, String.sub clean 2 (String.length clean - 2))
-          else if
-            String.length clean >= 2
-            && (String.sub clean 0 2 = "0b" || String.sub clean 0 2 = "0B")
-          then (2, String.sub clean 2 (String.length clean - 2))
-          else if
-            String.length clean >= 2
-            && (String.sub clean 0 2 = "0o" || String.sub clean 0 2 = "0O")
-          then (8, String.sub clean 2 (String.length clean - 2))
-          else (10, clean)
+          if raw_prefix "0x" || raw_prefix "0X" then
+            (16, String.sub raw 2 (String.length raw - 2))
+          else if raw_prefix "0b" || raw_prefix "0B" then
+            (2, String.sub raw 2 (String.length raw - 2))
+          else if raw_prefix "0o" || raw_prefix "0O" then
+            (8, String.sub raw 2 (String.length raw - 2))
+          else (10, raw)
         in
         let valid_digit c =
           match radix with
@@ -134,7 +128,25 @@ let lex ?(limits = Limits.default) source =
           | 16 -> is_hex c
           | _ -> false
         in
-        if digits = "" then Error [ diagnostic offset "invalid integer literal" ]
+        let digit_start = String.length raw - String.length digits in
+        let misplaced_separator =
+          let rec find i =
+            if i >= String.length raw then false
+            else if raw.[i] = '_' then
+              i <= digit_start
+              || i + 1 >= String.length raw
+              || (not (valid_digit raw.[i - 1]))
+              || (not (valid_digit raw.[i + 1]))
+              || find (i + 1)
+            else find (i + 1)
+          in
+          find 0
+        in
+        let clean = String.concat "" (String.split_on_char '_' raw) in
+        let digits = String.concat "" (String.split_on_char '_' digits) in
+        if misplaced_separator then
+          Error [ diagnostic offset "misplaced digit separator `_`" ]
+        else if digits = "" then Error [ diagnostic offset "invalid integer literal" ]
         else if not (String.for_all valid_digit digits) then
           Error
             [

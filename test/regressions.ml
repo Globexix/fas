@@ -2013,6 +2013,29 @@ let () =
   let u64_max = llvm_of "fn f() u64 { return 18446744073709551615 }\n" in
   if not (contains u64_max "ret i64 -1\n") then
     failwith "fas-020: valid u64 maximum literal was rejected";
+  let digit_separator_hir =
+    expect_ok
+      (Parser.parse
+         (source
+            "const Decimal u64 = 1_000\n\
+             const Hex u64 = 0x0100_0193\n\
+             const Binary u64 = 0b1010_0000\n"))
+    |> Sema.check |> expect_ok
+  in
+  List.iter
+    (fun (name, expected) ->
+      match
+        List.find_opt
+          (fun (constant : Hir.const_def) -> constant.name = name)
+          digit_separator_hir.consts
+      with
+      | Some constant when constant.bits = expected -> ()
+      | Some constant ->
+          failwith
+            (Printf.sprintf "integer-separator-%s: expected %Ld, got %Ld" name expected
+               constant.bits)
+      | None -> failwith ("integer-separator-" ^ name ^ ": constant was not emitted"))
+    [ ("Decimal", 1000L); ("Hex", 16777619L); ("Binary", 160L) ];
   let signed_const_eval =
     llvm_of
       "const X i8 = -4 / 2\n\
