@@ -889,9 +889,10 @@ and lower_builtin s b args t span =
           emit s
             (Ir.Bin (product, Ir.Mul, wide, Ir.Local (ex, wide), Ir.Local (ey, wide)));
           let amount =
-            if lanes > 1 then
-              Ir.Const_vector (wide, List.init lanes (fun _ -> Int64.of_int elem_bits))
-            else Ir.Const (wide, Int64.of_int elem_bits)
+            match rt with
+            | Ir.Vector _ ->
+                Ir.Const_vector (wide, List.init lanes (fun _ -> Int64.of_int elem_bits))
+            | _ -> Ir.Const (wide, Int64.of_int elem_bits)
           in
           let high = fresh s in
           emit s
@@ -928,12 +929,17 @@ and lower_builtin s b args t span =
           let iid = fresh s in
           emit s (Ir.Extract (iid, value_ty idx, idx, slot));
           let il = Ir.Local (iid, iw) in
-          let vid = fresh s in
-          emit s (Ir.Cmp (vid, Ir.Ult, iw, il, Ir.Const (iw, Int64.of_int n)));
-          let vl = Ir.Local (vid, Ir.I1) in
-          let sid = fresh s in
-          emit s (Ir.Select (sid, vl, il, Ir.Const (iw, 0L)));
-          let sl = Ir.Local (sid, iw) in
+          let all_indices_fit = match iw with Ir.I8 -> n >= 256 | _ -> false in
+          let vl, sl =
+            if all_indices_fit then (Ir.Const (Ir.I1, 1L), il)
+            else
+              let vid = fresh s in
+              emit s (Ir.Cmp (vid, Ir.Ult, iw, il, Ir.Const (iw, Int64.of_int n)));
+              let vl = Ir.Local (vid, Ir.I1) in
+              let sid = fresh s in
+              emit s (Ir.Select (sid, vl, il, Ir.Const (iw, 0L)));
+              (vl, Ir.Local (sid, iw))
+          in
           let eid = fresh s in
           emit s (Ir.Extract (eid, value_ty v, v, sl));
           let el = Ir.Local (eid, elem_ty) in
