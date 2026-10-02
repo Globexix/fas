@@ -364,10 +364,10 @@ let () =
     ];
   semantic_error "constant-zext-must-widen"
     "illegal cast for source and destination widths"
-    "const X u8 = zext[u8](256)\nfn main() u8 { return X }\n";
+    "const X u8 = zext[u8](256)\nfn test() u8 { return X }\n";
   semantic_error "constant-zext-equal-width"
     "illegal cast for source and destination widths"
-    "const A u8 = 1\nconst X u8 = zext[u8](A)\nfn main() u8 { return X }\n";
+    "const A u8 = 1\nconst X u8 = zext[u8](A)\nfn test() u8 { return X }\n";
   semantic_error "constant-sext-equal-width"
     "illegal cast for source and destination widths"
     "const A i32 = 1\nconst X i32 = sext[i32](A)\nfn main() i32 { return X }\n";
@@ -385,7 +385,7 @@ let () =
     "fn f(value i32) i32 { return trunc[i32](value) }\n";
   semantic_error "constant-trunc-bool-source"
     "illegal cast for source and destination widths"
-    "const X u8 = trunc[u8](true)\nfn main() u8 { return X }\n";
+    "const X u8 = trunc[u8](true)\nfn test() u8 { return X }\n";
   semantic_error "runtime-trunc-bool-source"
     "illegal cast for source and destination widths"
     "fn f(value bool) u8 { return trunc[u8](value) }\n";
@@ -587,7 +587,7 @@ let () =
     "type mismatch: expected vec[4, u16], got vec[4, u8]"
     "const Bytes vec[4,u8] = splat(1)\n\
      fn take(value vec[4,u16]) void { return }\n\
-     fn main() void { take(Bytes)\n\
+     fn test() void { take(Bytes)\n\
     \ return }\n";
   semantic_error "constant-vector-conversion-lanes"
     "illegal cast for source and destination widths"
@@ -609,7 +609,7 @@ let () =
   ignore
     (llvm_of
        "const Safe vec[4,u8] = true ? splat(7) : splat(1) / splat(0)\n\
-        fn main() u8 { return Safe[0] }\n");
+        fn test() u8 { return Safe[0] }\n");
   semantic_error "constant-vector-dead-ternary-type"
     "type mismatch: expected u8, got bool"
     "const Invalid vec[4,u8] = true ? splat(7) : splat(true)\n\
@@ -775,7 +775,7 @@ let () =
   let usize_specialization =
     llvm_of
       "fn id[N const usize](value usize) usize { return value + N }\n\
-       fn main() usize { return id[3](4) }\n"
+       fn test() usize { return id[3](4) }\n"
   in
   if not (contains usize_specialization "N=usize:3\"") then
     failwith "usize-specialization: specialization key lost usize identity";
@@ -784,7 +784,7 @@ let () =
       (Parser.parse
          (source
             "fn f[T](v T) T { return v }\n\
-             fn main() usize { a usize = f[usize](1)\n\
+             fn test() usize { a usize = f[usize](1)\n\
             \ b u64 = f[u64](2)\n\
             \ return a }\n"))
     |> Sema.check |> expect_ok
@@ -814,7 +814,7 @@ let () =
       (Parser.parse
          (source
             "fn f[T](v T) T { return v }\n\
-             fn main() isize { a isize = f[isize](1)\n\
+             fn test() isize { a isize = f[isize](1)\n\
             \ b i64 = f[i64](2)\n\
             \ return a }\n"))
     |> Sema.check |> expect_ok
@@ -840,26 +840,26 @@ let () =
   then failwith "target-width-instantiation: specialization key lost i64 identity";
   ignore (Lower.lower signed_target_width_hir |> expect_ok);
   let uninitialized_field_write =
-    llvm_of "struct S { x i64 }\nfn main() i64 { p S\n p.x = 1\n return 0 }\n"
+    llvm_of "struct S { x i64 }\nfn test() i64 { p S\n p.x = 1\n return 0 }\n"
   in
   if not (contains uninitialized_field_write "store i64 1") then
     failwith "place-init: field assignment on an uninitialized aggregate failed";
   let uninitialized_element_write =
-    llvm_of "fn main() i64 { a arr[2, i64]\n a[0] = 1\n return 0 }\n"
+    llvm_of "fn test() i64 { a arr[2, i64]\n a[0] = 1\n return 0 }\n"
   in
   if not (contains uninitialized_element_write "store i64 1") then
     failwith "place-init: element assignment on an uninitialized aggregate failed";
-  ignore (llvm_of "fn main() i64 { v vec[2, i64]\n v[0] = 1\n return 0 }\n");
+  ignore (llvm_of "fn test() i64 { v vec[2, i64]\n v[0] = 1\n return 0 }\n");
   let uninitialized_array_field_write =
     llvm_of
-      "struct S { a arr[2, i64] }\nfn main() i64 { s S\n s.a[0] = 1\n return 0 }\n"
+      "struct S { a arr[2, i64] }\nfn test() i64 { s S\n s.a[0] = 1\n return 0 }\n"
   in
   if not (contains uninitialized_array_field_write "store i64 1") then
     failwith "place-init: array field indexing read the whole aggregate";
   let uninitialized_array_address =
     llvm_of
       "fn take(p addr) void { return }\n\
-       fn main() i64 { a arr[2, i64]\n\
+       fn test() i64 { a arr[2, i64]\n\
        take(&a[0])\n\
        return 0 }\n"
   in
@@ -867,39 +867,39 @@ let () =
     failwith "place-init: address of an uninitialized array element failed";
   let uninitialized_address =
     llvm_of
-      "fn take(p addr) void { return }\nfn main() i64 { x i64\n take(&x)\n return 0 }\n"
+      "fn take(p addr) void { return }\nfn test() i64 { x i64\n take(&x)\n return 0 }\n"
   in
   if not (contains uninitialized_address "call void @take(ptr") then
     failwith "place-init: taking the address of an uninitialized local failed";
   semantic_error "place-init-pointer-intermediate" "use of uninitialized local `p`"
-    "fn main() i64 { p addr\n p[i64] = 1\n return 0 }\n";
+    "fn test() i64 { p addr\n p[i64] = 1\n return 0 }\n";
   semantic_error "place-init-pointer-index-write" "use of uninitialized local `p`"
-    "fn main() i64 { p addr\n p[i64] = 1\n return 0 }\n";
+    "fn test() i64 { p addr\n p[i64] = 1\n return 0 }\n";
   semantic_error "place-init-pointer-index-read" "use of uninitialized local `p`"
-    "fn main() i64 { p addr\n x i64 = p[i64]\n return x }\n";
+    "fn test() i64 { p addr\n x i64 = p[i64]\n return x }\n";
   semantic_error "place-init-pointer-index-address" "use of uninitialized local `p`"
     "fn take(p addr) void { return }\n\
-     fn main() i64 { p addr\n\
+     fn test() i64 { p addr\n\
      take(&p[i64])\n\
      return 0 }\n";
   semantic_error "place-init-pointer-index-compound" "use of uninitialized local `p`"
-    "fn main() i64 { p addr\n p[i64] += 1\n return 0 }\n";
+    "fn test() i64 { p addr\n p[i64] += 1\n return 0 }\n";
   semantic_error "place-init-pointer-field-write" "use of uninitialized local `s`"
-    "struct S { p addr }\nfn main() i64 { s S\n s.p[i64] = 1\n return 0 }\n";
+    "struct S { p addr }\nfn test() i64 { s S\n s.p[i64] = 1\n return 0 }\n";
   semantic_error "place-init-pointer-field-read" "use of uninitialized local `s`"
-    "struct S { p addr }\nfn main() i64 { s S\n x i64 = s.p[i64]\n return x }\n";
+    "struct S { p addr }\nfn test() i64 { s S\n x i64 = s.p[i64]\n return x }\n";
   semantic_error "place-init-pointer-field-address" "use of uninitialized local `s`"
     "struct S { p addr }\n\
      fn take(p addr) void { return }\n\
-     fn main() i64 { s S\n\
+     fn test() i64 { s S\n\
     \ take(&s.p[i64])\n\
     \ return 0 }\n";
   semantic_error "place-init-pointer-array-element" "use of uninitialized local `a`"
-    "fn main() i64 { a arr[2,addr]\n a[0][i64] = 1\n return 0 }\n";
+    "fn test() i64 { a arr[2,addr]\n a[0][i64] = 1\n return 0 }\n";
   ignore
     (lower_of
        "struct S { p addr }\n\
-        fn main() i64 { x i64\n\
+        fn test() i64 { x i64\n\
        \ s S\n\
        \ s.p = &x\n\
        \ s.p[i64] = 1\n\
@@ -1072,7 +1072,7 @@ let () =
     \ t i64 = p ? choose(s.x) : s.x\n\
     \ return t }\n";
   semantic_error "place-init-binding-identity" "use of uninitialized local `x`"
-    "fn main() i64 { { x i64 = 1 }\n { x i64\n y i64 = x\n }\n return 0 }\n";
+    "fn test() i64 { { x i64 = 1 }\n { x i64\n y i64 = x\n }\n return 0 }\n";
   semantic_error "aggregate-whole-read" "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\nfn f() i64 { s S\n t S\n copy(t, s)\n return 0 }\n";
   semantic_error "aggregate-partial-field" "use of uninitialized local `s`"
@@ -1561,7 +1561,7 @@ let () =
   semantic_error "lexical-scope-type-parameter-body" "duplicate local `T`"
     "fn f[T](value T) T { T i32 = 2\n\
     \ return value }\n\
-     fn main(value i32) i32 { return f[i32](value) }\n";
+     fn test(value i32) i32 { return f[i32](value) }\n";
   semantic_error "lexical-scope-const-parameter-body" "duplicate local `N`"
     "fn f[N const i32]() i32 { N i32 = 2\n\
     \ return N }\n\
@@ -1964,7 +1964,7 @@ let () =
   let arity_messages =
     semantic_messages
       "fn id[N const usize](x u64) u64 { return x + bitcast[u64](N) }\n\
-       fn main() u64 { return id[3](2, 4) }\n"
+       fn test() u64 { return id[3](2, 4) }\n"
   in
   (match arity_messages with
   | [ "wrong number of arguments" ] -> ()
@@ -2131,7 +2131,7 @@ let () =
     failwith "named-type-order-diagnostic: declaration reordering changed diagnostics";
   ignore
     (lower_of
-       "fn main() u64 { values arr[2,u64]\n\
+       "fn test() u64 { values arr[2,u64]\n\
        \ values[0] = id[3](4)\n\
        \ values[1] = 5\n\
        \ return values[0] }\n\
@@ -2190,7 +2190,7 @@ let () =
     "struct S @inline { x i64 }\n";
   let attribute_free_ir =
     llvm_of
-      "fn id[N const i64](x i64) i64 { return x }\nfn main() i64 { return id[3](4) }\n"
+      "fn id[N const i64](x i64) i64 { return x }\nfn test() i64 { return id[3](4) }\n"
   in
   List.iter
     (fun marker ->
@@ -2236,7 +2236,7 @@ let () =
       output_string channel
         "fn helper() i64 { return 3 }\n\
          fn other() i64 { return 4 }\n\
-         fn main() i64 { return helper() }\n";
+         fn test() i64 { return helper() }\n";
       close_out channel;
       let config =
         cli_run [ "-debug"; "-O3"; "--emit-llvm"; "-no-inline"; "helper"; profile_path ]
@@ -2310,7 +2310,7 @@ let () =
     (fun () ->
       let channel = open_out_bin external_profile_path in
       output_string channel
-        "extern \"C\" { fn external() i64 }\nfn main() i64 { return 0 }\n";
+        "extern \"C\" { fn external() i64 }\nfn test() i64 { return 0 }\n";
       close_out channel;
       let config =
         cli_run
@@ -2407,9 +2407,9 @@ let () =
   then failwith "integer-vector-div-trap: missing vector divisor guard";
   semantic_error "signed-div-constant-overflow"
     "signed division overflow in constant expression"
-    "const X i64 = -9223372036854775808 / -1\nfn main() i64 { return X }\n";
+    "const X i64 = -9223372036854775808 / -1\nfn test() i64 { return X }\n";
   let signed_rem_const =
-    llvm_of "const X i64 = -9223372036854775808 % -1\nfn main() i64 { return X }\n"
+    llvm_of "const X i64 = -9223372036854775808 % -1\nfn test() i64 { return X }\n"
   in
   if not (contains signed_rem_const "ret i64 0\n") then
     failwith "signed-rem-constant-overflow: expected zero remainder";
@@ -2420,7 +2420,7 @@ let () =
     llvm_of
       "const K arr[2,u32] = {4, 5}\n\
        fn pointer() addr { return &K }\n\
-       fn main() u32 { return K[0] }\n"
+       fn test() u32 { return K[0] }\n"
   in
   if
     (not
@@ -2430,11 +2430,11 @@ let () =
   then failwith "named-aggregate-constant-address: storage is not static and readonly";
   semantic_error "named-aggregate-constant-view-write" "cannot modify constant"
     "const K arr[2,u32] = {4, 5}\n\
-     fn main() void { view values = K\n\
+     fn test() void { view values = K\n\
     \ values[0] = 8\n\
     \ return }\n";
   semantic_error "scalar-constant-address" "constant `K` is not a place"
-    "const K u32 = 4\nfn main() addr { return &K }\n";
+    "const K u32 = 4\nfn test() addr { return &K }\n";
   semantic_error "fas-029-string-literal-index" "cannot modify read-only pointer"
     "fn main() i32 { \"x\"[u8] = 9\n return 0 }\n";
   let string_literals =
@@ -2467,7 +2467,7 @@ let () =
        const CByteCount usize = len(c\"fas\")\n\
        fn bytes() addr { return \"a\\0b\" }\n\
        fn cbytes() addr { return c\"fas\" }\n\
-       fn main() usize { return ByteCount }\n"
+       fn test() usize { return ByteCount }\n"
   in
   if not (contains byte_literal_semantics "[3 x i8] c\"a\\00b\"") then
     failwith "fas-030-string-literals: ordinary embedded NUL was not preserved";
@@ -2480,7 +2480,7 @@ let () =
       "const HexLen usize = len(\"\\x41\\x42\") + len(\"\\x414\")\n\
        fn hex_bytes() addr { return \"\\x41\\x00\\x42\" }\n\
        fn fixed_bytes() addr { return \"\\x414\" }\n\
-       fn main() usize { return HexLen }\n"
+       fn test() usize { return HexLen }\n"
   in
   if
     (not (contains hexadecimal_byte_literals "[3 x i8] c\"A\\00B\""))
@@ -2513,7 +2513,7 @@ let () =
   let character_bytes =
     Printf.sprintf
       "const CharacterBytes arr[%d,u8] = {%s}\n\
-       fn main() u8 { return CharacterBytes[0] }\n"
+       fn test() u8 { return CharacterBytes[0] }\n"
       (List.length all_characters)
       (all_characters |> List.map fst |> String.concat ", ")
   in
@@ -2555,11 +2555,11 @@ let () =
     failwith "character-literal-unary-minus: expected -97";
   semantic_error "character-literal-i8-overflow"
     "integer literal is out of range for i8"
-    "const Invalid i8 = '\\xFF'\nfn main() i8 { return Invalid }\n";
+    "const Invalid i8 = '\\xFF'\nfn test() i8 { return Invalid }\n";
   let apostrophe_escape_string =
     llvm_of
       "fn read(p addr) u8 { return p[u8,2] }\n\
-       fn main() u8 { return read(\"it\\'s\") }\n"
+       fn test() u8 { return read(\"it\\'s\") }\n"
   in
   if not (contains apostrophe_escape_string "[4 x i8] c\"it's\"") then
     failwith "string-apostrophe-escape: decoded bytes changed";
@@ -2571,38 +2571,38 @@ let () =
     "fn main() i32 { c\"a\\0b\"[0]\n return 0 }\n";
   semantic_error "fas-030-const-c-string-literal-nul"
     "C string literal cannot contain embedded NUL"
-    "const N usize = len(c\"a\\0b\")\nfn main() usize { return N }\n";
+    "const N usize = len(c\"a\\0b\")\nfn test() usize { return N }\n";
   semantic_error "fas-030-runtime-len-c-string-literal-nul"
     "C string literal cannot contain embedded NUL"
-    "fn main() usize { return len(c\"a\\0b\") }\n";
+    "fn test() usize { return len(c\"a\\0b\") }\n";
   semantic_error "fas-030-c-string-literal-hex-nul"
     "C string literal cannot contain embedded NUL"
     "fn main() i32 { c\"a\\x00b\"[0]\n return 0 }\n";
   semantic_error "fas-030-const-c-string-literal-hex-nul"
     "C string literal cannot contain embedded NUL"
-    "const N usize = len(c\"a\\x00b\")\nfn main() usize { return N }\n";
+    "const N usize = len(c\"a\\x00b\")\nfn test() usize { return N }\n";
   semantic_error "fas-030-runtime-len-c-string-literal-hex-nul"
     "C string literal cannot contain embedded NUL"
-    "fn main() usize { return len(c\"a\\x00b\") }\n";
+    "fn test() usize { return len(c\"a\\x00b\") }\n";
   let raw_literal_length =
-    llvm_of "fn main() i64 { return bitcast[i64](len(\"abc\")) }\n"
+    llvm_of "fn test() i64 { return bitcast[i64](len(\"abc\")) }\n"
   in
   if not (contains raw_literal_length "ret i64 3\n") then
     failwith "fas-031-len: raw literal length is incorrect";
   let c_literal_length =
-    llvm_of "fn main() i64 { return bitcast[i64](len(c\"abc\")) }\n"
+    llvm_of "fn test() i64 { return bitcast[i64](len(c\"abc\")) }\n"
   in
   if not (contains c_literal_length "ret i64 3\n") then
     failwith "fas-031-len: C literal payload length is incorrect";
   let c_literal_embedded_payload_length =
-    llvm_of "fn main() i64 { return bitcast[i64](len(c\"abc\")) }\n"
+    llvm_of "fn test() i64 { return bitcast[i64](len(c\"abc\")) }\n"
   in
   if not (contains c_literal_embedded_payload_length "ret i64 3\n") then
     failwith "fas-031-len: C literal payload length included a terminator";
   let literal_const_specialization =
     llvm_of
       "fn literal_size[N const usize]() usize { return N }\n\
-       fn main() usize { return literal_size[len(\"abc\")]() }\n"
+       fn test() usize { return literal_size[len(\"abc\")]() }\n"
   in
   if not (contains literal_const_specialization "N=usize:3\"") then
     failwith "fas-031-len: literal length was not accepted as a const argument";
@@ -2610,19 +2610,19 @@ let () =
     llvm_of
       "const K arr[3, u8] = {1, 2, 3}\n\
        const N usize = len(\"abc\")\n\
-       fn main() i64 { return bitcast[i64](len(K)) + bitcast[i64](N) }\n"
+       fn test() i64 { return bitcast[i64](len(K)) + bitcast[i64](N) }\n"
   in
   if
     (not (contains array_length "ret i64 %v"))
     || not (contains array_length "add i64 3, 3\n")
   then failwith "fas-031-len: fixed array length is incorrect";
   semantic_error "fas-031-len-pointer" "len requires a fixed array or string literal"
-    "fn main() i64 { p addr = \"abc\"\n return zext[i64](len(p)) }\n";
+    "fn test() i64 { p addr = \"abc\"\n return zext[i64](len(p)) }\n";
   let const_array_value =
     llvm_of
       "const G arr[2, i64] = {7, 8}\n\
        fn take(p addr) i64 { return p[i64,0] + p[i64,1] }\n\
-       fn main() i64 { a arr[2, i64]\n\
+       fn test() i64 { a arr[2, i64]\n\
       \ copy(a, G)\n\
       \ return take(&a) }\n"
   in
@@ -2650,7 +2650,7 @@ let () =
        const L32 u32 = clz(0)\n\
        const C64 u64 = ctz(0)\n\
        const L64 u64 = clz(0)\n\
-       fn main() i64 { return zext[i64](C8) + zext[i64](L8) +zext[i64](C16) + \
+       fn test() i64 { return zext[i64](C8) + zext[i64](L8) +zext[i64](C16) + \
        zext[i64](L16) + zext[i64](C32) +zext[i64](L32) + bitcast[i64](C64) + \
        bitcast[i64](L64) }\n"
   in
@@ -2672,7 +2672,7 @@ let () =
   semantic_error "fas-027-const-array-function-collision" "duplicate declaration `F`"
     "const F arr[2, i64] = {1, 2}\n\
      fn F() i64 { return 3 }\n\
-     fn main() i64 { return F() }\n";
+     fn test() i64 { return F() }\n";
   semantic_error "scalar-const-function-collision" "duplicate declaration `F`"
     "const F i64 = 1\nfn F() i64 { return 3 }\n";
   semantic_error "function-scalar-const-collision" "duplicate declaration `F`"
@@ -2811,7 +2811,7 @@ let () =
     llvm_of
       "const N i64 = 100\n\
        fn f[N const i64]() i64 { return N }\n\
-       fn main() i64 { return f[5]() }\n"
+       fn test() i64 { return f[5]() }\n"
   in
   if not (contains shadowed_template "ret i64 5\n") then
     failwith "fas-015: global const shadowed template const parameter";
@@ -2821,7 +2821,7 @@ let () =
       "const N i64 = 100\n\
        fn inner[N const i64]() i64 { return N }\n\
        fn outer[N const i64]() i64 { return inner[N]() }\n\
-       fn main() i64 { return outer[5]() }\n"
+       fn test() i64 { return outer[5]() }\n"
   in
   if not (contains nested_shadowed_template "ret i64 5\n") then
     failwith "fas-015: nested specialization used global const over template parameter";
@@ -3095,7 +3095,7 @@ let () =
       exact_semantic_error
         ("reserved-float-type-" ^ name)
         "reserved for v0.5 floating point"
-        (Printf.sprintf "fn main() %s { return 1 }\n" name);
+        (Printf.sprintf "fn test() %s { return 1 }\n" name);
       exact_semantic_error
         ("reserved-float-call-" ^ name)
         "reserved for v0.5 floating point"
@@ -3117,7 +3117,7 @@ let () =
         text)
     [
       ("reserved-float-local", "f32", "fn main() i32 { f32 i32 = 1\n return f32 }\n");
-      ("reserved-float-parameter", "f64", "fn main(f64 i32) i32 { return f64 }\n");
+      ("reserved-float-parameter", "f64", "fn test(f64 i32) i32 { return f64 }\n");
       ("reserved-float-function", "sqrt", "fn sqrt() i32 { return 0 }\n");
       ("reserved-float-struct", "fma", "struct fma { value i32 }\n");
       ( "reserved-float-generic-parameter",
@@ -3221,7 +3221,7 @@ let () =
             (Parser.parse
                (source
                   "fn id[N const usize](x u64) u64 { return x + bitcast[u64](N) }\n\
-                   fn main() u64 { return id[3](2) + id[1 + 2](3) }\n"))))
+                   fn test() u64 { return id[3](2) + id[1 + 2](3) }\n"))))
   in
   if List.length repeated_spec_at_count_limit.Hir.funcs <> 2 then
     failwith "spec-count-limit: repeated specialization was not deduplicated";
@@ -3230,7 +3230,7 @@ let () =
       (Parser.parse
          (source
             "fn id[N const usize](x u64) u64 { return x + bitcast[u64](N) }\n\
-             fn main() u64 { return id[3](2) + id[4](3) }\n"))
+             fn test() u64 { return id[3](2) + id[4](3) }\n"))
   in
   let count_limit_failure () =
     match Sema.check ~limits:spec_count_limits distinct_spec_at_count_limit with
@@ -3248,7 +3248,7 @@ let () =
              (Parser.parse
                 (source
                    "fn id[N const usize](x u64) u64 { return x + bitcast[u64](N) }\n\
-                    fn main() u64 { return id[3](2) + id[3](3) }\n")))));
+                    fn test() u64 { return id[3](2) + id[3](3) }\n")))));
   if
     not (contains first_count_limit_failure "const specialization count limit exceeded")
   then failwith "spec-count-limit: unexpected diagnostic";
@@ -3261,7 +3261,7 @@ let () =
             (Parser.parse
                (source
                   "fn loop[N const i64]() i64 { return loop[N]() }\n\
-                   fn main() i64 { return loop[5]() }\n"))))
+                   fn test() i64 { return loop[5]() }\n"))))
   in
   if List.length repeated_spec_at_depth_limit.Hir.funcs <> 2 then
     failwith "spec-depth-limit: repeated specialization was not deduplicated";
@@ -3272,7 +3272,7 @@ let () =
              (source
                 "fn inner[N const i64]() i64 { return N }\n\
                  fn outer[M const i64]() i64 { return inner[M]() }\n\
-                 fn main() i64 { return outer[5]() }\n")))
+                 fn test() i64 { return outer[5]() }\n")))
    with
   | Ok _ -> failwith "spec-depth-limit: expected rejection at the depth limit"
   | Error diagnostics ->
@@ -3286,7 +3286,7 @@ let () =
     "fn leaf[N const usize]() usize { return N }\n\
      fn left[N const usize]() usize { return leaf[N + 10]() }\n\
      fn right[N const usize]() usize { return leaf[N + 20]() }\n\
-     fn main() usize { return left[1]() + right[2]() }\n"
+     fn test() usize { return left[1]() + right[2]() }\n"
   in
   let specialization_order = llvm_of specialization_order_source in
   if specialization_order <> llvm_of specialization_order_source then
@@ -3467,7 +3467,7 @@ let () =
              (Parser.parse
                 (source
                    "fn first[A, B](left A, right B) A { return left }\n\
-                    fn main() i64 { return first[i64, u8](7, 1) }\n")))));
+                    fn test() i64 { return first[i64, u8](7, 1) }\n")))));
   let nested_generic_function_source =
     "struct Box[T] { value T }\n\
      fn inner[T](value T) T { result Box[T] = (Box[T]){value}\n\
@@ -3500,7 +3500,7 @@ let () =
       (Parser.parse
          (source
             "fn pick[T, N const usize](v T) T { return v }\n\
-             fn main() i64 { return pick[i64, 2](pick[i64, 1](7)) }\n"))
+             fn test() i64 { return pick[i64, 2](pick[i64, 1](7)) }\n"))
     |> Sema.check |> expect_ok
   in
   if
@@ -3516,7 +3516,7 @@ let () =
       (Parser.parse
          (source
             "fn pick[T, N const usize](v T) T { return v }\n\
-             fn main() i64 { return pick[i64, 2](zext[i64](pick[u8, 1](3))) }\n"))
+             fn test() i64 { return pick[i64, 2](zext[i64](pick[u8, 1](3))) }\n"))
     |> Sema.check |> expect_ok
   in
   if
@@ -3532,7 +3532,7 @@ let () =
     llvm_of
       "struct Box[T] { value T }\n\
        fn sz[T]() usize { return sizeof[T] }\n\
-       fn main() usize { return sz[Box[u8]]() }\n"
+       fn test() usize { return sz[Box[u8]]() }\n"
   in
   if not (contains nested_type_argument "ret i64 1\n") then
     failwith
@@ -3540,14 +3540,14 @@ let () =
   let sizeof_const_argument =
     llvm_of
       "fn ret[N const usize]() usize { return N }\n\
-       fn main() usize { return ret[sizeof[u8]]() }\n"
+       fn test() usize { return ret[sizeof[u8]]() }\n"
   in
   if not (contains sizeof_const_argument "ret i64 1\n") then
     failwith "sizeof-const-argument: nested sizeof query was not evaluated";
   let alignof_const_argument =
     llvm_of
       "fn ret[N const usize]() usize { return N }\n\
-       fn main() usize { return ret[1 + alignof[u16]]() }\n"
+       fn test() usize { return ret[1 + alignof[u16]]() }\n"
   in
   if not (contains alignof_const_argument "ret i64 3\n") then
     failwith "alignof-const-argument: nested alignof expression was not evaluated";
@@ -3555,7 +3555,7 @@ let () =
     llvm_of
       "struct Box[T] { value T }\n\
        fn ret[N const usize]() usize { return N }\n\
-       fn main() usize { return ret[sizeof[Box[i64]]]() }\n"
+       fn test() usize { return ret[sizeof[Box[i64]]]() }\n"
   in
   if not (contains nested_sizeof_const_argument "ret i64 8\n") then
     failwith
@@ -3563,7 +3563,7 @@ let () =
   let arithmetic_sizeof_const_argument =
     llvm_of
       "fn ret[N const usize]() usize { return N }\n\
-       fn main() usize { return ret[sizeof[arr[3, u8]] - 2]() }\n"
+       fn test() usize { return ret[sizeof[arr[3, u8]] - 2]() }\n"
   in
   if not (contains arithmetic_sizeof_const_argument "ret i64 1\n") then
     failwith
@@ -3571,14 +3571,14 @@ let () =
   semantic_error "const-argument-call-rejected" "invalid constant builtin call"
     "fn sz[T]() usize { return sizeof[T] }\n\
      fn pick[T, N const usize](v T) T { return v }\n\
-     fn main() i64 { return pick[i64, sz[u8]()](7) }\n";
+     fn test() i64 { return pick[i64, sz[u8]()](7) }\n";
   let while_parameter_shadow =
     llvm_of
       "const N usize = 99\n\
        fn count[N const usize]() usize { i usize = 0\n\
       \ while i < N { i = i + 1 }\n\
       \ return i }\n\
-       fn main() usize { return count[3]() }\n"
+       fn test() usize { return count[3]() }\n"
   in
   if not (contains while_parameter_shadow "icmp ult i64 %v1, 3\n") then
     failwith "while-const-argument: while condition did not use the const parameter";
@@ -3590,7 +3590,7 @@ let () =
        fn f[N const usize]() usize { defer { x usize = N\n\
       \ x = x + 1 }\n\
       \ return N }\n\
-       fn main() usize { return f[2]() }\n"
+       fn test() usize { return f[2]() }\n"
   in
   if not (contains defer_parameter_shadow "store i64 2, ptr") then
     failwith "defer-const-argument: defer body did not use the const parameter";
@@ -3607,7 +3607,7 @@ let () =
       \ defer { i = i + N }\n\
       \ i = i + N\n\
       \ return i }\n\
-       fn main() usize { return walk[2](0) }\n"
+       fn test() usize { return walk[2](0) }\n"
   in
   if not (contains statement_positions "switch i64 2, label") then
     failwith "statement-positions: switch scrutinee did not use the const parameter";
@@ -3654,7 +3654,7 @@ let () =
       "const N usize = 99\n\
        fn f[N const usize]() usize { N + 1\n\
       \ return N }\n\
-       fn main() usize { return f[2]() }\n"
+       fn test() usize { return f[2]() }\n"
   in
   if not (contains expr_statement_shadow "add i64 2, 1\n") then
     failwith "expr-stmt-const-argument: expr statement did not use the const parameter";
@@ -3668,7 +3668,7 @@ let () =
        fn g[M const usize]() usize { return M }\n\
        fn f[N const usize]() usize { g[N]()\n\
       \ return N }\n\
-       fn main() usize { return f[2]() }\n"
+       fn test() usize { return f[2]() }\n"
   in
   if not (contains expr_statement_call "M=usize:2\"") then
     failwith
@@ -3687,84 +3687,84 @@ let () =
   let ruled_additive_shift =
     llvm_of
       "fn w[N const usize]() usize { return N }\n\
-       fn main() usize { return w[1 + 2 << 3]() }\n"
+       fn test() usize { return w[1 + 2 << 3]() }\n"
   in
   if not (contains ruled_additive_shift "ret i64 24\n") then
     failwith "ruled-precedence: additive no longer binds tighter than shift";
   let ruled_shift_bitand =
     llvm_of
       "fn w[N const usize]() usize { return N }\n\
-       fn main() usize { return w[1 << 2 & 4]() }\n"
+       fn test() usize { return w[1 << 2 & 4]() }\n"
   in
   if not (contains ruled_shift_bitand "ret i64 4\n") then
     failwith "ruled-precedence: shift no longer binds tighter than bitwise and";
   let ruled_bitand_bitxor =
     llvm_of
       "fn w[N const usize]() usize { return N }\n\
-       fn main() usize { return w[2 & 3 ^ 1]() }\n"
+       fn test() usize { return w[2 & 3 ^ 1]() }\n"
   in
   if not (contains ruled_bitand_bitxor "ret i64 3\n") then
     failwith "ruled-precedence: bitwise and/xor group boundary moved";
   let ruled_bitxor_bitor =
     llvm_of
       "fn w[N const usize]() usize { return N }\n\
-       fn main() usize { return w[1 ^ 3 | 1]() }\n"
+       fn test() usize { return w[1 ^ 3 | 1]() }\n"
   in
   if not (contains ruled_bitxor_bitor "ret i64 3\n") then
     failwith "ruled-precedence: xor/or group boundary moved";
   let ruled_shift_assoc =
     llvm_of
       "fn w[N const usize]() usize { return N }\n\
-       fn main() usize { return w[16 >> 2 >> 1]() }\n"
+       fn test() usize { return w[16 >> 2 >> 1]() }\n"
   in
   if not (contains ruled_shift_assoc "ret i64 2\n") then
     failwith "ruled-precedence: shift chain lost left associativity";
   let literal_hex =
     llvm_of
-      "fn w[N const usize]() usize { return N }\nfn main() usize { return w[0xff]() }\n"
+      "fn w[N const usize]() usize { return N }\nfn test() usize { return w[0xff]() }\n"
   in
   if not (contains literal_hex "ret i64 255\n") then
     failwith "literal-bases: hex literal did not evaluate to 255";
   let literal_binary =
     llvm_of
       "fn w[N const usize]() usize { return N }\n\
-       fn main() usize { return w[0b1010]() }\n"
+       fn test() usize { return w[0b1010]() }\n"
   in
   if not (contains literal_binary "ret i64 10\n") then
     failwith "literal-bases: binary literal did not evaluate to 10";
   let literal_octal =
     llvm_of
-      "fn w[N const usize]() usize { return N }\nfn main() usize { return w[0o17]() }\n"
+      "fn w[N const usize]() usize { return N }\nfn test() usize { return w[0o17]() }\n"
   in
   if not (contains literal_octal "ret i64 15\n") then
     failwith "literal-bases: octal literal did not evaluate to 15";
   let literal_negative_hex =
     llvm_of
-      "fn w[N const i64]() i64 { return N }\nfn main() i64 { return w[-0x10]() }\n"
+      "fn w[N const i64]() i64 { return N }\nfn test() i64 { return w[-0x10]() }\n"
   in
   if not (contains literal_negative_hex "ret i64 -16\n") then
     failwith "literal-bases: negative hex literal did not evaluate to -16";
   let literal_underscores =
     llvm_of
       "fn w[N const usize]() usize { return N }\n\
-       fn main() usize { return w[0x1_00]() }\n"
+       fn test() usize { return w[0x1_00]() }\n"
   in
   if not (contains literal_underscores "ret i64 256\n") then
     failwith "literal-bases: underscore-separated literal did not evaluate to 256";
   semantic_error "generic-args-missing-rejected"
     "generic function `f` requires arguments"
-    "fn f[N const usize]() usize { return N }\nfn main() usize { return f() }\n";
+    "fn f[N const usize]() usize { return N }\nfn test() usize { return f() }\n";
   semantic_error "generic-args-extra-rejected" "wrong number of const arguments to `f`"
-    "fn f[N const usize]() usize { return N }\nfn main() usize { return f[1, 2]() }\n";
+    "fn f[N const usize]() usize { return N }\nfn test() usize { return f[1, 2]() }\n";
   semantic_error "generic-kind-type-for-const-rejected" "expected a const argument"
-    "fn f[N const usize]() usize { return N }\nfn main() usize { return f[i64]() }\n";
+    "fn f[N const usize]() usize { return N }\nfn test() usize { return f[i64]() }\n";
   semantic_error "generic-kind-const-for-type-rejected" "expected a type argument"
-    "fn f[T]() usize { return 0 }\nfn main() usize { return f[1]() }\n";
+    "fn f[T]() usize { return 0 }\nfn test() usize { return f[1]() }\n";
   semantic_error "generic-duplicate-parameter-rejected"
     "duplicate generic parameter `T`"
-    "fn f[T, T]() usize { return 0 }\nfn main() usize { return f[i64]() }\n";
+    "fn f[T, T]() usize { return 0 }\nfn test() usize { return f[i64]() }\n";
   semantic_error "generic-unknown-type-argument-rejected" "unknown type `Nope`"
-    "fn f[T]() usize { return 0 }\nfn main() usize { return f[Nope]() }\n";
+    "fn f[T]() usize { return 0 }\nfn test() usize { return f[Nope]() }\n";
   ignore
     (llvm_of "fn f(x u8) usize { return zext[usize](x) }\nfn main() i32 { return 0 }\n");
   ignore
@@ -3775,7 +3775,7 @@ let () =
     llvm_of
       "fn w[N const usize]() usize { return N }\n\
        const B u8 = 255\n\
-       fn main() usize { return w[zext[usize](B)]() }\n"
+       fn test() usize { return w[zext[usize](B)]() }\n"
   in
   if not (contains zext_const_value "ret i64 255\n") then
     failwith "target-width-conversion: zext const value mismatch";
@@ -3783,7 +3783,7 @@ let () =
     llvm_of
       "fn w[N const isize]() isize { return N }\n\
        const B i8 = -1\n\
-       fn main() isize { return w[sext[isize](B)]() }\n"
+       fn test() isize { return w[sext[isize](B)]() }\n"
   in
   if not (contains sext_const_value "ret i64 -1\n") then
     failwith "target-width-conversion: sext const value mismatch";
@@ -3791,7 +3791,7 @@ let () =
     llvm_of
       "fn w[N const usize]() usize { return N }\n\
        const B usize = 300\n\
-       fn main() usize { return w[zext[usize](trunc[u8](B))]() }\n"
+       fn test() usize { return w[zext[usize](trunc[u8](B))]() }\n"
   in
   if not (contains trunc_const_value "ret i64 44\n") then
     failwith "target-width-conversion: trunc low-bit value mismatch";
@@ -3814,7 +3814,7 @@ let () =
     llvm_of
       "fn w[N const usize]() usize { return N }\n\
        const B i8 = -1\n\
-       fn main() usize { return w[zext[usize](B)]() }\n"
+       fn test() usize { return w[zext[usize](B)]() }\n"
   in
   if not (contains zext_signed_value "ret i64 255\n") then
     failwith "target-width-conversion: zext of signed source must zero-fill (255)";
@@ -3822,7 +3822,7 @@ let () =
     llvm_of
       "fn w[N const isize]() isize { return N }\n\
        const D u8 = 255\n\
-       fn main() isize { return w[sext[isize](D)]() }\n"
+       fn test() isize { return w[sext[isize](D)]() }\n"
   in
   if not (contains sext_unsigned_value "ret i64 -1\n") then
     failwith "target-width-conversion: sext of unsigned source must sign-fill (-1)";
@@ -3831,7 +3831,7 @@ let () =
       "fn g() i64 { return 1 }\n\
        fn h() i64 { return 2 }\n\
        fn f(a i64, b i64) i64 { return a + b }\n\
-       fn main() i64 { return f(g(), h()) }\n"
+       fn test() i64 { return f(g(), h()) }\n"
   in
   if
     not
@@ -3841,7 +3841,7 @@ let () =
     llvm_of
       "fn i() usize { return 0 }\n\
        fn v() i64 { return 5 }\n\
-       fn main() i64 { a arr[4, i64]\n\
+       fn test() i64 { a arr[4, i64]\n\
       \ a[0] = 0\n\
       \ a[1] = 0\n\
       \ a[2] = 0\n\
@@ -3875,7 +3875,7 @@ let () =
     llvm_of
       "fn i() usize { return 0 }\n\
        fn v() i64 { return 5 }\n\
-       fn main() i64 { a arr[4, i64]\n\
+       fn test() i64 { a arr[4, i64]\n\
       \ a[0] = 0\n\
       \ a[1] = 0\n\
       \ a[2] = 0\n\
@@ -3893,7 +3893,7 @@ let () =
       "fn f() i64 { x i64 = 1\n\
        defer { x = 2 }\n\
        return x }\n\
-       fn main() i64 { return f() }\n"
+       fn test() i64 { return f() }\n"
   in
   let capture_load = positions return_before_defer "load i64" in
   let cleanup_store = positions return_before_defer "store i64 2, ptr" in
@@ -3906,7 +3906,7 @@ let () =
        defer { x = 1 }\n\
        defer { x = 2 }\n\
        return x }\n\
-       fn main() i64 { return f() }\n"
+       fn test() i64 { return f() }\n"
   in
   let second_defer = positions defer_reverse_order "store i64 2, ptr" in
   let first_defer = positions defer_reverse_order "store i64 1, ptr" in
@@ -3917,7 +3917,7 @@ let () =
     llvm_of
       "fn i() usize { return 0 }\n\
        fn v() i64 { return 5 }\n\
-       fn main() i64 { x vec[2, i64] = splat(1)\n\
+       fn test() i64 { x vec[2, i64] = splat(1)\n\
       \ x[i()] = v()\n\
       \ return 0 }\n"
   in
@@ -3930,7 +3930,7 @@ let () =
     llvm_of
       "fn i() usize { return 0 }\n\
        fn v() i64 { return 5 }\n\
-       fn main() i64 { x vec[2, i64] = splat(1)\n\
+       fn test() i64 { x vec[2, i64] = splat(1)\n\
       \ x[i()] += v()\n\
       \ return 0 }\n"
   in
@@ -3941,7 +3941,7 @@ let () =
   | _ -> failwith "eval-order: lane compound dest not once before rhs");
   let switch_no_fallthrough =
     llvm_of
-      "fn main() i64 { n i64 = 1\n\
+      "fn test() i64 { n i64 = 1\n\
       \ switch n {\n\
       \  case 1: { n = 2 }\n\
       \  case 2: { n = 3 }\n\
@@ -3960,7 +3960,7 @@ let () =
   let condition_before_branch =
     llvm_of
       "fn c() bool { return true }\n\
-       fn main() i64 { x i64 = 0\n\
+       fn test() i64 { x i64 = 0\n\
       \ if c() { x = 1 }\n\
       \ return x }\n"
   in
@@ -3987,7 +3987,7 @@ let () =
       \ defer { x = x + 1 }\n\
       \ x = 2\n\
       \ return x }\n\
-       fn main() i64 { return f() }\n"
+       fn test() i64 { return f() }\n"
   in
   let defer_mutation = positions defer_reads_current "store i64 2, ptr" in
   let defer_reads = positions defer_reads_current "load i64" in
@@ -3996,7 +3996,7 @@ let () =
   | _ -> failwith "eval-order: defer read stale values");
   let break_messages =
     semantic_messages
-      "fn main() i64 { n i64 = 0\n\
+      "fn test() i64 { n i64 = 0\n\
       \ switch n {\n\
       \  case 0: { break }\n\
       \  default: { n = 9 }\n\
@@ -4006,7 +4006,7 @@ let () =
   (match break_messages with
   | [ "break outside loop" ] -> ()
   | _ -> failwith "break-outside-loop: wrong message");
-  let continue_messages = semantic_messages "fn main() i64 { continue }\n" in
+  let continue_messages = semantic_messages "fn test() i64 { continue }\n" in
   (match continue_messages with
   | [ "continue outside loop" ] -> ()
   | _ -> failwith "continue-outside-loop: wrong message");
@@ -4036,18 +4036,18 @@ let () =
   (match bitnot_messages with
   | [ "integer unary operator requires an integer" ] -> ()
   | _ -> failwith "mask-bitnot-integer-only: wrong message");
-  let unterminated_messages = parse_messages "fn main() i64 {\n" in
+  let unterminated_messages = parse_messages "fn test() i64 {\n" in
   (match unterminated_messages with
   | [ "unterminated block" ] -> ()
   | _ -> failwith "unterminated-block: wrong message");
   let case_messages =
-    parse_messages "fn main() i64 { n i64 = 0\n switch n { foo }\n return 0 }\n"
+    parse_messages "fn test() i64 { n i64 = 0\n switch n { foo }\n return 0 }\n"
   in
   (match case_messages with
   | [ "expected case, default, or `}`" ] -> ()
   | _ -> failwith "switch-case-parse: wrong message");
   let separator_messages =
-    parse_messages "fn main() i64 { x i64 = 1 y i64 = 2\n return x }\n"
+    parse_messages "fn test() i64 { x i64 = 1 y i64 = 2\n return x }\n"
   in
   (match separator_messages with
   | [ "expected end of statement (newline or `;`)" ] -> ()
@@ -4069,12 +4069,12 @@ let () =
   | [ "`...` is legal only in extern \"C\"" ] -> ()
   | _ -> failwith "ellipsis-extern-only: wrong message");
   let block_comment_messages =
-    parse_messages "fn main() i64 { return 0 }\n/* unclosed\n"
+    parse_messages "fn test() i64 { return 0 }\n/* unclosed\n"
   in
   (match block_comment_messages with
   | [ "unterminated block comment" ] -> ()
   | _ -> failwith "block-comment: wrong message");
-  let string_literal_messages = parse_messages "fn main() i64 { return 0 }\n\"abc\n" in
+  let string_literal_messages = parse_messages "fn test() i64 { return 0 }\n\"abc\n" in
   (match string_literal_messages with
   | [ "unterminated string literal" ] -> ()
   | _ -> failwith "string-literal: wrong message");
@@ -4108,19 +4108,19 @@ let () =
       | _ -> failwith (name ^ ": wrong message " ^ String.concat "; " messages))
     character_literal_messages;
   let integer_literal_messages =
-    parse_messages "fn main() i64 { x i64 = 0x\n return 0 }\n"
+    parse_messages "fn test() i64 { x i64 = 0x\n return 0 }\n"
   in
   (match integer_literal_messages with
   | [ "invalid integer literal" ] -> ()
   | _ -> failwith "integer-literal: wrong message");
   let unterminated_escape_messages =
-    parse_messages "fn main() i64 { return 0 }\n\"abc\\"
+    parse_messages "fn test() i64 { return 0 }\n\"abc\\"
   in
   (match unterminated_escape_messages with
   | [ "unterminated escape" ] -> ()
   | _ -> failwith "string-escape: wrong message");
   let unknown_escape_messages =
-    parse_messages "fn main() i64 { return 0 }\n\"\\q\"\n"
+    parse_messages "fn test() i64 { return 0 }\n\"\\q\"\n"
   in
   (match unknown_escape_messages with
   | [ "unknown string escape" ] -> ()
@@ -4134,16 +4134,16 @@ let () =
           ()
       | messages -> failwith (name ^ ": wrong message " ^ String.concat "; " messages))
     [
-      ("hex-escape-missing-digits", "fn main() i64 { return 0 }\n\"\\x\"\n");
-      ("hex-escape-one-digit", "fn main() i64 { return 0 }\n\"\\xA\"\n");
-      ("hex-escape-invalid-first", "fn main() i64 { return 0 }\n\"\\xG1\"\n");
-      ("hex-escape-invalid-second", "fn main() i64 { return 0 }\n\"\\x0G\"\n");
+      ("hex-escape-missing-digits", "fn test() i64 { return 0 }\n\"\\x\"\n");
+      ("hex-escape-one-digit", "fn test() i64 { return 0 }\n\"\\xA\"\n");
+      ("hex-escape-invalid-first", "fn test() i64 { return 0 }\n\"\\xG1\"\n");
+      ("hex-escape-invalid-second", "fn test() i64 { return 0 }\n\"\\x0G\"\n");
     ];
   let min_sext_i8 =
     llvm_of
       "fn w[N const isize]() isize { return N }\n\
        const B i8 = -128\n\
-       fn main() isize { return w[sext[isize](B)]() }\n"
+       fn test() isize { return w[sext[isize](B)]() }\n"
   in
   if not (contains min_sext_i8 "ret i64 -128\n") then
     failwith "value: i8 min sext drifted";
@@ -4151,7 +4151,7 @@ let () =
     llvm_of
       "fn w[N const isize]() isize { return N }\n\
        const B i16 = -32768\n\
-       fn main() isize { return w[sext[isize](B)]() }\n"
+       fn test() isize { return w[sext[isize](B)]() }\n"
   in
   if not (contains min_sext_i16 "ret i64 -32768\n") then
     failwith "value: i16 min sext drifted";
@@ -4159,7 +4159,7 @@ let () =
     llvm_of
       "fn w[N const usize]() usize { return N }\n\
        const B i8 = -128\n\
-       fn main() usize { return w[zext[usize](B)]() }\n"
+       fn test() usize { return w[zext[usize](B)]() }\n"
   in
   if not (contains min_zext_i8_fill "ret i64 128\n") then
     failwith "value: i8 min zext fill drifted";
@@ -4167,7 +4167,7 @@ let () =
     llvm_of
       "fn w[N const isize]() isize { return N }\n\
        const B i8 = -0x80\n\
-       fn main() isize { return w[sext[isize](B)]() }\n"
+       fn test() isize { return w[sext[isize](B)]() }\n"
   in
   if not (contains neg_hex_literal "ret i64 -128\n") then
     failwith "value: negative hex literal drifted";
@@ -4175,7 +4175,7 @@ let () =
     llvm_of
       "fn w[N const isize]() isize { return N }\n\
        const B i8 = -0b10000000\n\
-       fn main() isize { return w[sext[isize](B)]() }\n"
+       fn test() isize { return w[sext[isize](B)]() }\n"
   in
   if not (contains neg_binary_literal "ret i64 -128\n") then
     failwith "value: negative binary literal drifted";
@@ -4183,7 +4183,7 @@ let () =
     llvm_of
       "fn w[N const isize]() isize { return N }\n\
        const B i8 = -0o200\n\
-       fn main() isize { return w[sext[isize](B)]() }\n"
+       fn test() isize { return w[sext[isize](B)]() }\n"
   in
   if not (contains neg_octal_literal "ret i64 -128\n") then
     failwith "value: negative octal literal drifted";
@@ -4192,7 +4192,7 @@ let () =
       "const C bool = 4 & 2 == 2\n\
        fn r[B const bool]() usize { if B { return 1 }\n\
       \ return 0 }\n\
-       fn main() usize { return r[C]() }\n"
+       fn test() usize { return r[C]() }\n"
   in
   if not (contains agreement_bitand_eq "ret i64 0\n") then
     failwith
@@ -4204,7 +4204,7 @@ let () =
       "const C bool = 1 | 0 == 0\n\
        fn r[B const bool]() usize { if B { return 1 }\n\
       \ return 0 }\n\
-       fn main() usize { return r[C]() }\n"
+       fn test() usize { return r[C]() }\n"
   in
   if not (contains agreement_bitor_eq "ret i64 0\n") then
     failwith
@@ -4216,7 +4216,7 @@ let () =
       "const C bool = 2 ^ 3 == 2\n\
        fn r[B const bool]() usize { if B { return 1 }\n\
       \ return 0 }\n\
-       fn main() usize { return r[C]() }\n"
+       fn test() usize { return r[C]() }\n"
   in
   if not (contains agreement_bitxor_eq "ret i64 0\n") then
     failwith
@@ -4228,7 +4228,7 @@ let () =
       "const C bool = 6 & 3 == 0\n\
        fn r[B const bool]() usize { if B { return 1 }\n\
       \ return 0 }\n\
-       fn main() usize { return r[C]() }\n"
+       fn test() usize { return r[C]() }\n"
   in
   if not (contains agreement_bitand_zero "ret i64 0\n") then
     failwith
@@ -4240,7 +4240,7 @@ let () =
       "const C bool = 5 & 3 < 4\n\
        fn r[B const bool]() usize { if B { return 1 }\n\
       \ return 0 }\n\
-       fn main() usize { return r[C]() }\n"
+       fn test() usize { return r[C]() }\n"
   in
   if not (contains agreement_bitand_rel "ret i64 1\n") then
     failwith
@@ -4260,7 +4260,7 @@ let () =
       "const C bool = true & true\n\
        fn r[B const bool]() usize { if B { return 1 }\n\
       \ return 0 }\n\
-       fn main() usize { return r[C]() }\n"
+       fn test() usize { return r[C]() }\n"
   in
   if not (contains bool_bitand_true "ret i64 1\n") then
     failwith "bool-bitops: true & true did not evaluate to true";
@@ -4271,7 +4271,7 @@ let () =
       "const C bool = true & false\n\
        fn r[B const bool]() usize { if B { return 1 }\n\
       \ return 0 }\n\
-       fn main() usize { return r[C]() }\n"
+       fn test() usize { return r[C]() }\n"
   in
   if not (contains bool_bitand_false "ret i64 0\n") then
     failwith "bool-bitops: true & false did not evaluate to false";
@@ -4282,7 +4282,7 @@ let () =
       "const C bool = false | false\n\
        fn r[B const bool]() usize { if B { return 1 }\n\
       \ return 0 }\n\
-       fn main() usize { return r[C]() }\n"
+       fn test() usize { return r[C]() }\n"
   in
   if not (contains bool_bitor_false "ret i64 0\n") then
     failwith "bool-bitops: false | false did not evaluate to false";
@@ -4293,7 +4293,7 @@ let () =
       "const C bool = true | false\n\
        fn r[B const bool]() usize { if B { return 1 }\n\
       \ return 0 }\n\
-       fn main() usize { return r[C]() }\n"
+       fn test() usize { return r[C]() }\n"
   in
   if not (contains bool_bitor_true "ret i64 1\n") then
     failwith "bool-bitops: true | false did not evaluate to true";
@@ -4304,7 +4304,7 @@ let () =
       "const C bool = true ^ true\n\
        fn r[B const bool]() usize { if B { return 1 }\n\
       \ return 0 }\n\
-       fn main() usize { return r[C]() }\n"
+       fn test() usize { return r[C]() }\n"
   in
   if not (contains bool_bitxor_false "ret i64 0\n") then
     failwith
@@ -4316,7 +4316,7 @@ let () =
       "const C bool = true ^ false\n\
        fn r[B const bool]() usize { if B { return 1 }\n\
       \ return 0 }\n\
-       fn main() usize { return r[C]() }\n"
+       fn test() usize { return r[C]() }\n"
   in
   if not (contains bool_bitxor_true "ret i64 1\n") then
     failwith
@@ -4328,7 +4328,7 @@ let () =
       "const C bool = false & false\n\
        fn r[B const bool]() usize { if B { return 1 }\n\
       \ return 0 }\n\
-       fn main() usize { return r[C]() }\n"
+       fn test() usize { return r[C]() }\n"
   in
   if not (contains bool_bitand_both_false "ret i64 0\n") then
     failwith "bool-bitops: false & false did not evaluate to false";
@@ -4339,7 +4339,7 @@ let () =
       "const C bool = true | true\n\
        fn r[B const bool]() usize { if B { return 1 }\n\
       \ return 0 }\n\
-       fn main() usize { return r[C]() }\n"
+       fn test() usize { return r[C]() }\n"
   in
   if not (contains bool_bitor_both_true "ret i64 1\n") then
     failwith "bool-bitops: true | true did not evaluate to true";
@@ -4350,7 +4350,7 @@ let () =
       "const C bool = false ^ false\n\
        fn r[B const bool]() usize { if B { return 1 }\n\
       \ return 0 }\n\
-       fn main() usize { return r[C]() }\n"
+       fn test() usize { return r[C]() }\n"
   in
   if not (contains bool_bitxor_both_false "ret i64 0\n") then
     failwith
@@ -4362,7 +4362,7 @@ let () =
       "const C bool = false & true\n\
        fn r[B const bool]() usize { if B { return 1 }\n\
       \ return 0 }\n\
-       fn main() usize { return r[C]() }\n"
+       fn test() usize { return r[C]() }\n"
   in
   if not (contains bool_bitand_false_true "ret i64 0\n") then
     failwith "bool-bitops: false & true did not evaluate to false";
@@ -4373,7 +4373,7 @@ let () =
       "const C bool = false | true\n\
        fn r[B const bool]() usize { if B { return 1 }\n\
       \ return 0 }\n\
-       fn main() usize { return r[C]() }\n"
+       fn test() usize { return r[C]() }\n"
   in
   if not (contains bool_bitor_false_true "ret i64 1\n") then
     failwith "bool-bitops: false | true did not evaluate to true";
@@ -4384,7 +4384,7 @@ let () =
       "const C bool = false ^ true\n\
        fn r[B const bool]() usize { if B { return 1 }\n\
       \ return 0 }\n\
-       fn main() usize { return r[C]() }\n"
+       fn test() usize { return r[C]() }\n"
   in
   if not (contains bool_bitxor_false_true "ret i64 1\n") then
     failwith
@@ -4429,12 +4429,12 @@ let () =
     "integer literal is out of range for u8"
     "const C u8 = 256\n\
      fn w[N const u8]() u8 { return N }\n\
-     fn main() u8 { return w[C]() }\n";
+     fn test() u8 { return w[C]() }\n";
   semantic_error "literal-range-const-i8-rejected"
     "integer literal is out of range for i8"
     "const C i8 = -129\n\
      fn w[N const i8]() i8 { return N }\n\
-     fn main() i8 { return w[C]() }\n";
+     fn test() i8 { return w[C]() }\n";
   semantic_error "literal-range-runtime-u8-rejected"
     "integer literal is out of range for u8"
     "fn f() u8 { return 256 }\nfn main() i32 { return 0 }\n";
@@ -4442,10 +4442,10 @@ let () =
     "vector lane count exceeds the portable cap of 256"
     "fn f() i64 { v vec[257, u8] = splat(1)\n\
     \ return 0 }\n\
-     fn main() i64 { return f() }\n";
+     fn test() i64 { return f() }\n";
   semantic_error "vector-size-cap-const-rejected"
     "vector size exceeds the portable cap of 2048 bits"
-    "const X vec[33, u64] = splat(0)\nfn main() i64 { return 0 }\n";
+    "const X vec[33, u64] = splat(0)\nfn test() i64 { return 0 }\n";
   let vec32_usize_legal =
     llvm_of "fn f(a vec[32, usize]) usize { return a[0] }\nfn main() i32 { return 0 }\n"
   in
@@ -4464,17 +4464,17 @@ let () =
     "fn f(a vec[33, isize]) isize { return a[0] }\nfn main() i32 { return 0 }\n";
   semantic_error "dead-branch-literal-range-rejected"
     "integer literal is out of range for u8"
-    "fn main() u8 { if false { return 256 }\n return 0 }\n";
+    "fn test() u8 { if false { return 256 }\n return 0 }\n";
   semantic_error "pruned-specialization-literal-range-rejected"
     "integer literal is out of range for u8"
     "fn r[B const bool]() u8 { if B { return 256 }\n\
     \ return 0 }\n\
-     fn main() u8 { return r[false]() }\n";
+     fn test() u8 { return r[false]() }\n";
   semantic_error "dead-branch-type-error-rejected"
     "type mismatch: expected u8, got bool"
-    "fn main() u8 { if false { return true }\n return 0 }\n";
+    "fn test() u8 { if false { return true }\n return 0 }\n";
   semantic_error "dead-branch-unknown-name-rejected" "unknown name `nope`"
-    "fn main() u8 { if false { return nope }\n return 0 }\n";
+    "fn test() u8 { if false { return nope }\n return 0 }\n";
   let unused_generic_function =
     expect_ok
       (Sema.check
@@ -4482,7 +4482,7 @@ let () =
             (Parser.parse
                (source
                   "fn unused[T](value T) T { return value + value }\n\
-                   fn main() i64 { return 0 }\n"))))
+                   fn test() i64 { return 0 }\n"))))
   in
   if
     List.exists
@@ -4491,7 +4491,7 @@ let () =
   then failwith "generic-function-template: unused template was emitted";
   let type_generic_failure =
     "fn bad[T](value T) T { return value + value }\n\
-     fn main(value addr) addr { return bad[addr](value) }\n"
+     fn test(value addr) addr { return bad[addr](value) }\n"
   in
   (match semantic_diagnostics type_generic_failure with
   | [ diagnostic ] ->
@@ -4511,7 +4511,7 @@ let () =
   | _ -> failwith "generic-instantiation-type: expected one diagnostic");
   let const_generic_failure =
     "fn bad[N const u64](value addr) addr { return value + value }\n\
-     fn main(value addr) addr {\n\
+     fn test(value addr) addr {\n\
      return bad[18446744073709551615](value)\n\
      }\n"
   in
@@ -4527,7 +4527,7 @@ let () =
   | _ -> failwith "generic-instantiation-const: expected one diagnostic");
   let mixed_generic_failure =
     "fn bad[T, N const u64](value T) T { return value + value }\n\
-     fn main(value addr) addr {\n\
+     fn test(value addr) addr {\n\
      return bad[addr, 18446744073709551615](value)\n\
      }\n"
   in
@@ -4548,7 +4548,7 @@ let () =
     "fn bad[A, N const u8, B, M const i8](left A, right B) A {\n\
      return left + left\n\
      }\n\
-     fn main(value addr, other addr) addr {\n\
+     fn test(value addr, other addr) addr {\n\
      return bad[addr, 2, addr, -3](value, other)\n\
      }\n"
   in
@@ -4565,7 +4565,7 @@ let () =
   let nested_generic_failure =
     "fn inner[T](value T) T { return value + value }\n\
      fn outer[T](value T) T { return inner[T](value) }\n\
-     fn main(value addr) addr { return outer[addr](value) }\n"
+     fn test(value addr) addr { return outer[addr](value) }\n"
   in
   (match semantic_diagnostics nested_generic_failure with
   | [ diagnostic ] ->
@@ -4583,7 +4583,7 @@ let () =
   let nested_const_generic_failure =
     "fn inner[N const usize](value addr) addr { return value + value }\n\
      fn outer[T](value T) T { return inner[4](value) }\n\
-     fn main(value addr) addr { return outer[addr](value) }\n"
+     fn test(value addr) addr { return outer[addr](value) }\n"
   in
   (match semantic_diagnostics nested_const_generic_failure with
   | [ diagnostic ] ->
@@ -4599,7 +4599,7 @@ let () =
           ^ String.concat " | " diagnostic.notes)
   | _ -> failwith "generic-instantiation-nested-const: expected one diagnostic");
   let generic_struct_field_failure =
-    "struct Bad[T] { value Missing }\nfn main(value Bad[u8]) i64 { return 0 }\n"
+    "struct Bad[T] { value Missing }\nfn test(value Bad[u8]) i64 { return 0 }\n"
   in
   (match semantic_diagnostics generic_struct_field_failure with
   | [ diagnostic ] ->
@@ -4612,7 +4612,7 @@ let () =
           ^ String.concat " | " diagnostic.notes)
   | _ -> failwith "generic-instantiation-struct-field: expected one diagnostic");
   let generic_struct_layout_failure =
-    "struct Bad[T] { value void }\nfn main(value Bad[u8]) i64 { return 0 }\n"
+    "struct Bad[T] { value void }\nfn test(value Bad[u8]) i64 { return 0 }\n"
   in
   (match semantic_diagnostics generic_struct_layout_failure with
   | [ diagnostic ] ->
@@ -4626,7 +4626,7 @@ let () =
   | _ -> failwith "generic-instantiation-struct-layout: expected one diagnostic");
   let recursive_generic_struct_failure =
     "struct Recursive[T] { value Recursive[T] }\n\
-     fn main(value Recursive[u8]) i64 { return 0 }\n"
+     fn test(value Recursive[u8]) i64 { return 0 }\n"
   in
   (match semantic_diagnostics recursive_generic_struct_failure with
   | [ diagnostic ] ->
@@ -4645,7 +4645,7 @@ let () =
   let nested_struct_argument_failure =
     "struct Box[T] { value T }\n\
      fn bad[T](value T) T { return value + value }\n\
-     fn main() i64 { value Box[Box[u8]] = (Box[Box[u8]]){(Box[u8]){1}}\n\
+     fn test() i64 { value Box[Box[u8]] = (Box[Box[u8]]){(Box[u8]){1}}\n\
      bad[Box[Box[u8]]](value)\n\
      return 0\n\
      }\n"
@@ -4660,7 +4660,7 @@ let () =
      local i64 = value\n\
      return 0\n\
      }\n\
-     fn main() i64 { value u8 = 1\n\
+     fn test() i64 { value u8 = 1\n\
     \ return bad[u8](value) }\n"
   in
   (match semantic_diagnostics specialized_type_message_failure with
@@ -4676,7 +4676,7 @@ let () =
       failwith "generic-instantiation-specialized-type-message: expected one diagnostic");
   let repeated_generic_failure =
     "fn bad[T](value T) T { return value + value }\n\
-     fn main(value addr) addr {\n\
+     fn test(value addr) addr {\n\
      first addr = bad[addr](value)\n\
      return bad[addr](first)\n\
      }\n"
@@ -4698,7 +4698,7 @@ let () =
      first T = left[T](value)\n\
      return right[T](first)\n\
      }\n\
-     fn main(value addr) addr { return root[addr](value) }\n"
+     fn test(value addr) addr { return root[addr](value) }\n"
   in
   (match semantic_diagnostics diamond_cache_failure with
   | [ diagnostic ] ->
@@ -4731,7 +4731,7 @@ let () =
     "fn broken[N const usize](value i64) i64 {\n\
      if true { return value + bitcast[i64](N) }\n\
      }\n\
-     fn main() i64 { return broken[1](0) }\n"
+     fn test() i64 { return broken[1](0) }\n"
   in
   let issue45_program = expect_ok (Parser.parse (source issue45_source)) in
   (match Sema.check issue45_program with
@@ -4758,24 +4758,24 @@ let () =
         failwith
           ("const-generic-specialization-span: missing source excerpt: " ^ rendered));
   semantic_error "generic-function-arity" "wrong number of type arguments to `pair`"
-    "fn pair[A, B](value A) A { return value }\nfn main() i64 { return pair[i64](1) }\n";
+    "fn pair[A, B](value A) A { return value }\nfn test() i64 { return pair[i64](1) }\n";
   semantic_error "generic-function-argument-kind" "expected a type argument"
     "fn identity[T](value T) T { return value }\n\
-     fn main() i64 { return identity[3](1) }\n";
+     fn test() i64 { return identity[3](1) }\n";
   semantic_error "generic-call-to-concrete" "function `identity` is not generic"
     "fn identity(value i64) i64 { return value }\n\
-     fn main() i64 { return identity[i64](1) }\n";
+     fn test() i64 { return identity[i64](1) }\n";
   semantic_error "unknown-generic-function" "unknown generic function `identity`"
-    "fn main() i64 { return identity[i64](1) }\n";
+    "fn test() i64 { return identity[i64](1) }\n";
   semantic_error "generic-function-missing-type-arguments"
     "generic function `identity` requires arguments"
-    "fn identity[T](value T) T { return value }\nfn main() i64 { return identity(1) }\n";
+    "fn identity[T](value T) T { return value }\nfn test() i64 { return identity(1) }\n";
   semantic_error "generic-function-unknown-type-argument" "unknown type `Missing`"
-    "fn ignore[T]() i64 { return 7 }\nfn main() i64 { return ignore[Missing]() }\n";
+    "fn ignore[T]() i64 { return 7 }\nfn test() i64 { return ignore[Missing]() }\n";
   semantic_error "generic-name-as-value" "`f` is a function, not a value"
-    "fn f[T]() usize { return 0 }\nfn main() usize { return f }\n";
+    "fn f[T]() usize { return 0 }\nfn test() usize { return f }\n";
   semantic_error "generic-specialization-as-value" "function `f` is not a place"
-    "fn f[T]() usize { return 0 }\nfn main() usize { return f[i64] }\n";
+    "fn f[T]() usize { return 0 }\nfn test() usize { return f[i64] }\n";
   ignore
     (expect_ok
        (Sema.check
@@ -4784,17 +4784,38 @@ let () =
                 (source
                    "fn inner[T, M const usize](x T) u64 { return bitcast[u64](M) }\n\
                     fn outer[N const usize](x i64) u64 { return inner[i64, 3](x) }\n\
-                    fn main() u64 { return outer[5](40) }\n")))));
+                    fn test() u64 { return outer[5](40) }\n")))));
   semantic_error "extern-c-type-parameter"
     "extern \"C\" functions cannot have type parameters"
     "extern \"C\" { fn identity[T](value T) T }\n";
   semantic_error "generic-main" "entry point `main` cannot have generic parameters"
     "fn main[T]() i64 { return 42 }\n";
+  let main_signature_error =
+    "entry point `main` must have signature `fn main() i32` or `fn main(argc i32, argv \
+     addr) i32`"
+  in
+  List.iter
+    (fun (name, text) -> semantic_message name main_signature_error text)
+    [
+      ("main-result-u32", "fn main() u32 { return 0 }\n");
+      ("main-result-void", "fn main() void { return }\n");
+      ("main-one-parameter", "fn main(argc i32) i32 { return 0 }\n");
+      ("main-parameter-types", "fn main(argc u32, argv addr) i32 { return 0 }\n");
+      ("main-c-signature", "extern \"C\" { fn main(argc i32, argv addr) i64 }\n");
+    ];
+  semantic_accept "main-no-arguments" "fn main() i32 { return 0 }\n";
+  semantic_accept "main-argc-argv"
+    "fn main(argc i32, argv addr) i32 { return argc - argc }\n";
+  semantic_message "main-internal-global"
+    "global `main` cannot be the program entry point" "var main i32 = 0\n";
+  semantic_message "main-exported-global"
+    "global `main` cannot be the program entry point"
+    "extern \"C\" { var main i32 = 0 }\n";
   let forward_constant_use =
     ( "use.fas",
       "const SIZE usize = LATER_SIZE\n\
        const FLAG bool = LATER_FLAG\n\
-       fn main() usize { return add[SIZE](choose[FLAG]()) }\n" )
+       fn test() usize { return add[SIZE](choose[FLAG]()) }\n" )
   in
   let forward_constant_declarations =
     ( "declarations.fas",
@@ -4815,7 +4836,7 @@ let () =
     ("decls.fas", "fn add[N const usize](value usize) usize { return value + N }\n")
   in
   let cross_file_generic_use_a =
-    ("use_a.fas", "fn main() usize { return add[3](1) + add[3](2) }\n")
+    ("use_a.fas", "fn test() usize { return add[3](1) + add[3](2) }\n")
   in
   let cross_file_generic_use_b =
     ("use_b.fas", "fn other() usize { return add[4](3) + add[3](4) }\n")
@@ -4899,14 +4920,14 @@ let () =
        "const NARROW u8 = trunc[u8](WIDE)\n\
         const WIDE u16 = 7\n\
         fn value[N const u8]() u8 { return N }\n\
-        fn main() u8 { return value[NARROW]() }\n");
+        fn test() u8 { return value[NARROW]() }\n");
   semantic_error "forward-constant-type-preservation"
     "constant initializer type mismatch" "const NARROW u8 = WIDE\nconst WIDE u16 = 7\n";
   semantic_error "forward-constant-cycle" "cyclic constant dependency"
     "const LEFT usize = RIGHT\nconst RIGHT usize = LEFT\n";
   let forward_array_scalar =
     llvm_of
-      "const A arr[2, i64] = {B, 0}\nconst B i64 = 1\nfn main() i64 { return A[0] }\n"
+      "const A arr[2, i64] = {B, 0}\nconst B i64 = 1\nfn test() i64 { return A[0] }\n"
   in
   if not (contains forward_array_scalar "[2 x i64] [i64 1, i64 0]") then
     failwith "forward-array-scalar: order-independent scalar did not resolve into array";
@@ -4914,12 +4935,12 @@ let () =
     "expression is not compile-time constant"
     "const A arr[2, i64] = {H[0], 0}\n\
      const H arr[2, i64] = {1, 2}\n\
-     fn main() i64 { return A[0] }\n";
+     fn test() i64 { return A[0] }\n";
   ignore
     (llvm_of
        "const LEFT bool = false && RIGHT\n\
         const RIGHT bool = LEFT\n\
-        fn main() bool { return RIGHT }\n");
+        fn test() bool { return RIGHT }\n");
   let mixed_generic_source =
     "const THREE usize = 3\n\
      struct Box[T] { value T }\n\
@@ -4928,7 +4949,7 @@ let () =
      fn wrap[T, N const usize](value T) T { seen usize = N\n\
      result Box[T] = (Box[T]){stamp[T, N](value)}\n\
      return result.value }\n\
-     fn main() i64 { first i64 = wrap[i64, THREE](7)\n\
+     fn test() i64 { first i64 = wrap[i64, THREE](7)\n\
      return wrap[i64, THREE](first) }\n"
   in
   let mixed_generic_hir =
@@ -4972,7 +4993,7 @@ let () =
     llvm_of
       "struct Sized[T] { value T }\n\
        fn size[T, N const usize]() usize { return N }\n\
-       fn main() usize { return size[Sized[i64], sizeof[Sized[i64]]]() }\n"
+       fn test() usize { return size[Sized[i64], sizeof[Sized[i64]]]() }\n"
   in
   if not (contains mixed_layout_argument "ret i64 8\n") then
     failwith
@@ -4985,7 +5006,7 @@ let () =
                (source
                   "fn sum[A, N const usize, B, M const usize](left A, right B) usize {\n\
                    return N + M }\n\
-                   fn main() usize { return sum[i64, 2, u8, 3](7, 1) }\n"))))
+                   fn test() usize { return sum[i64, 2, u8, 3](7, 1) }\n"))))
   in
   if
     List.length
@@ -5001,7 +5022,7 @@ let () =
             (Parser.parse
                (source
                   "fn value[T, N const usize](input T) usize { return N }\n\
-                   fn main() usize { return value[i64, 1](7) + value[i64, 2](7) }\n"))))
+                   fn test() usize { return value[i64, 1](7) + value[i64, 2](7) }\n"))))
   in
   if
     List.length
@@ -5018,14 +5039,14 @@ let () =
              (Parser.parse
                 (source
                    "fn value[T, N const usize](input T) usize { return N }\n\
-                    fn main() usize { return value[i64, 1](7) + value[i64, 1](7) }\n")))));
+                    fn test() usize { return value[i64, 1](7) + value[i64, 1](7) }\n")))));
   (match
      Sema.check ~limits:mixed_specialization_limits
        (expect_ok
           (Parser.parse
              (source
                 "fn value[T, N const usize](input T) usize { return N }\n\
-                 fn main() usize { return value[i64, 1](7) + value[i64, 2](7) }\n")))
+                 fn test() usize { return value[i64, 1](7) + value[i64, 2](7) }\n")))
    with
   | Ok _ -> failwith "mixed-generic-count-limit: expected rejection"
   | Error diagnostics ->
@@ -5037,17 +5058,17 @@ let () =
       then failwith "mixed-generic-count-limit: unexpected diagnostic");
   semantic_error "mixed-generic-arity" "wrong number of generic arguments to `identity`"
     "fn identity[T, N const usize](value T) T { return value }\n\
-     fn main() i64 { return identity[i64](1) }\n";
+     fn test() i64 { return identity[i64](1) }\n";
   semantic_error "mixed-generic-type-argument-kind" "expected a type argument"
     "fn identity[T, N const usize](value T) T { return value }\n\
-     fn main() i64 { return identity[3, 1](1) }\n";
+     fn test() i64 { return identity[3, 1](1) }\n";
   semantic_error "mixed-generic-const-argument-kind" "expected a const argument"
     "fn identity[T, N const usize](value T) T { return value }\n\
-     fn main() i64 { return identity[i64, u8](1) }\n";
+     fn test() i64 { return identity[i64, u8](1) }\n";
   semantic_error "mixed-generic-instantiated-body-error" "arithmetic requires"
     "fn bad[T, N const usize](value T) T { seen usize = N\n\
      return value + value }\n\
-     fn main(value addr) addr { return bad[addr, 1](value) }\n";
+     fn test(value addr) addr { return bad[addr, 1](value) }\n";
   let direct_recursive_limits = { Limits.default with max_specialization_depth = 1 } in
   let direct_recursive_specialization =
     expect_ok
@@ -5058,7 +5079,7 @@ let () =
                   "fn recurse[T](value T, count u8) T {\n\
                    if count == 0 { return value }\n\
                    return recurse[T](value, count - 1) }\n\
-                   fn main() u8 { return recurse[u8](7, 2) }\n"))))
+                   fn test() u8 { return recurse[u8](7, 2) }\n"))))
   in
   if
     List.length
@@ -5081,7 +5102,7 @@ let () =
                    fn right[T](value T, count u8) T {\n\
                    if count == 0 { return value }\n\
                    return left[T](value, count - 1) }\n\
-                   fn main() u8 { return left[u8](7, 2) }\n"))))
+                   fn test() u8 { return left[u8](7, 2) }\n"))))
   in
   if
     List.length
@@ -5101,7 +5122,7 @@ let () =
           (Parser.parse
              (source
                 "fn grow[T]() i64 { return grow[arr[2, T]]() }\n\
-                 fn main() i64 { return grow[u8]() }\n")))
+                 fn test() i64 { return grow[u8]() }\n")))
    with
   | Ok _ -> failwith "generic-function-depth-limit: expected rejection"
   | Error diagnostics ->
@@ -5119,7 +5140,7 @@ let () =
              (Parser.parse
                 (source
                    "fn identity[T](value T) T { return value }\n\
-                    fn main() i64 { return identity[i64](identity[i64](1)) }\n")))));
+                    fn test() i64 { return identity[i64](identity[i64](1)) }\n")))));
   let canonical_type_specialization =
     expect_ok
       (Sema.check ~limits:one_function_limit
@@ -5127,7 +5148,7 @@ let () =
             (Parser.parse
                (source
                   "fn identity[T](pointer addr) addr { return pointer }\n\
-                   fn main() usize { right arr[01, u8] = {1}\n\
+                   fn test() usize { right arr[01, u8] = {1}\n\
                    first addr = identity[arr[01, u8]](&right)\n\
                    second addr = identity[arr[1, u8]](first)\n\
                    return sizeof[arr[1, u8]] }\n"))))
@@ -5145,7 +5166,7 @@ let () =
           (Parser.parse
              (source
                 "fn identity[T](value T) T { return value }\n\
-                 fn main() i64 { a u8 = identity[u8](1)\n\
+                 fn test() i64 { a u8 = identity[u8](1)\n\
                  return identity[i64](1) }\n")))
    with
   | Ok _ -> failwith "generic-function-count-limit: expected rejection"
@@ -5161,7 +5182,7 @@ let () =
     "struct Box[T] { value T pointer addr }\n\
      struct Pair[A, B] { first A second B }\n\
      struct Wrapper[T] { boxed Box[T] }\n\
-     fn main() usize {\n\
+     fn test() usize {\n\
     \ box Box[i64] = (Box[i64]){7, addr_from_bits(0)}\n\
     \ pair64 Pair[i64, u8] = (Pair[i64, u8]){9, 1}\n\
     \ pair32 Pair[u32, u8] = (Pair[u32, u8]){9, 1}\n\
@@ -5212,39 +5233,39 @@ let () =
       (Sema.check
          (expect_ok
             (Parser.parse
-               (source "struct Unused[T] { value T }\nfn main() i64 { return 0 }\n"))))
+               (source "struct Unused[T] { value T }\nfn test() i64 { return 0 }\n"))))
   in
   if unused_generic_struct.Hir.structs <> [] then
     failwith "generic-struct-template: unused template was emitted";
   semantic_error "generic-struct-invalid-alignment"
     "alignment must be a positive power of two"
-    "struct Bad[T] @align(3) { value T }\nfn main() i64 { return 0 }\n";
+    "struct Bad[T] @align(3) { value T }\nfn test() i64 { return 0 }\n";
   semantic_error "generic-struct-bare-use"
     "generic struct `Box` requires type arguments"
-    "struct Box[T] { value T }\nfn main(value Box) i64 { return 0 }\n";
+    "struct Box[T] { value T }\nfn test(value Box) i64 { return 0 }\n";
   semantic_error "generic-struct-arity" "wrong number of generic arguments to `Pair`"
     "struct Pair[A, B] { first A second B }\n\
-     fn main(value Pair[i64]) i64 { return 0 }\n";
+     fn test(value Pair[i64]) i64 { return 0 }\n";
   semantic_error "generic-struct-argument-kind" "expected a type argument"
-    "struct Box[T] { value T }\nfn main(value Box[3]) i64 { return 0 }\n";
+    "struct Box[T] { value T }\nfn test(value Box[3]) i64 { return 0 }\n";
   semantic_error "generic-struct-aggregate-limit"
     "aggregate element count exceeds the configured limit"
     "struct Box[T] { value T }\n\
      fn consume(value Box[arr[1000001,u8]]) i32 { return 0 }\n\
      fn main() i32 { return 0 }\n";
   semantic_error "generic-application-to-concrete" "struct `Box` is not generic"
-    "struct Box { value i64 }\nfn main(value Box[i64]) i64 { return 0 }\n";
+    "struct Box { value i64 }\nfn test(value Box[i64]) i64 { return 0 }\n";
   semantic_error "unknown-generic-struct" "unknown generic struct `Missing`"
-    "fn main(value Missing[i64]) i64 { return 0 }\n";
+    "fn test(value Missing[i64]) i64 { return 0 }\n";
   semantic_error "generic-struct-duplicate-param" "duplicate generic parameter `T`"
-    "struct Pair[T, T] { first T second T }\nfn main() i64 { return 0 }\n";
+    "struct Pair[T, T] { first T second T }\nfn test() i64 { return 0 }\n";
 
   let const_generic_struct_source =
     "struct Buffer[T, N const usize] { data arr[N, T] }\n\
      struct Bytes[N const usize] { data arr[N, u8] }\n\
      struct Lanes[T, N const usize] { data vec[N, T] }\n\
      struct Wrapped[T, N const usize] { value Buffer[T, N] }\n\
-     fn main() usize {\n\
+     fn test() usize {\n\
     \ return sizeof[Buffer[u8, 3]] + sizeof[Buffer[u8, 1 + 2]] + "
     ^ "sizeof[Buffer[u16, 3]] + sizeof[Buffer[u8, 4]] + "
     ^ "sizeof[Bytes[5]] + sizeof[Lanes[u32, 4]] + sizeof[Wrapped[u8, 3]]\n}\n"
@@ -5317,7 +5338,7 @@ let () =
       (Parser.parse
          (source
             "struct Tagged[Flag const bool] { value u8 }\n\
-             fn main() usize {\n\
+             fn test() usize {\n\
             \ return sizeof[Tagged[true]] + sizeof[Tagged[false]] +sizeof[Tagged[1]] + \
              sizeof[Tagged[trunc[bool](3)]]\n\
              }\n"))
@@ -5333,7 +5354,7 @@ let () =
   let issue33_llvm =
     llvm_of
       "struct Bytes[N const usize] { data arr[N, u8] }\n\
-       fn main() usize { value Bytes[3]\n\
+       fn test() usize { value Bytes[3]\n\
       \ return sizeof[Bytes[3]] }\n"
   in
   if not (contains issue33_llvm "%\"struct.Bytes$spec$c7:usize:3\" = type { [3 x i8] }")
@@ -5343,16 +5364,16 @@ let () =
   semantic_error "const-generic-struct-arity"
     "wrong number of generic arguments to `Buffer`"
     "struct Buffer[T, N const usize] { data arr[N, T] }\n\
-     fn main(value Buffer[u8]) i64 { return 0 }\n";
+     fn test(value Buffer[u8]) i64 { return 0 }\n";
   semantic_error "const-generic-struct-argument-kind" "expected a const argument"
     "struct Buffer[T, N const usize] { data arr[N, T] }\n\
-     fn main(value Buffer[u8, u16]) i64 { return 0 }\n";
+     fn test(value Buffer[u8, u16]) i64 { return 0 }\n";
   semantic_error "const-generic-struct-argument-type" "const argument type mismatch"
     "struct Buffer[T, N const u8] { data arr[N, T] }\n\
-     fn main(value Buffer[u8, sizeof[u8]]) i64 { return 0 }\n";
+     fn test(value Buffer[u8, sizeof[u8]]) i64 { return 0 }\n";
   semantic_error "const-generic-struct-negative-length" "negative aggregate length"
     "struct Buffer[T, N const isize] { data arr[N, T] }\n\
-     fn main(value Buffer[u8, -1]) i64 { return 0 }\n";
+     fn test(value Buffer[u8, -1]) i64 { return 0 }\n";
 
   let global_const_generic_struct_source =
     "struct Unit { value u64 }\n\
@@ -5363,7 +5384,7 @@ let () =
      struct Holder { value Buffer[u8, THREE] }\n\
      fn fixed[T](pointer addr) void { result T\n\
      return }\n\
-     fn main() usize { three Buffer[u8, THREE]\n\
+     fn test() usize { three Buffer[u8, THREE]\n\
      boxed Buffer[u8, BOX_BYTES]\n\
      unit Buffer[u8, sizeof[Unit]]\n\
      fixed[Buffer[u8, THREE]](&three)\n\
@@ -5403,7 +5424,7 @@ let () =
   semantic_error "const-generic-struct-global-type" "const argument type mismatch"
     "const COUNT u8 = 3\n\
      struct Buffer[T, N const usize] { data arr[N, T] }\n\
-     fn main(value Buffer[u8, COUNT]) usize { return 0 }\n";
+     fn test(value Buffer[u8, COUNT]) usize { return 0 }\n";
 
   let const_generic_struct_type_argument_source =
     "const THREE usize = 3\n\
@@ -5411,7 +5432,7 @@ let () =
      struct Buffer[T, N const usize] { data arr[N, T] }\n\
      fn identity[T](pointer addr) addr { return pointer }\n\
      fn forward[T](pointer addr) addr { return identity[T](pointer) }\n\
-     fn main() usize { three Buffer[u8, THREE]\n\
+     fn test() usize { three Buffer[u8, THREE]\n\
      four Buffer[u8, FOUR]\n\
      a addr = identity[Buffer[u8, THREE]](&three)\n\
      b addr = identity[Buffer[u8, FOUR]](&four)\n\
@@ -5455,7 +5476,7 @@ let () =
      value Outer[Inner[N]]\n\
      return\n\
      }\n\
-     fn main() void { value Outer[Inner[1]]\n\
+     fn test() void { value Outer[Inner[1]]\n\
      pass[u8, 1](&value)\n\
      return\n\
      }\n"
@@ -5499,7 +5520,7 @@ let () =
      fn aggregate_metrics[T, N const usize]() usize {\n\
      return sizeof[arr[N, T]] + alignof[arr[N, T]] + sizeof[vec[N, T]]\n\
      }\n\
-     fn main() usize { value arr[3, u8] = {1, 2, 3}\n\
+     fn test() usize { value arr[3, u8] = {1, 2, 3}\n\
      pointer addr = array_outer[u8, THREE](&value)\n\
      forwarded addr = array_outer[u8, 3](pointer)\n\
      bytes addr = byte_identity[THREE](&value)\n\
@@ -5554,25 +5575,25 @@ let () =
   semantic_error "const-generic-function-type-mismatch"
     "aggregate arguments cannot be passed by value; pass `&x` as `addr` or `handle[T]`"
     "fn identity[N const usize](value arr[N, u8]) arr[N, u8] { return value }\n\
-     fn main() i64 { value arr[3,u8] = {1, 2, 3}\n\
+     fn test() i64 { value arr[3,u8] = {1, 2, 3}\n\
     \ identity[4](value)\n\
     \ return 0 }\n";
   semantic_error "const-generic-function-negative-length" "negative aggregate length"
     "fn identity[N const isize](value arr[N, u8]) arr[N, u8] { return value }\n\
-     fn main() i64 { value arr[1,u8] = {1}\n\
+     fn test() i64 { value arr[1,u8] = {1}\n\
     \ identity[-1](value)\n\
     \ return 0 }\n";
   semantic_error "const-generic-function-machine-length"
     "aggregate length is not a machine integer"
     "fn identity[N const u64](value arr[N, u8]) arr[N, u8] { return value }\n\
-     fn main() i64 { value arr[1,u8] = {1}\n\
+     fn test() i64 { value arr[1,u8] = {1}\n\
     \ identity[18446744073709551615](value)\n\
     \ return 0 }\n";
   let const_array_len_generic_llvm =
     llvm_of
       "const DATA arr[3, u8] = { 10, 20, 30 }\n\
        fn width[N const usize]() usize { return N }\n\
-       fn main() usize { return width[len(DATA)]() }\n"
+       fn test() usize { return width[len(DATA)]() }\n"
   in
   if not (contains const_array_len_generic_llvm "ret i64 3\n") then
     failwith "const-generic-array-len: array length was not used as a const argument";
@@ -5582,13 +5603,13 @@ let () =
        \ if N > 0 { return count[N - 1](value + 1) }\n\
        \ return value\n\
         }\n\
-        fn main() i64 { return count[0](41) }\n");
+        fn test() i64 { return count[0](41) }\n");
   let runtime_const_generic_if =
     llvm_of
       "fn choose[N const i64](value i64, condition i64) i64 {\n\
       \ if condition > 0 { return value + N } else { return value - N }\n\
        }\n\
-       fn main() i64 { return choose[2](40, 0) }\n"
+       fn test() i64 { return choose[2](40, 0) }\n"
   in
   if not (contains runtime_const_generic_if "br i1") then
     failwith "const-generic-runtime-if: runtime condition was pruned";
@@ -5848,7 +5869,7 @@ let () =
      pass[u8, sizeof[Unit]](pointer)\n\
      return\n\
      }\n\
-     fn main() void { value Buffer[u8, 3]\n\
+     fn test() void { value Buffer[u8, 3]\n\
      wrap[u8, THREE](&value)\n\
      sized(&value)\n\
      return\n\
@@ -5906,7 +5927,7 @@ let () =
              (Parser.parse
                 (source
                    "struct Node[T] { next addr value T }\n\
-                    fn main() i64 { value Node[u8]\n\
+                    fn test() i64 { value Node[u8]\n\
                    \ return 0 }\n")))));
   (match
      Sema.check ~limits:recursive_struct_limits
@@ -5915,7 +5936,7 @@ let () =
              (source
                 "struct Inner[T] { value T }\n\
                  struct Outer[T] { inner Inner[T] }\n\
-                 fn main() i64 { value Outer[u8]\n\
+                 fn test() i64 { value Outer[u8]\n\
                 \ return 0 }\n")))
    with
   | Ok _ -> failwith "generic-struct-depth-limit: expected rejection"
@@ -5934,7 +5955,7 @@ let () =
              (Parser.parse
                 (source
                    "struct Box[T] { value T }\n\
-                    fn main() i64 { left Box[u8]\n\
+                    fn test() i64 { left Box[u8]\n\
                    \ right Box[u8]\n\
                    \ return 0 }\n")))));
   (match
@@ -5944,7 +5965,7 @@ let () =
              (source
                 "struct Box[T] { value T }\n\
                  fn id[N const usize]() usize { return N }\n\
-                 fn main() usize { value Box[u8]\n\
+                 fn test() usize { value Box[u8]\n\
                 \ return id[1]() }\n")))
    with
   | Ok _ -> failwith "shared-specialization-limit: expected rejection"
@@ -6326,7 +6347,7 @@ let () =
   ignore
     (llvm_of
        "struct Pair[T] { left T right T }\n\
-        fn main() i64 { pair Pair[i64] = (Pair[i64]){12, 4}\n\
+        fn test() i64 { pair Pair[i64] = (Pair[i64]){12, 4}\n\
         return pair.left }\n");
 
   ignore (llvm_of "fn f(x u64) bool { return 1 == x }\n");
@@ -6440,7 +6461,7 @@ let () =
   then failwith "shift-vector-broadcast: undefined operand in count broadcast";
   let defined_construction =
     llvm_of
-      "fn main() i64 {\n\
+      "fn test() i64 {\n\
       \  a vec[4, u32] = splat(6)\n\
       \  b vec[4, u32] = splat(2)\n\
       \  s vec[4, u32] = a << b\n\
@@ -6491,7 +6512,7 @@ let () =
              "fn w[N const %s]() %s { return N }\n\
               const A %s = %s\n\
               const B %s = %s\n\
-              fn main() %s { return w[%s(A, B)]() }\n"
+              fn test() %s { return w[%s(A, B)]() }\n"
              ty ty ty a ty b ty op)
       in
       if not (contains ir needle) then failwith ("sat: " ^ name ^ " drifted"))
@@ -6554,7 +6575,7 @@ let () =
        const AV vec[4,u8] = bitcast[vec[4,u8]](A)\n\
        const BV vec[4,u8] = bitcast[vec[4,u8]](B)\n\
        const X vec[4,u8] = add_sat(AV, BV)\n\
-       fn main() u32 { return w[bitcast[u32](X)]() }\n"
+       fn test() u32 { return w[bitcast[u32](X)]() }\n"
   in
   if not (contains sat_vec_add "ret i32 100598783\n") then
     failwith "sat: vec add lanes drifted";
@@ -6566,7 +6587,7 @@ let () =
        const AV vec[4,u8] = bitcast[vec[4,u8]](A)\n\
        const BV vec[4,u8] = bitcast[vec[4,u8]](B)\n\
        const Y vec[4,u8] = sub_sat(AV, BV)\n\
-       fn main() u32 { return w[bitcast[u32](Y)]() }\n"
+       fn test() u32 { return w[bitcast[u32](Y)]() }\n"
   in
   if not (contains sat_vec_sub "ret i32 16711780\n") then
     failwith "sat: vec sub lanes drifted";
@@ -6578,7 +6599,7 @@ let () =
        const AV vec[4,u8] = bitcast[vec[4,u8]](A)\n\
        const BV vec[4,u8] = bitcast[vec[4,u8]](B)\n\
        const X vec[4,u8] = mul_hi(AV, BV)\n\
-       fn main() u32 { return w[bitcast[u32](X)]() }\n"
+       fn test() u32 { return w[bitcast[u32](X)]() }\n"
   in
   if not (contains mul_vec "ret i32 65790\n") then failwith "mul_hi: vec lanes drifted";
   let sat_runtime =
@@ -6654,7 +6675,7 @@ let () =
               const A u32 = 197375\n\
               const AV vec[4,u8] = bitcast[vec[4,u8]](A)\n\
               const X vec[4,u8] = %s(AV)\n\
-              fn main() u32 { return w[bitcast[u32](X)]() }\n"
+              fn test() u32 { return w[bitcast[u32](X)]() }\n"
              op)
       in
       if not (contains ir needle) then failwith ("bit-count: " ^ name ^ " drifted"))

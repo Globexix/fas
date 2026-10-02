@@ -134,6 +134,8 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
   in
   let rec validate_declarations next_id seen bindings = function
     | [] -> Ok (List.rev bindings)
+    | Ast.Global { name = "main"; span; _ } :: _ ->
+        error span "global `main` cannot be the program entry point"
     | item :: rest -> (
         match declaration item with
         | None -> validate_declarations next_id seen bindings rest
@@ -493,6 +495,16 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
     map_params (fun (param : Ast.param) -> source_obj param.span param.ty)
   in
   let sigs = ref [] and declared_functions = ref String_set.empty in
+  let validate_entry_signature span params ret =
+    let valid_params =
+      params = [] || params = [ ("argc", Hir.Int Hir.I32); ("argv", Hir.Addr) ]
+    in
+    if ret = Hir.Int Hir.I32 && valid_params then Ok ()
+    else
+      error span
+        "entry point `main` must have signature `fn main() i32` or `fn main(argc i32, \
+         argv addr) i32`"
+  in
   let* () =
     List.fold_left
       (fun r item ->
@@ -528,6 +540,9 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                     params
                 in
                 let* rt = source_return span ret in
+                let* () =
+                  if name = "main" then validate_entry_signature span ps rt else Ok ()
+                in
                 let* () =
                   if linkage = Ast.External_c then
                     validate_extern_c_signature span params ps rt

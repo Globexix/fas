@@ -360,7 +360,7 @@ let () =
       (Parser.parse
          (source
             "fn id[N const usize](x u64) u64 { return x + bitcast[u64](N) }\n\
-             fn main() u64 { return id[3](2) }\n"))
+             fn test() u64 { return id[3](2) }\n"))
   in
   let specialized = expect_ok (Sema.check generic) in
   assert (List.length specialized.Hir.funcs = 2);
@@ -834,7 +834,7 @@ let () =
   | Error [ diagnostic ] ->
       assert (diagnostic.message = "unknown function `identity` reached lowering")
   | Error _ -> assert false);
-  let golden_source = source "fn main() i64 { x i64 = 2\n return x + 3\n }\n" in
+  let golden_source = source "fn test() i64 { x i64 = 2\n return x + 3\n }\n" in
   let golden_ast = expect_ok (Parser.parse golden_source) in
   let golden_hir = expect_ok (Sema.check golden_ast) in
   let golden_ir = Ir.render (expect_ok (Lower.lower golden_hir)) in
@@ -853,7 +853,7 @@ let () =
     let parsed =
       expect_ok
         (Parser.parse
-           (source "fn main() i64 { s addr = \"a\\n\\t\\\\\\\"z\\0\"\n return 0\n }\n"))
+           (source "fn test() i64 { s addr = \"a\\n\\t\\\\\\\"z\\0\"\n return 0\n }\n"))
     in
     let hir = expect_ok (Sema.check parsed) in
     expect_ok (Lower.lower hir)
@@ -1141,7 +1141,7 @@ let () =
       (Parser.parse
          (source
             "fn echo[T](v T) addr { return \"abc\" }\n\
-             fn main() void { a addr = echo[u8](1)\n\
+             fn test() void { a addr = echo[u8](1)\n\
             \ b addr = echo[i64](2)\n\
             \ return }\n"))
   in
@@ -1164,7 +1164,7 @@ let () =
       (Parser.parse
          (source
             "fn big[N const u64](v addr) addr { return \"toolongstr\" }\n\
-             fn main(v addr) void { d addr = big[1](v)\n\
+             fn test(v addr) void { d addr = big[1](v)\n\
             \ return }\n"))
   in
   expect_budget_error "legality single" ~line:1 ~column:43
@@ -1182,7 +1182,7 @@ let () =
             \ a addr = \"aa\"\n\
             \ b addr = \"bb\"\n\
             \ return v }\n\
-             fn main(v addr) void { d addr = pair[1](v)\n\
+             fn test(v addr) void { d addr = pair[1](v)\n\
             \ return }\n"))
   in
   expect_budget_error "legality cumulative" ~line:3 ~column:11
@@ -1339,7 +1339,7 @@ let () =
     ~finally:(fun () -> Sys.remove input_path)
     (fun () ->
       let channel = open_out_bin input_path in
-      output_string channel "fn main() i64 { return 3 }\n";
+      output_string channel "fn test() i64 { return 3 }\n";
       close_out channel;
       let stdout_config =
         expect_cli (Cli.parse [| "fas"; "--emit-llvm"; input_path |])
@@ -2046,7 +2046,7 @@ let () =
       ~limits:{ Limits.default with max_specialization_depth = 1 }
       "fn inner[N const i64]() i64 { return N }\n\
        fn outer[M const i64]() i64 { return inner[M]() }\n\
-       fn main() i64 { return outer[5]() }\n";
+       fn test() i64 { return outer[5]() }\n";
     expect_naming
       [
         "function specialization count limit exceeded";
@@ -2054,7 +2054,7 @@ let () =
       ]
       ~limits:{ Limits.default with max_specializations = 1 }
       "fn identity[T](value T) T { return value }\n\
-       fn main() i64 { a u8 = identity[u8](1)\n\
+       fn test() i64 { a u8 = identity[u8](1)\n\
       \ return identity[i64](1) }\n";
     expect_naming
       [
@@ -2064,7 +2064,7 @@ let () =
       ~limits:{ Limits.default with max_specialization_depth = 1 }
       "struct Inner[T] { value T }\n\
        struct Outer[T] { inner Inner[T] }\n\
-       fn main() i64 { value Outer[u8]\n\
+       fn test() i64 { value Outer[u8]\n\
       \ return 0 }\n"
   in
   let run_specialization_span_tests () =
@@ -2075,7 +2075,7 @@ let () =
               ~text:
                 "fn first() u64 { return 1 }\n\
                  fn second[T](value T) T { return value }\n\
-                 fn main() i64 { return first() }\n"))
+                 fn test() i64 { return first() }\n"))
     in
     let first_span, template_span =
       match program.Ast.items with
