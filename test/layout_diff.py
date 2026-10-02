@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CC = os.environ.get("CC", "clang-22")
 LLVM_OPT = os.environ.get("LLVM_OPT", "opt-22")
 OCAML_FAS = os.environ.get("OCAML_FAS", str(ROOT / "_build/default/bin/main.exe"))
-SEED = 20260929
+SEED = int(os.environ.get("FAS_LAYOUT_DIFF_SEED", "20260929"))
 SCALARS = [
     ("u8", "uint8_t"),
     ("i8", "int8_t"),
@@ -121,7 +121,7 @@ def generate():
             }
         )
 
-    fas = ["opaque Opaque"]
+    fas = ['use "C" "layout_attributes.h"', "opaque Opaque"]
     for st in structs:
         annotation = f" @align({st['align']})" if st["align"] is not None else ""
         fas.append(f"struct {st['fas']}{annotation} {{")
@@ -134,6 +134,7 @@ def generate():
         "#include <stddef.h>",
         "#include <stdint.h>",
         "#include <stdio.h>",
+        '#include "layout_attributes.h"',
         "struct Opaque;",
     ]
     for (lanes, elem), (name, c_elem) in sorted(vectors.items()):
@@ -152,6 +153,27 @@ def generate():
         for field_index, ty in enumerate(st["fields"]):
             c_lines.append(f"    {declaration(ty, f'f{field_index}')};")
         c_lines.append("};")
+    attribute_queries = [
+        ("packed_size", "PackedTrailing", "sizeof(struct PackedTrailing)"),
+        ("packed_align", "PackedTrailing", "_Alignof(struct PackedTrailing)"),
+        ("packed_value_offset", "PackedTrailing", "offsetof(struct PackedTrailing, value)"),
+        ("aligned_size", "AlignedTrailing", "sizeof(struct AlignedTrailing)"),
+        ("aligned_align", "AlignedTrailing", "_Alignof(struct AlignedTrailing)"),
+        ("aligned_value_offset", "AlignedTrailing", "offsetof(struct AlignedTrailing, value)"),
+        ("typedef_size", "AlignedTypedef", "sizeof(AlignedTypedef)"),
+        ("typedef_align", "AlignedTypedef", "_Alignof(AlignedTypedef)"),
+        ("typedef_bytes_offset", "AlignedTypedef", "offsetof(AlignedTypedef, bytes)"),
+    ]
+    for query, ty, _ in attribute_queries:
+        name = f"fas_attribute_{query}"
+        if query.endswith("size"):
+            fas.append(f"    fn {name}() usize {{ return sizeof[{ty}] }}")
+        elif query.endswith("align"):
+            fas.append(f"    fn {name}() usize {{ return alignof[{ty}] }}")
+        else:
+            field = "value" if "value" in query else "bytes"
+            fas.append(f"    fn {name}() usize {{ return offsetof[{ty}, {field}] }}")
+        c_lines.append(f"extern size_t {name}(void);")
     fas.append("}")
     c_lines.extend(
         [
@@ -169,6 +191,11 @@ def generate():
                 f"    CHECK(\"S{index}.f{field_index} offsetof\", fas_offset_{index}_{field_index}(), offsetof(struct S{index}, f{field_index}));"
             )
             query_count += 1
+    for query, _, expected in attribute_queries:
+        c_lines.append(
+            f'    CHECK("{query}", fas_attribute_{query}(), {expected});'
+        )
+        query_count += 1
     c_lines.extend(["    return 0;", "}", ""])
     fas.append("")
     return "\n".join(fas), "\n".join(c_lines), structs, observed, query_count
@@ -178,6 +205,16 @@ def main():
     fas_text, c_text, structs, observed, query_count = generate()
     with tempfile.TemporaryDirectory(prefix="fas-layout-diff-") as temporary:
         temporary = Path(temporary)
+        (temporary / "layout_attributes.h").write_text(
+            "#include <stddef.h>\n"
+            "#include <stdint.h>\n"
+            "struct PackedTrailing { uint32_t prefix; uint64_t value; } "
+            "__attribute__((packed));\n"
+            "struct AlignedTrailing { uint32_t value; } "
+            "__attribute__((aligned(16)));\n"
+            "typedef struct { uint8_t bytes[32]; } AlignedTypedef "
+            "__attribute__((aligned(32)));\n"
+        )
         fas_source = temporary / "layout.fas"
         c_source = temporary / "layout.c"
         fas_ir = temporary / "fas.ll"

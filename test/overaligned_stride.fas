@@ -1,0 +1,3 @@
+use "C" "c_import/overaligned_stride.h"
+
+fn main() i32 { return 0 }

@@ -8575,6 +8575,8 @@ let () =
 
   let c_matrix = c_import_fixture "matrix.h" in
   let c_overaligned = c_import_fixture "overaligned_typedefs.h" in
+  let c_overaligned_stride = c_import_fixture "overaligned_stride.h" in
+  let c_record_attributes = c_import_fixture "record_attributes.h" in
   c_semantic_accept "c-import-overaligned-typedef-unused" c_overaligned
     "fn probe() i32 { return 0 }\n";
   c_semantic_accept "c-import-alignment-equals-size" c_overaligned
@@ -8602,6 +8604,11 @@ let () =
   c_semantic_message "c-import-overaligned-typedef-c-parameter"
     ("C declaration `fas_overaligned_parameter` is not supported: " ^ overaligned_reason)
     c_overaligned "fn probe() i32 { return fas_overaligned_parameter(0) }\n";
+  c_semantic_message "c-import-unrepresentable-record-stride"
+    "C declaration `FasUnrepresentableStride` is not supported: record layout differs \
+     from C"
+    c_overaligned_stride
+    "fn probe() usize { return sizeof[FasUnrepresentableStride] }\n";
   let c_matrix_source, c_matrix_imported = c_matrix in
   let stdio_declarations, _, _ =
     expect_ok
@@ -9791,6 +9798,17 @@ let () =
   c_semantic_accept "c-import-packed-record-layout" record_import_cases
     "fn read(value handle[FasPackedRecord]) i32 {\n\
      return handle_addr(value)[FasPackedRecord].word }\n";
+  c_semantic_accept "c-import-trailing-record-attributes" c_record_attributes
+    "fn packed_layout() usize { return sizeof[FasPackedTrailing] + \
+     alignof[FasPackedTrailing] + offsetof[FasPackedTrailing,value] }\n\
+     fn aligned_layout() usize { return sizeof[FasAlignedTrailing] + \
+     alignof[FasAlignedTrailing] + offsetof[FasAlignedTrailing,value] }\n\
+     fn typedef_layout() usize { return sizeof[FasAlignedTypedef] + \
+     alignof[FasAlignedTypedef] + offsetof[FasAlignedTypedef,bytes] }\n";
+  c_semantic_message "c-import-overaligned-enum"
+    "C declaration `FasAlignedEnum` is not supported: over-aligned C enums are not \
+     supported"
+    c_record_attributes "fn enum_layout() usize { return alignof[FasAlignedEnum] }\n";
   c_semantic_accept "c-import-union-record" record_import_cases
     "fn read(value handle[FasUnionRecord]) i32 {\n\
      return handle_addr(value)[FasUnionRecord].value }\n\
