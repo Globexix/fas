@@ -1,0 +1,13 @@
+use "C" "z_base.h"
+use "C" "a_derived.h"
+use "C" <<MAIN
+int main(void) {
+  return exported_base.value == 3 && exported_derived.base.value == 4
+      && exported_derived.extra == 5 ? 0 : 1;
+}
+MAIN
+
+extern "C" {
+  var exported_base Base = {3}
+  var exported_derived Derived = {{4},5}
+}

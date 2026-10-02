@@ -173,6 +173,9 @@ let declarations ?(reserved = []) records (program : program) =
           let name = stem ^ suffix in
           if
             List.mem name reserved
+            || List.exists
+                 (fun (structure : struct_def) -> structure.name = name)
+                 program.structs
             || List.exists (fun (export, _, _) -> export = name) exports
           then available (suffix ^ "_")
           else name
@@ -259,7 +262,14 @@ let declarations ?(reserved = []) records (program : program) =
             ^ ");\n")
       exports
   in
-  (String.concat "" (List.rev !lines @ decls), List.sort_uniq compare !headers, errors)
+  let headers =
+    List.fold_left
+      (fun headers header ->
+        if List.mem header headers then headers else header :: headers)
+      [] (List.rev !headers)
+    |> List.rev
+  in
+  (String.concat "" (List.rev !lines @ decls), headers, errors)
 
 let guard name =
   String.uppercase_ascii (Filename.remove_extension (Filename.basename name))

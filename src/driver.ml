@@ -164,6 +164,7 @@ let c_export_diagnostic (program : Ast.program) message =
 let load_program ~limits root =
   let loaded = Hashtbl.create 16 in
   let chains = Hashtbl.create 16 in
+  let load_order = ref [] in
   let total_bytes = ref 0 in
   let budget_error span name value =
     Error
@@ -225,6 +226,7 @@ let load_program ~limits root =
                   | Ok program ->
                       total_bytes := !total_bytes + String.length text;
                       Hashtbl.add loaded canonical program;
+                      load_order := canonical :: !load_order;
                       Hashtbl.add chains canonical file_chain;
                       let rec dependencies = function
                         | [] -> Ok ()
@@ -267,6 +269,11 @@ let load_program ~limits root =
         Hashtbl.fold (fun path program acc -> (path, program) :: acc) loaded []
         |> List.sort (fun (left, _) (right, _) -> String.compare left right)
       in
+      let ordered_files =
+        List.rev !load_order
+        |> List.filter_map (fun path ->
+            Option.map (fun program -> (path, program)) (Hashtbl.find_opt loaded path))
+      in
       let items =
         List.concat_map
           (fun (_, program) ->
@@ -286,7 +293,7 @@ let load_program ~limits root =
                 program.Ast.items
             in
             if headers = [] then None else Some (path, headers))
-          files
+          ordered_files
       in
       let chains =
         Hashtbl.fold (fun path chain acc -> (path, chain) :: acc) chains []
@@ -540,7 +547,8 @@ type imported_c_unit = {
   c_names : string list;
 }
 
-let compile_c_units config cc units adapters prelude artifacts =
+let compile_c_units config cc units adapters standard_headers declaration_headers
+    declarations artifacts =
   let rec compile acc = function
     | [] -> Ok (List.rev acc)
     | unit :: rest -> (
@@ -554,16 +562,64 @@ let compile_c_units config cc units adapters prelude artifacts =
             | Ok text -> Ok text
             | Error message -> Error [ Diag.error unit.use_span message ]
           in
-          let original =
-            String.split_on_char '\n' original
-            |> List.filter (fun line ->
-                not
-                  (String.starts_with ~prefix:"#include " line
-                  && Option.is_some (C_import.find_text prelude (line ^ "\n") 0)))
-            |> String.concat "\n"
-          in
-          if Option.is_none unit.assembly then
-            write_file unit.unit_path (prelude ^ original);
+          (if Option.is_none unit.assembly then
+             let lines = String.split_on_char '\n' original in
+             let include_path line =
+               if not (String.starts_with ~prefix:"#include " line) then None
+               else
+                 try Some (Scanf.sscanf line "#include %S" Fun.id)
+                 with Scanf.Scan_failure _ -> None
+             in
+             let is_fragment_path path =
+               String.starts_with ~prefix:"fas-c-fragment-" (Filename.basename path)
+             in
+             let is_fragment line =
+               Option.fold ~none:false ~some:is_fragment_path (include_path line)
+             in
+             let is_preprocessor_fragment line =
+               match include_path line with
+               | Some path when is_fragment_path path -> (
+                   match read_file path with
+                   | Error _ -> false
+                   | Ok contents ->
+                       String.split_on_char '\n' contents
+                       |> List.for_all (fun line ->
+                           let line = String.trim line in
+                           line = ""
+                           || String.starts_with ~prefix:"#" line
+                           || String.starts_with ~prefix:"//" line
+                           || String.starts_with ~prefix:"/*" line
+                           || String.starts_with ~prefix:"*" line
+                           || String.starts_with ~prefix:"*/" line))
+               | _ -> false
+             in
+             let is_header line =
+               String.starts_with ~prefix:"#include <" line
+               || String.starts_with ~prefix:"#include \"" line
+                  && not (is_fragment line)
+             in
+             let rec prefix acc = function
+               | line :: rest
+                 when String.trim line = ""
+                      || is_header line || is_preprocessor_fragment line ->
+                   prefix (line :: acc) rest
+               | rest -> (List.rev acc, rest)
+             in
+             let before, after = prefix [] lines in
+             let missing_headers =
+               List.filter
+                 (fun header -> not (List.mem (String.trim header) lines))
+                 declaration_headers
+             in
+             let generated =
+               standard_headers ^ String.concat "" missing_headers ^ declarations
+             in
+             let before = String.concat "\n" before
+             and after = String.concat "\n" after in
+             let output =
+               (if before = "" then "" else before ^ "\n") ^ generated ^ after
+             in
+             write_file unit.unit_path output);
           let object_path =
             if config.Cli.emit = Cli.Header && Option.is_none unit.assembly then ""
             else Filename.temp_file "fas-c-object-" ".o"
@@ -864,6 +920,37 @@ let run_unprotected ?header_output config =
               ~reserved:(List.concat_map (fun unit -> unit.c_names) !c_units)
               records hir
           in
+          let declaration_headers =
+            let candidates =
+              List.concat_map
+                (fun (source, headers) ->
+                  List.filter_map
+                    (fun (header : C_import.header) ->
+                      match header.spelling with
+                      | Ast.C_quoted path ->
+                          let path =
+                            if Filename.is_relative path then
+                              Filename.concat (Filename.dirname source) path
+                            else path
+                          in
+                          Some (Printf.sprintf "#include %S\n" path)
+                      | Ast.C_system path -> Some ("#include <" ^ path ^ ">\n")
+                      | Ast.C_fragment _ -> None)
+                    headers)
+                c_imports
+            in
+            let ordered =
+              List.filter (fun header -> List.mem header declaration_headers) candidates
+              |> List.fold_left
+                   (fun ordered header ->
+                     if List.mem header ordered then ordered else ordered @ [ header ])
+                   []
+            in
+            ordered
+            @ List.filter
+                (fun header -> not (List.mem header ordered))
+                declaration_headers
+          in
           let* () =
             match (config.Cli.emit, declaration_errors) with
             | Cli.Header, message :: _ -> Error [ c_export_diagnostic program message ]
@@ -899,10 +986,8 @@ let run_unprotected ?header_output config =
           let* () = ir_budget program (Ir.check_stack_scratch_bytes ~limits ir) in
           let* c_objects =
             compile_c_units config cc (List.rev !c_units) adapters
-              (C_exports.includes declarations
-              ^ String.concat "" declaration_headers
-              ^ declarations)
-              c_artifacts
+              (C_exports.includes declarations)
+              declaration_headers declarations c_artifacts
           in
           match config.emit with
           | Cli.Header ->

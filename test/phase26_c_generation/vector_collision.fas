@@ -1,0 +1,16 @@
+use "C" <<C
+int main(void) {
+  return collision.value == 3 && holder.lanes[1] == 2 ? 0 : 1;
+}
+C
+
+struct fas_vec_2_i32 {
+  value i32
+}
+struct Holder {
+  lanes vec[2,i32]
+}
+extern "C" {
+  var holder Holder = {{1,2}}
+  var collision fas_vec_2_i32 = {3}
+}
