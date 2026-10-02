@@ -1,0 +1,1 @@
+extern "C" { fn FAS_ADD_H() i32 { return 37 } }

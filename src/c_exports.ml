@@ -276,11 +276,38 @@ let guard name =
   |> String.map (fun c ->
       if (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') then c else '_')
 
+let identifiers text =
+  let is_start = function 'A' .. 'Z' | 'a' .. 'z' | '_' -> true | _ -> false in
+  let is_continue = function
+    | 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '_' -> true
+    | _ -> false
+  in
+  let length = String.length text in
+  let rec scan index names =
+    if index = length then names
+    else if is_start text.[index] then
+      let rec finish index =
+        if index < length && is_continue text.[index] then finish (index + 1) else index
+      in
+      let stop = finish (index + 1) in
+      scan stop (String.sub text index (stop - index) :: names)
+    else scan (index + 1) names
+  in
+  scan 0 []
+
 let header ~name ~headers declarations =
-  let guard = "FAS_" ^ guard name ^ "_H" in
-  "#ifndef " ^ guard ^ "\n#define " ^ guard ^ "\n" ^ includes declarations
-  ^ String.concat "" headers ^ "#ifdef __cplusplus\nextern \"C\" {\n#endif\n"
-  ^ declarations ^ "#ifdef __cplusplus\n}\n#endif\n#endif\n"
+  let body =
+    includes declarations ^ String.concat "" headers
+    ^ "#ifdef __cplusplus\nextern \"C\" {\n#endif\n" ^ declarations
+    ^ "#ifdef __cplusplus\n}\n#endif\n#endif\n"
+  in
+  let used = identifiers body in
+  let rec available suffix =
+    let candidate = "FAS_" ^ guard name ^ "_H" ^ suffix in
+    if List.mem candidate used then available (suffix ^ "_FAS") else candidate
+  in
+  let guard = available "" in
+  "#ifndef " ^ guard ^ "\n#define " ^ guard ^ "\n" ^ body
 
 let relative_path directory path =
   let parts path = String.split_on_char '/' (Unix.realpath path) in
