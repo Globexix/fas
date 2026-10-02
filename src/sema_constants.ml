@@ -286,15 +286,10 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
                 let* ty =
                   match argument with
                   | Ast.Type_arg ty | Ast.Type_or_index ty ->
-                      resolve_type
-                        (type_bindings @ outer_type_bindings)
-                        (const_bindings @ outer_const_bindings)
-                        at ty
+                      resolve_type outer_type_bindings outer_const_bindings at ty
                   | Ast.Name_arg (type_name, _) ->
-                      resolve_type
-                        (type_bindings @ outer_type_bindings)
-                        (const_bindings @ outer_const_bindings)
-                        at (Ast.Named_type type_name)
+                      resolve_type outer_type_bindings outer_const_bindings at
+                        (Ast.Named_type type_name)
                   | Ast.Const_arg expression ->
                       Error
                         [
@@ -319,9 +314,7 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
                       Error [ Diag.error at "expected a const argument" ]
                 in
                 let* actual_ty, value =
-                  evaluate
-                    (const_bindings @ outer_const_bindings @ consts)
-                    expression (Some const_ty)
+                  evaluate (outer_const_bindings @ consts) expression (Some const_ty)
                 in
                 if not (Hir.ty_equal actual_ty const_ty) then
                   Error

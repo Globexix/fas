@@ -112,6 +112,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     let previous = !local_values in
     let previous_shadowed_constants = !shadowed_constants in
     local_values := names;
+    shadowed_constants := names;
     let result = f () in
     local_values := previous;
     shadowed_constants := previous_shadowed_constants;
@@ -151,6 +152,14 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   in
   let generated = ref [] in
   let current_trace = ref [] in
+  let resolved_type_key values span ty =
+    match
+      source_ty_with_values ~globals:global_names eval_named_types
+        (values @ eval_consts) span ty
+    with
+    | Ok ty -> Hir.ty_name ty
+    | Error _ -> specialization_type_key ty
+  in
   let nearest_kind value_names type_names name =
     if String_set.mem name value_names then Some (`Value None)
     else if String_set.mem name type_names then Some (`Type None)
@@ -212,6 +221,16 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Struct_lit (ty, elements, _) ->
         type_mentions names ty || List.exists (expression_mentions names) elements
     | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ -> false
+  in
+  let shadowed_constant_error expression =
+    match
+      String_set.elements !shadowed_constants
+      |> List.find_opt (fun name -> expression_mentions [ name ] expression)
+    with
+    | Some name ->
+        error (Ast.expr_span expression)
+          (Printf.sprintf "`%s` is not a compile-time constant" name)
+    | None -> Ok ()
   in
   let rec validate_type_names value_names type_names span = function
     | Ast.Handle ty -> validate_type_names value_names type_names span ty
@@ -1099,13 +1118,21 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         Ok (Ast.Handle ty)
     | Ast.Array (length, ty) ->
         let* length =
-          resolve_aggregate_length ~globals:global_names values span length
+          if String_set.mem length !shadowed_constants then
+            error span (Printf.sprintf "`%s` is not a compile-time constant" length)
+          else
+            resolve_aggregate_length ~globals:global_names (values @ eval_consts) span
+              length
         in
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Array (length, ty))
     | Ast.Vec (length, ty) ->
         let* length =
-          resolve_aggregate_length ~globals:global_names values span length
+          if String_set.mem length !shadowed_constants then
+            error span (Printf.sprintf "`%s` is not a compile-time constant" length)
+          else
+            resolve_aggregate_length ~globals:global_names (values @ eval_consts) span
+              length
         in
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Vec (length, ty))
@@ -1158,6 +1185,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                     resolve_arguments (Ast.Type_arg ty :: resolved) params arguments
                 | Ast.Const_param _ :: params, argument :: arguments ->
                     let* expression = generic_const_argument span argument in
+                    let* () = shadowed_constant_error expression in
                     let* expression =
                       resolve_expr ~values ~defer_const_structs substitutions depth
                         expression
@@ -1199,7 +1227,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                         (diagnostic_type_of_ast specializations argument)
                     in
                     resolve_arguments
-                      (Type_specialization_arg (specialization_type_key argument)
+                      (Type_specialization_arg (resolved_type_key values span argument)
                       :: resolved)
                       (diagnostic_argument :: diagnostic)
                       (argument :: types)
@@ -1209,6 +1237,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                       params arguments
                 | Ast.Const_param parameter :: params, argument :: arguments ->
                     let* expression = generic_const_argument span argument in
+                    let* () = shadowed_constant_error expression in
                     let* const_ty = source_ty_diag [] parameter.span parameter.ty in
                     let* actual_ty, value =
                       const_expr ~structs:eval_structs ~named_types:eval_named_types
@@ -1375,7 +1404,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                     resolve_arguments (argument :: types)
                       ((parameter, argument) :: bindings)
                       consts
-                      (Staged_type_arg (specialization_type_key argument) :: staged)
+                      (Staged_type_arg (resolved_type_key values span argument)
+                      :: staged)
                       (Pending_diagnostic_type
                          (diagnostic_type_of_ast specializations argument)
                       :: diagnostic)
@@ -1516,7 +1546,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                   ( Function_specialization,
                     declaration_id,
                     List.map
-                      (fun ty -> Type_specialization_arg (specialization_type_key ty))
+                      (fun ty ->
+                        Type_specialization_arg (resolved_type_key values span ty))
                       type_arguments )
                 in
                 let pending_frame =

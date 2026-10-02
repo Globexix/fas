@@ -9029,6 +9029,20 @@ let () =
   c_semantic_accept "c-import-size-functions" c_sizes
     "fn length() usize { return strlen(c\"fas\") }\n\
      fn allocation(n usize) addr { return malloc(n) }\n";
+  let c_alias_specialization =
+    c_semantic_result c_sizes
+      "fn id[T](value T) T { return value }\n\
+       fn use_aliases() usize { first usize = id[fas_size_alias](1)\n\
+       return id[fas_uintptr_alias](first) }\n"
+    |> expect_ok
+  in
+  let id_specializations =
+    List.filter
+      (fun (func : Hir.func) -> contains func.name "id$spec$")
+      c_alias_specialization.Hir.funcs
+  in
+  if List.length id_specializations <> 1 then
+    failwith "c-alias-specialization: resolved typedef aliases used distinct slots";
   let c_stat = c_import_fixture "stat.h" in
   let stat_second_parameter imported =
     List.find_map
@@ -10245,6 +10259,50 @@ let () =
     "const WIDTH usize = sizeof[Bytes[WIDTH]]\n\
      struct Bytes[N const usize] { data arr[N, u8] }\n\
      fn test() usize { return WIDTH }\n";
+  let generic_layout_constant name expected text =
+    incr checks_run;
+    let hir = expect_ok (Parser.parse (source text)) |> Sema.check |> expect_ok in
+    match
+      List.find_opt (fun (constant : Hir.const_def) -> constant.name = name) hir.consts
+    with
+    | Some { bits; _ } when bits = expected -> ()
+    | Some { bits; _ } ->
+        failwith (Printf.sprintf "%s: expected %Ld, got %Ld" name expected bits)
+    | None -> failwith ("missing constant " ^ name)
+  in
+  generic_layout_constant "SIZE" 5L
+    "const N usize = 3\n\
+     struct Pair[N const usize, M const usize] { first arr[N, u8]\n\
+     second arr[M, u8] }\n\
+     const SIZE usize = sizeof[Pair[2, N]]\n\
+     fn main() i32 { return trunc[i32](SIZE) }\n";
+  generic_layout_constant "SIZE" 16L
+    "struct Inner[T, U] { first T, second U }\n\
+     struct Outer[T] { inner Inner[u8, T] }\n\
+     const SIZE usize = sizeof[Outer[u64]]\n\
+     fn main() i32 { return trunc[i32](SIZE) }\n";
+  generic_layout_constant "SIZE" 3L
+    "const N usize = 3\n\
+     struct Box[T] { value T }\n\
+     const SIZE usize = sizeof[Box[arr[N, u8]]]\n\
+     fn main() i32 { return trunc[i32](SIZE) }\n";
+  semantic_message "generic-layout-local-constant-shadow"
+    "`N` is not a compile-time constant"
+    "struct Bytes[N const usize] { data arr[N, u8] }\n\
+     fn probe[N const usize]() usize { { N usize = 2\n\
+     return sizeof[Bytes[N]] } }\n\
+     fn main() i32 { return trunc[i32](probe[3]()) }\n";
+  semantic_message "generic-array-type-local-constant-shadow"
+    "`N` is not a compile-time constant"
+    "const N usize = 3\n\
+     fn size_of[T]() usize { return sizeof[T] }\n\
+     fn main() i32 { N usize = 2\n\
+     return trunc[i32](size_of[arr[N, u8]]()) }\n";
+  semantic_message "generic-layout-array-local-constant-shadow"
+    "`N` is not a compile-time constant"
+    "const N usize = 3\n\
+     fn main() i32 { N usize = 2\n\
+     return trunc[i32](sizeof[arr[N, u8]]) }\n";
   parse_message "static-size-direct-len-cycle" "expected `,`, found `(`"
     "const A arr[len(B),u8] = {1}\nconst B arr[len(A),u8] = {2}\n";
   Printf.printf "regression checks: %d passed\n" !checks_run
