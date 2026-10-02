@@ -719,16 +719,24 @@ and check_expr (c : context) expected expression =
         handle_target c.named_types t
         |> Result.map_error (fun message -> [ Diag.error s message ])
       in
-      let* a = check_expr c None e in
-      match Hir.expr_ty a with
-      | Hir.Addr ->
-          Ok
-            (Hir.Call
-               ( Hir.Builtin (Hir.Handle_from_addr opaque_name),
-                 [ a ],
-                 Hir.Handle opaque_name,
-                 s ))
-      | _ -> error s "handle_from_addr argument must be an addr")
+      match e with
+      | Ast.Null null_span ->
+          error null_span
+            (Printf.sprintf
+               "write `null` directly where a `handle[%s]` is expected; \
+                `handle_from_addr[%s](null)` is not needed"
+               opaque_name opaque_name)
+      | _ -> (
+          let* a = check_expr c None e in
+          match Hir.expr_ty a with
+          | Hir.Addr ->
+              Ok
+                (Hir.Call
+                   ( Hir.Builtin (Hir.Handle_from_addr opaque_name),
+                     [ a ],
+                     Hir.Handle opaque_name,
+                     s ))
+          | _ -> error s "handle_from_addr argument must be an addr"))
   | Ast.Generic_args (_fn, _, s) ->
       error s "generic specialization is not available in this context"
   | Ast.Cast (k, t, e, s) ->
@@ -1109,16 +1117,24 @@ and check_handle_from_addr c name opaque_name args s =
   if List.length args <> 1 then
     error s (Printf.sprintf "builtin `%s` expects one argument" name)
   else
-    let* a = check_expr c (Some Hir.Addr) (List.hd args) in
-    match Hir.expr_ty a with
-    | Hir.Addr ->
-        Ok
-          (Hir.Call
-             ( Hir.Builtin (Hir.Handle_from_addr opaque_name),
-               [ a ],
-               Hir.Handle opaque_name,
-               s ))
-    | _ -> error s "handle_from_addr argument must be an addr"
+    match List.hd args with
+    | Ast.Null null_span ->
+        error null_span
+          (Printf.sprintf
+             "write `null` directly where a `handle[%s]` is expected; \
+              `handle_from_addr[%s](null)` is not needed"
+             opaque_name opaque_name)
+    | arg -> (
+        let* a = check_expr c (Some Hir.Addr) arg in
+        match Hir.expr_ty a with
+        | Hir.Addr ->
+            Ok
+              (Hir.Call
+                 ( Hir.Builtin (Hir.Handle_from_addr opaque_name),
+                   [ a ],
+                   Hir.Handle opaque_name,
+                   s ))
+        | _ -> error s "handle_from_addr argument must be an addr")
 
 and check_call c _expected fn args s =
   match fn with

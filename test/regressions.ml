@@ -1760,6 +1760,26 @@ let () =
   semantic_error "addr-handle-wrong-arg" "handle_from_addr argument must be an addr"
     "opaque O\n\
      fn f(n usize) usize { return addr_bits(handle_addr(handle_from_addr[O](n))) }\n";
+  let handle_null_source =
+    "opaque F\nfn f() handle[F] { return handle_from_addr[F](null) }\n"
+  in
+  let handle_null_offset = List.hd (positions handle_null_source "null") in
+  (match semantic_diagnostics handle_null_source with
+  | [ diagnostic ] ->
+      let span = diagnostic.Diag.primary in
+      if
+        diagnostic.message
+        <> "write `null` directly where a `handle[F]` is expected; \
+            `handle_from_addr[F](null)` is not needed"
+        || span.file <> "regression.fas"
+        || span.start_offset <> handle_null_offset
+        || span.end_offset <> handle_null_offset + 4
+        || span.line <> 2
+        || span.column <> handle_null_offset - String.length "opaque F\n" + 1
+      then failwith "handle-from-addr-null: exact message or null span changed"
+  | _ -> failwith "handle-from-addr-null: expected one diagnostic");
+  semantic_accept "handle-null-local-initializer"
+    "opaque F\nfn f() bool { h handle[F] = null\n return h == null }\n";
   semantic_error "addr-bits-wrong-arg" "addr_bits argument must be an addr"
     "fn f(n u32) usize { return addr_bits(n) }\n";
   semantic_error "addr-from-bits-wrong-arg" "addr_from_bits argument must be a usize"
