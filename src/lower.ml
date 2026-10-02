@@ -13,8 +13,8 @@ type state = {
   blocks : block_state Queue.t;
   entry : block_state;
   mutable current : block_state;
-  env : (int, Ir.value) Hashtbl.t;
-  mutable env_scopes : (int * Ir.value option) list list;
+  env : (int, Ir.value * int) Hashtbl.t;
+  mutable env_scopes : (int * (Ir.value * int) option) list list;
   ret : Ir.ty;
   structs : Hir.struct_def list;
   strings : string list;
@@ -125,6 +125,45 @@ let load_value s value_ty pointer alignment =
       let loaded = fresh s in
       emit s (Ir.Load (loaded, ty value_ty, pointer, alignment));
       Ok (Ir.Local (loaded, ty value_ty))
+
+let rec place_alignment s expression =
+  match expression with
+  | Hir.Local (local, span) -> (
+      match Hashtbl.find_opt s.env local.id with
+      | Some (_, alignment) -> Ok alignment
+      | None -> error span ("unknown local `" ^ local.name ^ "`"))
+  | Hir.Raw_select _ -> Ok 1
+  | Hir.Field (base, _, field_ty, _, _) ->
+      let* base_alignment = place_alignment s base in
+      let* field_alignment = align s field_ty in
+      Ok (min base_alignment field_alignment)
+  | Hir.Index (base, _, element_ty, _) ->
+      let* base_alignment = place_alignment s base in
+      let* element_alignment = align s element_ty in
+      Ok (min base_alignment element_alignment)
+  | Hir.Global (_, global_ty, _) | Hir.Const_array (_, global_ty, _) ->
+      align s global_ty
+  | _ -> align s (Hir.expr_ty expression)
+
+let target_alignment s target target_ty =
+  match target with
+  | Hir.ALocal local -> (
+      match Hashtbl.find_opt s.env local.id with
+      | Some (_, alignment) -> Ok alignment
+      | None -> error Span.synthetic ("unknown local `" ^ local.name ^ "`"))
+  | Hir.AGlobal (_, global_ty) -> align s global_ty
+  | Hir.ARaw _ -> Ok 1
+  | Hir.AIndex (base, _) -> (
+      match Hir.expr_ty base with
+      | Hir.Array _ ->
+          let* base_alignment = place_alignment s base in
+          let* element_alignment = align s target_ty in
+          Ok (min base_alignment element_alignment)
+      | _ -> align s target_ty)
+  | Hir.AField (base, _, _) ->
+      let* base_alignment = place_alignment s base in
+      let* field_alignment = align s target_ty in
+      Ok (min base_alignment field_alignment)
 
 let zero t = Ir.Const (t, 0L)
 
@@ -403,12 +442,12 @@ let require_bool span v =
   | Ir.I1 -> Ok v
   | _ -> error span "internal error: condition lowering received a non-bool value"
 
-let bind_local s binding value =
+let bind_local s binding value alignment =
   let old = Hashtbl.find_opt s.env binding.Hir.id in
   (match s.env_scopes with
   | scope :: rest -> s.env_scopes <- ((binding.id, old) :: scope) :: rest
   | [] -> ());
-  Hashtbl.replace s.env binding.id value
+  Hashtbl.replace s.env binding.id (value, alignment)
 
 let push_scope s =
   s.env_scopes <- [] :: s.env_scopes;
@@ -526,12 +565,12 @@ let rec expr s = function
   | Hir.Local (local, sp) -> (
       match Hashtbl.find_opt s.env local.id with
       | None -> error sp ("unknown lowering local `" ^ local.name ^ "`")
-      | Some p ->
-          let* alignment = align s local.ty in
-          load_value s local.ty p alignment)
+      | Some (p, alignment) -> load_value s local.ty p alignment)
   | Hir.Global (name, global_ty, _) ->
       let* p = address s (Hir.Global (name, global_ty, Span.synthetic)) in
-      let* alignment = align s global_ty in
+      let* alignment =
+        place_alignment s (Hir.Global (name, global_ty, Span.synthetic))
+      in
       load_value s global_ty p alignment
   | Hir.Function_address (name, _) -> Ok (Ir.Global (name, Ir.Pointer Ir.I8))
   | Hir.Unary (op, e, t, span) -> (
@@ -675,11 +714,11 @@ let rec expr s = function
           Ok (Ir.Local (id, ty t))
       | _ ->
           let* p = index_address s a i in
-          let* alignment = align s t in
+          let* alignment = place_alignment s (Hir.Index (a, i, t, Span.synthetic)) in
           load_value s t p alignment)
   | Hir.Field (a, _, t, off, _) ->
       let* p = field_address s a off in
-      let* alignment = align s t in
+      let* alignment = place_alignment s (Hir.Field (a, "", t, off, Span.synthetic)) in
       load_value s t p alignment
   | Hir.Sizeof (_, n, _) | Hir.Alignof (_, n, _) | Hir.Offsetof (_, _, n, _) ->
       Ok (Ir.Const (ty (Hir.Int Hir.Usize), Int64.of_int n))
@@ -695,7 +734,7 @@ let rec expr s = function
   | Hir.Const_array (n, t, _) ->
       let ptr_id = fresh s in
       emit s (Ir.Global_ptr (ptr_id, n, ty t));
-      let* alignment = align s t in
+      let* alignment = place_alignment s (Hir.Const_array (n, t, Span.synthetic)) in
       load_value s t (Ir.Local (ptr_id, Ir.Pointer (ty t))) alignment
 
 and address_step s operation pointer offset =
@@ -1095,7 +1134,7 @@ and address s e =
       Ok (Ir.Local (id, Ir.Pointer (ty global_ty)))
   | Hir.Local (local, sp) -> (
       match Hashtbl.find_opt s.env local.id with
-      | Some v -> Ok v
+      | Some (value, _) -> Ok value
       | None -> error sp ("unknown local `" ^ local.name ^ "`"))
   | Hir.Const_array (n, t, _) ->
       let id = fresh s in
@@ -1784,7 +1823,7 @@ and stmt s = function
       let id = fresh s in
       emit_entry s (Ir.Alloca (id, ty local.ty, alignment));
       let p = Ir.Local (id, Ir.Pointer (ty local.ty)) in
-      bind_local s local p;
+      bind_local s local p alignment;
       match init with
       | None -> Ok ()
       | Some e ->
@@ -1795,12 +1834,13 @@ and stmt s = function
       let id = fresh s in
       emit_entry s (Ir.Alloca (id, ty local.ty, alignment));
       let pointer = Ir.Local (id, Ir.Pointer (ty local.ty)) in
-      bind_local s local pointer;
+      bind_local s local pointer alignment;
       construct_into s pointer construction
   | Hir.View (local, place, span) ->
       let* pointer = address s place in
+      let* alignment = place_alignment s place in
       if match value_ty pointer with Ir.Pointer _ -> true | _ -> false then (
-        bind_local s local pointer;
+        bind_local s local pointer alignment;
         Ok ())
       else error span "internal error: view address has the wrong type"
   | Hir.Copy (destination, source, copy_ty, scratch_free, span) ->
@@ -1834,9 +1874,8 @@ and stmt s = function
       match target with
       | Hir.AIndex (a, i) when match Hir.expr_ty a with Hir.Vec _ -> true | _ -> false
         ->
-          let* p, source_ty, vt, iv = vector_lane s a i in
+          let* p, source_ty, vt, iv, alignment = vector_lane s a i in
           let* x = expr s e in
-          let* alignment = align s source_ty in
           let loaded_id = fresh s in
           emit s (Ir.Load (loaded_id, vt, p, alignment));
           let loaded = Ir.Local (loaded_id, vt) in
@@ -1851,14 +1890,13 @@ and stmt s = function
           let* p = target_address s target in
           let* v = expr s e in
           let t = Hir.expr_ty e in
-          let* alignment = align s t in
+          let* alignment = target_alignment s target t in
           store_value s t v p alignment)
   | Hir.Compound_assign (target, op, e, t, span) -> (
       match target with
       | Hir.AIndex (a, i) when match Hir.expr_ty a with Hir.Vec _ -> true | _ -> false
         ->
-          let* p, source_ty, vt, iv = vector_lane s a i in
-          let* alignment = align s source_ty in
+          let* p, source_ty, vt, iv, alignment = vector_lane s a i in
           let loaded_id = fresh s in
           emit s (Ir.Load (loaded_id, vt, p, alignment));
           let loaded = Ir.Local (loaded_id, vt) in
@@ -1888,7 +1926,7 @@ and stmt s = function
       | _ ->
           let* p = target_address s target in
           let it = ty t in
-          let* alignment = align s t in
+          let* alignment = target_alignment s target t in
           let* old = load_value s t p alignment in
           let* rhs = expr s e in
           let* value =
@@ -2086,7 +2124,7 @@ and stmt_list s xs =
 and target_address s = function
   | Hir.ALocal local -> (
       match Hashtbl.find_opt s.env local.id with
-      | Some p -> Ok p
+      | Some (pointer, _) -> Ok pointer
       | None -> error Span.synthetic ("unknown local `" ^ local.name ^ "`"))
   | Hir.AGlobal (name, global_ty) ->
       let id = fresh s in
@@ -2100,11 +2138,12 @@ and vector_lane s aggregate index =
   let source_ty = Hir.expr_ty aggregate in
   let* pointer = address s aggregate in
   let vector_ty = ty source_ty in
+  let* alignment = place_alignment s aggregate in
   let* iv = expr s index in
   let lanes = match source_ty with Hir.Vec (n, _) -> n | _ -> 1 in
   let* iv = normalize_index s index iv in
   lane_guard s index iv lanes;
-  Ok (pointer, source_ty, vector_ty, iv)
+  Ok (pointer, source_ty, vector_ty, iv, alignment)
 
 and lower_if s c a b =
   let* cv = expr s c in
@@ -2315,7 +2354,7 @@ let lower_func literal_globals structs strings functions f =
             let id = fresh s in
             emit s (Ir.Alloca (id, ty local.ty, alignment));
             let p = Ir.Local (id, Ir.Pointer (ty local.ty)) in
-            bind_local s local p;
+            bind_local s local p alignment;
             let* () =
               store_value s local.ty
                 (Ir.Param (parameter.name, ty local.ty))
