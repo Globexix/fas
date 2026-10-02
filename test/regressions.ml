@@ -9376,7 +9376,6 @@ let () =
         || List.assoc name phase21_imported.unsupported <> reason
       then failwith ("unsupported C record reason was not retained for " ^ name))
     [
-      ("FasPackedRecord", "record layout differs from C");
       ("FasBitfieldRecord", "bit-fields are not supported");
       ("FasFlexibleRecord", "flexible array members are not supported");
       ("FasAnonymousUnsupportedRecord", "transparent unions are not supported");
@@ -9406,6 +9405,7 @@ let () =
           then failwith ("unexpected imported record layout for " ^ name))
         [
           ("FasTagRecord", 8, 4, [ ("first", 0); ("second", 4) ]);
+          ("FasPackedRecord", 5, 1, [ ("byte", 0); ("word", 1) ]);
           ("FasAnonymousRecord", 8, 4, [ ("byte", 0); ("word", 4) ]);
           ("FasNestedRecord", 16, 4, [ ("inner", 0); ("values", 8) ]);
           ("FasSelfRecord", 16, 8, [ ("next", 0); ("value", 8) ]);
@@ -9527,9 +9527,9 @@ let () =
   then failwith "address-constants-imported-record-handles: invalid relocation";
   c_semantic_accept "c-import-unsupported-record-remains-handle" phase21_records
     "fn retain(value handle[FasUnionRecord]) handle[FasUnionRecord] { return value }\n";
-  c_semantic_message "c-import-packed-record-layout"
-    "C declaration `FasPackedRecord` is not supported: record layout differs from C"
-    phase21_records "fn read(value FasPackedRecord) i32 { return value.word }\n";
+  c_semantic_accept "c-import-packed-record-layout" phase21_records
+    "fn read(value handle[FasPackedRecord]) i32 {\n\
+     return handle_addr(value)[FasPackedRecord].word }\n";
   c_semantic_accept "c-import-union-record" phase21_records
     "fn read(value handle[FasUnionRecord]) i32 {\n\
      return handle_addr(value)[FasUnionRecord].value }\n\

@@ -121,6 +121,7 @@ and item =
       generic_params : generic_param list;
       fields : field list;
       align : int option;
+      size : int option;
       is_union : bool;
       span : Span.t;
     }

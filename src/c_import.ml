@@ -313,6 +313,115 @@ let imported_macro_nodes ~cc ~c_flags ~source ~unit_path ~paths ~macro_names =
                 definitions)
           probed
 
+let imported_enum_nodes ~cc ~c_flags ~source ~unit_path ~paths declarations =
+  let field name node = C_import_json.field name node in
+  let text name node = Option.bind (field name node) C_import_json.string in
+  let children node =
+    Option.fold ~none:[] ~some:C_import_json.array (field "inner" node)
+  in
+  let rec enum_decl_id node =
+    match text "kind" node with
+    | Some "EnumType" -> Option.bind (field "decl" node) (text "id")
+    | _ -> List.find_map enum_decl_id (children node)
+  in
+  let name node =
+    match text "name" node with Some name when name <> "" -> Some name | _ -> None
+  in
+  let enums =
+    List.filter (fun node -> text "kind" node = Some "EnumDecl") declarations
+  in
+  let aliases =
+    List.filter (fun node -> text "kind" node = Some "TypedefDecl") declarations
+  in
+  let candidates =
+    List.filter_map
+      (fun node ->
+        match text "id" node with
+        | None -> None
+        | Some id ->
+            let c_type =
+              match name node with
+              | Some name -> Some ("enum " ^ name)
+              | None ->
+                  List.find_map
+                    (fun alias ->
+                      if enum_decl_id alias = Some id then name alias else None)
+                    aliases
+            in
+            Option.map (fun c_type -> (id, c_type)) c_type)
+      enums
+    |> List.sort_uniq compare
+  in
+  if candidates = [] then Ok []
+  else
+    let common =
+      [ "-x"; "c"; "--target=x86_64-unknown-linux-gnu" ]
+      @ c_flags
+      @ [ "-iquote"; Filename.dirname source ]
+    in
+    let probe = Filename.temp_file "fas-c-enum-probe-" ".c" in
+    paths := probe :: !paths;
+    let prefix = "__fas_enumty_" ^ Digest.to_hex (Digest.string unit_path) ^ "_" in
+    let write_probe candidates =
+      let out = open_out_bin probe in
+      Fun.protect
+        ~finally:(fun () -> close_out_noerr out)
+        (fun () ->
+          Printf.fprintf out "#include %S\n" unit_path;
+          List.iteri
+            (fun i (_, c_type) ->
+              Printf.fprintf out
+                "static const int %s%d __attribute__((used)) = _Generic((%s)0, %s);\n"
+                prefix i c_type macro_probe_types)
+            candidates)
+    in
+    let rec run candidates =
+      write_probe candidates;
+      let argv =
+        Array.of_list
+          ([ cc; "-S"; "-emit-llvm"; "-o"; "-" ]
+          @ common
+          @ [ "-Xclang=-skip-function-bodies"; probe ])
+      in
+      match Process.run argv with
+      | Ok (ir, _) -> Ok (ir, candidates)
+      | Error failure ->
+          let bad =
+            String.split_on_char '\n' failure.stderr
+            |> List.filter_map (fun line ->
+                Option.bind (error_location line) (fun (file, line, _) ->
+                    if file = probe && line >= 2 then
+                      Option.map fst (List.nth_opt candidates (line - 2))
+                    else None))
+            |> List.sort_uniq compare
+          in
+          if bad = [] then Error failure.stderr
+          else
+            let remaining =
+              List.filter (fun (id, _) -> not (List.mem id bad)) candidates
+            in
+            if remaining = [] then Ok ("", []) else run remaining
+    in
+    Result.map
+      (fun (ir, candidates) ->
+        List.filter_map
+          (fun (i, (id, _)) ->
+            Option.bind
+              (llvm_integer ir (prefix ^ string_of_int i))
+              (fun (_, code) ->
+                Option.bind (int_of_string_opt code) (fun code ->
+                    Option.map
+                      (fun (underlying, _, _) ->
+                        C_import_json.Obj
+                          [
+                            ("kind", C_import_json.Str "FasEnumType");
+                            ("enumId", C_import_json.Str id);
+                            ("underlyingType", C_import_json.Str underlying);
+                          ])
+                      (macro_type code))))
+          (List.mapi (fun i candidate -> (i, candidate)) candidates))
+      (run candidates)
+
 let has_c_name name node =
   C_import_json.field "kind" node = Some (C_import_json.Str "FunctionDecl")
   && C_import_json.field "name" node = Some (C_import_json.Str name)
@@ -433,34 +542,46 @@ let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) ?(macro_names = []
             | Error failure ->
                 Error [ compilation_error (List.hd headers).span failure.stderr ]
             | Ok (layouts, _) -> (
-                let macro_names =
-                  List.filter
-                    (fun name -> not (List.exists (has_c_name name) declarations))
-                    macro_names
-                in
                 match
-                  imported_macro_nodes ~cc ~c_flags ~source ~unit_path
-                    ~paths:macro_paths ~macro_names
+                  imported_enum_nodes ~cc ~c_flags ~source ~unit_path ~paths:macro_paths
+                    declarations
                 with
                 | Error message ->
                     Error
                       [
                         Diag.error (List.hd headers).span
-                          ("internal error: C macro import failed: " ^ message);
+                          ("internal error: C enum type import failed: " ^ message);
                       ]
-                | Ok macros ->
-                    completed := true;
-                    Ok
-                      ( declarations
-                        @ C_import_json.Obj
-                            [
-                              ("kind", C_import_json.Str "FasLayoutDump");
-                              ("value", C_import_json.Str layouts);
-                            ]
-                          :: macros,
-                        (if keep then Some (unit_path :: List.rev !fragment_paths)
-                         else None),
-                        if retain then unit_path :: List.rev !fragment_paths else [] ))
+                | Ok enum_types -> (
+                    let macro_names =
+                      List.filter
+                        (fun name -> not (List.exists (has_c_name name) declarations))
+                        macro_names
+                    in
+                    match
+                      imported_macro_nodes ~cc ~c_flags ~source ~unit_path
+                        ~paths:macro_paths ~macro_names
+                    with
+                    | Error message ->
+                        Error
+                          [
+                            Diag.error (List.hd headers).span
+                              ("internal error: C macro import failed: " ^ message);
+                          ]
+                    | Ok macros ->
+                        completed := true;
+                        Ok
+                          ( declarations @ enum_types
+                            @ C_import_json.Obj
+                                [
+                                  ("kind", C_import_json.Str "FasLayoutDump");
+                                  ("value", C_import_json.Str layouts);
+                                ]
+                              :: macros,
+                            (if keep then Some (unit_path :: List.rev !fragment_paths)
+                             else None),
+                            if retain then unit_path :: List.rev !fragment_paths else []
+                          )))
           with Failure message ->
             Error
               [
@@ -691,11 +812,6 @@ let declaration_location node =
       in
       (string "file" location, number (get "line" location))
   | None -> (None, None)
-
-let enum_integer_type node =
-  children node
-  |> List.find_map (fun child ->
-      if string "kind" child = Some "EnumConstantDecl" then c_type_name child else None)
 
 let add_one_decimal value =
   let length = String.length value in
@@ -1131,6 +1247,14 @@ let map_declarations ?(container = false) ~span declarations =
     C_import_json.array (C_import_json.Arr declarations)
     |> List.filter (fun node -> string "kind" node <> Some "FasLayoutDump")
   in
+  let enum_probe_types = Hashtbl.create 32 in
+  List.iter
+    (fun node ->
+      if string "kind" node = Some "FasEnumType" then
+        match (string "enumId" node, string "underlyingType" node) with
+        | Some id, Some underlying -> Hashtbl.replace enum_probe_types id underlying
+        | _ -> ())
+    nodes;
   let macro_shadow_names =
     List.filter_map
       (fun node ->
@@ -1175,9 +1299,15 @@ let map_declarations ?(container = false) ~span declarations =
               Hashtbl.replace record_nodes_by_id id node
           | None, _ -> ())
       | Some "EnumDecl" -> (
-          Option.iter (fun name -> Hashtbl.replace enums name "int") (record_name node);
-          match (string "id" node, enum_integer_type node) with
-          | Some id, Some underlying -> Hashtbl.replace enum_id_types id underlying
+          match string "id" node with
+          | Some id ->
+              Option.iter
+                (fun underlying ->
+                  Hashtbl.replace enum_id_types id underlying;
+                  Option.iter
+                    (fun name -> Hashtbl.replace enums name underlying)
+                    (record_name node))
+                (Hashtbl.find_opt enum_probe_types id)
           | _ -> ())
       | Some "TypedefDecl" ->
           Option.iter
@@ -1243,13 +1373,6 @@ let map_declarations ?(container = false) ~span declarations =
           Hashtbl.replace records tag alias
       | _ -> ())
     record_nodes_by_id;
-  List.iter
-    (fun node ->
-      if string "kind" node = Some "EnumDecl" then
-        match (record_name node, enum_integer_type node) with
-        | Some name, Some underlying -> Hashtbl.replace enums name underlying
-        | _ -> ())
-    nodes;
   List.iter
     (fun node ->
       match
@@ -1410,11 +1533,11 @@ let map_declarations ?(container = false) ~span declarations =
   let rec record_layout ?anonymous_field node name =
     let tag = Option.value ~default:"struct" (string "tagUsed" node) in
     let direct = tag ^ " " ^ Option.value ~default:name (record_name node) in
-    match List.find_opt (fun layout -> layout.layout_name = direct) layouts with
-    | Some layout -> Some layout
+    match anonymous_record_layout anonymous_field with
+    | Some _ as layout -> layout
     | None -> (
-        match anonymous_record_layout anonymous_field with
-        | Some _ as layout -> layout
+        match List.find_opt (fun layout -> layout.layout_name = direct) layouts with
+        | Some layout -> Some layout
         | None ->
             let loc =
               Option.map
@@ -1520,9 +1643,7 @@ let map_declarations ?(container = false) ~span declarations =
   let raw_records =
     List.map
       (fun (name, node) ->
-        let unsupported = ref None
-        and blocked = ref false
-        and has_anonymous = ref false in
+        let unsupported = ref None and blocked = ref false in
         let reject reason =
           if Option.is_none !unsupported then unsupported := Some reason
         in
@@ -1562,7 +1683,6 @@ let map_declarations ?(container = false) ~span declarations =
                     in
                     match nested with
                     | Some nested when record_name nested = None -> (
-                        has_anonymous := true;
                         let nested_layout =
                           Option.bind layout (fun layout ->
                               Option.map
@@ -1651,16 +1771,6 @@ let map_declarations ?(container = false) ~span declarations =
         let field_names = List.map (fun (field : Ast.field) -> field.name) fields in
         if List.length (List.sort_uniq compare field_names) <> List.length field_names
         then unsupported := Some "anonymous member field names collide";
-        let special_layout =
-          !has_anonymous
-          || List.exists
-               (fun (field : Ast.field) -> Option.is_some field.unsupported_reason)
-               fields
-        in
-        let fields =
-          if special_layout then fields
-          else List.map (fun (field : Ast.field) -> { field with offset = None }) fields
-        in
         let reason =
           if
             string "tagUsed" node = Some "union"
@@ -1736,10 +1846,6 @@ let map_declarations ?(container = false) ~span declarations =
       if List.exists Option.is_none fields then None
       else Some (name, List.map Option.get fields)
   in
-  let natural =
-    List.filter_map candidate_fields raw_records
-    |> List.map (fun (name, fields) -> (name, fields, None))
-  in
   let field_offsets =
     List.filter_map
       (fun (name, _, fields, _, _, _) ->
@@ -1770,25 +1876,18 @@ let map_declarations ?(container = false) ~span declarations =
         if string "tagUsed" node = Some "union" then Some name else None)
       raw_records
   in
-  let natural_cache =
-    Hir.struct_layout_cache ~unions:union_names ~field_offsets ~field_reasons
-      ~byte_storage natural
-  in
   let alignments =
     List.filter_map
-      (fun (name, node, _, layout, reason, blocked) ->
+      (fun (name, _, _, layout, reason, blocked) ->
         if Option.is_some reason || blocked then None
-        else if List.mem_assoc name field_offsets then
-          Option.map (fun layout -> (name, Some layout.align)) layout
-        else
-          match (layout, Hir.compute_struct_cached natural_cache name) with
-          | Some layout, Ok natural
-            when layout.align > natural.align
-                 && List.exists
-                      (fun child -> string "kind" child = Some "AlignedAttr")
-                      (children node) ->
-              Some (name, Some layout.align)
-          | _ -> Some (name, None))
+        else Option.map (fun layout -> (name, Some layout.align)) layout)
+      raw_records
+  in
+  let struct_sizes =
+    List.filter_map
+      (fun (name, _, _, layout, reason, blocked) ->
+        if Option.is_some reason || blocked then None
+        else Option.map (fun layout -> (name, layout.size)) layout)
       raw_records
   in
   let struct_declarations =
@@ -1800,7 +1899,7 @@ let map_declarations ?(container = false) ~span declarations =
   in
   let layouts_cache =
     Hir.struct_layout_cache ~unions:union_names ~field_offsets ~field_reasons
-      ~byte_storage struct_declarations
+      ~byte_storage ~struct_sizes struct_declarations
   in
   let record_results =
     List.map
@@ -1872,7 +1971,16 @@ let map_declarations ?(container = false) ~span declarations =
       let item, signature =
         match layout with
         | Some align ->
-            ( Ast.Struct { name; generic_params = []; fields; align; is_union; span },
+            ( Ast.Struct
+                {
+                  name;
+                  generic_params = [];
+                  fields;
+                  align;
+                  size = Option.map (fun layout -> layout.size) c_layout;
+                  is_union;
+                  span;
+                },
               kind ^ " " ^ name
               ^ (if is_union then
                    Option.fold ~none:""
@@ -2008,9 +2116,13 @@ let map_declarations ?(container = false) ~span declarations =
                 match (string "name" child, c_type_name child) with
                 | Some constant, Some _ -> (
                     let underlying =
-                      match as_type ~allow_record:false child with
-                      | Ok ty -> Ok ty
-                      | Error reason -> Error reason
+                      match
+                        Option.bind (string "id" node) (Hashtbl.find_opt enum_id_types)
+                      with
+                      | Some representation ->
+                          type_result ~aliases ~records ~enums ~allow_record:false
+                            representation
+                      | None -> as_type ~allow_record:false child
                     in
                     let explicit_value =
                       let rec find_value = function

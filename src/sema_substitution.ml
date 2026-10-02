@@ -2034,7 +2034,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let result =
           with_current_trace specialization.trace (fun () ->
               match template with
-              | Ast.Struct { fields; align; span; generic_params; is_union; _ } ->
+              | Ast.Struct { fields; align; size; span; generic_params; is_union; _ } ->
                   let* fields =
                     with_generic_type_names (type_param_names generic_params) (fun () ->
                         Result_list.map
@@ -2048,7 +2048,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                   in
                   let generated_item =
                     Ast.Struct
-                      { name; generic_params = []; fields; align; is_union; span }
+                      { name; generic_params = []; fields; align; size; is_union; span }
                   in
                   let* () =
                     charge_expanded_item type_node_account

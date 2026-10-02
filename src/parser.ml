@@ -646,7 +646,15 @@ module P = struct
     let* () = end_stmt p in
     Ok
       (Ast.Struct
-         { name; generic_params; fields = fs; align; is_union = false; span = s })
+         {
+           name;
+           generic_params;
+           fields = fs;
+           align;
+           size = None;
+           is_union = false;
+           span = s;
+         })
 
   and opaque_item p =
     let s = span p in

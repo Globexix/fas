@@ -388,11 +388,13 @@ type struct_layout_cache = {
   field_offsets : (string * (string * int) list) list;
   field_reasons : (string * (string * string) list) list;
   byte_storage : string list;
+  struct_sizes : (string * int) list;
   definitions : (string, struct_def) Hashtbl.t;
 }
 
 let struct_layout_cache ?(target = Target_layout.current) ?(unions = [])
-    ?(field_offsets = []) ?(field_reasons = []) ?(byte_storage = []) decls =
+    ?(field_offsets = []) ?(field_reasons = []) ?(byte_storage = [])
+    ?(struct_sizes = []) decls =
   {
     target;
     decls;
@@ -400,6 +402,7 @@ let struct_layout_cache ?(target = Target_layout.current) ?(unions = [])
     field_offsets;
     field_reasons;
     byte_storage;
+    struct_sizes;
     definitions = Hashtbl.create (List.length decls);
   }
 
@@ -424,8 +427,16 @@ let compute_struct_cached cache name =
           | Some (_, fields, explicit) ->
               let rec each off maxa out = function
                 | [] ->
-                    let align = max maxa (Option.value ~default:1 explicit) in
-                    let* size = Target_layout.round_up_size off align in
+                    let byte_storage = List.mem n cache.byte_storage in
+                    let align =
+                      if byte_storage then Option.value ~default:1 explicit
+                      else max maxa (Option.value ~default:1 explicit)
+                    in
+                    let* size =
+                      match List.assoc_opt n cache.struct_sizes with
+                      | Some size -> Ok size
+                      | None -> Target_layout.round_up_size off align
+                    in
                     let definition =
                       {
                         name = n;
@@ -464,8 +475,16 @@ let compute_struct_cached cache name =
               let union_fields max_size max_align out =
                 let rec go max_size max_align out = function
                   | [] ->
-                      let align = max max_align (Option.value ~default:1 explicit) in
-                      let* size = Target_layout.round_up_size max_size align in
+                      let byte_storage = List.mem n cache.byte_storage in
+                      let align =
+                        if byte_storage then Option.value ~default:1 explicit
+                        else max max_align (Option.value ~default:1 explicit)
+                      in
+                      let* size =
+                        match List.assoc_opt n cache.struct_sizes with
+                        | Some size -> Ok size
+                        | None -> Target_layout.round_up_size max_size align
+                      in
                       let definition =
                         {
                           name = n;

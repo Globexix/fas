@@ -222,12 +222,14 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
   let struct_layout_metadata items =
     let structs =
       List.filter_map
-        (function Ast.Struct { name; fields; _ } -> Some (name, fields) | _ -> None)
+        (function
+          | Ast.Struct { name; fields; size; _ } -> Some (name, fields, size)
+          | _ -> None)
         items
     in
     let field_offsets =
       List.filter_map
-        (fun (name, fields) ->
+        (fun (name, fields, _) ->
           let offsets =
             List.filter_map
               (fun (field : Ast.field) ->
@@ -238,7 +240,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
         structs
     and field_reasons =
       List.filter_map
-        (fun (name, fields) ->
+        (fun (name, fields, _) ->
           let reasons =
             List.filter_map
               (fun (field : Ast.field) ->
@@ -247,11 +249,15 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
           in
           if reasons = [] then None else Some (name, reasons))
         structs
+    and struct_sizes =
+      List.filter_map
+        (fun (name, _, size) -> Option.map (fun size -> (name, size)) size)
+        structs
     in
     let byte_storage = List.map fst field_offsets in
-    (field_offsets, field_reasons, byte_storage)
+    (field_offsets, field_reasons, byte_storage, struct_sizes)
   in
-  let base_field_offsets, base_field_reasons, base_byte_storage =
+  let base_field_offsets, base_field_reasons, base_byte_storage, base_struct_sizes =
     struct_layout_metadata program.Ast.items
   in
   let* () =
@@ -289,7 +295,8 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
   in
   let base_struct_cache =
     Hir.struct_layout_cache ~unions:base_union_names ~field_offsets:base_field_offsets
-      ~field_reasons:base_field_reasons ~byte_storage:base_byte_storage base_structs_src
+      ~field_reasons:base_field_reasons ~byte_storage:base_byte_storage
+      ~struct_sizes:base_struct_sizes base_structs_src
   in
   let base_structs =
     List.filter_map
@@ -327,7 +334,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       (function Ast.Struct { name; is_union = true; _ } -> Some name | _ -> None)
       program.Ast.items
   in
-  let field_offsets, field_reasons, byte_storage =
+  let field_offsets, field_reasons, byte_storage, struct_sizes =
     struct_layout_metadata program.Ast.items
   in
   let rec collect_structs named_types acc = function
@@ -365,7 +372,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
   let build structs_src =
     let cache =
       Hir.struct_layout_cache ~unions:union_names ~field_offsets ~field_reasons
-        ~byte_storage structs_src
+        ~byte_storage ~struct_sizes structs_src
     in
     let rec go acc = function
       | [] -> Ok (List.rev acc)

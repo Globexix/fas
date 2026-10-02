@@ -103,6 +103,13 @@ let align s t =
       error Span.synthetic
         (Printf.sprintf "internal error: type `%s` has no layout: %s" (Hir.ty_name t) m)
 
+let offset_alignment alignment offset =
+  let rec reduce alignment =
+    if alignment <= 1 || offset mod alignment = 0 then alignment
+    else reduce (alignment / 2)
+  in
+  reduce alignment
+
 let load_value s value_ty pointer alignment =
   match value_ty with
   | Hir.Bool ->
@@ -133,10 +140,10 @@ let rec place_alignment s expression =
       | Some (_, alignment) -> Ok alignment
       | None -> error span ("unknown local `" ^ local.name ^ "`"))
   | Hir.Raw_select _ -> Ok 1
-  | Hir.Field (base, _, field_ty, _, _) ->
+  | Hir.Field (base, _, field_ty, offset, _) ->
       let* base_alignment = place_alignment s base in
       let* field_alignment = align s field_ty in
-      Ok (min base_alignment field_alignment)
+      Ok (min (offset_alignment base_alignment offset) field_alignment)
   | Hir.Index (base, _, element_ty, _) ->
       let* base_alignment = place_alignment s base in
       let* element_alignment = align s element_ty in
@@ -160,10 +167,10 @@ let target_alignment s target target_ty =
           let* element_alignment = align s target_ty in
           Ok (min base_alignment element_alignment)
       | _ -> align s target_ty)
-  | Hir.AField (base, _, _) ->
+  | Hir.AField (base, _, offset) ->
       let* base_alignment = place_alignment s base in
       let* field_alignment = align s target_ty in
-      Ok (min base_alignment field_alignment)
+      Ok (min (offset_alignment base_alignment offset) field_alignment)
 
 let zero t = Ir.Const (t, 0L)
 
@@ -2615,25 +2622,22 @@ let lower (p : Hir.program) =
         in
         let* fields, used, natural_align =
           if d.byte_storage then
-            let rec validate used natural_align = function
-              | [] -> Ok ([ Ir.Array (d.size, Ir.I8) ], d.size, natural_align)
+            let rec validate used = function
+              | [] -> Ok ([ Ir.Array (d.size, Ir.I8) ], d.size, 1)
               | (field : Hir.field) :: rest ->
                   let* size = field_size field.ty in
-                  let* align = field_align field.ty in
+                  let* _ = field_align field.ty in
                   if field.offset < 0 || field.offset > max_int - size then
                     malformed_struct d
                       (Printf.sprintf "field `%s` end offset overflows" field.name)
-                  else if field.offset mod align <> 0 then
-                    malformed_struct d
-                      (Printf.sprintf "field `%s` is not aligned to %d" field.name align)
                   else
                     let field_end = field.offset + size in
                     if field_end > d.size then
                       malformed_struct d
                         (Printf.sprintf "field `%s` exceeds its size" field.name)
-                    else validate (max used field_end) (max natural_align align) rest
+                    else validate (max used field_end) rest
             in
-            validate 0 1 d.fields
+            validate 0 d.fields
           else if d.is_union then
             let rec validate natural_align = function
               | [] -> Ok ([ Ir.Array (d.size, Ir.I8) ], d.size, natural_align)
