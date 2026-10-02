@@ -1,0 +1,20 @@
+typedef enum { am_a, am_b } ammo_t;
+typedef enum { S_X, S_Y } state_t;
+typedef struct { ammo_t ammo; int st; } info_t;
+typedef enum __attribute__((packed)) { PACKED_MIN = 0, PACKED_MAX = 255 } packed_t;
+typedef enum { WIDE_NEG = -3, WIDE_LARGE = 0xffffffffU } wide_t;
+typedef enum { UNSIGNED_ZERO = 0, UNSIGNED_MAX = 0xffffffffU } unsigned_enum_t;
+typedef ammo_t ammo_chain_t;
+enum FasTaggedEnum { FAS_TAGGED_FIRST, FAS_TAGGED_LAST };
+enum FasTaggedEnum;
+typedef enum FasTaggedEnum FasTaggedEnumType;
+enum FasEarlierEnum;
+typedef enum FasEarlierEnum FasEarlierEnumType;
+enum FasEarlierEnum { FAS_EARLIER_FIRST, FAS_EARLIER_LAST };
+
+state_t c_enum_roundtrip(state_t value);
+packed_t c_packed_roundtrip(packed_t value);
+wide_t c_wide_roundtrip(wide_t value);
+unsigned_enum_t c_unsigned_roundtrip(unsigned_enum_t value);
+FasTaggedEnumType c_tagged_enum_roundtrip(FasTaggedEnumType value);
+FasEarlierEnumType c_earlier_enum_roundtrip(FasEarlierEnumType value);

@@ -1464,6 +1464,46 @@ let map_declarations ?(container = false) ~span declarations =
         | Some id, Some underlying -> Hashtbl.replace enum_probe_types id underlying
         | _ -> ())
     nodes;
+  let integer_width = function
+    | Ast.Int (Ast.I8 | Ast.U8) -> Some 8
+    | Ast.Int (Ast.I16 | Ast.U16) -> Some 16
+    | Ast.Int (Ast.I32 | Ast.U32) -> Some 32
+    | Ast.Int (Ast.I64 | Ast.U64 | Ast.Isize | Ast.Usize) -> Some 64
+    | _ -> None
+  in
+  let enum_constant_type node =
+    let constants =
+      children node
+      |> List.filter_map (fun child ->
+          if string "kind" child = Some "EnumConstantDecl" then c_type_name child
+          else None)
+    in
+    let typed_constants =
+      List.filter_map
+        (fun raw -> Option.map (fun ty -> (ty, raw)) (int_type raw))
+        constants
+    in
+    if constants = [] || List.length typed_constants <> List.length constants then None
+    else
+      match List.map fst typed_constants |> List.sort_uniq compare with
+      | [ constant_type ] ->
+          List.find_map
+            (fun (ty, raw) -> if ty = constant_type then Some (ty, raw) else None)
+            typed_constants
+      | _ -> None
+  in
+  let enum_representation node underlying previous =
+    match enum_constant_type node with
+    | Some (constant_type, constants) -> (
+        match
+          (integer_width constant_type, Option.bind (int_type underlying) integer_width)
+        with
+        | Some constant_width, Some underlying_width
+          when constant_width = underlying_width ->
+            constants
+        | _ -> underlying)
+    | None -> Option.value ~default:underlying previous
+  in
   let macro_shadow_names =
     List.filter_map
       (fun node ->
@@ -1491,6 +1531,7 @@ let map_declarations ?(container = false) ~span declarations =
   and anonymous_record_aliases = Hashtbl.create 32
   and enums = Hashtbl.create 32
   and enum_id_types = Hashtbl.create 32
+  and enum_id_names = Hashtbl.create 32
   and alias_nodes = Hashtbl.create 64 in
   List.iter
     (fun node ->
@@ -1510,11 +1551,18 @@ let map_declarations ?(container = false) ~span declarations =
       | Some "EnumDecl" -> (
           match string "id" node with
           | Some id ->
+              Option.iter (Hashtbl.replace enum_id_names id) (record_name node);
               Option.iter
                 (fun underlying ->
-                  Hashtbl.replace enum_id_types id underlying;
+                  let previous =
+                    match Hashtbl.find_opt enum_id_types id with
+                    | Some _ as previous -> previous
+                    | None -> Option.bind (record_name node) (Hashtbl.find_opt enums)
+                  in
+                  let representation = enum_representation node underlying previous in
+                  Hashtbl.replace enum_id_types id representation;
                   Option.iter
-                    (fun name -> Hashtbl.replace enums name underlying)
+                    (fun name -> Hashtbl.replace enums name representation)
                     (record_name node))
                 (Hashtbl.find_opt enum_probe_types id)
           | _ -> ())
@@ -1578,7 +1626,19 @@ let map_declarations ?(container = false) ~span declarations =
     (fun node ->
       match (string "kind" node, record_name node, enum_decl_id node) with
       | Some "TypedefDecl", Some name, Some id ->
-          Option.iter (Hashtbl.replace enums name) (Hashtbl.find_opt enum_id_types id)
+          let representation =
+            match Hashtbl.find_opt enum_id_names id with
+            | Some enum_name -> (
+                match Hashtbl.find_opt enums enum_name with
+                | Some _ as representation -> representation
+                | None -> Hashtbl.find_opt enum_id_types id)
+            | None -> Hashtbl.find_opt enum_id_types id
+          in
+          Option.iter
+            (fun representation ->
+              Hashtbl.replace enum_id_types id representation;
+              Hashtbl.replace enums name representation)
+            representation
       | _ -> ())
     nodes;
   let aliases = Hashtbl.create 64 in
@@ -2404,15 +2464,7 @@ let map_declarations ?(container = false) ~span declarations =
               then
                 match (string "name" child, c_type_name child) with
                 | Some constant, Some _ -> (
-                    let underlying =
-                      match
-                        Option.bind (string "id" node) (Hashtbl.find_opt enum_id_types)
-                      with
-                      | Some representation ->
-                          type_result ~aliases ~records ~enums ~allow_record:false
-                            representation
-                      | None -> as_type ~allow_record:false child
-                    in
+                    let constant_type = as_type ~allow_record:false child in
                     let explicit_value =
                       let rec find_value = function
                         | [] -> None
@@ -2431,7 +2483,7 @@ let map_declarations ?(container = false) ~span declarations =
                             (Option.fold ~none:"0" ~some:add_one_decimal !previous_value)
                     in
                     previous_value := value;
-                    match (underlying, value) with
+                    match (constant_type, value) with
                     | Ok (Ast.Int _ as ty), Some value ->
                         let expression =
                           if String.starts_with ~prefix:"-" value then

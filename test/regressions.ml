@@ -9114,6 +9114,74 @@ let () =
       ("FAS_IMPLICIT_NEAR_MAX", 2147483646L);
       ("FAS_IMPLICIT_INT_MAX", 2147483647L);
     ];
+  let c_enum_types = c_import_fixture "enum_types.h" in
+  List.iter
+    (fun (name, expected) ->
+      incr checks_run;
+      match List.assoc_opt name (snd c_enum_types).aliases with
+      | Some actual when actual = Ast.Int expected -> ()
+      | Some actual ->
+          failwith
+            (Printf.sprintf "C enum type %s: expected %s, got %s" name
+               (Ast.type_name (Ast.Int expected))
+               (Ast.type_name actual))
+      | None -> failwith ("C enum type was not imported: " ^ name))
+    [
+      ("ammo_t", Ast.I32);
+      ("state_t", Ast.I32);
+      ("ammo_chain_t", Ast.I32);
+      ("packed_t", Ast.U8);
+      ("wide_t", Ast.I64);
+      ("unsigned_enum_t", Ast.U32);
+      ("FasTaggedEnumType", Ast.I32);
+      ("FasEarlierEnumType", Ast.I32);
+    ];
+  c_semantic_accept "c-import-enum-repro-and-abi" c_enum_types
+    "const constant_tab arr[2,i32] = { S_X, S_Y }\n\
+     extern \"C\" {\n\
+     var tab arr[1,info_t] = { (info_t){am_b, S_Y} }\n\
+     fn enum_result() i32 { return S_Y }\n\
+     fn enum_roundtrip(value state_t) state_t { return c_enum_roundtrip(value) }\n\
+     fn packed_roundtrip(value packed_t) packed_t { return c_packed_roundtrip(value) }\n\
+     fn wide_roundtrip(value wide_t) wide_t { return c_wide_roundtrip(value) }}\n";
+  let c_enum_program =
+    match
+      c_semantic_result c_enum_types
+        "const constant_tab arr[2,i32] = { S_X, S_Y }\n\
+         fn enum_result() i32 { return S_Y }\n"
+    with
+    | Ok program -> program
+    | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+  in
+  List.iter
+    (fun (name, ty, value) ->
+      match
+        List.find_opt
+          (fun (constant : Hir.const_def) -> constant.name = name)
+          c_enum_program.consts
+      with
+      | Some { ty = actual; bits; _ } when actual = ty && bits = value -> ()
+      | Some { ty = actual; bits; _ } ->
+          failwith
+            (Printf.sprintf "C enum constant %s: expected %s %Ld, got %s %Ld" name
+               (Hir.ty_name ty) value (Hir.ty_name actual) bits)
+      | None -> failwith ("C enum constant not imported: " ^ name))
+    [
+      ("am_a", Hir.Int Hir.I32, 0L);
+      ("am_b", Hir.Int Hir.I32, 1L);
+      ("S_X", Hir.Int Hir.I32, 0L);
+      ("S_Y", Hir.Int Hir.I32, 1L);
+      ("PACKED_MIN", Hir.Int Hir.I32, 0L);
+      ("PACKED_MAX", Hir.Int Hir.I32, 255L);
+      ("WIDE_NEG", Hir.Int Hir.I64, -3L);
+      ("WIDE_LARGE", Hir.Int Hir.I64, 4294967295L);
+      ("UNSIGNED_ZERO", Hir.Int Hir.U32, 0L);
+      ("UNSIGNED_MAX", Hir.Int Hir.U32, 4294967295L);
+      ("FAS_TAGGED_FIRST", Hir.Int Hir.I32, 0L);
+      ("FAS_TAGGED_LAST", Hir.Int Hir.I32, 1L);
+      ("FAS_EARLIER_FIRST", Hir.Int Hir.I32, 0L);
+      ("FAS_EARLIER_LAST", Hir.Int Hir.I32, 1L);
+    ];
   let c_records = c_import_fixture "records.h" in
   c_semantic_accept "c-import-typedef-anonymous-record-handle" c_records
     "fn probe(value handle[FasAnonymousRecord]) handle[FasAnonymousRecord] {\n\

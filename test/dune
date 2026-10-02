@@ -14,6 +14,7 @@
   c_import/matrix.h
   c_import/conflict.h
   c_import/enums.h
+  c_import/enum_types.h
   c_import/records.h
   c_import/record_import_cases.h
   c_import/time_record_handles.h
