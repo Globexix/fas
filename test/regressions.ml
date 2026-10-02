@@ -3617,6 +3617,38 @@ let () =
     failwith "statement-positions: specialization key lost const argument identity";
   if contains statement_positions "99" then
     failwith "statement-positions: a statement position resolved the shadowing global";
+  let local_index_shadow =
+    "fn read[T](runtime_index usize) i32 { values arr[4,i32] = {11,22,33,44}\n\
+    \ { T usize = runtime_index\n\
+    \ return values[T] } }\n\
+     fn main() i32 { return read[u8](1) }\n"
+  in
+  semantic_accept "generic-local-index-shadow" local_index_shadow;
+  semantic_error "generic-local-raw-type-shadow" "unknown type `T`"
+    "fn load[T](p addr, runtime_index usize) T {\n\
+    \ { T usize = runtime_index\n\
+    \ return p[T] } }\n\
+     fn main() i32 { bytes arr[2,u8] = {11,22}\n\
+    \ return zext[i32](load[u8](&bytes,1)) }\n";
+  semantic_error "generic-local-volatile-type-shadow" "`T` is a value, not a type"
+    "fn load[T](p addr, runtime_index usize) T {\n\
+    \ { T usize = runtime_index\n\
+    \ return volatile_load[T](p) } }\n\
+     fn main() i32 { bytes arr[2,u8] = {11,22}\n\
+    \ return zext[i32](load[u8](&bytes,1)) }\n";
+  semantic_error "generic-local-simd-type-shadow" "`T` is a value, not a type"
+    "fn load[T](p addr, runtime_index usize) T {\n\
+    \ { T usize = runtime_index\n\
+    \ mask vec[1,bool] = {true}\n\
+    \ fallback vec[1,u8] = {99}\n\
+    \ return masked_load[T](p,mask,fallback)[0] } }\n\
+     fn main() i32 { bytes arr[2,u8] = {11,22}\n\
+    \ return zext[i32](load[u8](&bytes,1)) }\n";
+  semantic_error "generic-struct-local-value-shadow" "`Ring` is a value, not a type"
+    "struct Ring[N const usize] { value i32 }\n\
+     fn main() i32 { Ring i32 = 7\n\
+    \ item Ring[4] = {9}\n\
+    \ return item.value }\n";
   let expr_statement_shadow =
     llvm_of
       "const N usize = 99\n\

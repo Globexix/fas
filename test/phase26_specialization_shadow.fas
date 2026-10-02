@@ -1,0 +1,53 @@
+fn block_shadow[N const usize](runtime_value usize) i32 {
+  {
+    N usize = runtime_value
+    {
+      if N == 3 { return 1 } else { return 2 }
+    }
+  }
+  return 0
+}
+
+fn for_shadow[N const usize](runtime_value usize) i32 {
+  for N usize = runtime_value; N < runtime_value + 1; N += 1 {
+    if N == 3 { return 1 } else { return 2 }
+  }
+  return 0
+}
+
+fn switch_shadow[N const usize](runtime_value usize) i32 {
+  switch runtime_value {
+    case 3: {
+      N usize = runtime_value
+      if N == 3 { return 1 } else { return 2 }
+    }
+    default: { return 2 }
+  }
+  return 0
+}
+
+fn view_shadow[N const usize](runtime_value usize) i32 {
+  values arr[1, usize] = {runtime_value}
+  {
+    view N = values[0]
+    if N == 3 { return 1 } else { return 2 }
+  }
+  return 0
+}
+
+fn index_shadow[T](runtime_index usize) i32 {
+  values arr[4, i32] = {11, 22, 33, 44}
+  {
+    T usize = runtime_index
+    return values[T]
+  }
+}
+
+fn main() i32 {
+  if block_shadow[4](3) != 1 { return 1 }
+  if for_shadow[4](3) != 1 { return 2 }
+  if switch_shadow[4](3) != 1 { return 3 }
+  if view_shadow[4](3) != 1 { return 4 }
+  if index_shadow[u8](1) != 22 { return 5 }
+  return 0
+}

@@ -96,12 +96,27 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   in
   let generic_type_names = ref [] in
   let local_values = ref String_set.empty in
+  let shadowed_constants = ref String_set.empty in
   let with_local_values names f =
     let previous = !local_values in
+    let previous_shadowed_constants = !shadowed_constants in
     local_values := names;
     let result = f () in
     local_values := previous;
+    shadowed_constants := previous_shadowed_constants;
     result
+  in
+  let ambiguous_name = function
+    | Ast.Named_type name | Ast.Applied_type (name, _, _) -> Some name
+    | _ -> None
+  in
+  let is_shadowed_argument = function
+    | Ast.Type_or_index ty -> (
+        match ambiguous_name ty with
+        | Some name -> String_set.mem name !local_values
+        | None -> false)
+    | Ast.Name_arg (name, _) -> String_set.mem name !local_values
+    | _ -> false
   in
   let bind_argument = function
     | Ast.Type_or_index (Ast.Applied_type (name, _, _) as ty)
@@ -201,6 +216,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         validate_type_names value_names type_names span ty
     | Ast.Named_type name when Names.reserved_float_name name ->
         error span "reserved for v0.5 floating point"
+    | Ast.Named_type name when String_set.mem name !local_values ->
+        error span (Printf.sprintf "`%s` is a value, not a type" name)
     | Ast.Named_type name -> (
         match nearest_kind value_names type_names name with
         | Some (`Type _) -> Ok ()
@@ -210,7 +227,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             error span (Printf.sprintf "`%s` is a function, not a type" name)
         | None -> error span (Printf.sprintf "unknown type `%s`" name))
     | Ast.Applied_type (name, arguments, application_span) ->
-        if not (String_set.mem name struct_names) then
+        if String_set.mem name value_names then
+          error span (Printf.sprintf "`%s` is a value, not a type" name)
+        else if not (String_set.mem name struct_names) then
           error span (Printf.sprintf "unknown generic struct `%s`" name)
         else
           Result_list.iter
@@ -235,6 +254,17 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           || String_set.mem name type_names
         then Ok ()
         else error span (Printf.sprintf "unknown name `%s`" name)
+  and validate_selection_argument_names value_names type_names span = function
+    | Ast.Type_or_index ty -> (
+        match ambiguous_name ty with
+        | Some name -> (
+            match nearest_kind value_names type_names name with
+            | Some (`Value _) ->
+                validate_expression_names value_names type_names
+                  (Ast.index_expression ty)
+            | _ -> validate_type_names value_names type_names span ty)
+        | None -> validate_type_names value_names type_names span ty)
+    | argument -> validate_generic_argument_names value_names type_names span argument
   and validate_expression_names value_names type_names = function
     | Ast.Ident (name, span) -> (
         match nearest_kind value_names type_names name with
@@ -254,7 +284,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Select (base, args, span) ->
         let* () = validate_expression_names value_names type_names base in
         Result_list.iter
-          (validate_generic_argument_names value_names type_names span)
+          (validate_selection_argument_names value_names type_names span)
           args
     | Ast.Call (Ast.Ident (name, span), arguments, _) ->
         let* () =
@@ -1070,16 +1100,22 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Named_type name when Names.reserved_float_name name ->
         error span "reserved for v0.5 floating point"
     | Ast.Named_type name -> (
-        match List.assoc_opt name substitutions with
-        | Some ty -> Ok ty
-        | None ->
-            if List.mem_assoc name struct_templates then
-              error span
-                (Printf.sprintf "generic struct `%s` requires type arguments" name)
-            else if
-              String_set.mem name named_type_names || List.mem name !generic_type_names
-            then Ok (Ast.Named_type name)
-            else error span (Printf.sprintf "unknown type `%s`" name))
+        if String_set.mem name !local_values then
+          error span (Printf.sprintf "`%s` is a value, not a type" name)
+        else
+          match List.assoc_opt name substitutions with
+          | Some ty -> Ok ty
+          | None ->
+              if List.mem_assoc name struct_templates then
+                error span
+                  (Printf.sprintf "generic struct `%s` requires type arguments" name)
+              else if
+                String_set.mem name named_type_names
+                || List.mem name !generic_type_names
+              then Ok (Ast.Named_type name)
+              else error span (Printf.sprintf "unknown type `%s`" name))
+    | Ast.Applied_type (name, _, _) when String_set.mem name !local_values ->
+        error span (Printf.sprintf "`%s` is a value, not a type" name)
     | Ast.Applied_type (name, arguments, application_span) -> (
         let arguments = List.map bind_argument arguments in
         match List.assoc_opt name struct_templates with
@@ -1259,7 +1295,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       when name = "volatile_load" || name = "volatile_store"
            || List.mem name simd_memory_names ->
         let resolve_argument argument =
-          match bind_argument argument with
+          match
+            if is_shadowed_argument argument then argument else bind_argument argument
+          with
           | Ast.Type_arg ty | Ast.Type_or_index ty ->
               let* ty =
                 resolve_ty ~values ~defer_const_structs substitutions depth span ty
@@ -1543,22 +1581,27 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let* args =
           Result_list.map
             (fun arg ->
-              match bind_argument arg with
-              | Ast.Type_arg ty | Ast.Type_or_index ty ->
-                  let* ty =
-                    resolve_ty ~values ~defer_const_structs substitutions depth span ty
-                  in
-                  Ok (Ast.Type_arg ty)
-              | Ast.Const_arg expression ->
-                  let* expression =
-                    resolve_expr ~values ~defer_const_structs substitutions depth
-                      expression
-                  in
-                  Ok (Ast.Const_arg expression)
-              | Ast.Name_arg (name, _) -> (
-                  match List.assoc_opt name substitutions with
-                  | Some ty -> Ok (Ast.Type_arg ty)
-                  | None -> Ok arg))
+              match arg with
+              | (Ast.Type_or_index _ | Ast.Name_arg _) when is_shadowed_argument arg ->
+                  Ok arg
+              | _ -> (
+                  match bind_argument arg with
+                  | Ast.Type_arg ty | Ast.Type_or_index ty ->
+                      let* ty =
+                        resolve_ty ~values ~defer_const_structs substitutions depth span
+                          ty
+                      in
+                      Ok (Ast.Type_arg ty)
+                  | Ast.Const_arg expression ->
+                      let* expression =
+                        resolve_expr ~values ~defer_const_structs substitutions depth
+                          expression
+                      in
+                      Ok (Ast.Const_arg expression)
+                  | Ast.Name_arg (name, _) -> (
+                      match List.assoc_opt name substitutions with
+                      | Some ty -> Ok (Ast.Type_arg ty)
+                      | None -> Ok arg)))
             args
         in
         Ok (Ast.Select (base, args, span))
@@ -1616,20 +1659,24 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let* args =
           Result_list.map
             (fun arg ->
-              match bind_argument arg with
-              | Ast.Type_arg ty | Ast.Type_or_index ty ->
-                  let* ty =
-                    resolve_ty ~values ~defer_const_structs substitutions depth
-                      (Ast.expr_span base) ty
-                  in
-                  Ok (Ast.Type_arg ty)
-              | Ast.Const_arg expression ->
-                  let* expression = resolve expression in
-                  Ok (Ast.Const_arg expression)
-              | Ast.Name_arg (name, _) -> (
-                  match List.assoc_opt name substitutions with
-                  | Some ty -> Ok (Ast.Type_arg ty)
-                  | None -> Ok arg))
+              match arg with
+              | (Ast.Type_or_index _ | Ast.Name_arg _) when is_shadowed_argument arg ->
+                  Ok arg
+              | _ -> (
+                  match bind_argument arg with
+                  | Ast.Type_arg ty | Ast.Type_or_index ty ->
+                      let* ty =
+                        resolve_ty ~values ~defer_const_structs substitutions depth
+                          (Ast.expr_span base) ty
+                      in
+                      Ok (Ast.Type_arg ty)
+                  | Ast.Const_arg expression ->
+                      let* expression = resolve expression in
+                      Ok (Ast.Const_arg expression)
+                  | Ast.Name_arg (name, _) -> (
+                      match List.assoc_opt name substitutions with
+                      | Some ty -> Ok (Ast.Type_arg ty)
+                      | None -> Ok arg)))
             args
         in
         Ok (Ast.Target_select (base, args))
@@ -1638,9 +1685,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           resolve_expr ~values ~defer_const_structs substitutions depth base
         in
         Ok (Ast.Target_field (base, name))
-  and resolve_stmt ?(values = []) ?(shadowed_constants = [])
-      ?(defer_const_structs = false) substitutions depth statement =
+  and resolve_stmt ?(values = []) ?(defer_const_structs = false) substitutions depth
+      statement =
     let previous = !local_values in
+    let previous_shadowed_constants = !shadowed_constants in
     let result =
       match statement with
       | Ast.Let { name; ty; init; span } ->
@@ -1659,12 +1707,14 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 Ok (Some expression)
           in
           local_values := String_set.add name !local_values;
+          shadowed_constants := String_set.add name !shadowed_constants;
           Ok (Ast.Let { name; ty; init; span })
       | Ast.View { name; place; span } ->
           let* place =
             resolve_expr ~values ~defer_const_structs substitutions depth place
           in
           local_values := String_set.add name !local_values;
+          shadowed_constants := String_set.add name !shadowed_constants;
           Ok (Ast.View { name; place; span })
       | Ast.Assign (target, expression, span) ->
           let* target =
@@ -1699,18 +1749,15 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           let* condition =
             resolve_expr ~values ~defer_const_structs substitutions depth condition
           in
-          let resolve =
-            resolve_stmt ~values ~shadowed_constants ~defer_const_structs substitutions
-              depth
-          in
+          let resolve = resolve_stmt ~values ~defer_const_structs substitutions depth in
           let specialization_values =
             List.filter
-              (fun (name, _, _) -> not (List.mem name shadowed_constants))
+              (fun (name, _, _) -> not (String_set.mem name !shadowed_constants))
               values
           in
           let constant_environment =
             List.filter
-              (fun (name, _, _) -> not (List.mem name shadowed_constants))
+              (fun (name, _, _) -> not (String_set.mem name !shadowed_constants))
               (values @ eval_consts)
           in
           let specialization_names =
@@ -1767,8 +1814,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           in
           let* body =
             Result_list.map
-              (resolve_stmt ~values ~shadowed_constants ~defer_const_structs
-                 substitutions depth)
+              (resolve_stmt ~values ~defer_const_structs substitutions depth)
               body
           in
           Ok (Ast.While (condition, body, span))
@@ -1776,8 +1822,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       | Ast.Defer (body, span) ->
           let* body =
             Result_list.map
-              (resolve_stmt ~values ~shadowed_constants ~defer_const_structs
-                 substitutions depth)
+              (resolve_stmt ~values ~defer_const_structs substitutions depth)
               body
           in
           Ok (Ast.Defer (body, span))
@@ -1789,8 +1834,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       | Ast.Block (body, span) ->
           let* body =
             Result_list.map
-              (resolve_stmt ~values ~shadowed_constants ~defer_const_structs
-                 substitutions depth)
+              (resolve_stmt ~values ~defer_const_structs substitutions depth)
               body
           in
           Ok (Ast.Block (body, span))
@@ -1802,8 +1846,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 Ok (Some value)
           in
           let resolve_stmt =
-            resolve_stmt ~values ~shadowed_constants ~defer_const_structs substitutions
-              depth
+            resolve_stmt ~values ~defer_const_structs substitutions depth
           in
           let resolve_expr =
             resolve_expr ~values ~defer_const_structs substitutions depth
@@ -1821,8 +1864,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             resolve_expr ~values ~defer_const_structs substitutions depth
           in
           let resolve_stmt =
-            resolve_stmt ~values ~shadowed_constants ~defer_const_structs substitutions
-              depth
+            resolve_stmt ~values ~defer_const_structs substitutions depth
           in
           let* expression = resolve_expr expression in
           let* cases =
@@ -1850,7 +1892,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     in
     (match statement with
     | Ast.Let _ | Ast.View _ -> ()
-    | _ -> local_values := previous);
+    | _ ->
+        local_values := previous;
+        shadowed_constants := previous_shadowed_constants);
     result
   and resolve_function ?(values = []) substitutions depth specialization_name = function
     | Ast.Func ({ params; ret; body; generic_params; span; _ } as item) ->
@@ -1866,7 +1910,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               |> String_set.of_list
             in
             let previous_local_values = !local_values in
+            let previous_shadowed_constants = !shadowed_constants in
             local_values := body_value_names;
+            shadowed_constants :=
+              List.map (fun (parameter : Ast.param) -> parameter.name) params
+              |> String_set.of_list;
             let defer_const_structs = values = [] && has_const_params generic_params in
             let* params =
               Result_list.map
@@ -1910,18 +1958,15 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                         ~params:item.params ~generic_params:item.generic_params
                         statements
                   in
-                  let shadowed_constants =
-                    List.map (fun (parameter : Ast.param) -> parameter.name) params
-                  in
                   let* statements =
                     Result_list.map
-                      (resolve_stmt ~values ~shadowed_constants ~defer_const_structs
-                         substitutions depth)
+                      (resolve_stmt ~values ~defer_const_structs substitutions depth)
                       statements
                   in
                   Ok (Ast.Statements statements)
             in
             local_values := previous_local_values;
+            shadowed_constants := previous_shadowed_constants;
             Ok
               (Ast.Func
                  {
