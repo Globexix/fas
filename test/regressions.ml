@@ -8554,6 +8554,34 @@ let () =
     "fn run() void { var Value i32\nreturn }\n";
 
   let c_matrix = c_import_fixture "matrix.h" in
+  let c_overaligned = c_import_fixture "overaligned_typedefs.h" in
+  c_semantic_accept "c-import-overaligned-typedef-unused" c_overaligned
+    "fn probe() i32 { return 0 }\n";
+  c_semantic_accept "c-import-alignment-equals-size" c_overaligned
+    "struct Holder { value FasAlignmentEqualsSize }\n\
+     var stored FasAlignmentEqualsSize = 7\n\
+     fn probe(value FasAlignmentEqualsSize) FasAlignmentEqualsSize { return value }\n";
+  let overaligned_reason =
+    "over-aligned typedef `FasOveraligned` has alignment greater than its size"
+  in
+  c_semantic_message "c-import-overaligned-typedef-type"
+    ("C declaration `FasOveraligned` is not supported: " ^ overaligned_reason)
+    c_overaligned "fn probe() FasOveraligned { return 0 }\n";
+  c_semantic_message "c-import-overaligned-typedef-field"
+    ("C declaration `FasOveraligned` is not supported: " ^ overaligned_reason)
+    c_overaligned "struct Holder { value FasOveraligned }\n";
+  c_semantic_message "c-import-overaligned-typedef-global"
+    ("C declaration `FasOveraligned` is not supported: " ^ overaligned_reason)
+    c_overaligned "var stored FasOveraligned = 0\n";
+  c_semantic_message "c-import-overaligned-typedef-parameter"
+    ("C declaration `FasOveraligned` is not supported: " ^ overaligned_reason)
+    c_overaligned "fn probe(value FasOveraligned) void { return }\n";
+  c_semantic_message "c-import-overaligned-typedef-c-global"
+    ("C declaration `fas_overaligned_global` is not supported: " ^ overaligned_reason)
+    c_overaligned "fn probe() i32 { return fas_overaligned_global }\n";
+  c_semantic_message "c-import-overaligned-typedef-c-parameter"
+    ("C declaration `fas_overaligned_parameter` is not supported: " ^ overaligned_reason)
+    c_overaligned "fn probe() i32 { return fas_overaligned_parameter(0) }\n";
   let c_matrix_source, c_matrix_imported = c_matrix in
   let stdio_declarations, _, _ =
     expect_ok

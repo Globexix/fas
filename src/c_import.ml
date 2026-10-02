@@ -422,6 +422,108 @@ let imported_enum_nodes ~cc ~c_flags ~source ~unit_path ~paths declarations =
           (List.mapi (fun i candidate -> (i, candidate)) candidates))
       (run candidates)
 
+let imported_typedef_layout_nodes ~cc ~c_flags ~source ~unit_path ~paths declarations =
+  let field name node = C_import_json.field name node in
+  let text name node = Option.bind (field name node) C_import_json.string in
+  let children node =
+    Option.fold ~none:[] ~some:C_import_json.array (field "inner" node)
+  in
+  let candidates =
+    List.filter_map
+      (fun node ->
+        match (text "kind" node, text "name" node) with
+        | Some "TypedefDecl", Some name
+          when List.exists
+                 (fun child -> text "kind" child = Some "AlignedAttr")
+                 (children node) ->
+            Some name
+        | _ -> None)
+      declarations
+    |> List.sort_uniq compare
+  in
+  if candidates = [] then Ok []
+  else
+    let probe = Filename.temp_file "fas-c-typedef-layout-" ".c" in
+    paths := probe :: !paths;
+    let prefix = "__fas_tdlay_" ^ Digest.to_hex (Digest.string unit_path) ^ "_" in
+    let write_probe candidates =
+      let out = open_out_bin probe in
+      Fun.protect
+        ~finally:(fun () -> close_out_noerr out)
+        (fun () ->
+          Printf.fprintf out "#include %S\n" unit_path;
+          List.iteri
+            (fun i name ->
+              Printf.fprintf out
+                "static const unsigned long long %ss_%d __attribute__((used)) = \
+                 sizeof(%s);\n\
+                 static const unsigned long long %sa_%d __attribute__((used)) = \
+                 _Alignof(%s);\n"
+                prefix i name prefix i name)
+            candidates)
+    in
+    let rec run candidates =
+      write_probe candidates;
+      let argv =
+        Array.of_list
+          ([
+             cc;
+             "-S";
+             "-emit-llvm";
+             "-o";
+             "-";
+             "-x";
+             "c";
+             "--target=x86_64-unknown-linux-gnu";
+           ]
+          @ c_flags
+          @ [
+              "-iquote"; Filename.dirname source; "-Xclang=-skip-function-bodies"; probe;
+            ])
+      in
+      match Process.run argv with
+      | Ok (ir, _) -> Ok (ir, candidates)
+      | Error failure ->
+          let bad =
+            String.split_on_char '\n' failure.stderr
+            |> List.filter_map (fun line ->
+                Option.bind (error_location line) (fun (file, line, _) ->
+                    if file = probe && line >= 2 then
+                      List.nth_opt candidates ((line - 2) / 2)
+                    else None))
+            |> List.sort_uniq compare
+          in
+          if bad = [] then Error failure.stderr
+          else
+            let remaining =
+              List.filter (fun name -> not (List.mem name bad)) candidates
+            in
+            if remaining = [] then Ok ("", []) else run remaining
+    in
+    Result.map
+      (fun (ir, candidates) ->
+        List.filter_map
+          (fun (i, name) ->
+            match
+              ( llvm_integer ir (prefix ^ "s_" ^ string_of_int i),
+                llvm_integer ir (prefix ^ "a_" ^ string_of_int i) )
+            with
+            | Some (_, size), Some (_, align) -> (
+                match (int_of_string_opt size, int_of_string_opt align) with
+                | Some size, Some align ->
+                    Some
+                      (C_import_json.Obj
+                         [
+                           ("kind", C_import_json.Str "FasTypedefLayout");
+                           ("name", C_import_json.Str name);
+                           ("size", C_import_json.Str (string_of_int size));
+                           ("align", C_import_json.Str (string_of_int align));
+                         ])
+                | _ -> None)
+            | _ -> None)
+          (List.mapi (fun i name -> (i, name)) candidates))
+      (run candidates)
+
 let has_c_name name node =
   C_import_json.field "kind" node = Some (C_import_json.Str "FunctionDecl")
   && C_import_json.field "name" node = Some (C_import_json.Str name)
@@ -553,35 +655,49 @@ let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) ?(macro_names = []
                           ("internal error: C enum type import failed: " ^ message);
                       ]
                 | Ok enum_types -> (
-                    let macro_names =
-                      List.filter
-                        (fun name -> not (List.exists (has_c_name name) declarations))
-                        macro_names
-                    in
                     match
-                      imported_macro_nodes ~cc ~c_flags ~source ~unit_path
-                        ~paths:macro_paths ~macro_names
+                      imported_typedef_layout_nodes ~cc ~c_flags ~source ~unit_path
+                        ~paths:macro_paths declarations
                     with
                     | Error message ->
                         Error
                           [
                             Diag.error (List.hd headers).span
-                              ("internal error: C macro import failed: " ^ message);
+                              ("internal error: C typedef layout import failed: "
+                             ^ message);
                           ]
-                    | Ok macros ->
-                        completed := true;
-                        Ok
-                          ( declarations @ enum_types
-                            @ C_import_json.Obj
-                                [
-                                  ("kind", C_import_json.Str "FasLayoutDump");
-                                  ("value", C_import_json.Str layouts);
-                                ]
-                              :: macros,
-                            (if keep then Some (unit_path :: List.rev !fragment_paths)
-                             else None),
-                            if retain then unit_path :: List.rev !fragment_paths else []
-                          )))
+                    | Ok typedef_layouts -> (
+                        let macro_names =
+                          List.filter
+                            (fun name ->
+                              not (List.exists (has_c_name name) declarations))
+                            macro_names
+                        in
+                        match
+                          imported_macro_nodes ~cc ~c_flags ~source ~unit_path
+                            ~paths:macro_paths ~macro_names
+                        with
+                        | Error message ->
+                            Error
+                              [
+                                Diag.error (List.hd headers).span
+                                  ("internal error: C macro import failed: " ^ message);
+                              ]
+                        | Ok macros ->
+                            completed := true;
+                            Ok
+                              ( declarations @ enum_types @ typedef_layouts
+                                @ C_import_json.Obj
+                                    [
+                                      ("kind", C_import_json.Str "FasLayoutDump");
+                                      ("value", C_import_json.Str layouts);
+                                    ]
+                                  :: macros,
+                                (if keep then
+                                   Some (unit_path :: List.rev !fragment_paths)
+                                 else None),
+                                if retain then unit_path :: List.rev !fragment_paths
+                                else [] ))))
           with Failure message ->
             Error
               [
@@ -1307,9 +1423,23 @@ let map_declarations ?(container = false) ~span declarations =
       declarations
   in
   let layouts = Option.fold ~none:[] ~some:clang_layouts layout_dump in
+  let typedef_layouts = Hashtbl.create 16 in
+  List.iter
+    (fun node ->
+      if string "kind" node = Some "FasTypedefLayout" then
+        match (string "name" node, string "size" node, string "align" node) with
+        | Some name, Some size, Some align -> (
+            match (int_of_string_opt size, int_of_string_opt align) with
+            | Some size, Some align -> Hashtbl.replace typedef_layouts name (size, align)
+            | _ -> ())
+        | _ -> ())
+    declarations;
   let nodes =
     C_import_json.array (C_import_json.Arr declarations)
-    |> List.filter (fun node -> string "kind" node <> Some "FasLayoutDump")
+    |> List.filter (fun node ->
+        not
+          (List.mem (string "kind" node)
+             [ Some "FasLayoutDump"; Some "FasTypedefLayout" ]))
   in
   let enum_probe_types = Hashtbl.create 32 in
   List.iter
@@ -1457,6 +1587,20 @@ let map_declarations ?(container = false) ~span declarations =
     match Hashtbl.find_opt aliases name with
     | Some result -> result
     | None when List.mem name stack -> Error "recursive C typedef is not supported"
+    | None -> (
+        match Hashtbl.find_opt typedef_layouts name with
+        | Some (size, align) when align > size ->
+            let result =
+              Error
+                (Printf.sprintf
+                   "over-aligned typedef `%s` has alignment greater than its size" name)
+            in
+            Hashtbl.replace aliases name result;
+            result
+        | _ -> alias_type stack name)
+  and alias_type stack name =
+    match Hashtbl.find_opt aliases name with
+    | Some result -> result
     | None when Option.is_some (machine_integer_type name) ->
         let result = Ok (Option.get (machine_integer_type name)) in
         Hashtbl.replace aliases name result;

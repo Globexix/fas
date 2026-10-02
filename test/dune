@@ -19,6 +19,7 @@
   c_import/phase22_time.h
   c_import/phase25_after_container.h
   c_import/phase23_raw.h
+  c_import/overaligned_typedefs.h
   c_import/sizes.h
   c_import/stat.h
   c_import/namespaces.h
