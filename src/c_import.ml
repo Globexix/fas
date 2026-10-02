@@ -984,6 +984,21 @@ let rec record_decl_id node =
   | Some "RecordType" -> Option.bind (get "decl" node) (string "id")
   | _ -> List.find_map record_decl_id (children node)
 
+let direct_record_decl_id node =
+  let rec direct = function
+    | node -> (
+        match string "kind" node with
+        | Some "RecordType" -> Option.bind (get "decl" node) (string "id")
+        | Some ("ElaboratedType" | "AttributedType" | "ParenType" | "TypedefType") ->
+            children node |> List.find_map direct
+        | _ -> None)
+  in
+  children node
+  |> List.find_map (fun child ->
+      match string "kind" child with
+      | Some kind when String.ends_with ~suffix:"Type" kind -> direct child
+      | _ -> None)
+
 let record_name node =
   match string "name" node with Some name when name <> "" -> Some name | _ -> None
 
@@ -1521,15 +1536,7 @@ let map_declarations ?(container = false) ~span declarations =
           Hashtbl.replace record_nodes_by_id id (Hashtbl.find record_nodes_by_id id)
       | _ -> ())
     nodes;
-  let same_record_typedef id tag node =
-    record_decl_id node = Some id
-    &&
-    match c_type_name node with
-    | Some raw ->
-        let raw, _ = clean_type raw in
-        raw = "struct " ^ tag || raw = "union " ^ tag
-    | None -> false
-  in
+  let same_record_typedef id _tag node = direct_record_decl_id node = Some id in
   let collides_with_ordinary tag id =
     List.exists
       (fun node ->
@@ -1569,11 +1576,8 @@ let map_declarations ?(container = false) ~span declarations =
     record_nodes_by_id;
   List.iter
     (fun node ->
-      match
-        (string "kind" node, record_name node, c_type_name node, enum_decl_id node)
-      with
-      | Some "TypedefDecl", Some name, Some raw, Some id
-        when String.starts_with ~prefix:"enum " raw ->
+      match (string "kind" node, record_name node, enum_decl_id node) with
+      | Some "TypedefDecl", Some name, Some id ->
           Option.iter (Hashtbl.replace enums name) (Hashtbl.find_opt enum_id_types id)
       | _ -> ())
     nodes;
@@ -1608,13 +1612,24 @@ let map_declarations ?(container = false) ~span declarations =
     | None -> (
         match Hashtbl.find_opt alias_nodes name with
         | None -> Error ("unknown C typedef " ^ name)
-        | Some node -> (
-            match c_type_name node with
-            | None -> Error "typedef has no canonical type"
-            | Some raw ->
-                let result = resolve_aliases (name :: stack) raw in
-                Hashtbl.replace aliases name result;
-                result))
+        | Some node ->
+            let result =
+              match direct_record_decl_id node with
+              | Some id -> (
+                  match Hashtbl.find_opt record_ids id with
+                  | Some target when Hashtbl.mem records target ->
+                      Ok (Ast.Named_type target)
+                  | _ ->
+                      Option.fold ~none:(Error "typedef has no canonical type")
+                        ~some:(resolve_aliases (name :: stack))
+                        (c_type_name node))
+              | None ->
+                  Option.fold ~none:(Error "typedef has no canonical type")
+                    ~some:(resolve_aliases (name :: stack))
+                    (c_type_name node)
+            in
+            Hashtbl.replace aliases name result;
+            result)
   and resolve_aliases stack raw =
     let raw, _ = clean_type raw in
     let first_delimiter = function

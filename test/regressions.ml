@@ -8987,7 +8987,10 @@ let () =
         {
           spelling =
             Ast.C_fragment
-              { tag = "FAS_STAT_TYPEDEF"; text = "typedef struct stat stat_t;" };
+              {
+                tag = "FAS_STAT_TYPEDEF";
+                text = "typedef struct stat stat_base; typedef stat_base stat_t;";
+              };
           span = Span.synthetic;
         };
     ]
@@ -9001,12 +9004,12 @@ let () =
   in
   incr checks_run;
   (match stat_second_parameter c_stat_typedef with
-  | Some (Ast.Handle (Ast.Named_type "stat_t")) -> ()
+  | Some (Ast.Handle (Ast.Named_type "stat_base")) -> ()
   | Some _ -> failwith "stat_t did not become the imported stat() handle type"
   | None -> failwith "sys/stat.h stat() was not imported with stat_t");
   c_semantic_accept "c-import-stat-typedef-handle" (stat_source, c_stat_typedef)
-    "fn call_stat(path addr, output handle[stat_t]) i32 {\n\
-     st stat_t\n\
+    "fn call_stat(path addr, output handle[stat_base]) i32 {\n\
+     st stat_base\n\
      return stat(path, output) }\n";
   let c_namespaces = c_import_fixture "namespaces.h" in
   c_semantic_accept "c-import-tag-ordinary-collisions" c_namespaces
@@ -9036,6 +9039,9 @@ let () =
   c_semantic_accept "c-import-anonymous-enum-typedef-abi" c_matrix
     "fn anonymous_enum(value FasAnonymousEnum) FasAnonymousEnum {\n\
      return fas_anonymous_enum_echo(value) }\n";
+  c_semantic_accept "c-import-anonymous-enum-typedef-chain" c_matrix
+    "fn anonymous_enum(value FasAnonymousEnumChain) FasAnonymousEnumChain {\n\
+     return fas_anonymous_enum_chain_echo(value) }\n";
   let enum_program =
     match
       c_semantic_result c_matrix "fn enum_values() i64 { return FAS_ENUM_LARGE }\n"
