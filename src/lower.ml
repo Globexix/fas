@@ -103,6 +103,29 @@ let align s t =
       error Span.synthetic
         (Printf.sprintf "internal error: type `%s` has no layout: %s" (Hir.ty_name t) m)
 
+let load_value s value_ty pointer alignment =
+  match value_ty with
+  | Hir.Bool ->
+      let byte_pointer =
+        match Ir.value_ty pointer with
+        | Ir.Pointer Ir.I8 -> pointer
+        | pointer_ty ->
+            let id = fresh s in
+            emit s (Ir.Cast (id, "bitcast", pointer_ty, pointer, Ir.Pointer Ir.I8));
+            Ir.Local (id, Ir.Pointer Ir.I8)
+      in
+      let loaded = fresh s in
+      emit s (Ir.Load (loaded, Ir.I8, byte_pointer, alignment));
+      let normalized = fresh s in
+      emit s
+        (Ir.Cmp
+           (normalized, Ir.Ne, Ir.I8, Ir.Local (loaded, Ir.I8), Ir.Const (Ir.I8, 0L)));
+      Ok (Ir.Local (normalized, Ir.I1))
+  | _ ->
+      let loaded = fresh s in
+      emit s (Ir.Load (loaded, ty value_ty, pointer, alignment));
+      Ok (Ir.Local (loaded, ty value_ty))
+
 let zero t = Ir.Const (t, 0L)
 
 let ones span = function
@@ -505,15 +528,11 @@ let rec expr s = function
       | None -> error sp ("unknown lowering local `" ^ local.name ^ "`")
       | Some p ->
           let* alignment = align s local.ty in
-          let id = fresh s in
-          emit s (Ir.Load (id, ty local.ty, p, alignment));
-          Ok (Ir.Local (id, ty local.ty)))
+          load_value s local.ty p alignment)
   | Hir.Global (name, global_ty, _) ->
       let* p = address s (Hir.Global (name, global_ty, Span.synthetic)) in
       let* alignment = align s global_ty in
-      let id = fresh s in
-      emit s (Ir.Load (id, ty global_ty, p, alignment));
-      Ok (Ir.Local (id, ty global_ty))
+      load_value s global_ty p alignment
   | Hir.Function_address (name, _) -> Ok (Ir.Global (name, Ir.Pointer Ir.I8))
   | Hir.Unary (op, e, t, span) -> (
       let* v = expr s e in
@@ -657,15 +676,11 @@ let rec expr s = function
       | _ ->
           let* p = index_address s a i in
           let* alignment = align s t in
-          let id = fresh s in
-          emit s (Ir.Load (id, ty t, p, alignment));
-          Ok (Ir.Local (id, ty t)))
+          load_value s t p alignment)
   | Hir.Field (a, _, t, off, _) ->
       let* p = field_address s a off in
       let* alignment = align s t in
-      let id = fresh s in
-      emit s (Ir.Load (id, ty t, p, alignment));
-      Ok (Ir.Local (id, ty t))
+      load_value s t p alignment
   | Hir.Sizeof (_, n, _) | Hir.Alignof (_, n, _) | Hir.Offsetof (_, _, n, _) ->
       Ok (Ir.Const (ty (Hir.Int Hir.Usize), Int64.of_int n))
   | Hir.Ternary (c, a, b, t, _) -> lower_ternary s c a b t
@@ -681,9 +696,7 @@ let rec expr s = function
       let ptr_id = fresh s in
       emit s (Ir.Global_ptr (ptr_id, n, ty t));
       let* alignment = align s t in
-      let value_id = fresh s in
-      emit s (Ir.Load (value_id, ty t, Ir.Local (ptr_id, Ir.Pointer (ty t)), alignment));
-      Ok (Ir.Local (value_id, ty t))
+      load_value s t (Ir.Local (ptr_id, Ir.Pointer (ty t))) alignment
 
 and address_step s operation pointer offset =
   let pointer_bits = fresh s in
@@ -1876,9 +1889,7 @@ and stmt s = function
           let* p = target_address s target in
           let it = ty t in
           let* alignment = align s t in
-          let id = fresh s in
-          emit s (Ir.Load (id, it, p, alignment));
-          let old = Ir.Local (id, it) in
+          let* old = load_value s t p alignment in
           let* rhs = expr s e in
           let* value =
             match (t, op) with

@@ -1,0 +1,29 @@
+use "C" "phase26_bool.h"
+
+struct Phase26NativeBool { value bool }
+
+var Phase26GlobalBool bool
+
+extern "C" {
+  fn phase26_bool_paths(raw addr, foreign handle[Phase26ForeignBool]) u32 {
+    local bool = false
+    (&local)[u8] = 2
+    items arr[2,bool] = {false, false}
+    (&items[1])[u8] = 2
+    native Phase26NativeBool = {false}
+    (&native.value)[u8] = 2
+    (&Phase26GlobalBool)[u8] = 2
+    view viewed = raw[bool]
+    foreign_raw addr = handle_addr(foreign)
+    score u32 = 0
+    if local && !(!local) && local == true && zext[u8](local) == 1 { score += 1 }
+    if items[1] && !(!items[1]) && items[1] == true && zext[u8](items[1]) == 1 { score += 1 }
+    if native.value && !(!native.value) && native.value == true && zext[u8](native.value) == 1 { score += 1 }
+    if Phase26GlobalBool && !(!Phase26GlobalBool) && Phase26GlobalBool == true && zext[u8](Phase26GlobalBool) == 1 { score += 1 }
+    if raw[bool] && !(!raw[bool]) && raw[bool] == true && zext[u8](raw[bool]) == 1 { score += 1 }
+    if raw[bool, 0] && !(!raw[bool, 0]) && raw[bool, 0] == true && zext[u8](raw[bool, 0]) == 1 { score += 1 }
+    if viewed && !(!viewed) && viewed == true && zext[u8](viewed) == 1 { score += 1 }
+    if foreign_raw[Phase26ForeignBool].value && !(!foreign_raw[Phase26ForeignBool].value) && foreign_raw[Phase26ForeignBool].value == true && zext[u8](foreign_raw[Phase26ForeignBool].value) == 1 { score += 1 }
+    return score
+  }
+}
