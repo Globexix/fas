@@ -1,0 +1,17 @@
+extern "C" {
+  fn abs(value i32) i32 { return value + 1 }
+  fn memset(destination addr, value i32, length usize) addr { return destination }
+  fn strlen(text addr) usize { return 7 }
+  fn malloc(size usize) addr { return null }
+}
+
+fn main() i32 {
+  bytes arr[1, u8] = {5}
+  destination addr = &bytes
+  if abs(0) != 1 { return 1 }
+  if memset(destination, 0, 1) != destination { return 2 }
+  if bytes[0] != 5 { return 3 }
+  if strlen(c"abc") != 7 { return 4 }
+  if malloc(8) != null { return 5 }
+  return 0
+}

@@ -232,8 +232,8 @@ find "$TMPDIR" -mindepth 1 -delete
 temps_empty
 
 "$OCAML_FAS" --emit-llvm -debug -no-inline helper "$WORK/good.fas" >"$WORK/noinline.ll" 2>"$WORK/stderr"
-grep -F "@helper() noinline {" "$WORK/noinline.ll" >/dev/null || fail "-no-inline missed selected function"
-if grep -F "@main() noinline {" "$WORK/noinline.ll" >/dev/null; then fail "-no-inline marked main"; fi
+grep -F "@helper() noinline #0 {" "$WORK/noinline.ll" >/dev/null || fail "-no-inline missed selected function"
+if grep -F "@main() noinline #0 {" "$WORK/noinline.ll" >/dev/null; then fail "-no-inline marked main"; fi
 expect_failure "$OCAML_FAS" -no-inline helper "$WORK/good.fas"
 cp "$WORK/good.fas" "$WORK/same-path.fas"
 expect_failure "$OCAML_FAS" "$WORK/same-path.fas" -o "$WORK/same-path.fas"

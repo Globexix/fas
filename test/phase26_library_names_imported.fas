@@ -1,0 +1,8 @@
+use "C" <string.h>
+
+fn imported_length() usize { return strlen(c"abc") }
+
+fn main() i32 {
+  if imported_length() != 3 { return 1 }
+  return 0
+}

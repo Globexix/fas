@@ -1449,6 +1449,29 @@ let render_bounded ?(redirect = Fun.id) ~budget m =
         params;
       if variadic then if !emitted then add ", ..." else add "..."
     in
+    let called_names = Hashtbl.create (List.length m.funcs) in
+    List.iter
+      (fun f ->
+        List.iter
+          (fun b ->
+            List.iter
+              (function
+                | Call (_, _, _, name, _) -> Hashtbl.replace called_names name ()
+                | _ -> ())
+              b.instrs)
+          f.blocks)
+      m.funcs;
+    let no_builtin_names =
+      let seen = Hashtbl.create (List.length m.funcs) in
+      List.filter_map
+        (fun (f : func) ->
+          let is_called = Hashtbl.mem called_names f.name in
+          if f.blocks = [] || (not is_called) || Hashtbl.mem seen f.name then None
+          else (
+            Hashtbl.add seen f.name ();
+            Some f.name))
+        m.funcs
+    in
     try
       add "; ModuleID = 'fas'";
       newline ();
@@ -1588,7 +1611,8 @@ let render_bounded ?(redirect = Fun.id) ~budget m =
              emit_symbol sink f.name;
              add "(";
              add_params (f.blocks <> []) f.variadic f.params;
-             add ")")
+             add ")";
+             if no_builtin_names <> [] then add " #0")
            else
              let link = if f.linkage = Internal then "internal " else "" in
              let no_inline =
@@ -1606,6 +1630,7 @@ let render_bounded ?(redirect = Fun.id) ~budget m =
              add_params (f.blocks <> []) f.variadic f.params;
              add ")";
              add no_inline;
+             if no_builtin_names <> [] then add " #0";
              add " {";
              newline ();
              List.iteri
@@ -1626,6 +1651,16 @@ let render_bounded ?(redirect = Fun.id) ~budget m =
              add "}");
           newline ())
         m.funcs;
+      if no_builtin_names <> [] then (
+        add "attributes #0 = {";
+        List.iter
+          (fun name ->
+            add " \"no-builtin-";
+            add_escaped_bytes name;
+            add "\"")
+          no_builtin_names;
+        add " }";
+        newline ());
       Ok (Buffer.contents buffer)
     with Render_exhausted ->
       Error

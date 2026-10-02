@@ -2247,9 +2247,9 @@ let () =
         | Ok output -> output
         | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
       in
-      if not (contains profile_ir "@helper() noinline {") then
+      if not (contains profile_ir "@helper() noinline #0 {") then
         failwith "no-inline: selected function missing LLVM attribute";
-      if contains profile_ir "@other() noinline {" then
+      if contains profile_ir "@other() noinline #0 {" then
         failwith "no-inline: attribute leaked to another function";
       let missing_config =
         cli_run [ "-debug"; "--emit-llvm"; "-no-inline"; "missing"; profile_path ]
@@ -2302,7 +2302,7 @@ let () =
       if
         not
           (contains output (Ir.quote_identifier generic_profile_name)
-          && contains output "noinline {")
+          && contains output "noinline #0 {")
       then failwith "no-inline: generic specialization was not selected");
   let external_profile_path = Filename.temp_file "fas-profile-external-" ".fas" in
   Fun.protect
