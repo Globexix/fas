@@ -2,6 +2,6 @@ struct Bytes[N const usize] {
   data arr[N, u8]
 }
 
-fn main() usize {
-  return sizeof[Bytes[3]]
+fn main() i32 {
+  return trunc[i32](sizeof[Bytes[3]])
 }

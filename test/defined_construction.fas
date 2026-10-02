@@ -1,4 +1,4 @@
-fn main() i64 {
+fn main() i32 {
   a vec[4, u32] = splat(6)
   b vec[4, u32] = splat(2)
   s vec[4, u32] = a << b

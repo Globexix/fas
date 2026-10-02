@@ -1,4 +1,4 @@
-fn main() i64 {
+fn main() i32 {
   x i64 = 2
-  return x + 3
+  return trunc[i32](x + 3)
 }
