@@ -39,7 +39,7 @@ let fact_in_domain ty value =
 
 let fact_exact ty value : value_fact =
   let value = sign_extend_value ty value in
-  { low = value; high = value }
+  { low = value; high = value; induction = None }
 
 let fact_single ty fact = fact_order ty fact.low fact.high = 0
 
@@ -78,6 +78,13 @@ let fact_min ty left right = if fact_order ty left right <= 0 then left else rig
 let fact_max ty left right = if fact_order ty left right >= 0 then left else right
 
 let combine_facts op ty left right =
+  let induction =
+    match
+      (left.induction, right.induction, fact_single ty left, fact_single ty right)
+    with
+    | Some id, _, false, true | _, Some id, true, false -> Some id
+    | _ -> None
+  in
   let endpoints =
     match op with
     | Ast.Add -> (fact_add ty left.low right.low, fact_add ty left.high right.high)
@@ -98,7 +105,9 @@ let combine_facts op ty left right =
             Some (List.fold_left (fact_max ty) (List.hd values) (List.tl values)) )
     | _ -> (None, None)
   in
-  match endpoints with Some low, Some high -> Some { low; high } | _ -> None
+  match endpoints with
+  | Some low, Some high -> Some { low; high; induction }
+  | _ -> None
 
 let rec value_fact (c : context) = function
   | Hir.EInt (value, ty, _) -> Some (fact_exact ty value)
@@ -107,7 +116,13 @@ let rec value_fact (c : context) = function
       match value_fact c value with
       | Some fact when is_int ty && not (is_unsigned ty) ->
           if fact.low = fst (fact_bounds ty) then None
-          else Some { low = Int64.neg fact.high; high = Int64.neg fact.low }
+          else
+            Some
+              {
+                low = Int64.neg fact.high;
+                high = Int64.neg fact.low;
+                induction = fact.induction;
+              }
       | Some fact when fact.low = 0L && fact.high = 0L -> Some fact
       | _ -> None)
   | Hir.Binary (((Ast.Add | Ast.Sub | Ast.Mul) as op), left, right, ty, _) -> (
@@ -125,6 +140,8 @@ let rec value_fact (c : context) = function
                 {
                   low = fact_min ty yes.low no.low;
                   high = fact_max ty yes.high no.high;
+                  induction =
+                    (if yes.induction = no.induction then yes.induction else None);
                 }
           | _ -> None))
   | _ -> None
@@ -134,7 +151,7 @@ and fact_for_condition c expression =
   | Some fact -> Some fact
   | None when is_int (Hir.expr_ty expression) ->
       let low, high = fact_bounds (Hir.expr_ty expression) in
-      Some { low; high }
+      Some { low; high; induction = None }
   | None -> None
 
 and comparison_truth op ty left right =
@@ -210,7 +227,8 @@ let constrain_fact ty fact op constant truth =
     | _ -> None
   in
   match interval with
-  | Some (low, high) when fact_order ty low high <= 0 -> Some { low; high }
+  | Some (low, high) when fact_order ty low high <= 0 ->
+      Some { low; high; induction = fact.induction }
   | _ -> None
 
 let refine_condition (c : context) expression truth =
@@ -220,10 +238,15 @@ let refine_condition (c : context) expression truth =
       | Some fact -> fact
       | None ->
           let low, high = fact_bounds binding.ty in
-          { low; high }
+          { low; high; induction = None }
     in
-    Sema_flow.set_value c.flow binding
-      (constrain_fact binding.ty fact op constant truth)
+    match fact with
+    | { induction = Some id; _ }
+      when Sema_flow.induction_valid c.flow id && (op = Ast.Eq || op = Ast.Ne) ->
+        ()
+    | fact ->
+        Sema_flow.set_value c.flow binding
+          (constrain_fact binding.ty fact op constant truth)
   in
   let rec apply expression truth =
     match expression with
@@ -567,7 +590,14 @@ let rec check_place (c : context) expr =
       if unsigned then Int64.unsigned_compare fact.low count >= 0
       else fact.high < 0L || fact.low >= count
     in
-    all_outside
+    let induction_outside =
+      match fact.induction with
+      | Some id when Sema_flow.induction_valid c.flow id ->
+          if unsigned then Int64.unsigned_compare fact.high count >= 0
+          else fact.low < 0L || fact.high >= count
+      | _ -> false
+    in
+    all_outside || induction_outside
   in
   match expr with
   | Ast.Ident (n, s)
@@ -2199,6 +2229,100 @@ let local_path place =
 
 let copy_is_aggregate = function Hir.Array _ | Hir.Struct _ -> true | _ -> false
 
+let loop_induction c init condition step =
+  match (init, condition, step) with
+  | ( Some (Hir.Let (binding, Some initial, _)),
+      Some condition,
+      Some
+        (Ast.Compound_assign
+           (Ast.Target_ident (name, _), ((Ast.Add | Ast.Sub) as step_op), rhs, _)) )
+    when name = binding.name && is_int binding.ty -> (
+      let comparison =
+        match condition with
+        | Hir.Binary
+            (((Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge) as op), Hir.Local (b, _), bound, _, _)
+          when b.id = binding.id ->
+            Some (op, bound)
+        | Hir.Binary
+            (((Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge) as op), bound, Hir.Local (b, _), _, _)
+          when b.id = binding.id ->
+            Some (reverse_comparison op, bound)
+        | _ -> None
+      in
+      match (value_fact c initial, comparison) with
+      | Some start, Some (op, bound) when fact_single binding.ty start -> (
+          let before = Sema_flow.snapshot c.flow in
+          let checked_step = check_expr c (Some binding.ty) rhs in
+          let amount = Option.bind (Result.to_option checked_step) (value_fact c) in
+          Sema_flow.restore c.flow before;
+          match (amount, value_fact c bound) with
+          | Some amount, Some bound
+            when fact_single binding.ty amount && fact_single binding.ty bound -> (
+              let raw_step = amount.low in
+              let movement =
+                if is_unsigned binding.ty then
+                  if raw_step = 0L then None else Some (step_op = Ast.Add, raw_step)
+                else if step_op = Ast.Add then
+                  if raw_step = 0L then None
+                  else if raw_step > 0L then Some (true, raw_step)
+                  else if raw_step = Int64.min_int then None
+                  else Some (false, Int64.neg raw_step)
+                else if raw_step = 0L || raw_step = Int64.min_int then None
+                else if raw_step < 0L then Some (true, Int64.neg raw_step)
+                else Some (false, raw_step)
+              in
+              match movement with
+              | Some (forward, stride)
+                when (if forward then op = Ast.Lt || op = Ast.Le
+                      else op = Ast.Gt || op = Ast.Ge)
+                     && comparison_truth op binding.ty start bound = Some true -> (
+                  let distance =
+                    if forward then fact_sub binding.ty bound.low start.low
+                    else fact_sub binding.ty start.low bound.low
+                  in
+                  let strict = op = Ast.Lt || op = Ast.Gt in
+                  let distance =
+                    Option.bind distance (fun distance ->
+                        if strict then fact_sub binding.ty distance 1L
+                        else Some distance)
+                  in
+                  let quotient =
+                    Option.map
+                      (fun distance ->
+                        if is_unsigned binding.ty then
+                          Int64.unsigned_div distance stride
+                        else Int64.div distance stride)
+                      distance
+                  in
+                  let last =
+                    Option.bind quotient (fun quotient ->
+                        let offset = fact_mul binding.ty quotient stride in
+                        Option.bind offset (fun offset ->
+                            if forward then fact_add binding.ty start.low offset
+                            else fact_sub binding.ty start.low offset))
+                  in
+                  let valid_step =
+                    match last with
+                    | Some last ->
+                        if forward then Option.is_some (fact_add binding.ty last stride)
+                        else Option.is_some (fact_sub binding.ty last stride)
+                    | None -> false
+                  in
+                  match last with
+                  | Some last when valid_step ->
+                      Some
+                        ( binding,
+                          {
+                            low = fact_min binding.ty start.low last;
+                            high = fact_max binding.ty start.low last;
+                            induction = Some binding.id;
+                          } )
+                  | _ -> None)
+              | _ -> None)
+          | _ -> None)
+      | _ -> None)
+  | _ -> None
+
 let check_copy c args span =
   if List.length args <> 2 then error span "builtin `copy` expects two arguments"
   else
@@ -2372,8 +2496,9 @@ and check_stmt (c : context) = function
       | _ -> ());
       (match (checked_target.root, checked_target.path) with
       | Some binding, Some (Exact []) when is_int binding.ty ->
+          Sema_flow.note_binding_write c.flow binding.id;
           Sema_flow.set_value c.flow binding (value_fact c v)
-      | Some _, _ -> ()
+      | Some binding, _ -> Sema_flow.note_binding_write c.flow binding.id
       | _ -> ());
       Ok (Hir.Assign (target, v, span))
   | Ast.Compound_assign (t, op, e, span) ->
@@ -2432,6 +2557,7 @@ and check_stmt (c : context) = function
         | _ -> ());
         (match (checked_target.root, checked_target.path) with
         | Some binding, Some (Exact []) when is_int binding.ty ->
+            Sema_flow.note_binding_write c.flow binding.id;
             let result =
               match (op, value_fact c (Hir.Local (binding, span)), value_fact c v) with
               | ((Ast.Add | Ast.Sub | Ast.Mul) as op), Some left, Some right ->
@@ -2439,7 +2565,7 @@ and check_stmt (c : context) = function
               | _ -> None
             in
             Sema_flow.set_value c.flow binding result
-        | Some _, _ -> ()
+        | Some binding, _ -> Sema_flow.note_binding_write c.flow binding.id
         | _ -> ());
         Ok (Hir.Compound_assign (target, op, v, et, span)))
   | Ast.Expr_stmt (Ast.Call (Ast.Ident ("copy", _), args, call_span), _) ->
@@ -2463,6 +2589,7 @@ and check_stmt (c : context) = function
       let* () =
         if Sema_flow.falls_through c.flow then validate_exit_defers c 0 else Ok ()
       in
+      Sema_flow.invalidate_induction_on_return c.flow;
       Ok (Hir.Return (x, span))
   | Ast.Expr_stmt
       ( Ast.Call
@@ -2609,20 +2736,28 @@ and check_stmt (c : context) = function
               if Hir.expr_ty y = Hir.Bool then Ok (Some y)
               else error (Ast.expr_span x) "for condition must be bool"
         in
+        let induction = loop_induction c ti tq step in
         let condition =
           match tq with
           | None -> Some true
           | Some condition -> condition_truth c condition
         in
-        let loop = Sema_flow.begin_loop c.flow in
+        let loop =
+          Sema_flow.begin_loop
+            ?induction_binding:(Option.map (fun (binding, _) -> binding.id) induction)
+            c.flow
+        in
         Sema_flow.forget_all_values c.flow;
+        Option.iter
+          (fun (binding, fact) -> Sema_flow.set_value c.flow binding (Some fact))
+          induction;
         let init_condition =
           match tq with
           | None -> Some true
           | Some condition -> literal_condition_truth condition
         in
-        (match tq with
-        | Some condition_expr when condition <> Some false ->
+        (match (tq, induction) with
+        | Some condition_expr, None when condition <> Some false ->
             refine_condition c condition_expr true
         | _ -> ());
         let body_result =

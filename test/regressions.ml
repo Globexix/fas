@@ -11545,6 +11545,27 @@ let () =
      index usize = 1\n\
      if flag { index = 4 }\n\
      return values[index] }";
+  semantic_message "value-fact-loop-inclusive-index" "array index is out of bounds"
+    "fn f() u8 { values arr[4,u8] = {0,1,2,3}\n\
+     result u8 = 0\n\
+     for index usize = 0; index <= 4; index += 1 {\n\
+     result = values[index]\n\
+     }\n\
+     return result }";
+  semantic_accept "value-fact-loop-exclusive-index"
+    "fn f() u8 { values arr[4,u8] = {0,1,2,3}\n\
+     result u8 = 0\n\
+     for index usize = 0; index < 4; index += 1 {\n\
+     result = values[index]\n\
+     }\n\
+     return result }";
+  semantic_message "value-fact-loop-negative-index" "array index is out of bounds"
+    "fn f() i32 { values arr[4,i32] = {0,1,2,3}\n\
+     result i32 = 0\n\
+     for index i32 = 0; index >= -1; index -= 1 {\n\
+     result = values[index]\n\
+     }\n\
+     return result }";
   semantic_accept "value-fact-loop-break-before-index"
     "fn f() u8 { values arr[4,u8] = {0,1,2,3}\n\
      index usize = 4\n\

@@ -3,7 +3,7 @@ module State_map = Map.Make (Int)
 type binding = Hir.local = { name : string; ty : Hir.ty; id : int }
 type selector = Field of string | Element of int
 type init_state = Uninit | Full | Unknown | Partial of (selector * init_state) list
-type value_fact = { low : int64; high : int64 }
+type value_fact = { low : int64; high : int64; induction : int option }
 type value_state = value_fact option State_map.t
 type place_path = Exact of selector list | Dynamic_prefix of selector list
 type view_access = Mutable_access | Constant_access | Readonly_access
@@ -21,6 +21,9 @@ type loop_init_flow = {
   entry_falls_through : bool;
   mutable break_states : snapshot list;
   mutable continue_states : snapshot list;
+  induction_binding : int option;
+  mutable induction_valid : bool;
+  mutable stepping : bool;
 }
 
 and snapshot = {
@@ -126,6 +129,13 @@ let view_access flow binding =
 
 let is_view flow binding = Hashtbl.mem flow.view_origins binding.id
 
+let invalidate_induction_for_binding flow id =
+  if not flow.checking_dead then
+    List.iter
+      (fun loop ->
+        if loop.induction_binding = Some id then loop.induction_valid <- false)
+      flow.loop_init_flows
+
 let bind_view flow binding root path access =
   let origin =
     match (root, path) with Some root, Some path -> Some (root, path) | _ -> None
@@ -133,7 +143,9 @@ let bind_view flow binding root path access =
   Hashtbl.replace flow.view_origins binding.id origin;
   Hashtbl.replace flow.view_accesses binding.id access;
   Option.iter
-    (fun (root, _) -> flow.values <- State_map.add root.id None flow.values)
+    (fun (root, _) ->
+      invalidate_induction_for_binding flow root.id;
+      flow.values <- State_map.add root.id None flow.values)
     origin
 
 let push flow =
@@ -306,10 +318,22 @@ let set_value flow binding value =
   | Hir.Int _, _, None -> flow.values <- State_map.remove binding.id flow.values
   | _ -> flow.values <- State_map.remove binding.id flow.values
 
-let forget_value flow binding = flow.values <- State_map.add binding.id None flow.values
+let forget_value flow binding =
+  invalidate_induction_for_binding flow binding.id;
+  flow.values <- State_map.add binding.id None flow.values
 
 let forget_all_values flow =
-  flow.values <- State_map.filter (fun _ value -> Option.is_none value) flow.values
+  flow.values <-
+    State_map.filter
+      (fun _ value ->
+        match value with
+        | Some { induction = Some id; _ } ->
+            List.exists
+              (fun loop -> loop.induction_binding = Some id && loop.induction_valid)
+              flow.loop_init_flows
+        | None -> true
+        | Some _ -> false)
+      flow.values
 
 let require_state binding path flow span =
   let rec walk ty state = function
@@ -473,6 +497,8 @@ let merge_value_maps flow left right =
                  high =
                    (if fact_compare binding.ty left.high right.high >= 0 then left.high
                     else right.high);
+                 induction =
+                   (if left.induction = right.induction then left.induction else None);
                })
       | Some _, Some None, _ | Some _, _, Some None -> Some None
       | _ -> None)
@@ -634,7 +660,7 @@ let finish_statement flow ~before ~terminates =
 let validate_return flow span =
   if flow.in_defer then error span "return is not allowed inside defer" else Ok ()
 
-let begin_loop flow =
+let begin_loop ?induction_binding flow =
   let loop =
     {
       keep_defer_depth = List.length flow.defer_scopes;
@@ -642,6 +668,9 @@ let begin_loop flow =
       entry_falls_through = flow.falls_through;
       break_states = [];
       continue_states = [];
+      induction_binding;
+      induction_valid = Option.is_some induction_binding;
+      stepping = false;
     }
   in
   flow.loop_depth <- flow.loop_depth + 1;
@@ -669,6 +698,7 @@ let finish_while flow loop ~condition_is_true ~condition_is_false =
   flow.falls_through <- loop.entry_falls_through && exit_states <> []
 
 let prepare_for_step flow loop ~body_falls_through =
+  loop.stepping <- true;
   let step_states =
     if body_falls_through then snapshot flow :: loop.continue_states
     else loop.continue_states
@@ -678,6 +708,7 @@ let prepare_for_step flow loop ~body_falls_through =
   flow.falls_through <- step_states <> []
 
 let finish_for flow loop ~unconditional ~condition_is_false =
+  loop.stepping <- false;
   let exit_states =
     if unconditional then loop.break_states
     else if condition_is_false then [ loop.entry_state ]
@@ -696,6 +727,7 @@ let record_loop_exit flow span kind =
   else
     match flow.loop_init_flows with
     | loop :: _ ->
+        if not flow.checking_dead then loop.induction_valid <- false;
         let* state = exit_defer_state flow loop.keep_defer_depth in
         Option.iter
           (fun state ->
@@ -707,6 +739,24 @@ let record_loop_exit flow span kind =
 
 let record_break flow span = record_loop_exit flow span "break"
 let record_continue flow span = record_loop_exit flow span "continue"
+
+let invalidate_induction_on_return flow =
+  if not flow.checking_dead then
+    List.iter (fun loop -> loop.induction_valid <- false) flow.loop_init_flows
+
+let note_binding_write flow id =
+  if
+    (not flow.checking_dead)
+    && not
+         (List.exists
+            (fun loop -> loop.induction_binding = Some id && loop.stepping)
+            flow.loop_init_flows)
+  then invalidate_induction_for_binding flow id
+
+let induction_valid flow id =
+  List.exists
+    (fun loop -> loop.induction_binding = Some id && loop.induction_valid)
+    flow.loop_init_flows
 
 let begin_defer flow span =
   if flow.in_defer then error span "nested defer is not allowed"
