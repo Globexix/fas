@@ -147,11 +147,19 @@ let semantic_messages text =
 
 let semantic_message name expected text =
   incr checks_run;
-  match semantic_messages text with
-  | [ actual ] when actual = expected -> ()
-  | actual ->
-      failwith
-        (name ^ ": expected [" ^ expected ^ "], got [" ^ String.concat "; " actual ^ "]")
+  let program = expect_ok (Parser.parse (source text)) in
+  match Sema.check program with
+  | Ok _ -> failwith (name ^ ": expected semantic rejection")
+  | Error diagnostics -> (
+      let actual =
+        List.map (fun (diagnostic : Diag.t) -> diagnostic.message) diagnostics
+      in
+      match actual with
+      | [ actual ] when actual = expected -> ()
+      | actual ->
+          failwith
+            (name ^ ": expected [" ^ expected ^ "], got [" ^ String.concat "; " actual
+           ^ "]"))
 
 let semantic_error name fragment text =
   incr checks_run;
@@ -9672,11 +9680,10 @@ let () =
      fn peer_handle(other handle[timespec]) bool {\n\
      ts timespec\n\
      return (&ts == other) && (other == &ts) }\n\
-     fn address_default() addr { ts timespec\n\
-     return &ts }\n\
      struct NativeTimespec { value i32 }\n\
-     fn native_address() addr { ts NativeTimespec\n\
-     return &ts }\n";
+     fn address_default() addr { return addr_from_bits(0) }\n\
+     var NativeTimespecStorage NativeTimespec\n\
+     fn native_address() addr { return &NativeTimespecStorage }\n";
   c_semantic_message "c-import-record-address-different-handle"
     "type mismatch: expected handle[timespec], got addr" time_record_handles
     "fn wrong_record() i32 { ts FasOtherTimespec\nreturn clock_gettime(1, &ts) }\n";
@@ -11726,5 +11733,116 @@ let () =
      values[index] = 1\n\
      }\n\
      return values[3] - 1 }"
+
+let () =
+  semantic_message "null-raw-write" "access through null address"
+    "fn f() void { p addr = null\np[u32] = 1\nreturn }";
+  semantic_message "null-offset-raw-read" "access through null address"
+    "fn f() u32 { p addr = null\nq addr = p + 8\nreturn q[u32] }";
+  semantic_message "null-masked-load" "access through null address"
+    "fn f() vec[2,u32] {\n\
+     mask vec[2,bool] = {true, true}\n\
+     fallback vec[2,u32] = {0, 0}\n\
+     return masked_load[u32](null, mask, fallback) }";
+  semantic_accept "null-masked-load-empty-mask"
+    "fn f() vec[2,u32] {\n\
+     mask vec[2,bool] = {false, false}\n\
+     fallback vec[2,u32] = {7, 9}\n\
+     return masked_load[u32](null, mask, fallback) }";
+  semantic_accept "null-masked-load-dead-local-condition"
+    "fn f() i32 { pointer addr = null\n\
+     active bool = false\n\
+     mask vec[2,bool] = {true, false}\n\
+     fallback vec[2,u32] = {0, 0}\n\
+     if active { loaded vec[2,u32] = masked_load[u32](pointer, mask, fallback) }\n\
+     return 0 }";
+  semantic_accept "null-unknown-from-bits"
+    "fn f() void { p addr = addr_from_bits(0)\np[u32] = 1\nreturn }";
+  semantic_accept "null-object-join-is-unknown"
+    "fn f(flag bool) void {\n\
+     x u32 = 1\n\
+     p addr\n\
+     if flag { p = null } else { p = &x }\n\
+     p[u32] = 2\n\
+     return }";
+  semantic_message "object-raw-index-past-end"
+    "access outside object `x` (offset 4, size 4 bytes, object size 4)"
+    "fn f() void { x u32 = 1\np addr = &x\np[u32, 1] = 2\nreturn }";
+  semantic_accept "object-raw-byte-last"
+    "fn f() void { x u32 = 1\np addr = &x\np[u8, 3] = 2\nreturn }";
+  semantic_accept "object-pointer-moves-out-and-back"
+    "fn f() u32 { x u32 = 7\np addr = &x + 8\nq addr = p - 8\nreturn q[u32] }";
+  semantic_accept "object-array-element-address"
+    "fn f() void { x arr[2,u32] = {1, 2}\np addr = &x[1]\np[u32] = 3\nreturn }";
+  semantic_accept "object-field-address"
+    "struct Pair { left u32\n\
+     right u32 }\n\
+     fn f() void { x Pair\n\
+     p addr = &x.right\n\
+     p[u32] = 3\n\
+     return }";
+  semantic_accept "object-nested-array-field-address"
+    "struct Pair { bytes arr[2,u8] }\n\
+     fn f() void { x Pair\n\
+     p addr = &x.bytes[1]\n\
+     p[u8] = 3\n\
+     return }";
+  semantic_message "object-field-footprint-past-end"
+    "access outside object `pair` (offset 8, size 4 bytes, object size 8)"
+    "struct Pair { left u32\n\
+     right u32 }\n\
+     fn f() void { pair Pair\n\
+     p addr = &pair.right\n\
+     p[u32, 1] = 3\n\
+     return }";
+  semantic_message "object-footprint-straddles-end"
+    "access outside object `x` (offset 6, size 4 bytes, object size 8)"
+    "fn f() void { x arr[2,u32] = {1, 2}\np addr = &x[1] + 2\np[u32] = 3\nreturn }";
+  semantic_message "constant-raw-write" "write to constant storage `TABLE`"
+    "const TABLE arr[1,u32] = {4}\nfn f() void { p addr = &TABLE\np[u32] = 5\nreturn }";
+  semantic_accept "constant-raw-read"
+    "const TABLE arr[1,u32] = {4}\nfn f() u32 { p addr = &TABLE\nreturn p[u32] }";
+  semantic_message "constant-volatile-write" "write to constant storage `TABLE`"
+    "const TABLE arr[1,u32] = {4}\n\
+     fn f() void { volatile_store[u32](&TABLE, 5)\n\
+     return }";
+  semantic_message "constant-scatter-write" "write to constant storage `TABLE`"
+    "const TABLE arr[2,u32] = {4, 6}\n\
+     fn f() void { indices vec[2,i32] = {0, 1}\n\
+     mask vec[2,bool] = {true, false}\n\
+     values vec[2,u32] = {5, 7}\n\
+     scatter[u32](&TABLE, indices, mask, values)\n\
+     return }";
+  semantic_accept "constant-masked-store-empty-mask"
+    "const TABLE arr[1,u32] = {4}\n\
+     fn f() void { mask vec[2,bool] = {false, false}\n\
+     values vec[2,u32] = {5, 7}\n\
+     masked_store[u32](&TABLE, mask, values)\n\
+     return }";
+  semantic_accept "constant-address-join-unknown-write"
+    "const TABLE arr[1,u32] = {4}\n\
+     fn f(flag bool) void { mutable u32 = 1\n\
+     p addr\n\
+     if flag { p = &TABLE } else { p = &mutable }\n\
+     p[u32] = 5\n\
+     return }";
+  semantic_message "lifetime-return-local" "returns address of local `value`"
+    "fn f() addr { value u32 = 1\nreturn &value }";
+  semantic_message "lifetime-return-parameter" "returns address of local `value`"
+    "fn f(value u32) addr { return &value }";
+  semantic_message "lifetime-global-store"
+    "stores address of local `value` in global storage"
+    "var G addr\nfn f() void { value u32 = 1\nG = &value\nreturn }";
+  semantic_message "lifetime-access-after-block"
+    "access to local `value` after its block ended"
+    "fn f() void { p addr\n{ value u32 = 1\np = &value }\np[u32] = 2\nreturn }";
+  semantic_accept "lifetime-hold-and-compare-after-block"
+    "fn f() bool { p addr\n\
+     { value u32 = 1\n\
+     p = &value }\n\
+     other addr = null\n\
+     return p != other }";
+  semantic_accept "lifetime-outer-local-used-in-inner-block"
+    "fn f() u32 { value u32 = 1\np addr = &value\n{ p[u32] = 2 }\nreturn value }"
 
 let () = Printf.printf "all regression checks: %d passed\n" !checks_run

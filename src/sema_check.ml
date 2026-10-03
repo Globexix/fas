@@ -178,6 +178,10 @@ and comparison_truth op ty left right =
 and condition_truth c = function
   | Hir.EBool (value, _) -> Some value
   | Hir.EInt (value, _, _) -> Some (value <> 0L)
+  | Hir.Local (binding, _) when binding.ty = Hir.Bool -> (
+      match Sema_flow.mask_of c.flow binding with
+      | Some [ value ] -> Some value
+      | _ -> None)
   | Hir.Unary (Ast.Not, value, _, _) -> Option.map not (condition_truth c value)
   | Hir.Binary (Ast.And, left, right, _, _) -> (
       match condition_truth c left with
@@ -199,6 +203,431 @@ and condition_truth c = function
       | Some left, Some right -> comparison_truth op ty left right
       | _ -> None)
   | _ -> None
+
+let exact_address_offset c expression =
+  let rec exact = function
+    | Hir.EInt (value, ty, _) -> Some (sign_extend_value ty value)
+    | Hir.Cast (kind, value, ty, _) -> (
+        match exact value with
+        | None -> None
+        | Some value ->
+            let converted =
+              match kind with Ast.Trunc -> mask_value ty value | _ -> value
+            in
+            if is_unsigned ty && Int64.compare converted 0L < 0 then None
+            else Some (sign_extend_value ty converted))
+    | Hir.Binary (((Ast.Add | Ast.Sub | Ast.Mul) as op), left, right, ty, _) -> (
+        match (exact left, exact right) with
+        | Some left, Some right ->
+            let result =
+              match op with
+              | Ast.Add ->
+                  if
+                    (right > 0L && left > Int64.sub Int64.max_int right)
+                    || (right < 0L && left < Int64.sub Int64.min_int right)
+                  then None
+                  else Some (Int64.add left right)
+              | Ast.Sub ->
+                  if
+                    (right < 0L && left > Int64.add Int64.max_int right)
+                    || (right > 0L && left < Int64.add Int64.min_int right)
+                  then None
+                  else Some (Int64.sub left right)
+              | Ast.Mul ->
+                  if left = 0L || right = 0L then Some 0L
+                  else if
+                    (left = Int64.min_int && right = -1L)
+                    || (right = Int64.min_int && left = -1L)
+                  then None
+                  else
+                    let product = Int64.mul left right in
+                    if Int64.div product right = left then Some product else None
+              | _ -> None
+            in
+            Option.bind result (fun result ->
+                if is_unsigned ty && result < 0L then None
+                else Some (sign_extend_value ty result))
+        | _ -> None)
+    | Hir.Local (binding, _) ->
+        Option.map
+          (fun fact -> sign_extend_value binding.ty fact.low)
+          (Sema_flow.value_of c.flow binding)
+    | _ -> None
+  in
+  match exact expression with
+  | Some value -> Some value
+  | None -> (
+      match value_fact c expression with
+      | Some fact when fact_single (Hir.expr_ty expression) fact ->
+          let value = fact.low in
+          if is_unsigned (Hir.expr_ty expression) && Int64.compare value 0L < 0 then
+            None
+          else Some (sign_extend_value (Hir.expr_ty expression) value)
+      | _ -> None)
+
+let shift_address op address delta =
+  let shift offset =
+    match op with
+    | Ast.Add ->
+        let value = Int64.add offset delta in
+        if Int64.logand (Int64.logxor offset value) (Int64.logxor delta value) < 0L then
+          None
+        else Some value
+    | Ast.Sub ->
+        let value = Int64.sub offset delta in
+        if Int64.logand (Int64.logxor offset delta) (Int64.logxor offset value) < 0L
+        then None
+        else Some value
+    | _ -> None
+  in
+  match address with
+  | Sema_flow.Null_address offset ->
+      Option.map (fun offset -> Sema_flow.Null_address offset) (shift offset)
+  | Sema_flow.Object_address ({ offset; _ } as address) ->
+      Option.map
+        (fun offset -> Sema_flow.Object_address { address with offset })
+        (shift offset)
+  | Sema_flow.Dead_local_address _ -> Some address
+
+let rec address_fact c = function
+  | Hir.Null _ -> Some (Sema_flow.Null_address 0L)
+  | Hir.Local (binding, _) when binding.ty = Hir.Addr ->
+      if Sema_flow.is_view c.flow binding then
+        Option.bind (Sema_flow.view_origin c.flow binding) (fun (root, _) ->
+            Sema_flow.address_of c.flow root)
+      else Sema_flow.address_of c.flow binding
+  | Hir.Address (place, _, _) -> object_address c place
+  | Hir.Binary (((Ast.Add | Ast.Sub) as op), left, right, Hir.Addr, _) -> (
+      match (address_fact c left, exact_address_offset c right) with
+      | Some address, Some offset -> shift_address op address offset
+      | _ -> (
+          match (op, exact_address_offset c left, address_fact c right) with
+          | Ast.Add, Some offset, Some address -> shift_address Ast.Add address offset
+          | _ -> None))
+  | Hir.Ternary (condition, yes, no, _, _) -> (
+      match condition_truth c condition with
+      | Some true -> address_fact c yes
+      | Some false -> address_fact c no
+      | None -> (
+          match (address_fact c yes, address_fact c no) with
+          | Some yes, Some no when yes = no -> Some yes
+          | _ -> None))
+  | _ -> None
+
+and object_address c expression =
+  let object_size ty =
+    match Hir.layout c.structs ty with Ok (size, _) -> Some size | Error _ -> None
+  in
+  let root binding ty =
+    Option.map
+      (fun extent ->
+        Sema_flow.Object_address
+          {
+            identity = Printf.sprintf "local:%d" binding.id;
+            name = binding.name;
+            owner_name = Some binding.name;
+            writable = true;
+            owner = Some binding.id;
+            extent;
+            offset = 0L;
+          })
+      (object_size ty)
+  in
+  let rec from_path address ty = function
+    | [] -> Some address
+    | Sema_flow.Field name :: rest -> (
+        match ty with
+        | Hir.Struct struct_name -> (
+            match field_info c.structs struct_name name with
+            | Some field -> (
+                match (address, object_size field.ty) with
+                | Sema_flow.Object_address base, Some _ ->
+                    let address =
+                      Sema_flow.Object_address
+                        {
+                          base with
+                          offset = Int64.add base.offset (Int64.of_int field.offset);
+                        }
+                    in
+                    from_path address field.ty rest
+                | _ -> None)
+            | None -> None)
+        | _ -> None)
+    | Sema_flow.Element index :: rest -> (
+        match ty with
+        | Hir.Array (_, element) | Hir.Vec (_, element) -> (
+            match (address, object_size element) with
+            | Sema_flow.Object_address base, Some stride ->
+                let step = Int64.mul (Int64.of_int index) (Int64.of_int stride) in
+                from_path
+                  (Sema_flow.Object_address
+                     { base with offset = Int64.add base.offset step })
+                  element rest
+            | _ -> None)
+        | _ -> None)
+  in
+  let rec locate = function
+    | Hir.Local (binding, _) when binding.ty = Hir.Addr -> None
+    | Hir.Local (binding, _) when Sema_flow.is_view c.flow binding -> (
+        match Sema_flow.view_origin c.flow binding with
+        | Some (root_binding, Sema_flow.Exact path) ->
+            Option.bind (root root_binding root_binding.ty) (fun address ->
+                from_path address root_binding.ty path)
+        | _ -> None)
+    | Hir.Local (binding, _) -> root binding binding.ty
+    | Hir.Global (name, ty, _) ->
+        Option.map
+          (fun extent ->
+            let writable =
+              match lookup_top_level name c.top_level_bindings with
+              | Some { declaration_kind = Top_const; _ } -> false
+              | _ -> (
+                  match lookup_global name c.globals with
+                  | Some (_, _, Ast.Import_const_c) -> false
+                  | _ -> true)
+            in
+            Sema_flow.Object_address
+              {
+                identity = "global:" ^ name;
+                name;
+                owner_name = None;
+                writable;
+                owner = None;
+                extent;
+                offset = 0L;
+              })
+          (object_size ty)
+    | Hir.Const_array (name, ty, _) ->
+        Option.map
+          (fun extent ->
+            Sema_flow.Object_address
+              {
+                identity = "constant:" ^ name;
+                name;
+                owner_name = None;
+                writable = false;
+                owner = None;
+                extent;
+                offset = 0L;
+              })
+          (object_size ty)
+    | Hir.Field (base_expr, _, _, field_offset, _) -> (
+        match locate base_expr with
+        | Some (Sema_flow.Object_address base) ->
+            Some
+              (Sema_flow.Object_address
+                 {
+                   base with
+                   offset = Int64.add base.offset (Int64.of_int field_offset);
+                 })
+        | _ -> None)
+    | Hir.Index (base, index, ty, _) -> (
+        match (locate base, exact_address_offset c index, object_size ty) with
+        | Some (Sema_flow.Object_address base), Some index, Some stride ->
+            let index = Int64.mul index (Int64.of_int stride) in
+            Some
+              (Sema_flow.Object_address
+                 { base with offset = Int64.add base.offset index })
+        | _ -> None)
+    | Hir.Raw_select (base, offset, _, _) -> (
+        match (address_fact c base, exact_address_offset c offset) with
+        | Some address, Some offset -> shift_address Ast.Add address offset
+        | _ -> None)
+    | _ -> None
+  in
+  locate expression
+
+let address_equal c left right =
+  match (address_fact c left, address_fact c right) with
+  | Some left, Some right -> Some (left = right)
+  | _ -> None
+
+let condition_truth c expression =
+  match expression with
+  | Hir.Binary (((Ast.Eq | Ast.Ne) as op), left, right, _, _)
+    when Hir.expr_ty left = Hir.Addr ->
+      Option.map
+        (fun equal -> if op = Ast.Eq then equal else not equal)
+        (address_equal c left right)
+  | _ -> condition_truth c expression
+
+let address_checks_enabled c =
+  (not (Sema_flow.checking_dead c.flow))
+  && Sema_flow.value_reachable c.flow
+  && Sema_flow.falls_through c.flow
+
+let check_address_access c span ~write fact size =
+  if not (address_checks_enabled c) then Ok ()
+  else
+    match fact with
+    | Some (Sema_flow.Null_address offset) when Int64.compare offset 4096L < 0 ->
+        error span "access through null address"
+    | Some (Sema_flow.Object_address address) when write && not address.writable ->
+        error span (Printf.sprintf "write to constant storage `%s`" address.name)
+    | Some (Sema_flow.Object_address address) ->
+        let past = Int64.add address.offset (Int64.of_int size) in
+        if
+          address.offset < 0L
+          || Int64.compare past address.offset < 0
+          || Int64.compare past (Int64.of_int address.extent) > 0
+        then
+          error span
+            (Printf.sprintf
+               "access outside object `%s` (offset %Ld, size %d bytes, object size %d)"
+               address.name address.offset size address.extent)
+        else Ok ()
+    | Some (Sema_flow.Dead_local_address name) ->
+        error span (Printf.sprintf "access to local `%s` after its block ended" name)
+    | _ -> Ok ()
+
+let access_footprint c ty =
+  match ty with
+  | Hir.Vec (lanes, Hir.Bool) -> Some ((lanes + 7) / 8)
+  | Hir.Vec (lanes, element) -> (
+      match Hir.layout c.structs element with
+      | Ok (size, _) -> Some (size * lanes)
+      | Error _ -> None)
+  | _ -> (
+      match Hir.layout c.structs ty with Ok (size, _) -> Some size | Error _ -> None)
+
+let check_place_access c span ~write expression =
+  match access_footprint c (Hir.expr_ty expression) with
+  | None -> Ok ()
+  | Some size -> check_address_access c span ~write (object_address c expression) size
+
+let check_global_address_escape c span target value =
+  if Hir.expr_ty value <> Hir.Addr then Ok ()
+  else
+    let destination_is_global =
+      match target with
+      | Hir.AGlobal _ -> true
+      | Hir.ARaw (base, offset, ty) ->
+          Option.fold ~none:false
+            ~some:(function
+              | Sema_flow.Object_address { owner = None; _ } -> true | _ -> false)
+            (object_address c (Hir.Raw_select (base, offset, ty, span)))
+      | Hir.AField (base, name, offset) -> (
+          match Hir.expr_ty base with
+          | Hir.Struct struct_name -> (
+              match field_info c.structs struct_name name with
+              | Some field -> (
+                  match
+                    object_address c (Hir.Field (base, name, field.ty, offset, span))
+                  with
+                  | Some (Sema_flow.Object_address { owner = None; _ }) -> true
+                  | _ -> false)
+              | None -> false)
+          | _ -> false)
+      | Hir.AIndex (base, index) -> (
+          match Hir.expr_ty base with
+          | Hir.Array (_, element) | Hir.Vec (_, element) -> (
+              match object_address c (Hir.Index (base, index, element, span)) with
+              | Some (Sema_flow.Object_address { owner = None; _ }) -> true
+              | _ -> false)
+          | _ -> false)
+      | Hir.ALocal _ -> false
+    in
+    let local_name =
+      match address_fact c value with
+      | Some (Sema_flow.Object_address { owner = Some _; owner_name; _ }) -> owner_name
+      | Some (Sema_flow.Dead_local_address name) -> Some name
+      | _ -> None
+    in
+    match (destination_is_global, local_name) with
+    | true, Some name ->
+        error span
+          (Printf.sprintf "stores address of local `%s` in global storage" name)
+    | _ -> Ok ()
+
+let static_vector_lanes c = function
+  | Hir.EBool (value, _) -> Some [ value ]
+  | Hir.Local (binding, _) when binding.ty = Hir.Bool ->
+      Sema_flow.mask_of c.flow binding
+  | Hir.Local (binding, _) -> Sema_flow.mask_of c.flow binding
+  | Hir.EVector (values, Hir.Vec (_, Hir.Bool), _) ->
+      Some (List.map (fun value -> value <> 0L) values)
+  | Hir.Vector_lit (values, Hir.Vec (_, Hir.Bool), _) ->
+      let facts = List.map (condition_truth c) values in
+      if List.for_all Option.is_some facts then Some (List.map Option.get facts)
+      else None
+  | Hir.Splat (Hir.EBool (value, _), Hir.Vec (lanes, Hir.Bool), _) ->
+      Some (List.init lanes (fun _ -> value))
+  | _ -> None
+
+let static_vector_integers c = function
+  | Hir.EVector (values, Hir.Vec (_, (Hir.Int _ as element)), _) ->
+      Some (List.map (sign_extend_value element) values)
+  | Hir.Vector_lit (values, Hir.Vec (_, (Hir.Int _ as element)), _) ->
+      let values =
+        List.map
+          (fun value ->
+            match value_fact c value with
+            | Some fact when fact_single (Hir.expr_ty value) fact ->
+                Some (sign_extend_value element fact.low)
+            | _ -> None)
+          values
+      in
+      if List.for_all Option.is_some values then Some (List.map Option.get values)
+      else None
+  | _ -> None
+
+let check_simd_access c span ~write name access_ty args =
+  let indexed =
+    name = "gather" || name = "gather_bytes" || name = "scatter"
+    || name = "scatter_bytes"
+  in
+  let base, indices, mask =
+    if indexed then (List.nth args 0, Some (List.nth args 1), List.nth args 2)
+    else (List.nth args 0, None, List.nth args 1)
+  in
+  match static_vector_lanes c mask with
+  | None -> Ok ()
+  | Some active ->
+      let base_fact = address_fact c base in
+      let element_size =
+        match Hir.layout c.structs access_ty with Ok (size, _) -> size | Error _ -> 0
+      in
+      let lanes =
+        match indices with
+        | None -> Some (List.mapi (fun lane _ -> Int64.of_int lane) active)
+        | Some indices -> static_vector_integers c indices
+      in
+      let scale =
+        if String.ends_with ~suffix:"_bytes" name then 1L else Int64.of_int element_size
+      in
+      let rec check lane = function
+        | [] -> Ok ()
+        | false :: rest -> check (lane + 1) rest
+        | true :: rest ->
+            let* () =
+              match base_fact with
+              | Some (Sema_flow.Dead_local_address name) ->
+                  check_address_access c span ~write
+                    (Some (Sema_flow.Dead_local_address name)) element_size
+              | Some (Sema_flow.Object_address address)
+                when write && not address.writable ->
+                  error span
+                    (Printf.sprintf "write to constant storage `%s`" address.name)
+              | _ -> Ok ()
+            in
+            let lane_offset =
+              match lanes with
+              | Some offsets when lane < List.length offsets ->
+                  Some (Int64.mul (List.nth offsets lane) scale)
+              | _ -> None
+            in
+            let* () =
+              match (base_fact, lane_offset) with
+              | Some fact, Some offset -> (
+                  match shift_address Ast.Add fact offset with
+                  | Some fact ->
+                      check_address_access c span ~write (Some fact) element_size
+                  | None -> Ok ())
+              | _ -> Ok ()
+            in
+            check (lane + 1) rest
+      in
+      check 0 active
 
 let reverse_comparison = function
   | Ast.Lt -> Ast.Gt
@@ -258,6 +687,14 @@ let refine_condition (c : context) expression truth =
     | Hir.Binary (Ast.Or, left, right, _, _) when not truth ->
         apply left false;
         apply right false
+    | Hir.Binary (((Ast.Eq | Ast.Ne) as op), Hir.Local (binding, _), right, _, _)
+      when binding.ty = Hir.Addr ->
+        let equal = op = Ast.Eq = truth in
+        if equal then Sema_flow.set_address c.flow binding (address_fact c right)
+    | Hir.Binary (((Ast.Eq | Ast.Ne) as op), left, Hir.Local (binding, _), _, _)
+      when binding.ty = Hir.Addr ->
+        let equal = op = Ast.Eq = truth in
+        if equal then Sema_flow.set_address c.flow binding (address_fact c left)
     | Hir.Binary
         ( ((Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge) as op),
           Hir.Local (binding, _),
@@ -877,6 +1314,11 @@ and check_expr (c : context) expected expression =
             | Some (root, path) -> require_place_state root path c s
             | None -> Ok ()
           in
+          let* () =
+            if Sema_flow.is_view c.flow b then
+              check_place_access c s ~write:false (Hir.Local (b, s))
+            else Ok ()
+          in
           Ok (Hir.Local (b, s))
       | None -> (
           match lookup_top_level n c.top_level_bindings with
@@ -1120,6 +1562,13 @@ and check_expr (c : context) expected expression =
         | Some binding, Some path -> require_place_state binding path c s
         | _ -> Ok ()
       in
+      let* () =
+        if
+          (match place.expr with Hir.Raw_select _ -> true | _ -> false)
+          || expression_uses_view c place.expr
+        then check_place_access c s ~write:false place.expr
+        else Ok ()
+      in
       Ok place.expr
   | Ast.Field (a, n, s) ->
       let* place = check_place c (Ast.Field (a, n, s)) in
@@ -1128,16 +1577,27 @@ and check_expr (c : context) expected expression =
         | Some binding, Some path -> require_place_state binding path c s
         | _ -> Ok ()
       in
+      let* () =
+        if
+          (match place.expr with Hir.Raw_select _ -> true | _ -> false)
+          || expression_uses_view c place.expr
+        then check_place_access c s ~write:false place.expr
+        else Ok ()
+      in
       Ok place.expr
   | Ast.Addr_of (e, s) -> (
       let* place = check_place c e in
       (match (place.root, place.path) with
       | Some binding, Some (Exact path) ->
           set_state c binding path Unknown;
-          Sema_flow.forget_value c.flow binding
+          Sema_flow.forget_value c.flow binding;
+          Sema_flow.forget_address c.flow binding;
+          Sema_flow.forget_mask c.flow binding
       | Some binding, Some (Dynamic_prefix path) ->
           set_state c binding path Unknown;
-          Sema_flow.forget_value c.flow binding
+          Sema_flow.forget_value c.flow binding;
+          Sema_flow.forget_address c.flow binding;
+          Sema_flow.forget_mask c.flow binding
       | _ -> ());
       match place.expr with
       | Hir.Function_address _ -> Ok place.expr
@@ -1550,6 +2010,7 @@ and check_call c _expected fn args s =
     when name = "masked_load" || name = "gather" || name = "gather_bytes" ->
       let* access_ty = simd_memory_access_type c name application_span generic_args in
       let* checked, lanes = check_simd_memory_args c name access_ty args s in
+      let* () = check_simd_access c s ~write:false name access_ty checked in
       let kind =
         match name with
         | "masked_load" -> Hir.Masked
@@ -1574,6 +2035,12 @@ and check_call c _expected fn args s =
         let* () =
           ensure_expected (Hir.expr_ty pointer) Hir.Addr (Ast.expr_span pointer_arg)
         in
+        let* size =
+          match access_footprint c access_ty with
+          | Some size -> Ok size
+          | None -> error s "volatile access type has no storage layout"
+        in
+        let* () = check_address_access c s ~write:false (address_fact c pointer) size in
         Ok
           (Hir.Call
              (Hir.Builtin (Hir.Volatile_load access_ty), [ pointer ], access_ty, s))
@@ -2078,6 +2545,11 @@ let check_target (c : context) = function
                 | Some (root, path) -> (Some root, Some path)
                 | None -> (None, None)
               in
+              let* () =
+                if is_view c.flow b then
+                  check_place_access c span ~write:true (Hir.Local (b, span))
+                else Ok ()
+              in
               Ok { target = Hir.ALocal b; root; path; through_view = is_view c.flow b })
       | None -> (
           match List.assoc_opt n c.c_unsupported with
@@ -2113,6 +2585,7 @@ let check_target (c : context) = function
       | Hir.Raw_select (_, _, (Hir.Struct _ | Hir.Array _), _) ->
           error (Ast.expr_span a) "raw selection cannot store an aggregate value"
       | Hir.Raw_select (base, off, t, _) ->
+          let* () = check_place_access c (Ast.expr_span a) ~write:true x in
           if access = Readonly_access then
             error (Ast.expr_span a) "cannot modify read-only pointer"
           else if access = Constant_access then
@@ -2150,6 +2623,7 @@ let check_target (c : context) = function
       | Hir.Raw_select (_, _, (Hir.Struct _ | Hir.Array _), _) ->
           error (Ast.expr_span a) "raw selection cannot store an aggregate value"
       | Hir.Raw_select (base, off, t, _) ->
+          let* () = check_place_access c (Ast.expr_span a) ~write:true x in
           if access = Readonly_access then
             error (Ast.expr_span a) "cannot modify read-only pointer"
           else if access = Constant_access then
@@ -2474,6 +2948,9 @@ let check_copy c args span =
       | Constant_access -> error span "cannot modify constant"
       | Mutable_access -> Ok ()
     in
+    let* () = check_place_access c span ~write:true destination.expr in
+    let* () = check_place_access c span ~write:false source.expr in
+    Sema_flow.forget_addresses_on_write c.flow;
     let* () =
       match local_path source with
       | Some (binding, path) -> require_place_state binding path c span
@@ -2560,7 +3037,9 @@ and check_stmt (c : context) = function
       (match x with
       | Some (`Value value) ->
           mark_init binding c;
-          Sema_flow.set_value c.flow binding (value_fact c value)
+          Sema_flow.set_value c.flow binding (value_fact c value);
+          Sema_flow.set_address c.flow binding (address_fact c value);
+          Sema_flow.set_mask c.flow binding (static_vector_lanes c value)
       | Some (`Aggregate _) -> mark_init binding c
       | None -> ());
       match x with
@@ -2593,6 +3072,7 @@ and check_stmt (c : context) = function
         else if addressable place_info.expr then Ok ()
         else error (Ast.expr_span place) "view source must be an existing place"
       in
+      let* () = check_place_access c span ~write:false place_info.expr in
       let* binding = add_local name (Hir.expr_ty place_info.expr) c span in
       let root, path =
         match place_info.expr with
@@ -2615,6 +3095,17 @@ and check_stmt (c : context) = function
           error span "aggregate assignment is not supported; use `copy(dst, src)`"
         else ensure_expected (Hir.expr_ty v) expected span
       in
+      let* () = check_global_address_escape c span target v in
+      (match target with
+      | Hir.ALocal binding when binding.ty = Hir.Addr ->
+          let target_binding =
+            match Sema_flow.view_origin c.flow binding with
+            | Some (root, Sema_flow.Exact []) when root.ty = Hir.Addr -> root
+            | _ -> binding
+          in
+          Sema_flow.set_address c.flow target_binding (address_fact c v)
+      | Hir.ARaw _ -> Sema_flow.forget_addresses_on_write c.flow
+      | _ -> ());
       (match (checked_target.root, checked_target.path) with
       | Some binding, Some (Exact path) -> set_state c binding path Full
       | Some binding, Some (Dynamic_prefix path) -> set_state c binding path Unknown
@@ -2623,6 +3114,10 @@ and check_stmt (c : context) = function
       | Some binding, Some (Exact []) when is_int binding.ty ->
           Sema_flow.note_binding_write c.flow binding.id;
           Sema_flow.set_value c.flow binding (value_fact c v)
+      | Some binding, Some (Exact []) ->
+          Sema_flow.note_binding_write c.flow binding.id;
+          Sema_flow.set_address c.flow binding (address_fact c v);
+          Sema_flow.set_mask c.flow binding (static_vector_lanes c v)
       | Some binding, _ -> Sema_flow.note_binding_write c.flow binding.id
       | _ -> ());
       Ok (Hir.Assign (target, v, span))
@@ -2676,6 +3171,13 @@ and check_stmt (c : context) = function
       if (not (is_numeric et)) && not is_addr_step then
         error span "compound assignment requires an integer or vector"
       else (
+        (match (target, is_addr_step) with
+        | Hir.ALocal binding, true when binding.ty = Hir.Addr ->
+            let current = Hir.Local (binding, span) in
+            Sema_flow.set_address c.flow binding
+              (address_fact c (Hir.Binary (op, current, v, Hir.Addr, span)))
+        | Hir.ARaw _, _ -> Sema_flow.forget_addresses_on_write c.flow
+        | _ -> ());
         (match (checked_target.root, checked_target.path) with
         | Some binding, Some (Exact path) -> set_state c binding path Full
         | Some binding, Some (Dynamic_prefix path) -> set_state c binding path Unknown
@@ -2707,6 +3209,18 @@ and check_stmt (c : context) = function
         | Some e, t ->
             let* v = check_expr c (Some t) e in
             let* () = ensure_expected (Hir.expr_ty v) t span in
+            let* () =
+              if t = Hir.Addr then
+                match address_fact c v with
+                | Some (Sema_flow.Object_address { owner = Some _; owner_name; _ }) ->
+                    error span
+                      (Printf.sprintf "returns address of local `%s`"
+                         (Option.value ~default:"" owner_name))
+                | Some (Sema_flow.Dead_local_address name) ->
+                    error span (Printf.sprintf "returns address of local `%s`" name)
+                | _ -> Ok ()
+              else Ok ()
+            in
             Ok (Some v)
         | None, _ ->
             error span ("return value required (expected " ^ ty_name c.ret_ty ^ ")")
@@ -2738,6 +3252,15 @@ and check_stmt (c : context) = function
         let* () =
           ensure_expected (Hir.expr_ty value) access_ty (Ast.expr_span value_arg)
         in
+        let* size =
+          match layout_diag call_span c.structs access_ty with
+          | Ok (size, _) -> Ok size
+          | Error diagnostics -> Error diagnostics
+        in
+        let* () =
+          check_address_access c call_span ~write:true (address_fact c pointer) size
+        in
+        Sema_flow.forget_addresses_on_write c.flow;
         Ok (Hir.Volatile_store (access_ty, pointer, value, span))
   | Ast.Expr_stmt
       ( Ast.Call
@@ -2748,12 +3271,27 @@ and check_stmt (c : context) = function
     when name = "masked_store" || name = "scatter" || name = "scatter_bytes" ->
       let* access_ty = simd_memory_access_type c name application_span generic_args in
       let* checked, _ = check_simd_memory_args c name access_ty args call_span in
-      let* () =
-        match view_access_of_expr c (List.hd checked) with
-        | Constant_access -> error call_span "cannot modify constant"
-        | Readonly_access -> error call_span "cannot modify read-only pointer"
-        | Mutable_access -> Ok ()
+      let* () = check_simd_access c call_span ~write:true name access_ty checked in
+      let mask_lanes =
+        static_vector_lanes c
+          (List.nth checked (if List.length checked = 3 then 1 else 2))
       in
+      let no_active_lanes =
+        match mask_lanes with
+        | Some lanes -> not (List.exists Fun.id lanes)
+        | None -> false
+      in
+      let* () =
+        if no_active_lanes then Ok ()
+        else
+          match view_access_of_expr c (List.hd checked) with
+          | Constant_access -> error call_span "cannot modify constant"
+          | Readonly_access -> error call_span "cannot modify read-only pointer"
+          | Mutable_access -> Ok ()
+      in
+      (match no_active_lanes with
+      | true -> ()
+      | _ -> Sema_flow.forget_addresses_on_write c.flow);
       let kind =
         match name with
         | "masked_store" -> Hir.Masked_store

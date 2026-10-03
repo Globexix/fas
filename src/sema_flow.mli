@@ -2,6 +2,20 @@ type binding = Hir.local = { name : string; ty : Hir.ty; id : int }
 type selector = Field of string | Element of int
 type init_state = Uninit | Full | Unknown | Partial of (selector * init_state) list
 type value_fact = { low : int64; high : int64; induction : int option }
+
+type address_fact =
+  | Null_address of int64
+  | Object_address of {
+      identity : string;
+      name : string;
+      owner_name : string option;
+      writable : bool;
+      owner : int option;
+      extent : int;
+      offset : int64;
+    }
+  | Dead_local_address of string
+
 type place_path = Exact of selector list | Dynamic_prefix of selector list
 type view_access = Mutable_access | Constant_access | Readonly_access
 type snapshot
@@ -27,6 +41,15 @@ val value_of : t -> binding -> value_fact option
 val set_value : t -> binding -> value_fact option -> unit
 val forget_value : t -> binding -> unit
 val forget_all_values : t -> unit
+val address_of : t -> binding -> address_fact option
+val set_address : t -> binding -> address_fact option -> unit
+val forget_address : t -> binding -> unit
+val forget_all_addresses : t -> unit
+val forget_addresses_on_write : t -> unit
+val mask_of : t -> binding -> bool list option
+val set_mask : t -> binding -> bool list option -> unit
+val forget_all_masks : t -> unit
+val forget_mask : t -> binding -> unit
 val value_reachable : t -> bool
 val note_binding_write : t -> int -> unit
 val copy_state : t -> binding -> selector list -> binding -> selector list -> unit

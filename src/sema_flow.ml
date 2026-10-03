@@ -5,6 +5,22 @@ type selector = Field of string | Element of int
 type init_state = Uninit | Full | Unknown | Partial of (selector * init_state) list
 type value_fact = { low : int64; high : int64; induction : int option }
 type value_state = value_fact option State_map.t
+
+type address_fact =
+  | Null_address of int64
+  | Object_address of {
+      identity : string;
+      name : string;
+      owner_name : string option;
+      writable : bool;
+      owner : int option;
+      extent : int;
+      offset : int64;
+    }
+  | Dead_local_address of string
+
+type address_state = address_fact State_map.t
+type mask_state = bool list State_map.t
 type place_path = Exact of selector list | Dynamic_prefix of selector list
 type view_access = Mutable_access | Constant_access | Readonly_access
 type deferred_requirement = binding * selector list * Span.t
@@ -29,6 +45,8 @@ type loop_init_flow = {
 and snapshot = {
   initialized : init_state State_map.t;
   values : value_state;
+  addresses : address_state;
+  masks : mask_state;
   value_reachable : bool;
 }
 
@@ -47,6 +65,8 @@ type t = {
   view_accesses : (int, view_access) Hashtbl.t;
   mutable initialized : init_state State_map.t;
   mutable values : value_state;
+  mutable addresses : address_state;
+  mutable masks : mask_state;
   mutable value_reachable : bool;
   mutable next_binding_id : int;
   mutable loop_depth : int;
@@ -73,6 +93,8 @@ let create ~initial_scope structs =
     view_accesses = Hashtbl.create 16;
     initialized = State_map.empty;
     values = State_map.empty;
+    addresses = State_map.empty;
+    masks = State_map.empty;
     value_reachable = true;
     next_binding_id = 0;
     loop_depth = 0;
@@ -155,9 +177,24 @@ let push flow =
 let pop flow =
   (match !(flow.locals) with
   | scope :: rest ->
+      let expired =
+        Hashtbl.fold (fun _ binding bindings -> binding :: bindings) scope []
+      in
+      let expired_ids = List.map (fun binding -> binding.id) expired in
+      flow.addresses <-
+        State_map.map
+          (function
+            | Object_address { owner = Some id; owner_name; _ }
+              when List.mem id expired_ids ->
+                Dead_local_address (Option.value ~default:"" owner_name)
+            | address -> address)
+          flow.addresses;
       flow.locals := rest;
       Hashtbl.iter
-        (fun _ binding -> flow.values <- State_map.remove binding.id flow.values)
+        (fun _ binding ->
+          flow.values <- State_map.remove binding.id flow.values;
+          flow.addresses <- State_map.remove binding.id flow.addresses;
+          flow.masks <- State_map.remove binding.id flow.masks)
         scope
   | [] -> ());
   match flow.defer_scopes with _ :: rest -> flow.defer_scopes <- rest | [] -> ()
@@ -321,6 +358,31 @@ let set_value flow binding value =
 let forget_value flow binding =
   invalidate_induction_for_binding flow binding.id;
   flow.values <- State_map.add binding.id None flow.values
+
+let address_of flow binding = State_map.find_opt binding.id flow.addresses
+
+let set_address flow binding = function
+  | Some address when binding.ty = Hir.Addr ->
+      flow.addresses <- State_map.add binding.id address flow.addresses
+  | Some _ | None -> flow.addresses <- State_map.remove binding.id flow.addresses
+
+let forget_address flow binding =
+  flow.addresses <- State_map.remove binding.id flow.addresses
+
+let forget_all_addresses flow = flow.addresses <- State_map.empty
+
+let forget_addresses_on_write flow =
+  flow.addresses <- State_map.empty;
+  flow.masks <- State_map.empty
+
+let mask_of flow binding = State_map.find_opt binding.id flow.masks
+
+let set_mask flow binding = function
+  | Some lanes -> flow.masks <- State_map.add binding.id lanes flow.masks
+  | None -> flow.masks <- State_map.remove binding.id flow.masks
+
+let forget_all_masks flow = flow.masks <- State_map.empty
+let forget_mask flow binding = flow.masks <- State_map.remove binding.id flow.masks
 
 let forget_all_values flow =
   flow.values <-
@@ -504,6 +566,17 @@ let merge_value_maps flow left right =
       | _ -> None)
     left right
 
+let merge_address_maps left right =
+  State_map.merge
+    (fun _ left right ->
+      match (left, right) with
+      | Some left, Some right when left = right -> Some left
+      | _ -> None)
+    left right
+
+let merge_mask_maps left right =
+  State_map.merge (fun _ left right -> if left = right then left else None) left right
+
 let merge_maps (flow : t) (left : snapshot) (right : snapshot) : snapshot =
   let values, value_reachable =
     match (left.value_reachable, right.value_reachable) with
@@ -512,9 +585,25 @@ let merge_maps (flow : t) (left : snapshot) (right : snapshot) : snapshot =
     | false, true -> (right.values, true)
     | false, false -> (State_map.empty, false)
   in
+  let addresses =
+    match (left.value_reachable, right.value_reachable) with
+    | true, true -> merge_address_maps left.addresses right.addresses
+    | true, false -> left.addresses
+    | false, true -> right.addresses
+    | false, false -> State_map.empty
+  in
+  let masks =
+    match (left.value_reachable, right.value_reachable) with
+    | true, true -> merge_mask_maps left.masks right.masks
+    | true, false -> left.masks
+    | false, true -> right.masks
+    | false, false -> State_map.empty
+  in
   {
     initialized = merge_initialized_maps flow left.initialized right.initialized;
     values;
+    addresses;
+    masks;
     value_reachable;
   }
 
@@ -529,7 +618,23 @@ let merge_values_into (flow : t) (state : snapshot) (values : snapshot list) : s
           (fun facts (next : snapshot) -> merge_value_maps flow facts next.values)
           first.values rest
   in
-  { state with values = merged; value_reachable = values <> [] }
+  let addresses =
+    match values with
+    | [] -> State_map.empty
+    | first :: rest ->
+        List.fold_left
+          (fun facts (next : snapshot) -> merge_address_maps facts next.addresses)
+          first.addresses rest
+  in
+  let masks =
+    match values with
+    | [] -> State_map.empty
+    | first :: rest ->
+        List.fold_left
+          (fun facts (next : snapshot) -> merge_mask_maps facts next.masks)
+          first.masks rest
+  in
+  { state with values = merged; addresses; masks; value_reachable = values <> [] }
 
 let widen_values entry result =
   State_map.merge
@@ -540,18 +645,24 @@ let widen_values entry result =
     entry result
 
 let widen_loop (entry : snapshot) (result : snapshot) : snapshot =
-  { result with values = widen_values entry.values result.values }
+  let addresses = merge_address_maps entry.addresses result.addresses in
+  let masks = merge_mask_maps entry.masks result.masks in
+  { result with values = widen_values entry.values result.values; addresses; masks }
 
 let snapshot (flow : t) : snapshot =
   {
     initialized = flow.initialized;
     values = flow.values;
+    addresses = flow.addresses;
+    masks = flow.masks;
     value_reachable = flow.value_reachable;
   }
 
 let restore (flow : t) (state : snapshot) =
   flow.initialized <- state.initialized;
   flow.values <- state.values;
+  flow.addresses <- state.addresses;
+  flow.masks <- state.masks;
   flow.value_reachable <- state.value_reachable
 
 let add_init_state flow ty left right =
@@ -745,6 +856,7 @@ let invalidate_induction_on_return flow =
     List.iter (fun loop -> loop.induction_valid <- false) flow.loop_init_flows
 
 let note_binding_write flow id =
+  flow.masks <- State_map.remove id flow.masks;
   if
     (not flow.checking_dead)
     && not
