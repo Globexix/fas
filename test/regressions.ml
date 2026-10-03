@@ -11640,4 +11640,91 @@ let () =
      loaded vec[4,u32] = masked_load[u32](&values, mask, fallback)\n\
      return loaded[0] == 1 && loaded[3] == 4 ? 0 : 1 }"
 
+let () =
+  semantic_accept "value-fact-not-equal-if-edge"
+    "fn f() i32 { divisor i32 = 0\n\
+     value i32 = 7\n\
+     if divisor != 0 { value = value / divisor }\n\
+     return value }";
+  semantic_accept "value-fact-not-equal-reversed-edge"
+    "fn f() i32 { divisor i32 = 0\n\
+     value i32 = 7\n\
+     if 0 != divisor { value = value / divisor }\n\
+     return value }";
+  semantic_accept "value-fact-not-equal-and-edges"
+    "fn t() bool { return true }\n\
+     fn f() i32 { divisor i32 = 0\n\
+     value i32 = 7\n\
+     if t() && divisor != 0 { value = value / divisor }\n\
+     if divisor != 0 && t() { value = value / divisor }\n\
+     return value }";
+  semantic_accept "value-fact-not-equal-or-edge"
+    "fn f() i32 { divisor i32 = 0\n\
+     value i32 = 7\n\
+     if divisor != 0 || divisor != 0 { value = value / divisor }\n\
+     return value }";
+  semantic_accept "value-fact-not-equal-ternary-edge"
+    "fn f() i32 { divisor i32 = 0\n\
+     value i32 = divisor != 0 ? 7 / divisor : 7\n\
+     return value }";
+  semantic_accept "value-fact-not-equal-while-edge"
+    "fn f() i32 { divisor i32 = 0\n\
+     value i32 = 7\n\
+     while divisor != 0 { value = value / divisor }\n\
+     return value }";
+  semantic_accept "value-fact-not-equal-for-edge"
+    "fn f() i32 { divisor i32 = 0\n\
+     value i32 = 7\n\
+     for i usize = 0; divisor != 0; i += 1 { value = value / divisor }\n\
+     return value }";
+  semantic_accept "value-fact-comparison-infeasible-edges"
+    "fn f() i32 { value i32 = 7\n\
+     zero i32 = 0\n\
+     if zero < 0 { value = value / zero }\n\
+     if zero <= -1 { value = value / zero }\n\
+     if zero > 0 { value = value / zero }\n\
+     if zero >= 1 { value = value / zero }\n\
+     if zero == 1 { value = value / zero }\n\
+     if zero != 0 { value = value / zero }\n\
+     return value }";
+  semantic_message "value-fact-not-equal-true-edge"
+    "division by zero is not a defined runtime operation"
+    "fn f() i32 { zero i32 = 0\n\
+     value i32 = 7\n\
+     if zero != 1 { value = value / zero }\n\
+     return value }";
+  semantic_accept "value-fact-loop-written-bound"
+    "fn f() i32 { values arr[4,i32] = {}\n\
+     bound usize = 8\n\
+     for index usize = 0; index < bound; index += 1 {\n\
+     bound = 4\n\
+     values[index] = 1\n\
+     }\n\
+     return values[3] - 1 }";
+  semantic_accept "value-fact-loop-written-inclusive-bound"
+    "fn f() i32 { values arr[4,i32] = {}\n\
+     bound usize = 8\n\
+     for index usize = 0; index <= bound; index += 1 {\n\
+     values[index] = 1\n\
+     bound = 2\n\
+     }\n\
+     return values[2] - 1 }";
+  semantic_accept "value-fact-loop-addressed-bound"
+    "fn shrink(pointer addr) void { pointer[usize] = 4 }\n\
+     fn f() i32 { values arr[4,i32] = {}\n\
+     bound usize = 8\n\
+     for index usize = 0; index < bound; index += 1 {\n\
+     shrink(&bound)\n\
+     values[index] = 1\n\
+     }\n\
+     return values[3] - 1 }";
+  semantic_accept "value-fact-loop-written-step"
+    "fn f() i32 { values arr[4,i32] = {}\n\
+     step usize = 2\n\
+     for index usize = 0; index <= 4; index += step {\n\
+     step = 3\n\
+     values[index] = 1\n\
+     }\n\
+     return values[3] - 1 }"
+
 let () = Printf.printf "all regression checks: %d passed\n" !checks_run

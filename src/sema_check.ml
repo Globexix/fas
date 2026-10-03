@@ -170,6 +170,7 @@ and comparison_truth op ty left right =
   | Ast.Eq when compare left.high right.low < 0 || compare right.high left.low < 0 ->
       Some false
   | Ast.Ne when exact && compare left.low right.low <> 0 -> Some true
+  | Ast.Ne when exact && compare left.low right.low = 0 -> Some false
   | Ast.Ne when compare left.high right.low < 0 || compare right.high left.low < 0 ->
       Some false
   | _ -> None
@@ -2229,7 +2230,124 @@ let local_path place =
 
 let copy_is_aggregate = function Hir.Array _ | Hir.Struct _ -> true | _ -> false
 
-let loop_induction c init condition step =
+let rec expression_mentions_name name = function
+  | Ast.Ident (found, _) -> found = name
+  | Ast.Unary (_, value, _)
+  | Ast.Cast (_, _, value, _)
+  | Ast.Field (value, _, _)
+  | Ast.Addr_of (value, _)
+  | Ast.Handle_from_addr (_, value, _)
+  | Ast.Splat (value, _) ->
+      expression_mentions_name name value
+  | Ast.Binary (_, left, right, _) ->
+      expression_mentions_name name left || expression_mentions_name name right
+  | Ast.Call (callee, args, _) ->
+      expression_mentions_name name callee
+      || List.exists (expression_mentions_name name) args
+  | Ast.Generic_args (value, args, _) | Ast.Select (value, args, _) ->
+      expression_mentions_name name value
+      || List.exists
+           (function
+             | Ast.Const_arg value -> expression_mentions_name name value | _ -> false)
+           args
+  | Ast.Ternary (condition, yes, no, _) ->
+      expression_mentions_name name condition
+      || expression_mentions_name name yes
+      || expression_mentions_name name no
+  | Ast.Array_lit (values, _) | Ast.Struct_lit (_, values, _) ->
+      List.exists (expression_mentions_name name) values
+  | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Sizeof _
+  | Ast.Alignof _ | Ast.Offsetof _ ->
+      false
+
+let rec expression_takes_name_address name = function
+  | Ast.Addr_of (value, _) ->
+      expression_mentions_name name value || expression_takes_name_address name value
+  | Ast.Unary (_, value, _)
+  | Ast.Cast (_, _, value, _)
+  | Ast.Field (value, _, _)
+  | Ast.Handle_from_addr (_, value, _)
+  | Ast.Splat (value, _) ->
+      expression_takes_name_address name value
+  | Ast.Binary (_, left, right, _) ->
+      expression_takes_name_address name left
+      || expression_takes_name_address name right
+  | Ast.Call (callee, args, _) ->
+      expression_takes_name_address name callee
+      || List.exists (expression_takes_name_address name) args
+  | Ast.Generic_args (value, args, _) | Ast.Select (value, args, _) ->
+      expression_takes_name_address name value
+      || List.exists
+           (function
+             | Ast.Const_arg value -> expression_takes_name_address name value
+             | _ -> false)
+           args
+  | Ast.Ternary (condition, yes, no, _) ->
+      expression_takes_name_address name condition
+      || expression_takes_name_address name yes
+      || expression_takes_name_address name no
+  | Ast.Array_lit (values, _) | Ast.Struct_lit (_, values, _) ->
+      List.exists (expression_takes_name_address name) values
+  | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Ident _
+  | Ast.Sizeof _ | Ast.Alignof _ | Ast.Offsetof _ ->
+      false
+
+let target_takes_name_address name = function
+  | Ast.Target_ident _ -> false
+  | Ast.Target_select (value, args) ->
+      expression_takes_name_address name value
+      || List.exists
+           (function
+             | Ast.Const_arg value -> expression_takes_name_address name value
+             | _ -> false)
+           args
+  | Ast.Target_field (value, _) -> expression_takes_name_address name value
+
+let rec statement_changes_name name = function
+  | Ast.Let { init; _ } ->
+      Option.fold ~none:false ~some:(expression_takes_name_address name) init
+  | Ast.View { place; _ } -> expression_mentions_name name place
+  | Ast.Assign (Ast.Target_ident (found, _), value, _)
+  | Ast.Compound_assign (Ast.Target_ident (found, _), _, value, _) ->
+      found = name || expression_takes_name_address name value
+  | Ast.Assign (target, value, _) | Ast.Compound_assign (target, _, value, _) ->
+      target_takes_name_address name target || expression_takes_name_address name value
+  | Ast.Return (value, _) ->
+      Option.fold ~none:false ~some:(expression_takes_name_address name) value
+  | Ast.If (condition, yes, no, _) ->
+      expression_takes_name_address name condition
+      || List.exists (statement_changes_name name) yes
+      || Option.fold ~none:false ~some:(List.exists (statement_changes_name name)) no
+  | Ast.While (condition, body, _) ->
+      expression_takes_name_address name condition
+      || List.exists (statement_changes_name name) body
+  | Ast.Defer (body, _) | Ast.Block (body, _) ->
+      List.exists (statement_changes_name name) body
+  | Ast.Expr_stmt (expression, _) -> expression_takes_name_address name expression
+  | Ast.For (init, condition, step, body, _) ->
+      Option.fold ~none:false ~some:(statement_changes_name name) init
+      || Option.fold ~none:false ~some:(expression_takes_name_address name) condition
+      || Option.fold ~none:false ~some:(statement_changes_name name) step
+      || List.exists (statement_changes_name name) body
+  | Ast.Switch (value, arms, default, _) ->
+      expression_takes_name_address name value
+      || List.exists
+           (fun (case, body) ->
+             expression_takes_name_address name case
+             || List.exists (statement_changes_name name) body)
+           arms
+      || Option.fold ~none:false
+           ~some:(List.exists (statement_changes_name name))
+           default
+  | Ast.Break _ | Ast.Continue _ -> false
+
+let stable_loop_operand body = function
+  | Hir.EInt _ -> true
+  | Hir.Local (binding, _) ->
+      not (List.exists (statement_changes_name binding.name) body)
+  | _ -> false
+
+let loop_induction c init condition step body =
   match (init, condition, step) with
   | ( Some (Hir.Let (binding, Some initial, _)),
       Some condition,
@@ -2254,10 +2372,17 @@ let loop_induction c init condition step =
           let before = Sema_flow.snapshot c.flow in
           let checked_step = check_expr c (Some binding.ty) rhs in
           let amount = Option.bind (Result.to_option checked_step) (value_fact c) in
+          let stable_step =
+            match Result.to_option checked_step with
+            | Some expression -> stable_loop_operand body expression
+            | None -> false
+          in
+          let stable_bound = stable_loop_operand body bound in
           Sema_flow.restore c.flow before;
           match (amount, value_fact c bound) with
           | Some amount, Some bound
-            when fact_single binding.ty amount && fact_single binding.ty bound -> (
+            when stable_step && stable_bound && fact_single binding.ty amount
+                 && fact_single binding.ty bound -> (
               let raw_step = amount.low in
               let movement =
                 if is_unsigned binding.ty then
@@ -2736,7 +2861,7 @@ and check_stmt (c : context) = function
               if Hir.expr_ty y = Hir.Bool then Ok (Some y)
               else error (Ast.expr_span x) "for condition must be bool"
         in
-        let induction = loop_induction c ti tq step in
+        let induction = loop_induction c ti tq step b in
         let condition =
           match tq with
           | None -> Some true
