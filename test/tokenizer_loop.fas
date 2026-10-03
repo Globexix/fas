@@ -1,0 +1,13 @@
+fn tokenizer_count(p addr, n usize) u64 {
+  count u64 = 0
+  inside bool = false
+  i usize = 0
+  while i < n {
+    byte u8 = p[u8, i]
+    space bool = byte == 32 || byte == 9 || byte == 10
+    if !space && !inside { count += 1 }
+    inside = !space
+    i += 1
+  }
+  return count
+}

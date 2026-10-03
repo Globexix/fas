@@ -7447,7 +7447,8 @@ let () =
   let bool_one_lane_bitcasts =
     llvm_of
       "fn to_bool(mask vec[1,bool]) bool { return bitcast[bool](mask) }\n\
-       fn to_mask(value bool) vec[1,bool] { return bitcast[vec[1,bool]](value) }\n"
+       fn to_mask(value i32) vec[1,bool] { return \
+       bitcast[vec[1,bool]](trunc[bool](value)) }\n"
   in
   List.iter
     (fun marker ->
@@ -7723,6 +7724,55 @@ let () =
       if not (contains raw_bool_shape marker) then
         failwith ("raw-bool-shape: missing `" ^ marker ^ "`"))
     [ "load i8, ptr %"; "icmp ne i8" ];
+  let bool_byte_storage =
+    llvm_of
+      "struct BoolPair { first bool second bool }\n\
+       var BooleanGlobal bool = false\n\
+       const BooleanArray arr[2,bool] = {true, false}\n\
+       var ConstantPair BoolPair = {true, false}\n\
+       fn bool_storage(p addr, input bool) void {\n\
+       local bool = input\n\
+       values arr[2,bool] = {false, true}\n\
+       fields BoolPair = {false, false}\n\
+       large arr[20,bool] = {false, false, false, false, false, false, false, false, \
+       false, false, false, false, false, false, false, false, false, false, false, \
+       true}\n\
+       copy(fields, ConstantPair)\n\
+       local = true\n\
+       values[0] = true\n\
+       fields.second = true\n\
+       BooleanGlobal = true\n\
+       volatile_store[bool](p, input)\n\
+       return\n\
+       }\n"
+  in
+  List.iter
+    (fun marker ->
+      if contains bool_byte_storage marker then
+        failwith
+          ("bool-memory-byte-storage: forbidden LLVM memory form `" ^ marker ^ "`"))
+    [
+      "alloca i1";
+      "load i1, ptr";
+      "load volatile i1, ptr";
+      "store i1 ";
+      "store volatile i1 ";
+      "[2 x i1]";
+      "[20 x i1]";
+      "global i1";
+      "constant i1";
+    ];
+  List.iter
+    (fun marker ->
+      if not (contains bool_byte_storage marker) then
+        failwith ("bool-memory-byte-storage: missing `" ^ marker ^ "`"))
+    [
+      "zext i1";
+      "store i8";
+      "@BooleanGlobal = internal global [1 x i8]";
+      "@BooleanArray = private unnamed_addr constant [2 x i8]";
+      "@.literal.0 = private constant [20 x i8]";
+    ];
   let raw_mask_shape = llvm_of "fn f(p addr) vec[3,bool] { return p[vec[3,bool]] }\n" in
   List.iter
     (fun marker ->

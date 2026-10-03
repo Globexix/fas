@@ -74,10 +74,17 @@ let rec ty = function
       | Error message -> invalid_arg message)
   | Hir.Addr | Hir.Handle _ -> Ir.Pointer Ir.I8
   | Hir.Vec (n, t) -> Ir.Vector (n, ty t)
-  | Hir.Array (n, t) -> Ir.Array (n, ty t)
+  | Hir.Array (n, t) -> Ir.Array (n, storage_ty t)
   | Hir.Struct n -> Ir.Struct n
   | Hir.Opaque n -> Ir.Struct n
   | Hir.Void -> Ir.Void
+
+and storage_ty = function
+  | Hir.Bool -> Ir.I8
+  | Hir.Array (n, t) -> Ir.Array (n, storage_ty t)
+  | Hir.Struct n -> Ir.Struct n
+  | Hir.Opaque n -> Ir.Struct n
+  | t -> ty t
 
 let ir_extension = function
   | Target_layout.C_no_extension -> Ir.No_extension
@@ -740,7 +747,7 @@ let rec expr s = function
       Ok (Ir.Local (i2, vt))
   | Hir.Const_array (n, t, _) ->
       let ptr_id = fresh s in
-      emit s (Ir.Global_ptr (ptr_id, n, ty t));
+      emit s (Ir.Global_ptr (ptr_id, n, storage_ty t));
       let* alignment = place_alignment s (Hir.Const_array (n, t, Span.synthetic)) in
       load_value s t (Ir.Local (ptr_id, Ir.Pointer (ty t))) alignment
 
@@ -1134,8 +1141,8 @@ and materialize s e =
   let ht = Hir.expr_ty e in
   let* alignment = align s ht in
   let id = fresh s in
-  emit s (Ir.Alloca (id, ty ht, alignment));
-  let p = Ir.Local (id, Ir.Pointer (ty ht)) in
+  emit s (Ir.Alloca (id, storage_ty ht, alignment));
+  let p = Ir.Local (id, Ir.Pointer (storage_ty ht)) in
   let* () = store_value s ht v p alignment in
   Ok p
 
@@ -1143,16 +1150,16 @@ and address s e =
   match e with
   | Hir.Global (name, global_ty, _) ->
       let id = fresh s in
-      emit s (Ir.Global_ptr (id, name, ty global_ty));
-      Ok (Ir.Local (id, Ir.Pointer (ty global_ty)))
+      emit s (Ir.Global_ptr (id, name, storage_ty global_ty));
+      Ok (Ir.Local (id, Ir.Pointer (storage_ty global_ty)))
   | Hir.Local (local, sp) -> (
       match Hashtbl.find_opt s.env local.id with
       | Some (value, _) -> Ok value
       | None -> error sp ("unknown local `" ^ local.name ^ "`"))
   | Hir.Const_array (n, t, _) ->
       let id = fresh s in
-      emit s (Ir.Global_ptr (id, n, ty t));
-      Ok (Ir.Local (id, Ir.Pointer (ty t)))
+      emit s (Ir.Global_ptr (id, n, storage_ty t));
+      Ok (Ir.Local (id, Ir.Pointer (storage_ty t)))
   | Hir.Raw_select (b, off, _, _) -> raw_address s b off
   | Hir.Index (a, i, _, _) -> index_address s a i
   | Hir.Field (a, _, _, off, _) -> field_address s a off
@@ -1632,6 +1639,11 @@ and raw_store s t v p =
 
 and store_value s t value pointer alignment =
   match t with
+  | Hir.Bool ->
+      let byte = fresh s in
+      emit s (Ir.Cast (byte, "zext", Ir.I1, value, Ir.I8));
+      emit s (Ir.Store (Ir.I8, Ir.Local (byte, Ir.I8), pointer, alignment));
+      Ok ()
   | Hir.Vec (lanes, Hir.Bool) when lanes mod 8 <> 0 -> raw_store s t value pointer
   | _ ->
       emit s (Ir.Store (ty t, value, pointer, alignment));
@@ -1834,8 +1846,8 @@ and stmt s = function
   | Hir.Let (local, init, _) -> (
       let* alignment = align s local.ty in
       let id = fresh s in
-      emit_entry s (Ir.Alloca (id, ty local.ty, alignment));
-      let p = Ir.Local (id, Ir.Pointer (ty local.ty)) in
+      emit_entry s (Ir.Alloca (id, storage_ty local.ty, alignment));
+      let p = Ir.Local (id, Ir.Pointer (storage_ty local.ty)) in
       bind_local s local p alignment;
       match init with
       | None -> Ok ()
@@ -1845,8 +1857,8 @@ and stmt s = function
   | Hir.Let_construct (local, construction, _) ->
       let* alignment = align s local.ty in
       let id = fresh s in
-      emit_entry s (Ir.Alloca (id, ty local.ty, alignment));
-      let pointer = Ir.Local (id, Ir.Pointer (ty local.ty)) in
+      emit_entry s (Ir.Alloca (id, storage_ty local.ty, alignment));
+      let pointer = Ir.Local (id, Ir.Pointer (storage_ty local.ty)) in
       bind_local s local pointer alignment;
       construct_into s pointer construction
   | Hir.View (local, place, span) ->
@@ -1872,8 +1884,8 @@ and stmt s = function
         else
           let* alignment = align s copy_ty in
           let scratch_id = fresh s in
-          emit_entry s (Ir.Alloca (scratch_id, ty copy_ty, alignment));
-          let scratch = Ir.Local (scratch_id, Ir.Pointer (ty copy_ty)) in
+          emit_entry s (Ir.Alloca (scratch_id, storage_ty copy_ty, alignment));
+          let scratch = Ir.Local (scratch_id, Ir.Pointer (storage_ty copy_ty)) in
           let* () = copy_place s span copy_ty scratch source_pointer in
           copy_place s span copy_ty destination_pointer scratch
   | Hir.Volatile_store (access_ty, pointer_expr, value_expr, span) ->
@@ -2076,7 +2088,7 @@ and construct_entries s destination = function
       if List.length elements <> length then
         error span "internal error: array construction arity"
       else
-        let aggregate_ty = Ir.Array (length, ty element_ty) in
+        let aggregate_ty = Ir.Array (length, storage_ty element_ty) in
         let rec go index = function
           | [] -> Ok ()
           | element :: rest ->
@@ -2089,7 +2101,7 @@ and construct_entries s destination = function
                      [ Ir.Zero; Ir.Index (Ir.Const (Ir.I64, Int64.of_int index)) ] ));
               let* () =
                 construct_into s
-                  (Ir.Local (pointer_id, Ir.Pointer (ty element_ty)))
+                  (Ir.Local (pointer_id, Ir.Pointer (storage_ty element_ty)))
                   element
               in
               go (index + 1) rest
@@ -2141,8 +2153,8 @@ and target_address s = function
       | None -> error Span.synthetic ("unknown local `" ^ local.name ^ "`"))
   | Hir.AGlobal (name, global_ty) ->
       let id = fresh s in
-      emit s (Ir.Global_ptr (id, name, ty global_ty));
-      Ok (Ir.Local (id, Ir.Pointer (ty global_ty)))
+      emit s (Ir.Global_ptr (id, name, storage_ty global_ty));
+      Ok (Ir.Local (id, Ir.Pointer (storage_ty global_ty)))
   | Hir.ARaw (b, off, _) -> raw_address s b off
   | Hir.AIndex (a, i) -> index_address s a i
   | Hir.AField (a, _, off) -> field_address s a off
@@ -2365,8 +2377,8 @@ let lower_func literal_globals structs strings functions f =
         | (local : Hir.local) :: local_rest, (parameter : Ir.param) :: parameter_rest ->
             let* alignment = align s local.ty in
             let id = fresh s in
-            emit s (Ir.Alloca (id, ty local.ty, alignment));
-            let p = Ir.Local (id, Ir.Pointer (ty local.ty)) in
+            emit s (Ir.Alloca (id, storage_ty local.ty, alignment));
+            let p = Ir.Local (id, Ir.Pointer (storage_ty local.ty)) in
             bind_local s local p alignment;
             let* () =
               store_value s local.ty
@@ -2561,7 +2573,7 @@ let global_storage structs (global : Hir.global) =
           (Ir.Storage_global
              {
                name = global.name;
-               storage_ty = ty global.ty;
+               storage_ty = storage_ty global.ty;
                size;
                bytes;
                pointers = List.rev !pointers;
@@ -2674,7 +2686,7 @@ let lower (p : Hir.program) =
                     let out =
                       if padding > 0 then Ir.Array (padding, Ir.I8) :: out else out
                     in
-                    go field_end (ty f.ty :: out) (max used field_end)
+                    go field_end (storage_ty f.ty :: out) (max used field_end)
                       (max natural_align align) rest
             in
             go 0 [] 0 1 d.fields
@@ -2708,7 +2720,8 @@ let lower (p : Hir.program) =
         | Hir.Array (_, e) ->
             let* align = field_align e in
             Ok
-              (Ir.Array_global { name = a.name; elem_ty = ty e; elems = a.elems; align })
+              (Ir.Array_global
+                 { name = a.name; elem_ty = storage_ty e; elems = a.elems; align })
         | _ ->
             Ok
               (Ir.Array_global { name = a.name; elem_ty = Ir.I8; elems = []; align = 1 }))

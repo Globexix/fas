@@ -1,11 +1,14 @@
 use "C" "bool_memory.h"
 
 struct NativeBool { value bool }
+struct BoolPair { first bool second bool }
 
-var GlobalBool bool
+var GlobalBool bool = false
+const ConstantFlags arr[2,bool] = {true, false}
+var ConstantPair BoolPair = {true, false}
 
 extern "C" {
-  fn bool_memory_paths(raw addr, foreign handle[ForeignBool]) u32 {
+  fn bool_memory_paths(raw addr, foreign handle[ForeignBool], output addr, volatile_output addr, passed bool) u32 {
     local bool = false
     (&local)[u8] = 2
     items arr[2,bool] = {false, false}
@@ -24,6 +27,35 @@ extern "C" {
     if raw[bool, 0] && !(!raw[bool, 0]) && raw[bool, 0] == true && zext[u8](raw[bool, 0]) == 1 { score += 1 }
     if viewed && !(!viewed) && viewed == true && zext[u8](viewed) == 1 { score += 1 }
     if foreign_raw[ForeignBool].value && !(!foreign_raw[ForeignBool].value) && foreign_raw[ForeignBool].value == true && zext[u8](foreign_raw[ForeignBool].value) == 1 { score += 1 }
+
+    local = true
+    items[1] = true
+    native.value = true
+    GlobalBool = true
+    viewed = true
+    foreign_raw[ForeignBool].value = true
+    output[u8, 0] = (&local)[u8]
+    output[u8, 1] = (&passed)[u8]
+    output[u8, 2] = (&items[1])[u8]
+    output[u8, 3] = (&native.value)[u8]
+    output[u8, 4] = (&GlobalBool)[u8]
+    output[u8, 5] = (&ConstantFlags[0])[u8]
+    output[u8, 6] = (&ConstantPair.first)[u8]
+    output[u8, 7] = (&ConstantPair.second)[u8]
+
+    copied BoolPair = {false, false}
+    copy(copied, ConstantPair)
+    output[u8, 8] = (&copied.first)[u8]
+    output[u8, 9] = (&copied.second)[u8]
+
+    large arr[20,bool] = {false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true}
+    output[u8, 10] = (&large[19])[u8]
+    raw[bool] = true
+    output[u8, 11] = (&raw[bool])[u8]
+    local = false
+    output[u8, 12] = (&local)[u8]
+    volatile_store[bool](volatile_output, false)
+    volatile_store[bool](volatile_output + 1, true)
     return score
   }
 }
