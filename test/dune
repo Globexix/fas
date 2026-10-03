@@ -23,6 +23,7 @@
   c_import/overaligned_typedefs.h
   c_import/overaligned_stride.h
   c_import/record_attributes.h
+  c_import/pointer_enum_macro_types.h
   c_import/sizes.h
   c_import/stat.h
   c_import/namespaces.h

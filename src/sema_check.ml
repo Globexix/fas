@@ -796,7 +796,9 @@ and check_expr (c : context) expected expression =
       match t with
       | Hir.Struct sn -> (
           match field_info structs sn n with
-          | Some { unsupported_reason = Some reason; _ } -> error s reason
+          | Some { unsupported_reason = Some reason; _ }
+            when reason <> "floating-point fields are not supported until v0.5" ->
+              error s reason
           | Some f -> Ok (Hir.Offsetof (t, n, f.offset, s))
           | None -> error s (Printf.sprintf "unknown field `%s`" n))
       | _ -> error s "offsetof requires a struct type")

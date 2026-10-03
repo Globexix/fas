@@ -9567,6 +9567,40 @@ let () =
        struct FasContainerNested nested; };\n"
   in
   let time_record_handles = c_import_fixture "time_record_handles.h" in
+  let pointer_enum_types = c_import_fixture "pointer_enum_macro_types.h" in
+  let pointer_enum_aliases = snd pointer_enum_types in
+  let require_c_alias name expected =
+    incr checks_run;
+    match List.assoc_opt name pointer_enum_aliases.aliases with
+    | Some actual when actual = expected -> ()
+    | Some actual ->
+        failwith
+          (Printf.sprintf "C alias %s: expected %s, got %s" name
+             (Ast.type_name expected) (Ast.type_name actual))
+    | None -> failwith ("C alias was not imported: " ^ name)
+  in
+  require_c_alias "PointerRecordPointer" (Ast.Handle (Ast.Named_type "PointerRecord"));
+  require_c_alias "PointerUnionPointer" (Ast.Handle (Ast.Named_type "PointerUnion"));
+  require_c_alias "AnonymousRecordPointer" Ast.Addr;
+  require_c_alias "PointerCollision" Ast.Addr;
+  require_c_alias "IncompletePointer"
+    (Ast.Handle (Ast.Named_type "IncompletePointerTarget"));
+  c_semantic_accept "c-import-record-pointer-typedefs" pointer_enum_types
+    "fn pointers() bool { return pointer_record_value(null) == 0 && \
+     pointer_union_value(null) == 0 && anonymous_pointer_is_null(null) != 0 && \
+     pointer_collision_value(null) == 0 && incomplete_pointer() == null }\n";
+  c_semantic_accept "c-import-anonymous-record-pointer-fields" pointer_enum_types
+    "fn pointers() bool { return anonymous_pointer_fields.pointer == null && \
+     anonymous_pointer_fields.pointers[0] == null && \
+     anonymous_pointer_fields.union_pointer == null }\n";
+  c_semantic_accept "c-import-anonymous-record-pointer-parameter" pointer_enum_types
+    "fn read(value addr) i32 { return read_anonymous_parameter(value) }\n";
+  c_semantic_accept "c-import-anonymous-enum-values" pointer_enum_types
+    "fn values() bool { return anonymous_enum_global == 42 && \
+     anonymous_enum_field.kind == AnonymousFieldHigh }\n";
+  c_semantic_accept "c-import-float-field-offset" pointer_enum_types
+    "const ValuesOffset usize = offsetof[OffsetFloatStorage, values]\n\
+     const TailOffset usize = offsetof[OffsetFloatStorage, tail]\n";
   c_semantic_accept "c-import-record-address-handle-contexts" time_record_handles
     "fn read_clock() i32 { ts timespec\n\
      return clock_gettime(1, &ts) }\n\
@@ -10128,6 +10162,46 @@ let () =
         "addr";
       ]
   in
+  let machine_size_macros =
+    c_import_macro_fixture "pointer_enum_macro_types.h"
+      [
+        "SIZE_T_MACRO";
+        "PTRDIFF_MACRO";
+        "UINTPTR_MACRO";
+        "INTPTR_MACRO";
+        "CUSTOM_SIZE_MACRO";
+        "SIZE_MAX";
+        "INT64_MAX";
+      ]
+  in
+  let machine_size_program =
+    match c_semantic_result machine_size_macros "fn probe() i32 { return 0 }\n" with
+    | Ok program -> program
+    | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+  in
+  List.iter
+    (fun (name, expected_ty, expected_bits) ->
+      incr checks_run;
+      match
+        List.find_opt
+          (fun (constant : Hir.const_def) -> constant.name = name)
+          machine_size_program.consts
+      with
+      | Some { ty; bits; _ } when ty = expected_ty && bits = expected_bits -> ()
+      | Some { ty; bits; _ } ->
+          failwith
+            (Printf.sprintf "C macro %s: expected %s %Ld, got %s %Ld" name
+               (Hir.ty_name expected_ty) expected_bits (Hir.ty_name ty) bits)
+      | None -> failwith ("C macro was not imported: " ^ name))
+    [
+      ("SIZE_T_MACRO", Hir.Int Hir.Usize, 4L);
+      ("PTRDIFF_MACRO", Hir.Int Hir.Isize, -5L);
+      ("UINTPTR_MACRO", Hir.Int Hir.Usize, 7L);
+      ("INTPTR_MACRO", Hir.Int Hir.Isize, -6L);
+      ("CUSTOM_SIZE_MACRO", Hir.Int Hir.Usize, 4L);
+      ("SIZE_MAX", Hir.Int Hir.U64, -1L);
+      ("INT64_MAX", Hir.Int Hir.I64, Int64.max_int);
+    ];
   let macro_program =
     match c_semantic_result c_macros "fn macro_probe() i32 { return 0 }\n" with
     | Ok program -> program

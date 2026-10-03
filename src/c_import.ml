@@ -272,6 +272,72 @@ let imported_macro_nodes ~cc ~c_flags ~source ~unit_path ~paths ~macro_names =
         in
         Result.map
           (fun (ir, candidates) ->
+            let ast_path = Filename.temp_file "fas-c-macro-ast-" ".json" in
+            paths := ast_path :: !paths;
+            let ast_argv =
+              Array.of_list
+                ([
+                   cc;
+                   "-fsyntax-only";
+                   "-Xclang";
+                   "-ast-dump=json";
+                   "-Xclang";
+                   "-skip-function-bodies";
+                 ]
+                @ common @ [ probe ])
+            in
+            let macro_type_aliases =
+              match Process.run_to_file ast_argv ast_path with
+              | Error _ -> []
+              | Ok _ ->
+                  let channel = open_in_bin ast_path in
+                  let ast_nodes =
+                    Fun.protect
+                      ~finally:(fun () -> close_in_noerr channel)
+                      (fun () -> C_import_json.declarations channel)
+                  in
+                  let rec flatten node =
+                    node
+                    :: List.concat_map flatten
+                         (Option.fold ~none:[] ~some:C_import_json.array
+                            (C_import_json.field "inner" node))
+                  in
+                  let nodes = List.concat_map flatten ast_nodes in
+                  let aliases = Hashtbl.create 32 in
+                  List.iter
+                    (fun node ->
+                      if
+                        C_import_json.field "kind" node
+                        = Some (C_import_json.Str "TypedefDecl")
+                      then
+                        match
+                          ( C_import_json.field "id" node,
+                            C_import_json.field "name" node )
+                        with
+                        | Some (C_import_json.Str id), Some (C_import_json.Str name) ->
+                            Hashtbl.replace aliases id name
+                        | _ -> ())
+                    nodes;
+                  List.mapi
+                    (fun i _ ->
+                      let variable = prefix ^ string_of_int i in
+                      List.find_map
+                        (fun node ->
+                          if
+                            C_import_json.field "kind" node
+                            = Some (C_import_json.Str "VarDecl")
+                            && C_import_json.field "name" node
+                               = Some (C_import_json.Str variable)
+                          then
+                            Option.bind (C_import_json.field "type" node) (fun ty ->
+                                Option.bind (C_import_json.field "typeAliasDeclId" ty)
+                                  (function
+                                  | C_import_json.Str id -> Hashtbl.find_opt aliases id
+                                  | _ -> None))
+                          else None)
+                        nodes)
+                    candidates
+            in
             let integer (i, (name, _)) =
               match
                 ( llvm_integer ir (prefix ^ string_of_int i),
@@ -292,7 +358,9 @@ let imported_macro_nodes ~cc ~c_flags ~source ~unit_path ~paths ~macro_names =
               | _ -> None
             in
             let imported =
-              List.filter_map integer (List.mapi (fun i item -> (i, item)) candidates)
+              List.mapi (fun i item -> (i, item)) candidates
+              |> List.filter_map (fun (i, item) ->
+                  Option.map (fun value -> (i, value)) (integer (i, item)))
             in
             let node kind name extra =
               C_import_json.Obj
@@ -300,20 +368,32 @@ let imported_macro_nodes ~cc ~c_flags ~source ~unit_path ~paths ~macro_names =
                 :: ("name", C_import_json.Str name)
                 :: extra)
             in
-            List.map
-              (fun (name, ty, code, value) ->
-                node "FasIntegerMacro" name
-                  [
-                    ("macroType", C_import_json.Str ty);
-                    ("macroTypeCode", C_import_json.Str (string_of_int code));
-                    ("value", C_import_json.Str value);
-                  ])
-              imported
-            @ List.filter_map
+            let imported_nodes =
+              List.map
+                (fun (index, (name, ty, code, value)) ->
+                  let extra =
+                    [
+                      ("macroType", C_import_json.Str ty);
+                      ("macroTypeCode", C_import_json.Str (string_of_int code));
+                      ("value", C_import_json.Str value);
+                    ]
+                    @ Option.to_list
+                        (Option.map
+                           (fun alias ->
+                             ("macroTypeAliasName", C_import_json.Str alias))
+                           (List.nth_opt macro_type_aliases index |> Option.join))
+                  in
+                  node "FasIntegerMacro" name extra)
+                imported
+            in
+            let invisible_nodes =
+              List.filter_map
                 (fun (name, _) ->
-                  if List.exists (fun (n, _, _, _) -> n = name) imported then None
+                  if List.exists (fun (_, (n, _, _, _)) -> n = name) imported then None
                   else Some (node "FasInvisibleMacro" name []))
-                definitions)
+                definitions
+            in
+            imported_nodes @ invisible_nodes)
           probed
 
 let imported_enum_nodes ~cc ~c_flags ~source ~unit_path ~paths declarations =
@@ -322,6 +402,8 @@ let imported_enum_nodes ~cc ~c_flags ~source ~unit_path ~paths declarations =
   let children node =
     Option.fold ~none:[] ~some:C_import_json.array (field "inner" node)
   in
+  let rec flatten node = node :: List.concat_map flatten (children node) in
+  let all_nodes = List.concat_map flatten declarations in
   let rec enum_decl_id node =
     match text "kind" node with
     | Some "EnumType" -> Option.bind (field "decl" node) (text "id")
@@ -330,11 +412,9 @@ let imported_enum_nodes ~cc ~c_flags ~source ~unit_path ~paths declarations =
   let name node =
     match text "name" node with Some name when name <> "" -> Some name | _ -> None
   in
-  let enums =
-    List.filter (fun node -> text "kind" node = Some "EnumDecl") declarations
-  in
+  let enums = List.filter (fun node -> text "kind" node = Some "EnumDecl") all_nodes in
   let aliases =
-    List.filter (fun node -> text "kind" node = Some "TypedefDecl") declarations
+    List.filter (fun node -> text "kind" node = Some "TypedefDecl") all_nodes
   in
   let candidates =
     List.filter_map
@@ -345,11 +425,25 @@ let imported_enum_nodes ~cc ~c_flags ~source ~unit_path ~paths declarations =
             let c_type =
               match name node with
               | Some name -> Some ("enum " ^ name)
-              | None ->
-                  List.find_map
-                    (fun alias ->
-                      if enum_decl_id alias = Some id then name alias else None)
-                    aliases
+              | None -> (
+                  match
+                    List.find_map
+                      (fun alias ->
+                        if enum_decl_id alias = Some id then name alias else None)
+                      aliases
+                  with
+                  | Some _ as name -> name
+                  | None ->
+                      List.find_map
+                        (fun probe ->
+                          match (text "kind" probe, field "tree" probe) with
+                          | Some "FasTypeProbe", Some tree
+                            when enum_decl_id tree = Some id ->
+                              Option.map
+                                (fun expression -> "__typeof__(" ^ expression ^ ")")
+                                (text "expression" probe)
+                          | _ -> None)
+                        all_nodes)
             in
             Option.map (fun c_type -> (id, c_type)) c_type)
       enums
@@ -455,6 +549,14 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declar
   let children node =
     Option.fold ~none:[] ~some:C_import_json.array (field "inner" node)
   in
+  let type_node node =
+    children node
+    |> List.find_opt (fun child ->
+        Option.fold ~none:false
+          ~some:(String.ends_with ~suffix:"Type")
+          (string "kind" child))
+  in
+  let rec flatten node = node :: List.concat_map flatten (children node) in
   let id node = string "id" node in
   let name node = string "name" node in
   let kind node = string "kind" node in
@@ -487,20 +589,35 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declar
           (fun offset -> "field:" ^ file ^ ":" ^ string_of_int offset)
           (source_offset node))
   in
-  let rec direct_record_id node =
+  let alias_types_by_id = Hashtbl.create 32 in
+  List.iter
+    (fun node ->
+      if kind node = Some "TypedefDecl" then
+        Option.iter
+          (fun id ->
+            Option.iter (Hashtbl.replace alias_types_by_id id) (type_node node))
+          (id node))
+    (List.concat_map flatten declarations);
+  let rec direct_record_id seen node =
     match kind node with
     | Some "RecordType" -> Option.bind (field "decl" node) (string "id")
+    | Some "TypedefType" -> (
+        match Option.bind (field "decl" node) (string "id") with
+        | Some id when not (List.mem id seen) ->
+            Option.bind
+              (Hashtbl.find_opt alias_types_by_id id)
+              (direct_record_id (id :: seen))
+        | _ -> None)
     | Some
-        ( "ElaboratedType" | "AttributedType" | "ParenType" | "TypedefType" | "QualType"
+        ( "ElaboratedType" | "AttributedType" | "ParenType" | "QualType"
         | "MacroQualifiedType" ) ->
-        children node |> List.find_map direct_record_id
-    | _ -> children node |> List.find_map direct_record_id
+        children node |> List.find_map (direct_record_id seen)
+    | _ -> None
   in
   let rec collect_records node =
     (if kind node = Some "RecordDecl" then [ node ] else [])
     @ List.concat_map collect_records (children node)
   in
-  let rec flatten node = node :: List.concat_map flatten (children node) in
   let all_nodes = List.concat_map flatten declarations in
   let top_declarations =
     List.filter
@@ -515,7 +632,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declar
   List.iter
     (fun node ->
       if kind node = Some "TypedefDecl" then
-        match (name node, direct_record_id node) with
+        match (name node, Option.bind (type_node node) (direct_record_id [])) with
         | Some alias, Some record_id ->
             Hashtbl.replace alias_names_by_record record_id
               (alias
@@ -694,7 +811,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declar
                       ( List.nth_opt indexed index,
                         List.find_opt is_type_node (children node) )
                     with
-                    | Some (_, target, _), Some type_of_expr ->
+                    | Some (_, target, expression), Some type_of_expr ->
                         Option.map
                           (fun tree ->
                             C_import_json.Obj
@@ -702,6 +819,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declar
                                 ("kind", C_import_json.Str "FasTypeProbe");
                                 ("target", C_import_json.Str target);
                                 ("tree", tree);
+                                ("expression", C_import_json.Str expression);
                               ])
                           (List.find_opt is_type_node
                              (List.rev (children type_of_expr)))
@@ -1178,23 +1296,6 @@ let rec type_has_function ~alias_type_node seen node =
       | _ -> false)
   | _ -> List.exists (type_has_function ~alias_type_node seen) (children node)
 
-let rec direct_record_decl_id node =
-  match string "kind" node with
-  | Some "RecordType" -> type_node_id node
-  | Some
-      ( "ElaboratedType" | "ParenType" | "MacroQualifiedType" | "AttributedType"
-      | "TypeOfType" | "TypeOfExprType" | "PredefinedSugarType" ) ->
-      List.find_map direct_record_decl_id (children node)
-  | _ -> None
-
-let record_decl_id node =
-  let rec find tree =
-    match string "kind" tree with
-    | Some "RecordType" -> type_node_id tree
-    | _ -> List.find_map find (children tree)
-  in
-  Option.bind (type_node node) find
-
 let rec enum_decl_id node =
   match string "kind" node with
   | Some "EnumType" -> type_node_id node
@@ -1233,7 +1334,7 @@ let add_one_decimal value =
   else adjust 1
 
 let type_result ?(allow_arrays = false) ~alias_name ~alias_type_node ~resolve_alias
-    ~record_ids ~record_nodes_by_id ~enum_types ~allow_record ctype =
+    ~record_ids ~visible_record_ids ~enum_types ~allow_record ctype =
   let child_type node =
     children node
     |> List.find_opt (fun child ->
@@ -1332,17 +1433,13 @@ let type_result ?(allow_arrays = false) ~alias_name ~alias_type_node ~resolve_al
                 | Some "RecordType" -> (
                     match type_node_id node with
                     | Some id -> (
-                        match Hashtbl.find_opt record_ids id with
-                        | Some name -> Ok (Ast.Handle (Ast.Named_type name))
-                        | None ->
-                            Option.fold
-                              ~none:
-                                (Error "anonymous record pointers are not supported")
-                              ~some:(fun record ->
-                                if Option.is_some (record_name record) then Ok Ast.Addr
-                                else Error "anonymous record pointers are not supported")
-                              (Hashtbl.find_opt record_nodes_by_id id))
-                    | None -> Error "anonymous record pointers are not supported")
+                        match
+                          ( Hashtbl.find_opt record_ids id,
+                            Hashtbl.mem visible_record_ids id )
+                        with
+                        | Some name, true -> Ok (Ast.Handle (Ast.Named_type name))
+                        | _ -> Ok Ast.Addr)
+                    | None -> Ok Ast.Addr)
                 | Some
                     ( "BuiltinType" | "BitIntType" | "EnumType" | "PointerType"
                     | "BlockPointerType" | "ConstantArrayType" | "IncompleteArrayType"
@@ -1691,6 +1788,8 @@ let map_declarations ?(container = false) ~span declarations =
                Some "FasRecordLayout";
              ]))
   in
+  let rec flatten node = node :: List.concat_map flatten (children node) in
+  let all_nodes = List.concat_map flatten nodes in
   let enum_probe_types = Hashtbl.create 32 in
   List.iter
     (fun node ->
@@ -1869,7 +1968,25 @@ let map_declarations ?(container = false) ~span declarations =
               Hashtbl.replace alias_names_by_id id name
           | _ -> ())
       | _ -> ())
-    nodes;
+    all_nodes;
+  let rec direct_record_type_id seen node =
+    match string "kind" node with
+    | Some "RecordType" -> type_node_id node
+    | Some "TypedefType" -> (
+        match type_node_id node with
+        | Some id when not (List.mem id seen) ->
+            Option.bind (Hashtbl.find_opt alias_nodes_by_id id) (fun alias_node ->
+                Option.bind (type_node alias_node) (direct_record_type_id (id :: seen)))
+        | _ -> None)
+    | Some
+        ( "ElaboratedType" | "ParenType" | "MacroQualifiedType" | "AttributedType"
+        | "TypeOfType" | "PredefinedSugarType" | "QualType" ) ->
+        List.find_map (direct_record_type_id seen) (children node)
+    | _ -> None
+  in
+  let typedef_record_id node =
+    Option.bind (type_node node) (direct_record_type_id [])
+  in
   List.iter
     (fun node ->
       if string "kind" node = Some "EnumDecl" then
@@ -1890,10 +2007,10 @@ let map_declarations ?(container = false) ~span declarations =
                   (record_name node))
               (Hashtbl.find_opt enum_probe_types id)
         | None -> ())
-    nodes;
+    all_nodes;
   List.iter
     (fun node ->
-      match (string "kind" node, record_name node, record_decl_id node) with
+      match (string "kind" node, record_name node, typedef_record_id node) with
       | Some "TypedefDecl", Some name, Some id when Hashtbl.mem anonymous_record_ids id
         ->
           let canonical = Option.value ~default:name (Hashtbl.find_opt record_ids id) in
@@ -1902,8 +2019,8 @@ let map_declarations ?(container = false) ~span declarations =
           Hashtbl.replace record_ids id canonical;
           Hashtbl.replace record_nodes_by_id id (Hashtbl.find record_nodes_by_id id)
       | _ -> ())
-    nodes;
-  let same_record_typedef id _tag node = record_decl_id node = Some id in
+    all_nodes;
+  let same_record_typedef id _tag node = typedef_record_id node = Some id in
   let collides_with_ordinary tag id =
     List.exists
       (fun node ->
@@ -1941,6 +2058,20 @@ let map_declarations ?(container = false) ~span declarations =
           Hashtbl.replace records tag alias
       | _ -> ())
     record_nodes_by_id;
+  let visible_record_ids = Hashtbl.create 64 in
+  let add_visible_record id =
+    if Hashtbl.mem record_ids id then Hashtbl.replace visible_record_ids id ()
+  in
+  List.iter
+    (fun node ->
+      if string "kind" node = Some "RecordDecl" then
+        Option.iter add_visible_record (string "id" node))
+    nodes;
+  List.iter
+    (fun node ->
+      if string "kind" node = Some "TypedefDecl" then
+        Option.iter add_visible_record (typedef_record_id node))
+    all_nodes;
   List.iter
     (fun node ->
       match (string "kind" node, record_name node, enum_decl_id node) with
@@ -1959,7 +2090,7 @@ let map_declarations ?(container = false) ~span declarations =
               Hashtbl.replace enums name representation)
             representation
       | _ -> ())
-    nodes;
+    all_nodes;
   let aliases = Hashtbl.create 64 in
   let aliases_being_resolved = Hashtbl.create 16 in
   let alias_name id = Hashtbl.find_opt alias_names_by_id id in
@@ -1999,7 +2130,7 @@ let map_declarations ?(container = false) ~span declarations =
                       Option.fold ~none:(Error "typedef has no canonical type")
                         ~some:
                           (type_result ~allow_arrays:true ~alias_name ~alias_type_node
-                             ~resolve_alias:alias ~record_ids ~record_nodes_by_id
+                             ~resolve_alias:alias ~record_ids ~visible_record_ids
                              ~enum_types:enum_id_types ~allow_record:true)
                         (type_node node))
             in
@@ -2204,7 +2335,7 @@ let map_declarations ?(container = false) ~span declarations =
   in
   let parse_type ?(allow_arrays = false) ~allow_record tree =
     type_result ~allow_arrays ~alias_name ~alias_type_node ~resolve_alias:alias
-      ~record_ids ~record_nodes_by_id ~enum_types:enum_id_types ~allow_record tree
+      ~record_ids ~visible_record_ids ~enum_types:enum_id_types ~allow_record tree
   in
   let rec contains_function_type seen node =
     match string "kind" node with
@@ -3015,6 +3146,17 @@ let map_declarations ?(container = false) ~span declarations =
         | _ -> acc)
       enums []
   in
+  let top_enum_ids =
+    nodes
+    |> List.filter (fun node -> string "kind" node = Some "EnumDecl")
+    |> List.filter_map (string "id")
+  in
+  let nested_enum_nodes =
+    all_nodes
+    |> List.filter (fun node ->
+        string "kind" node = Some "EnumDecl"
+        && not (List.mem (Option.value ~default:"" (string "id" node)) top_enum_ids))
+  in
   List.iter
     (fun node ->
       let name = Option.value ~default:"" (string "name" node) in
@@ -3027,7 +3169,7 @@ let map_declarations ?(container = false) ~span declarations =
           let value = string "value" node in
           match (Option.bind macro_code macro_type, value) with
           | Some (_, bits, unsigned), Some value ->
-              let ty =
+              let inferred_ty =
                 match (bits, unsigned, macro_code) with
                 | _, _, Some 11 -> Some Ast.Bool
                 | 8, false, _ -> Some (Ast.Int Ast.I8)
@@ -3039,6 +3181,15 @@ let map_declarations ?(container = false) ~span declarations =
                 | 64, false, _ -> Some (Ast.Int Ast.I64)
                 | 64, true, _ -> Some (Ast.Int Ast.U64)
                 | _ -> None
+              in
+              let machine_alias_ty =
+                Option.bind (string "macroTypeAliasName" node) (fun alias_name ->
+                    match alias alias_name with
+                    | Ok (Ast.Int (Ast.Usize | Ast.Isize) as ty) -> Some ty
+                    | _ -> None)
+              in
+              let ty =
+                match machine_alias_ty with Some _ as ty -> ty | None -> inferred_ty
               in
               Option.iter
                 (fun ty ->
@@ -3315,7 +3466,7 @@ let map_declarations ?(container = false) ~span declarations =
             (declaration_spelling node name)
             signature item (origin node) (quals node) reason ()
       | _ -> ())
-    nodes;
+    (nodes @ nested_enum_nodes);
   let items =
     List.sort
       (fun left right -> String.compare (item_name left) (item_name right))
