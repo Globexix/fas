@@ -7,6 +7,256 @@ open Sema_context
 
 let error span message = Error [ Diag.error span message ]
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
+let literal_condition_truth = function Hir.EBool (value, _) -> Some value | _ -> None
+
+let literal_expression_truth = function
+  | Hir.EBool (value, _) -> Some value
+  | Hir.EInt (value, _, _) -> Some (value <> 0L)
+  | _ -> None
+
+let fact_order ty =
+  match ty with
+  | Hir.Int (Hir.U8 | U16 | U32 | U64 | Usize) -> Int64.unsigned_compare
+  | _ -> Int64.compare
+
+let fact_bounds ty =
+  match ty with
+  | Hir.Int kind ->
+      let bits = int_bits kind in
+      if is_unsigned ty then
+        ( 0L,
+          if bits = 64 then Int64.minus_one else Int64.pred (Int64.shift_left 1L bits)
+        )
+      else if bits = 64 then (Int64.min_int, Int64.max_int)
+      else
+        let minimum = Int64.neg (Int64.shift_left 1L (bits - 1)) in
+        (minimum, Int64.pred (Int64.shift_left 1L (bits - 1)))
+  | _ -> (0L, 0L)
+
+let fact_in_domain ty value =
+  let low, high = fact_bounds ty in
+  fact_order ty value low >= 0 && fact_order ty value high <= 0
+
+let fact_exact ty value : value_fact =
+  let value = sign_extend_value ty value in
+  { low = value; high = value }
+
+let fact_single ty fact = fact_order ty fact.low fact.high = 0
+
+let fact_add ty left right =
+  let value = Int64.add left right in
+  let valid =
+    if is_unsigned ty then Int64.unsigned_compare value left >= 0
+    else Int64.logand (Int64.logxor left value) (Int64.logxor right value) >= 0L
+  in
+  if valid && fact_in_domain ty value then Some value else None
+
+let fact_sub ty left right =
+  let value = Int64.sub left right in
+  let valid =
+    if is_unsigned ty then Int64.unsigned_compare left right >= 0
+    else Int64.logand (Int64.logxor left right) (Int64.logxor left value) >= 0L
+  in
+  if valid && fact_in_domain ty value then Some value else None
+
+let fact_mul ty left right =
+  let _, maximum = fact_bounds ty in
+  if is_unsigned ty then
+    if right = 0L || Int64.unsigned_compare left (Int64.unsigned_div maximum right) <= 0
+    then
+      let value = Int64.mul left right in
+      if fact_in_domain ty value then Some value else None
+    else None
+  else if left = 0L || right = 0L then Some 0L
+  else if (left = Int64.min_int && right = -1L) || (right = Int64.min_int && left = -1L)
+  then None
+  else
+    let value = Int64.mul left right in
+    if Int64.div value right = left && fact_in_domain ty value then Some value else None
+
+let fact_min ty left right = if fact_order ty left right <= 0 then left else right
+let fact_max ty left right = if fact_order ty left right >= 0 then left else right
+
+let combine_facts op ty left right =
+  let endpoints =
+    match op with
+    | Ast.Add -> (fact_add ty left.low right.low, fact_add ty left.high right.high)
+    | Ast.Sub -> (fact_sub ty left.low right.high, fact_sub ty left.high right.low)
+    | Ast.Mul ->
+        let products =
+          [
+            fact_mul ty left.low right.low;
+            fact_mul ty left.low right.high;
+            fact_mul ty left.high right.low;
+            fact_mul ty left.high right.high;
+          ]
+        in
+        if List.exists Option.is_none products then (None, None)
+        else
+          let values = List.map Option.get products in
+          ( Some (List.fold_left (fact_min ty) (List.hd values) (List.tl values)),
+            Some (List.fold_left (fact_max ty) (List.hd values) (List.tl values)) )
+    | _ -> (None, None)
+  in
+  match endpoints with Some low, Some high -> Some { low; high } | _ -> None
+
+let rec value_fact (c : context) = function
+  | Hir.EInt (value, ty, _) -> Some (fact_exact ty value)
+  | Hir.Local (binding, _) -> Sema_flow.value_of c.flow binding
+  | Hir.Unary (Ast.Neg, value, ty, _) -> (
+      match value_fact c value with
+      | Some fact when is_int ty && not (is_unsigned ty) ->
+          if fact.low = fst (fact_bounds ty) then None
+          else Some { low = Int64.neg fact.high; high = Int64.neg fact.low }
+      | Some fact when fact.low = 0L && fact.high = 0L -> Some fact
+      | _ -> None)
+  | Hir.Binary (((Ast.Add | Ast.Sub | Ast.Mul) as op), left, right, ty, _) -> (
+      match (value_fact c left, value_fact c right) with
+      | Some left, Some right -> combine_facts op ty left right
+      | _ -> None)
+  | Hir.Ternary (condition, yes, no, ty, _) -> (
+      match condition_truth c condition with
+      | Some true -> value_fact c yes
+      | Some false -> value_fact c no
+      | None -> (
+          match (value_fact c yes, value_fact c no) with
+          | Some yes, Some no ->
+              Some
+                {
+                  low = fact_min ty yes.low no.low;
+                  high = fact_max ty yes.high no.high;
+                }
+          | _ -> None))
+  | _ -> None
+
+and fact_for_condition c expression =
+  match value_fact c expression with
+  | Some fact -> Some fact
+  | None when is_int (Hir.expr_ty expression) ->
+      let low, high = fact_bounds (Hir.expr_ty expression) in
+      Some { low; high }
+  | None -> None
+
+and comparison_truth op ty left right =
+  let compare = fact_order ty in
+  let exact = fact_single ty left && fact_single ty right in
+  match op with
+  | Ast.Lt when compare left.high right.low < 0 -> Some true
+  | Ast.Lt when compare left.low right.high >= 0 -> Some false
+  | Ast.Le when compare left.high right.low <= 0 -> Some true
+  | Ast.Le when compare left.low right.high > 0 -> Some false
+  | Ast.Gt when compare left.low right.high > 0 -> Some true
+  | Ast.Gt when compare left.high right.low <= 0 -> Some false
+  | Ast.Ge when compare left.low right.high >= 0 -> Some true
+  | Ast.Ge when compare left.high right.low < 0 -> Some false
+  | Ast.Eq when exact && compare left.low right.low = 0 -> Some true
+  | Ast.Eq when compare left.high right.low < 0 || compare right.high left.low < 0 ->
+      Some false
+  | Ast.Ne when exact && compare left.low right.low <> 0 -> Some true
+  | Ast.Ne when compare left.high right.low < 0 || compare right.high left.low < 0 ->
+      Some false
+  | _ -> None
+
+and condition_truth c = function
+  | Hir.EBool (value, _) -> Some value
+  | Hir.EInt (value, _, _) -> Some (value <> 0L)
+  | Hir.Unary (Ast.Not, value, _, _) -> Option.map not (condition_truth c value)
+  | Hir.Binary (Ast.And, left, right, _, _) -> (
+      match condition_truth c left with
+      | Some false -> Some false
+      | Some true -> condition_truth c right
+      | None -> (
+          match condition_truth c right with Some false -> Some false | _ -> None))
+  | Hir.Binary (Ast.Or, left, right, _, _) -> (
+      match condition_truth c left with
+      | Some true -> Some true
+      | Some false -> condition_truth c right
+      | None -> (
+          match condition_truth c right with Some true -> Some true | _ -> None))
+  | Hir.Binary
+      (((Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge) as op), left, right, _, _)
+    -> (
+      let ty = Hir.expr_ty left in
+      match (fact_for_condition c left, fact_for_condition c right) with
+      | Some left, Some right -> comparison_truth op ty left right
+      | _ -> None)
+  | _ -> None
+
+let reverse_comparison = function
+  | Ast.Lt -> Ast.Gt
+  | Ast.Le -> Ast.Ge
+  | Ast.Gt -> Ast.Lt
+  | Ast.Ge -> Ast.Le
+  | op -> op
+
+let constrain_fact ty fact op constant truth =
+  let low, high = (fact.low, fact.high) in
+  let lower_bound value = fact_max ty low value
+  and upper_bound value = fact_min ty high value in
+  let predecessor = fact_sub ty constant 1L and successor = fact_add ty constant 1L in
+  let interval =
+    match (op, truth) with
+    | Ast.Lt, true -> Option.map (fun high -> (low, upper_bound high)) predecessor
+    | Ast.Lt, false -> Some (lower_bound constant, high)
+    | Ast.Le, true -> Some (low, upper_bound constant)
+    | Ast.Le, false -> Option.map (fun low -> (lower_bound low, high)) successor
+    | Ast.Gt, true -> Option.map (fun low -> (lower_bound low, high)) successor
+    | Ast.Gt, false -> Some (low, upper_bound constant)
+    | Ast.Ge, true -> Some (lower_bound constant, high)
+    | Ast.Ge, false -> Option.map (fun high -> (low, upper_bound high)) predecessor
+    | Ast.Eq, true -> Some (lower_bound constant, upper_bound constant)
+    | Ast.Ne, false -> Some (lower_bound constant, upper_bound constant)
+    | Ast.Eq, false | Ast.Ne, true -> Some (low, high)
+    | _ -> None
+  in
+  match interval with
+  | Some (low, high) when fact_order ty low high <= 0 -> Some { low; high }
+  | _ -> None
+
+let refine_condition (c : context) expression truth =
+  let set_local binding op constant truth =
+    let fact =
+      match Sema_flow.value_of c.flow binding with
+      | Some fact -> fact
+      | None ->
+          let low, high = fact_bounds binding.ty in
+          { low; high }
+    in
+    Sema_flow.set_value c.flow binding
+      (constrain_fact binding.ty fact op constant truth)
+  in
+  let rec apply expression truth =
+    match expression with
+    | Hir.Unary (Ast.Not, inner, _, _) -> apply inner (not truth)
+    | Hir.Binary (Ast.And, left, right, _, _) when truth ->
+        apply left true;
+        apply right true
+    | Hir.Binary (Ast.Or, left, right, _, _) when not truth ->
+        apply left false;
+        apply right false
+    | Hir.Binary
+        ( ((Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge) as op),
+          Hir.Local (binding, _),
+          right,
+          _,
+          _ ) -> (
+        match value_fact c right with
+        | Some constant when fact_single (Hir.expr_ty right) constant ->
+            set_local binding op constant.low truth
+        | _ -> ())
+    | Hir.Binary
+        ( ((Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge) as op),
+          left,
+          Hir.Local (binding, _),
+          _,
+          _ ) -> (
+        match value_fact c left with
+        | Some constant when fact_single (Hir.expr_ty left) constant ->
+            set_local binding (reverse_comparison op) constant.low truth
+        | _ -> ())
+    | _ -> ()
+  in
+  apply expression truth
 
 let aggregate_construction ty entries span =
   let rec zero = function
@@ -310,6 +560,15 @@ let rec check_place (c : context) expr =
     | Ok (ty, value) -> Known (ty, value)
     | Error _ -> Dynamic
   in
+  let index_outside ty fact length =
+    let count = Int64.of_int length in
+    let unsigned = is_unsigned ty in
+    let all_outside =
+      if unsigned then Int64.unsigned_compare fact.low count >= 0
+      else fact.high < 0L || fact.low >= count
+    in
+    all_outside
+  in
   match expr with
   | Ast.Ident (n, s)
     when Option.is_none (lookup_local n c)
@@ -384,16 +643,44 @@ let rec check_place (c : context) expr =
                     path;
                   }
             | Dynamic ->
-                Ok
-                  {
-                    expr = Hir.Index (base.expr, checked_index, e, s);
-                    root = base.root;
-                    path =
-                      (match base.path with
-                      | Some (Exact path) -> Some (Dynamic_prefix path)
-                      | Some (Dynamic_prefix path) -> Some (Dynamic_prefix path)
-                      | None -> None);
-                  })
+                let fact = value_fact c checked_index in
+                if
+                  fact <> None
+                  && (not (Sema_flow.checking_dead c.flow))
+                  && Sema_flow.value_reachable c.flow
+                  && Sema_flow.falls_through c.flow
+                  && index_outside (Hir.expr_ty checked_index) (Option.get fact) length
+                then error s "array index is out of bounds"
+                else
+                  let index_expr =
+                    match fact with
+                    | Some fact when fact_single (Hir.expr_ty checked_index) fact ->
+                        Hir.EInt (fact.low, Hir.expr_ty checked_index, Ast.expr_span i)
+                    | _ -> checked_index
+                  in
+                  let known =
+                    match fact with
+                    | Some fact when fact_single (Hir.expr_ty checked_index) fact ->
+                        true
+                    | _ -> false
+                  in
+                  let value_path =
+                    match (base.root, base.path, known) with
+                    | Some _, Some (Exact path), true ->
+                        Some
+                          (Exact
+                             (path @ [ Element (Int64.to_int (Option.get fact).low) ]))
+                    | Some _, Some (Exact path), false -> Some (Dynamic_prefix path)
+                    | Some _, Some (Dynamic_prefix path), _ ->
+                        Some (Dynamic_prefix path)
+                    | _ -> None
+                  in
+                  Ok
+                    {
+                      expr = Hir.Index (base.expr, index_expr, e, s);
+                      root = base.root;
+                      path = value_path;
+                    })
       | (Hir.Array _ | Hir.Vec _), _ -> error s "array index takes one expression"
       | Hir.Addr, [ type_payload ] ->
           let* () =
@@ -625,17 +912,37 @@ and check_expr (c : context) expected expression =
       if op = Ast.And || op = Ast.Or then (
         let* a = check_expr c None l in
         let after_left = Sema_flow.snapshot c.flow in
-        let dead =
+        let left_truth = condition_truth c a in
+        let literal_dead =
           match (op, a) with
           | Ast.And, Hir.EBool (false, _) | Ast.Or, Hir.EBool (true, _) -> true
           | Ast.And, Hir.EInt (0L, _, _) -> true
           | Ast.Or, Hir.EInt (value, _, _) when value <> 0L -> true
           | _ -> false
         in
-        let* b = with_dead_check c dead (fun () -> check_expr c None r) in
+        let fact_dead =
+          (op = Ast.And && left_truth = Some false)
+          || (op = Ast.Or && left_truth = Some true)
+        in
+        (match op with
+        | Ast.And -> refine_condition c a true
+        | Ast.Or -> refine_condition c a false
+        | _ -> ());
+        let* b = with_dead_check c fact_dead (fun () -> check_expr c None r) in
         let after_right = Sema_flow.snapshot c.flow in
+        let initialized =
+          if literal_dead then after_left else merge_maps c after_left after_right
+        in
+        let value_paths =
+          match left_truth with
+          | Some false when op = Ast.And -> [ after_left ]
+          | Some true when op = Ast.Or -> [ after_left ]
+          | Some true when op = Ast.And -> [ after_right ]
+          | Some false when op = Ast.Or -> [ after_right ]
+          | _ -> [ after_left; after_right ]
+        in
         Sema_flow.restore c.flow
-          (if dead then after_left else merge_maps c after_left after_right);
+          (Sema_flow.merge_values_into c.flow initialized value_paths);
         if Hir.expr_ty a = Hir.Bool && Hir.expr_ty b = Hir.Bool then
           Ok (Hir.Binary (op, a, b, Hir.Bool, s))
         else error s "logical operands must be bool")
@@ -707,11 +1014,35 @@ and check_expr (c : context) expected expression =
               binary_result_type ~mismatch:"binary operands must have the same type" s
                 op at bt
             in
-            if
-              (op = Ast.Div || op = Ast.Rem)
-              && (not (Sema_flow.checking_dead c.flow))
-              && match b with Hir.EInt (v, _, _) -> v = 0L | _ -> false
-            then error s "division by zero is not a defined runtime operation"
+            let facts_enabled =
+              (not (Sema_flow.checking_dead c.flow))
+              && Sema_flow.value_reachable c.flow
+              && Sema_flow.falls_through c.flow
+            in
+            let divisor_fact = value_fact c b in
+            let division_by_zero =
+              facts_enabled
+              && (op = Ast.Div || op = Ast.Rem)
+              &&
+              match divisor_fact with
+              | Some fact -> fact_single bt fact && fact.low = 0L
+              | None -> false
+            in
+            let minimum_division_overflow =
+              facts_enabled && op = Ast.Div && is_int at
+              && (not (is_unsigned at))
+              &&
+              match (value_fact c a, divisor_fact) with
+              | Some numerator, Some denominator ->
+                  fact_single at numerator && fact_single bt denominator
+                  && numerator.low = fst (fact_bounds at)
+                  && denominator.low = -1L
+              | _ -> false
+            in
+            if division_by_zero then
+              error s "division by zero is not a defined runtime operation"
+            else if minimum_division_overflow then
+              error s "signed division overflow in constant expression"
             else Ok (Hir.Binary (op, a, b, result_ty, s)))
   | Ast.Call (fn, args, s) -> check_call c None fn args s
   | Ast.Handle_from_addr (t, e, s) -> (
@@ -770,8 +1101,12 @@ and check_expr (c : context) expected expression =
   | Ast.Addr_of (e, s) -> (
       let* place = check_place c e in
       (match (place.root, place.path) with
-      | Some binding, Some (Exact path) -> set_state c binding path Unknown
-      | Some binding, Some (Dynamic_prefix path) -> set_state c binding path Unknown
+      | Some binding, Some (Exact path) ->
+          set_state c binding path Unknown;
+          Sema_flow.forget_value c.flow binding
+      | Some binding, Some (Dynamic_prefix path) ->
+          set_state c binding path Unknown;
+          Sema_flow.forget_value c.flow binding
       | _ -> ());
       match place.expr with
       | Hir.Function_address _ -> Ok place.expr
@@ -814,12 +1149,8 @@ and check_expr (c : context) expected expression =
       if Hir.expr_ty tq <> Hir.Bool then error s "ternary condition must be bool"
       else
         let before_arms = Sema_flow.snapshot c.flow in
-        let condition =
-          match tq with
-          | Hir.EBool (value, _) -> Some value
-          | Hir.EInt (value, _, _) -> Some (value <> 0L)
-          | _ -> None
-        in
+        let condition = condition_truth c tq
+        and init_condition = literal_expression_truth tq in
         let* expected =
           if
             expected = None
@@ -831,21 +1162,32 @@ and check_expr (c : context) expected expression =
             Ok (match Hir.expr_ty peer with Hir.Vec _ as ty -> Some ty | _ -> None))
           else Ok expected
         in
+        refine_condition c tq true;
         let* ta =
           with_dead_check c (condition = Some false) (fun () -> check_expr c expected a)
         in
         let after_a = Sema_flow.snapshot c.flow in
         Sema_flow.restore c.flow before_arms;
+        refine_condition c tq false;
         let* tb =
           with_dead_check c (condition = Some true) (fun () ->
               check_expr c (Some (Hir.expr_ty ta)) b)
         in
         let after_b = Sema_flow.snapshot c.flow in
-        Sema_flow.restore c.flow
-          (match condition with
+        let initialized =
+          match init_condition with
           | Some true -> after_a
           | Some false -> after_b
-          | None -> merge_maps c after_a after_b);
+          | None -> merge_maps c after_a after_b
+        in
+        let value_paths =
+          match condition with
+          | Some true -> [ after_a ]
+          | Some false -> [ after_b ]
+          | None -> [ after_a; after_b ]
+        in
+        Sema_flow.restore c.flow
+          (Sema_flow.merge_values_into c.flow initialized value_paths);
         let at = Hir.expr_ty ta and bt = Hir.expr_ty tb in
         let result_ty =
           if equal at bt then Some at
@@ -1966,7 +2308,12 @@ and check_stmt (c : context) = function
             Ok (Some initialized)
       in
       let* binding = add_local name t c span in
-      if Option.is_some x then mark_init binding c;
+      (match x with
+      | Some (`Value value) ->
+          mark_init binding c;
+          Sema_flow.set_value c.flow binding (value_fact c value)
+      | Some (`Aggregate _) -> mark_init binding c
+      | None -> ());
       match x with
       | None -> Ok (Hir.Let (binding, None, span))
       | Some (`Value value) -> Ok (Hir.Let (binding, Some value, span))
@@ -2023,6 +2370,11 @@ and check_stmt (c : context) = function
       | Some binding, Some (Exact path) -> set_state c binding path Full
       | Some binding, Some (Dynamic_prefix path) -> set_state c binding path Unknown
       | _ -> ());
+      (match (checked_target.root, checked_target.path) with
+      | Some binding, Some (Exact []) when is_int binding.ty ->
+          Sema_flow.set_value c.flow binding (value_fact c v)
+      | Some _, _ -> ()
+      | _ -> ());
       Ok (Hir.Assign (target, v, span))
   | Ast.Compound_assign (t, op, e, span) ->
       let* checked_target = check_target c t in
@@ -2077,6 +2429,17 @@ and check_stmt (c : context) = function
         (match (checked_target.root, checked_target.path) with
         | Some binding, Some (Exact path) -> set_state c binding path Full
         | Some binding, Some (Dynamic_prefix path) -> set_state c binding path Unknown
+        | _ -> ());
+        (match (checked_target.root, checked_target.path) with
+        | Some binding, Some (Exact []) when is_int binding.ty ->
+            let result =
+              match (op, value_fact c (Hir.Local (binding, span)), value_fact c v) with
+              | ((Ast.Add | Ast.Sub | Ast.Mul) as op), Some left, Some right ->
+                  combine_facts op et left right
+              | _ -> None
+            in
+            Sema_flow.set_value c.flow binding result
+        | Some _, _ -> ()
         | _ -> ());
         Ok (Hir.Compound_assign (target, op, v, et, span)))
   | Ast.Expr_stmt (Ast.Call (Ast.Ident ("copy", _), args, call_span), _) ->
@@ -2158,50 +2521,75 @@ and check_stmt (c : context) = function
       let* tq = check_expr c None q in
       if Hir.expr_ty tq <> Hir.Bool then error s "if condition must be bool"
       else
+        let condition = condition_truth c tq
+        and init_condition = literal_condition_truth tq in
         let before = Sema_flow.snapshot c.flow in
         let before_falls = Sema_flow.falls_through c.flow in
+        refine_condition c tq true;
         Sema_flow.set_falls_through c.flow before_falls;
-        let* ta = check_block c a in
+        let* ta =
+          with_dead_check c (condition = Some false) (fun () -> check_block c a)
+        in
         let ia = Sema_flow.snapshot c.flow in
         let fa = Sema_flow.falls_through c.flow in
         Sema_flow.restore c.flow before;
+        refine_condition c tq false;
         Sema_flow.set_falls_through c.flow before_falls;
         let* tb =
           match b with
           | None -> Ok None
           | Some xs ->
-              let* x = check_block c xs in
+              let* x =
+                with_dead_check c (condition = Some true) (fun () -> check_block c xs)
+              in
               Ok (Some x)
         in
         let ib = Sema_flow.snapshot c.flow in
         let fb = Sema_flow.falls_through c.flow in
-        (match tq with
-        | Hir.EBool (true, _) ->
-            Sema_flow.restore c.flow ia;
-            Sema_flow.set_falls_through c.flow (before_falls && fa)
-        | Hir.EBool (false, _) ->
-            Sema_flow.restore c.flow ib;
-            Sema_flow.set_falls_through c.flow (before_falls && fb)
-        | _ ->
-            Sema_flow.restore c.flow
-              (match (fa, fb) with
-              | true, true -> merge_maps c ia ib
-              | true, false -> ia
-              | false, true -> ib
-              | false, false -> before);
-            Sema_flow.set_falls_through c.flow (before_falls && (fa || fb)));
+        let initialized, initialization_falls_through =
+          match init_condition with
+          | Some true -> (ia, before_falls && fa)
+          | Some false -> (ib, before_falls && fb)
+          | None ->
+              ( (match (fa, fb) with
+                | true, true -> merge_maps c ia ib
+                | true, false -> ia
+                | false, true -> ib
+                | false, false -> before),
+                before_falls && (fa || fb) )
+        in
+        let value_paths =
+          match condition with
+          | Some true -> if fa then [ ia ] else []
+          | Some false -> if fb then [ ib ] else []
+          | None -> (
+              match (fa, fb) with
+              | true, true -> [ ia; ib ]
+              | true, false -> [ ia ]
+              | false, true -> [ ib ]
+              | false, false -> [ before ])
+        in
+        Sema_flow.restore c.flow
+          (Sema_flow.merge_values_into c.flow initialized value_paths);
+        Sema_flow.set_falls_through c.flow initialization_falls_through;
         Ok (Hir.If (tq, ta, tb, s))
   | Ast.While (q, b, s) ->
       let* tq = check_expr c None q in
       if Hir.expr_ty tq <> Hir.Bool then error s "while condition must be bool"
       else
+        let condition = condition_truth c tq in
+        let init_condition = literal_condition_truth tq in
         let loop = Sema_flow.begin_loop c.flow in
-        let checked = check_block c b in
+        Sema_flow.forget_all_values c.flow;
+        if condition <> Some false then refine_condition c tq true;
+        let checked =
+          with_dead_check c (condition = Some false) (fun () -> check_block c b)
+        in
         Sema_flow.end_loop c.flow;
         let* tb = checked in
-        Sema_flow.finish_while c.flow loop ~condition_is_true:(Hir.condition_is_true tq)
-          ~condition_is_false:
-            (match tq with Hir.EBool (false, _) -> true | _ -> false);
+        Sema_flow.finish_while c.flow loop
+          ~condition_is_true:(init_condition = Some true)
+          ~condition_is_false:(init_condition = Some false);
         Ok (Hir.While (tq, tb, s))
   | Ast.For (i, q, step, b, s) ->
       push c;
@@ -2221,8 +2609,25 @@ and check_stmt (c : context) = function
               if Hir.expr_ty y = Hir.Bool then Ok (Some y)
               else error (Ast.expr_span x) "for condition must be bool"
         in
+        let condition =
+          match tq with
+          | None -> Some true
+          | Some condition -> condition_truth c condition
+        in
         let loop = Sema_flow.begin_loop c.flow in
-        let body_result = check_block c b in
+        Sema_flow.forget_all_values c.flow;
+        let init_condition =
+          match tq with
+          | None -> Some true
+          | Some condition -> literal_condition_truth condition
+        in
+        (match tq with
+        | Some condition_expr when condition <> Some false ->
+            refine_condition c condition_expr true
+        | _ -> ());
+        let body_result =
+          with_dead_check c (condition = Some false) (fun () -> check_block c b)
+        in
         let* tb = body_result in
         Sema_flow.prepare_for_step c.flow loop
           ~body_falls_through:(Hir.block_flow tb).falls_through;
@@ -2230,18 +2635,13 @@ and check_stmt (c : context) = function
           match step with
           | None -> Ok None
           | Some x ->
-              let* y = check_stmt c x in
+              let* y =
+                with_dead_check c (condition = Some false) (fun () -> check_stmt c x)
+              in
               Ok (Some y)
         in
-        let unconditional =
-          match tq with
-          | None -> true
-          | Some condition -> Hir.condition_is_true condition
-        in
-        let condition_is_false =
-          match tq with Some (Hir.EBool (false, _)) -> true | _ -> false
-        in
-        Sema_flow.finish_for c.flow loop ~unconditional ~condition_is_false;
+        Sema_flow.finish_for c.flow loop ~unconditional:(init_condition = Some true)
+          ~condition_is_false:(init_condition = Some false);
         Sema_flow.end_loop c.flow;
         Ok (Hir.For (ti, tq, ts, tb, s))
       in

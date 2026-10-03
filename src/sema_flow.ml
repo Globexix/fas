@@ -3,6 +3,8 @@ module State_map = Map.Make (Int)
 type binding = Hir.local = { name : string; ty : Hir.ty; id : int }
 type selector = Field of string | Element of int
 type init_state = Uninit | Full | Unknown | Partial of (selector * init_state) list
+type value_fact = { low : int64; high : int64 }
+type value_state = value_fact option State_map.t
 type place_path = Exact of selector list | Dynamic_prefix of selector list
 type view_access = Mutable_access | Constant_access | Readonly_access
 type deferred_requirement = binding * selector list * Span.t
@@ -15,13 +17,18 @@ type checked_defer = {
 
 type loop_init_flow = {
   keep_defer_depth : int;
-  entry_state : init_state State_map.t;
+  entry_state : snapshot;
   entry_falls_through : bool;
-  mutable break_states : init_state State_map.t list;
-  mutable continue_states : init_state State_map.t list;
+  mutable break_states : snapshot list;
+  mutable continue_states : snapshot list;
 }
 
-type snapshot = init_state State_map.t
+and snapshot = {
+  initialized : init_state State_map.t;
+  values : value_state;
+  value_reachable : bool;
+}
+
 type loop = loop_init_flow
 
 type defer_capture = {
@@ -36,6 +43,8 @@ type t = {
   view_origins : (int, (binding * place_path) option) Hashtbl.t;
   view_accesses : (int, view_access) Hashtbl.t;
   mutable initialized : init_state State_map.t;
+  mutable values : value_state;
+  mutable value_reachable : bool;
   mutable next_binding_id : int;
   mutable loop_depth : int;
   mutable loop_init_flows : loop_init_flow list;
@@ -60,6 +69,8 @@ let create ~initial_scope structs =
     view_origins = Hashtbl.create 16;
     view_accesses = Hashtbl.create 16;
     initialized = State_map.empty;
+    values = State_map.empty;
+    value_reachable = true;
     next_binding_id = 0;
     loop_depth = 0;
     loop_init_flows = [];
@@ -120,14 +131,23 @@ let bind_view flow binding root path access =
     match (root, path) with Some root, Some path -> Some (root, path) | _ -> None
   in
   Hashtbl.replace flow.view_origins binding.id origin;
-  Hashtbl.replace flow.view_accesses binding.id access
+  Hashtbl.replace flow.view_accesses binding.id access;
+  Option.iter
+    (fun (root, _) -> flow.values <- State_map.add root.id None flow.values)
+    origin
 
 let push flow =
   flow.locals := Hashtbl.create 8 :: !(flow.locals);
   flow.defer_scopes <- [] :: flow.defer_scopes
 
 let pop flow =
-  (match !(flow.locals) with _ :: rest -> flow.locals := rest | [] -> ());
+  (match !(flow.locals) with
+  | scope :: rest ->
+      flow.locals := rest;
+      Hashtbl.iter
+        (fun _ binding -> flow.values <- State_map.remove binding.id flow.values)
+        scope
+  | [] -> ());
   match flow.defer_scopes with _ :: rest -> flow.defer_scopes <- rest | [] -> ()
 
 let state_of flow binding =
@@ -271,6 +291,26 @@ let set_state flow binding path replacement =
     flow.initialized <- State_map.remove binding.id flow.initialized
   else flow.initialized <- State_map.add binding.id state flow.initialized
 
+let value_of flow binding =
+  match binding.ty with
+  | Hir.Int _ -> Option.join (State_map.find_opt binding.id flow.values)
+  | _ -> None
+
+let value_reachable flow = flow.value_reachable
+
+let set_value flow binding value =
+  match (binding.ty, State_map.find_opt binding.id flow.values, value) with
+  | Hir.Int _, Some None, _ -> ()
+  | Hir.Int _, _, Some value ->
+      flow.values <- State_map.add binding.id (Some value) flow.values
+  | Hir.Int _, _, None -> flow.values <- State_map.remove binding.id flow.values
+  | _ -> flow.values <- State_map.remove binding.id flow.values
+
+let forget_value flow binding = flow.values <- State_map.add binding.id None flow.values
+
+let forget_all_values flow =
+  flow.values <- State_map.filter (fun _ value -> Option.is_none value) flow.values
+
 let require_state binding path flow span =
   let rec walk ty state = function
     | [] -> if state_usable state || is_vacuous_type flow ty then Ok () else Error ()
@@ -378,7 +418,7 @@ let merge_state flow ty left right =
   in
   merge ty left right
 
-let merge_maps flow left right =
+let merge_initialized_maps flow left right =
   State_map.merge
     (fun id left right ->
       let rec find = function
@@ -405,6 +445,88 @@ let merge_maps flow left right =
           in
           if state = Uninit then None else Some state)
     left right
+
+let fact_compare ty left right =
+  match ty with
+  | Hir.Int (Hir.U8 | U16 | U32 | U64 | Usize) -> Int64.unsigned_compare left right
+  | _ -> Int64.compare left right
+
+let find_binding flow id =
+  List.find_map
+    (fun scope ->
+      Hashtbl.fold
+        (fun _ binding found -> if binding.id = id then Some binding else found)
+        scope None)
+    !(flow.locals)
+
+let merge_value_maps flow left right =
+  State_map.merge
+    (fun id left right ->
+      match (find_binding flow id, left, right) with
+      | Some binding, Some (Some left), Some (Some right) ->
+          Some
+            (Some
+               {
+                 low =
+                   (if fact_compare binding.ty left.low right.low <= 0 then left.low
+                    else right.low);
+                 high =
+                   (if fact_compare binding.ty left.high right.high >= 0 then left.high
+                    else right.high);
+               })
+      | Some _, Some None, _ | Some _, _, Some None -> Some None
+      | _ -> None)
+    left right
+
+let merge_maps (flow : t) (left : snapshot) (right : snapshot) : snapshot =
+  let values, value_reachable =
+    match (left.value_reachable, right.value_reachable) with
+    | true, true -> (merge_value_maps flow left.values right.values, true)
+    | true, false -> (left.values, true)
+    | false, true -> (right.values, true)
+    | false, false -> (State_map.empty, false)
+  in
+  {
+    initialized = merge_initialized_maps flow left.initialized right.initialized;
+    values;
+    value_reachable;
+  }
+
+let merge_values_into (flow : t) (state : snapshot) (values : snapshot list) : snapshot
+    =
+  let values = List.filter (fun (state : snapshot) -> state.value_reachable) values in
+  let merged =
+    match values with
+    | [] -> State_map.empty
+    | first :: rest ->
+        List.fold_left
+          (fun facts (next : snapshot) -> merge_value_maps flow facts next.values)
+          first.values rest
+  in
+  { state with values = merged; value_reachable = values <> [] }
+
+let widen_values entry result =
+  State_map.merge
+    (fun _ initial after ->
+      match (initial, after) with
+      | Some initial, Some after when initial = after -> Some after
+      | _ -> None)
+    entry result
+
+let widen_loop (entry : snapshot) (result : snapshot) : snapshot =
+  { result with values = widen_values entry.values result.values }
+
+let snapshot (flow : t) : snapshot =
+  {
+    initialized = flow.initialized;
+    values = flow.values;
+    value_reachable = flow.value_reachable;
+  }
+
+let restore (flow : t) (state : snapshot) =
+  flow.initialized <- state.initialized;
+  flow.values <- state.values;
+  flow.value_reachable <- state.value_reachable
 
 let add_init_state flow ty left right =
   let rec add ty left right =
@@ -463,10 +585,10 @@ let validate_defer_scopes flow keep =
   run count flow.defer_scopes
 
 let exit_defer_state flow keep =
-  let before = flow.initialized in
+  let before = snapshot flow in
   let result = validate_defer_scopes flow keep in
-  let after = flow.initialized in
-  flow.initialized <- before;
+  let after = snapshot flow in
+  restore flow before;
   let* falls_through = result in
   Ok (if falls_through then Some after else None)
 
@@ -488,8 +610,6 @@ let with_dead_check flow dead check =
   result
 
 let checking_dead flow = flow.checking_dead
-let snapshot flow = flow.initialized
-let restore flow state = flow.initialized <- state
 let merge = merge_maps
 let falls_through flow = flow.falls_through
 let set_falls_through flow value = flow.falls_through <- value
@@ -508,7 +628,7 @@ let finish_block_scope flow =
   Ok ()
 
 let finish_statement flow ~before ~terminates =
-  if not flow.falls_through then flow.initialized <- before
+  if not flow.falls_through then restore flow before
   else if terminates then flow.falls_through <- false
 
 let validate_return flow span =
@@ -518,7 +638,7 @@ let begin_loop flow =
   let loop =
     {
       keep_defer_depth = List.length flow.defer_scopes;
-      entry_state = flow.initialized;
+      entry_state = snapshot flow;
       entry_falls_through = flow.falls_through;
       break_states = [];
       continue_states = [];
@@ -535,34 +655,38 @@ let end_loop flow =
 
 let finish_while flow loop ~condition_is_true ~condition_is_false =
   let iteration_states =
-    (if flow.falls_through then [ flow.initialized ] else []) @ loop.continue_states
+    (if flow.falls_through then [ snapshot flow ] else []) @ loop.continue_states
   in
   let exit_states =
     if condition_is_true then loop.break_states
     else if condition_is_false then [ loop.entry_state ]
     else loop.entry_state :: (iteration_states @ loop.break_states)
   in
-  flow.initialized <-
-    Option.value ~default:loop.entry_state (merge_flow_states flow exit_states);
+  let result =
+    Option.value ~default:loop.entry_state (merge_flow_states flow exit_states)
+  in
+  restore flow (widen_loop loop.entry_state result);
   flow.falls_through <- loop.entry_falls_through && exit_states <> []
 
 let prepare_for_step flow loop ~body_falls_through =
   let step_states =
-    if body_falls_through then flow.initialized :: loop.continue_states
+    if body_falls_through then snapshot flow :: loop.continue_states
     else loop.continue_states
   in
-  flow.initialized <-
-    Option.value ~default:loop.entry_state (merge_flow_states flow step_states);
+  restore flow
+    (Option.value ~default:loop.entry_state (merge_flow_states flow step_states));
   flow.falls_through <- step_states <> []
 
 let finish_for flow loop ~unconditional ~condition_is_false =
   let exit_states =
     if unconditional then loop.break_states
     else if condition_is_false then [ loop.entry_state ]
-    else loop.entry_state :: flow.initialized :: loop.break_states
+    else loop.entry_state :: snapshot flow :: loop.break_states
   in
-  flow.initialized <-
-    Option.value ~default:loop.entry_state (merge_flow_states flow exit_states);
+  let result =
+    Option.value ~default:loop.entry_state (merge_flow_states flow exit_states)
+  in
+  restore flow (widen_loop loop.entry_state result);
   flow.falls_through <- loop.entry_falls_through && exit_states <> []
 
 let record_loop_exit flow span kind =
@@ -595,7 +719,7 @@ let begin_defer flow span =
     in
     let capture =
       {
-        defer_before = flow.initialized;
+        defer_before = snapshot flow;
         defer_before_falls_through = flow.falls_through;
         defer_visible_bindings = visible_bindings;
       }
@@ -610,7 +734,7 @@ let finish_defer flow capture checked ~falls_through:body_falls_through =
   let requirements = Option.value ~default:[] flow.collecting_defer |> List.rev in
   flow.in_defer <- false;
   flow.collecting_defer <- None;
-  flow.initialized <- capture.defer_before;
+  restore flow capture.defer_before;
   flow.falls_through <- capture.defer_before_falls_through;
   let* body = checked in
   let effects =

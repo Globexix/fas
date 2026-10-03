@@ -11477,4 +11477,146 @@ let () =
      return 0 }\n\
     \ fn g() u32 { return f[4]() }"
 
+let () =
+  semantic_message "value-fact-index-arithmetic" "array index is out of bounds"
+    "fn f() u8 { values arr[4,u8] = {0,1,2,3}\n\
+     index usize = 2 + 2\n\
+     return values[index] }";
+  semantic_message "value-fact-branch-joined-index" "array index is out of bounds"
+    "fn f(flag bool) u8 { values arr[4,u8] = {0,1,2,3}\n\
+     index usize = 0\n\
+     if flag { index = 4 } else { index = 4 }\n\
+     return values[index] }";
+  semantic_accept "value-fact-branch-hull-keeps-unknown"
+    "fn f(flag bool) u8 { values arr[4,u8] = {0,1,2,3}\n\
+     index usize = 0\n\
+     if flag { index = 4 } else { index = 1 }\n\
+     return values[index] }";
+  semantic_message "value-fact-view-index" "array index is out of bounds"
+    "fn f() u8 { values arr[4,u8] = {0,1,2,3}\n\
+     view row = values\n\
+     index usize = 4\n\
+     return row[index] }";
+  semantic_message "value-fact-global-index" "array index is out of bounds"
+    "var Values arr[2,u8] = {1,2}\nfn f() u8 { index usize = 2\nreturn Values[index] }";
+  semantic_accept "value-fact-address-escape-keeps-unknown"
+    "fn f() u8 { values arr[4,u8] = {0,1,2,3}\n\
+     index usize = 4\n\
+     pointer addr = &index\n\
+     return values[index] }";
+  semantic_accept "value-fact-wrapping-update-keeps-unknown"
+    "fn f() u8 { values arr[4,u8] = {0,1,2,3}\n\
+     index u8 = 255\n\
+     index += 1\n\
+     return values[index] }";
+  semantic_accept "value-fact-specialized-false-guard"
+    "fn at[N const usize]() u8 { values arr[4,u8] = {0,1,2,3}\n\
+     if N < 4 { return values[N] }\n\
+     return 0 }\n\
+     fn instantiate() u8 { return at[7]() }";
+  semantic_accept "value-fact-local-false-guard"
+    "fn f() u8 { values arr[4,u8] = {0,1,2,3}\n\
+     index usize = 7\n\
+     if index < 4 { return values[index] }\n\
+     return 0 }";
+  semantic_message "value-fact-comparison-refined-index" "array index is out of bounds"
+    "fn f(index usize) u8 { values arr[4,u8] = {0,1,2,3}\n\
+     if index >= 4 { return values[index] }\n\
+     return 0 }";
+  semantic_message "value-fact-generic-index" "array index is out of bounds"
+    "fn at[N const usize]() u8 { values arr[N,u8] = {}\n\
+     index usize = N\n\
+     return values[index] }\n\
+     fn instantiate() u8 { return at[2]() }";
+  semantic_message "value-fact-vector-lane" "array index is out of bounds"
+    "fn f() u32 { values vec[2,u32] = {7,9}\nlane usize = 1 + 1\nreturn values[lane] }";
+  semantic_accept "value-fact-valid-vector-lane"
+    "fn f(lane usize) u32 { values vec[2,u32] = {7,9}\n\
+     if lane < 2 { return values[lane] }\n\
+     return 0 }";
+  semantic_accept "value-fact-generic-valid-specialization"
+    "fn at[N const usize](index usize) u8 { values arr[N,u8] = {}\n\
+     return values[index] }\n\
+     fn instantiate(index usize) u8 { return at[4](index) }";
+  semantic_accept "value-fact-unknown-index"
+    "fn f(index usize) u8 { values arr[4,u8] = {0,1,2,3}\nreturn values[index] }";
+  semantic_accept "value-fact-data-dependent-branch-index"
+    "fn f(flag bool) u8 { values arr[4,u8] = {0,1,2,3}\n\
+     index usize = 1\n\
+     if flag { index = 4 }\n\
+     return values[index] }";
+  semantic_accept "value-fact-loop-break-before-index"
+    "fn f() u8 { values arr[4,u8] = {0,1,2,3}\n\
+     index usize = 4\n\
+     for i usize = 0; i <= 4; i += 1 {\n\
+     break\n\
+     values[index]\n\
+     }\n\
+     return 0 }";
+  semantic_accept "value-fact-loop-unknown-bound"
+    "fn f(bound usize) u8 { values arr[4,u8] = {0,1,2,3}\n\
+     result u8 = 0\n\
+     for index usize = 0; index <= bound; index += 1 {\n\
+     result = values[index]\n\
+     }\n\
+     return result }";
+  semantic_message "value-fact-divide-by-zero"
+    "division by zero is not a defined runtime operation"
+    "fn f() i32 { divisor i32 = 9\ndivisor -= 9\nreturn 81 / divisor }";
+  semantic_message "value-fact-remainder-by-zero"
+    "division by zero is not a defined runtime operation"
+    "fn f() i32 { divisor i32 = 3 - 3\nreturn 81 % divisor }";
+  semantic_accept "value-fact-unknown-divisor"
+    "fn f(divisor i32) i32 { return 81 / divisor }";
+  semantic_message "value-fact-min-div-minus-one"
+    "signed division overflow in constant expression"
+    "fn f() i32 { value i32 = -2147483648\ndivisor i32 = -1\nreturn value / divisor }";
+  semantic_accept "value-fact-min-rem-minus-one-is-defined"
+    "fn f() i32 { value i32 = -2147483648\ndivisor i32 = -1\nreturn value % divisor }";
+  semantic_accept "value-fact-min-div-minus-two"
+    "fn f() i32 { value i32 = -2147483648\ndivisor i32 = -2\nreturn value / divisor }"
+
+let () =
+  semantic_accept "value-fact-init-return-before-divide"
+    "fn main() i32 { divisor i32 = 7\n\
+     if divisor == 7 { divisor = 0 }\n\
+     if divisor == 0 { return 0 }\n\
+     quotient i32 = 91 / divisor\n\
+     return quotient == 13 ? 0 : 1 }";
+  semantic_accept "value-fact-init-for-reaches-initializer"
+    "fn main() i32 { x u32\n\
+     for i usize = 0; i < 2; i += 1 { if i == 1 { x = 3 } }\n\
+     value u32 = x\n\
+     return 0 }";
+  semantic_accept "value-fact-init-for-unconditional-initializer"
+    "fn main() i32 { x u32\n\
+     for i usize = 0; i < 1; i += 1 { x = 3 }\n\
+     return bitcast[i32](x) - 3 }";
+  semantic_accept "value-fact-init-for-initializes-both-elements"
+    "fn main() i32 { xs arr[2,u32]\n\
+     for i usize = 0; i < 2; i += 1 { xs[i] = 8 }\n\
+     value u32 = xs[1]\n\
+     return 0 }";
+  semantic_accept "value-fact-init-for-fill-last-element"
+    "fn main() i32 { xs arr[2,u32]\n\
+     for i usize = 0; i < 1; i += 1 { xs[i] = 8 }\n\
+     xs[1] = 9\n\
+     return bitcast[i32](xs[1]) - 9 }";
+  semantic_accept "value-fact-init-while-all-lanes"
+    "fn main() i32 { values vec[128,u16]\n\
+     lane usize = 0\n\
+     while lane < 128 { values[lane] = 0\n\
+     lane += 1 }\n\
+     (&values)[u16, 0] = 13\n\
+     return reduce_sum(values) == 13 ? 0 : 1 }";
+  semantic_accept "value-fact-init-while-fallback-lanes"
+    "fn main() i32 { values arr[4,u32] = {1, 2, 3, 4}\n\
+     fallback vec[4,u32]\n\
+     lane usize = 0\n\
+     while lane < 4 { fallback[lane] = 0\n\
+     lane += 1 }\n\
+     mask vec[4,bool] = {true, true, true, true}\n\
+     loaded vec[4,u32] = masked_load[u32](&values, mask, fallback)\n\
+     return loaded[0] == 1 && loaded[3] == 4 ? 0 : 1 }"
+
 let () = Printf.printf "all regression checks: %d passed\n" !checks_run

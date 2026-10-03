@@ -1,6 +1,7 @@
 type binding = Hir.local = { name : string; ty : Hir.ty; id : int }
 type selector = Field of string | Element of int
 type init_state = Uninit | Full | Unknown | Partial of (selector * init_state) list
+type value_fact = { low : int64; high : int64 }
 type place_path = Exact of selector list | Dynamic_prefix of selector list
 type view_access = Mutable_access | Constant_access | Readonly_access
 type snapshot
@@ -22,6 +23,11 @@ val bind_view :
 val push : t -> unit
 val pop : t -> unit
 val set_state : t -> binding -> selector list -> init_state -> unit
+val value_of : t -> binding -> value_fact option
+val set_value : t -> binding -> value_fact option -> unit
+val forget_value : t -> binding -> unit
+val forget_all_values : t -> unit
+val value_reachable : t -> bool
 val copy_state : t -> binding -> selector list -> binding -> selector list -> unit
 
 val require_state :
@@ -37,6 +43,7 @@ val checking_dead : t -> bool
 val snapshot : t -> snapshot
 val restore : t -> snapshot -> unit
 val merge : t -> snapshot -> snapshot -> snapshot
+val merge_values_into : t -> snapshot -> snapshot list -> snapshot
 val falls_through : t -> bool
 val set_falls_through : t -> bool -> unit
 val finish_block_scope : t -> (unit, Diag.t list) result
