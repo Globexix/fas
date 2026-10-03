@@ -139,3 +139,25 @@ let show = function
   | Not -> "`!`"
   | Newline -> "newline"
   | Eof -> "end of file"
+
+let c_header_component = function
+  | Ident text | Int text -> Some text
+  | Kw_fn -> Some "fn"
+  | Kw_return -> Some "return"
+  | Kw_if -> Some "if"
+  | Kw_else -> Some "else"
+  | Kw_while -> Some "while"
+  | Kw_break -> Some "break"
+  | Kw_continue -> Some "continue"
+  | Kw_const -> Some "const"
+  | Kw_var -> Some "var"
+  | Kw_struct -> Some "struct"
+  | Kw_opaque -> Some "opaque"
+  | Kw_extern -> Some "extern"
+  | Kw_defer -> Some "defer"
+  | Kw_use -> Some "use"
+  | Kw_for -> Some "for"
+  | Kw_switch -> Some "switch"
+  | Kw_case -> Some "case"
+  | Kw_default -> Some "default"
+  | _ -> None

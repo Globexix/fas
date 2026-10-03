@@ -1,0 +1,2 @@
+use "C" <net/if.h>
+fn main() i32 { return 0 }

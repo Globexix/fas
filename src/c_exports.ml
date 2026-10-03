@@ -139,7 +139,33 @@ let declarations ?(reserved = []) records (program : program) =
       errors
   in
   let lines = ref [] and headers = ref [] and seen = Hashtbl.create 32 in
+  let record_headers_seen = Hashtbl.create 32 in
   let add text = lines := text :: !lines in
+  let add_header record =
+    Option.iter (fun header -> headers := header :: !headers) record.header
+  in
+  let rec add_type_headers active = function
+    | Struct name -> add_record_headers active name
+    | Array (_, ty) -> add_type_headers active ty
+    | _ -> ()
+  and add_record_headers active name =
+    if (not (List.mem name active)) && not (Hashtbl.mem record_headers_seen name) then
+      match List.find_opt (fun record -> record.name = name) records with
+      | None -> ()
+      | Some record ->
+          Hashtbl.add record_headers_seen name ();
+          (match
+             List.find_opt
+               (fun (structure : struct_def) -> structure.name = name)
+               program.structs
+           with
+          | None -> ()
+          | Some structure ->
+              List.iter
+                (fun (field : field) -> add_type_headers (name :: active) field.ty)
+                structure.fields);
+          add_header record
+  in
   let rec base = function
     | Bool -> "bool"
     | Int Usize -> "size_t"
@@ -160,7 +186,7 @@ let declarations ?(reserved = []) records (program : program) =
             then (
               Hashtbl.add seen ("handle:" ^ name) ();
               add (r.spelling ^ ";\n"));
-            Option.iter (fun h -> headers := h :: !headers) r.header;
+            add_record_headers [] name;
             r.spelling ^ " *"
         | None ->
             if not (Hashtbl.mem seen ("handle:" ^ name)) then (
@@ -194,7 +220,7 @@ let declarations ?(reserved = []) records (program : program) =
           let s = find name in
           match List.find_opt (fun r -> r.name = name) records with
           | Some r ->
-              Option.iter (fun h -> headers := h :: !headers) r.header;
+              add_record_headers [] name;
               checks r.spelling (Struct name);
               List.iter
                 (fun (f : field) ->

@@ -483,14 +483,16 @@ module P = struct
               if parts = [] then
                 Error [ Diag.error use_span "C header name cannot be empty" ]
               else Ok (Ast.C_system (String.concat "" (List.rev parts)))
-          | Token.Ident s | Token.Int s -> path (s :: parts)
           | Token.Dot -> path ("." :: parts)
           | Token.Slash -> path ("/" :: parts)
           | Token.Minus -> path ("-" :: parts)
           | Token.Plus -> path ("+" :: parts)
           | Token.Newline | Token.Eof ->
               Error [ Diag.error use_span "expected `>` in C header name" ]
-          | _ -> Error [ Diag.error use_span "expected `>` in C header name" ]
+          | kind -> (
+              match Token.c_header_component kind with
+              | Some component -> path (component :: parts)
+              | None -> Error [ Diag.error use_span "expected `>` in C header name" ])
         in
         path []
     | _ -> Error [ Diag.error use_span "expected a quoted or angle-bracket C header" ]

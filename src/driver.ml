@@ -939,7 +939,7 @@ let run_unprotected ?header_output config =
                 c_imports
             in
             let ordered =
-              List.filter (fun header -> List.mem header declaration_headers) candidates
+              List.filter (fun header -> List.mem header candidates) declaration_headers
               |> List.fold_left
                    (fun ordered header ->
                      if List.mem header ordered then ordered else ordered @ [ header ])

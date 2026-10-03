@@ -2935,6 +2935,10 @@ let () =
   (match (parse_file "angle-use.fas" "use \"C\" <system.h>\n").Ast.items with
   | [ Ast.Use { path = "C"; c_header = Some (Ast.C_system "system.h"); _ } ] -> ()
   | _ -> failwith "use-c-angle: parser did not preserve the system header");
+  incr checks_run;
+  (match (parse_file "keyword-angle-use.fas" "use \"C\" <net/if.h>\n").Ast.items with
+  | [ Ast.Use { path = "C"; c_header = Some (Ast.C_system "net/if.h"); _ } ] -> ()
+  | _ -> failwith "use-c-keyword-angle: parser did not preserve the system header");
   let raw_container =
     parse_file "raw-container.fas"
       "  use \"C\" <<END\n/* } { */\nconst char *s = \"# Fas text\";\nEND\n"
@@ -10780,6 +10784,25 @@ let () =
       assert (
         contains nested "#include <types.h>\n"
         && contains nested "NestedAlias * echo(NestedAlias * x);\n");
+      write angle "typedef struct { ZRecord embedded; int other; } ARecord;\n";
+      write inner
+        "#ifndef EXPORT_INNER_H\n\
+         #define EXPORT_INNER_H\n\
+         typedef struct fas_z_record { int value; } ZRecord;\n\
+         #endif\n";
+      write root
+        "use \"C\" <inner.h>\n\
+         use \"C\" <types.h>\n\
+         extern \"C\" { fn accept_nested(value handle[ARecord]) i32 { return 1 } }\n";
+      let ordered =
+        expect_ok (Driver.run (cli_run [ "--emit-header"; "-I"; dir; root ]))
+      in
+      if
+        not
+          (positions ordered "#include <inner.h>\n"
+           < positions ordered "#include <types.h>\n"
+          && contains ordered "int32_t accept_nested(ARecord * value);\n")
+      then failwith "c-export-nested-record-headers: dependency include order changed";
 
       write root "struct S { char u8 }\nextern \"C\" { var value S = {1} }\n";
       (match Driver.run (cli_run [ "--emit-header"; root ]) with
