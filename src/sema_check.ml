@@ -495,50 +495,6 @@ let check_place_access c span ~write expression =
   | None -> Ok ()
   | Some size -> check_address_access c span ~write (object_address c expression) size
 
-let check_global_address_escape c span target value =
-  if Hir.expr_ty value <> Hir.Addr then Ok ()
-  else
-    let destination_is_global =
-      match target with
-      | Hir.AGlobal _ -> true
-      | Hir.ARaw (base, offset, ty) ->
-          Option.fold ~none:false
-            ~some:(function
-              | Sema_flow.Object_address { owner = None; _ } -> true | _ -> false)
-            (object_address c (Hir.Raw_select (base, offset, ty, span)))
-      | Hir.AField (base, name, offset) -> (
-          match Hir.expr_ty base with
-          | Hir.Struct struct_name -> (
-              match field_info c.structs struct_name name with
-              | Some field -> (
-                  match
-                    object_address c (Hir.Field (base, name, field.ty, offset, span))
-                  with
-                  | Some (Sema_flow.Object_address { owner = None; _ }) -> true
-                  | _ -> false)
-              | None -> false)
-          | _ -> false)
-      | Hir.AIndex (base, index) -> (
-          match Hir.expr_ty base with
-          | Hir.Array (_, element) | Hir.Vec (_, element) -> (
-              match object_address c (Hir.Index (base, index, element, span)) with
-              | Some (Sema_flow.Object_address { owner = None; _ }) -> true
-              | _ -> false)
-          | _ -> false)
-      | Hir.ALocal _ -> false
-    in
-    let local_name =
-      match address_fact c value with
-      | Some (Sema_flow.Object_address { owner = Some _; owner_name; _ }) -> owner_name
-      | Some (Sema_flow.Dead_local_address name) -> Some name
-      | _ -> None
-    in
-    match (destination_is_global, local_name) with
-    | true, Some name ->
-        error span
-          (Printf.sprintf "stores address of local `%s` in global storage" name)
-    | _ -> Ok ()
-
 let static_vector_lanes c = function
   | Hir.EBool (value, _) -> Some [ value ]
   | Hir.Local (binding, _) when binding.ty = Hir.Bool ->
@@ -3095,7 +3051,6 @@ and check_stmt (c : context) = function
           error span "aggregate assignment is not supported; use `copy(dst, src)`"
         else ensure_expected (Hir.expr_ty v) expected span
       in
-      let* () = check_global_address_escape c span target v in
       (match target with
       | Hir.ALocal binding when binding.ty = Hir.Addr ->
           let target_binding =

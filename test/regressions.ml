@@ -11830,9 +11830,33 @@ let () =
     "fn f() addr { value u32 = 1\nreturn &value }";
   semantic_message "lifetime-return-parameter" "returns address of local `value`"
     "fn f(value u32) addr { return &value }";
-  semantic_message "lifetime-global-store"
-    "stores address of local `value` in global storage"
+  semantic_accept "lifetime-global-store"
     "var G addr\nfn f() void { value u32 = 1\nG = &value\nreturn }";
+  semantic_accept "lifetime-global-use-replace"
+    "var saved addr\n\
+     var stable u32 = 9\n\
+     fn f() u32 { x u32 = 7\n\
+     saved = &x\n\
+     value u32 = saved[u32]\n\
+     saved = &stable\n\
+     return value }";
+  semantic_accept "lifetime-global-record-use-replace"
+    "struct Saved { value addr }\n\
+     var stable u32 = 9\n\
+     var saved Saved = {null}\n\
+     fn f() u32 { x u32 = 7\n\
+     saved.value = &x\n\
+     value u32 = saved.value[u32]\n\
+     saved.value = &stable\n\
+     return value }";
+  semantic_accept "lifetime-global-inner-block-use-replace"
+    "var saved addr\n\
+     fn f() u32 { stable u32 = 9\n\
+     { x u32 = 7\n\
+     saved = &x\n\
+     value u32 = saved[u32]\n\
+     saved = &stable }\n\
+     return stable }";
   semantic_message "lifetime-access-after-block"
     "access to local `value` after its block ended"
     "fn f() void { p addr\n{ value u32 = 1\np = &value }\np[u32] = 2\nreturn }";
