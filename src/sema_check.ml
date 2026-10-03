@@ -2445,6 +2445,26 @@ and check_call c _expected fn args s =
                   else
                     let policy = if sig_.variadic then Promote_variadic else Reject in
                     let* xs = check_actuals c policy s sig_.params args in
+                    let* () =
+                      match List.assoc_opt name c.c_nonnull_parameters with
+                      | None -> Ok ()
+                      | Some indices ->
+                          Result_list.iter
+                            (fun index ->
+                              match
+                                ( List.nth_opt xs (index - 1),
+                                  List.nth_opt args (index - 1) )
+                              with
+                              | Some value, Some argument
+                                when address_fact c value
+                                     = Some (Sema_flow.Null_address 0L) ->
+                                  error (Ast.expr_span argument)
+                                    (Printf.sprintf
+                                       "null argument to nonnull parameter %d of `%s`"
+                                       index name)
+                              | _ -> Ok ())
+                            indices
+                    in
                     Ok (Hir.Call (Hir.User name, xs, sig_.ret, s)))))
   | _ -> error s "call target must be a function name"
 

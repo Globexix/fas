@@ -169,17 +169,18 @@ let keep_field = function
   | "inline" | "tagUsed" | "completeDefinition" | "fixedUnderlyingType" | "isBitfield"
   | "isImplicit" | "inner" | "qualType" | "desugaredQualType" | "file" | "line" | "col"
   | "typeAliasDeclId" | "qualifiers" | "size" | "cc" | "variadic" | "offset"
-  | "expansionLoc" | "spellingLoc" | "presumedFile" | "presumedLine" ->
+  | "expansionLoc" | "spellingLoc" | "presumedFile" | "presumedLine" | "range" | "begin"
+  | "end" | "tokLen" | "isMacroArgExpansion" | "args" ->
       true
   | _ -> false
 
-let rec json ?(location = false) i =
+let rec json ?(location = false) ?(range = false) i =
   space i;
   match peek i with
   | '"' ->
       ignore (take i);
       Str (read_string i)
-  | '{' -> object_value ~location i
+  | '{' -> object_value ~location ~range i
   | '[' -> array_value i
   | 't' -> literal i "true" (Bool true)
   | 'f' -> literal i "false" (Bool false)
@@ -218,7 +219,7 @@ and array_value i =
     in
     loop []
 
-and object_value ?(location = false) i =
+and object_value ?(location = false) ?(range = false) i =
   let inherited_file = i.last_file and inherited_line = i.last_line in
   let inherited_presumed_file = i.presumed_file
   and inherited_presumed_line = i.presumed_line in
@@ -254,16 +255,19 @@ and object_value ?(location = false) i =
       expect i '"';
       let key = read_string i in
       expect i ':';
-      let keep = keep_field key in
+      let keep = keep_field key && (key <> "range" || kind = "NonNullAttr") in
       let skip_inner =
         key = "inner" && (kind = "VarDecl" || String.ends_with ~suffix:"Stmt" kind)
       in
-      let child_location = List.mem key [ "loc"; "expansionLoc"; "spellingLoc" ] in
+      let child_location =
+        List.mem key [ "loc"; "expansionLoc"; "spellingLoc" ]
+        || (range && List.mem key [ "begin"; "end" ])
+      in
       let value =
         if (not keep) || skip_inner then (
           skip_value ~location:child_location ~range:(key = "range") ~field:key i;
           None)
-        else Some (json ~location:child_location i)
+        else Some (json ~location:child_location ~range:(key = "range") i)
       in
       (match (location, key, value) with
       | true, ("file" | "line" | "presumedFile" | "presumedLine"), Some (Str value) ->
@@ -325,7 +329,7 @@ let declaration i =
         expect i '"';
         let key = read_string i in
         expect i ':';
-        if keep && keep_field key then
+        if keep && keep_field key && key <> "range" then
           rest
             (( key,
                json ~location:(List.mem key [ "loc"; "expansionLoc"; "spellingLoc" ]) i

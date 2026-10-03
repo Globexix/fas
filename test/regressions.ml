@@ -96,7 +96,8 @@ let c_semantic_result ((source, imported) : string * C_import.mapped) text =
   in
   let program = { Ast.items = program.items @ imported.items } in
   Sema.check ~c_aliases:imported.aliases ~c_unsupported:imported.unsupported
-    ~c_records:imported.record_types program
+    ~c_nonnull_parameters:imported.nonnull_parameters ~c_records:imported.record_types
+    program
 
 let c_semantic_accept name imported text =
   match c_semantic_result imported text with
@@ -8636,6 +8637,46 @@ let () =
     "fn run() void { var Value i32\nreturn }\n";
 
   let c_matrix = c_import_fixture "matrix.h" in
+  let c_nonnull_source, _ = c_import_fixture "nonnull.h" in
+  let c_nonnull_declarations, _, _ =
+    expect_ok
+      (C_import.import ~cc:"clang-22" ~debug:false ~keep:false c_nonnull_source
+         [
+           C_import.{ spelling = Ast.C_quoted "nonnull.h"; span = Span.synthetic };
+           C_import.{ spelling = Ast.C_system "string.h"; span = Span.synthetic };
+         ])
+  in
+  let c_nonnull =
+    ( c_nonnull_source,
+      C_import.map_declarations ~span:Span.synthetic c_nonnull_declarations )
+  in
+  c_semantic_message "c-nonnull-strlen-null"
+    "null argument to nonnull parameter 1 of `strlen`" c_nonnull
+    "fn probe() usize { return strlen(null) }\n";
+  c_semantic_message "c-nonnull-memcpy-zero-length"
+    "null argument to nonnull parameter 2 of `memcpy`" c_nonnull
+    "fn probe() void { byte u8 = 0\nmemcpy(&byte, null, 0)\nreturn }\n";
+  c_semantic_message "c-nonnull-strcmp-local-null"
+    "null argument to nonnull parameter 2 of `strcmp`" c_nonnull
+    "fn probe(first addr) i32 { second addr = null\nreturn strcmp(first, second) }\n";
+  c_semantic_message "c-nonnull-no-index-pointer-parameter"
+    "null argument to nonnull parameter 2 of `fas_nonnull_every`" c_nonnull
+    "fn probe() void { fas_nonnull_every(c\"text\", null, 1)\nreturn }\n";
+  c_semantic_message "c-nonnull-qualified-parameter"
+    "null argument to nonnull parameter 1 of `fas_nonnull_qualified`" c_nonnull
+    "fn probe() void { fas_nonnull_qualified(null)\nreturn }\n";
+  c_semantic_accept "c-nonnull-unmarked-nullable-parameter" c_matrix
+    "fn probe() addr { return fas_scalar_pointer(null) }\n";
+  c_semantic_accept "c-nonnull-nonzero-offset" c_nonnull
+    "fn probe() usize { return strlen(addr_from_bits(0) + 1) }\n";
+  c_semantic_accept "c-nonnull-null-object-join" c_nonnull
+    "fn probe(flag bool) usize { pointer addr\n\
+     if flag { pointer = null } else { pointer = c\"object\" }\n\
+     return strlen(pointer) }\n";
+  c_semantic_accept "c-nonnull-reconstructed-zero" c_nonnull
+    "fn probe() usize { return strlen(addr_from_bits(0)) }\n";
+  c_semantic_accept "c-nonnull-fas-wrapper" c_nonnull
+    "fn wrapped() addr { return null }\nfn probe() usize { return strlen(wrapped()) }\n";
   let c_overaligned = c_import_fixture "overaligned_typedefs.h" in
   let c_overaligned_stride = c_import_fixture "overaligned_stride.h" in
   let c_record_attributes = c_import_fixture "record_attributes.h" in
@@ -9123,7 +9164,7 @@ let () =
       failwith "stat without a record typedef did not import its pointer as addr"
   | None -> failwith "sys/stat.h stat() was not imported");
   c_semantic_accept "c-import-stat-without-typedef" c_stat
-    "fn call_stat(path addr) i32 { return stat(path, null) }\n";
+    "fn call_stat(path addr) i32 { metadata i32 = 0\nreturn stat(path, &metadata) }\n";
   let stat_source = fst c_stat in
   let stat_headers =
     [

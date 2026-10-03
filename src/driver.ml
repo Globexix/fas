@@ -876,8 +876,9 @@ let run_unprotected ?header_output config =
           let* hir =
             match
               Sema.check ~limits ~c_aliases:imported.aliases
-                ~c_unsupported:imported.unsupported ~c_records:imported.record_types
-                program
+                ~c_unsupported:imported.unsupported
+                ~c_nonnull_parameters:imported.nonnull_parameters
+                ~c_records:imported.record_types program
             with
             | Ok hir -> Ok hir
             | Error diagnostics -> Error (add_include_chains chains diagnostics)

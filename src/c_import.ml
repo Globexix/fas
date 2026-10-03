@@ -1491,6 +1491,7 @@ type mapped = {
   unsupported : (string * string) list;
   identities : (string * string) list;
   manifest : string list;
+  nonnull_parameters : (string * int list) list;
   static_functions : static_function list;
   records : (string * string * string option) list;
   record_types : (string * string * string option) list;
@@ -2413,9 +2414,153 @@ let map_declarations ?(container = false) ~span declarations =
   let entities = Hashtbl.create 256
   and unsupported = Hashtbl.create 128
   and manifest = Hashtbl.create 256
+  and nonnull_parameters = Hashtbl.create 32
   and incomplete_arrays = Hashtbl.create 16
   and static_functions = Hashtbl.create 32
   and items = ref [] in
+  let source_cache = Hashtbl.create 16 in
+  let source_text path =
+    match Hashtbl.find_opt source_cache path with
+    | Some text -> text
+    | None ->
+        let text =
+          try
+            let channel = open_in_bin path in
+            Fun.protect
+              ~finally:(fun () -> close_in_noerr channel)
+              (fun () -> Some (really_input_string channel (in_channel_length channel)))
+          with Sys_error _ -> None
+        in
+        Hashtbl.replace source_cache path text;
+        text
+  in
+  let json_integer value =
+    match value with
+    | C_import_json.Num value | C_import_json.Str value -> int_of_string_opt value
+    | _ -> None
+  in
+  let attribute_source node =
+    Option.bind (get "range" node) (fun range ->
+        Option.bind (get "begin" range) (fun begin_location ->
+            Option.bind (get "end" range) (fun end_location ->
+                let begin_location =
+                  Option.value ~default:begin_location
+                    (get "expansionLoc" begin_location)
+                and end_location =
+                  Option.value ~default:end_location (get "spellingLoc" end_location)
+                in
+                let path =
+                  match string "file" begin_location with
+                  | Some _ as path -> path
+                  | None -> string "file" end_location
+                in
+                let start = Option.bind (get "offset" begin_location) json_integer
+                and finish =
+                  Option.bind
+                    (Option.bind (get "offset" end_location) json_integer)
+                    (fun offset ->
+                      Option.map (( + ) offset)
+                        (Option.bind (get "tokLen" end_location) json_integer))
+                in
+                match (path, start, finish) with
+                | Some path, Some start, Some finish when start >= 0 && finish >= start
+                  ->
+                    Option.bind (source_text path) (fun text ->
+                        if finish > String.length text then None
+                        else Some (String.sub text start (finish - start)))
+                | _ -> None)))
+  in
+  let parse_nonnull_attribute node =
+    match attribute_source node with
+    | None -> None
+    | Some source -> (
+        match find_text source "nonnull" 0 with
+        | None -> None
+        | Some start ->
+            let identifier_char = function
+              | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' -> true
+              | _ -> false
+            in
+            let rec identifier_end index =
+              if index < String.length source && identifier_char source.[index] then
+                identifier_end (index + 1)
+              else index
+            in
+            let rec spaces index =
+              if
+                index < String.length source
+                && List.mem source.[index] [ ' '; '\n'; '\r'; '\t' ]
+              then spaces (index + 1)
+              else index
+            in
+            let after = spaces (identifier_end (start + String.length "nonnull")) in
+            if after = String.length source || source.[after] <> '(' then Some None
+            else
+              let numbers = ref [] and digits = Buffer.create 8 and valid = ref true in
+              let flush () =
+                if Buffer.length digits > 0 then (
+                  (match int_of_string_opt (Buffer.contents digits) with
+                  | Some value when value > 0 -> numbers := value :: !numbers
+                  | _ -> valid := false);
+                  Buffer.clear digits)
+              in
+              for index = after + 1 to String.length source - 1 do
+                match source.[index] with
+                | '0' .. '9' as digit -> Buffer.add_char digits digit
+                | ' ' | '\n' | '\r' | '\t' | ',' | '(' | ')' -> flush ()
+                | _ -> valid := false
+              done;
+              flush ();
+              if (not !valid) || !numbers = [] then None
+              else Some (Some (List.rev !numbers)))
+  in
+  let parameter_type_texts parameter =
+    Option.fold ~none:[]
+      ~some:(fun ty ->
+        [ "qualType"; "desugaredQualType" ]
+        |> List.filter_map (fun field -> string field ty))
+      (get "type" parameter)
+  in
+  let parameter_is_pointer parameter =
+    parameter_type_texts parameter
+    |> List.exists (fun ty -> Option.is_some (String.index_opt ty '*'))
+  in
+  let parameter_is_nonnull parameter =
+    let spelled = Option.bind (get "type" parameter) (string "qualType") in
+    match spelled with
+    | None -> false
+    | Some spelled -> (
+        match find_text spelled "_Nonnull" 0 with
+        | None -> false
+        | Some marker -> (
+            match String.rindex_opt spelled '*' with
+            | Some star -> marker > star
+            | None ->
+                parameter_type_texts parameter
+                |> List.exists (fun ty -> Option.is_some (String.index_opt ty '*'))))
+  in
+  let function_nonnull_positions node parameters =
+    let pointers =
+      List.mapi (fun index parameter -> (index + 1, parameter)) parameters
+      |> List.filter_map (fun (index, parameter) ->
+          if parameter_is_pointer parameter then Some index else None)
+    in
+    let from_attributes =
+      children node
+      |> List.filter (fun child -> string "kind" child = Some "NonNullAttr")
+      |> List.concat_map (fun attribute ->
+          match parse_nonnull_attribute attribute with
+          | Some None -> pointers
+          | Some (Some indices) -> indices
+          | None -> [])
+    in
+    let from_types =
+      List.mapi (fun index parameter -> (index + 1, parameter)) parameters
+      |> List.filter_map (fun (index, parameter) ->
+          if parameter_is_nonnull parameter then Some index else None)
+    in
+    List.sort_uniq compare (from_attributes @ from_types)
+  in
   let add_unsupported name reason = Hashtbl.replace unsupported name reason in
   Hashtbl.iter
     (fun name result ->
@@ -3289,6 +3434,13 @@ let map_declarations ?(container = false) ~span declarations =
             children node
             |> List.filter (fun child -> string "kind" child = Some "ParmVarDecl")
           in
+          let nonnull_positions = function_nonnull_positions node parameter_nodes in
+          (if nonnull_positions <> [] then
+             let previous =
+               Option.value ~default:[] (Hashtbl.find_opt nonnull_parameters name)
+             in
+             Hashtbl.replace nonnull_parameters name
+               (List.sort_uniq compare (previous @ nonnull_positions)));
           let function_info = function_type node in
           let variadic =
             match function_info with
@@ -3538,6 +3690,11 @@ let map_declarations ?(container = false) ~span declarations =
     identities;
     manifest =
       Hashtbl.fold (fun _ line acc -> line :: acc) manifest [] |> List.sort compare;
+    nonnull_parameters =
+      Hashtbl.fold
+        (fun name positions acc -> (name, positions) :: acc)
+        nonnull_parameters []
+      |> List.sort compare;
     static_functions =
       Hashtbl.fold (fun _ static acc -> static :: acc) static_functions []
       |> List.sort (fun a b -> String.compare a.name b.name);
@@ -3597,6 +3754,16 @@ let merge_imports mappings =
     unsupported;
     identities = [];
     manifest = List.concat_map (fun mapping -> mapping.manifest) mappings;
+    nonnull_parameters =
+      List.concat_map (fun mapping -> mapping.nonnull_parameters) mappings
+      |> List.filter (fun (name, _) -> not (bad name))
+      |> List.fold_left
+           (fun merged (name, positions) ->
+             let previous = Option.value ~default:[] (List.assoc_opt name merged) in
+             (name, List.sort_uniq compare (positions @ previous))
+             :: List.remove_assoc name merged)
+           []
+      |> List.sort compare;
     static_functions =
       List.concat_map (fun mapping -> mapping.static_functions) mappings;
   }
