@@ -6692,6 +6692,101 @@ let () =
   if semantic_render chained_comparison_source <> chained_comparison_expected then
     failwith
       ("chained-comparison-diagnostic: " ^ semantic_render chained_comparison_source);
+  let comparison_operators = [ "=="; "!="; "<"; "<="; ">"; ">=" ] in
+  List.iter
+    (fun operator ->
+      let source =
+        Printf.sprintf "fn f(a i32) bool { return a %s 2 %s 3 }\n" operator operator
+      in
+      let line = String.trim source in
+      let column = String.rindex line '3' + 1 in
+      let message =
+        Printf.sprintf "comparisons cannot be chained; write `a %s 2 && 2 %s 3`"
+          operator operator
+      in
+      let expected = expected_diagnostic_without_help line column 1 message in
+      if semantic_render source <> expected then
+        failwith
+          ("chained-comparison-literal-" ^ operator ^ ": " ^ semantic_render source))
+    comparison_operators;
+  let chained_call_source =
+    "fn take(value bool) void { return }\n\
+     fn f(a i32) void { take(a < 2 < 3); return }\n"
+  in
+  let chained_call_line = "fn f(a i32) void { take(a < 2 < 3); return }" in
+  let chained_call_expected =
+    expected_diagnostic_without_help ~line_number:2 chained_call_line
+      (String.rindex chained_call_line '3' + 1)
+      1 "comparisons cannot be chained; write `a < 2 && 2 < 3`"
+  in
+  if semantic_render chained_call_source <> chained_call_expected then
+    failwith ("chained-comparison-call: " ^ semantic_render chained_call_source);
+  let chained_if_line = "fn f(a i32) i32 { if a < 2 < 3 { return 1 } return 0 }" in
+  let chained_if_expected =
+    expected_diagnostic_without_help chained_if_line
+      (String.rindex chained_if_line '3' + 1)
+      1 "comparisons cannot be chained; write `a < 2 && 2 < 3`"
+  in
+  if semantic_render (chained_if_line ^ "\n") <> chained_if_expected then
+    failwith ("chained-comparison-if: " ^ semantic_render (chained_if_line ^ "\n"));
+  ignore
+    (llvm_of
+       "fn f(a i32, b i32) bool { return (a < 2) == (b < 3) }\n\
+        fn g(a i32) bool { return (a < 2) == true }\n");
+  let binary_widening_bad_context =
+    "fn f(c i64, a i32) i32 { x i32 = c + a; return x }\n"
+  in
+  let binary_widening_bad_line = String.trim binary_widening_bad_context in
+  let binary_widening_bad_expected =
+    expected_diagnostic_without_help binary_widening_bad_line
+      (String.length "fn f(c i64, a i32) i32 { x i32 = c + " + 1)
+      1 "operands of `+` have different types: `i64` and `i32`"
+  in
+  if semantic_render binary_widening_bad_context <> binary_widening_bad_expected then
+    failwith
+      ("binary-widening-bad-context: " ^ semantic_render binary_widening_bad_context);
+  let binary_widening_initializer =
+    "fn f(c i64, a i32) i64 { x i64 = c + a; return x }\n"
+  in
+  let binary_widening_initializer_line = String.trim binary_widening_initializer in
+  let binary_widening_initializer_expected =
+    expected_diagnostic binary_widening_initializer_line
+      (String.length "fn f(c i64, a i32) i64 { x i64 = c + " + 1)
+      1 "operands of `+` have different types: `i64` and `i32`" "write `sext[i64](a)`"
+  in
+  if semantic_render binary_widening_initializer <> binary_widening_initializer_expected
+  then
+    failwith
+      ("binary-widening-initializer: " ^ semantic_render binary_widening_initializer);
+  ignore (llvm_of "fn f(c i64, a i32) i64 { x i64 = c + sext[i64](a); return x }\n");
+  let binary_widening_argument =
+    "fn put(value i64) void { return }\n\
+     fn f(c i64, a i32) void { put(c + a); return }\n"
+  in
+  let binary_widening_argument_line =
+    "fn f(c i64, a i32) void { put(c + a); return }"
+  in
+  let binary_widening_argument_expected =
+    expected_diagnostic ~line_number:2 binary_widening_argument_line
+      (String.length "fn f(c i64, a i32) void { put(c + " + 1)
+      1 "operands of `+` have different types: `i64` and `i32`" "write `sext[i64](a)`"
+  in
+  if semantic_render binary_widening_argument <> binary_widening_argument_expected then
+    failwith ("binary-widening-argument: " ^ semantic_render binary_widening_argument);
+  ignore
+    (llvm_of
+       "fn put(value i64) void { return }\n\
+        fn f(c i64, a i32) void { put(c + sext[i64](a)); return }\n");
+  let binary_widening_return = "fn f(c i64, a i32) i64 { return c + a }\n" in
+  let binary_widening_return_line = String.trim binary_widening_return in
+  let binary_widening_return_expected =
+    expected_diagnostic binary_widening_return_line
+      (String.length "fn f(c i64, a i32) i64 { return c + " + 1)
+      1 "operands of `+` have different types: `i64` and `i32`" "write `sext[i64](a)`"
+  in
+  if semantic_render binary_widening_return <> binary_widening_return_expected then
+    failwith ("binary-widening-return: " ^ semantic_render binary_widening_return);
+  ignore (llvm_of "fn f(c i64, a i32) i64 { return c + sext[i64](a) }\n");
   ignore (llvm_of "fn f(a i32, b i64) i64 { return sext[i64](a) + b }\n");
   ignore (llvm_of "fn f(a u64, b u32) u64 { return a + zext[u64](b) }\n");
   semantic_error "constant-binary-type-mismatch"

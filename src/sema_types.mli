@@ -58,6 +58,7 @@ val binary_operator_name : Ast.binop -> string
 val binary_result_type :
   ?left_expression:Ast.expr ->
   ?right_expression:Ast.expr ->
+  ?result_expected:Hir.ty ->
   Span.t ->
   Ast.binop ->
   Hir.ty ->

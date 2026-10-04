@@ -350,7 +350,8 @@ let binary_widening_help = function
            name)
   | _ -> None
 
-let binary_result_type ?left_expression ?right_expression span operation left right =
+let binary_result_type ?left_expression ?right_expression ?result_expected span
+    operation left right =
   let result_span expression =
     match expression with Some expression -> Ast.expr_span expression | None -> span
   in
@@ -414,7 +415,19 @@ let binary_result_type ?left_expression ?right_expression span operation left ri
           (binary_operator_name operation)
           (diagnostic_ty_name left) (diagnostic_ty_name right)
       in
-      Diag.error ?help:(binary_widening_help widening) span message |> fun diagnostic ->
+      let result_type =
+        match operation with
+        | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> Some Hir.Bool
+        | _ -> Option.map (fun (_, _, ty) -> ty) widening
+      in
+      let widening_help =
+        match (result_expected, result_type) with
+        | None, _ -> binary_widening_help widening
+        | Some expected, Some actual when Hir.ty_equal expected actual ->
+            binary_widening_help widening
+        | _ -> None
+      in
+      Diag.error ?help:widening_help span message |> fun diagnostic ->
       Error [ diagnostic ]
   | None -> (
       match operation with

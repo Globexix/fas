@@ -9,6 +9,10 @@ let error span message = Error [ Diag.error span message ]
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 let literal_condition_truth = function Hir.EBool (value, _) -> Some value | _ -> None
 
+let is_comparison_operator = function
+  | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> true
+  | _ -> false
+
 let assignment_context = function
   | Hir.ALocal local -> Printf.sprintf "value for `%s`" local.name
   | Hir.AGlobal (name, _) -> Printf.sprintf "value for `%s`" name
@@ -1579,6 +1583,13 @@ and check_expr_inner ?destination (c : context) expected expression =
         in
         Ok (Hir.Binary (op, a, b, at, s))
       else
+        let comparison_chain =
+          is_comparison_operator op
+          &&
+          match l with
+          | Ast.Binary (inner, _, _, _) -> is_comparison_operator inner
+          | _ -> false
+        in
         let address_peer_type =
           match (expected, l, r) with
           | None, Ast.Addr_of _, Ast.Addr_of _ | Some _, _, _ -> None
@@ -1599,7 +1610,11 @@ and check_expr_inner ?destination (c : context) expected expression =
                 | _ -> operand_type_hint c op expected l r
               in
               let* a = check_expr c left_expected l in
-              let* b = check_expr c (contextual_peer_type c op (Hir.expr_ty a) r) r in
+              let right_expected =
+                if comparison_chain then None
+                else contextual_peer_type c op (Hir.expr_ty a) r
+              in
+              let* b = check_expr c right_expected r in
               Ok (a, b)
         in
         let at = Hir.expr_ty a in
@@ -1621,7 +1636,8 @@ and check_expr_inner ?destination (c : context) expected expression =
             Ok (Hir.Binary (op, a, b, Hir.Bool, s))
         | _ ->
             let* result_ty =
-              binary_result_type ~left_expression:l ~right_expression:r s op at bt
+              binary_result_type ~left_expression:l ~right_expression:r
+                ?result_expected:expected s op at bt
             in
             let facts_enabled = Sema_flow.proof_checks_enabled c.flow in
             let divisor_fact = value_fact c b in
