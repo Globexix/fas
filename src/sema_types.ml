@@ -14,6 +14,45 @@ let ( let* ) result continuation =
 
 let error span message = Error [ Diag.error span message ]
 
+let truthiness_help expression ty =
+  match (expression, ty) with
+  | Ast.Ident (name, _), Hir.Int _ ->
+      Some (Printf.sprintf "Fas has no implicit truth values; write `%s != 0`" name)
+  | Ast.Ident (name, _), Hir.Addr ->
+      Some (Printf.sprintf "Fas has no implicit truth values; write `%s != null`" name)
+  | _ -> None
+
+let condition_error construct expression ty =
+  Diag.error
+    ?help:(truthiness_help expression ty)
+    (Ast.expr_span expression)
+    (Printf.sprintf "condition of `%s` is `%s`, not `bool`" construct (Hir.ty_name ty))
+
+let logical_operand_error operation side expression ty =
+  Diag.error
+    ?help:(truthiness_help expression ty)
+    (Ast.expr_span expression)
+    (Printf.sprintf "%s operand of `%s` is `%s`, not `bool`" side operation
+       (Hir.ty_name ty))
+
+let logical_not_error expression ty =
+  let help =
+    match (expression, ty) with
+    | Ast.Ident (name, _), Hir.Int _ -> Some (Printf.sprintf "write `%s == 0`" name)
+    | _ -> None
+  in
+  Diag.error ?help (Ast.expr_span expression)
+    (Printf.sprintf "logical not needs `bool`, got `%s`" (Hir.ty_name ty))
+
+let raw_access_needs_type_error base span =
+  let help =
+    match base with
+    | Ast.Ident (name, _) ->
+        Some (Printf.sprintf "write `%s[T, i]`, e.g. `%s[u8, i]`" name name)
+    | _ -> None
+  in
+  Diag.error ?help span "raw access on `addr` needs an element type"
+
 let src_int = function
   | Ast.U8 -> Hir.U8
   | U16 -> U16
@@ -171,7 +210,8 @@ let ensure_expected actual expected span =
       (Printf.sprintf "type mismatch: expected %s, got %s" (Hir.ty_name expected)
          (Hir.ty_name actual))
 
-let binary_result_type ~mismatch span operation left right =
+let binary_result_type ~mismatch ?left_expression ?right_expression span operation left
+    right =
   if
     not
       (Hir.ty_equal left right
@@ -204,7 +244,21 @@ let binary_result_type ~mismatch span operation left right =
         else error span "arithmetic requires integer or vector operands"
     | Ast.And | Ast.Or ->
         if left = Hir.Bool && right = Hir.Bool then Ok Hir.Bool
-        else error span "logical operands must be bool"
+        else
+          let operation = if operation = Ast.And then "&&" else "||" in
+          let side, expression, ty =
+            if left <> Hir.Bool then ("left", left_expression, left)
+            else ("right", right_expression, right)
+          in
+          let diagnostic =
+            match expression with
+            | Some expression -> logical_operand_error operation side expression ty
+            | None ->
+                Diag.error span
+                  (Printf.sprintf "%s operand of `%s` is `%s`, not `bool`" side
+                     operation (Hir.ty_name ty))
+          in
+          Error [ diagnostic ]
     | Ast.Shl | Ast.Shr -> Ok left
 
 let variadic_promote expression =

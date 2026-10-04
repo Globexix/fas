@@ -53,10 +53,12 @@ let use_path_error path =
 let include_chain_note paths = "include chain: " ^ String.concat " -> " paths
 
 let with_chain diagnostics paths =
-  List.map
-    (fun (diagnostic : Diag.t) ->
-      { diagnostic with Diag.notes = diagnostic.notes @ [ include_chain_note paths ] })
-    diagnostics
+  if List.length paths < 2 then diagnostics
+  else
+    List.map
+      (fun (diagnostic : Diag.t) ->
+        { diagnostic with Diag.notes = diagnostic.notes @ [ include_chain_note paths ] })
+      diagnostics
 
 let definition_file note =
   let prefix = "first definition is at " in
@@ -82,7 +84,9 @@ let add_include_chains chains diagnostics =
       let notes =
         List.filter_map
           (fun file ->
-            Option.map (fun chain -> include_chain_note chain) (chain_for file))
+            Option.bind (chain_for file) (function
+              | _ :: _ :: _ as chain -> Some (include_chain_note chain)
+              | _ -> None))
           files
         |> List.sort_uniq String.compare
       in
@@ -175,11 +179,15 @@ let load_program ~limits root =
              (Limits.budget_profile_name limits));
       ]
   in
-  let rec visit chain path use_span =
+  let display_dependency_path importer dependency =
+    let directory = Filename.dirname importer in
+    if directory = "." then dependency else Filename.concat directory dependency
+  in
+  let rec visit chain display_path path use_span =
     let canonical = canonical_path path in
     if Hashtbl.mem loaded canonical then Ok ()
     else
-      let file_chain = chain @ [ canonical ] in
+      let file_chain = chain @ [ display_path ] in
       let primary = Option.value use_span ~default:Span.synthetic in
       if limits.Limits.max_use_files < 0 then
         Error
@@ -201,7 +209,7 @@ let load_program ~limits root =
         match Unix.stat canonical with
         | stats when stats.Unix.st_kind = Unix.S_DIR ->
             let diagnostics =
-              [ Diag.error primary ("Fas dependency is a directory: " ^ canonical) ]
+              [ Diag.error primary ("Fas dependency is a directory: " ^ display_path) ]
             in
             if Option.is_some use_span then Error (with_chain diagnostics file_chain)
             else Error diagnostics
@@ -220,14 +228,14 @@ let load_program ~limits root =
                 if String.length text > limits.Limits.max_use_bytes - !total_bytes then
                   budget_error primary "max_use_bytes" limits.Limits.max_use_bytes
                 else
-                  let source = Source.create ~file:canonical ~text in
+                  let source = Source.create ~file:display_path ~text in
                   match Parser.parse ~limits source with
                   | Error diagnostics -> Error (with_chain diagnostics file_chain)
                   | Ok program ->
                       total_bytes := !total_bytes + String.length text;
                       Hashtbl.add loaded canonical program;
                       load_order := canonical :: !load_order;
-                      Hashtbl.add chains canonical file_chain;
+                      Hashtbl.add chains display_path file_chain;
                       let rec dependencies = function
                         | [] -> Ok ()
                         | Ast.Use { path = dependency; c_header = None; span } :: rest
@@ -235,16 +243,20 @@ let load_program ~limits root =
                             match use_path_error dependency with
                             | Some message ->
                                 Error
-                                  (with_chain
-                                     [ Diag.error span message ]
-                                     (file_chain @ [ dependency ]))
+                                  (with_chain [ Diag.error span message ] file_chain)
                             | None -> (
                                 let target =
                                   Filename.concat (Filename.dirname canonical)
                                     dependency
                                 in
+                                let target_display =
+                                  display_dependency_path display_path dependency
+                                in
                                 let target_canonical = canonical_path target in
-                                match visit file_chain target_canonical (Some span) with
+                                match
+                                  visit file_chain target_display target_canonical
+                                    (Some span)
+                                with
                                 | Error diagnostics -> Error diagnostics
                                 | Ok () -> dependencies rest))
                         | Ast.Use { c_header = Some _; _ } :: rest -> dependencies rest
@@ -256,13 +268,13 @@ let load_program ~limits root =
             let diagnostics =
               [
                 Diag.error primary
-                  ("cannot read Fas dependency " ^ canonical ^ ": " ^ message);
+                  ("cannot read Fas dependency " ^ display_path ^ ": " ^ message);
               ]
             in
             if Option.is_some use_span then Error (with_chain diagnostics file_chain)
             else Error diagnostics
   in
-  match visit [] root None with
+  match visit [] root root None with
   | Error diagnostics -> Error diagnostics
   | Ok () ->
       let files =

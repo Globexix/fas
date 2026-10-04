@@ -908,7 +908,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     else
       let* checked = check_expr c None expression in
       if Hir.expr_ty checked = Hir.Bool then Ok ()
-      else error (Ast.expr_span expression) (label ^ " condition must be bool")
+      else Error [ Sema_types.condition_error label expression (Hir.expr_ty checked) ]
   in
   let target_mentions names = function
     | Ast.Target_ident (name, _) -> List.mem name names

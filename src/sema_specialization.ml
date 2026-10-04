@@ -244,7 +244,7 @@ let append_instantiation_trace specializations trace diagnostics =
         diagnostic with
         message = source_facing_text specializations diagnostic.message;
         notes = List.map (source_facing_text specializations) diagnostic.notes @ notes;
-        hints = List.map (source_facing_text specializations) diagnostic.hints;
+        help = Option.map (source_facing_text specializations) diagnostic.help;
       })
     diagnostics
 

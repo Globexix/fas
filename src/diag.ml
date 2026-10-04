@@ -7,14 +7,14 @@ type t = {
   primary : Span.t;
   message : string;
   notes : string list;
-  hints : string list;
+  help : string option;
 }
 
-let error ?(issue = General) ?(notes = []) ?(hints = []) primary message =
-  { severity = Error; issue; primary; message; notes; hints }
+let error ?(issue = General) ?(notes = []) ?help primary message =
+  { severity = Error; issue; primary; message; notes; help }
 
-let warning ?(notes = []) ?(hints = []) primary message =
-  { severity = Warning; issue = General; primary; message; notes; hints }
+let warning ?(notes = []) ?help primary message =
+  { severity = Warning; issue = General; primary; message; notes; help }
 
 let local_declaration_message name =
   if List.mem name [ "let"; "auto"; "mut" ] then
@@ -63,13 +63,62 @@ let render_one ~source diagnostic =
     | Some src when Source.file src = diagnostic.primary.Span.file -> (
         match Source.line_text src diagnostic.primary.Span.line with
         | None -> ""
-        | Some line -> Printf.sprintf "\n  %s\n" line)
+        | Some line ->
+            let text = Source.text src in
+            let offset_for_line line =
+              let rec find current offset =
+                if current >= line then offset
+                else
+                  match String.index_from_opt text offset '\n' with
+                  | Some newline -> find (current + 1) (newline + 1)
+                  | None -> String.length text
+              in
+              find 1 0
+            in
+            let offset_only =
+              diagnostic.primary.Span.start_offset = 0
+              && diagnostic.primary.Span.end_offset = 0
+            in
+            let line_start =
+              if offset_only then offset_for_line diagnostic.primary.Span.line
+              else
+                max 0
+                  (diagnostic.primary.Span.start_offset
+                  - (diagnostic.primary.Span.column - 1))
+            in
+            let line_stop =
+              match String.index_from_opt text line_start '\n' with
+              | Some stop -> stop
+              | None -> String.length text
+            in
+            let start =
+              if offset_only then
+                min line_stop (line_start + diagnostic.primary.Span.column - 1)
+              else max line_start (min line_stop diagnostic.primary.Span.start_offset)
+            in
+            let stop =
+              if offset_only then min line_stop (start + 1)
+              else max start (min line_stop diagnostic.primary.Span.end_offset)
+            in
+            let width = max 1 (stop - start) in
+            let prefix_length = max 0 (min (String.length line) (start - line_start)) in
+            let prefix = String.make prefix_length ' ' in
+            Printf.sprintf "\n  %s\n  %s^%s\n" line prefix (String.make (width - 1) '~')
+        )
     | Some _ -> ""
   in
   let notes = List.map (fun n -> Printf.sprintf "note: %s\n" n) diagnostic.notes in
-  let hints = List.map (fun h -> Printf.sprintf "help: %s\n" h) diagnostic.hints in
-  Printf.sprintf "%s: %s: %s%s%s%s" location level diagnostic.message excerpt
-    (String.concat "" notes) (String.concat "" hints)
+  let help =
+    match diagnostic.help with
+    | None -> ""
+    | Some text ->
+        Printf.sprintf "%shelp: %s\n" (if excerpt = "" then "\n" else "") text
+  in
+  let notes =
+    if excerpt = "" && help = "" && notes <> [] then "\n" :: notes else notes
+  in
+  Printf.sprintf "%s: %s: %s%s%s%s" location level diagnostic.message excerpt help
+    (String.concat "" notes)
 
 let render ~source diagnostic = render_one ~source diagnostic
 

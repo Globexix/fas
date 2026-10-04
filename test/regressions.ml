@@ -172,6 +172,24 @@ let semantic_error name fragment text =
       if not (contains rendered fragment) then
         failwith (name ^ ": unexpected diagnostic: " ^ rendered)
 
+let semantic_render text =
+  incr checks_run;
+  let src = source text in
+  let program = expect_ok (Parser.parse src) in
+  match Sema.check program with
+  | Ok _ -> failwith "expected semantic rejection"
+  | Error diagnostics -> Diag.render_all ~source:(Some src) diagnostics
+
+let expected_diagnostic line column width message help =
+  String.concat "\n"
+    [
+      Printf.sprintf "regression.fas:1:%d: error: %s" column message;
+      "  " ^ line;
+      "  " ^ String.make (column - 1) ' ' ^ "^" ^ String.make (width - 1) '~';
+      "help: " ^ help;
+    ]
+  ^ "\n"
+
 let semantic_accept name text =
   incr checks_run;
   let program = expect_ok (Parser.parse (source text)) in
@@ -626,7 +644,8 @@ let () =
     "type mismatch: expected u8, got bool"
     "const Invalid vec[4,u8] = true ? splat(7) : splat(true)\n\
      fn main() i32 { return 0 }\n";
-  semantic_error "runtime-logical-integer-left" "logical operands must be bool"
+  semantic_error "runtime-logical-integer-left"
+    "left operand of `&&` is `i32`, not `bool`"
     "fn f() bool { return 0 && (1 / 0 == 0) }\n";
   let integer_vector_comparisons =
     llvm_of
@@ -673,13 +692,14 @@ let () =
     "fn f(left vec[4,i32], right i32) vec[4,bool] { return left == right }\n";
   semantic_error "integer-vector-comparison-bool-order" "requires integer operands"
     "fn f(left vec[4,bool], right vec[4,bool]) vec[4,bool] { return left < right }\n";
-  semantic_error "integer-vector-comparison-condition" "if condition must be bool"
+  semantic_error "integer-vector-comparison-condition"
+    "condition of `if` is `vec[4, bool]`, not `bool`"
     "fn f(left vec[4,i32], right vec[4,i32]) i32 {\n\
     \ if left == right { return 1 }\n\
     \ return 0\n\
      }\n";
   semantic_error "integer-vector-comparison-no-reduction"
-    "logical operands must be bool"
+    "left operand of `&&` is `vec[4, bool]`, not `bool`"
     "fn f(left vec[4,i32], right vec[4,i32]) vec[4,bool] {\n\
     \ return (left == right) && (left != right)\n\
      }\n";
@@ -1875,7 +1895,7 @@ let () =
     "opaque O\nopaque P\nfn f(a handle[O], b handle[P]) bool { return a == b }\n";
   semantic_error "handle-null-unconstrained" "null requires an addr or handle context"
     "opaque O\nfn f() bool { return null == null }\n";
-  semantic_error "addr-index-reject" "raw selection requires a type argument"
+  semantic_error "addr-index-reject" "raw access on `addr` needs an element type"
     "fn f(p addr) u8 { return p[0] }\n";
   parse_error_message "removed-typed-pointer"
     "typed pointers are no longer supported; use addr or handle[T]"
@@ -3025,6 +3045,10 @@ let () =
   let use_directory = Filename.concat use_limit_directory "directory.fas" in
   let use_directory_root = Filename.concat use_limit_directory "directory-root.fas" in
   let use_duplicate_root = Filename.concat use_limit_directory "duplicate-root.fas" in
+  let use_relative_root = Filename.concat use_limit_directory "relative-root.fas" in
+  let use_relative_missing_root =
+    Filename.concat use_limit_directory "relative-missing-root.fas"
+  in
   let use_duplicate_one = Filename.concat use_limit_directory "one.fas" in
   let use_duplicate_two = Filename.concat use_limit_directory "two.fas" in
   let write_use_test_file path contents =
@@ -3052,6 +3076,8 @@ let () =
           use_duplicate_root;
           use_duplicate_one;
           use_duplicate_two;
+          use_relative_root;
+          use_relative_missing_root;
         ];
       remove_use_test_directory use_directory;
       remove_use_test_directory use_limit_directory)
@@ -3067,7 +3093,7 @@ let () =
       in
       if
         file_error
-        <> "dependency closure exceeds budget max_use_files of 1 (profile 0.15)"
+        <> "dependency closure exceeds budget max_use_files of 1 (profile 0.1.5)"
       then failwith ("dependency-file-limit: unexpected diagnostic " ^ file_error);
       let byte_error =
         dependency_limit_error
@@ -3077,7 +3103,7 @@ let () =
         byte_error
         <> "dependency closure exceeds budget max_use_bytes of "
            ^ string_of_int (String.length use_limit_root_text)
-           ^ " (profile 0.15)"
+           ^ " (profile 0.1.5)"
       then failwith ("dependency-byte-limit: unexpected diagnostic " ^ byte_error);
       let driver_error path =
         match Driver.run (cli_run [ path ]) with
@@ -3085,6 +3111,34 @@ let () =
         | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
         | Ok _ -> failwith "use-diagnostic-pins: expected driver rejection"
       in
+      let original_cwd = Sys.getcwd () in
+      write_use_test_file use_relative_root "fn f() void { if 1 { return } }\n";
+      let relative_diagnostic =
+        Fun.protect
+          ~finally:(fun () -> Sys.chdir original_cwd)
+          (fun () ->
+            Sys.chdir use_limit_directory;
+            driver_error "relative-root.fas")
+      in
+      if
+        relative_diagnostic.primary.Span.file <> "relative-root.fas"
+        || relative_diagnostic.notes <> []
+      then failwith "relative-root-path: diagnostic path or root notes changed";
+      write_use_test_file use_relative_missing_root "use \"absent.fas\"\n";
+      let relative_missing =
+        Fun.protect
+          ~finally:(fun () -> Sys.chdir original_cwd)
+          (fun () ->
+            Sys.chdir use_limit_directory;
+            driver_error "relative-missing-root.fas")
+      in
+      if
+        relative_missing.primary.Span.file <> "relative-missing-root.fas"
+        || relative_missing.Diag.message
+           <> "cannot read Fas dependency absent.fas: No such file or directory"
+        || relative_missing.notes
+           <> [ "include chain: relative-missing-root.fas -> absent.fas" ]
+      then failwith "relative-include-path: path or include chain changed";
       write_use_test_file use_missing_root "use \"absent.fas\"\n";
       let missing = driver_error use_missing_root in
       if
@@ -3710,7 +3764,8 @@ let () =
      fn main() i32 { return read[u8](1) }\n"
   in
   semantic_accept "generic-local-index-shadow" local_index_shadow;
-  semantic_error "generic-local-raw-type-shadow" "unknown type `T`"
+  semantic_error "generic-local-raw-type-shadow"
+    "raw access on `addr` needs an element type"
     "fn load[T](p addr, runtime_index usize) T {\n\
     \ { T usize = runtime_index\n\
     \ return p[T] } }\n\
@@ -6380,25 +6435,76 @@ let () =
     "division by zero is not a defined runtime operation"
     "fn f() bool { return true && (1 / 0 == 0) }\n";
 
-  semantic_error "const-logical-bool-only" "logical operands must be bool"
+  semantic_error "const-logical-bool-only" "left operand of `&&` is `i32`, not `bool`"
     "const B bool = 1 && true\n";
-  semantic_error "runtime-logical-bool-only" "logical operands must be bool"
+  semantic_error "runtime-logical-bool-only" "left operand of `&&` is `i32`, not `bool`"
     "fn f() bool { return 1 && true }\n";
-  semantic_error "logical-not-integer" "logical not requires bool or a bool vector"
+  semantic_error "logical-not-integer" "logical not needs `bool`, got `i64`"
     "fn f(value i64) bool { return !value }\n";
   semantic_error "logical-not-integer-vector"
-    "logical not requires bool or a bool vector"
+    "logical not needs `bool`, got `vec[4, i64]`"
     "fn f(value vec[4,i64]) vec[4,bool] { return !value }\n";
-  semantic_error "if-condition-bool-only" "if condition must be bool"
+  semantic_error "if-condition-bool-only" "condition of `if` is `i64`, not `bool`"
     "fn f(value i64) i64 { if value { return 1 } return 0 }\n";
-  semantic_error "while-condition-bool-only" "while condition must be bool"
+  semantic_error "while-condition-bool-only"
+    "condition of `while` is `addr`, not `bool`"
     "fn f(value addr) void { while value { break } }\n";
-  semantic_error "for-condition-bool-only" "for condition must be bool"
+  semantic_error "for-condition-bool-only" "condition of `for` is `i32`, not `bool`"
     "fn f() void { for ; 1; (1) { break } }\n";
-  semantic_error "ternary-condition-bool-only" "ternary condition must be bool"
+  semantic_error "ternary-condition-bool-only"
+    "condition of `ternary` is `i64`, not `bool`"
     "fn f(value i64) i64 { return value ? 1 : 0 }\n";
-  semantic_error "constant-ternary-condition-bool-only" "ternary condition must be bool"
-    "const X i64 = 1 ? 2 : 3\n";
+  semantic_error "constant-ternary-condition-bool-only"
+    "condition of `ternary` is `i32`, not `bool`" "const X i64 = 1 ? 2 : 3\n";
+  let logical_source = "fn f(c i32) bool { return c && true }\n" in
+  let logical_expected =
+    expected_diagnostic "fn f(c i32) bool { return c && true }" 27 1
+      "left operand of `&&` is `i32`, not `bool`"
+      "Fas has no implicit truth values; write `c != 0`"
+  in
+  if semantic_render logical_source <> logical_expected then
+    failwith ("logical-operand-diagnostic: " ^ semantic_render logical_source);
+  let raw_source = "fn f(p addr, i usize) u8 { return p[i] }\n" in
+  let raw_expected =
+    expected_diagnostic "fn f(p addr, i usize) u8 { return p[i] }" 35 4
+      "raw access on `addr` needs an element type" "write `p[T, i]`, e.g. `p[u8, i]`"
+  in
+  if semantic_render raw_source <> raw_expected then
+    failwith ("raw-access-diagnostic: " ^ semantic_render raw_source);
+  let not_source = "fn f(x i32) bool { return !x }\n" in
+  let not_expected =
+    expected_diagnostic "fn f(x i32) bool { return !x }" 28 1
+      "logical not needs `bool`, got `i32`" "write `x == 0`"
+  in
+  if semantic_render not_source <> not_expected then
+    failwith ("logical-not-diagnostic: " ^ semantic_render not_source);
+  let if_line = "fn f(c i32) i32 { if c { return 1 } return 0 }" in
+  let if_expected =
+    expected_diagnostic if_line
+      (String.rindex if_line 'c' + 1)
+      1 "condition of `if` is `i32`, not `bool`"
+      "Fas has no implicit truth values; write `c != 0`"
+  in
+  if semantic_render (if_line ^ "\n") <> if_expected then
+    failwith ("if-condition-diagnostic: " ^ semantic_render (if_line ^ "\n"));
+  let while_line = "fn f(p addr) void { while p { break } }" in
+  let while_expected =
+    expected_diagnostic while_line
+      (String.rindex while_line 'p' + 1)
+      1 "condition of `while` is `addr`, not `bool`"
+      "Fas has no implicit truth values; write `p != null`"
+  in
+  if semantic_render (while_line ^ "\n") <> while_expected then
+    failwith ("while-condition-diagnostic: " ^ semantic_render (while_line ^ "\n"));
+  let ternary_line = "fn f(c i32) i32 { return c ? 1 : 0 }" in
+  let ternary_expected =
+    expected_diagnostic ternary_line
+      (String.rindex ternary_line 'c' + 1)
+      1 "condition of `ternary` is `i32`, not `bool`"
+      "Fas has no implicit truth values; write `c != 0`"
+  in
+  if semantic_render (ternary_line ^ "\n") <> ternary_expected then
+    failwith ("ternary-condition-diagnostic: " ^ semantic_render (ternary_line ^ "\n"));
   ignore
     (llvm_of
        "const Explicit bool = (1 != 0) && true\n\
@@ -7253,7 +7359,7 @@ let () =
         "compound assignment requires an integer or vector" );
       ( "mask-truthiness",
         "fn f(m vec[2,bool]) i32 {\n  if m { return 1 }\n  return 0\n}\n",
-        "if condition must be bool" );
+        "condition of `if` is `vec[2, bool]`, not `bool`" );
       ( "select-scalar-mask",
         "fn f(a vec[2,i32], b vec[2,i32]) vec[2,i32] { return select(true, a, b) }\n",
         "select mask must be a bool vector" );
@@ -7708,9 +7814,9 @@ let () =
   semantic_error "raw-select-three-payloads"
     "raw selection takes a type and an optional index"
     "fn f(p addr, i usize) u32 { return p[u32, i, 3] }\n";
-  semantic_error "raw-select-value-payload" "unknown type `x`"
+  semantic_error "raw-select-value-payload" "raw access on `addr` needs an element type"
     "fn f(p addr, x u32) u32 { return p[x] }\n";
-  semantic_error "raw-select-const-payload" "raw selection requires a type argument"
+  semantic_error "raw-select-const-payload" "raw access on `addr` needs an element type"
     "fn f(p addr) u32 { return p[3] }\n";
   semantic_error "raw-select-void" "raw selection requires a concrete type"
     "fn f(p addr) void { p[void] = p[void] }\n";

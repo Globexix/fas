@@ -253,8 +253,9 @@ grep -F "$USE_EDGES_TMP/paths/missing-import.fas:1:1: error: C compilation faile
 grep -F "C compilation failed: '$USE_EDGES_TMP/paths/absent.h' file not found" \
   "$USE_EDGES_TMP/stderr" >/dev/null || fail "mapped diagnostic omitted the missing header reason"
 
-grep -E '^note: .*:1:10$' "$USE_EDGES_TMP/stderr" >/dev/null \
-  || fail "missing header diagnostic omitted its Clang location note"
+if grep -F "fas-c-import-" "$USE_EDGES_TMP/stderr" >/dev/null; then
+  fail "missing header diagnostic exposed a compiler temporary path"
+fi
 
 mkdir -p "$USE_EDGES_TMP/library"
 cat >"$USE_EDGES_TMP/library/api.fas" <<'FAS'

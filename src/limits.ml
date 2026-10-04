@@ -20,7 +20,7 @@ type t = {
   max_use_bytes : int;
 }
 
-let budget_version_name = function V0_15 -> "0.15"
+let budget_version_name = function V0_15 -> "0.1.5"
 let default_budget_version = V0_15
 let budget_profile_name limits = budget_version_name limits.budget_version
 

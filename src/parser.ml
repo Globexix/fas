@@ -1163,10 +1163,16 @@ module P = struct
           let* arguments = generic_args p in
           go (Ast.Generic_args (e, arguments, s))
       | Token.Lbracket ->
-          let s = span p in
           ignore (bump p);
           let* args = select_payloads p in
-          go (Ast.Select (e, args, s))
+          let finish = p.tokens.(p.pos - 1).Token.span in
+          let base = Ast.expr_span e in
+          let selection_span =
+            Span.make ~file:base.Span.file ~start_offset:base.Span.start_offset
+              ~end_offset:finish.Span.end_offset ~line:base.Span.line
+              ~column:base.Span.column
+          in
+          go (Ast.Select (e, args, selection_span))
       | Token.Colon when (peek_n p 1).kind = Token.Assign ->
           Error
             [

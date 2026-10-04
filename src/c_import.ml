@@ -92,7 +92,11 @@ let compilation_error ?(prefix = "C compilation failed") fallback output =
     | Some (file, line, column) when Filename.check_suffix file ".fas" ->
         (Span.make ~file ~start_offset:0 ~end_offset:0 ~line ~column, [])
     | Some (file, line, column) ->
-        (fallback, [ Printf.sprintf "%s:%d:%d" file line column ])
+        let notes =
+          if String.starts_with ~prefix:"fas-c-import-" (Filename.basename file) then []
+          else [ Printf.sprintf "%s:%d:%d" file line column ]
+        in
+        (fallback, notes)
     | None -> (fallback, [])
   in
   Diag.error ~notes span (if message = "" then prefix else prefix ^ ": " ^ message)

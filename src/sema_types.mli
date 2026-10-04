@@ -13,6 +13,10 @@ val source_ty : named_types -> Ast.ty -> (Hir.ty, string) result
 val handle_target : named_types -> Ast.ty -> (string, string) result
 val source_ty_diag : named_types -> Span.t -> Ast.ty -> (Hir.ty, Diag.t list) result
 val vec_cap_error : int -> Hir.ty -> string option
+val condition_error : string -> Ast.expr -> Hir.ty -> Diag.t
+val logical_operand_error : string -> string -> Ast.expr -> Hir.ty -> Diag.t
+val logical_not_error : Ast.expr -> Hir.ty -> Diag.t
+val raw_access_needs_type_error : Ast.expr -> Span.t -> Diag.t
 
 val resolve_aggregate_length :
   ?globals:string list ->
@@ -38,6 +42,8 @@ val ensure_expected : Hir.ty -> Hir.ty -> Span.t -> (unit, Diag.t list) result
 
 val binary_result_type :
   mismatch:string ->
+  ?left_expression:Ast.expr ->
+  ?right_expression:Ast.expr ->
   Span.t ->
   Ast.binop ->
   Hir.ty ->

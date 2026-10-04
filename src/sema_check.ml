@@ -1129,6 +1129,12 @@ let rec check_place (c : context) expr =
       | Hir.Vec _, [ _ ]
         when match base.expr with Hir.Raw_select _ -> true | _ -> false ->
           error s "raw vector lane selection is not yet supported"
+      | Hir.Addr, [ Ast.Const_arg _ ] ->
+          Error [ Sema_types.raw_access_needs_type_error a s ]
+      | Hir.Addr, [ Ast.Name_arg (name, _) ]
+        when Result.is_error (Sema_types.source_ty c.named_types (Ast.Named_type name))
+        ->
+          Error [ Sema_types.raw_access_needs_type_error a s ]
       | (Hir.Array (length, e) | Hir.Vec (length, e)), [ payload ] -> (
           let* i = select_value_arg s payload in
           let* checked_index = check_expr c None i in
@@ -1437,7 +1443,7 @@ and check_expr_inner (c : context) expected expression =
             result_ty = Hir.Bool
             || match result_ty with Hir.Vec (_, Hir.Bool) -> true | _ -> false
           then Ok (Hir.Unary (op, te, result_ty, s))
-          else error s "logical not requires bool or a bool vector")
+          else Error [ Sema_types.logical_not_error e result_ty ])
   | Ast.Binary (op, l, r, s) -> (
       if op = Ast.And || op = Ast.Or then (
         let* a = check_expr c None l in
@@ -1475,7 +1481,20 @@ and check_expr_inner (c : context) expected expression =
           (Sema_flow.merge_values_into c.flow initialized value_paths);
         if Hir.expr_ty a = Hir.Bool && Hir.expr_ty b = Hir.Bool then
           Ok (Hir.Binary (op, a, b, Hir.Bool, s))
-        else error s "logical operands must be bool")
+        else if Hir.expr_ty a <> Hir.Bool then
+          Error
+            [
+              Sema_types.logical_operand_error
+                (if op = Ast.And then "&&" else "||")
+                "left" l (Hir.expr_ty a);
+            ]
+        else
+          Error
+            [
+              Sema_types.logical_operand_error
+                (if op = Ast.And then "&&" else "||")
+                "right" r (Hir.expr_ty b);
+            ])
       else if op = Ast.Shl || op = Ast.Shr then
         let* a =
           check_expr c
@@ -1541,8 +1560,8 @@ and check_expr_inner (c : context) expected expression =
             Ok (Hir.Binary (op, a, b, Hir.Bool, s))
         | _ ->
             let* result_ty =
-              binary_result_type ~mismatch:"binary operands must have the same type" s
-                op at bt
+              binary_result_type ~mismatch:"binary operands must have the same type"
+                ~left_expression:l ~right_expression:r s op at bt
             in
             let facts_enabled = Sema_flow.proof_checks_enabled c.flow in
             let divisor_fact = value_fact c b in
@@ -1690,7 +1709,8 @@ and check_expr_inner (c : context) expected expression =
       | _ -> error s "splat requires a vector type context")
   | Ast.Ternary (q, a, b, s) -> (
       let* tq = check_expr c None q in
-      if Hir.expr_ty tq <> Hir.Bool then error s "ternary condition must be bool"
+      if Hir.expr_ty tq <> Hir.Bool then
+        Error [ Sema_types.condition_error "ternary" q (Hir.expr_ty tq) ]
       else
         let before_arms = Sema_flow.snapshot c.flow in
         let condition = condition_truth c tq
@@ -3385,7 +3405,8 @@ and check_stmt (c : context) = function
       Ok (Hir.Block (x, s))
   | Ast.If (q, a, b, s) ->
       let* tq = check_expr c None q in
-      if Hir.expr_ty tq <> Hir.Bool then error s "if condition must be bool"
+      if Hir.expr_ty tq <> Hir.Bool then
+        Error [ Sema_types.condition_error "if" q (Hir.expr_ty tq) ]
       else
         let condition = condition_truth c tq
         and init_condition = literal_condition_truth tq in
@@ -3441,7 +3462,8 @@ and check_stmt (c : context) = function
         Ok (Hir.If (tq, ta, tb, s))
   | Ast.While (q, b, s) ->
       let* tq = check_expr c None q in
-      if Hir.expr_ty tq <> Hir.Bool then error s "while condition must be bool"
+      if Hir.expr_ty tq <> Hir.Bool then
+        Error [ Sema_types.condition_error "while" q (Hir.expr_ty tq) ]
       else
         let condition = condition_truth c tq in
         let init_condition = literal_condition_truth tq in
@@ -3473,7 +3495,7 @@ and check_stmt (c : context) = function
           | Some x ->
               let* y = check_expr c None x in
               if Hir.expr_ty y = Hir.Bool then Ok (Some y)
-              else error (Ast.expr_span x) "for condition must be bool"
+              else Error [ Sema_types.condition_error "for" x (Hir.expr_ty y) ]
         in
         let induction = loop_induction c ti tq step b in
         let condition =

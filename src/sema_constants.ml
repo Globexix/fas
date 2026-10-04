@@ -479,19 +479,25 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
       in
       if not (is_int t) then error s "bitwise not requires an integer"
       else Ok (t, mask_value t (Int64.lognot v))
-  | Ast.Unary (Ast.Not, e, s) ->
+  | Ast.Unary (Ast.Not, e, _s) ->
       let* t, v =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
           ~globals ?resolve consts None ~check_only ~validate_dead e
       in
-      if t <> Hir.Bool then error s "logical not requires bool"
+      if t <> Hir.Bool then Error [ Sema_types.logical_not_error e t ]
       else Ok (Hir.Bool, if v = 0L then 1L else 0L)
-  | Ast.Binary (((Ast.And | Ast.Or) as op), l, r, s) ->
+  | Ast.Binary (((Ast.And | Ast.Or) as op), l, r, _s) ->
       let* lt, lv =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
           ~globals ?resolve consts None ~check_only ~validate_dead l
       in
-      if lt <> Hir.Bool then error s "logical operands must be bool"
+      if lt <> Hir.Bool then
+        Error
+          [
+            Sema_types.logical_operand_error
+              (if op = Ast.And then "&&" else "||")
+              "left" l lt;
+          ]
       else if
         (not check_only) && ((op = Ast.And && lv = 0L) || (op = Ast.Or && lv <> 0L))
       then
@@ -505,7 +511,13 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
           const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
             ~globals ?resolve consts None ~check_only ~validate_dead r
         in
-        if rt <> Hir.Bool then error s "logical operands must be bool"
+        if rt <> Hir.Bool then
+          Error
+            [
+              Sema_types.logical_operand_error
+                (if op = Ast.And then "&&" else "||")
+                "right" r rt;
+            ]
         else Ok (Hir.Bool, if rv <> 0L then 1L else 0L)
   | Ast.Binary (((Ast.Shl | Ast.Shr) as op), l, r, s) ->
       let* lt, lv =
@@ -572,7 +584,8 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
             Ok ((lt, lv), (rt, rv))
       in
       let* result_ty =
-        binary_result_type ~mismatch:"constant operands have different types" s op lt rt
+        binary_result_type ~mismatch:"constant operands have different types"
+          ~left_expression:l ~right_expression:r s op lt rt
       in
       if (not check_only) && (op = Ast.Div || op = Ast.Rem) && rv = 0L then
         error s "division by zero in constant expression"
@@ -635,12 +648,12 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
             | Or -> if lv <> 0L || rv <> 0L then 1L else 0L
           in
           Ok (result_ty, mask_value result_ty result)
-  | Ast.Ternary (c, a, b, s) ->
+  | Ast.Ternary (c, a, b, _s) ->
       let* ct, cv =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
           ~globals ?resolve consts None ~check_only ~validate_dead c
       in
-      if ct <> Hir.Bool then error s "ternary condition must be bool"
+      if ct <> Hir.Bool then Error [ Sema_types.condition_error "ternary" c ct ]
       else if cv <> 0L then
         let* at, av =
           const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
@@ -946,12 +959,12 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
           let* () = ensure_expected actual element (Ast.expr_span expression) in
           Ok (ty, List.init lanes (fun _ -> lane_mask element value))
       | _ -> error span "splat requires a vector type context")
-  | Ast.Unary (Ast.Not, value, span) -> (
+  | Ast.Unary (Ast.Not, value, _span) -> (
       let* ty, values = evaluate expected value in
       match ty with
       | Hir.Vec (_, Hir.Bool) ->
           Ok (ty, List.map (fun value -> if value = 0L then 1L else 0L) values)
-      | _ -> error span "logical not requires a bool vector")
+      | _ -> Error [ Sema_types.logical_not_error value ty ])
   | Ast.Binary (((Ast.Shl | Ast.Shr) as op), value, count, span) ->
       let* ty, values = evaluate expected value in
       let* element =
@@ -1017,8 +1030,8 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
             Ok (left_ty, left_values, right_ty, right_values)
       in
       let* result_ty =
-        binary_result_type ~mismatch:"constant operands have different types" span
-          operation left_ty right_ty
+        binary_result_type ~mismatch:"constant operands have different types"
+          ~left_expression:left ~right_expression:right span operation left_ty right_ty
       in
       let* element =
         match lane_type left_ty with
@@ -1284,7 +1297,7 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
           List.map2
             (fun a b -> lane_mask (Hir.Int kind) (sat_or_mulhi name kind a b))
             left_values right_values )
-  | Ast.Ternary (condition, yes, no, span) ->
+  | Ast.Ternary (condition, yes, no, _span) ->
       let* expected =
         if
           expected = None
@@ -1302,7 +1315,8 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
           ~globals ?resolve consts None ~check_only condition
       in
-      if condition_ty <> Hir.Bool then error span "ternary condition must be bool"
+      if condition_ty <> Hir.Bool then
+        Error [ Sema_types.condition_error "ternary" condition condition_ty ]
       else if condition_value <> 0L then
         let* yes_ty, yes_values = evaluate expected yes in
         let* no_ty, _ =
