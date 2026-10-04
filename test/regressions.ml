@@ -250,6 +250,20 @@ let parse_diagnostics name text =
   assert_deterministic name src first second;
   first
 
+let syntax_pin name text line column width message =
+  match parse_diagnostics name text with
+  | [ diagnostic ]
+    when diagnostic.Diag.primary.Span.line = line
+         && diagnostic.primary.Span.column = column
+         && diagnostic.primary.Span.end_offset - diagnostic.primary.Span.start_offset
+            = width
+         && diagnostic.message = message ->
+      ()
+  | diagnostics ->
+      failwith
+        (name ^ ": unexpected diagnostic: "
+        ^ Diag.render_all ~source:(Some (source text)) diagnostics)
+
 let parse_error name text = ignore (parse_diagnostics name text)
 
 let parse_messages text =
@@ -12593,5 +12607,119 @@ let () =
      return p != other }";
   semantic_accept "lifetime-outer-local-used-in-inner-block"
     "fn f() u32 { value u32 = 1\np addr = &value\n{ p[u32] = 2 }\nreturn value }"
+
+let () =
+  let pin name text line prefix width message =
+    syntax_pin name text line (String.length prefix + 1) width message
+  in
+  let type_order = "fn f() void { u16 samples[3]\n return }\n" in
+  pin "c-array-type-order" type_order 1 "fn f() void { u16 " 7
+    "C array declaration `u16 samples[3]` is not Fas syntax; write `samples arr[3,u16]`";
+  let c_array = "fn f() void { int items[4]\n return }\n" in
+  pin "c-array-declaration" c_array 1 "fn f() void { " 3
+    "C array declaration `int items[4]` is not Fas syntax; write `items arr[4,i32]`";
+  let missing_element = "fn f() void { items arr[3] }\n" in
+  pin "array-missing-element-type" missing_element 1 "fn f() void { items arr[3" 1
+    "array type `arr` needs an element type after its length";
+  let sizeof_variable = "fn f() usize { return sizeof amount }\n" in
+  pin "sizeof-needs-type" sizeof_variable 1 "fn f() usize { return sizeof " 6
+    "`sizeof` takes a type in brackets; write `sizeof[i32]`";
+  pin "c-header-needs-delimiters" "use \"C\" math.h\n" 1 "use \"C\" " 4
+    "C header path `math.h` needs quotes or angle brackets";
+  syntax_pin "c-function-prototype" "u16 sum(u16 left, u16 right);\n" 1 1 3
+    "C `u16` function prototypes are not Fas syntax; use `fn` declarations";
+  syntax_pin "c-extern-function" "extern int write(char* data);\n" 1 8 3
+    "C extern function prototypes starting with `int` are not Fas syntax; use `extern \
+     \"C\"` and `fn`";
+  syntax_pin "c-extern-global" "extern int count;\n" 1 8 3
+    "C extern global declarations starting with `int` are not Fas syntax; use `extern \
+     \"C\"` and `var`";
+  let char_pointer = "fn accept(data char*) void { return }\n" in
+  pin "c-char-pointer-type" char_pointer 1 "fn accept(data char*" 1
+    "C type `char*` is not a Fas type; use `addr`";
+  let parameter_order = "fn combine(i64 first, i64 second) i64 { return first }\n" in
+  pin "c-parameter-order" parameter_order 1 "fn combine(" 3
+    "C parameter order puts `i64` before the name; Fas parameters put the name first";
+  let missing_result = "fn empty() { return 0 }\n" in
+  pin "function-result-type-required" missing_result 1 "fn empty() " 1
+    "function result type is required before the body";
+  let return_type_first = "fn u32 read() { return 0 }\n" in
+  pin "function-return-type-first" return_type_first 1 "fn u32 " 4
+    "Fas function result types follow the parameters; `fn u32 name` puts the type first";
+  let void_parameter = "fn vacant(void) void { return }\n" in
+  pin "c-void-parameter" void_parameter 1 "fn vacant(" 4
+    "C `void` parameter spelling is not Fas syntax; use an empty parameter list";
+  syntax_pin "c-static-declaration" "static i32 counter = 1\n" 1 1 6
+    "C `static` is not a Fas keyword; use `fn` for a function or `var` for a global";
+  syntax_pin "c-const-global" "const int TOTAL = 1\n" 1 7 3
+    "C `const int` globals are not Fas syntax; Fas puts the name before its type";
+  syntax_pin "c-const-local" "fn f() void { const int value = 1\n return }\n" 1 15 5
+    "C `const int` locals are not Fas syntax; Fas locals put the name before the type";
+  pin "global-type-required" "var LIMIT = 1\n" 1 "var LIMIT " 1
+    "global `var` declarations need an explicit type before `=`";
+  let record_variable = "fn f() void { struct Pair point\n return }\n" in
+  pin "c-record-variable" record_variable 1 "fn f() void { " 6
+    "C `struct Pair point` declarations are not Fas syntax; write `point Pair`";
+  syntax_pin "c-struct-fields" "struct Point { int x; }\n" 1 1 6
+    "C struct field declarations are not Fas syntax; fields put the name before the \
+     type";
+  pin "c-for-loop" "fn f() i32 { for (;;) { return 1 } return 0 }\n" 1
+    "fn f() i32 { for (" 1
+    "C `for (;;)` syntax has parentheses; Fas writes `for ; ;` with an optional \
+     condition";
+  pin "c-do-while" "fn f() void { do { break } while (true)\n return }\n" 1
+    "fn f() void { do " 1 "C `do`/`while` loops are not Fas syntax; use `while`";
+  pin "c-goto" "fn f() void { goto finish\n return }\n" 1 "fn f() void { " 4
+    "Fas has no `goto` labels; use `break` or `continue` in a loop";
+  let arrow = "fn read(p addr) i32 { return p->value }\n" in
+  pin "c-arrow-field" arrow 1 "fn read(p addr) i32 { return p" 1
+    "Fas has no `->`; access field `value` with `.`";
+  let cast = "fn widen(p addr) u32 { return (u8*)p }\n" in
+  pin "c-cast" cast 1 "fn widen(p addr) u32 { return " 1
+    "C cast `(u8*)` is not Fas syntax; use `zext`, `sext` or `trunc`";
+  let dereference = "fn read(pointer addr) u8 { return *pointer }\n" in
+  pin "c-star-dereference" dereference 1 "fn read(pointer addr) u8 { return " 1
+    "Fas has no unary `*`; use typed `addr` selection";
+  let prefix_increment = "fn increment(value i32) i32 { return ++value }\n" in
+  pin "c-prefix-increment" prefix_increment 1 "fn increment(value i32) i32 { return " 1
+    "Fas has no prefix `++` operator; write `value += 1`";
+  let postfix_increment = "fn increment(value i32) void { value++\n return }\n" in
+  pin "c-postfix-increment" postfix_increment 1 "fn increment(value i32) void { value" 1
+    "Fas has no `++`; write `value += 1`";
+  let chain =
+    "fn f() void { left i32 = 0\n right i32 = 1\n left = right = 2\n return }\n"
+  in
+  pin "c-chained-assignment" chain 3 " left = right " 1
+    "Fas assignments are statements, not chained assignment expressions";
+  let comma = "fn f(left i32, right i32) i32 { return (left, right) }\n" in
+  pin "c-comma-operator" comma 1 "fn f(left i32, right i32) i32 { return (left" 1
+    "Fas has no comma operator; put each expression in its own statement";
+  ignore (llvm_of "fn samples() void { values arr[3,u16]\n return }\n");
+  ignore (llvm_of "fn count_bytes() usize { return sizeof[i32] }\n");
+  ignore (llvm_of "use \"C\" \"stdint.h\"\nfn f() void { return }\n");
+  ignore (llvm_of "fn sum(left u16, right u16) u16 { return left + right }\n");
+  ignore (llvm_of "extern \"C\" { fn puts(text addr) i32 }\nfn f() void { return }\n");
+  ignore (llvm_of "extern \"C\" { var count i32 }\nfn f() void { return }\n");
+  ignore (llvm_of "fn accept(data addr) void { return }\n");
+  ignore (llvm_of "fn combine(first i64, second i64) i64 { return first + second }\n");
+  ignore (llvm_of "fn empty() i32 { return 0 }\n");
+  ignore (llvm_of "fn read() u32 { return 0 }\n");
+  ignore (llvm_of "fn vacant() void { return }\n");
+  ignore (llvm_of "var TOTAL i32 = 1\nfn f() void { value i32 = 1\n return }\n");
+  ignore (llvm_of "const TOTAL i32 = 1\nfn f() void { value i32 = 1\n return }\n");
+  ignore (llvm_of "fn counter() i32 { return 1 }\nvar count i32 = 1\n");
+  ignore (llvm_of "struct Pair { value i32 }\nfn f() void { point Pair\n return }\n");
+  ignore (llvm_of "fn f() i32 { for ; ; { return 1 } return 0 }\n");
+  ignore (llvm_of "fn f() void { while true { break }\n return }\n");
+  ignore (llvm_of "fn g() void { while true { continue }\n return }\n");
+  ignore
+    (llvm_of
+       "struct Point { value i32 }\nfn read(p addr) i32 { return p[Point].value }\n");
+  ignore (llvm_of "fn widen(value u8) u32 { return zext[u32](value) }\n");
+  ignore (llvm_of "fn widen_signed(value i8) i32 { return sext[i32](value) }\n");
+  ignore (llvm_of "fn narrow(value i32) u8 { return trunc[u8](value) }\n");
+  ignore (llvm_of "fn increment(value i32) i32 { value += 1\n return value }\n");
+  ignore
+    (llvm_of "fn f() void { left i32 = 0\n right i32 = 1\n left = right\n return }\n");
 
 let () = Printf.printf "all regression checks: %d passed\n" !checks_run

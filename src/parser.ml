@@ -281,6 +281,32 @@ module P = struct
   let ( let* ) = bind
   let span p = (peek p).Token.span
 
+  let c_type_word = function
+    | "char" | "int" | "short" | "long" | "unsigned" | "signed" | "float" | "double"
+    | "void" ->
+        true
+    | _ -> false
+
+  let type_word name = c_type_word name || List.mem name Names.scalar_type_names
+  let error span message = Error [ Diag.error span message ]
+
+  let c_array_declaration p =
+    match ((peek p).kind, (peek_n p 1).kind, (peek_n p 2).kind) with
+    | Token.Ident element, Token.Ident name, Token.Lbracket
+      when type_word element && Names.type_constructor name = None ->
+        let count =
+          match (peek_n p 3).kind with Token.Int count -> count | _ -> "N"
+        in
+        let fas_element = if element = "int" then "i32" else element in
+        let primary = if c_type_word element then span p else (peek_n p 1).span in
+        Some
+          (error primary
+             (Printf.sprintf
+                "C array declaration `%s %s[%s]` is not Fas syntax; write `%s \
+                 arr[%s,%s]`"
+                element name count name count fas_element))
+    | _ -> None
+
   let within_nesting p s message parse =
     p.nesting <- p.nesting + 1;
     if p.nesting + p.depth > p.limits.Limits.max_nesting then (
@@ -325,7 +351,11 @@ module P = struct
         let* () = expected p Token.Lbracket in
         delimited p (fun () ->
             let* n = aggregate_length p in
-            let* () = expected p Token.Comma in
+            let* () =
+              if at p Token.Rbracket then
+                error (span p) "array type `arr` needs an element type after its length"
+              else expected p Token.Comma
+            in
             let* t = ty p in
             let* () = expected p Token.Rbracket in
             Ok (Ast.Array (n, t)))
@@ -352,6 +382,8 @@ module P = struct
         | "usize" -> Ok (Ast.Int Ast.Usize)
         | "isize" -> Ok (Ast.Int Ast.Isize)
         | _ -> assert false)
+    | Token.Ident "char" when (peek_n p 1).kind = Token.Star ->
+        error (peek_n p 2).span "C type `char*` is not a Fas type; use `addr`"
     | Token.Ident s ->
         ignore (bump p);
         if at p Token.Lbracket then
@@ -495,6 +527,14 @@ module P = struct
               | None -> Error [ Diag.error use_span "expected `>` in C header name" ])
         in
         path []
+    | Token.Ident first when (peek_n p 1).kind = Token.Dot ->
+        let name =
+          match (peek_n p 2).kind with
+          | Token.Ident second -> first ^ "." ^ second
+          | _ -> first
+        in
+        error (span p)
+          (Printf.sprintf "C header path `%s` needs quotes or angle brackets" name)
     | _ -> Error [ Diag.error use_span "expected a quoted or angle-bracket C header" ]
 
   and items p =
@@ -541,6 +581,18 @@ module P = struct
     | Token.Kw_fn ->
         let* x = fn_item p false in
         Ok [ x ]
+    | Token.Ident "static" ->
+        error (span p)
+          "C `static` is not a Fas keyword; use `fn` for a function or `var` for a \
+           global"
+    | Token.Ident result
+      when type_word result
+           && (match (peek_n p 1).kind with Token.Ident _ -> true | _ -> false)
+           && (peek_n p 2).kind = Token.Lparen ->
+        error (span p)
+          (Printf.sprintf
+             "C `%s` function prototypes are not Fas syntax; use `fn` declarations"
+             result)
     | Token.At ->
         let s = span p in
         let* () = expected p Token.At in
@@ -554,39 +606,55 @@ module P = struct
     let s = span p in
     let* () = expected p Token.Kw_const in
     let name_span = span p in
-    let* name = ident p in
-    let* ty = ty p in
-    let* () = expected p Token.Assign in
-    skip_newlines p;
-    let* value =
-      if at p Token.Lbrace then
-        let* () = expected p Token.Lbrace in
-        delimited p (fun () ->
-            let rec es acc =
-              if at p Token.Rbrace then Ok (List.rev acc)
-              else
-                let* e = expr p in
-                let* () =
-                  if eat p Token.Comma then Ok ()
-                  else if at p Token.Rbrace then Ok ()
+    match ((peek p).kind, (peek_n p 1).kind, (peek_n p 2).kind) with
+    | Token.Ident c_type, Token.Ident _, Token.Assign when c_type_word c_type ->
+        error (span p)
+          (Printf.sprintf
+             "C `const %s` globals are not Fas syntax; Fas puts the name before its \
+              type"
+             c_type)
+    | _ ->
+        let* name = ident p in
+        let* ty = ty p in
+        let* () = expected p Token.Assign in
+        skip_newlines p;
+        let* value =
+          if at p Token.Lbrace then
+            let* () = expected p Token.Lbrace in
+            delimited p (fun () ->
+                let rec es acc =
+                  if at p Token.Rbrace then Ok (List.rev acc)
                   else
-                    Error
-                      [ Diag.error (span p) "expected comma between literal elements" ]
+                    let* e = expr p in
+                    let* () =
+                      if eat p Token.Comma then Ok ()
+                      else if at p Token.Rbrace then Ok ()
+                      else
+                        Error
+                          [
+                            Diag.error (span p)
+                              "expected comma between literal elements";
+                          ]
+                    in
+                    es (e :: acc)
                 in
-                es (e :: acc)
-            in
-            let* xs = es [] in
-            let* () = expected p Token.Rbrace in
-            Ok (Ast.Array_lit (xs, s)))
-      else expr p
-    in
-    let* () = end_stmt p in
-    Ok (Ast.Const { name; name_span; ty; value; span = s })
+                let* xs = es [] in
+                let* () = expected p Token.Rbrace in
+                Ok (Ast.Array_lit (xs, s)))
+          else expr p
+        in
+        let* () = end_stmt p in
+        Ok (Ast.Const { name; name_span; ty; value; span = s })
 
   and global_item p linkage =
     let s = span p in
     let* () = expected p Token.Kw_var in
     let* name = ident p in
+    let* () =
+      if at p Token.Assign then
+        error (span p) "global `var` declarations need an explicit type before `=`"
+      else Ok ()
+    in
     let* ty = ty p in
     let* init =
       if eat p Token.Assign then (
@@ -610,6 +678,21 @@ module P = struct
     let name_span = span p in
     let* name = ident p in
     let* generic_params = generic_params p in
+    let* () =
+      if
+        at p Token.Lbrace
+        && c_type_word
+             (match (peek_n p 1).kind with
+             | Token.Ident field_type -> field_type
+             | _ -> "")
+        && (match (peek_n p 2).kind with Token.Ident _ -> true | _ -> false)
+        && (peek_n p 3).kind = Token.Semi
+      then
+        error s
+          "C struct field declarations are not Fas syntax; fields put the name before \
+           the type"
+      else Ok ()
+    in
     let* align =
       if at p Token.At then
         let at_span = span p in
@@ -716,23 +799,65 @@ module P = struct
                 let* () = expected p Token.Ellipsis in
                 let* () = expected p Token.Rparen in
                 Ok (List.rev acc, true)
+            else if
+              acc = []
+              && (peek p).kind = Token.Ident "void"
+              && (peek_n p 1).kind = Token.Rparen
+            then
+              error (span p)
+                "C `void` parameter spelling is not Fas syntax; use an empty parameter \
+                 list"
             else
               let ps = span p in
-              let* name = ident p in
-              let* t = ty p in
-              let param : Ast.param = { Ast.name; ty = t; span = ps } in
-              ignore (eat p Token.Comma);
-              params (param :: acc) variadic
+              match (peek p).kind with
+              | Token.Ident name
+                when type_word name
+                     &&
+                     match (peek_n p 1).kind with
+                     | Token.Ident _ -> true
+                     | _ -> false ->
+                  error ps
+                    (Printf.sprintf
+                       "C parameter order puts `%s` before the name; Fas parameters \
+                        put the name first"
+                       name)
+              | _ ->
+                  let* name = ident p in
+                  let* t = ty p in
+                  let param : Ast.param = { Ast.name; ty = t; span = ps } in
+                  ignore (eat p Token.Comma);
+                  params (param :: acc) variadic
           in
           params [] false)
     in
     let ret_span = span p in
-    let* ret = ty p in
+    let* ret =
+      if at p Token.Lbrace then
+        error (span p) "function result type is required before the body"
+      else ty p
+    in
     Ok (ps, ret, variadic, ret_span)
 
   and extern_block p =
     let s = span p in
     let* () = expected p Token.Kw_extern in
+    let* () =
+      match ((peek p).kind, (peek_n p 1).kind, (peek_n p 2).kind) with
+      | Token.Ident c_type, Token.Ident _, Token.Lparen when c_type_word c_type ->
+          error (span p)
+            (Printf.sprintf
+               "C extern function prototypes starting with `%s` are not Fas syntax; \
+                use `extern \"C\"` and `fn`"
+               c_type)
+      | Token.Ident c_type, Token.Ident _, (Token.Semi | Token.Assign)
+        when c_type_word c_type ->
+          error (span p)
+            (Printf.sprintf
+               "C extern global declarations starting with `%s` are not Fas syntax; \
+                use `extern \"C\"` and `var`"
+               c_type)
+      | _ -> Ok ()
+    in
     let* abi = string p in
     if abi <> "C" then Error [ Diag.error s "only extern \"C\" is supported" ]
     else
@@ -759,6 +884,16 @@ module P = struct
     let* () = expected p Token.Kw_fn in
     let name_span = span p in
     let* name = ident p in
+    let* () =
+      if type_word name && match (peek p).kind with Token.Ident _ -> true | _ -> false
+      then
+        error (span p)
+          (Printf.sprintf
+             "Fas function result types follow the parameters; `fn %s name` puts the \
+              type first"
+             name)
+      else Ok ()
+    in
     let* generic_params = generic_params p in
     let* ps, ret, var, ret_span = signature p allow_variadic in
     if allow_variadic then
@@ -851,7 +986,33 @@ module P = struct
             Diag.error (span p)
               "`var` declares globals; locals are declared as `name Type = value`";
           ]
+    | Token.Kw_const when (peek_n p 1).kind = Token.Ident "int" ->
+        error (span p)
+          "C `const int` locals are not Fas syntax; Fas locals put the name before the \
+           type"
+    | Token.Kw_struct
+      when match ((peek_n p 1).kind, (peek_n p 2).kind) with
+           | Token.Ident _, Token.Ident _ -> true
+           | _ -> false ->
+        let record =
+          match (peek_n p 1).kind with Token.Ident name -> name | _ -> "T"
+        in
+        let name = match (peek_n p 2).kind with Token.Ident name -> name | _ -> "x" in
+        error (span p)
+          (Printf.sprintf
+             "C `struct %s %s` declarations are not Fas syntax; write `%s %s`" record
+             name name record)
+    | Token.Ident "goto"
+      when match (peek_n p 1).kind with Token.Ident _ -> true | _ -> false ->
+        error (span p) "Fas has no `goto` labels; use `break` or `continue` in a loop"
+    | Token.Ident "do" when (peek_n p 1).kind = Token.Lbrace ->
+        error (peek_n p 1).span "C `do`/`while` loops are not Fas syntax; use `while`"
     | Token.Ident "view" -> view_statement p true
+    | Token.Ident _ -> (
+        match c_array_declaration p with
+        | Some result -> result
+        | None when starts_type p -> declaration p
+        | None -> assignment_or_expr p)
     | Token.Kw_return ->
         let s = span p in
         ignore (bump p);
@@ -908,7 +1069,6 @@ module P = struct
         let s = span p in
         let* b = block p in
         Ok (Ast.Block (b, s))
-    | Token.Ident _ when starts_type p -> declaration p
     | _ -> assignment_or_expr p
 
   and view_statement p consume_end =
@@ -964,9 +1124,13 @@ module P = struct
     | None ->
         if eat p Token.Assign then
           let* rhs = expr p in
-          let* t = target lhs in
-          let* () = finish_statement p consume_end in
-          Ok (Ast.Assign (t, rhs, s))
+          if at p Token.Assign then
+            error (span p)
+              "Fas assignments are statements, not chained assignment expressions"
+          else
+            let* t = target lhs in
+            let* () = finish_statement p consume_end in
+            Ok (Ast.Assign (t, rhs, s))
         else
           let* () = finish_statement p consume_end in
           Ok (Ast.Expr_stmt (lhs, s))
@@ -986,31 +1150,36 @@ module P = struct
 
   and for_stmt p =
     let s = span p in
-    ignore (bump p);
-    let* init =
-      if at p Token.Semi then (
-        ignore (bump p);
-        Ok None)
-      else
-        let* x = for_clause p in
-        let* () = expected p Token.Semi in
-        Ok (Some x)
-    in
-    let* cond =
-      if at p Token.Semi then Ok None
-      else
-        let* e = expr p in
-        Ok (Some e)
-    in
-    let* () = expected p Token.Semi in
-    let* step =
-      if at p Token.Lbrace then Ok None
-      else
-        let* x = for_clause_before_block p in
-        Ok (Some x)
-    in
-    let* body = block p in
-    Ok (Ast.For (init, cond, step, body, s))
+    if (peek_n p 1).kind = Token.Lparen then
+      error (peek_n p 2).span
+        "C `for (;;)` syntax has parentheses; Fas writes `for ; ;` with an optional \
+         condition"
+    else
+      let () = ignore (bump p) in
+      let* init =
+        if at p Token.Semi then (
+          ignore (bump p);
+          Ok None)
+        else
+          let* x = for_clause p in
+          let* () = expected p Token.Semi in
+          Ok (Some x)
+      in
+      let* cond =
+        if at p Token.Semi then Ok None
+        else
+          let* e = expr p in
+          Ok (Some e)
+      in
+      let* () = expected p Token.Semi in
+      let* step =
+        if at p Token.Lbrace then Ok None
+        else
+          let* x = for_clause_before_block p in
+          Ok (Some x)
+      in
+      let* body = block p in
+      Ok (Ast.For (init, cond, step, body, s))
 
   and switch_stmt p =
     let s = span p in
@@ -1099,6 +1268,14 @@ module P = struct
     let* first = next p in
     let rec go lhs =
       match (peek p).kind with
+      | Token.Minus
+        when (peek_n p 1).kind = Token.Gt
+             && (peek p).span.Span.end_offset = (peek_n p 1).span.Span.start_offset ->
+          let field =
+            match (peek_n p 2).kind with Token.Ident field -> field | _ -> "field"
+          in
+          error (span p)
+            (Printf.sprintf "Fas has no `->`; access field `%s` with `.`" field)
       | k when List.mem_assoc k ops ->
           let op = List.assoc k ops in
           let s = span p in
@@ -1131,6 +1308,16 @@ module P = struct
 
   and unary p =
     match (peek p).kind with
+    | (Token.Plus | Token.Minus) as op
+      when (peek_n p 1).kind = op
+           && (peek p).span.Span.end_offset = (peek_n p 1).span.Span.start_offset ->
+        let operator = if op = Token.Plus then "++" else "--" in
+        let assignment = if op = Token.Plus then "+=" else "-=" in
+        let name = match (peek_n p 2).kind with Token.Ident name -> name | _ -> "x" in
+        error (span p)
+          (Printf.sprintf "Fas has no prefix `%s` operator; write `%s %s 1`" operator
+             name assignment)
+    | Token.Star -> error (span p) "Fas has no unary `*`; use typed `addr` selection"
     | Token.Amp ->
         let s = span p in
         within_nesting p s "unary nesting exceeds the configured limit" (fun () ->
@@ -1280,11 +1467,26 @@ module P = struct
     let* () = expected p Token.Lparen in
     delimited p (fun () ->
         let* e = expr p in
-        let* () = expected p Token.Rparen in
-        Ok e)
+        if at p Token.Comma then
+          error (span p)
+            "Fas has no comma operator; put each expression in its own statement"
+        else
+          let* () = expected p Token.Rparen in
+          Ok e)
+
+  and c_cast_type p =
+    match ((peek_n p 1).kind, (peek_n p 2).kind, (peek_n p 3).kind) with
+    | Token.Ident name, Token.Star, Token.Rparen when type_word name -> Some (name ^ "*")
+    | Token.Ident name, Token.Rparen, _ when type_word name -> Some name
+    | _ -> None
 
   and primary p =
     match (peek p).kind with
+    | Token.Lparen when Option.is_some (c_cast_type p) ->
+        let cast = Option.get (c_cast_type p) in
+        error (span p)
+          (Printf.sprintf
+             "C cast `(%s)` is not Fas syntax; use `zext`, `sext` or `trunc`" cast)
     | Token.Lbrace ->
         let s = span p in
         let* () = expected p Token.Lbrace in
@@ -1302,6 +1504,18 @@ module P = struct
         let sp = span p in
         ignore (bump p);
         Ok (Ast.String_lit (true, s, sp))
+    | Token.Dot
+      when match ((peek_n p 1).kind, (peek_n p 2).kind) with
+           | Token.Ident _, Token.Assign -> true
+           | _ -> false ->
+        let field =
+          match (peek_n p 1).kind with Token.Ident field -> field | _ -> "field"
+        in
+        error (span p)
+          (Printf.sprintf
+             "Fas struct initializers are positional; designated initializer `.%s` is \
+              not supported"
+             field)
     | Token.Lparen ->
         let s = span p in
         if starts_struct_literal p then
@@ -1345,7 +1559,20 @@ module P = struct
               let* e = expression_argument p in
               Ok (Ast.Handle_from_addr (t, e, sp))
           | Some ((Names.Sizeof | Names.Alignof | Names.Offsetof) as operation), _ ->
-              let* () = expected p Token.Lbracket in
+              let* () =
+                if at p Token.Lbracket then expected p Token.Lbracket
+                else
+                  let operation =
+                    match operation with
+                    | Names.Sizeof -> "sizeof"
+                    | Names.Alignof -> "alignof"
+                    | Names.Offsetof -> "offsetof"
+                    | _ -> assert false
+                  in
+                  error (span p)
+                    (Printf.sprintf "`%s` takes a type in brackets; write `%s[i32]`"
+                       operation operation)
+              in
               delimited p (fun () ->
                   let* t = ty p in
                   if operation = Names.Offsetof then
