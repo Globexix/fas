@@ -202,8 +202,8 @@ c_import_unit=$(sed -n 's/^fas: kept C import unit: //p' "$USE_EDGES_TMP/c-impor
 [ -s "$c_import_unit" ] || fail "--keep did not retain the generated C import unit"
 grep -F '#include <stddef.h>' "$c_import_unit" >/dev/null \
   || fail "generated C import unit omitted the angle header"
-grep -F '#include "library.h"' "$c_import_unit" >/dev/null \
-  || fail "quoted header spelling changed in the generated C import unit"
+grep -F "#include \"$USE_EDGES_TMP/paths/library.h\"" "$c_import_unit" >/dev/null \
+  || fail "quoted header was not resolved from the Fas source directory"
 cp "$ROOT/test/c_import/matrix.h" "$USE_EDGES_TMP/paths/matrix.h"
 cat >"$USE_EDGES_TMP/paths/left.fas" <<'FAS'
 use "C" "matrix.h"

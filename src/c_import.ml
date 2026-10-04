@@ -20,8 +20,13 @@ type adapter = {
   signature : string;
 }
 
-let include_line _source fragment_path = function
-  | { spelling = Ast.C_quoted path; _ } -> Printf.sprintf "#include %S\n" path
+let include_line source fragment_path = function
+  | { spelling = Ast.C_quoted path; _ } ->
+      let path =
+        if Filename.is_relative path then Filename.concat (Filename.dirname source) path
+        else path
+      in
+      Printf.sprintf "#include %S\n" path
   | { spelling = Ast.C_system path; _ } -> "#include <" ^ path ^ ">\n"
   | { spelling = Ast.C_fragment _; _ } ->
       Printf.sprintf "#include %S\n" (Option.get fragment_path)
@@ -92,7 +97,8 @@ let error_location line =
                     (fun column -> (file, line, column))
                     (int_of_string_opt column))))
 
-let compilation_error ?(prefix = "C compilation failed") fallback output =
+let compilation_error ?source ?(headers = []) ?(prefix = "C compilation failed")
+    fallback output =
   let line = Option.value ~default:(String.trim output) (first_error output) in
   let raw_message =
     match find_text line "error:" 0 with
@@ -103,7 +109,24 @@ let compilation_error ?(prefix = "C compilation failed") fallback output =
   let message, missing_header =
     match missing_header_path raw_message with
     | None -> (raw_message, false)
-    | Some path -> (Printf.sprintf "C header `%s` not found" path, true)
+    | Some path ->
+        let spelling =
+          Option.bind source (fun source ->
+              List.find_map
+                (fun header ->
+                  match header.spelling with
+                  | Ast.C_quoted spelling ->
+                      let resolved =
+                        if Filename.is_relative spelling then
+                          Filename.concat (Filename.dirname source) spelling
+                        else spelling
+                      in
+                      if resolved = path then Some spelling else None
+                  | Ast.C_system _ | Ast.C_fragment _ -> None)
+                headers)
+          |> Option.value ~default:path
+        in
+        (Printf.sprintf "C header `%s` not found" spelling, true)
   in
   let span, notes =
     match error_location line with
@@ -1147,7 +1170,11 @@ let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) ?(macro_names = []
                     ^ String.concat " " (Array.to_list layout_argv));
                 match Process.run layout_argv with
                 | Error failure ->
-                    Error [ compilation_error (List.hd headers).span failure.stderr ]
+                    Error
+                      [
+                        compilation_error ~source ~headers (List.hd headers).span
+                          failure.stderr;
+                      ]
                 | Ok (layouts, _) -> (
                     match
                       imported_enum_nodes ~cc ~c_flags ~source ~unit_path
@@ -1213,7 +1240,7 @@ let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) ?(macro_names = []
       | Error failure ->
           Error
             [
-              compilation_error
+              compilation_error ~source ~headers
                 (error_span headers (unit_line unit_path failure.stderr))
                 failure.stderr;
             ])
