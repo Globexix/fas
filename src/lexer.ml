@@ -144,14 +144,38 @@ let lex ?(limits = Limits.default) source =
         in
         let clean = String.concat "" (String.split_on_char '_' raw) in
         let digits = String.concat "" (String.split_on_char '_' digits) in
-        if misplaced_separator then
+        let c_suffix =
+          String.length raw > 1
+          &&
+          match raw.[String.length raw - 1] with
+          | 'u' | 'U' | 'l' | 'L' -> true
+          | _ -> false
+        in
+        if stop + 1 < n && text.[stop] = '.' && is_digit text.[stop + 1] then
+          Error
+            [
+              diagnostic offset
+                "float literals are not Fas syntax; use an integer literal";
+            ]
+        else if c_suffix then
+          let unsuffixed = String.sub raw 0 (String.length raw - 1) in
+          Error
+            [
+              diagnostic offset
+                (Printf.sprintf "C integer suffix `%s` is not valid in Fas; write `%s`"
+                   raw unsuffixed);
+            ]
+        else if misplaced_separator then
           Error [ diagnostic offset "misplaced digit separator `_`" ]
         else if digits = "" then Error [ diagnostic offset "invalid integer literal" ]
         else if not (String.for_all valid_digit digits) then
           Error
             [
               diagnostic offset
-                (Printf.sprintf "invalid digit in integer literal %S" raw);
+                (Printf.sprintf
+                   (if radix = 2 then "invalid digit in binary integer literal %S"
+                    else "invalid digit in integer literal %S")
+                   raw);
             ]
         else
           let sp = Source.span source ~start_offset:offset ~end_offset:stop in
@@ -183,7 +207,9 @@ let lex ?(limits = Limits.default) source =
                   character_end next buffer)
           else if Char.code text.[i] < 32 || Char.code text.[i] > 126 then
             Error
-              [ diagnostic i "character literal must be printable ASCII; use \\xNN" ]
+              [
+                diagnostic offset "character literal must be printable ASCII; use \\xNN";
+              ]
           else (
             Buffer.add_char buffer text.[i];
             character_end (i + 1) buffer)
@@ -232,6 +258,8 @@ let lex ?(limits = Limits.default) source =
           else one kind1
         in
         match c with
+        | '#' when offset + 8 <= n && String.sub text offset 8 = "#include" ->
+            Error [ diagnostic offset "C `#include` is not Fas syntax; use `use`" ]
         | '(' -> one Lparen
         | ')' -> one Rparen
         | '{' -> one Lbrace

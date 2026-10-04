@@ -3324,7 +3324,8 @@ let () =
   in
   if not (contains released_unreserved_names "%struct.Members = type") then
     failwith "released-unreserved-name: member labels stopped compiling";
-  parse_error_message "floating-literal-unavailable" "expected identifier, found `5`"
+  parse_error_message "floating-literal-unavailable"
+    "float literals are not Fas syntax; use an integer literal"
     "fn main() i32 { return 1.5 }\n";
   parse_error "labeled-break-rejected" "fn f() void { while true { break outer } }\n";
 
@@ -12626,6 +12627,8 @@ let () =
     "`sizeof` takes a type in brackets; write `sizeof[i32]`";
   pin "c-header-needs-delimiters" "use \"C\" math.h\n" 1 "use \"C\" " 4
     "C header path `math.h` needs quotes or angle brackets";
+  syntax_pin "include-directive" "#include <stdint.h>\n" 1 1 1
+    "C `#include` is not Fas syntax; use `use`";
   syntax_pin "c-function-prototype" "u16 sum(u16 left, u16 right);\n" 1 1 3
     "C `u16` function prototypes are not Fas syntax; use `fn` declarations";
   syntax_pin "c-extern-function" "extern int write(char* data);\n" 1 8 3
@@ -12694,6 +12697,17 @@ let () =
   let comma = "fn f(left i32, right i32) i32 { return (left, right) }\n" in
   pin "c-comma-operator" comma 1 "fn f(left i32, right i32) i32 { return (left" 1
     "Fas has no comma operator; put each expression in its own statement";
+  pin "float-literal" "fn f() i32 { return 1.0 }\n" 1 "fn f() i32 { return " 1
+    "float literals are not Fas syntax; use an integer literal";
+  pin "float-shift-count" "fn f(value i32) i32 { return value << 1.0 }\n" 1
+    "fn f(value i32) i32 { return value << " 1
+    "float literals are not Fas syntax; use an integer literal";
+  pin "unsigned-integer-suffix" "fn f() u32 { return 10u }\n" 1 "fn f() u32 { return " 1
+    "C integer suffix `10u` is not valid in Fas; write `10`";
+  pin "long-integer-suffix" "fn f() i64 { return 10L }\n" 1 "fn f() i64 { return " 1
+    "C integer suffix `10L` is not valid in Fas; write `10`";
+  pin "binary-invalid-digit" "fn f() i32 { return 0b102 }\n" 1 "fn f() i32 { return " 1
+    "invalid digit in binary integer literal \"0b102\"";
   ignore (llvm_of "fn samples() void { values arr[3,u16]\n return }\n");
   ignore (llvm_of "fn count_bytes() usize { return sizeof[i32] }\n");
   ignore (llvm_of "use \"C\" \"stdint.h\"\nfn f() void { return }\n");
@@ -12721,5 +12735,8 @@ let () =
   ignore (llvm_of "fn increment(value i32) i32 { value += 1\n return value }\n");
   ignore
     (llvm_of "fn f() void { left i32 = 0\n right i32 = 1\n left = right\n return }\n");
+  ignore (llvm_of "fn f() i32 { return 1 }\n");
+  ignore (llvm_of "fn f() i32 { return 10 }\n");
+  ignore (llvm_of "fn f() i32 { return 0b101 }\n")
 
 let () = Printf.printf "all regression checks: %d passed\n" !checks_run
