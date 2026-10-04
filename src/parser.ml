@@ -211,14 +211,14 @@ module P = struct
   let field_ident p =
     let token = bump p in
     match token.kind with
-    | Token.Ident name -> Ok name
+    | Token.Ident name -> Ok (name, token.span)
     | ( Token.Kw_fn | Token.Kw_return | Token.Kw_if | Token.Kw_else | Token.Kw_while
       | Token.Kw_break | Token.Kw_continue | Token.Kw_const | Token.Kw_var
       | Token.Kw_struct | Token.Kw_opaque | Token.Kw_extern | Token.Kw_defer
       | Token.Kw_use | Token.Kw_for | Token.Kw_switch | Token.Kw_case | Token.Kw_default
         ) as kind ->
         let shown = Token.show kind in
-        Ok (String.sub shown 1 (String.length shown - 2))
+        Ok (String.sub shown 1 (String.length shown - 2), token.span)
     | kind ->
         Error
           [ Diag.error token.span ("expected identifier, found " ^ Token.show kind) ]
@@ -935,7 +935,7 @@ module P = struct
     match e with
     | Ast.Ident (n, span) -> Ok (Ast.Target_ident (n, span))
     | Ast.Select (a, args, _) -> Ok (Ast.Target_select (a, args))
-    | Ast.Field (a, n, _) -> Ok (Ast.Target_field (a, n))
+    | Ast.Field (a, n, span) -> Ok (Ast.Target_field (a, n, span))
     | _ -> Error [ Diag.error (Ast.expr_span e) "invalid assignment target" ]
 
   and assignment_or_expr_with_end p consume_end =
@@ -1218,8 +1218,8 @@ module P = struct
                   "pointer dereference is no longer supported; use raw selection";
               ]
           else
-            let* n = field_ident p in
-            go (Ast.Field (e, n, s))
+            let* n, field_span = field_ident p in
+            go (Ast.Field (e, n, field_span))
       | _ -> Ok e
     in
     go first

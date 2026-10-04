@@ -111,7 +111,7 @@ let address_value c ty expression =
             | Some { unsupported_reason = Some reason; _ } ->
                 error (Ast.expr_span base) reason
             | Some field -> Ok (name, field.ty, previous + field.offset)
-            | None -> error span "unknown field")
+            | None -> error span (Sema_types.missing_field_message field ty))
         | _ ->
             error span
               "address initializer requires static storage and constant selectors")

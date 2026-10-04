@@ -438,7 +438,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         Result_list.iter
           (validate_generic_argument_names value_names type_names (Ast.expr_span base))
           args
-    | Ast.Target_field (base, _) ->
+    | Ast.Target_field (base, _, _) ->
         validate_expression_names value_names type_names base
   and validate_statement_names value_names type_names scope_names = function
     | Ast.Let { name; ty; init; span; _ } ->
@@ -927,7 +927,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   in
   let target_mentions names = function
     | Ast.Target_ident (name, _) -> List.mem name names
-    | Ast.Target_field (expression, _) -> expression_mentions names expression
+    | Ast.Target_field (expression, _, _) -> expression_mentions names expression
     | Ast.Target_select (base, args) ->
         expression_mentions names base
         || List.exists (generic_argument_mentions names) args
@@ -1780,11 +1780,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             args
         in
         Ok (Ast.Target_select (base, args))
-    | Ast.Target_field (base, name) ->
+    | Ast.Target_field (base, name, span) ->
         let* base =
           resolve_expr ~values ~defer_const_structs substitutions depth base
         in
-        Ok (Ast.Target_field (base, name))
+        Ok (Ast.Target_field (base, name, span))
   and resolve_stmt ?(values = []) ?(defer_const_structs = false) substitutions depth
       statement =
     let previous = !local_values in

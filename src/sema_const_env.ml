@@ -28,7 +28,8 @@ let collect ?(global_names = []) ?(array_lengths = []) ?(generic_structs = [])
                   Ok ()
               | None -> error span "internal error: invalid zero array initializer")
           | Hir.Array (n, elem), Ast.Array_lit (xs, _) ->
-              if List.length xs <> n then error span "const array length mismatch"
+              if List.length xs <> n then
+                error span (Sema_types.array_element_count_message n (List.length xs))
               else
                 let rec values acc = function
                   | [] -> Ok (List.rev acc)
@@ -44,6 +45,23 @@ let collect ?(global_names = []) ?(array_lengths = []) ?(generic_structs = [])
                 arrays := (name, t, vs) :: !arrays;
                 arrays_names := String_set.add name !arrays_names;
                 Ok ()
+          | Hir.Struct record, Ast.Array_lit (xs, _) -> (
+              match
+                List.find_opt
+                  (fun (definition : Hir.struct_def) -> definition.name = record)
+                  structs
+              with
+              | Some definition ->
+                  let expected =
+                    if definition.is_union then min 1 (List.length definition.fields)
+                    else List.length definition.fields
+                  in
+                  if List.length xs <> expected then
+                    error span
+                      (Sema_types.record_field_count_message (Ast.type_name ty) expected
+                         (List.length xs))
+                  else error span "brace-list requires an array type"
+              | None -> error span "brace-list requires an array type")
           | Hir.Array _, _ -> error span "const array needs a brace-list initializer"
           | (Hir.Vec _ as vector_ty), _ ->
               let* actual_ty, values =

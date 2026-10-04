@@ -48,7 +48,9 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~generic_structs ~c
         | Some [] -> Ok (Hir.Global_zero (Hir.zero_initializer ty))
         | Some items when List.length items = length ->
             map (fun xs -> Hir.Global_array xs) element items
-        | Some _ -> error span "wrong number of array literal elements"
+        | Some items ->
+            error span
+              (Sema_types.array_element_count_message length (List.length items))
         | None -> error span "global initializer must be a constant expression")
     | Hir.Struct name -> (
         let items =
@@ -90,7 +92,13 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~generic_structs ~c
                     (List.combine definition.fields items)
                 in
                 Ok (Hir.Global_struct values))
-        | Some _, Some _ -> error span "wrong number of struct literal fields"
+        | Some items, Some definition ->
+            let expected =
+              if definition.is_union then min 1 (List.length definition.fields)
+              else List.length definition.fields
+            in
+            error span
+              (Sema_types.record_field_count_message name expected (List.length items))
         | _, None -> error span (Printf.sprintf "unknown struct `%s`" name)
         | _ -> error span "global initializer must be a constant expression")
     | Hir.Opaque _ | Hir.Void ->

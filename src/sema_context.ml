@@ -235,7 +235,7 @@ and count_expanded_target_type_nodes target cap total =
   else
     match target with
     | Ast.Target_ident _ -> total
-    | Ast.Target_field (expression, _) ->
+    | Ast.Target_field (expression, _, _) ->
         count_expanded_expr_type_nodes expression cap total
     | Ast.Target_select (base, args) ->
         List.fold_left

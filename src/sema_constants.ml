@@ -871,14 +871,14 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
       in
       let* _, n = layout_diag s layout_structs t in
       Ok (Hir.Int Hir.Usize, Int64.of_int n)
-  | Ast.Offsetof (t, n, s) -> (
+  | Ast.Offsetof (source_ty, n, s) -> (
       let evaluate values expression expected =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
           ~globals ?resolve values expected ~check_only ~validate_dead expression
       in
       let* t, layout_structs =
         query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate consts s
-          t
+          source_ty
       in
       match t with
       | Hir.Struct sn -> (
@@ -887,7 +887,10 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
             when reason <> "floating-point fields are not supported until v0.5" ->
               error s reason
           | Some f -> Ok (Hir.Int Hir.Usize, Int64.of_int f.offset)
-          | None -> error s "unknown field in offsetof")
+          | None ->
+              error s
+                (Sema_types.missing_field_message ~record_name:(Ast.type_name source_ty)
+                   n (Hir.Struct sn)))
       | _ -> error s "offsetof requires a struct")
   | expr -> global_error (Ast.expr_span expr) "expression is not compile-time constant"
 

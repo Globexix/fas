@@ -83,7 +83,7 @@ and stmt =
 and assign_target =
   | Target_ident of string * Span.t
   | Target_select of expr * generic_arg list
-  | Target_field of expr * string
+  | Target_field of expr * string * Span.t
 
 and field = {
   name : string;
@@ -139,7 +139,7 @@ and item =
 
 type program = { items : item list }
 
-let expr_span = function
+let rec expr_span = function
   | Int_lit (_, s)
   | Bool_lit (_, s)
   | Null s
@@ -151,7 +151,6 @@ let expr_span = function
   | Generic_args (_, _, s)
   | Cast (_, _, _, s)
   | Select (_, _, s)
-  | Field (_, _, s)
   | Addr_of (_, s)
   | Handle_from_addr (_, _, s)
   | Sizeof (_, s)
@@ -162,6 +161,11 @@ let expr_span = function
   | Array_lit (_, s)
   | Struct_lit (_, _, s) ->
       s
+  | Field (base, _, field_span) ->
+      let base_span = expr_span base in
+      Span.make ~file:base_span.Span.file ~start_offset:base_span.Span.start_offset
+        ~end_offset:field_span.Span.end_offset ~line:base_span.Span.line
+        ~column:base_span.Span.column
 
 let rec index_expression = function
   | Named_type name -> Ident (name, Span.synthetic)
@@ -759,8 +763,8 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
         count at;
         go_expr a;
         List.iter (go_generic_arg at) args
-    | Target_field (a, _) ->
-        count (expr_span a);
+    | Target_field (a, _, span) ->
+        count span;
         go_expr a
   and go_stmts xs = List.iter go_stmt xs
   and go_stmt s =

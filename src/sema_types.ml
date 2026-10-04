@@ -265,6 +265,21 @@ let diagnostic_ty_name ty =
   Hir.ty_name ty |> String.split_on_char ',' |> List.map String.trim
   |> String.concat ","
 
+let missing_field_message ?record_name field receiver =
+  match receiver with
+  | Hir.Struct record ->
+      Printf.sprintf "record `%s` has no field `%s`"
+        (Option.value ~default:record record_name)
+        field
+  | _ -> Printf.sprintf "no field `%s` on `%s`" field (diagnostic_ty_name receiver)
+
+let record_field_count_message record expected actual =
+  let noun = if expected = 1 then "field" else "fields" in
+  Printf.sprintf "record `%s` has %d %s, got %d" record expected noun actual
+
+let array_element_count_message expected actual =
+  Printf.sprintf "array of %d elements, got %d" expected actual
+
 let ensure_expected ?(context = "value") ?expression actual expected span =
   if compatible actual expected then Ok ()
   else

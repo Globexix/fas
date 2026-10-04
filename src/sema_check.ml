@@ -1313,8 +1313,9 @@ let rec check_place (c : context) expr =
                   root = base.root;
                   path = base.path;
                 }
-          | None -> error s (Printf.sprintf "unknown field `%s`" n))
-      | Hir.Raw_select (_, _, _, _) -> error s "field access requires a struct"
+          | None -> error s (Sema_types.missing_field_message n (Hir.Struct sn)))
+      | Hir.Raw_select (_, _, access_ty, _) ->
+          error (Ast.expr_span a) (Sema_types.missing_field_message n access_ty)
       | _ -> (
           match Hir.expr_ty base.expr with
           | Hir.Struct sn -> (
@@ -1331,8 +1332,9 @@ let rec check_place (c : context) expr =
                         | Some (Dynamic_prefix path) -> Some (Dynamic_prefix path)
                         | None -> None);
                     }
-              | None -> error s (Printf.sprintf "unknown field `%s`" n))
-          | _ -> error s "field access requires a struct"))
+              | None -> error s (Sema_types.missing_field_message n (Hir.Struct sn)))
+          | actual ->
+              error (Ast.expr_span a) (Sema_types.missing_field_message n actual)))
   | e ->
       let* checked = check_expr c None e in
       Ok { expr = checked; root = None; path = None }
@@ -1747,8 +1749,8 @@ and check_expr_inner ?destination (c : context) expected expression =
       let* t, structs = query_layout_in_context c s t in
       let* _, a = layout_diag s structs t in
       Ok (Hir.Alignof (t, a, s))
-  | Ast.Offsetof (t, n, s) -> (
-      let* t, structs = query_layout_in_context c s t in
+  | Ast.Offsetof (source_ty, n, s) -> (
+      let* t, structs = query_layout_in_context c s source_ty in
       match t with
       | Hir.Struct sn -> (
           match field_info structs sn n with
@@ -1756,7 +1758,10 @@ and check_expr_inner ?destination (c : context) expected expression =
             when reason <> "floating-point fields are not supported until v0.5" ->
               error s reason
           | Some f -> Ok (Hir.Offsetof (t, n, f.offset, s))
-          | None -> error s (Printf.sprintf "unknown field `%s`" n))
+          | None ->
+              error s
+                (Sema_types.missing_field_message ~record_name:(Ast.type_name source_ty)
+                   n (Hir.Struct sn)))
       | _ -> error s "offsetof requires a struct type")
   | Ast.Splat (e, s) -> (
       match expected with
@@ -1881,7 +1886,8 @@ and check_initializer ?(constant = false) ?destination c expected expression =
           match ty with
           | Hir.Array (length, element) ->
               if List.length entries <> length then
-                error span "wrong number of array literal elements"
+                error span
+                  (Sema_types.array_element_count_message length (List.length entries))
               else
                 Ok
                   (List.mapi
@@ -1913,9 +1919,15 @@ and check_initializer ?(constant = false) ?destination c expected expression =
                               Printf.sprintf "field `%s` of record `%s`" field.name name
                             );
                           ]
-                    | _ -> error span "wrong number of struct literal fields"
+                    | _ ->
+                        error span
+                          (Sema_types.record_field_count_message name 1
+                             (List.length entries))
                   else if List.length entries <> List.length definition.fields then
-                    error span "wrong number of struct literal fields"
+                    error span
+                      (Sema_types.record_field_count_message name
+                         (List.length definition.fields)
+                         (List.length entries))
                   else if
                     List.exists
                       (fun (field : Hir.field) ->
@@ -2816,8 +2828,8 @@ let check_target (c : context) = function
                   }
             | _ -> error (Ast.expr_span a) "index assignment requires aggregate")
       | _ -> error (Ast.expr_span a) "index assignment requires aggregate")
-  | Ast.Target_field (a, n) -> (
-      let* place = check_place c (Ast.Field (a, n, Ast.expr_span a)) in
+  | Ast.Target_field (a, n, field_span) -> (
+      let* place = check_place c (Ast.Field (a, n, field_span)) in
       let x = place.expr in
       let access = view_access_of_expr c x in
       match x with
@@ -2857,9 +2869,12 @@ let check_target (c : context) = function
                         through_view = expression_uses_view c x;
                       }
                 | None ->
-                    error (Ast.expr_span a) (Printf.sprintf "unknown field `%s`" n))
-            | _ -> error (Ast.expr_span a) "field assignment requires struct")
-      | _ -> error (Ast.expr_span a) "field assignment requires struct")
+                    error (Ast.expr_span a)
+                      (Sema_types.missing_field_message n (Hir.Struct sn)))
+            | actual ->
+                error (Ast.expr_span a) (Sema_types.missing_field_message n actual))
+      | _ ->
+          error (Ast.expr_span a) (Sema_types.missing_field_message n (Hir.expr_ty x)))
 
 let target_ty c = function
   | Hir.ALocal binding -> Some binding.ty
@@ -2976,7 +2991,7 @@ let target_takes_name_address name = function
              | Ast.Const_arg value -> expression_takes_name_address name value
              | _ -> false)
            args
-  | Ast.Target_field (value, _) -> expression_takes_name_address name value
+  | Ast.Target_field (value, _, _) -> expression_takes_name_address name value
 
 let rec statement_changes_name name = function
   | Ast.Let { init; _ } ->

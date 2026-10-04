@@ -1938,7 +1938,7 @@ let () =
   semantic_error "addr-bitcast-to-reject"
     "illegal cast for source and destination widths"
     "fn f(n usize) addr { return bitcast[addr](n) }\n";
-  semantic_error "handle-field-reject" "field access requires a struct"
+  semantic_error "handle-field-reject" "no field `x` on `handle[O]`"
     "opaque O\nfn f(h handle[O]) usize { return h.x }\n";
   semantic_error "handle-index-reject" "cannot select through a handle"
     "opaque O\nfn f(h handle[O]) u8 { return h[0] }\n";
@@ -2816,7 +2816,7 @@ let () =
     "opaque F\nfn check_case() i64 { return F }\n";
   semantic_error "const-env-duplicate-const" "duplicate const `A`"
     "const A arr[2, i64] = {1, 2}\nconst A i64 = 1\n";
-  semantic_error "const-env-array-length-mismatch" "const array length mismatch"
+  semantic_error "const-env-array-length-mismatch" "array of 2 elements, got 3"
     "const A arr[2, i64] = {1, 2, 3}\n";
   semantic_error "const-env-array-element-type-mismatch"
     "const array element type mismatch" "const A arr[2, i64] = {1, true}\n";
@@ -8065,10 +8065,38 @@ let () =
   semantic_error "raw-select-compound-addr-bad"
     "right operand of `+=` is `bool`; `addr` arithmetic needs a scalar integer offset"
     "fn f(p addr, b bool) void { p[addr] += b }\n";
-  semantic_error "raw-select-field-nonstruct" "field access requires a struct"
+  semantic_error "raw-select-field-nonstruct" "no field `x` on `u32`"
     "fn f(p addr) u32 { return p[u32].x }\n";
-  semantic_error "raw-select-unknown-field" "unknown field `x`"
+  semantic_error "raw-select-unknown-field" "record `S` has no field `x`"
     "struct S { a u8 }\nfn f(p addr) u8 { return p[S].x }\n";
+  semantic_message "unknown-field-assignment" "record `S` has no field `missing`"
+    "struct S { value i32 }\nfn f() void { item S = {1}\nitem.missing = 2\nreturn }\n";
+  semantic_message "unknown-field-offsetof" "record `S` has no field `missing`"
+    "struct S { value i32 }\nfn f() usize { return offsetof[S, missing] }\n";
+  semantic_message "unknown-field-constant-offsetof" "record `S` has no field `missing`"
+    "struct S { value i32 }\nconst Offset usize = offsetof[S, missing]\n";
+  let handle_field_source = "opaque O\nfn f(h handle[O]) usize { return h.x }\n" in
+  let handle_field_line = "fn f(h handle[O]) usize { return h.x }" in
+  let handle_field_expected =
+    expected_diagnostic_without_help ~line_number:2 handle_field_line 34 1
+      "no field `x` on `handle[O]`"
+  in
+  if semantic_render handle_field_source <> handle_field_expected then
+    failwith "handle-field-reject: receiver diagnostic span or message changed";
+  let unknown_field_source =
+    "struct Pair { x i32 }\n\
+     fn main() i32 {\n\
+    \ p Pair = (Pair){ 1 }\n\
+    \ return p.missing\n\
+     }\n"
+  in
+  let unknown_field_line = " return p.missing" in
+  let unknown_field_expected =
+    expected_diagnostic_without_help ~line_number:4 unknown_field_line 11 7
+      "record `Pair` has no field `missing`"
+  in
+  if semantic_render unknown_field_source <> unknown_field_expected then
+    failwith "unknown-field: field-name diagnostic span or message changed";
   let raw_load_shape = llvm_of "fn f(p addr) u32 { return p[u32] }\n" in
   List.iter
     (fun marker ->
@@ -8591,8 +8619,7 @@ let () =
   semantic_error "construction-empty-scalar"
     "construction needs an array, struct or vector type"
     "fn f() void { value i32 = {}\nreturn }\n";
-  semantic_error "construction-empty-array-nonzero-count"
-    "wrong number of array literal elements"
+  semantic_error "construction-empty-array-nonzero-count" "array of 5 elements, got 1"
     "fn f() void { values arr[5,u8] = {0}\nreturn }\n";
   let empty_aggregate_llvm =
     llvm_of
@@ -8635,11 +8662,9 @@ let () =
   semantic_accept "construction-contextual-array-of-vectors"
     "fn f() u32 { values arr[2,vec[2,u32]] = {{13, 17}, {19, 23}}\n\
      return values[1][0] + values[1][1] }\n";
-  semantic_error "construction-array-entry-count"
-    "wrong number of array literal elements"
+  semantic_error "construction-array-entry-count" "array of 2 elements, got 1"
     "fn f() void { values arr[2,i32] = {1}\nreturn }\n";
-  semantic_error "construction-struct-entry-count"
-    "wrong number of struct literal fields"
+  semantic_error "construction-struct-entry-count" "record `Pair` has 2 fields, got 1"
     "struct Pair { left i32 right i32 }\nfn f() void { value Pair = {1}\nreturn }\n";
   semantic_error "construction-vector-entry-count"
     "wrong number of vector literal lanes"
@@ -8972,11 +8997,15 @@ let () =
     "var Choice i32 = 2\n\
      fn run() i32 { switch 0 { case Choice: return 1 }\n\
      return 0 }\n";
-  semantic_message "global-array-initializer-arity"
-    "wrong number of array literal elements" "var Values arr[2,i32] = {1}\n";
-  semantic_message "global-struct-initializer-arity"
-    "wrong number of struct literal fields"
+  semantic_message "global-array-initializer-arity" "array of 2 elements, got 1"
+    "var Values arr[2,i32] = {1}\n";
+  semantic_message "global-struct-initializer-arity" "record `Pair` has 2 fields, got 1"
     "struct Pair { x i32\ny i32 }\nvar Item Pair = {1}\n";
+  semantic_message "constant-global-array-initializer-arity"
+    "array of 3 elements, got 2" "const Values arr[3,i32] = {1, 2}\n";
+  semantic_message "constant-global-record-initializer-arity"
+    "record `Pair` has 1 field, got 2"
+    "struct Pair { x i32 }\nconst Item Pair = {1, 2}\n";
   semantic_message "global-opaque-object"
     "opaque type `Token` may only be used behind a pointer"
     "opaque Token\nvar Value Token\n";
@@ -11356,8 +11385,7 @@ let () =
   semantic_accept "constant-local-literal-expressions" literal;
   if not (contains (llvm_of literal) "@.literal.") then
     failwith "constant local literal must use immutable storage";
-  semantic_message "constant-local-literal-width"
-    "wrong number of array literal elements"
+  semantic_message "constant-local-literal-width" "array of 20 elements, got 2"
     "fn main() i32 { a arr[20,u32] = {1,2}\n return 0 }";
   semantic_accept "large-zero-array-loop"
     "fn main() i32 { a arr[65536,u32] = {}\n\
@@ -11513,7 +11541,8 @@ let () =
      users[1].id = u.id\n\
      return users[1].id + u.x + bitcast[i32](w.word) }\n";
   c_semantic_message "c-import-container-anonymous-typedef-field-error"
-    "unknown field `missing`" fixture "fn f() i32 { u user_t = {}\nreturn u.missing }\n"
+    "record `user_t` has no field `missing`" fixture
+    "fn f() i32 { u user_t = {}\nreturn u.missing }\n"
 
 let () =
   let fixture =
@@ -11662,7 +11691,7 @@ let () =
      b BeforeContainer = {}\n\
      return a.after + b.before }\n";
   c_semantic_message "c-import-anonymous-header-after-container-field"
-    "unknown field `missing`" fixture
+    "record `AfterContainer` has no field `missing`" fixture
     "fn f() i32 { a AfterContainer = {}\nreturn a.missing }\n"
 
 let () =
@@ -11891,7 +11920,7 @@ let () =
     \ Ring arr[1,u32] = {1}\n\
     \ return a[Ring[0]] }\n\
     \ fn g() u32 { return f[4]() }";
-  semantic_message "generic-brace-local-width" "wrong number of array literal elements"
+  semantic_message "generic-brace-local-width" "array of 4 elements, got 2"
     "fn f[N const usize]() u32 { a arr[4,u32] = {4,5}\n\
      return 0 }\n\
     \ fn g() u32 { return f[4]() }"

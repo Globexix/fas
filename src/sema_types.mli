@@ -41,6 +41,9 @@ val layout_diag :
 val field_info : Hir.struct_def list -> string -> string -> Hir.field option
 val compatible : Hir.ty -> Hir.ty -> bool
 val diagnostic_ty_name : Hir.ty -> string
+val missing_field_message : ?record_name:string -> string -> Hir.ty -> string
+val record_field_count_message : string -> int -> int -> string
+val array_element_count_message : int -> int -> string
 
 val ensure_expected :
   ?context:string ->
