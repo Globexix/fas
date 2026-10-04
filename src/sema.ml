@@ -335,9 +335,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       ~array_lengths:(Sema_static_env.source_array_lengths program.Ast.items)
       ~globals:global_names ~structs:base_structs ~named_types
       ~generic_structs:program.Ast.items
-      ~resolve_type:(fun span ty ->
-        source_ty named_types ty
-        |> Result.map_error (fun message -> [ Diag.error span message ]))
+      ~resolve_type:(fun span ty -> source_ty_diag named_types span ty)
       ~strict:false ordinary_program.Ast.items
   in
   let* program =
@@ -374,10 +372,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                 if String_set.mem f.name seen then
                   error f.span (Printf.sprintf "duplicate field `%s`" f.name)
                 else
-                  let* ty =
-                    source_ty named_types f.ty
-                    |> Result.map_error (fun message -> [ Diag.error f.span message ])
-                  in
+                  let* ty = source_ty_diag named_types f.span f.ty in
                   collect_fields (String_set.add f.name seen) ((f.name, ty) :: out)
                     fields
           in
@@ -412,9 +407,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
   in
   let* structs = build structs_src in
   let source_obj span t =
-    let* t =
-      source_ty named_types t |> Result.map_error (fun m -> [ Diag.error span m ])
-    in
+    let* t = source_ty_diag named_types span t in
     Sema_limits.validate_object limits structs span t
   in
   let map_params convert params =

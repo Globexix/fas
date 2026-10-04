@@ -44,11 +44,66 @@ let logical_not_error expression ty =
   Diag.error ?help (Ast.expr_span expression)
     (Printf.sprintf "logical not needs `bool`, got `%s`" (Hir.ty_name ty))
 
-let raw_access_needs_type_error base span =
+let edit_distance left right =
+  let left_length = String.length left in
+  let right_length = String.length right in
+  let previous = Array.init (right_length + 1) Fun.id in
+  let current = Array.make (right_length + 1) 0 in
+  for i = 1 to left_length do
+    current.(0) <- i;
+    for j = 1 to right_length do
+      let substitution =
+        previous.(j - 1) + if left.[i - 1] = right.[j - 1] then 0 else 1
+      in
+      current.(j) <- min (min (previous.(j) + 1) (current.(j - 1) + 1)) substitution
+    done;
+    Array.blit current 0 previous 0 (right_length + 1)
+  done;
+  previous.(right_length)
+
+let primitive_type_names =
+  [
+    "bool";
+    "void";
+    "addr";
+    "u8";
+    "u16";
+    "u32";
+    "u64";
+    "i8";
+    "i16";
+    "i32";
+    "i64";
+    "usize";
+    "isize";
+  ]
+
+let unknown_type_error visible_types span name =
+  let candidates =
+    List.sort_uniq String.compare (primitive_type_names @ visible_types)
+    |> List.filter (fun candidate -> edit_distance name candidate <= 2)
+  in
+  let help =
+    match candidates with
+    | [ candidate ] -> Some (Printf.sprintf "did you mean `%s`?" candidate)
+    | _ -> None
+  in
+  Diag.error ?help span (Printf.sprintf "unknown type `%s`" name)
+
+let unknown_type_name message =
+  let prefix = "unknown type `" in
+  if String.starts_with ~prefix message && String.ends_with ~suffix:"`" message then
+    Some
+      (String.sub message (String.length prefix)
+         (String.length message - String.length prefix - 1))
+  else None
+
+let raw_access_needs_type_error ?(index = "i") base span =
   let help =
     match base with
     | Ast.Ident (name, _) ->
-        Some (Printf.sprintf "write `%s[T, i]`, e.g. `%s[u8, i]`" name name)
+        Some
+          (Printf.sprintf "write `%s[T, %s]`, e.g. `%s[u8, %s]`" name index name index)
     | _ -> None
   in
   Diag.error ?help span "raw access on `addr` needs an element type"
@@ -145,7 +200,10 @@ and source_aggregate named_types make raw element =
 
 let source_ty_diag named_types span ty =
   source_ty named_types ty
-  |> Result.map_error (fun message -> [ Diag.error span message ])
+  |> Result.map_error (fun message ->
+      match unknown_type_name message with
+      | Some name -> [ unknown_type_error (List.map fst named_types) span name ]
+      | None -> [ Diag.error span message ])
 
 let lookup name table = List.find_opt (fun (entry, _, _) -> entry = name) table
 

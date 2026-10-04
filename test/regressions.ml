@@ -205,6 +205,15 @@ let expected_diagnostic line column width message help =
     ]
   ^ "\n"
 
+let expected_diagnostic_without_help line column width message =
+  String.concat "\n"
+    [
+      Printf.sprintf "regression.fas:1:%d: error: %s" column message;
+      "  " ^ line;
+      "  " ^ String.make (column - 1) ' ' ^ "^" ^ String.make (width - 1) '~';
+    ]
+  ^ "\n"
+
 let semantic_accept name text =
   incr checks_run;
   let program = expect_ok (Parser.parse (source text)) in
@@ -6485,6 +6494,104 @@ let () =
   in
   if semantic_render raw_source <> raw_expected then
     failwith ("raw-access-diagnostic: " ^ semantic_render raw_source);
+  let raw_unknown_source =
+    "opaque memblock_t; fn f(p addr) i32 { x i32 = p[memblock_s, 0]; return 0 }\n"
+  in
+  let raw_unknown_line = String.trim raw_unknown_source in
+  let raw_unknown_column =
+    String.length "opaque memblock_t; fn f(p addr) i32 { x i32 = p[" + 1
+  in
+  let raw_unknown_expected =
+    expected_diagnostic raw_unknown_line raw_unknown_column (String.length "memblock_s")
+      "unknown type `memblock_s`" "did you mean `memblock_t`?"
+  in
+  if semantic_render raw_unknown_source <> raw_unknown_expected then
+    failwith ("raw-unknown-type-diagnostic: " ^ semantic_render raw_unknown_source);
+  let raw_no_match_source =
+    "fn f(p addr) i32 { x i32 = p[nonexistent, 0]; return 0 }\n"
+  in
+  let raw_no_match_line = String.trim raw_no_match_source in
+  let raw_no_match_column = String.length "fn f(p addr) i32 { x i32 = p[" + 1 in
+  let raw_no_match_expected =
+    expected_diagnostic_without_help raw_no_match_line raw_no_match_column
+      (String.length "nonexistent") "unknown type `nonexistent`"
+  in
+  if semantic_render raw_no_match_source <> raw_no_match_expected then
+    failwith ("raw-unknown-type-without-help: " ^ semantic_render raw_no_match_source);
+  let raw_ambiguous_source =
+    "opaque memblock_t; opaque memblock_u; fn f(p addr) i32 { x i32 = p[memblock_s, \
+     0]; return 0 }\n"
+  in
+  let raw_ambiguous_line = String.trim raw_ambiguous_source in
+  let raw_ambiguous_column =
+    String.length "opaque memblock_t; opaque memblock_u; fn f(p addr) i32 { x i32 = p["
+    + 1
+  in
+  let raw_ambiguous_expected =
+    expected_diagnostic_without_help raw_ambiguous_line raw_ambiguous_column
+      (String.length "memblock_s") "unknown type `memblock_s`"
+  in
+  if semantic_render raw_ambiguous_source <> raw_ambiguous_expected then
+    failwith
+      ("raw-unknown-type-with-ambiguous-help: " ^ semantic_render raw_ambiguous_source);
+  let raw_value_source =
+    "fn f(p addr, requested_index usize) u8 { return p[requested_index] }\n"
+  in
+  let raw_value_line = String.trim raw_value_source in
+  let raw_value_fragment = "p[requested_index]" in
+  let raw_value_column =
+    String.length "fn f(p addr, requested_index usize) u8 { return " + 1
+  in
+  let raw_value_expected =
+    expected_diagnostic raw_value_line raw_value_column
+      (String.length raw_value_fragment)
+      "raw access on `addr` needs an element type"
+      "write `p[T, requested_index]`, e.g. `p[u8, requested_index]`"
+  in
+  if semantic_render raw_value_source <> raw_value_expected then
+    failwith ("raw-value-index-help: " ^ semantic_render raw_value_source);
+  let raw_expression_source =
+    "fn f(p addr, requested_index usize) u8 { return p[requested_index + 1] }\n"
+  in
+  let raw_expression_line = String.trim raw_expression_source in
+  let raw_expression_fragment = "p[requested_index + 1]" in
+  let raw_expression_column =
+    String.length "fn f(p addr, requested_index usize) u8 { return " + 1
+  in
+  let raw_expression_expected =
+    expected_diagnostic raw_expression_line raw_expression_column
+      (String.length raw_expression_fragment)
+      "raw access on `addr` needs an element type"
+      "write `p[T, requested_index + 1]`, e.g. `p[u8, requested_index + 1]`"
+  in
+  if semantic_render raw_expression_source <> raw_expression_expected then
+    failwith ("raw-expression-index-help: " ^ semantic_render raw_expression_source);
+  let ordinary_unknown_type_source =
+    "opaque memblock_t; fn f(x handle[memblock_s]) void { return }\n"
+  in
+  let ordinary_unknown_diagnostic =
+    match semantic_diagnostics ordinary_unknown_type_source with
+    | [ diagnostic ] -> diagnostic
+    | diagnostics ->
+        failwith
+          ("ordinary-unknown-type-diagnostic: "
+          ^ Diag.render_all ~source:None diagnostics)
+  in
+  if
+    ordinary_unknown_diagnostic.Diag.message <> "unknown type `memblock_s`"
+    || ordinary_unknown_diagnostic.Diag.help <> Some "did you mean `memblock_t`?"
+  then failwith "ordinary-unknown-type-diagnostic: missing exact similar-name help";
+  ignore (llvm_of "opaque memblock_t; fn f(x handle[memblock_t]) void { return }\n");
+  ignore
+    (llvm_of
+       "struct memblock_t { prev u8 }; fn f(base addr) u8 { return base[memblock_t, \
+        0].prev }\n");
+  ignore
+    (llvm_of
+       "fn f(p addr, requested_index usize) u8 { return p[u8, requested_index] }\n");
+  ignore
+    (llvm_of
+       "fn f(p addr, requested_index usize) u8 { return p[u8, requested_index + 1] }\n");
   let not_source = "fn f(x i32) bool { return !x }\n" in
   let not_expected =
     expected_diagnostic "fn f(x i32) bool { return !x }" 28 1

@@ -1129,12 +1129,30 @@ let rec check_place (c : context) expr =
       | Hir.Vec _, [ _ ]
         when match base.expr with Hir.Raw_select _ -> true | _ -> false ->
           error s "raw vector lane selection is not yet supported"
-      | Hir.Addr, [ Ast.Const_arg _ ] ->
-          Error [ Sema_types.raw_access_needs_type_error a s ]
+      | Hir.Addr, [ Ast.Const_arg index ] ->
+          Error
+            [ Sema_types.raw_access_needs_type_error ~index:(Ast.expr_name index) a s ]
       | Hir.Addr, [ Ast.Name_arg (name, _) ]
+        when Option.is_some (lookup_local name c)
+             ||
+             match lookup_top_level name c.top_level_bindings with
+             | Some { declaration_kind = Top_const | Top_global; _ } -> true
+             | _ -> false ->
+          Error [ Sema_types.raw_access_needs_type_error ~index:name a s ]
+      | Hir.Addr, [ Ast.Name_arg (name, name_span) ]
         when Result.is_error (Sema_types.source_ty c.named_types (Ast.Named_type name))
-        ->
-          Error [ Sema_types.raw_access_needs_type_error a s ]
+        -> (
+          match Sema_types.source_ty c.named_types (Ast.Named_type name) with
+          | Ok _ -> Error [ Sema_types.raw_access_needs_type_error a s ]
+          | Error message -> (
+              match Sema_types.unknown_type_name message with
+              | Some _ ->
+                  Error
+                    [
+                      Sema_types.unknown_type_error (List.map fst c.named_types)
+                        name_span name;
+                    ]
+              | None -> Error [ Sema_types.raw_access_needs_type_error a s ]))
       | (Hir.Array (length, e) | Hir.Vec (length, e)), [ payload ] -> (
           let* i = select_value_arg s payload in
           let* checked_index = check_expr c None i in

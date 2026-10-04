@@ -16,7 +16,9 @@ val vec_cap_error : int -> Hir.ty -> string option
 val condition_error : string -> Ast.expr -> Hir.ty -> Diag.t
 val logical_operand_error : string -> string -> Ast.expr -> Hir.ty -> Diag.t
 val logical_not_error : Ast.expr -> Hir.ty -> Diag.t
-val raw_access_needs_type_error : Ast.expr -> Span.t -> Diag.t
+val raw_access_needs_type_error : ?index:string -> Ast.expr -> Span.t -> Diag.t
+val unknown_type_error : string list -> Span.t -> string -> Diag.t
+val unknown_type_name : string -> string option
 
 val resolve_aggregate_length :
   ?globals:string list ->

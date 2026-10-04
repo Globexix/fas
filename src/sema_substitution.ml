@@ -256,7 +256,13 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             error span (Printf.sprintf "`%s` is a value, not a type" name)
         | Some (`Function _) ->
             error span (Printf.sprintf "`%s` is a function, not a type" name)
-        | None -> error span (Printf.sprintf "unknown type `%s`" name))
+        | None ->
+            Error
+              [
+                unknown_type_error
+                  (String_set.elements type_names @ !generic_type_names)
+                  span name;
+              ])
     | Ast.Applied_type (name, arguments, application_span) ->
         if String_set.mem name value_names then
           error span (Printf.sprintf "`%s` is a value, not a type" name)
@@ -1157,7 +1163,14 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 String_set.mem name named_type_names
                 || List.mem name !generic_type_names
               then Ok (Ast.Named_type name)
-              else error span (Printf.sprintf "unknown type `%s`" name))
+              else
+                Error
+                  [
+                    unknown_type_error
+                      (String_set.elements named_type_names
+                      @ !generic_type_names @ List.map fst eval_named_types)
+                      span name;
+                  ])
     | Ast.Applied_type (name, _, _) when String_set.mem name !local_values ->
         error span (Printf.sprintf "`%s` is a value, not a type" name)
     | Ast.Applied_type (name, arguments, application_span) -> (
