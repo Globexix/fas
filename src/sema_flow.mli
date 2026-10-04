@@ -51,6 +51,7 @@ val set_mask : t -> binding -> bool list option -> unit
 val forget_all_masks : t -> unit
 val forget_mask : t -> binding -> unit
 val value_reachable : t -> bool
+val proof_checks_enabled : t -> bool
 val note_binding_write : t -> int -> unit
 val copy_state : t -> binding -> selector list -> binding -> selector list -> unit
 

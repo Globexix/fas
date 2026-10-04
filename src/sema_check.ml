@@ -451,10 +451,7 @@ let condition_truth c expression =
         (address_equal c left right)
   | _ -> condition_truth c expression
 
-let address_checks_enabled c =
-  (not (Sema_flow.checking_dead c.flow))
-  && Sema_flow.value_reachable c.flow
-  && Sema_flow.falls_through c.flow
+let address_checks_enabled c = Sema_flow.proof_checks_enabled c.flow
 
 let check_address_access c span ~write fact size =
   if not (address_checks_enabled c) then Ok ()
@@ -561,7 +558,8 @@ let check_simd_access c span ~write name access_ty args =
                   check_address_access c span ~write
                     (Some (Sema_flow.Dead_local_address name)) element_size
               | Some (Sema_flow.Object_address address)
-                when write && not address.writable ->
+                when write && (not address.writable)
+                     && Sema_flow.proof_checks_enabled c.flow ->
                   error span
                     (Printf.sprintf "write to constant storage `%s`" address.name)
               | _ -> Ok ()
@@ -1048,7 +1046,8 @@ let rec check_place (c : context) expr =
             match static_index i with
             | Known (ty, value)
               when let value = sign_extend_value ty value in
-                   value < 0L || value >= Int64.of_int length ->
+                   (value < 0L || value >= Int64.of_int length)
+                   && Sema_flow.proof_checks_enabled c.flow ->
                 error s "array index is out of bounds"
             | Known (ty, value) ->
                 let value = sign_extend_value ty value in
@@ -1069,10 +1068,8 @@ let rec check_place (c : context) expr =
             | Dynamic ->
                 let fact = value_fact c checked_index in
                 if
-                  fact <> None
-                  && (not (Sema_flow.checking_dead c.flow))
-                  && Sema_flow.value_reachable c.flow
-                  && Sema_flow.falls_through c.flow
+                  Sema_flow.proof_checks_enabled c.flow
+                  && fact <> None
                   && index_outside (Hir.expr_ty checked_index) (Option.get fact) length
                 then error s "array index is out of bounds"
                 else
@@ -1443,11 +1440,7 @@ and check_expr (c : context) expected expression =
               binary_result_type ~mismatch:"binary operands must have the same type" s
                 op at bt
             in
-            let facts_enabled =
-              (not (Sema_flow.checking_dead c.flow))
-              && Sema_flow.value_reachable c.flow
-              && Sema_flow.falls_through c.flow
-            in
+            let facts_enabled = Sema_flow.proof_checks_enabled c.flow in
             let divisor_fact = value_fact c b in
             let division_by_zero =
               facts_enabled
@@ -2446,9 +2439,13 @@ and check_call c _expected fn args s =
                     let policy = if sig_.variadic then Promote_variadic else Reject in
                     let* xs = check_actuals c policy s sig_.params args in
                     let* () =
-                      match List.assoc_opt name c.c_nonnull_parameters with
-                      | None -> Ok ()
-                      | Some indices ->
+                      match
+                        ( Sema_flow.proof_checks_enabled c.flow,
+                          List.assoc_opt name c.c_nonnull_parameters )
+                      with
+                      | false, _ -> Ok ()
+                      | true, None -> Ok ()
+                      | true, Some indices ->
                           Result_list.iter
                             (fun index ->
                               match
@@ -3185,7 +3182,7 @@ and check_stmt (c : context) = function
             let* v = check_expr c (Some t) e in
             let* () = ensure_expected (Hir.expr_ty v) t span in
             let* () =
-              if t = Hir.Addr then
+              if t = Hir.Addr && Sema_flow.proof_checks_enabled c.flow then
                 match address_fact c v with
                 | Some (Sema_flow.Object_address { owner = Some _; owner_name; _ }) ->
                     error span

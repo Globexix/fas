@@ -8665,6 +8665,23 @@ let () =
   c_semantic_message "c-nonnull-qualified-parameter"
     "null argument to nonnull parameter 1 of `fas_nonnull_qualified`" c_nonnull
     "fn probe() void { fas_nonnull_qualified(null)\nreturn }\n";
+  c_semantic_accept "c-nonnull-unreachable-if-false" c_nonnull
+    "fn probe() void { if false { strlen(null) }\nreturn }\n";
+  c_semantic_accept "c-nonnull-unreachable-null-guard" c_nonnull
+    "fn probe() void { p addr = null\nif p != null { strlen(p) }\nreturn }\n";
+  c_semantic_accept "c-nonnull-unreachable-ternary-arm" c_nonnull
+    "fn probe() usize { p addr = null\n\
+     n usize = p == null ? 0 : strlen(p)\n\
+     return n }\n";
+  c_semantic_accept "c-nonnull-unreachable-and-right" c_nonnull
+    "fn probe() bool { p addr = null\nreturn p != null && strlen(p) == 0 }\n";
+  c_semantic_accept "c-nonnull-unreachable-or-right" c_nonnull
+    "fn probe() bool { p addr = null\nreturn p == null || strlen(p) == 0 }\n";
+  c_semantic_accept "c-nonnull-unreachable-while-body" c_nonnull
+    "fn probe() void { p addr = null\nwhile p != null { strlen(p) }\nreturn }\n";
+  c_semantic_message "c-nonnull-reachable-null-guard"
+    "null argument to nonnull parameter 1 of `strlen`" c_nonnull
+    "fn probe() void { p addr = null\nif p == null { strlen(p) }\nreturn }\n";
   c_semantic_accept "c-nonnull-unmarked-nullable-parameter" c_matrix
     "fn probe() addr { return fas_scalar_pointer(null) }\n";
   c_semantic_accept "c-nonnull-nonzero-offset" c_nonnull

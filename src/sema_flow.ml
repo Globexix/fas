@@ -347,6 +347,9 @@ let value_of flow binding =
 
 let value_reachable flow = flow.value_reachable
 
+let proof_checks_enabled flow =
+  (not flow.checking_dead) && flow.value_reachable && flow.falls_through
+
 let set_value flow binding value =
   match (binding.ty, State_map.find_opt binding.id flow.values, value) with
   | Hir.Int _, Some None, _ -> ()
