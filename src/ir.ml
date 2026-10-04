@@ -618,59 +618,117 @@ let validate_function struct_names globals functions (func : func) =
         validate_blocks rest
   in
   let reachable = Hashtbl.create (List.length func.blocks) in
-  let rec mark_reachable block_id =
-    if not (Hashtbl.mem reachable block_id) then (
-      Hashtbl.add reachable block_id ();
-      let block = Hashtbl.find blocks_by_id block_id in
-      List.iter mark_reachable (terminator_successors block.terminator))
-  in
-  let dominators = Hashtbl.create (List.length func.blocks) in
   let compute_dominators () =
     match func.blocks with
-    | [] -> ()
+    | [] -> Hashtbl.create 0
     | (entry : block) :: _ ->
-        mark_reachable entry.id;
-        let reachable_ids =
-          List.filter_map
-            (fun (block : block) ->
-              if Hashtbl.mem reachable block.id then Some block.id else None)
-            func.blocks
+        let block_count = List.length func.blocks in
+        let vertex = Array.make (block_count + 1) 0 in
+        let parent = Array.make (block_count + 1) 0 in
+        let dfs_index = Hashtbl.create block_count in
+        vertex.(1) <- entry.id;
+        Hashtbl.add dfs_index entry.id 1;
+        Hashtbl.add reachable entry.id ();
+        let entry_block = Hashtbl.find blocks_by_id entry.id in
+        let stack = ref [ (entry.id, terminator_successors entry_block.terminator) ] in
+        let count = ref 1 in
+        while !stack <> [] do
+          match !stack with
+          | (block_id, successor :: rest) :: remaining ->
+              stack := (block_id, rest) :: remaining;
+              if not (Hashtbl.mem dfs_index successor) then (
+                incr count;
+                vertex.(!count) <- successor;
+                parent.(!count) <- Hashtbl.find dfs_index block_id;
+                Hashtbl.add dfs_index successor !count;
+                Hashtbl.add reachable successor ();
+                let block = Hashtbl.find blocks_by_id successor in
+                stack := (successor, terminator_successors block.terminator) :: !stack)
+          | (_, []) :: remaining -> stack := remaining
+          | [] -> ()
+        done;
+        let semi = Array.init (block_count + 1) (fun index -> index) in
+        let idom = Array.make (block_count + 1) 0 in
+        let ancestor = Array.make (block_count + 1) 0 in
+        let label = Array.init (block_count + 1) (fun index -> index) in
+        let buckets = Array.make (block_count + 1) [] in
+        let eval value =
+          if ancestor.(value) = 0 then label.(value)
+          else
+            let path = ref [] in
+            let current = ref value in
+            while ancestor.(ancestor.(!current)) <> 0 do
+              path := !current :: !path;
+              current := ancestor.(!current)
+            done;
+            List.iter
+              (fun node ->
+                let previous = ancestor.(node) in
+                if semi.(label.(previous)) < semi.(label.(node)) then
+                  label.(node) <- label.(previous);
+                ancestor.(node) <- ancestor.(previous))
+              !path;
+            let previous = ancestor.(value) in
+            if previous <> 0 && semi.(label.(previous)) < semi.(label.(value)) then
+              label.(previous)
+            else label.(value)
         in
-        List.iter
-          (fun block_id ->
-            Hashtbl.add dominators block_id
-              (if block_id = entry.id then [ entry.id ] else reachable_ids))
-          reachable_ids;
-        let intersection left right = List.filter (fun id -> List.mem id right) left in
-        let changed = ref true in
-        while !changed do
-          changed := false;
+        for index = !count downto 2 do
+          let block_id = vertex.(index) in
+          let preds =
+            Option.value ~default:[] (Hashtbl.find_opt predecessors block_id)
+          in
           List.iter
-            (fun block_id ->
-              if block_id <> entry.id then
-                let reachable_predecessors =
-                  Option.value ~default:[] (Hashtbl.find_opt predecessors block_id)
-                  |> List.filter (Hashtbl.mem reachable)
-                in
-                let common =
-                  match reachable_predecessors with
-                  | [] -> []
-                  | first :: rest ->
-                      List.fold_left
-                        (fun current predecessor ->
-                          intersection current (Hashtbl.find dominators predecessor))
-                        (Hashtbl.find dominators first)
-                        rest
-                in
-                let next = List.sort_uniq compare (block_id :: common) in
-                if next <> Hashtbl.find dominators block_id then (
-                  Hashtbl.replace dominators block_id next;
-                  changed := true))
-            reachable_ids
-        done
+            (fun predecessor ->
+              match Hashtbl.find_opt dfs_index predecessor with
+              | None -> ()
+              | Some predecessor_index ->
+                  let candidate = eval predecessor_index in
+                  semi.(index) <- min semi.(index) semi.(candidate))
+            preds;
+          buckets.(semi.(index)) <- index :: buckets.(semi.(index));
+          ancestor.(index) <- parent.(index);
+          List.iter
+            (fun node ->
+              let candidate = eval node in
+              idom.(node) <-
+                (if semi.(candidate) < semi.(node) then candidate else parent.(index)))
+            buckets.(parent.(index));
+          buckets.(parent.(index)) <- []
+        done;
+        for index = 2 to !count do
+          if idom.(index) <> semi.(index) then idom.(index) <- idom.(idom.(index))
+        done;
+        idom.(1) <- 1;
+        let children = Array.make (block_count + 1) [] in
+        for index = 2 to !count do
+          children.(idom.(index)) <- index :: children.(idom.(index))
+        done;
+        let before = Array.make (block_count + 1) 0 in
+        let after = Array.make (block_count + 1) 0 in
+        let clock = ref 1 in
+        before.(1) <- 1;
+        let tree_stack = ref [ (1, children.(1)) ] in
+        while !tree_stack <> [] do
+          match !tree_stack with
+          | (node, child :: rest) :: remaining ->
+              tree_stack := (node, rest) :: remaining;
+              incr clock;
+              before.(child) <- !clock;
+              tree_stack := (child, children.(child)) :: !tree_stack
+          | (node, []) :: remaining ->
+              after.(node) <- !clock;
+              tree_stack := remaining
+          | [] -> ()
+        done;
+        let intervals = Hashtbl.create !count in
+        for index = 1 to !count do
+          Hashtbl.add intervals vertex.(index) (before.(index), after.(index))
+        done;
+        intervals
   in
   let validate_dominance () =
-    compute_dominators ();
+    let dominator_intervals = compute_dominators () in
     let validate_use report_block use_block use_index = function
       | Local (id, _) -> (
           match Hashtbl.find_opt definition_locations id with
@@ -680,9 +738,14 @@ let validate_function struct_names globals functions (func : func) =
                 if not (Hashtbl.mem reachable use_block) then true
                 else if definition_block = use_block then definition_index < use_index
                 else
-                  match Hashtbl.find_opt dominators use_block with
-                  | Some blocks -> List.mem definition_block blocks
-                  | None -> false
+                  match
+                    ( Hashtbl.find_opt dominator_intervals definition_block,
+                      Hashtbl.find_opt dominator_intervals use_block )
+                  with
+                  | ( Some (definition_before, definition_after),
+                      Some (use_before, use_after) ) ->
+                      definition_before <= use_before && use_after <= definition_after
+                  | _ -> false
               in
               if dominates then Ok ()
               else fail "block %d value %d does not dominate its use" report_block id)
