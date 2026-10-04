@@ -290,56 +290,159 @@ let ensure_expected ?(context = "value") ?expression actual expected span =
          (diagnostic_ty_name expected))
     |> fun diagnostic -> Error [ diagnostic ]
 
-let binary_result_type ~mismatch ?left_expression ?right_expression span operation left
-    right =
-  if
-    not
-      (Hir.ty_equal left right
-      || (operation = Ast.Eq || operation = Ast.Ne)
-         && (compatible left right || compatible right left))
-  then error span mismatch
-  else
-    match operation with
-    | Ast.Eq | Ast.Ne -> (
-        match left with
-        | Hir.Vec (lanes, (Hir.Bool | Hir.Int _)) -> Ok (Hir.Vec (lanes, Hir.Bool))
-        | Hir.Addr | Hir.Handle _ -> Ok Hir.Bool
-        | _ when Sema_numeric.is_scalar left -> Ok Hir.Bool
-        | _ -> error span "equality requires scalar or integer/bool-vector operands")
-    | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
-        if Sema_numeric.is_int left || left = Hir.Addr then Ok Hir.Bool
-        else
+let binary_operator_name = function
+  | Ast.Add -> "+"
+  | Ast.Sub -> "-"
+  | Ast.Mul -> "*"
+  | Ast.Div -> "/"
+  | Ast.Rem -> "%"
+  | Ast.Bit_and -> "&"
+  | Ast.Bit_or -> "|"
+  | Ast.Bit_xor -> "^"
+  | Ast.Eq -> "=="
+  | Ast.Ne -> "!="
+  | Ast.Lt -> "<"
+  | Ast.Le -> "<="
+  | Ast.Gt -> ">"
+  | Ast.Ge -> ">="
+  | Ast.And -> "&&"
+  | Ast.Or -> "||"
+  | Ast.Shl -> "<<"
+  | Ast.Shr -> ">>"
+
+let is_comparison = function
+  | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> true
+  | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
+  | Ast.Bit_xor | Ast.And | Ast.Or | Ast.Shl | Ast.Shr ->
+      false
+
+let binary_widening_target left_expression right_expression left right =
+  match (left, right, left_expression, right_expression) with
+  | Hir.Int _, Hir.Int _, Some left_expression, Some right_expression
+    when Sema_numeric.is_unsigned left = Sema_numeric.is_unsigned right ->
+      let left_width = Option.get (Sema_numeric.integer_value_bit_width left) in
+      let right_width = Option.get (Sema_numeric.integer_value_bit_width right) in
+      if left_width < right_width then Some (left_expression, left, right)
+      else if right_width < left_width then Some (right_expression, right, left)
+      else None
+  | _ -> None
+
+let binary_widening_help = function
+  | Some (Ast.Ident (name, _), actual, expected) ->
+      let extension = if Sema_numeric.is_unsigned actual then "zext" else "sext" in
+      Some
+        (Printf.sprintf "write `%s[%s](%s)`" extension (diagnostic_ty_name expected)
+           name)
+  | _ -> None
+
+let binary_result_type ?left_expression ?right_expression span operation left right =
+  let result_span expression =
+    match expression with Some expression -> Ast.expr_span expression | None -> span
+  in
+  let comparison_chain () =
+    match (left_expression, right_expression) with
+    | Some (Ast.Binary (inner_operation, first, middle, _)), Some last
+      when is_comparison inner_operation && is_comparison operation ->
+        Some
+          (Printf.sprintf "comparisons cannot be chained; write `%s && %s %s %s`"
+             (Ast.expr_name (Ast.Binary (inner_operation, first, middle, span)))
+             (Ast.expr_name middle)
+             (binary_operator_name operation)
+             (Ast.expr_name last))
+    | _ -> None
+  in
+  match comparison_chain () with
+  | Some message -> error (result_span right_expression) message
+  | None
+    when (operation = Ast.Bit_and || operation = Ast.Bit_or || operation = Ast.Bit_xor)
+         && (left = Hir.Addr || right = Hir.Addr) ->
+      let offending =
+        if left = Hir.Addr && right <> Hir.Addr then left_expression
+        else right_expression
+      in
+      error (result_span offending)
+        (Printf.sprintf "bitwise `%s` is not defined for `addr`"
+           (binary_operator_name operation))
+  | None
+    when (operation = Ast.Add || operation = Ast.Sub)
+         && (left = Hir.Addr || right = Hir.Addr) ->
+      error
+        (result_span right_expression)
+        (Printf.sprintf
+           "address arithmetic for `%s` has operands `%s` and `%s`; expected a scalar \
+            integer offset"
+           (binary_operator_name operation)
+           (diagnostic_ty_name left) (diagnostic_ty_name right))
+  | None
+    when (operation = Ast.Mul || operation = Ast.Div || operation = Ast.Rem)
+         && (left = Hir.Addr || right = Hir.Addr) ->
+      let offending = if left = Hir.Addr then left_expression else right_expression in
+      error (result_span offending)
+        (Printf.sprintf "arithmetic `%s` is not defined for `addr`"
+           (binary_operator_name operation))
+  | None
+    when not
+           (Hir.ty_equal left right
+           || (operation = Ast.Eq || operation = Ast.Ne)
+              && (compatible left right || compatible right left)) ->
+      let widening =
+        binary_widening_target left_expression right_expression left right
+      in
+      let offending = Option.map (fun (expression, _, _) -> expression) widening in
+      let span =
+        match offending with
+        | Some expression -> result_span (Some expression)
+        | None -> result_span right_expression
+      in
+      let message =
+        Printf.sprintf "operands of `%s` have different types: `%s` and `%s`"
+          (binary_operator_name operation)
+          (diagnostic_ty_name left) (diagnostic_ty_name right)
+      in
+      Diag.error ?help:(binary_widening_help widening) span message |> fun diagnostic ->
+      Error [ diagnostic ]
+  | None -> (
+      match operation with
+      | Ast.Eq | Ast.Ne -> (
           match left with
-          | Hir.Vec (lanes, Hir.Int _) -> Ok (Hir.Vec (lanes, Hir.Bool))
-          | _ -> error span "ordered comparison requires integer operands")
-    | Ast.Bit_and | Ast.Bit_or | Ast.Bit_xor -> (
-        if Sema_numeric.is_numeric left then Ok left
-        else if left = Hir.Bool then Ok Hir.Bool
-        else
-          match left with
-          | Hir.Vec (_, Hir.Bool) -> Ok left
-          | _ -> error span "arithmetic requires integer or vector operands")
-    | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem ->
-        if Sema_numeric.is_numeric left then Ok left
-        else error span "arithmetic requires integer or vector operands"
-    | Ast.And | Ast.Or ->
-        if left = Hir.Bool && right = Hir.Bool then Ok Hir.Bool
-        else
-          let operation = if operation = Ast.And then "&&" else "||" in
-          let side, expression, ty =
-            if left <> Hir.Bool then ("left", left_expression, left)
-            else ("right", right_expression, right)
-          in
-          let diagnostic =
-            match expression with
-            | Some expression -> logical_operand_error operation side expression ty
-            | None ->
-                Diag.error span
-                  (Printf.sprintf "%s operand of `%s` is `%s`, not `bool`" side
-                     operation (Hir.ty_name ty))
-          in
-          Error [ diagnostic ]
-    | Ast.Shl | Ast.Shr -> Ok left
+          | Hir.Vec (lanes, (Hir.Bool | Hir.Int _)) -> Ok (Hir.Vec (lanes, Hir.Bool))
+          | Hir.Addr | Hir.Handle _ -> Ok Hir.Bool
+          | _ when Sema_numeric.is_scalar left -> Ok Hir.Bool
+          | _ -> error span "equality requires scalar or integer/bool-vector operands")
+      | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
+          if Sema_numeric.is_int left || left = Hir.Addr then Ok Hir.Bool
+          else
+            match left with
+            | Hir.Vec (lanes, Hir.Int _) -> Ok (Hir.Vec (lanes, Hir.Bool))
+            | _ -> error span "ordered comparison requires integer operands")
+      | Ast.Bit_and | Ast.Bit_or | Ast.Bit_xor -> (
+          if Sema_numeric.is_numeric left then Ok left
+          else if left = Hir.Bool then Ok Hir.Bool
+          else
+            match left with
+            | Hir.Vec (_, Hir.Bool) -> Ok left
+            | _ -> error span "arithmetic requires integer or vector operands")
+      | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem ->
+          if Sema_numeric.is_numeric left then Ok left
+          else error span "arithmetic requires integer or vector operands"
+      | Ast.And | Ast.Or ->
+          if left = Hir.Bool && right = Hir.Bool then Ok Hir.Bool
+          else
+            let operation = if operation = Ast.And then "&&" else "||" in
+            let side, expression, ty =
+              if left <> Hir.Bool then ("left", left_expression, left)
+              else ("right", right_expression, right)
+            in
+            let diagnostic =
+              match expression with
+              | Some expression -> logical_operand_error operation side expression ty
+              | None ->
+                  Diag.error span
+                    (Printf.sprintf "%s operand of `%s` is `%s`, not `bool`" side
+                       operation (Hir.ty_name ty))
+            in
+            Error [ diagnostic ]
+      | Ast.Shl | Ast.Shr -> Ok left)
 
 let variadic_promote expression =
   match Hir.expr_ty expression with

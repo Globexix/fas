@@ -584,8 +584,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
             Ok ((lt, lv), (rt, rv))
       in
       let* result_ty =
-        binary_result_type ~mismatch:"constant operands have different types"
-          ~left_expression:l ~right_expression:r s op lt rt
+        binary_result_type ~left_expression:l ~right_expression:r s op lt rt
       in
       if (not check_only) && (op = Ast.Div || op = Ast.Rem) && rv = 0L then
         error s "division by zero in constant expression"
@@ -1030,8 +1029,8 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
             Ok (left_ty, left_values, right_ty, right_values)
       in
       let* result_ty =
-        binary_result_type ~mismatch:"constant operands have different types"
-          ~left_expression:left ~right_expression:right span operation left_ty right_ty
+        binary_result_type ~left_expression:left ~right_expression:right span operation
+          left_ty right_ty
       in
       let* element =
         match lane_type left_ty with

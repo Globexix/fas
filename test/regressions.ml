@@ -384,7 +384,7 @@ let () =
      fn take(value i32) void { return }\n\
      fn check_case() void { take(Small) }\n";
   semantic_error "named-i8-constant-binary-keeps-type"
-    "binary operands must have the same type"
+    "operands of `+` have different types: `i8` and `i32`"
     "const Small i8 = 7\nfn add(value i32) i32 { return Small + value }\n";
   semantic_error "named-i8-constant-generic-argument-keeps-type"
     "const argument type mismatch"
@@ -704,11 +704,14 @@ let () =
   then failwith "integer-vector-comparison: result vector was not preserved";
   if contains integer_vector_comparisons "store <4 x i1>" then
     failwith "integer-vector-comparison: mask store retained unused bits";
-  semantic_error "integer-vector-comparison-lanes" "same type"
+  semantic_error "integer-vector-comparison-lanes"
+    "operands of `==` have different types: `vec[4,i32]` and `vec[8,i32]`"
     "fn f(left vec[4,i32], right vec[8,i32]) vec[4,bool] { return left == right }\n";
-  semantic_error "integer-vector-comparison-elements" "same type"
+  semantic_error "integer-vector-comparison-elements"
+    "operands of `==` have different types: `vec[4,i32]` and `vec[4,u32]`"
     "fn f(left vec[4,i32], right vec[4,u32]) vec[4,bool] { return left == right }\n";
-  semantic_error "integer-vector-comparison-scalar" "same type"
+  semantic_error "integer-vector-comparison-scalar"
+    "operands of `==` have different types: `vec[4,i32]` and `i32`"
     "fn f(left vec[4,i32], right i32) vec[4,bool] { return left == right }\n";
   semantic_error "integer-vector-comparison-bool-order" "requires integer operands"
     "fn f(left vec[4,bool], right vec[4,bool]) vec[4,bool] { return left < right }\n";
@@ -1911,7 +1914,7 @@ let () =
     "arithmetic requires integer or vector operands"
     "opaque O\nfn f(a handle[O], b handle[O]) handle[O] { return a + b }\n";
   semantic_error "cross-handle-equality-reject"
-    "binary operands must have the same type"
+    "operands of `==` have different types: `handle[O]` and `handle[P]`"
     "opaque O\nopaque P\nfn f(a handle[O], b handle[P]) bool { return a == b }\n";
   semantic_error "handle-null-unconstrained" "null requires an addr or handle context"
     "opaque O\nfn f() bool { return null == null }\n";
@@ -1939,7 +1942,7 @@ let () =
     "opaque O\nfn f(h handle[O]) usize { return h.x }\n";
   semantic_error "handle-index-reject" "cannot select through a handle"
     "opaque O\nfn f(h handle[O]) u8 { return h[0] }\n";
-  semantic_error "comparison-chaining-reject" "binary operands must have the same type"
+  semantic_error "comparison-chaining-reject" "comparisons cannot be chained"
     "fn f(a i32, b i32, c i32) bool { return a < b < c }\n";
   semantic_error "conditional-defer-divergence" "may reach the end without returning"
     "fn finish(choice bool) i32 { defer { if choice { while true { } } } }\n";
@@ -4568,7 +4571,8 @@ let () =
    in
    if not (contains ir "and <2 x i1>") then
      failwith "bool-mask-bitop: vec bitand did not lower");
-  semantic_error "int-bool-bitop-rejected" "binary operands must have the same type"
+  semantic_error "int-bool-bitop-rejected"
+    "operands of `&` have different types: `u8` and `bool`"
     "fn f(x u8, b bool) bool { return x & b }\nfn main() i32 { return 0 }\n";
   ignore
     (llvm_of "fn f(a vec[256, u8]) u8 { return a[0] }\nfn main() i32 { return 0 }\n");
@@ -4651,12 +4655,15 @@ let () =
   in
   (match semantic_diagnostics type_generic_failure with
   | [ diagnostic ] ->
-      if diagnostic.message <> "address arithmetic requires a scalar integer offset"
+      if
+        diagnostic.message
+        <> "address arithmetic for `+` has operands `addr` and `addr`; expected a \
+            scalar integer offset"
       then failwith "generic-instantiation-type: root message changed";
       if
         diagnostic.primary.Span.file <> "regression.fas"
         || diagnostic.primary.Span.line <> 1
-        || diagnostic.primary.Span.column <> 37
+        || diagnostic.primary.Span.column <> 39
       then failwith "generic-instantiation-type: root span changed";
       if
         diagnostic.notes <> [ "while instantiating `bad[addr]` at regression.fas:2:38" ]
@@ -5221,7 +5228,7 @@ let () =
   semantic_error "mixed-generic-const-argument-kind" "expected a const argument"
     "fn identity[T, N const usize](value T) T { return value }\n\
      fn test() i64 { return identity[i64, u8](1) }\n";
-  semantic_error "mixed-generic-instantiated-body-error" "arithmetic requires"
+  semantic_error "mixed-generic-instantiated-body-error" "address arithmetic for `+`"
     "fn bad[T, N const usize](value T) T { seen usize = N\n\
      return value + value }\n\
      fn test(value addr) addr { return bad[addr, 1](value) }\n";
@@ -6634,6 +6641,66 @@ let () =
   if semantic_render signedness_mismatch_source <> signedness_mismatch_expected then
     failwith
       ("signedness-mismatch-no-help: " ^ semantic_render signedness_mismatch_source);
+  let binary_type_mismatch_source = "fn f(a i32, b u32) i32 { return a + b }\n" in
+  let binary_type_mismatch_line = String.trim binary_type_mismatch_source in
+  let binary_type_mismatch_column =
+    String.length "fn f(a i32, b u32) i32 { return a + " + 1
+  in
+  let binary_type_mismatch_expected =
+    expected_diagnostic_without_help binary_type_mismatch_line
+      binary_type_mismatch_column 1
+      "operands of `+` have different types: `i32` and `u32`"
+  in
+  if semantic_render binary_type_mismatch_source <> binary_type_mismatch_expected then
+    failwith ("binary-type-mismatch: " ^ semantic_render binary_type_mismatch_source);
+  let binary_widen_left_source = "fn f(a i32, b i64) i64 { return a + b }\n" in
+  let binary_widen_left_line = String.trim binary_widen_left_source in
+  let binary_widen_left_column = String.length "fn f(a i32, b i64) i64 { return " + 1 in
+  let binary_widen_left_expected =
+    expected_diagnostic binary_widen_left_line binary_widen_left_column 1
+      "operands of `+` have different types: `i32` and `i64`" "write `sext[i64](a)`"
+  in
+  if semantic_render binary_widen_left_source <> binary_widen_left_expected then
+    failwith ("binary-left-widening: " ^ semantic_render binary_widen_left_source);
+  let binary_widen_right_source = "fn f(a u64, b u32) u64 { return a + b }\n" in
+  let binary_widen_right_line = String.trim binary_widen_right_source in
+  let binary_widen_right_column =
+    String.length "fn f(a u64, b u32) u64 { return a + " + 1
+  in
+  let binary_widen_right_expected =
+    expected_diagnostic binary_widen_right_line binary_widen_right_column 1
+      "operands of `+` have different types: `u64` and `u32`" "write `zext[u64](b)`"
+  in
+  if semantic_render binary_widen_right_source <> binary_widen_right_expected then
+    failwith ("binary-right-widening: " ^ semantic_render binary_widen_right_source);
+  let addr_bitwise_source = "fn f(p addr, n u32) addr { return p & n }\n" in
+  let addr_bitwise_line = String.trim addr_bitwise_source in
+  let addr_bitwise_column = String.length "fn f(p addr, n u32) addr { return " + 1 in
+  let addr_bitwise_expected =
+    expected_diagnostic_without_help addr_bitwise_line addr_bitwise_column 1
+      "bitwise `&` is not defined for `addr`"
+  in
+  if semantic_render addr_bitwise_source <> addr_bitwise_expected then
+    failwith ("addr-bitwise-diagnostic: " ^ semantic_render addr_bitwise_source);
+  let chained_comparison_source =
+    "fn f(a i32, b i32, c i32) bool { return a < b < c }\n"
+  in
+  let chained_comparison_line = String.trim chained_comparison_source in
+  let chained_comparison_column =
+    String.length "fn f(a i32, b i32, c i32) bool { return a < b < " + 1
+  in
+  let chained_comparison_expected =
+    expected_diagnostic_without_help chained_comparison_line chained_comparison_column 1
+      "comparisons cannot be chained; write `a < b && b < c`"
+  in
+  if semantic_render chained_comparison_source <> chained_comparison_expected then
+    failwith
+      ("chained-comparison-diagnostic: " ^ semantic_render chained_comparison_source);
+  ignore (llvm_of "fn f(a i32, b i64) i64 { return sext[i64](a) + b }\n");
+  ignore (llvm_of "fn f(a u64, b u32) u64 { return a + zext[u64](b) }\n");
+  semantic_error "constant-binary-type-mismatch"
+    "operands of `+` have different types: `i32` and `u32`"
+    "const Left i32 = 1\nconst Right u32 = 2\nconst Sum i32 = Left + Right\n";
   ignore (llvm_of "fn f(x i32) i64 { return sext[i64](x) }\n");
   ignore
     (llvm_of
@@ -6742,10 +6809,10 @@ let () =
   semantic_error "context-null-unconstrained" "null requires an addr or handle context"
     "fn f() bool { return null == null }\n";
   semantic_error "context-conflicting-anchors-comparison"
-    "binary operands must have the same type"
+    "operands of `==` have different types: `u32` and `u64`"
     "fn f(x u32, y u64) bool { return x == y }\n";
   semantic_error "context-conflicting-anchors-arithmetic"
-    "binary operands must have the same type"
+    "operands of `+` have different types: `u32` and `u64`"
     "fn f(x u32, y u64) u64 { return x + y }\n";
   semantic_error "context-splat-no-invented-lanes"
     "splat requires a vector type context" "fn f() usize { return len(splat(1)) }\n";
@@ -7956,12 +8023,16 @@ let () =
         failwith ("generic-cast-path: missing `" ^ marker ^ "`"))
     [ "bitcast <1 x i1>"; "zext i8" ];
   semantic_error "raw-select-addr-add-both"
-    "address arithmetic requires a scalar integer offset"
+    "address arithmetic for `+` has operands `addr` and `addr`; expected a scalar \
+     integer offset"
     "fn f(a addr, b addr) addr { return a + b }\n";
   semantic_error "raw-select-addr-sub-both"
-    "address arithmetic requires a scalar integer offset"
+    "address arithmetic for `-` has operands `addr` and `addr`; expected a scalar \
+     integer offset"
     "fn f(a addr, b addr) addr { return a - b }\n";
-  semantic_error "raw-select-int-addr-sub" "binary operands must have the same type"
+  semantic_error "raw-select-int-addr-sub"
+    "address arithmetic for `-` has operands `usize` and `addr`; expected a scalar \
+     integer offset"
     "fn f(n usize, p addr) usize { return n - p }\n";
   semantic_error "raw-select-handle-select" "cannot select through a handle"
     "opaque O\nfn f(h handle[O]) u8 { return h[u8] }\n";
@@ -7992,7 +8063,7 @@ let () =
     "compound assignment requires an integer or vector"
     "fn f(p addr) void { p[addr] *= 2 }\n";
   semantic_error "raw-select-compound-addr-bad"
-    "address arithmetic requires a scalar integer offset"
+    "right operand of `+=` is `bool`; `addr` arithmetic needs a scalar integer offset"
     "fn f(p addr, b bool) void { p[addr] += b }\n";
   semantic_error "raw-select-field-nonstruct" "field access requires a struct"
     "fn f(p addr) u32 { return p[u32].x }\n";

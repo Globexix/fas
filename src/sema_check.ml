@@ -1610,13 +1610,16 @@ and check_expr_inner ?destination (c : context) expected expression =
             let* off = normalize_offset_expr c.structs s a in
             Ok (Hir.Binary (Ast.Add, b, off, Hir.Addr, s))
         | (Ast.Add | Ast.Sub), Hir.Addr, Hir.Addr ->
-            error s "address arithmetic requires a scalar integer offset"
+            error (Ast.expr_span r)
+              (Printf.sprintf
+                 "address arithmetic for `%s` has operands `addr` and `addr`; expected \
+                  a scalar integer offset"
+                 (Sema_types.binary_operator_name op))
         | (Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge), Hir.Addr, Hir.Addr ->
             Ok (Hir.Binary (op, a, b, Hir.Bool, s))
         | _ ->
             let* result_ty =
-              binary_result_type ~mismatch:"binary operands must have the same type"
-                ~left_expression:l ~right_expression:r s op at bt
+              binary_result_type ~left_expression:l ~right_expression:r s op at bt
             in
             let facts_enabled = Sema_flow.proof_checks_enabled c.flow in
             let divisor_fact = value_fact c b in
@@ -3366,7 +3369,13 @@ and check_stmt (c : context) = function
         else if is_addr_step then
           match Hir.expr_ty v with
           | Hir.Int _ -> Ok ()
-          | _ -> error span "address arithmetic requires a scalar integer offset"
+          | actual ->
+              error (Ast.expr_span e)
+                (Printf.sprintf
+                   "right operand of `%s` is `%s`; `addr` arithmetic needs a scalar \
+                    integer offset"
+                   (compound_operator op)
+                   (Sema_types.diagnostic_ty_name actual))
         else
           ensure_expected
             ~context:(Printf.sprintf "right operand of `%s`" (compound_operator op))
