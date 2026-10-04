@@ -357,7 +357,7 @@ let binary_result_type ?left_expression ?right_expression span operation left ri
   let comparison_chain () =
     match (left_expression, right_expression) with
     | Some (Ast.Binary (inner_operation, first, middle, _)), Some last
-      when is_comparison inner_operation && is_comparison operation ->
+      when is_comparison inner_operation && is_comparison operation && left <> right ->
         Some
           (Printf.sprintf "comparisons cannot be chained; write `%s && %s %s %s`"
              (Ast.expr_name (Ast.Binary (inner_operation, first, middle, span)))
