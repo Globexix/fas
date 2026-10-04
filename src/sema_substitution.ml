@@ -693,7 +693,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       match expected with
       | None -> Ok ()
       | Some expected ->
-          ensure_expected (Hir.expr_ty checked) expected (Ast.expr_span expression)
+          ensure_expected ~expression (Hir.expr_ty checked) expected
+            (Ast.expr_span expression)
     else
       match expression with
       | Ast.Unary (_, value, _) | Ast.Addr_of (value, _) | Ast.Splat (value, _) ->
@@ -737,7 +738,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 let* () = validate_arguments signature.params arguments in
                 match expected with
                 | None -> Ok ()
-                | Some expected -> ensure_expected signature.ret expected span)
+                | Some expected ->
+                    ensure_expected
+                      ~context:(Printf.sprintf "result of `%s`" name)
+                      signature.ret expected span)
           | None ->
               Result_list.iter
                 (validate_non_dependent_expression c dependent None)
@@ -786,7 +790,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                           ~arrays:eval_arrays eval_consts (Some ty) expression
                       in
                       let* () =
-                        ensure_expected actual_ty ty (Ast.expr_span expression)
+                        ensure_expected
+                          ~context:(Printf.sprintf "value for `%s`" parameter.name)
+                          ~expression actual_ty ty (Ast.expr_span expression)
                       in
                       resolve_arguments substitutions
                         ((parameter.name, ty, value) :: values)
@@ -839,7 +845,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                     in
                     match expected with
                     | None -> Ok ()
-                    | Some expected -> ensure_expected return_ty expected span))
+                    | Some expected ->
+                        ensure_expected
+                          ~context:(Printf.sprintf "result of `%s`" name)
+                          return_ty expected span))
           | _ ->
               Result_list.iter
                 (validate_non_dependent_expression c dependent None)

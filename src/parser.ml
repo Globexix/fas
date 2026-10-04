@@ -1161,9 +1161,19 @@ module P = struct
     let rec go e =
       match (peek p).kind with
       | Token.Lparen ->
-          let s = span p in
           let* xs = args p in
-          go (Ast.Call (e, xs, s))
+          let finish = p.tokens.(p.pos - 1).Token.span in
+          let rec callee_start = function
+            | Ast.Generic_args (callee, _, _) -> callee_start callee
+            | expression -> Ast.expr_span expression
+          in
+          let base = callee_start e in
+          let call_span =
+            Span.make ~file:base.Span.file ~start_offset:base.Span.start_offset
+              ~end_offset:finish.Span.end_offset ~line:base.Span.line
+              ~column:base.Span.column
+          in
+          go (Ast.Call (e, xs, call_span))
       | Token.Lbracket when brackets_before_call () ->
           let s = span p in
           let* arguments = generic_args p in

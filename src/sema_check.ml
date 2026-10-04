@@ -9,6 +9,36 @@ let error span message = Error [ Diag.error span message ]
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 let literal_condition_truth = function Hir.EBool (value, _) -> Some value | _ -> None
 
+let assignment_context = function
+  | Hir.ALocal local -> Printf.sprintf "value for `%s`" local.name
+  | Hir.AGlobal (name, _) -> Printf.sprintf "value for `%s`" name
+  | Hir.AField (base, name, _) -> (
+      match Hir.expr_ty base with
+      | Hir.Struct record ->
+          Printf.sprintf "value for field `%s` of record `%s`" name record
+      | _ -> Printf.sprintf "value for field `%s`" name)
+  | Hir.ARaw _ | Hir.AIndex _ -> "assigned value"
+
+let compound_operator = function
+  | Ast.Add -> "+="
+  | Ast.Sub -> "-="
+  | Ast.Mul -> "*="
+  | Ast.Div -> "/="
+  | Ast.Rem -> "%="
+  | Ast.Bit_and -> "&="
+  | Ast.Bit_or -> "|="
+  | Ast.Bit_xor -> "^="
+  | Ast.Shl -> "<<="
+  | Ast.Shr -> ">>="
+  | Ast.And -> "&&="
+  | Ast.Or -> "||="
+  | Ast.Eq -> "=="
+  | Ast.Ne -> "!="
+  | Ast.Lt -> "<"
+  | Ast.Le -> "<="
+  | Ast.Gt -> ">"
+  | Ast.Ge -> ">="
+
 let literal_expression_truth = function
   | Hir.EBool (value, _) -> Some value
   | Hir.EInt (value, _, _) -> Some (value <> 0L)
@@ -1326,7 +1356,7 @@ and raw_offset_expr c s access_ty index_payload =
                Hir.Int Hir.Usize,
                s ))
 
-and check_expr (c : context) expected expression =
+and check_expr ?destination (c : context) expected expression =
   let previous_depth = c.expression_depth in
   if previous_depth = 0 then c.unresolved_shapes_unique <- false;
   if previous_depth = 0 && unresolved_shape_cache_worthwhile expression then (
@@ -1334,11 +1364,11 @@ and check_expr (c : context) expected expression =
     c.unresolved_shapes <- shapes;
     c.unresolved_shapes_unique <- unique);
   c.expression_depth <- previous_depth + 1;
-  let result = check_expr_inner c expected expression in
+  let result = check_expr_inner ?destination c expected expression in
   c.expression_depth <- previous_depth;
   result
 
-and check_expr_inner (c : context) expected expression =
+and check_expr_inner ?destination (c : context) expected expression =
   let peer_handle_type expression =
     let before = Sema_flow.snapshot c.flow in
     let checked = check_expr c None expression in
@@ -1352,16 +1382,23 @@ and check_expr_inner (c : context) expected expression =
     if List.length entries <> lanes then
       error span "wrong number of vector literal lanes"
     else
-      let rec go acc = function
+      let rec go index acc = function
         | [] -> Ok (List.rev acc)
         | entry :: rest ->
             let* value = check_expr c (Some element) entry in
             let* () =
-              ensure_expected (Hir.expr_ty value) element (Ast.expr_span entry)
+              let context =
+                match destination with
+                | Some name ->
+                    Printf.sprintf "element %d of vector `%s`" (index + 1) name
+                | None -> Printf.sprintf "lane %d of vector literal" (index + 1)
+              in
+              ensure_expected ~context ~expression:entry (Hir.expr_ty value) element
+                (Ast.expr_span entry)
             in
-            go (value :: acc) rest
+            go (index + 1) (value :: acc) rest
       in
-      let* entries = go [] entries in
+      let* entries = go 0 [] entries in
       Ok (Hir.Vector_lit (entries, literal_type, span))
   in
   match expression with
@@ -1813,9 +1850,9 @@ and check_same_operands c left right =
     let* right = check_expr c (hint left right) right in
     Ok (left, right)
 
-and check_initializer ?(constant = false) c expected expression =
+and check_initializer ?(constant = false) ?destination c expected expression =
   let vector_value () =
-    let* value = check_expr c (Some expected) expression in
+    let* value = check_expr ?destination c (Some expected) expression in
     if not constant then Ok (`Value value)
     else
       let consts =
@@ -1842,7 +1879,17 @@ and check_initializer ?(constant = false) c expected expression =
           | Hir.Array (length, element) ->
               if List.length entries <> length then
                 error span "wrong number of array literal elements"
-              else Ok (List.map (fun entry -> (element, entry)) entries)
+              else
+                Ok
+                  (List.mapi
+                     (fun index entry ->
+                       ( element,
+                         entry,
+                         Printf.sprintf "element %d of array%s" (index + 1)
+                           (match destination with
+                           | Some name -> Printf.sprintf " `%s`" name
+                           | None -> "") ))
+                     entries)
           | Hir.Struct name -> (
               match
                 List.find_opt
@@ -1855,7 +1902,14 @@ and check_initializer ?(constant = false) c expected expression =
                     match (definition.fields, entries) with
                     | { unsupported_reason = Some reason; _ } :: _, _ ->
                         error span reason
-                    | field :: _, [ entry ] -> Ok [ (field.ty, entry) ]
+                    | field :: _, [ entry ] ->
+                        Ok
+                          [
+                            ( field.ty,
+                              entry,
+                              Printf.sprintf "field `%s` of record `%s`" field.name name
+                            );
+                          ]
                     | _ -> error span "wrong number of struct literal fields"
                   else if List.length entries <> List.length definition.fields then
                     error span "wrong number of struct literal fields"
@@ -1873,14 +1927,20 @@ and check_initializer ?(constant = false) c expected expression =
                   else
                     Ok
                       (List.map2
-                         (fun (field : Hir.field) entry -> (field.ty, entry))
+                         (fun (field : Hir.field) entry ->
+                           ( field.ty,
+                             entry,
+                             Printf.sprintf "field `%s` of record `%s`" field.name name
+                           ))
                          definition.fields entries))
           | _ -> error span "construction needs an array, struct or vector type"
         in
         let rec check acc = function
           | [] -> Ok (List.rev acc)
-          | (entry_ty, entry) :: rest ->
-              let* initialized = check_initializer ~constant:true c entry_ty entry in
+          | (entry_ty, entry, context) :: rest ->
+              let* initialized =
+                check_initializer ~constant:true ?destination c entry_ty entry
+              in
               let* () =
                 let actual =
                   match initialized with
@@ -1894,7 +1954,9 @@ and check_initializer ?(constant = false) c expected expression =
                   error (Ast.expr_span entry)
                     "aggregate value initialization is not supported; use `copy(dst, \
                      src)`"
-                else ensure_expected actual entry_ty (Ast.expr_span entry)
+                else
+                  ensure_expected ~context ~expression:entry actual entry_ty
+                    (Ast.expr_span entry)
               in
               let child =
                 match initialized with
@@ -2004,7 +2066,11 @@ and check_simd_memory_args c name access_ty args span =
   else
     let base_arg = List.nth args 0 in
     let* base = check_expr c (Some Hir.Addr) base_arg in
-    let* () = ensure_expected (Hir.expr_ty base) Hir.Addr (Ast.expr_span base_arg) in
+    let* () =
+      ensure_expected
+        ~context:(Printf.sprintf "argument 1 of `%s`" name)
+        ~expression:base_arg (Hir.expr_ty base) Hir.Addr (Ast.expr_span base_arg)
+    in
     if not indexed then
       let mask_arg = List.nth args 1 in
       let* mask = check_expr c None mask_arg in
@@ -2014,7 +2080,10 @@ and check_simd_memory_args c name access_ty args span =
           let value_ty = Hir.Vec (lanes, access_ty) in
           let* value = check_expr c (Some value_ty) value_arg in
           let* () =
-            ensure_expected (Hir.expr_ty value) value_ty (Ast.expr_span value_arg)
+            ensure_expected
+              ~context:(Printf.sprintf "argument 3 of `%s`" name)
+              ~expression:value_arg (Hir.expr_ty value) value_ty
+              (Ast.expr_span value_arg)
           in
           Ok ([ base; mask; value ], lanes)
       | _ -> error (Ast.expr_span mask_arg) (name ^ " mask must be a bool vector")
@@ -2027,13 +2096,18 @@ and check_simd_memory_args c name access_ty args span =
           let mask_ty = Hir.Vec (lanes, Hir.Bool) in
           let* mask = check_expr c (Some mask_ty) mask_arg in
           let* () =
-            ensure_expected (Hir.expr_ty mask) mask_ty (Ast.expr_span mask_arg)
+            ensure_expected
+              ~context:(Printf.sprintf "argument 3 of `%s`" name)
+              ~expression:mask_arg (Hir.expr_ty mask) mask_ty (Ast.expr_span mask_arg)
           in
           let value_arg = List.nth args 3 in
           let value_ty = Hir.Vec (lanes, access_ty) in
           let* value = check_expr c (Some value_ty) value_arg in
           let* () =
-            ensure_expected (Hir.expr_ty value) value_ty (Ast.expr_span value_arg)
+            ensure_expected
+              ~context:(Printf.sprintf "argument 4 of `%s`" name)
+              ~expression:value_arg (Hir.expr_ty value) value_ty
+              (Ast.expr_span value_arg)
           in
           Ok ([ base; indices; mask; value ], lanes)
       | _ ->
@@ -2124,7 +2198,9 @@ and check_call c _expected fn args s =
         let pointer_arg = List.hd args in
         let* pointer = check_expr c (Some Hir.Addr) pointer_arg in
         let* () =
-          ensure_expected (Hir.expr_ty pointer) Hir.Addr (Ast.expr_span pointer_arg)
+          ensure_expected ~context:"argument 1 of `volatile_load`"
+            ~expression:pointer_arg (Hir.expr_ty pointer) Hir.Addr
+            (Ast.expr_span pointer_arg)
         in
         let* size =
           match access_footprint c access_ty with
@@ -2246,7 +2322,7 @@ and check_call c _expected fn args s =
                     params
                 in
                 let* rt = source_ty_with_values c.named_types values s ret in
-                let* checked = check_actuals c Reject s ps args in
+                let* checked = check_actuals ~callee:name c Reject s ps args in
                 Ok (Hir.Call (Hir.User specialization.name, checked, rt, s))
           | Some _ -> error s "const-generic symbol is not a function"))
   | Ast.Ident ("volatile_load", _) ->
@@ -2579,7 +2655,7 @@ and check_call c _expected fn args s =
                   then error s (Printf.sprintf "wrong number of arguments to `%s`" name)
                   else
                     let policy = if sig_.variadic then Promote_variadic else Reject in
-                    let* xs = check_actuals c policy s sig_.params args in
+                    let* xs = check_actuals ~callee:name c policy s sig_.params args in
                     let* () =
                       match
                         ( Sema_flow.proof_checks_enabled c.flow,
@@ -2607,8 +2683,8 @@ and check_call c _expected fn args s =
                     Ok (Hir.Call (Hir.User name, xs, sig_.ret, s)))))
   | _ -> error s "call target must be a function name"
 
-and check_actuals c policy span formals actuals =
-  let rec loop checked formals actuals =
+and check_actuals ?callee c policy span formals actuals =
+  let rec loop index checked formals actuals =
     match (formals, actuals) with
     | [], rest ->
         let* trailing =
@@ -2640,12 +2716,19 @@ and check_actuals c policy span formals actuals =
             error (Ast.expr_span expression)
               "aggregate arguments cannot be passed by value; pass `&x` as `addr` or \
                `handle[T]`"
-          else ensure_expected (Hir.expr_ty value) expected (Ast.expr_span expression)
+          else
+            let context =
+              match callee with
+              | Some name -> Printf.sprintf "argument %d of `%s`" index name
+              | None -> Printf.sprintf "argument %d" index
+            in
+            ensure_expected ~context ~expression (Hir.expr_ty value) expected
+              (Ast.expr_span expression)
         in
-        loop (value :: checked) formal_rest actual_rest
+        loop (index + 1) (value :: checked) formal_rest actual_rest
     | _ -> error span "wrong number of arguments"
   in
-  loop [] formals actuals
+  loop 1 [] formals actuals
 
 let check_target (c : context) = function
   | Ast.Target_ident (n, span) -> (
@@ -3130,7 +3213,7 @@ and check_stmt (c : context) = function
         match init with
         | None -> Ok None
         | Some e ->
-            let* initialized = check_initializer c t e in
+            let* initialized = check_initializer ~destination:name c t e in
             let* () =
               let actual =
                 match initialized with
@@ -3144,7 +3227,10 @@ and check_stmt (c : context) = function
                 error (Ast.expr_span e)
                   "aggregate value initialization is not supported; use `copy(dst, \
                    src)`"
-              else ensure_expected actual t (Ast.expr_span e)
+              else
+                ensure_expected
+                  ~context:(Printf.sprintf "value for `%s`" name)
+                  ~expression:e actual t (Ast.expr_span e)
             in
             Ok (Some initialized)
       in
@@ -3208,7 +3294,9 @@ and check_stmt (c : context) = function
       let* () =
         if aggregate_value_type expected && aggregate_value_type (Hir.expr_ty v) then
           error span "aggregate assignment is not supported; use `copy(dst, src)`"
-        else ensure_expected (Hir.expr_ty v) expected span
+        else
+          ensure_expected ~context:(assignment_context target) ~expression:e
+            (Hir.expr_ty v) expected (Ast.expr_span e)
       in
       (match target with
       | Hir.ALocal binding when binding.ty = Hir.Addr ->
@@ -3279,7 +3367,10 @@ and check_stmt (c : context) = function
           match Hir.expr_ty v with
           | Hir.Int _ -> Ok ()
           | _ -> error span "address arithmetic requires a scalar integer offset"
-        else ensure_expected (Hir.expr_ty v) et span
+        else
+          ensure_expected
+            ~context:(Printf.sprintf "right operand of `%s`" (compound_operator op))
+            ~expression:e (Hir.expr_ty v) et (Ast.expr_span e)
       in
       let* v = if is_addr_step then normalize_offset_expr c.structs span v else Ok v in
       if (not (is_numeric et)) && not is_addr_step then
@@ -3322,7 +3413,10 @@ and check_stmt (c : context) = function
         | Some _, Hir.Void -> error span "void function cannot return a value"
         | Some e, t ->
             let* v = check_expr c (Some t) e in
-            let* () = ensure_expected (Hir.expr_ty v) t span in
+            let* () =
+              ensure_expected ~context:"return value" ~expression:e (Hir.expr_ty v) t
+                (Ast.expr_span e)
+            in
             let* () =
               if t = Hir.Addr && Sema_flow.proof_checks_enabled c.flow then
                 match address_fact c v with
@@ -3360,11 +3454,15 @@ and check_stmt (c : context) = function
         let pointer_arg = List.nth args 0 and value_arg = List.nth args 1 in
         let* pointer = check_expr c (Some Hir.Addr) pointer_arg in
         let* () =
-          ensure_expected (Hir.expr_ty pointer) Hir.Addr (Ast.expr_span pointer_arg)
+          ensure_expected ~context:"argument 1 of `volatile_store`"
+            ~expression:pointer_arg (Hir.expr_ty pointer) Hir.Addr
+            (Ast.expr_span pointer_arg)
         in
         let* value = check_expr c (Some access_ty) value_arg in
         let* () =
-          ensure_expected (Hir.expr_ty value) access_ty (Ast.expr_span value_arg)
+          ensure_expected ~context:"argument 2 of `volatile_store`"
+            ~expression:value_arg (Hir.expr_ty value) access_ty
+            (Ast.expr_span value_arg)
         in
         let* size =
           match layout_diag call_span c.structs access_ty with
@@ -3602,7 +3700,10 @@ and check_stmt (c : context) = function
                           "case label must be a compile-time constant";
                       ])
               in
-              let* () = ensure_expected kt et (Ast.expr_span k) in
+              let* () =
+                ensure_expected ~context:"case value" ~expression:k kt et
+                  (Ast.expr_span k)
+              in
               if List.mem kv !seen then
                 error (Ast.expr_span k) (Printf.sprintf "duplicate case label `%Ld`" kv)
               else (

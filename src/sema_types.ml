@@ -261,12 +261,34 @@ let field_info structs name field =
 
 let compatible actual expected = Hir.ty_equal actual expected
 
-let ensure_expected actual expected span =
+let diagnostic_ty_name ty =
+  Hir.ty_name ty |> String.split_on_char ',' |> List.map String.trim
+  |> String.concat ","
+
+let ensure_expected ?(context = "value") ?expression actual expected span =
   if compatible actual expected then Ok ()
   else
-    error span
-      (Printf.sprintf "type mismatch: expected %s, got %s" (Hir.ty_name expected)
-         (Hir.ty_name actual))
+    let help =
+      match (expression, actual, expected) with
+      | Some (Ast.Ident (name, _)), Hir.Int _, Hir.Int _
+        when let actual_bits =
+               Option.get (Sema_numeric.integer_value_bit_width actual)
+             in
+             let expected_bits =
+               Option.get (Sema_numeric.integer_value_bit_width expected)
+             in
+             expected_bits > actual_bits
+             && Sema_numeric.is_unsigned actual = Sema_numeric.is_unsigned expected ->
+          let extension = if Sema_numeric.is_unsigned actual then "zext" else "sext" in
+          Some
+            (Printf.sprintf "write `%s[%s](%s)`" extension (diagnostic_ty_name expected)
+               name)
+      | _ -> None
+    in
+    Diag.error ?help span
+      (Printf.sprintf "%s is `%s`, expected `%s`" context (diagnostic_ty_name actual)
+         (diagnostic_ty_name expected))
+    |> fun diagnostic -> Error [ diagnostic ]
 
 let binary_result_type ~mismatch ?left_expression ?right_expression span operation left
     right =

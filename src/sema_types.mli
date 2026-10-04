@@ -40,7 +40,14 @@ val layout_diag :
 
 val field_info : Hir.struct_def list -> string -> string -> Hir.field option
 val compatible : Hir.ty -> Hir.ty -> bool
-val ensure_expected : Hir.ty -> Hir.ty -> Span.t -> (unit, Diag.t list) result
+
+val ensure_expected :
+  ?context:string ->
+  ?expression:Ast.expr ->
+  Hir.ty ->
+  Hir.ty ->
+  Span.t ->
+  (unit, Diag.t list) result
 
 val binary_result_type :
   mismatch:string ->

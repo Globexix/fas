@@ -195,20 +195,20 @@ let semantic_render text =
   let diagnostics = semantic_diagnostics text in
   Diag.render_all ~source:(Some src) diagnostics
 
-let expected_diagnostic line column width message help =
+let expected_diagnostic ?(line_number = 1) line column width message help =
   String.concat "\n"
     [
-      Printf.sprintf "regression.fas:1:%d: error: %s" column message;
+      Printf.sprintf "regression.fas:%d:%d: error: %s" line_number column message;
       "  " ^ line;
       "  " ^ String.make (column - 1) ' ' ^ "^" ^ String.make (width - 1) '~';
       "help: " ^ help;
     ]
   ^ "\n"
 
-let expected_diagnostic_without_help line column width message =
+let expected_diagnostic_without_help ?(line_number = 1) line column width message =
   String.concat "\n"
     [
-      Printf.sprintf "regression.fas:1:%d: error: %s" column message;
+      Printf.sprintf "regression.fas:%d:%d: error: %s" line_number column message;
       "  " ^ line;
       "  " ^ String.make (column - 1) ' ' ^ "^" ^ String.make (width - 1) '~';
     ]
@@ -360,31 +360,26 @@ let () =
   | Ok (size, align) ->
       failwith (Printf.sprintf "isize-layout: expected (4, 4), got (%d, %d)" size align)
   | Error message -> failwith ("isize-layout: " ^ message));
-  semantic_error "usize-distinct-from-u64" "type mismatch: expected usize, got u64"
+  semantic_error "usize-distinct-from-u64" "is `u64`, expected `usize`"
     "fn convert(value u64) usize { return value }\n";
-  semantic_error "u64-distinct-from-usize" "type mismatch: expected u64, got usize"
+  semantic_error "u64-distinct-from-usize" "is `usize`, expected `u64`"
     "fn convert(value usize) u64 { return value }\n";
-  semantic_error "isize-distinct-from-i64" "type mismatch: expected isize, got i64"
+  semantic_error "isize-distinct-from-i64" "is `i64`, expected `isize`"
     "fn convert(value i64) isize { return value }\n";
-  semantic_error "i64-distinct-from-isize" "type mismatch: expected i64, got isize"
+  semantic_error "i64-distinct-from-isize" "is `isize`, expected `i64`"
     "fn convert(value isize) i64 { return value }\n";
-  semantic_error "usize-call-distinct-from-u64" "type mismatch: expected usize, got u64"
+  semantic_error "usize-call-distinct-from-u64" "is `u64`, expected `usize`"
     "fn take(value usize) void { return }\n\
      fn check_case(value u64) void { take(value) }\n";
-  semantic_error "named-bool-constant-keeps-type"
-    "type mismatch: expected i32, got bool"
+  semantic_error "named-bool-constant-keeps-type" "is `bool`, expected `i32`"
     "const Flag bool = true\nfn main() i32 { value i32 = Flag\n return value }\n";
-  semantic_error "named-i8-constant-local-keeps-type"
-    "type mismatch: expected i32, got i8"
+  semantic_error "named-i8-constant-local-keeps-type" "is `i8`, expected `i32`"
     "const Small i8 = 7\nfn main() i32 { value i32 = Small\n return value }\n";
-  semantic_error "named-negative-i8-constant-keeps-type"
-    "type mismatch: expected u16, got i8"
+  semantic_error "named-negative-i8-constant-keeps-type" "is `i8`, expected `u16`"
     "const Negative i8 = -1\nfn main() i32 { value u16 = Negative\n return 0 }\n";
-  semantic_error "named-i8-constant-return-keeps-type"
-    "type mismatch: expected i32, got i8"
+  semantic_error "named-i8-constant-return-keeps-type" "is `i8`, expected `i32`"
     "const Small i8 = 7\nfn value() i32 { return Small }\n";
-  semantic_error "named-i8-constant-argument-keeps-type"
-    "type mismatch: expected i32, got i8"
+  semantic_error "named-i8-constant-argument-keeps-type" "is `i8`, expected `i32`"
     "const Small i8 = 7\n\
      fn take(value i32) void { return }\n\
      fn check_case() void { take(Small) }\n";
@@ -544,7 +539,7 @@ let () =
     "illegal cast for source and destination widths"
     "fn f(value u64) vec[4,u32] { return bitcast[vec[4,u32]](value) }\n";
   semantic_error "integer-vector-bitcast-implicit"
-    "type mismatch: expected vec[4, u32], got vec[4, i32]"
+    "is `vec[4,i32]`, expected `vec[4,u32]`"
     "fn f(value vec[4,i32]) vec[4,u32] { return value }\n";
   semantic_error "integer-vector-bitcast-array"
     "raw selection cannot load an aggregate value"
@@ -603,7 +598,7 @@ let () =
   semantic_error "constant-bool-shift"
     "shift value must be an integer or integer vector"
     "const Invalid bool = true << false\nfn main() i32 { return 0 }\n";
-  semantic_error "constant-dead-ternary-type" "type mismatch: expected i32, got bool"
+  semantic_error "constant-dead-ternary-type" "is `bool`, expected `i32`"
     "const Invalid i32 = true ? 1 : false\nfn main() i32 { return Invalid }\n";
   ignore (llvm_of "const Safe i32 = true ? 7 : 1 / 0\nfn main() i32 { return Safe }\n");
   let vector_constants =
@@ -640,7 +635,7 @@ let () =
       "<i8 1, i8 1, i8 1, i8 1>";
     ];
   semantic_error "named-vector-constant-keeps-type"
-    "type mismatch: expected vec[4, u16], got vec[4, u8]"
+    "is `vec[4,u8]`, expected `vec[4,u16]`"
     "const Bytes vec[4,u8] = splat(1)\n\
      fn take(value vec[4,u16]) void { return }\n\
      fn test() void { take(Bytes)\n\
@@ -666,8 +661,7 @@ let () =
     (llvm_of
        "const Safe vec[4,u8] = true ? splat(7) : splat(1) / splat(0)\n\
         fn test() u8 { return Safe[0] }\n");
-  semantic_error "constant-vector-dead-ternary-type"
-    "type mismatch: expected u8, got bool"
+  semantic_error "constant-vector-dead-ternary-type" "is `bool`, expected `u8`"
     "const Invalid vec[4,u8] = true ? splat(7) : splat(true)\n\
      fn main() i32 { return 0 }\n";
   semantic_error "runtime-logical-integer-left"
@@ -815,11 +809,11 @@ let () =
   semantic_error "shift-compound-scalar-value-vector-count"
     "shift count must be a scalar integer for a scalar value"
     "fn f(x u32, count vec[4,u32]) u32 { x <<= count\n return x }\n";
-  semantic_error "shift-no-splat-lift" "type mismatch: expected vec[4, u32], got i32"
+  semantic_error "shift-no-splat-lift" "is `i32`, expected `vec[4,u32]`"
     "fn f(n u32) vec[4,u32] { return 1 << n }\n";
-  semantic_error "len-returns-usize" "type mismatch: expected u64, got usize"
+  semantic_error "len-returns-usize" "is `usize`, expected `u64`"
     "const Values arr[3,u8] = {1, 2, 3}\nfn size() u64 { return len(Values) }\n";
-  semantic_error "sizeof-returns-usize" "type mismatch: expected u64, got usize"
+  semantic_error "sizeof-returns-usize" "is `usize`, expected `u64`"
     "fn size() u64 { return sizeof[u8] }\n";
   ignore
     (lower_of
@@ -2212,8 +2206,7 @@ let () =
     "opaque Handle\nfn check_case() usize { return sizeof[Handle] }\n";
   semantic_error "opaque-alignof" "opaque type `Handle` has no layout"
     "opaque Handle\nfn check_case() usize { return alignof[Handle] }\n";
-  semantic_error "opaque-implicit-erasure"
-    "type mismatch: expected addr, got handle[Handle]"
+  semantic_error "opaque-implicit-erasure" "is `handle[Handle]`, expected `addr`"
     "opaque Handle\nfn check_case(value handle[Handle]) addr { return value }\n";
   ignore
     (lower_of
@@ -2228,9 +2221,9 @@ let () =
        \ read_only = value\n\
        \ return value == read_only\n\
         }\n");
-  semantic_error "pointer-implicit-to-integer" "type mismatch: expected usize, got addr"
+  semantic_error "pointer-implicit-to-integer" "is `addr`, expected `usize`"
     "fn check_case(value addr) void { bits usize = value }\n";
-  semantic_error "integer-implicit-to-pointer" "type mismatch: expected addr, got usize"
+  semantic_error "integer-implicit-to-pointer" "is `usize`, expected `addr`"
     "fn check_case(value usize) void { pointer addr = value }\n";
   semantic_error "pointer-bitcast-discards-const"
     "illegal cast for source and destination widths"
@@ -2691,8 +2684,7 @@ let () =
   in
   if not (contains apostrophe_escape_string "[4 x i8] c\"it's\"") then
     failwith "string-apostrophe-escape: decoded bytes changed";
-  semantic_error "fas-030-string-literal-fixed-array"
-    "type mismatch: expected arr[3, u8], got addr"
+  semantic_error "fas-030-string-literal-fixed-array" "is `addr`, expected `arr[3,u8]`"
     "fn main() i32 { bytes arr[3,u8] = \"abc\"\n return 0 }\n";
   semantic_error "fas-030-c-string-literal-nul"
     "C string literal cannot contain embedded NUL"
@@ -4635,8 +4627,7 @@ let () =
     "fn r[B const bool]() u8 { if B { return 256 }\n\
     \ return 0 }\n\
      fn test() u8 { return r[false]() }\n";
-  semantic_error "dead-branch-type-error-rejected"
-    "type mismatch: expected u8, got bool"
+  semantic_error "dead-branch-type-error-rejected" "is `bool`, expected `u8`"
     "fn test() u8 { if false { return true }\n return 0 }\n";
   semantic_error "dead-branch-unknown-name-rejected" "unknown name `nope`"
     "fn test() u8 { if false { return nope }\n return 0 }\n";
@@ -4831,7 +4822,7 @@ let () =
   (match semantic_diagnostics specialized_type_message_failure with
   | [ diagnostic ] ->
       let rendered = Diag.render_all ~source:None [ diagnostic ] in
-      if diagnostic.message <> "type mismatch: expected i64, got u8" then
+      if diagnostic.message <> "value for `local` is `u8`, expected `i64`" then
         failwith
           ("generic-instantiation-specialized-type-message: unexpected message: "
          ^ diagnostic.message);
@@ -5874,14 +5865,14 @@ let () =
      }\n\
      fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-local-type-mismatch"
-    "type mismatch: expected i32, got bool"
+    "is `bool`, expected `i32`"
     "fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { value i32 = true\n\
     \ return value }\n\
      }\n\
      fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-assignment-type-mismatch"
-    "type mismatch: expected i32, got bool"
+    "is `bool`, expected `i32`"
     "fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { value i32 = 0\n\
     \ value = true\n\
@@ -5889,14 +5880,14 @@ let () =
      }\n\
      fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-call-type-mismatch"
-    "type mismatch: expected i32, got bool"
+    "is `bool`, expected `i32`"
     "fn plain(value i32) i32 { return value }\n\
      fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { return plain(true) }\n\
      }\n\
      fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-dependent-call-sibling"
-    "type mismatch: expected i32, got bool"
+    "is `bool`, expected `i32`"
     "fn plain(left i32, right i32) i32 { return left + right }\n\
      fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { return plain(N, true) }\n\
@@ -5942,7 +5933,7 @@ let () =
      }\n\
      fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-generic-call-type"
-    "type mismatch: expected i32, got bool"
+    "is `bool`, expected `i32`"
     "fn plain[T](value T) T { return value }\n\
      fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { return plain[i32](true) }\n\
@@ -5956,7 +5947,7 @@ let () =
      }\n\
      fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-named-const-argument-type"
-    "type mismatch: expected u8, got i32"
+    "is `i32`, expected `u8`"
     "const Wide i32 = 7\n\
      fn plain[N const u8]() i32 { return 1 }\n\
      fn choose[N const i32]() i32 {\n\
@@ -6592,6 +6583,62 @@ let () =
   ignore
     (llvm_of
        "fn f(p addr, requested_index usize) u8 { return p[u8, requested_index + 1] }\n");
+  let argument_mismatch_source =
+    "fn put(value u8) void { return }\nfn f(x u16) void { put(x); return }\n"
+  in
+  let argument_mismatch_line = "fn f(x u16) void { put(x); return }" in
+  let argument_mismatch_column = String.length "fn f(x u16) void { put(" + 1 in
+  let argument_mismatch_expected =
+    expected_diagnostic_without_help ~line_number:2 argument_mismatch_line
+      argument_mismatch_column 1 "argument 1 of `put` is `u16`, expected `u8`"
+  in
+  if semantic_render argument_mismatch_source <> argument_mismatch_expected then
+    failwith ("argument-type-mismatch: " ^ semantic_render argument_mismatch_source);
+  let initializer_mismatch_source = "fn f(x u16) u8 { value u8 = x; return 0 }\n" in
+  let initializer_mismatch_line = String.trim initializer_mismatch_source in
+  let initializer_mismatch_column = String.length "fn f(x u16) u8 { value u8 = " + 1 in
+  let initializer_mismatch_expected =
+    expected_diagnostic_without_help initializer_mismatch_line
+      initializer_mismatch_column 1 "value for `value` is `u16`, expected `u8`"
+  in
+  if semantic_render initializer_mismatch_source <> initializer_mismatch_expected then
+    failwith
+      ("initializer-type-mismatch: " ^ semantic_render initializer_mismatch_source);
+  let signed_widen_source = "fn f(x i32) i64 { return x }\n" in
+  let signed_widen_expected =
+    expected_diagnostic
+      (String.trim signed_widen_source)
+      (String.length "fn f(x i32) i64 { return " + 1)
+      1 "return value is `i32`, expected `i64`" "write `sext[i64](x)`"
+  in
+  if semantic_render signed_widen_source <> signed_widen_expected then
+    failwith ("signed-widening-help: " ^ semantic_render signed_widen_source);
+  let unsigned_widen_source =
+    "fn put(value u64) void { return }\nfn f(x u32) void { put(x); return }\n"
+  in
+  let unsigned_widen_line = "fn f(x u32) void { put(x); return }" in
+  let unsigned_widen_column = String.length "fn f(x u32) void { put(" + 1 in
+  let unsigned_widen_expected =
+    expected_diagnostic ~line_number:2 unsigned_widen_line unsigned_widen_column 1
+      "argument 1 of `put` is `u32`, expected `u64`" "write `zext[u64](x)`"
+  in
+  if semantic_render unsigned_widen_source <> unsigned_widen_expected then
+    failwith ("unsigned-widening-help: " ^ semantic_render unsigned_widen_source);
+  let signedness_mismatch_source = "fn f(x u32) i64 { return x }\n" in
+  let signedness_mismatch_expected =
+    expected_diagnostic_without_help
+      (String.trim signedness_mismatch_source)
+      (String.length "fn f(x u32) i64 { return " + 1)
+      1 "return value is `u32`, expected `i64`"
+  in
+  if semantic_render signedness_mismatch_source <> signedness_mismatch_expected then
+    failwith
+      ("signedness-mismatch-no-help: " ^ semantic_render signedness_mismatch_source);
+  ignore (llvm_of "fn f(x i32) i64 { return sext[i64](x) }\n");
+  ignore
+    (llvm_of
+       "fn put(value u64) void { return }\n\
+        fn f(x u32) void { put(zext[u64](x)); return }\n");
   let not_source = "fn f(x i32) bool { return !x }\n" in
   let not_expected =
     expected_diagnostic "fn f(x i32) bool { return !x }" 28 1
@@ -6712,12 +6759,12 @@ let () =
   ignore (llvm_of "fn f(x u32, y u64) u64 { return zext[u64](x) + y }\n");
   ignore (llvm_of "fn f(x i32, y i64) i64 { return sext[i64](x) + y }\n");
   ignore (llvm_of "fn f(x u64) u32 { return trunc[u32](x) }\n");
-  semantic_error "context-no-implicit-equal-width"
-    "type mismatch: expected u64, got u32" "fn f(x u32) u64 { return x + 1 }\n";
-  semantic_error "context-no-implicit-wrong-direction"
-    "type mismatch: expected u32, got u64" "fn f(x u64) u32 { return x + 1 }\n";
-  semantic_error "context-literal-takes-peer-not-destination"
-    "type mismatch: expected u64, got u32" "fn f(x u32) u64 { return 1 + x }\n";
+  semantic_error "context-no-implicit-equal-width" "is `u32`, expected `u64`"
+    "fn f(x u32) u64 { return x + 1 }\n";
+  semantic_error "context-no-implicit-wrong-direction" "is `u64`, expected `u32`"
+    "fn f(x u64) u32 { return x + 1 }\n";
+  semantic_error "context-literal-takes-peer-not-destination" "is `u32`, expected `u64`"
+    "fn f(x u32) u64 { return 1 + x }\n";
   ignore
     (llvm_of
        "fn f(p addr) bool { return p == addr_from_bits(0) }\n\
@@ -8117,7 +8164,7 @@ let () =
     "fn f(p addr) u32 { return volatile_load(p) }\n";
   semantic_error "volatile-store-arity" "expects two arguments"
     "fn f(p addr) void {\nvolatile_store[u32](p)\nreturn\n}\n";
-  semantic_error "volatile-value-type" "type mismatch: expected u32, got bool"
+  semantic_error "volatile-value-type" "is `bool`, expected `u32`"
     "fn f(p addr) void {\nvolatile_store[u32](p, true)\nreturn\n}\n";
 
   semantic_accept "place-init-ternary-escape-unknown"
@@ -8529,8 +8576,7 @@ let () =
   semantic_error "construction-scalar-literal-destination"
     "construction needs an array, struct or vector type"
     "fn f() void { value u32 = {1}\nreturn }\n";
-  semantic_error "construction-entry-type-mismatch"
-    "type mismatch: expected i32, got bool"
+  semantic_error "construction-entry-type-mismatch" "is `bool`, expected `i32`"
     "struct S { flag i32 }\nfn f() void { value S = {true}\nreturn }\n";
   semantic_error "construction-explicit-type-mismatch"
     "aggregate construction type does not match destination"
@@ -8625,14 +8671,15 @@ let () =
     "fn f(p addr, i vec[2,bool], m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
      gather[u32](p, i, m, v) }\n";
   semantic_error "simd-memory-lane-count"
-    "type mismatch: expected vec[2, bool], got vec[3, bool]"
+    "argument 3 of `gather` is `vec[3,bool]`, expected `vec[2,bool]`"
     "fn f(p addr, i vec[2,i8], m vec[3,bool], v vec[2,u32]) vec[2,u32] { return \
      gather[u32](p, i, m, v) }\n";
   semantic_error "simd-memory-fallback-type"
-    "type mismatch: expected vec[2, u32], got vec[3, u32]"
+    "argument 3 of `masked_load` is `vec[3,u32]`, expected `vec[2,u32]`"
     "fn f(p addr, m vec[2,bool], v vec[3,u32]) vec[2,u32] { return masked_load[u32](p, \
      m, v) }\n";
-  semantic_error "simd-memory-base-type" "type mismatch: expected addr, got u32"
+  semantic_error "simd-memory-base-type"
+    "argument 1 of `masked_load` is `u32`, expected `addr`"
     "fn f(p u32, m vec[2,bool], v vec[2,u32]) vec[2,u32] { return masked_load[u32](p, \
      m, v) }\n";
   semantic_error "simd-memory-load-arity" "builtin `masked_load` expects 3 arguments"
@@ -9616,7 +9663,9 @@ let () =
      fas_variadic(1, true, 2)\n\
      return }\n";
   c_semantic_error "c-import-distinct-record-identities"
-    "expected handle[FasOtherRecord], got handle[FasRecord]" c_matrix
+    "argument 1 of `fas_other_pointer` is `handle[FasRecord]`, expected \
+     `handle[FasOtherRecord]`"
+    c_matrix
     "fn wrong(record handle[FasRecord]) void {\nfas_other_pointer(record)\nreturn }\n";
   c_semantic_accept "c-import-global-places" c_matrix
     "fn globals() i32 {\n\
@@ -9973,7 +10022,8 @@ let () =
      var NativeTimespecStorage NativeTimespec\n\
      fn native_address() addr { return &NativeTimespecStorage }\n";
   c_semantic_message "c-import-record-address-different-handle"
-    "type mismatch: expected handle[timespec], got addr" time_record_handles
+    "argument 2 of `clock_gettime` is `addr`, expected `handle[timespec]`"
+    time_record_handles
     "fn wrong_record() i32 { ts FasOtherTimespec\nreturn clock_gettime(1, &ts) }\n";
   let record_import = snd record_import_cases in
   let imported_struct name =
@@ -11402,7 +11452,7 @@ let () =
   c_semantic_accept "c-import-self-macro-preserves-global" fixture
     "fn f() i32 { return counter }\n";
   c_semantic_message "c-import-self-macro-global-type"
-    "type mismatch: expected u8, got i32" fixture "fn f() u8 { return counter }\n"
+    "return value is `i32`, expected `u8`" fixture "fn f() u8 { return counter }\n"
 
 let () =
   semantic_accept "brace-vector-static-contexts"
