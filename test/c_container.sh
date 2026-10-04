@@ -268,7 +268,7 @@ use "C" "broken.h"
 fn main() i32 { return 0 }
 FAS
 expect_failure "$OCAML_FAS" --emit-llvm "$CONTAINER_TMP/header-error.fas"
-grep -F "$CONTAINER_TMP/header-error.fas:1:1: error: C compilation failed: expected expression" "$CONTAINER_TMP/stderr" >/dev/null \
+grep -F "$CONTAINER_TMP/header-error.fas:1:9: error: C compilation failed: expected expression" "$CONTAINER_TMP/stderr" >/dev/null \
   || fail "header error has the wrong primary message"
 grep -Fx "note: $CONTAINER_TMP/broken.h:1:21" "$CONTAINER_TMP/stderr" >/dev/null \
   || fail "header error omitted its foreign location"
