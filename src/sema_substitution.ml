@@ -613,6 +613,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       spec_depth = 0;
       spec_trace = [];
       flow = Sema_flow.create ~initial_scope:true eval_structs;
+      expression_depth = 0;
+      unresolved_shapes = Hashtbl.create 0;
+      unresolved_shapes_unique = false;
       string_pool = create_string_pool limits;
       ret_ty;
       limits;

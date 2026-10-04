@@ -849,11 +849,70 @@ let rec expression_uses_view c = function
       expression_uses_view c yes || expression_uses_view c no
   | _ -> false
 
-type unresolved_shape = Unresolved_int | Unresolved_vector | Unresolved_null
+let unresolved_shape_key expression =
+  let span = Ast.expr_span expression in
+  (span.Span.file, span.Span.start_offset, span.Span.end_offset)
 
-let rec unresolved_shape_of expression =
+let shape_children = function
+  | Ast.Unary ((Ast.Neg | Ast.Bit_not), operand, _) -> [ operand ]
+  | Ast.Binary
+      ( ( Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
+        | Ast.Bit_xor ),
+        left,
+        right,
+        _ ) ->
+      [ left; right ]
+  | _ -> []
+
+let build_unresolved_shapes expression =
+  let shapes = Hashtbl.create 64 in
+  let seen = Hashtbl.create 64 in
+  let unique = ref true in
+  let stack = ref [ (expression, false) ] in
+  let cached_shape expression =
+    Option.value ~default:None
+      (Hashtbl.find_opt shapes (unresolved_shape_key expression))
+  in
+  while !stack <> [] do
+    match !stack with
+    | (current, true) :: rest ->
+        stack := rest;
+        let shape =
+          match current with
+          | Ast.Int_lit _ -> Some Unresolved_int
+          | Ast.Null _ -> Some Unresolved_null
+          | Ast.Unary ((Ast.Neg | Ast.Bit_not), operand, _) -> (
+              match cached_shape operand with
+              | Some Unresolved_int -> Some Unresolved_int
+              | _ -> None)
+          | Ast.Binary
+              ( ( Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and
+                | Ast.Bit_or | Ast.Bit_xor ),
+                left,
+                right,
+                _ ) -> (
+              match (cached_shape left, cached_shape right) with
+              | Some left_shape, Some right_shape when left_shape = right_shape ->
+                  Some left_shape
+              | _ -> None)
+          | Ast.Splat _ | Ast.Array_lit _ -> Some Unresolved_vector
+          | _ -> None
+        in
+        Hashtbl.replace shapes (unresolved_shape_key current) shape
+    | (current, false) :: rest ->
+        stack := (current, true) :: rest;
+        let key = unresolved_shape_key current in
+        if Hashtbl.mem seen key then unique := false else Hashtbl.add seen key ();
+        List.iter
+          (fun child -> stack := (child, false) :: !stack)
+          (shape_children current)
+    | [] -> ()
+  done;
+  (shapes, !unique)
+
+let rec unresolved_shape_uncached expression =
   let combined left right =
-    match (unresolved_shape_of left, unresolved_shape_of right) with
+    match (unresolved_shape_uncached left, unresolved_shape_uncached right) with
     | Some left_shape, Some right_shape when left_shape = right_shape -> Some left_shape
     | _ -> None
   in
@@ -861,7 +920,7 @@ let rec unresolved_shape_of expression =
   | Ast.Int_lit _ -> Some Unresolved_int
   | Ast.Null _ -> Some Unresolved_null
   | Ast.Unary ((Ast.Neg | Ast.Bit_not), operand, _) -> (
-      match unresolved_shape_of operand with
+      match unresolved_shape_uncached operand with
       | Some Unresolved_int -> Some Unresolved_int
       | _ -> None)
   | Ast.Binary
@@ -871,24 +930,33 @@ let rec unresolved_shape_of expression =
         right,
         _ ) ->
       combined left right
-  | Ast.Splat (_, _) | Ast.Array_lit _ -> Some Unresolved_vector
+  | Ast.Splat _ | Ast.Array_lit _ -> Some Unresolved_vector
   | _ -> None
 
-let rec unresolved_vector_elements expression =
+let unresolved_shape_of (c : context) expression =
+  if c.unresolved_shapes_unique then
+    match Hashtbl.find_opt c.unresolved_shapes (unresolved_shape_key expression) with
+    | Some shape -> shape
+    | None -> unresolved_shape_uncached expression
+  else unresolved_shape_uncached expression
+
+let rec unresolved_vector_elements c expression =
   match expression with
   | Ast.Splat (element, _) -> (
-      match unresolved_shape_of element with Some Unresolved_int -> true | _ -> false)
+      match unresolved_shape_of c element with
+      | Some Unresolved_int -> true
+      | _ -> false)
   | Ast.Binary
       ( ( Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
         | Ast.Bit_xor ),
         left,
         right,
         _ ) ->
-      unresolved_vector_elements left && unresolved_vector_elements right
+      unresolved_vector_elements c left && unresolved_vector_elements c right
   | Ast.Binary ((Ast.Shl | Ast.Shr), _, _, _) -> false
   | _ -> false
 
-let operand_type_hint operation expected left right =
+let operand_type_hint c operation expected left right =
   match operation with
   | Ast.Add | Ast.Sub -> (
       match expected with Some Hir.Addr -> Some (Hir.Int Hir.Usize) | e -> e)
@@ -896,14 +964,14 @@ let operand_type_hint operation expected left right =
   | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
       match expected with
       | Some (Hir.Vec (lanes, _))
-        when unresolved_vector_elements left && unresolved_vector_elements right ->
+        when unresolved_vector_elements c left && unresolved_vector_elements c right ->
           Some (Hir.Vec (lanes, Hir.Int Hir.I32))
       | _ -> None)
   | Ast.And | Ast.Or -> None
   | Ast.Shl | Ast.Shr -> None
 
-let contextual_peer_type operation peer operand =
-  match (peer, unresolved_shape_of operand, operation) with
+let contextual_peer_type c operation peer operand =
+  match (peer, unresolved_shape_of c operand, operation) with
   | Hir.Addr, Some Unresolved_null, (Ast.Eq | Ast.Ne) -> Some Hir.Addr
   | Hir.Addr, _, _ -> Some (Hir.Int Hir.Usize)
   | Hir.Handle _, Some Unresolved_int, _ -> None
@@ -1211,6 +1279,17 @@ and raw_offset_expr c s access_ty index_payload =
                s ))
 
 and check_expr (c : context) expected expression =
+  let previous_depth = c.expression_depth in
+  if previous_depth = 0 then (
+    let shapes, unique = build_unresolved_shapes expression in
+    c.unresolved_shapes <- shapes;
+    c.unresolved_shapes_unique <- unique);
+  c.expression_depth <- previous_depth + 1;
+  let result = check_expr_inner c expected expression in
+  c.expression_depth <- previous_depth;
+  result
+
+and check_expr_inner (c : context) expected expression =
   let peer_handle_type expression =
     let before = Sema_flow.snapshot c.flow in
     let checked = check_expr c None expression in
@@ -1407,19 +1486,19 @@ and check_expr (c : context) expected expression =
           | None, _, _ -> None
         in
         let* a, b =
-          match (unresolved_shape_of l, unresolved_shape_of r) with
+          match (unresolved_shape_of c l, unresolved_shape_of c r) with
           | Some _, None ->
-              let* b = check_expr c (operand_type_hint op expected l r) r in
-              let* a = check_expr c (contextual_peer_type op (Hir.expr_ty b) l) l in
+              let* b = check_expr c (operand_type_hint c op expected l r) r in
+              let* a = check_expr c (contextual_peer_type c op (Hir.expr_ty b) l) l in
               Ok (a, b)
           | _ ->
               let left_expected =
                 match address_peer_type with
                 | Some (`Left ty) -> Some ty
-                | _ -> operand_type_hint op expected l r
+                | _ -> operand_type_hint c op expected l r
               in
               let* a = check_expr c left_expected l in
-              let* b = check_expr c (contextual_peer_type op (Hir.expr_ty a) r) r in
+              let* b = check_expr c (contextual_peer_type c op (Hir.expr_ty a) r) r in
               Ok (a, b)
         in
         let at = Hir.expr_ty a in
@@ -1594,8 +1673,8 @@ and check_expr (c : context) expected expression =
         let* expected =
           if
             expected = None
-            && unresolved_shape_of a = Some Unresolved_vector
-            && unresolved_shape_of b = None
+            && unresolved_shape_of c a = Some Unresolved_vector
+            && unresolved_shape_of c b = None
           then (
             let* peer = check_expr c None b in
             Sema_flow.restore c.flow before_arms;
@@ -1655,9 +1734,9 @@ and check_expr (c : context) expected expression =
       | _ -> error s "aggregate literal requires an array, struct, or vector type")
 
 and check_same_operands c left right =
-  let contextual expression = Option.is_some (unresolved_shape_of expression) in
+  let contextual expression = Option.is_some (unresolved_shape_of c expression) in
   let hint peer expression =
-    match (unresolved_shape_of expression, Hir.expr_ty peer) with
+    match (unresolved_shape_of c expression, Hir.expr_ty peer) with
     | Some Unresolved_int, (Hir.Int _ as ty) -> Some ty
     | Some Unresolved_vector, (Hir.Vec _ as ty) -> Some ty
     | _ -> None

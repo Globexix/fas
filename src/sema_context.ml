@@ -34,6 +34,9 @@ type string_pool = {
   budget_profile : string;
 }
 
+type unresolved_shape = Unresolved_int | Unresolved_vector | Unresolved_null
+type unresolved_shape_cache = (string * int * int, unresolved_shape option) Hashtbl.t
+
 let create_string_pool limits =
   {
     reversed = [];
@@ -61,6 +64,9 @@ type context = {
   spec_depth : int;
   spec_trace : instantiation_frame list;
   flow : Sema_flow.t;
+  mutable expression_depth : int;
+  mutable unresolved_shapes : unresolved_shape_cache;
+  mutable unresolved_shapes_unique : bool;
   string_pool : string_pool;
   ret_ty : Hir.ty;
   limits : Limits.t;

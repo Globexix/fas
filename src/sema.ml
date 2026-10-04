@@ -502,6 +502,9 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       spec_depth = 0;
       spec_trace = [];
       flow = Sema_flow.create ~initial_scope:false structs;
+      expression_depth = 0;
+      unresolved_shapes = Hashtbl.create 0;
+      unresolved_shapes_unique = false;
       string_pool = program_strings;
       ret_ty = Hir.Void;
       limits;
@@ -637,6 +640,9 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       spec_depth;
       spec_trace;
       flow = Sema_flow.create ~initial_scope:false structs;
+      expression_depth = 0;
+      unresolved_shapes = Hashtbl.create 0;
+      unresolved_shapes_unique = false;
       string_pool = program_strings;
       ret_ty;
       limits;

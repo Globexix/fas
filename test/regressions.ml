@@ -282,6 +282,9 @@ let lower_function_error name fragment params body =
         failwith (name ^ ": unexpected diagnostic: " ^ rendered)
 
 let () =
+  let long_sum = String.concat " + " (List.init 100_000 (fun _ -> "1")) in
+  semantic_accept "long-arithmetic-expression"
+    ("fn main() i32 { value i32 = 1\nreturn value + " ^ long_sum ^ " }\n");
   let expect_layout name expected ty =
     match Hir.layout [] ty with
     | Ok actual when actual = expected -> ()
