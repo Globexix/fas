@@ -17,6 +17,11 @@ let positions text needle =
   in
   if needle = "" then [] else search 0 []
 
+let assert_deterministic name src first second =
+  let rendered diagnostics = Diag.render_all ~source:(Some src) diagnostics in
+  if rendered first <> rendered second then
+    failwith (name ^ ": diagnostic changed between repeated checks")
+
 let expect_ok = function
   | Ok value -> value
   | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
@@ -88,16 +93,29 @@ let c_import_macro_fixture ?(c_flags = []) file macro_names =
 
 let c_semantic_result ((source, imported) : string * C_import.mapped) text =
   incr checks_run;
-  let program =
-    match Parser.parse (Source.create ~file:source ~text) with
-    | Ok program -> program
-    | Error diagnostics ->
-        failwith (Diag.render_all ~source:None diagnostics ^ "\n" ^ text)
+  let src = Source.create ~file:source ~text in
+  let run () =
+    let program =
+      match Parser.parse src with
+      | Ok program -> program
+      | Error diagnostics ->
+          failwith (Diag.render_all ~source:None diagnostics ^ "\n" ^ text)
+    in
+    let program = { Ast.items = program.items @ imported.items } in
+    Sema.check ~c_aliases:imported.aliases ~c_unsupported:imported.unsupported
+      ~c_nonnull_parameters:imported.nonnull_parameters ~c_records:imported.record_types
+      program
   in
-  let program = { Ast.items = program.items @ imported.items } in
-  Sema.check ~c_aliases:imported.aliases ~c_unsupported:imported.unsupported
-    ~c_nonnull_parameters:imported.nonnull_parameters ~c_records:imported.record_types
-    program
+  match run () with
+  | Ok _ as result -> result
+  | Error diagnostics as result ->
+      let repeated =
+        match run () with
+        | Error repeated -> repeated
+        | Ok _ -> failwith "C semantic result changed between repeated checks"
+      in
+      assert_deterministic "C semantic rejection" src diagnostics repeated;
+      result
 
 let c_semantic_accept name imported text =
   match c_semantic_result imported text with
@@ -138,20 +156,24 @@ let check_files files =
 
 let semantic_diagnostics text =
   incr checks_run;
-  let program = expect_ok (Parser.parse (source text)) in
-  match Sema.check program with
-  | Ok _ -> failwith "expected semantic rejection"
-  | Error diagnostics -> diagnostics
+  let src = source text in
+  let run () =
+    let program = expect_ok (Parser.parse src) in
+    match Sema.check program with
+    | Ok _ -> failwith "expected semantic rejection"
+    | Error diagnostics -> diagnostics
+  in
+  let first = run () in
+  let second = run () in
+  assert_deterministic "semantic rejection" src first second;
+  first
 
 let semantic_messages text =
   List.map (fun (diagnostic : Diag.t) -> diagnostic.message) (semantic_diagnostics text)
 
 let semantic_message name expected text =
-  incr checks_run;
-  let program = expect_ok (Parser.parse (source text)) in
-  match Sema.check program with
-  | Ok _ -> failwith (name ^ ": expected semantic rejection")
-  | Error diagnostics -> (
+  match semantic_diagnostics text with
+  | diagnostics -> (
       let actual =
         List.map (fun (diagnostic : Diag.t) -> diagnostic.message) diagnostics
       in
@@ -163,22 +185,15 @@ let semantic_message name expected text =
            ^ "]"))
 
 let semantic_error name fragment text =
-  incr checks_run;
-  let program = expect_ok (Parser.parse (source text)) in
-  match Sema.check program with
-  | Ok _ -> failwith (name ^ ": expected semantic rejection")
-  | Error diagnostics ->
-      let rendered = Diag.render_all ~source:None diagnostics in
-      if not (contains rendered fragment) then
-        failwith (name ^ ": unexpected diagnostic: " ^ rendered)
+  let diagnostics = semantic_diagnostics text in
+  let rendered = Diag.render_all ~source:None diagnostics in
+  if not (contains rendered fragment) then
+    failwith (name ^ ": unexpected diagnostic: " ^ rendered)
 
 let semantic_render text =
-  incr checks_run;
   let src = source text in
-  let program = expect_ok (Parser.parse src) in
-  match Sema.check program with
-  | Ok _ -> failwith "expected semantic rejection"
-  | Error diagnostics -> Diag.render_all ~source:(Some src) diagnostics
+  let diagnostics = semantic_diagnostics text in
+  Diag.render_all ~source:(Some src) diagnostics
 
 let expected_diagnostic line column width message help =
   String.concat "\n"
@@ -199,21 +214,26 @@ let semantic_accept name text =
       failwith
         (name ^ ": unexpected rejection: " ^ Diag.render_all ~source:None diagnostics)
 
-let parse_error name text =
+let parse_diagnostics name text =
   incr checks_run;
-  match Parser.parse (source text) with
-  | Ok _ -> failwith (name ^ ": expected parse rejection")
-  | Error _ -> ()
+  let src = source text in
+  let run () =
+    match Parser.parse src with
+    | Ok _ -> failwith (name ^ ": expected parse rejection")
+    | Error diagnostics -> diagnostics
+  in
+  let first = run () in
+  let second = run () in
+  assert_deterministic name src first second;
+  first
+
+let parse_error name text = ignore (parse_diagnostics name text)
 
 let parse_messages text =
-  incr checks_run;
-  match Parser.parse (source text) with
-  | Ok _ -> failwith "expected parse rejection"
-  | Error diagnostics ->
-      List.map (fun (diagnostic : Diag.t) -> diagnostic.message) diagnostics
+  parse_diagnostics "parse rejection" text
+  |> List.map (fun (diagnostic : Diag.t) -> diagnostic.message)
 
 let parse_message name expected text =
-  incr checks_run;
   match parse_messages text with
   | [ actual ] when actual = expected -> ()
   | actual ->
@@ -221,13 +241,10 @@ let parse_message name expected text =
         (name ^ ": expected [" ^ expected ^ "], got [" ^ String.concat "; " actual ^ "]")
 
 let parse_error_message name fragment text =
-  incr checks_run;
-  match Parser.parse (source text) with
-  | Ok _ -> failwith (name ^ ": expected parse rejection")
-  | Error diagnostics ->
-      let rendered = Diag.render_all ~source:None diagnostics in
-      if not (contains rendered fragment) then
-        failwith (name ^ ": unexpected diagnostic: " ^ rendered)
+  let diagnostics = parse_diagnostics name text in
+  let rendered = Diag.render_all ~source:None diagnostics in
+  if not (contains rendered fragment) then
+    failwith (name ^ ": unexpected diagnostic: " ^ rendered)
 
 let cli_error name fragment args =
   incr checks_run;
