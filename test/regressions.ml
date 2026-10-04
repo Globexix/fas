@@ -3152,7 +3152,7 @@ let () =
       if
         relative_missing.primary.Span.file <> "relative-missing-root.fas"
         || relative_missing.Diag.message
-           <> "cannot read Fas dependency absent.fas: No such file or directory"
+           <> "cannot read Fas dependency `absent.fas`: No such file or directory"
         || relative_missing.notes
            <> [ "include chain: relative-missing-root.fas -> absent.fas" ]
       then failwith "relative-include-path: path or include chain changed";
@@ -3160,9 +3160,7 @@ let () =
       let missing = driver_error use_missing_root in
       if
         missing.Diag.message
-        <> "cannot read Fas dependency "
-           ^ Filename.concat use_limit_directory "absent.fas"
-           ^ ": No such file or directory"
+        <> "cannot read Fas dependency `absent.fas`: No such file or directory"
         || missing.primary.Span.file <> use_missing_root
         || missing.primary.Span.line <> 1
         || missing.primary.Span.column <> 1
@@ -3176,7 +3174,7 @@ let () =
       write_use_test_file use_directory_root "use \"directory.fas\"\n";
       let directory = driver_error use_directory_root in
       if
-        directory.Diag.message <> "Fas dependency is a directory: " ^ use_directory
+        directory.Diag.message <> "Fas dependency `directory.fas` is a directory"
         || directory.notes
            <> [ "include chain: " ^ use_directory_root ^ " -> " ^ use_directory ]
       then failwith "use-directory-chain: diagnostic or include chain changed";
@@ -6468,11 +6466,10 @@ let () =
     "fn f(value addr) void { while value { break } }\n";
   semantic_error "for-condition-bool-only" "condition of `for` is `i32`, not `bool`"
     "fn f() void { for ; 1; (1) { break } }\n";
-  semantic_error "ternary-condition-bool-only"
-    "condition of `ternary` is `i64`, not `bool`"
+  semantic_error "ternary-condition-bool-only" "condition of `?:` is `i64`, not `bool`"
     "fn f(value i64) i64 { return value ? 1 : 0 }\n";
   semantic_error "constant-ternary-condition-bool-only"
-    "condition of `ternary` is `i32`, not `bool`" "const X i64 = 1 ? 2 : 3\n";
+    "condition of `?:` is `i32`, not `bool`" "const X i64 = 1 ? 2 : 3\n";
   let logical_source = "fn f(c i32) bool { return c && true }\n" in
   let logical_expected =
     expected_diagnostic "fn f(c i32) bool { return c && true }" 27 1
@@ -6517,7 +6514,7 @@ let () =
   let ternary_expected =
     expected_diagnostic ternary_line
       (String.rindex ternary_line 'c' + 1)
-      1 "condition of `ternary` is `i32`, not `bool`"
+      1 "condition of `?:` is `i32`, not `bool`"
       "Fas has no implicit truth values; write `c != 0`"
   in
   if semantic_render (ternary_line ^ "\n") <> ternary_expected then
@@ -9178,7 +9175,7 @@ let () =
       with
       | Error [ diagnostic ]
         when diagnostic.primary = missing_span
-             && contains diagnostic.message "file not found" ->
+             && diagnostic.message = "C header `../absent.h` not found" ->
           ()
       | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
       | Ok _ -> failwith "missing C header was accepted");
@@ -11267,7 +11264,10 @@ let () =
         (Printf.sprintf "use \"asm\" %S\n" (Filename.basename missing));
       match Driver.run (cli_run [ "--emit-ir"; assembly_root ]) with
       | Error [ diagnostic ]
-        when diagnostic.Diag.message = missing ^ ": No such file or directory" ->
+        when diagnostic.Diag.message
+             = Printf.sprintf
+                 "cannot read assembly input `%s`: No such file or directory"
+                 (Filename.basename missing) ->
           ()
       | _ -> failwith "assembly missing file diagnostic changed");
   print_endline "C export spelling, omission, diagnostics and header pins: passed"

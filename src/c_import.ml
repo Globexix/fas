@@ -20,13 +20,8 @@ type adapter = {
   signature : string;
 }
 
-let include_line source fragment_path = function
-  | { spelling = Ast.C_quoted path; _ } ->
-      let path =
-        if Filename.is_relative path then Filename.concat (Filename.dirname source) path
-        else path
-      in
-      Printf.sprintf "#include %S\n" path
+let include_line _source fragment_path = function
+  | { spelling = Ast.C_quoted path; _ } -> Printf.sprintf "#include %S\n" path
   | { spelling = Ast.C_system path; _ } -> "#include <" ^ path ^ ">\n"
   | { spelling = Ast.C_fragment _; _ } ->
       Printf.sprintf "#include %S\n" (Option.get fragment_path)
@@ -43,6 +38,24 @@ let find_text text needle start =
 let first_error output =
   String.split_on_char '\n' output
   |> List.find_opt (fun line -> Option.is_some (find_text line "error:" 0))
+
+let missing_header_path message =
+  let suffix = " file not found" in
+  if not (String.ends_with ~suffix message) then None
+  else
+    let quoted = String.sub message 0 (String.length message - String.length suffix) in
+    let last = String.length quoted - 1 in
+    if last < 0 || (quoted.[last] <> '\'' && quoted.[last] <> '"') then None
+    else
+      let quote = quoted.[last] in
+      let rec opening start =
+        if start < 0 then None
+        else if quoted.[start] = quote then Some start
+        else opening (start - 1)
+      in
+      match opening (last - 1) with
+      | Some start -> Some (String.sub quoted (start + 1) (last - start - 1))
+      | _ -> None
 
 let error_location line =
   match find_text line "error:" 0 with
@@ -81,11 +94,16 @@ let error_location line =
 
 let compilation_error ?(prefix = "C compilation failed") fallback output =
   let line = Option.value ~default:(String.trim output) (first_error output) in
-  let message =
+  let raw_message =
     match find_text line "error:" 0 with
     | None -> line
     | Some start ->
         String.trim (String.sub line (start + 6) (String.length line - start - 6))
+  in
+  let message, missing_header =
+    match missing_header_path raw_message with
+    | None -> (raw_message, false)
+    | Some path -> (Printf.sprintf "C header `%s` not found" path, true)
   in
   let span, notes =
     match error_location line with
@@ -99,7 +117,10 @@ let compilation_error ?(prefix = "C compilation failed") fallback output =
         (fallback, notes)
     | None -> (fallback, [])
   in
-  Diag.error ~notes span (if message = "" then prefix else prefix ^ ": " ^ message)
+  Diag.error ~notes span
+    (if missing_header then message
+     else if message = "" then prefix
+     else prefix ^ ": " ^ message)
 
 let unit_line unit_path output =
   match find_text output (unit_path ^ ":") 0 with

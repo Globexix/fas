@@ -1710,7 +1710,7 @@ and check_expr_inner (c : context) expected expression =
   | Ast.Ternary (q, a, b, s) -> (
       let* tq = check_expr c None q in
       if Hir.expr_ty tq <> Hir.Bool then
-        Error [ Sema_types.condition_error "ternary" q (Hir.expr_ty tq) ]
+        Error [ Sema_types.condition_error "?:" q (Hir.expr_ty tq) ]
       else
         let before_arms = Sema_flow.snapshot c.flow in
         let condition = condition_truth c tq

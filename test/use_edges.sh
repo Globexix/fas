@@ -180,7 +180,7 @@ expect_failure "$OCAML_FAS" "$USE_EDGES_TMP/paths/header.fas"
 grep -F 'Fas dependency paths must end in lowercase `.fas`; C headers use `use "C"` in v0.2' \
   "$USE_EDGES_TMP/stderr" >/dev/null || fail "C path guidance is missing"
 expect_failure "$OCAML_FAS" "$USE_EDGES_TMP/paths/directory.fas/root.fas"
-grep -F "Fas dependency is a directory:" "$USE_EDGES_TMP/stderr" >/dev/null \
+grep -F 'Fas dependency `../directory.fas` is a directory' "$USE_EDGES_TMP/stderr" >/dev/null \
   || fail "directory dependency diagnostic changed"
 cat >"$USE_EDGES_TMP/paths/library.h" <<'C'
 typedef unsigned long imported_size;
@@ -202,8 +202,8 @@ c_import_unit=$(sed -n 's/^fas: kept C import unit: //p' "$USE_EDGES_TMP/c-impor
 [ -s "$c_import_unit" ] || fail "--keep did not retain the generated C import unit"
 grep -F '#include <stddef.h>' "$c_import_unit" >/dev/null \
   || fail "generated C import unit omitted the angle header"
-grep -F "#include \"$USE_EDGES_TMP/paths/library.h\"" "$c_import_unit" >/dev/null \
-  || fail "quoted header was not resolved relative to its Fas file"
+grep -F '#include "library.h"' "$c_import_unit" >/dev/null \
+  || fail "quoted header spelling changed in the generated C import unit"
 cp "$ROOT/test/c_import/matrix.h" "$USE_EDGES_TMP/paths/matrix.h"
 cat >"$USE_EDGES_TMP/paths/left.fas" <<'FAS'
 use "C" "matrix.h"
@@ -248,10 +248,10 @@ cat >"$USE_EDGES_TMP/paths/missing-import.fas" <<'FAS'
 use "C" "absent.h"
 FAS
 expect_failure "$OCAML_FAS" --emit-ir "$USE_EDGES_TMP/paths/missing-import.fas"
-grep -F "$USE_EDGES_TMP/paths/missing-import.fas:1:1: error: C compilation failed:" \
-  "$USE_EDGES_TMP/stderr" >/dev/null || fail "Clang error was not mapped to its use line"
-grep -F "C compilation failed: '$USE_EDGES_TMP/paths/absent.h' file not found" \
-  "$USE_EDGES_TMP/stderr" >/dev/null || fail "mapped diagnostic omitted the missing header reason"
+grep -F "$USE_EDGES_TMP/paths/missing-import.fas:1:9: error: C header \`absent.h\` not found" \
+  "$USE_EDGES_TMP/stderr" >/dev/null || fail "missing-header diagnostic lost its spelling or span"
+grep -F '          ^~~~~~~~~~' "$USE_EDGES_TMP/stderr" >/dev/null \
+  || fail "missing-header diagnostic did not point at the header string"
 
 if grep -F "fas-c-import-" "$USE_EDGES_TMP/stderr" >/dev/null; then
   fail "missing header diagnostic exposed a compiler temporary path"

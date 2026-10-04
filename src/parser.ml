@@ -512,9 +512,15 @@ module P = struct
         ignore (bump p);
         let* path = string p in
         if path = "C" || path = "asm" then
+          let header_start = span p in
           let* header = c_header p s in
           let* () = end_stmt p in
-          Ok [ Ast.Use { path; c_header = Some header; span = s } ]
+          let span =
+            match header with
+            | Ast.C_quoted _ | Ast.C_system _ -> header_start
+            | Ast.C_fragment _ -> s
+          in
+          Ok [ Ast.Use { path; c_header = Some header; span } ]
         else
           let* () = end_stmt p in
           Ok [ Ast.Use { path; c_header = None; span = s } ]

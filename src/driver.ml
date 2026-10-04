@@ -11,6 +11,22 @@ let read_file path =
           Ok (really_input_string channel length))
   with Sys_error message -> Error message
 
+let path_error_detail path message =
+  let prefixes = List.sort_uniq String.compare [ path; Filename.basename path ] in
+  match
+    List.find_map
+      (fun prefix ->
+        let prefix = prefix ^ ": " in
+        if String.starts_with ~prefix message then
+          Some
+            (String.sub message (String.length prefix)
+               (String.length message - String.length prefix))
+        else None)
+      prefixes
+  with
+  | Some detail -> detail
+  | None -> message
+
 let normalize_absolute path =
   let parts = String.split_on_char '/' path in
   let parts =
@@ -183,7 +199,7 @@ let load_program ~limits root =
     let directory = Filename.dirname importer in
     if directory = "." then dependency else Filename.concat directory dependency
   in
-  let rec visit chain display_path path use_span =
+  let rec visit chain display_path spelling path use_span =
     let canonical = canonical_path path in
     if Hashtbl.mem loaded canonical then Ok ()
     else
@@ -209,7 +225,10 @@ let load_program ~limits root =
         match Unix.stat canonical with
         | stats when stats.Unix.st_kind = Unix.S_DIR ->
             let diagnostics =
-              [ Diag.error primary ("Fas dependency is a directory: " ^ display_path) ]
+              [
+                Diag.error primary
+                  (Printf.sprintf "Fas dependency `%s` is a directory" spelling);
+              ]
             in
             if Option.is_some use_span then Error (with_chain diagnostics file_chain)
             else Error diagnostics
@@ -218,8 +237,13 @@ let load_program ~limits root =
         | _ -> (
             match read_file canonical with
             | Error message ->
+                let message = path_error_detail canonical message in
                 let diagnostics =
-                  [ Diag.error primary ("cannot read Fas dependency: " ^ message) ]
+                  [
+                    Diag.error primary
+                      (Printf.sprintf "cannot read Fas dependency `%s`: %s" spelling
+                         message);
+                  ]
                 in
                 if Option.is_some use_span then
                   Error (with_chain diagnostics file_chain)
@@ -254,8 +278,8 @@ let load_program ~limits root =
                                 in
                                 let target_canonical = canonical_path target in
                                 match
-                                  visit file_chain target_display target_canonical
-                                    (Some span)
+                                  visit file_chain target_display dependency
+                                    target_canonical (Some span)
                                 with
                                 | Error diagnostics -> Error diagnostics
                                 | Ok () -> dependencies rest))
@@ -268,13 +292,13 @@ let load_program ~limits root =
             let diagnostics =
               [
                 Diag.error primary
-                  ("cannot read Fas dependency " ^ display_path ^ ": " ^ message);
+                  (Printf.sprintf "cannot read Fas dependency `%s`: %s" spelling message);
               ]
             in
             if Option.is_some use_span then Error (with_chain diagnostics file_chain)
             else Error diagnostics
   in
-  match visit [] root root None with
+  match visit [] root root root None with
   | Error diagnostics -> Error diagnostics
   | Ok () ->
       let files =
@@ -827,16 +851,23 @@ let run_unprotected ?header_output config =
                           Ok
                             (Printf.sprintf "#line %d %S\n%s\n" (span.Span.line + 1)
                                source fragment.text)
-                      | Ast.C_quoted path ->
+                      | Ast.C_quoted path_spelling ->
                           let path =
-                            if Filename.is_relative path then
-                              Filename.concat (Filename.dirname source) path
-                            else path
+                            if Filename.is_relative path_spelling then
+                              Filename.concat (Filename.dirname source) path_spelling
+                            else path_spelling
                           in
                           let* text =
                             match read_file path with
                             | Ok text -> Ok text
-                            | Error message -> Error [ Diag.error span message ]
+                            | Error message ->
+                                let message = path_error_detail path message in
+                                Error
+                                  [
+                                    Diag.error span
+                                      ("cannot read assembly input `" ^ path_spelling
+                                     ^ "`: " ^ message);
+                                  ]
                           in
                           if Filename.check_suffix path ".s" then
                             Ok (Printf.sprintf ".include %S\n" path)
