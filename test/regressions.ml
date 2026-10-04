@@ -6976,6 +6976,12 @@ let () =
   semantic_pin "record-count-extra-caret" record_too_many_source 2
     (String.length "fn f() void { item Record = (Record){3, " + 1)
     1 "record `Record` has 1 field, got 2" None;
+  let record_too_few_source =
+    "struct Record { key u32 value u32 }\nfn f() void { item Record = {3}\n return }\n"
+  in
+  semantic_pin "record-count-short-caret" record_too_few_source 2
+    (String.length "fn f() void { item Record = " + 1)
+    1 "record `Record` has 2 fields, got 1" None;
   ignore
     (llvm_of
        "struct Point { x i32 }\n\
