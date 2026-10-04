@@ -25,6 +25,7 @@ type t
 
 val create : initial_scope:bool -> Hir.struct_def list -> t
 val lookup_local : string -> t -> binding option
+val local_names : t -> string list
 val ensure_new_local : string -> t -> Span.t -> (unit, Diag.t list) result
 val add_local : string -> Hir.ty -> t -> Span.t -> (binding, Diag.t list) result
 val view_origin : t -> binding -> (binding * place_path) option

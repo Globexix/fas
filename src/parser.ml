@@ -553,6 +553,7 @@ module P = struct
   and const_item p =
     let s = span p in
     let* () = expected p Token.Kw_const in
+    let name_span = span p in
     let* name = ident p in
     let* ty = ty p in
     let* () = expected p Token.Assign in
@@ -580,7 +581,7 @@ module P = struct
       else expr p
     in
     let* () = end_stmt p in
-    Ok (Ast.Const { name; ty; value; span = s })
+    Ok (Ast.Const { name; name_span; ty; value; span = s })
 
   and global_item p linkage =
     let s = span p in
@@ -606,6 +607,7 @@ module P = struct
   and struct_item p =
     let s = span p in
     let* () = expected p Token.Kw_struct in
+    let name_span = span p in
     let* name = ident p in
     let* generic_params = generic_params p in
     let* align =
@@ -657,6 +659,7 @@ module P = struct
       (Ast.Struct
          {
            name;
+           name_span;
            generic_params;
            fields = fs;
            align;
@@ -723,8 +726,9 @@ module P = struct
           in
           params [] false)
     in
+    let ret_span = span p in
     let* ret = ty p in
-    Ok (ps, ret, variadic)
+    Ok (ps, ret, variadic, ret_span)
 
   and extern_block p =
     let s = span p in
@@ -753,9 +757,10 @@ module P = struct
   and fn_item p allow_variadic =
     let s = span p in
     let* () = expected p Token.Kw_fn in
+    let name_span = span p in
     let* name = ident p in
     let* generic_params = generic_params p in
-    let* ps, ret, var = signature p allow_variadic in
+    let* ps, ret, var, ret_span = signature p allow_variadic in
     if allow_variadic then
       if at p Token.Lbrace then
         if var then
@@ -770,6 +775,8 @@ module P = struct
             (Ast.Func
                {
                  name;
+                 name_span;
+                 ret_span;
                  params = ps;
                  ret;
                  body = Ast.Statements body;
@@ -784,6 +791,8 @@ module P = struct
           (Ast.Func
              {
                name;
+               name_span;
+               ret_span;
                params = ps;
                ret;
                body = Ast.Declaration;
@@ -798,6 +807,8 @@ module P = struct
         (Ast.Func
            {
              name;
+             name_span;
+             ret_span;
              params = ps;
              ret;
              body = Ast.Statements body;
@@ -912,6 +923,7 @@ module P = struct
   and declaration_with_end p consume_end =
     let s = span p in
     let* name = ident p in
+    let ty_span = span p in
     let* ty = ty p in
     let* init =
       if eat p Token.Assign then
@@ -928,7 +940,7 @@ module P = struct
       else Ok None
     in
     let* () = finish_statement p consume_end in
-    Ok (Ast.Let { name; ty; init; span = s })
+    Ok (Ast.Let { name; ty; ty_span; init; span = s })
 
   and declaration p = declaration_with_end p true
 

@@ -1426,7 +1426,8 @@ let () =
     "fn f() void { defer { defer { } } }\n";
   sema_error ~message:"void function cannot return a value"
     "extern \"C\" { fn sink() void }\nfn f() void { return sink() }\n";
-  sema_error ~message:"may reach the end without returning" "fn f() i64 { }\n";
+  sema_error ~message:"function `f` returning `i64` may reach the end without `return`"
+    "fn f() i64 { }\n";
   let edge_program =
     expect_ok
       (Parser.parse

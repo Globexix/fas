@@ -437,7 +437,9 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
       if not (fits_literal ty v) then
-        error s ("integer literal is out of range for " ^ ty_name ty)
+        error s
+          (Printf.sprintf "integer literal is out of range for %s: `%s`" (ty_name ty)
+             raw)
       else Ok (ty, mask_value ty v)
   | Ast.Null s -> (
       match expected with
@@ -464,7 +466,10 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
         | _ -> false
       in
       if fits_negative_literal t v || allowed then Ok (t, mask_value t (Int64.neg v))
-      else error s ("integer literal is out of range for " ^ ty_name t)
+      else
+        error s
+          (Printf.sprintf "integer literal is out of range for %s: `-%s`" (ty_name t)
+             raw)
   | Ast.Unary (Ast.Neg, e, s) ->
       let* t, v =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
@@ -1393,7 +1398,7 @@ let resolve_scalar_declarations ?(globals = []) ?(array_lengths = [])
   let declarations =
     List.filter_map
       (function
-        | Ast.Const { name; ty; value; span } -> Some (name, (ty, value, span))
+        | Ast.Const { name; ty; value; span; _ } -> Some (name, (ty, value, span))
         | _ -> None)
       items
   in
@@ -1436,6 +1441,17 @@ let resolve_scalar_declarations ?(globals = []) ?(array_lengths = [])
               in
               Hashtbl.remove visiting name;
               match result with
+              | Error
+                  [
+                    {
+                      Diag.message = "constant expression requires a known constant";
+                      _;
+                    };
+                  ] ->
+                  error (Ast.expr_span initial_value)
+                    (Printf.sprintf
+                       "constant `%s` initializer uses nonconstant value `%s`" name
+                       (Ast.expr_name initial_value))
               | Error _ as failure -> failure
               | Ok (ty, value) as resolved ->
                   Hashtbl.replace values name (ty, value);

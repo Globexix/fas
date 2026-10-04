@@ -32,7 +32,7 @@ let local_declaration_message name =
          name)
   else None
 
-let local_type_error name result =
+let local_type_error ?span name result =
   Result.map_error
     (List.map (fun diagnostic ->
          let prefix = "unknown type `" in
@@ -51,7 +51,13 @@ let local_type_error name result =
                    name
              | None -> diagnostic.message
            in
-           { diagnostic with message }))
+           let primary =
+             match span with
+             | Some (span : Span.t) when message <> diagnostic.message ->
+                 { span with Span.end_offset = span.start_offset + String.length name }
+             | _ -> diagnostic.primary
+           in
+           { diagnostic with primary; message }))
     result
 
 let render_one ~source diagnostic =

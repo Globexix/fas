@@ -49,7 +49,9 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~generic_structs ~c
         | Some items when List.length items = length ->
             map (fun xs -> Hir.Global_array xs) element items
         | Some items ->
-            error span
+            error
+              (Sema_types.aggregate_count_error_span (Ast.expr_span expression) length
+                 items)
               (Sema_types.array_element_count_message length (List.length items))
         | None -> error span "global initializer must be a constant expression")
     | Hir.Struct name -> (
@@ -97,18 +99,23 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~generic_structs ~c
               if definition.is_union then min 1 (List.length definition.fields)
               else List.length definition.fields
             in
-            error span
+            error
+              (Sema_types.aggregate_count_error_span (Ast.expr_span expression) expected
+                 items)
               (Sema_types.record_field_count_message name expected (List.length items))
         | _, None -> error span (Printf.sprintf "unknown struct `%s`" name)
         | _ -> error span "global initializer must be a constant expression")
     | Hir.Opaque _ | Hir.Void ->
         error span "global type does not have a supported object initializer"
   in
-  let evaluate span ty expression =
+  let evaluate name span ty expression =
     match value span ty expression with
     | Error [ { Diag.issue = Diag.Not_constant; _ } ] ->
         error (Ast.expr_span expression)
-          "global initializer must be a constant expression"
+          (Printf.sprintf
+             "global initializer must be a constant expression for `%s`; `%s` is not \
+              constant"
+             name (Ast.expr_name expression))
     | result -> result
   in
   let rec globals acc = function
@@ -119,7 +126,7 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~generic_structs ~c
           match init with
           | None -> Ok None
           | Some expression ->
-              let* value = evaluate span ty expression in
+              let* value = evaluate name span ty expression in
               Ok (Some value)
         in
         globals

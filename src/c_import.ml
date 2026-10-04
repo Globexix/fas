@@ -3208,6 +3208,7 @@ let map_declarations ?(container = false) ~span declarations =
             ( Ast.Struct
                 {
                   name;
+                  name_span = span;
                   generic_params = [];
                   fields;
                   align;
@@ -3402,8 +3403,7 @@ let map_declarations ?(container = false) ~span declarations =
                   in
                   add_item name ("macro " ^ name)
                     ("macro " ^ Ast.type_name ty ^ " " ^ value)
-                    (Some
-                       (Ast.Const { name; ty; value = expression; span = macro_span }))
+                    (Some (Ast.const_item name macro_span ty expression macro_span))
                     (None, None) [] None ())
                 ty
           | _ -> ())
@@ -3451,9 +3451,7 @@ let map_declarations ?(container = false) ~span declarations =
                                 span )
                           else Ast.Int_lit (value, span)
                         in
-                        let item =
-                          Ast.Const { name = constant; ty; value = expression; span }
-                        in
+                        let item = Ast.const_item constant span ty expression span in
                         add_item constant
                           (declaration_spelling child constant)
                           (Ast.type_name ty ^ " " ^ value)
@@ -3582,6 +3580,8 @@ let map_declarations ?(container = false) ~span declarations =
                   (Ast.Func
                      {
                        name;
+                       name_span = span;
+                       ret_span = span;
                        params =
                          List.mapi
                            (fun index (_, ty) ->

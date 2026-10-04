@@ -14,10 +14,14 @@ val handle_target : named_types -> Ast.ty -> (string, string) result
 val source_ty_diag : named_types -> Span.t -> Ast.ty -> (Hir.ty, Diag.t list) result
 val vec_cap_error : int -> Hir.ty -> string option
 val condition_error : string -> Ast.expr -> Hir.ty -> Diag.t
-val logical_operand_error : string -> string -> Ast.expr -> Hir.ty -> Diag.t
+
+val logical_operand_error :
+  ?help:string -> string -> string -> Ast.expr -> Hir.ty -> Diag.t
+
 val logical_not_error : Ast.expr -> Hir.ty -> Diag.t
 val raw_access_needs_type_error : ?index:string -> Ast.expr -> Span.t -> Diag.t
 val unknown_type_error : string list -> Span.t -> string -> Diag.t
+val similar_name_help : string list -> string -> string option
 val unknown_type_name : string -> string option
 
 val resolve_aggregate_length :
@@ -44,6 +48,7 @@ val diagnostic_ty_name : Hir.ty -> string
 val missing_field_message : ?record_name:string -> string -> Hir.ty -> string
 val record_field_count_message : string -> int -> int -> string
 val array_element_count_message : int -> int -> string
+val aggregate_count_error_span : Span.t -> int -> Ast.expr list -> Span.t
 
 val ensure_expected :
   ?context:string ->

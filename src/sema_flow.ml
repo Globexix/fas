@@ -116,6 +116,11 @@ let lookup_local name flow =
   in
   find !(flow.locals)
 
+let local_names flow =
+  List.concat_map
+    (fun scope -> Hashtbl.fold (fun name _ names -> name :: names) scope [])
+    !(flow.locals)
+
 let ensure_new_local name flow span =
   let* () =
     if Names.reserved_binding_name name then

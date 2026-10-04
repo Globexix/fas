@@ -105,7 +105,12 @@ let add_include_chains chains diagnostics =
           files
         |> List.sort_uniq String.compare
       in
-      { diagnostic with Diag.notes = diagnostic.notes @ notes })
+      let message =
+        if notes <> [] && String.starts_with ~prefix:"unknown name `" diagnostic.message
+        then diagnostic.message ^ "; see include chain"
+        else diagnostic.message
+      in
+      { diagnostic with Diag.message; notes = diagnostic.notes @ notes })
     diagnostics
 
 let c_export_diagnostic (program : Ast.program) message =

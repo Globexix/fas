@@ -20,18 +20,25 @@ let truthiness_help expression ty =
       Some (Printf.sprintf "Fas has no implicit truth values; write `%s != 0`" name)
   | Ast.Ident (name, _), Hir.Addr ->
       Some (Printf.sprintf "Fas has no implicit truth values; write `%s != null`" name)
+  | (Ast.Call _ | Ast.Binary _), Hir.Int _ ->
+      Some
+        (Printf.sprintf "Fas has no implicit truth values; write `%s != 0`"
+           (Ast.expr_name expression))
   | _ -> None
+
+let rec expression_start_span = function
+  | Ast.Binary (_, left, _, _) | Ast.Unary (_, left, _) -> expression_start_span left
+  | expression -> Ast.expr_span expression
 
 let condition_error construct expression ty =
   Diag.error
     ?help:(truthiness_help expression ty)
-    (Ast.expr_span expression)
+    (expression_start_span expression)
     (Printf.sprintf "condition of `%s` is `%s`, not `bool`" construct (Hir.ty_name ty))
 
-let logical_operand_error operation side expression ty =
-  Diag.error
-    ?help:(truthiness_help expression ty)
-    (Ast.expr_span expression)
+let logical_operand_error ?help operation side expression ty =
+  let help = Option.fold ~none:(truthiness_help expression ty) ~some:Option.some help in
+  Diag.error ?help (Ast.expr_span expression)
     (Printf.sprintf "%s operand of `%s` is `%s`, not `bool`" side operation
        (Hir.ty_name ty))
 
@@ -39,10 +46,11 @@ let logical_not_error expression ty =
   let help =
     match (expression, ty) with
     | Ast.Ident (name, _), Hir.Int _ -> Some (Printf.sprintf "write `%s == 0`" name)
+    | Ast.Ident (name, _), Hir.Addr -> Some (Printf.sprintf "write `%s == null`" name)
     | _ -> None
   in
   Diag.error ?help (Ast.expr_span expression)
-    (Printf.sprintf "logical not needs `bool`, got `%s`" (Hir.ty_name ty))
+    (Printf.sprintf "logical not needs `bool`, got `%s` for `!`" (Hir.ty_name ty))
 
 let edit_distance left right =
   let left_length = String.length left in
@@ -89,6 +97,15 @@ let unknown_type_error visible_types span name =
     | _ -> None
   in
   Diag.error ?help span (Printf.sprintf "unknown type `%s`" name)
+
+let similar_name_help visible_names name =
+  match
+    List.filter
+      (fun candidate -> edit_distance name candidate <= 2)
+      (List.sort_uniq String.compare visible_names)
+  with
+  | [ candidate ] -> Some (Printf.sprintf "did you mean `%s`?" candidate)
+  | _ -> None
 
 let unknown_type_name message =
   let prefix = "unknown type `" in
@@ -279,6 +296,9 @@ let record_field_count_message record expected actual =
 
 let array_element_count_message expected actual =
   Printf.sprintf "array of %d elements, got %d" expected actual
+
+let aggregate_count_error_span span n xs =
+  Option.fold ~none:span ~some:Ast.expr_span (List.nth_opt xs n)
 
 let ensure_expected ?(context = "value") ?expression actual expected span =
   if compatible actual expected then Ok ()

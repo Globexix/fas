@@ -195,6 +195,20 @@ let semantic_render text =
   let diagnostics = semantic_diagnostics text in
   Diag.render_all ~source:(Some src) diagnostics
 
+let semantic_pin name text line column width message help =
+  match semantic_diagnostics text with
+  | [ diagnostic ]
+    when diagnostic.Diag.primary.Span.line = line
+         && diagnostic.primary.Span.column = column
+         && diagnostic.primary.Span.end_offset - diagnostic.primary.Span.start_offset
+            = width
+         && diagnostic.message = message && diagnostic.help = help ->
+      ()
+  | diagnostics ->
+      failwith
+        (name ^ ": unexpected diagnostic: "
+        ^ Diag.render_all ~source:(Some (source text)) diagnostics)
+
 let expected_diagnostic ?(line_number = 1) line column width message help =
   String.concat "\n"
     [
@@ -971,13 +985,14 @@ let () =
        \ v[1] = 2\n\
        \ x vec[2,i64] = v\n\
        \ return x[0] }\n");
-  semantic_error "place-init-static-large-index" "array index is out of bounds"
+  semantic_error "place-init-static-large-index"
+    "array index `9223372036854775808` is out of bounds for length 2"
     "const N u64 = 9223372036854775808\n\
      fn f() i64 { a arr[2,i64]\n\
     \ x i64 = a[N]\n\
     \ return x }\n";
   semantic_error "place-init-static-narrow-negative-index"
-    "array index is out of bounds"
+    "array index `-1` is out of bounds for length 300"
     "const N i8 = -1\nfn f() i64 { a arr[300,i64]\nreturn a[N] }\n";
   semantic_error "vector-lane-address-rejected" "cannot take address of a vector lane"
     "fn take(p addr) void { return }\n\
@@ -1219,47 +1234,47 @@ let () =
        \ copy(t, a)\n\
        \ return t[0] }\n");
   semantic_error "aggregate-direct-return"
-    "aggregate result cannot be returned by value; pass destination storage as `addr` \
-     or `handle[T]`"
+    "aggregate result `S` cannot be returned by value; pass destination storage as \
+     `addr` or `handle[T]`"
     "struct S { x i64 }\nfn f() S { s S\nreturn s }\n";
   semantic_error "aggregate-parameter"
-    "aggregate parameter `value` cannot be passed by value; pass `&x` as `addr` or \
-     `handle[T]`"
+    "aggregate parameter `value` of type `S` cannot be passed by value; pass `&x` as \
+     `addr` or `handle[T]`"
     "struct S { x i64 }\nfn f(value S) void { return }\n";
   semantic_error "aggregate-array-parameter"
-    "aggregate parameter `value` cannot be passed by value; pass `&x` as `addr` or \
-     `handle[T]`"
+    "aggregate parameter `value` of type `arr[4,u32]` cannot be passed by value; pass \
+     `&x` as `addr` or `handle[T]`"
     "fn f(value arr[4,u32]) void { return }\n";
   semantic_error "aggregate-result"
-    "aggregate result cannot be returned by value; pass destination storage as `addr` \
-     or `handle[T]`"
+    "aggregate result `S` cannot be returned by value; pass destination storage as \
+     `addr` or `handle[T]`"
     "struct S { x i64 }\nfn f() S { s S\nreturn s }\n";
   semantic_error "aggregate-array-result"
-    "aggregate result cannot be returned by value; pass destination storage as `addr` \
-     or `handle[T]`"
+    "aggregate result `arr[4,u32]` cannot be returned by value; pass destination \
+     storage as `addr` or `handle[T]`"
     "fn f() arr[4,u32] { value arr[4,u32]\nreturn value }\n";
   let generic_aggregate_parameter_error =
-    "aggregate parameter `x` cannot be passed by value; pass `&x` as `addr` or \
-     `handle[T]`"
+    "aggregate parameter `x` of type `arr[N,u8]` cannot be passed by value; pass `&x` \
+     as `addr` or `handle[T]`"
   in
   semantic_error "generic-array-parameter-by-value" generic_aggregate_parameter_error
     "fn take[N const usize](x arr[N,u8]) void { return }\n";
   semantic_error "generic-struct-parameter-by-value"
-    "aggregate parameter `r` cannot be passed by value; pass `&x` as `addr` or \
-     `handle[T]`"
+    "aggregate parameter `r` of type `Ring[N]` cannot be passed by value; pass `&x` as \
+     `addr` or `handle[T]`"
     "struct Ring[N const usize] { data arr[N,u8] }\n\
      fn take[N const usize](r Ring[N]) void { return }\n";
   semantic_error "generic-known-struct-parameter-by-value"
-    "aggregate parameter `value` cannot be passed by value; pass `&x` as `addr` or \
-     `handle[T]`"
+    "aggregate parameter `value` of type `S` cannot be passed by value; pass `&x` as \
+     `addr` or `handle[T]`"
     "struct S { value i32 }\nfn take[N const usize](value S) void { return }\n";
   semantic_error "generic-array-result-by-value"
-    "aggregate result cannot be returned by value; pass destination storage as `addr` \
-     or `handle[T]`"
+    "aggregate result `arr[N,u8]` cannot be returned by value; pass destination \
+     storage as `addr` or `handle[T]`"
     "fn make[N const usize]() arr[N,u8] { value arr[N,u8]\nreturn value }\n";
   semantic_error "generic-struct-result-by-value"
-    "aggregate result cannot be returned by value; pass destination storage as `addr` \
-     or `handle[T]`"
+    "aggregate result `Ring[N]` cannot be returned by value; pass destination storage \
+     as `addr` or `handle[T]`"
     "struct Ring[N const usize] { data arr[N,u8] }\n\
      fn make[N const usize]() Ring[N] { value Ring[N]\n\
      return value }\n";
@@ -1281,7 +1296,7 @@ let () =
      fn pass(pointer addr, token handle[Token]) u64 { return consume(1, pointer, \
      token) }\n";
   semantic_error "variadic-vector-argument"
-    "aggregate arguments cannot be passed by value; pass `&x` as `addr` or `handle[T]`"
+    "aggregate `vec[2,u32]` cannot be passed through C varargs"
     "extern \"C\" { fn consume(marker u64, ...) void }\n\
      fn pass() void { value vec[2,u32] = splat(0)\n\
      consume(1, value)\n\
@@ -1772,8 +1787,8 @@ let () =
     "fn f() i64 { value = 1\n value i64 = 2\n return value }\n";
   semantic_error "void-value-return" "void function cannot return a value"
     "extern \"C\" { fn sink() void }\nfn f() void { return sink() }\n";
-  semantic_error "nonvoid-fallthrough" "may reach the end without returning"
-    "fn f() i64 { }\n";
+  semantic_error "nonvoid-fallthrough"
+    "function `f` returning `i64` may reach the end without `return`" "fn f() i64 { }\n";
   ignore (lower_of "fn spin() i32 { while true { } }\n");
   ignore (lower_of "fn spin() i32 { for ; ; { continue } }\n");
   ignore (lower_of "fn spin() i32 { while true { while true { break } } }\n");
@@ -1784,12 +1799,14 @@ let () =
        \ defer { while true { } } }\n");
   ignore
     (lower_of "fn spin() i32 { while true { defer { while true { } }\n break } }\n");
-  semantic_error "conditional-loop-fallthrough" "may reach the end without returning"
+  semantic_error "conditional-loop-fallthrough"
+    "function `spin` returning `i32` may reach the end without `return`"
     "fn spin(condition bool) i32 { while condition { } }\n";
   semantic_error "unconditional-loop-reachable-break"
-    "may reach the end without returning"
+    "function `spin` returning `i32` may reach the end without `return`"
     "fn spin(condition bool) i32 { while true { if condition { break } } }\n";
-  semantic_error "switch-break-exits-loop" "may reach the end without returning"
+  semantic_error "switch-break-exits-loop"
+    "function `spin` returning `i32` may reach the end without `return`"
     "fn spin(value i32) i32 { while true { switch value {\n\
      case 0:\n\
      break\n\
@@ -1803,7 +1820,7 @@ let () =
   semantic_error "switch-vec-scrutinee" "switch scrutinee must be an integer or bool"
     "fn f(v vec[2,i32]) i32 { switch v { case 1: return 1 } return 0 }\n";
   semantic_error "switch-bool-exhaustive-still-needs-return"
-    "may reach the end without returning"
+    "function `f` returning `i32` may reach the end without `return`"
     "fn f(x bool) i32 { switch x { case true: return 1; case false: return 2 } }\n";
   semantic_error "addr-handle-nonopaque-target"
     "handle type argument must be an opaque type"
@@ -1944,38 +1961,40 @@ let () =
     "opaque O\nfn f(h handle[O]) u8 { return h[0] }\n";
   semantic_error "comparison-chaining-reject" "comparisons cannot be chained"
     "fn f(a i32, b i32, c i32) bool { return a < b < c }\n";
-  semantic_error "conditional-defer-divergence" "may reach the end without returning"
+  semantic_error "conditional-defer-divergence"
+    "function `finish` returning `i32` may reach the end without `return`"
     "fn finish(choice bool) i32 { defer { if choice { while true { } } } }\n";
   semantic_error "unreached-defer-does-not-consume-break"
-    "may reach the end without returning"
+    "function `spin` returning `i32` may reach the end without `return`"
     "fn spin() i32 { while true { break\n defer { while true { } } } }\n";
   semantic_error "extern-c-struct-parameter"
-    "aggregate parameter `value` cannot be passed by value; pass `&x` as `addr` or \
-     `handle[T]`"
+    "aggregate parameter `value` of type `S` cannot be passed by value; pass `&x` as \
+     `addr` or `handle[T]`"
     "struct S { x i64 }\nextern \"C\" { fn take(value S) void }\n";
   semantic_error "extern-c-array-parameter"
-    "aggregate parameter `value` cannot be passed by value; pass `&x` as `addr` or \
-     `handle[T]`"
+    "aggregate parameter `value` of type `arr[2,i64]` cannot be passed by value; pass \
+     `&x` as `addr` or `handle[T]`"
     "extern \"C\" { fn take(value arr[2,i64]) void }\n";
   semantic_error "extern-c-struct-return"
-    "aggregate result cannot be returned by value; pass destination storage as `addr` \
-     or `handle[T]`"
+    "aggregate result `S` cannot be returned by value; pass destination storage as \
+     `addr` or `handle[T]`"
     "struct S { x i64 }\nextern \"C\" { fn make() S }\n";
   semantic_error "extern-c-vector-parameter"
     "cannot use `vec[4, i32]` by value; use a pointer"
     "extern \"C\" { fn take(value vec[4,i32]) void }\n";
   semantic_error "extern-c-array-return"
-    "aggregate result cannot be returned by value; pass destination storage as `addr` \
-     or `handle[T]`"
+    "aggregate result `arr[2,i64]` cannot be returned by value; pass destination \
+     storage as `addr` or `handle[T]`"
     "extern \"C\" { fn make() arr[2,i64] }\n";
   semantic_error "extern-c-opaque-parameter"
     "opaque type `Handle` may only be used behind a pointer"
     "opaque Handle\nextern \"C\" { fn take(value Handle) void }\n";
-  semantic_error "extern-c-definition-fallthrough" "may reach the end without returning"
+  semantic_error "extern-c-definition-fallthrough"
+    "function `value` returning `i64` may reach the end without `return`"
     "extern \"C\" { fn value() i64 { } }\n";
   semantic_error "extern-c-definition-struct-parameter"
-    "aggregate parameter `value` cannot be passed by value; pass `&x` as `addr` or \
-     `handle[T]`"
+    "aggregate parameter `value` of type `S` cannot be passed by value; pass `&x` as \
+     `addr` or `handle[T]`"
     "struct S { x i64 }\nextern \"C\" { fn take(value S) void { return } }\n";
   parse_error_message "extern-c-variadic-definition"
     "extern \"C\" function definitions cannot be variadic"
@@ -3183,13 +3202,13 @@ let () =
       write_use_test_file use_duplicate_two "fn duplicate() i64 { return 2 }\n";
       let duplicate = driver_error use_duplicate_root in
       if
-        duplicate.Diag.message <> "duplicate function `duplicate`"
+        duplicate.Diag.message <> "duplicate function `duplicate` symbol"
         || duplicate.primary.Span.file <> use_duplicate_two
         || duplicate.primary.Span.line <> 1
-        || duplicate.primary.Span.column <> 1
+        || duplicate.primary.Span.column <> 4
         || duplicate.notes
            <> [
-                "first definition is at " ^ use_duplicate_one ^ ":1:1";
+                "first definition is at " ^ use_duplicate_one ^ ":1:4";
                 "include chain: " ^ use_duplicate_root ^ " -> " ^ use_duplicate_one;
                 "include chain: " ^ use_duplicate_root ^ " -> " ^ use_duplicate_two;
               ]
@@ -4810,8 +4829,8 @@ let () =
      }\n"
   in
   semantic_error "generic-instantiation-nested-struct"
-    "aggregate parameter `value` cannot be passed by value; pass `&x` as `addr` or \
-     `handle[T]`"
+    "aggregate parameter `value` of type `generic aggregate` cannot be passed by \
+     value; pass `&x` as `addr` or `handle[T]`"
     nested_struct_argument_failure;
   let specialized_type_message_failure =
     "struct Box[T] { value T }\n\
@@ -4903,7 +4922,7 @@ let () =
       if
         diagnostic.primary.Span.file <> "regression.fas"
         || diagnostic.primary.Span.line <> 1
-        || diagnostic.primary.Span.column <> 1
+        || diagnostic.primary.Span.column <> 4
       then
         failwith
           ("const-generic-specialization-span: unexpected location: "
@@ -5063,14 +5082,14 @@ let () =
     | Ok _ -> failwith (name ^ ": duplicate declaration was accepted")
   in
   duplicate_across_files "extern-duplicate-matching-signature"
-    "duplicate function `shared`" "extern_first.fas" "extern_second.fas"
+    "duplicate function `shared` symbol" "extern_first.fas" "extern_second.fas"
     "extern \"C\" { fn shared(value i32) i32 }\n"
     "extern \"C\" { fn shared(value i32) i32 }\n";
   duplicate_across_files "extern-duplicate-mismatching-signature"
-    "duplicate function `shared`" "extern_mismatch_first.fas"
+    "duplicate function `shared` symbol" "extern_mismatch_first.fas"
     "extern_mismatch_second.fas" "extern \"C\" { fn shared(value i32) i32 }\n"
     "extern \"C\" { fn shared(value i64) i32 }\n";
-  duplicate_across_files "native-extern-collision" "duplicate function `shared`"
+  duplicate_across_files "native-extern-collision" "duplicate function `shared` symbol"
     "native_first.fas" "extern_collision.fas"
     "fn shared(value i32) i32 { return value }\n"
     "extern \"C\" { fn shared(value i32) i32 }\n";
@@ -5732,8 +5751,8 @@ let () =
     || contains const_generic_function_type_llvm "@aggregate_metrics("
   then failwith "const-generic-function-type-template: template reached LLVM output";
   semantic_error "const-generic-function-type-mismatch"
-    "aggregate parameter `value` cannot be passed by value; pass `&x` as `addr` or \
-     `handle[T]`"
+    "aggregate parameter `value` of type `arr[N,u8]` cannot be passed by value; pass \
+     `&x` as `addr` or `handle[T]`"
     "fn identity[N const usize](value arr[N, u8]) arr[N, u8] { return value }\n";
   semantic_error "const-generic-function-negative-length" "negative aggregate length"
     "fn size[N const isize]() usize { return sizeof[arr[N,u8]] }\n\
@@ -6797,10 +6816,168 @@ let () =
     (llvm_of
        "fn put(value u64) void { return }\n\
         fn f(x u32) void { put(zext[u64](x)); return }\n");
+  semantic_pin "array-assignment-diagnostic"
+    "fn f() void { left arr[2,u8] = {1,2}\n\
+    \ right arr[2,u8] = {3,4}\n\
+    \ left = right\n\
+    \ return }\n"
+    3 2 4 "aggregate assignment is not supported for an array; use `copy(dst, src)`"
+    None;
+  semantic_pin "array-bounds-diagnostic"
+    "fn f() u8 { elems arr[2,u8] = {1,2}\n return elems[2] }\n" 2 15 1
+    "array index `2` is out of bounds for length 2" None;
+  semantic_pin "aggregate-parameter-diagnostic"
+    "fn consume(rows arr[3,u16]) void { return }\n" 1 12 4
+    "aggregate parameter `rows` of type `arr[3,u16]` cannot be passed by value; pass \
+     `&x` as `addr` or `handle[T]`"
+    None;
+  semantic_pin "aggregate-result-diagnostic"
+    "fn values() arr[3,u8] { return (arr[3,u8]){1,2,3} }\n" 1 13 3
+    "aggregate result `arr[3,u8]` cannot be returned by value; pass destination \
+     storage as `addr` or `handle[T]`"
+    None;
+  semantic_pin "missing-return-diagnostic"
+    "fn fetch() i64 {\n if true { return 3 }\n}\n" 1 4 5
+    "function `fetch` returning `i64` may reach the end without `return`" None;
+  semantic_pin "void-return-value-diagnostic" "fn consume() void { return false }\n" 1
+    28 5 "void function cannot return a value of type `bool`" None;
+  semantic_pin "wrong-arity-diagnostic"
+    "fn put(a u8, b u16) void { return }\nfn main() i32 { put(1); return 0 }\n" 2 17 6
+    "function `put` expects 2 arguments, got 1" None;
+  semantic_pin "global-initializer-diagnostic" "var TOTAL i64 = absent_value\n" 1 17 12
+    "global initializer must be a constant expression for `TOTAL`; `absent_value` is \
+     not constant"
+    None;
+  semantic_pin "constant-local-initializer-diagnostic"
+    "fn f() i32 { result i32 = 2\n return result }\nconst LIMIT i32 = result\n" 3 19 6
+    "constant `LIMIT` initializer uses nonconstant value `result`" None;
+  semantic_pin "literal-overflow-diagnostic" "fn f() u8 { return 257 }\n" 1 20 3
+    "integer literal is out of range for u8: `257`" None;
+  semantic_pin "duplicate-constant-diagnostic"
+    "const AMOUNT i64 = 1\nconst AMOUNT i64 = 2\n" 2 7 6 "duplicate const `AMOUNT`" None;
+  semantic_pin "duplicate-function-diagnostic"
+    "fn compute() i32 { return 1 }\nfn compute() i64 { return 2 }\n" 2 4 7
+    "duplicate function `compute` symbol" None;
+  semantic_pin "duplicate-record-diagnostic"
+    "struct Point { x i32 }\nstruct Point { y i32 }\n" 2 8 5 "duplicate type `Point`"
+    None;
+  semantic_pin "logical-integer-help"
+    "fn f(left i32, right i64) bool { return left && right }\n" 1 41 4
+    "left operand of `&&` is `i32`, not `bool`"
+    (Some "Fas has no implicit truth values; write `left != 0 && right != 0`");
+  semantic_pin "shift-condition-help"
+    "fn f(x i32) i32 { if x << 2 { return 1 } return 0 }\n" 1 22 1
+    "condition of `if` is `i32`, not `bool`"
+    (Some "Fas has no implicit truth values; write `x << 2 != 0`");
+  semantic_pin "ternary-arm-diagnostic"
+    "fn f(flag bool) i64 { result i64 = flag ? 1 : false\n return 0 }\n" 1 47 5
+    "arms of `?:` have different types: `i64` and `bool`" None;
+  semantic_pin "raw-index-diagnostic" "fn f(p addr) u8 { return p[u8, false] }\n" 1 32 5
+    "raw selection index must be an integer, got `bool`" None;
+  semantic_pin "unknown-record-diagnostic"
+    "fn f() void { value Missing = null\n return }\n" 1 21 7 "unknown type `Missing`"
+    None;
+  semantic_pin "call-condition-help"
+    "fn ready() i32 { return 1 }\nfn f() i32 { if ready() { return 1 } return 0 }\n" 2
+    17 7 "condition of `if` is `i32`, not `bool`"
+    (Some "Fas has no implicit truth values; write `ready() != 0`");
+  semantic_pin "logical-not-address-help" "fn f(p addr) bool { return !p }\n" 1 29 1
+    "logical not needs `bool`, got `addr` for `!`" (Some "write `p == null`");
+  semantic_pin "logical-not-integer-help" "fn f(count i64) bool { return !count }\n" 1
+    32 5 "logical not needs `bool`, got `i64` for `!`" (Some "write `count == 0`");
+  semantic_pin "logical-or-call-help"
+    "fn ready() i32 { return 1 }\n\
+     fn f() i32 { if false || ready() { return 1 } return 0 }\n"
+    2 26 7 "right operand of `||` is `i32`, not `bool`"
+    (Some "Fas has no implicit truth values; write `ready() != 0`");
+  let field_candidate_source =
+    "struct Point { x i32 }\nfn f(p addr) i32 { return p[Point].xx }\n"
+  in
+  semantic_pin "unknown-field-near-name" field_candidate_source 2
+    (String.length "fn f(p addr) i32 { return p[Point]." + 1)
+    2 "record `Point` has no field `xx`" (Some "did you mean `x`?");
+  let field_no_candidate_source =
+    "struct Point { x i32 }\nfn f(p addr) i32 { return p[Point].radius }\n"
+  in
+  semantic_pin "unknown-field-no-candidate" field_no_candidate_source 2
+    (String.length "fn f(p addr) i32 { return p[Point]." + 1)
+    6 "record `Point` has no field `radius`" None;
+  let field_ambiguous_source =
+    "struct Point { x i32\n xy i32 }\nfn f(p addr) i32 { return p[Point].xx }\n"
+  in
+  semantic_pin "unknown-field-two-candidates" field_ambiguous_source 3
+    (String.length "fn f(p addr) i32 { return p[Point]." + 1)
+    2 "record `Point` has no field `xx`" None;
+  let value_candidate_source = "fn f(value i32) i32 { return valeu }\n" in
+  semantic_pin "unknown-value-near-name" value_candidate_source 1
+    (String.length "fn f(value i32) i32 { return " + 1)
+    5 "unknown name `valeu`" (Some "did you mean `value`?");
+  let value_no_candidate_source = "fn f() i32 { return absent_value }\n" in
+  semantic_pin "unknown-value-no-candidate" value_no_candidate_source 1
+    (String.length "fn f() i32 { return " + 1)
+    (String.length "absent_value")
+    "unknown name `absent_value`" None;
+  let value_ambiguous_source = "fn f(alpha i32, alphi i32) i32 { return alph }\n" in
+  semantic_pin "unknown-value-two-candidates" value_ambiguous_source 1
+    (String.length "fn f(alpha i32, alphi i32) i32 { return " + 1)
+    4 "unknown name `alph`" None;
+  let function_candidate_source =
+    "fn compute() i32 { return 1 }\nfn f() i32 { return comptue() }\n"
+  in
+  semantic_pin "unknown-function-near-name" function_candidate_source 2
+    (String.length "fn f() i32 { return " + 1)
+    9 "unknown function `comptue`" (Some "did you mean `compute`?");
+  let function_no_candidate_source = "fn f() i32 { return absent_value() }\n" in
+  semantic_pin "unknown-function-no-candidate" function_no_candidate_source 1
+    (String.length "fn f() i32 { return " + 1)
+    14 "unknown function `absent_value`" None;
+  let function_ambiguous_source =
+    "fn compute() i32 { return 1 }\n\
+     fn commute() i32 { return 2 }\n\
+     fn f() i32 { return comute() }\n"
+  in
+  semantic_pin "unknown-function-two-candidates" function_ambiguous_source 3
+    (String.length "fn f() i32 { return " + 1)
+    (String.length "comute()") "unknown function `comute`" None;
+  let address_field_source =
+    "struct Point { x i32 }\nfn read(q addr) i32 { return q.x }\n"
+  in
+  semantic_pin "address-field-help" address_field_source 2
+    (String.length "fn read(q addr) i32 { return " + 1)
+    1 "no field `x` on `addr`" (Some "write `q[T].x` with the record type");
+  let array_too_many_source =
+    "fn f() void { data arr[3,u16] = {2,3,5,7}\n return }\n"
+  in
+  semantic_pin "array-count-extra-caret" array_too_many_source 1
+    (String.length "fn f() void { data arr[3,u16] = {2,3,5," + 1)
+    1 "array of 3 elements, got 4" None;
+  let array_too_few_source = "fn f() void { data arr[3,u16] = {2,3}\n return }\n" in
+  semantic_pin "array-count-short-caret" array_too_few_source 1
+    (String.length "fn f() void { data arr[3,u16] = " + 1)
+    1 "array of 3 elements, got 2" None;
+  let record_too_many_source =
+    "struct Record { key u32 }\nfn f() void { item Record = (Record){3, 5}\n return }\n"
+  in
+  semantic_pin "record-count-extra-caret" record_too_many_source 2
+    (String.length "fn f() void { item Record = (Record){3, " + 1)
+    1 "record `Record` has 1 field, got 2" None;
+  ignore
+    (llvm_of
+       "struct Point { x i32 }\n\
+        fn f(p addr) i32 { return p[Point].x }\n\
+        fn value(candidate i32) i32 { return candidate }\n\
+        fn compute() i32 { return 1 }\n\
+        fn g() i32 { return compute() }\n");
+  ignore (llvm_of "struct Point { x i32 }\nfn read(q addr) i32 { return q[Point].x }\n");
+  ignore
+    (llvm_of
+       "fn ready() bool { return true }\n\
+        fn f() i32 { if ready() { return 1 } return 0 }\n");
+  ignore (llvm_of "fn f(p addr) bool { return p == null }\n");
   let not_source = "fn f(x i32) bool { return !x }\n" in
   let not_expected =
     expected_diagnostic "fn f(x i32) bool { return !x }" 28 1
-      "logical not needs `bool`, got `i32`" "write `x == 0`"
+      "logical not needs `bool`, got `i32` for `!`" "write `x == 0`"
   in
   if semantic_render not_source <> not_expected then
     failwith ("logical-not-diagnostic: " ^ semantic_render not_source);
@@ -7797,19 +7974,19 @@ let () =
         "expand values and mask must have the same lane count" );
       ( "vec-lane-read-oob",
         "fn f(a vec[4,u8]) u8 { return a[7] }\n",
-        "array index is out of bounds" );
+        "array index `7` is out of bounds for length 4" );
       ( "vec-lane-write-oob",
         "fn f(a vec[4,u8]) void { a[7] = 1 }\n",
-        "array index is out of bounds" );
+        "array index `7` is out of bounds for length 4" );
       ( "vec-lane-compound-oob",
         "fn f(a vec[4,u8]) void { a[7] += 1 }\n",
-        "array index is out of bounds" );
+        "array index `7` is out of bounds for length 4" );
       ( "vec-lane-negative",
         "fn f(a vec[4,u8]) u8 { return a[-1] }\n",
-        "array index is out of bounds" );
+        "array index `-1` is out of bounds for length 4" );
       ( "vec-lane-const-oob",
         "const K usize = 9\nfn f(a vec[4,u8]) u8 { return a[K] }\n",
-        "array index is out of bounds" );
+        "array index `9` is out of bounds for length 4" );
       ( "zext-equal-width",
         "fn f(a u32) u32 { return zext[u32](a) }\n",
         "illegal cast for source and destination widths" );
@@ -8139,7 +8316,7 @@ let () =
     "raw vector lane selection is not yet supported"
     "fn f(p addr) void { p[vec[2,u32]][0] = 1 }\n";
   semantic_error "raw-select-index-nonint"
-    "raw selection index must be a scalar integer"
+    "raw selection index must be an integer, got `bool`"
     "fn f(p addr, b bool) u32 { return p[u32, b] }\n";
   semantic_error "raw-select-three-payloads"
     "raw selection takes a type and an optional index"
@@ -8966,7 +9143,8 @@ let () =
   parse_message "native-struct-keyword-field-rejected" "expected identifier, found `fn`"
     "struct S { fn i32 }\n";
   semantic_message "global-initializer-not-constant"
-    "global initializer must be a constant expression"
+    "global initializer must be a constant expression for `Value`; `dynamic()` is not \
+     constant"
     "fn dynamic() i32 { return 1 }\nvar Value i32 = dynamic()\n";
   semantic_message "global-initializer-global-read" "global `Source` is not a constant"
     "var Source i32 = 1\nvar Value i32 = Source\n";
@@ -9020,20 +9198,25 @@ let () =
   in
   if not (contains address_length "ret i64 2") then
     failwith "address-constants-length-query: incorrect fixed length";
-  semantic_message "address-constants-oob" "array index is out of bounds"
+  semantic_message "address-constants-oob"
+    "array index `2` is out of bounds for length 2"
     "var G arr[2,i32]\nvar P addr = &G[2]\n";
   semantic_message "address-constants-scalar-slot"
-    "global initializer must be a constant expression" "var G i32\nvar P i32 = &G\n";
+    "global initializer must be a constant expression for `P`; `&G` is not constant"
+    "var G i32\nvar P i32 = &G\n";
   semantic_message "address-constants-arithmetic" "address constants are storable only"
     "var G i32\nvar P addr = &G + 1\n";
   semantic_message "address-constants-comparison"
-    "global initializer must be a constant expression"
+    "global initializer must be a constant expression for `P`; `&G == &G` is not \
+     constant"
     "var G i32\nconst P bool = &G == &G\n";
   semantic_message "address-constants-integer-conversion"
-    "global initializer must be a constant expression"
+    "global initializer must be a constant expression for `P`; `zext[usize](&G)` is \
+     not constant"
     "var G i32\nconst P usize = zext[usize](&G)\n";
   semantic_message "address-constants-bitcast"
-    "global initializer must be a constant expression"
+    "global initializer must be a constant expression for `P`; `bitcast[usize](&G)` is \
+     not constant"
     "var G i32\nconst P usize = bitcast[usize](&G)\n";
   semantic_message "address-constants-array-length"
     "aggregate length is not a machine integer"
@@ -9929,10 +10112,12 @@ let () =
         "cannot modify read-only pointer" c_matrix
         ("fn probe() void { " ^ name ^ "[0] = 1 }\n"))
     [ "fas_array_readonly"; "fas_array_readonly_alias" ];
-  c_semantic_message "c-import-array-bounds" "array index is out of bounds" c_matrix
+  c_semantic_message "c-import-array-bounds"
+    "array index `4` is out of bounds for length 4" c_matrix
     "fn probe() i32 { return fas_array_global[4] }\n";
-  c_semantic_message "c-import-array-nested-bounds" "array index is out of bounds"
-    c_matrix "fn probe() i8 { return fas_array_names[0][8] }\n";
+  c_semantic_message "c-import-array-nested-bounds"
+    "array index `8` is out of bounds for length 8" c_matrix
+    "fn probe() i8 { return fas_array_names[0][8] }\n";
   c_semantic_message "c-import-array-readonly-view" "cannot modify read-only pointer"
     c_matrix "fn probe() void { view values = fas_array_readonly; values[0] = 1 }\n";
   c_semantic_message "c-import-array-readonly-copy" "cannot modify read-only pointer"
@@ -11664,7 +11849,7 @@ let () =
         ("fn f(k u32) u32 { return " ^ name ^ "(k, 2) + " ^ name ^ "(2, k) }\n");
       semantic_message
         ("builtin-peer-range-" ^ name)
-        "integer literal is out of range for u8"
+        "integer literal is out of range for u8: `256`"
         ("fn f(k u8) u8 { return " ^ name ^ "(k, 256) }\n"))
     [ "add_sat"; "sub_sat"; "mul_hi" ];
   semantic_accept "builtin-peer-default-literals"
@@ -11692,7 +11877,7 @@ let () =
      masked_store[u32](p, m, z)\n\
      return z[0] }\n";
   semantic_message "builtin-store-literal-range"
-    "integer literal is out of range for u8"
+    "integer literal is out of range for u8: `256`"
     "fn f(p addr) void { volatile_store[u8](p, 256)\nreturn }\n";
   semantic_message "builtin-select-type-mismatch"
     "builtin arguments must have the same type"
@@ -11809,9 +11994,10 @@ let () =
      \ view Ring = p[arr[1,u32]]\n\
      \ return a[Ring[0]] }\n\
      \ fn g(p addr) u32 { return f[4](p) }");
-  semantic_message "nested-index-bounds" "array index is out of bounds"
+  semantic_message "nested-index-bounds" "array index `1` is out of bounds for length 1"
     "fn f() u32 { a arr[4,u32] = {}\n i arr[1,u32] = {0}\n return a[i[1]] }";
-  semantic_message "nested-index-noninteger" "array index must be an integer"
+  semantic_message "nested-index-noninteger"
+    "array index must be an integer, got `bool`"
     "fn f() u32 { a arr[4,u32] = {}\n i arr[1,bool] = {true}\n return a[i[0]] }";
   List.iter
     (fun ty ->
@@ -11977,22 +12163,23 @@ let () =
         ("fn f(v vec[4,u32]) vec[4,u32] { return " ^ name ^ "(v, splat(2)) + " ^ name
        ^ "({1,2,3,4}, v) }");
       semantic_message ("peer-vector-range-" ^ name)
-        "integer literal is out of range for u8"
+        "integer literal is out of range for u8: `256`"
         ("fn f(v vec[4,u8]) vec[4,u8] { return " ^ name ^ "(v, splat(256)) }"))
     [ "add_sat"; "sub_sat"; "mul_hi" ];
   List.iter
     (fun name ->
       semantic_message ("peer-rotate-range-" ^ name)
-        "integer literal is out of range for i32"
+        "integer literal is out of range for i32: `4294967296`"
         ("fn f(k u8) u8 { return " ^ name ^ "(k, 4294967296) }"))
     [ "rotl"; "rotr" ];
-  semantic_message "peer-masked-store-range" "integer literal is out of range for u8"
+  semantic_message "peer-masked-store-range"
+    "integer literal is out of range for u8: `256`"
     "fn f(p addr, m vec[4,bool]) void { masked_store[u8](p, m, splat(256))\nreturn }";
   semantic_message "peer-shuffle-constructor-range"
-    "integer literal is out of range for u8"
+    "integer literal is out of range for u8: `256`"
     "fn f(v vec[4,u8]) vec[4,u8] { return shuffle(v, splat(256), {0,1,2,3}) }";
   semantic_message "peer-select-constructor-range"
-    "integer literal is out of range for u8"
+    "integer literal is out of range for u8: `256`"
     "fn f(m vec[4,bool], v vec[4,u8]) vec[4,u8] { return select(m, v, splat(256)) }";
   semantic_accept "generic-index-arithmetic"
     "fn f[N const usize](p addr) u32 { view a = p[arr[4,u32]]\n\
@@ -12017,11 +12204,13 @@ let () =
     \ fn g() u32 { return f[4]() }"
 
 let () =
-  semantic_message "value-fact-index-arithmetic" "array index is out of bounds"
+  semantic_message "value-fact-index-arithmetic"
+    "array index is out of bounds for length 4"
     "fn f() u8 { values arr[4,u8] = {0,1,2,3}\n\
      index usize = 2 + 2\n\
      return values[index] }";
-  semantic_message "value-fact-branch-joined-index" "array index is out of bounds"
+  semantic_message "value-fact-branch-joined-index"
+    "array index is out of bounds for length 4"
     "fn f(flag bool) u8 { values arr[4,u8] = {0,1,2,3}\n\
      index usize = 0\n\
      if flag { index = 4 } else { index = 4 }\n\
@@ -12031,12 +12220,12 @@ let () =
      index usize = 0\n\
      if flag { index = 4 } else { index = 1 }\n\
      return values[index] }";
-  semantic_message "value-fact-view-index" "array index is out of bounds"
+  semantic_message "value-fact-view-index" "array index is out of bounds for length 4"
     "fn f() u8 { values arr[4,u8] = {0,1,2,3}\n\
      view row = values\n\
      index usize = 4\n\
      return row[index] }";
-  semantic_message "value-fact-global-index" "array index is out of bounds"
+  semantic_message "value-fact-global-index" "array index is out of bounds for length 2"
     "var Values arr[2,u8] = {1,2}\nfn f() u8 { index usize = 2\nreturn Values[index] }";
   semantic_accept "value-fact-address-escape-keeps-unknown"
     "fn f() u8 { values arr[4,u8] = {0,1,2,3}\n\
@@ -12058,16 +12247,18 @@ let () =
      index usize = 7\n\
      if index < 4 { return values[index] }\n\
      return 0 }";
-  semantic_message "value-fact-comparison-refined-index" "array index is out of bounds"
+  semantic_message "value-fact-comparison-refined-index"
+    "array index is out of bounds for length 4"
     "fn f(index usize) u8 { values arr[4,u8] = {0,1,2,3}\n\
      if index >= 4 { return values[index] }\n\
      return 0 }";
-  semantic_message "value-fact-generic-index" "array index is out of bounds"
+  semantic_message "value-fact-generic-index"
+    "array index is out of bounds for length 2"
     "fn at[N const usize]() u8 { values arr[N,u8] = {}\n\
      index usize = N\n\
      return values[index] }\n\
      fn instantiate() u8 { return at[2]() }";
-  semantic_message "value-fact-vector-lane" "array index is out of bounds"
+  semantic_message "value-fact-vector-lane" "array index is out of bounds for length 2"
     "fn f() u32 { values vec[2,u32] = {7,9}\nlane usize = 1 + 1\nreturn values[lane] }";
   semantic_accept "value-fact-valid-vector-lane"
     "fn f(lane usize) u32 { values vec[2,u32] = {7,9}\n\
@@ -12084,7 +12275,8 @@ let () =
      index usize = 1\n\
      if flag { index = 4 }\n\
      return values[index] }";
-  semantic_message "value-fact-loop-inclusive-index" "array index is out of bounds"
+  semantic_message "value-fact-loop-inclusive-index"
+    "array index is out of bounds for length 4"
     "fn f() u8 { values arr[4,u8] = {0,1,2,3}\n\
      result u8 = 0\n\
      for index usize = 0; index <= 4; index += 1 {\n\
@@ -12098,7 +12290,8 @@ let () =
      result = values[index]\n\
      }\n\
      return result }";
-  semantic_message "value-fact-loop-negative-index" "array index is out of bounds"
+  semantic_message "value-fact-loop-negative-index"
+    "array index is out of bounds for length 4"
     "fn f() i32 { values arr[4,i32] = {0,1,2,3}\n\
      result i32 = 0\n\
      for index i32 = 0; index >= -1; index -= 1 {\n\

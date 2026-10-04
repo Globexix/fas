@@ -65,7 +65,13 @@ and binop =
 and cast_kind = Zext | Sext | Trunc | Bitcast
 
 and stmt =
-  | Let of { name : string; ty : ty; init : expr option; span : Span.t }
+  | Let of {
+      name : string;
+      ty : ty;
+      ty_span : Span.t;
+      init : expr option;
+      span : Span.t;
+    }
   | View of { name : string; place : expr; span : Span.t }
   | Assign of assign_target * expr * Span.t
   | Compound_assign of assign_target * binop * expr * Span.t
@@ -108,7 +114,7 @@ and c_header = C_quoted of string | C_system of string | C_fragment of c_fragmen
 
 and item =
   | Use of { path : string; c_header : c_header option; span : Span.t }
-  | Const of { name : string; ty : ty; value : expr; span : Span.t }
+  | Const of { name : string; name_span : Span.t; ty : ty; value : expr; span : Span.t }
   | Global of {
       name : string;
       ty : ty;
@@ -118,6 +124,7 @@ and item =
     }
   | Struct of {
       name : string;
+      name_span : Span.t;
       generic_params : generic_param list;
       fields : field list;
       align : int option;
@@ -128,6 +135,8 @@ and item =
   | Opaque of { name : string; span : Span.t }
   | Func of {
       name : string;
+      name_span : Span.t;
+      ret_span : Span.t;
       params : param list;
       ret : ty;
       body : body;
@@ -138,6 +147,8 @@ and item =
     }
 
 type program = { items : item list }
+
+let const_item name name_span ty value span = Const { name; name_span; ty; value; span }
 
 let rec expr_span = function
   | Int_lit (_, s)

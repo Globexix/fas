@@ -1791,10 +1791,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     let previous_shadowed_constants = !shadowed_constants in
     let result =
       match statement with
-      | Ast.Let { name; ty; init; span } ->
+      | Ast.Let { name; ty; ty_span; init; span } ->
           let* ty =
-            Diag.local_type_error name
-              (resolve_ty ~values ~defer_const_structs substitutions depth span ty)
+            Diag.local_type_error ~span name
+              (resolve_ty ~values ~defer_const_structs substitutions depth ty_span ty)
           in
           let* init =
             match init with
@@ -1808,7 +1808,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           in
           local_values := String_set.add name !local_values;
           shadowed_constants := String_set.add name !shadowed_constants;
-          Ok (Ast.Let { name; ty; init; span })
+          Ok (Ast.Let { name; ty; ty_span; init; span })
       | Ast.View { name; place; span } ->
           let* place =
             resolve_expr ~values ~defer_const_structs substitutions depth place
@@ -2183,7 +2183,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let result =
           with_current_trace specialization.trace (fun () ->
               match template with
-              | Ast.Struct { fields; align; size; span; generic_params; is_union; _ } ->
+              | Ast.Struct
+                  { name_span; fields; align; size; span; generic_params; is_union; _ }
+                ->
                   let* fields =
                     with_generic_type_names (type_param_names generic_params) (fun () ->
                         Result_list.map
@@ -2197,7 +2199,16 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                   in
                   let generated_item =
                     Ast.Struct
-                      { name; generic_params = []; fields; align; size; is_union; span }
+                      {
+                        name;
+                        name_span;
+                        generic_params = [];
+                        fields;
+                        align;
+                        size;
+                        is_union;
+                        span;
+                      }
                   in
                   let* () =
                     charge_expanded_item type_node_account

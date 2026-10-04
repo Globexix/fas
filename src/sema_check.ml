@@ -5,9 +5,49 @@ open Sema_specialization
 open Sema_types
 open Sema_context
 
-let error span message = Error [ Diag.error span message ]
+let error ?help span message = Error [ Diag.error ?help span message ]
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 let literal_condition_truth = function Hir.EBool (value, _) -> Some value | _ -> None
+
+let index_type_error label expression ty =
+  error (Ast.expr_span expression)
+    (Printf.sprintf "%s must be an integer, got `%s`" label
+       (Sema_types.diagnostic_ty_name ty))
+
+let visible_value_names c =
+  Sema_flow.local_names c.flow
+  @ List.filter_map
+      (fun binding ->
+        if binding.declaration_kind = Top_const || binding.declaration_kind = Top_global
+        then Some binding.declaration_name
+        else None)
+      c.top_level_bindings
+  @ List.map (fun (name, _, _) -> name) c.consts
+  @ List.map (fun (name, _, _) -> name) c.arrays
+
+let unknown_name_error visible kind span name =
+  error
+    ?help:(similar_name_help visible name)
+    span
+    ("unknown " ^ kind ^ " `" ^ name ^ "`")
+
+let missing_field_error ?record_name ?base c span name ty =
+  let help =
+    match (ty, base) with
+    | Hir.Addr, Some (Ast.Ident (base_name, _)) ->
+        Some (Printf.sprintf "write `%s[T].%s` with the record type" base_name name)
+    | Hir.Addr, _ -> None
+    | Hir.Struct record_name, _ ->
+        c.structs
+        |> List.find_opt (fun (record : Hir.struct_def) -> record.name = record_name)
+        |> Option.map (fun (record : Hir.struct_def) ->
+            similar_name_help
+              (List.map (fun (field : Hir.field) -> field.name) record.fields)
+              name)
+        |> Option.join
+    | _ -> None
+  in
+  error ?help span (missing_field_message ?record_name name ty)
 
 let is_comparison_operator = function
   | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> true
@@ -1156,7 +1196,7 @@ let rec check_place (c : context) expr =
                   | Some (_, ty, _) ->
                       Ok { expr = Hir.Global (n, ty, s); root = None; path = None }
                   | None -> error s "internal error: global declaration is missing")
-              | None -> error s (Printf.sprintf "unknown name `%s`" n))))
+              | None -> unknown_name_error (visible_value_names c) "name" s n)))
   | Ast.Select (a, args, s) -> (
       let* base = check_place c a in
       match (Hir.expr_ty base.expr, args) with
@@ -1191,14 +1231,19 @@ let rec check_place (c : context) expr =
           let* i = select_value_arg s payload in
           let* checked_index = check_expr c None i in
           if not (is_int (Hir.expr_ty checked_index)) then
-            error s "array index must be an integer"
+            index_type_error "array index" i (Hir.expr_ty checked_index)
           else
             match static_index i with
             | Known (ty, value)
               when let value = sign_extend_value ty value in
                    (value < 0L || value >= Int64.of_int length)
                    && Sema_flow.proof_checks_enabled c.flow ->
-                error s "array index is out of bounds"
+                error (Ast.expr_span i)
+                  (Printf.sprintf "array index `%s` is out of bounds for length %d"
+                     (if is_unsigned ty then
+                        Printf.sprintf "%Lu" (sign_extend_value ty value)
+                      else Int64.to_string (sign_extend_value ty value))
+                     length)
             | Known (ty, value) ->
                 let value = sign_extend_value ty value in
                 let index = Int64.to_int value in
@@ -1221,7 +1266,9 @@ let rec check_place (c : context) expr =
                   Sema_flow.proof_checks_enabled c.flow
                   && fact <> None
                   && index_outside (Hir.expr_ty checked_index) (Option.get fact) length
-                then error s "array index is out of bounds"
+                then
+                  error (Ast.expr_span i)
+                    (Printf.sprintf "array index is out of bounds for length %d" length)
                 else
                   let index_expr =
                     match fact with
@@ -1317,9 +1364,9 @@ let rec check_place (c : context) expr =
                   root = base.root;
                   path = base.path;
                 }
-          | None -> error s (Sema_types.missing_field_message n (Hir.Struct sn)))
+          | None -> missing_field_error ~base:a c s n (Hir.Struct sn))
       | Hir.Raw_select (_, _, access_ty, _) ->
-          error (Ast.expr_span a) (Sema_types.missing_field_message n access_ty)
+          missing_field_error ~base:a c (Ast.expr_span a) n access_ty
       | _ -> (
           match Hir.expr_ty base.expr with
           | Hir.Struct sn -> (
@@ -1336,9 +1383,8 @@ let rec check_place (c : context) expr =
                         | Some (Dynamic_prefix path) -> Some (Dynamic_prefix path)
                         | None -> None);
                     }
-              | None -> error s (Sema_types.missing_field_message n (Hir.Struct sn)))
-          | actual ->
-              error (Ast.expr_span a) (Sema_types.missing_field_message n actual)))
+              | None -> missing_field_error ~base:a c s n (Hir.Struct sn))
+          | actual -> missing_field_error ~base:a c (Ast.expr_span a) n actual))
   | e ->
       let* checked = check_expr c None e in
       Ok { expr = checked; root = None; path = None }
@@ -1350,7 +1396,7 @@ and raw_offset_expr c s access_ty index_payload =
       let* i = select_value_arg s payload in
       let* idx = check_expr c None i in
       if not (is_int (Hir.expr_ty idx)) then
-        error s "raw selection index must be a scalar integer"
+        index_type_error "raw selection index" i (Hir.expr_ty idx)
       else
         let* norm = normalize_offset_expr c.structs s idx in
         let* size, _ = layout_diag s c.structs access_ty in
@@ -1412,7 +1458,9 @@ and check_expr_inner ?destination (c : context) expected expression =
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
       if not (fits_literal ty v) then
-        error s ("integer literal is out of range for " ^ ty_name ty)
+        error s
+          (Printf.sprintf "integer literal is out of range for %s: `%s`" (ty_name ty)
+             raw)
       else Ok (Hir.EInt (mask_value ty v, ty, s))
   | Ast.Bool_lit (v, s) -> Ok (Hir.EBool (v, s))
   | Ast.Null s -> (
@@ -1469,8 +1517,8 @@ and check_expr_inner ?destination (c : context) expected expression =
                   | Some (_, (Hir.Array _ as t), _) -> Ok (Hir.Const_array (n, t, s))
                   | Some (_, (Hir.Vec _ as t), values) ->
                       Ok (Hir.EVector (values, t, s))
-                  | Some _ -> error s (Printf.sprintf "unknown name `%s`" n)
-                  | None -> error s (Printf.sprintf "unknown name `%s`" n)))))
+                  | Some _ -> unknown_name_error (visible_value_names c) "name" s n
+                  | None -> unknown_name_error (visible_value_names c) "name" s n))))
   | Ast.Unary (Ast.Neg, Ast.Int_lit (raw, is), s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error is m ]) in
       let t = Option.value ~default:(Hir.Int Hir.I32) expected in
@@ -1483,7 +1531,10 @@ and check_expr_inner ?destination (c : context) expected expression =
       in
       if fits_negative_literal t v || allowed then
         Ok (Hir.EInt (mask_value t (Int64.neg v), t, s))
-      else error s ("integer literal is out of range for " ^ ty_name t)
+      else
+        error s
+          (Printf.sprintf "integer literal is out of range for %s: `-%s`" (ty_name t)
+             raw)
   | Ast.Unary (op, e, s) -> (
       let* te =
         check_expr c
@@ -1540,22 +1591,29 @@ and check_expr_inner ?destination (c : context) expected expression =
         in
         Sema_flow.restore c.flow
           (Sema_flow.merge_values_into c.flow initialized value_paths);
+        let logical_help =
+          match (Hir.expr_ty a, Hir.expr_ty b) with
+          | Hir.Int _, Hir.Int _ ->
+              Some
+                (Printf.sprintf
+                   "Fas has no implicit truth values; write `%s != 0 %s %s != 0`"
+                   (Ast.expr_name l)
+                   (if op = Ast.And then "&&" else "||")
+                   (Ast.expr_name r))
+          | _ -> None
+        in
+        let logical_operand_error side expression ty =
+          let operation = if op = Ast.And then "&&" else "||" in
+          match logical_help with
+          | Some help ->
+              Sema_types.logical_operand_error ~help operation side expression ty
+          | None -> Sema_types.logical_operand_error operation side expression ty
+        in
         if Hir.expr_ty a = Hir.Bool && Hir.expr_ty b = Hir.Bool then
           Ok (Hir.Binary (op, a, b, Hir.Bool, s))
         else if Hir.expr_ty a <> Hir.Bool then
-          Error
-            [
-              Sema_types.logical_operand_error
-                (if op = Ast.And then "&&" else "||")
-                "left" l (Hir.expr_ty a);
-            ]
-        else
-          Error
-            [
-              Sema_types.logical_operand_error
-                (if op = Ast.And then "&&" else "||")
-                "right" r (Hir.expr_ty b);
-            ])
+          Error [ logical_operand_error "left" l (Hir.expr_ty a) ]
+        else Error [ logical_operand_error "right" r (Hir.expr_ty b) ])
       else if op = Ast.Shl || op = Ast.Shr then
         let* a =
           check_expr c
@@ -1775,9 +1833,8 @@ and check_expr_inner ?destination (c : context) expected expression =
               error s reason
           | Some f -> Ok (Hir.Offsetof (t, n, f.offset, s))
           | None ->
-              error s
-                (Sema_types.missing_field_message ~record_name:(Ast.type_name source_ty)
-                   n (Hir.Struct sn)))
+              missing_field_error ~record_name:(Ast.type_name source_ty) c s n
+                (Hir.Struct sn))
       | _ -> error s "offsetof requires a struct type")
   | Ast.Splat (e, s) -> (
       match expected with
@@ -1839,7 +1896,11 @@ and check_expr_inner ?destination (c : context) expected expression =
           else None
         in
         match result_ty with
-        | None -> error s "ternary arms have different types"
+        | None ->
+            error (Ast.expr_span b)
+              (Printf.sprintf "arms of `?:` have different types: `%s` and `%s`"
+                 (Sema_types.diagnostic_ty_name at)
+                 (Sema_types.diagnostic_ty_name bt))
         | Some _ when at = Hir.Void || bt = Hir.Void ->
             error s "ternary arms cannot have void type"
         | Some ty -> Ok (Hir.Ternary (tq, ta, tb, ty, s)))
@@ -1902,7 +1963,8 @@ and check_initializer ?(constant = false) ?destination c expected expression =
           match ty with
           | Hir.Array (length, element) ->
               if List.length entries <> length then
-                error span
+                error
+                  (Sema_types.aggregate_count_error_span span length entries)
                   (Sema_types.array_element_count_message length (List.length entries))
               else
                 Ok
@@ -1936,11 +1998,15 @@ and check_initializer ?(constant = false) ?destination c expected expression =
                             );
                           ]
                     | _ ->
-                        error span
+                        error
+                          (Sema_types.aggregate_count_error_span span 1 entries)
                           (Sema_types.record_field_count_message name 1
                              (List.length entries))
                   else if List.length entries <> List.length definition.fields then
-                    error span
+                    error
+                      (Sema_types.aggregate_count_error_span span
+                         (List.length definition.fields)
+                         entries)
                       (Sema_types.record_field_count_message name
                          (List.length definition.fields)
                          (List.length entries))
@@ -2678,12 +2744,18 @@ and check_call c _expected fn args s =
                           (Printf.sprintf "`%s` is a constant, not a function" name)
                       else if Option.is_some (List.assoc_opt name c.named_types) then
                         error s (Printf.sprintf "`%s` is a type, not a function" name)
-                      else error s (Printf.sprintf "unknown function `%s`" name))
+                      else
+                        unknown_name_error
+                          (List.map fst c.signatures @ List.map fst c.templates)
+                          "function" s name)
               | Some sig_ ->
                   if
                     ((not sig_.variadic) && List.length args <> List.length sig_.params)
                     || (sig_.variadic && List.length args < List.length sig_.params)
-                  then error s (Printf.sprintf "wrong number of arguments to `%s`" name)
+                  then
+                    error s
+                      (Printf.sprintf "function `%s` expects %d arguments, got %d" name
+                         (List.length sig_.params) (List.length args))
                   else
                     let policy = if sig_.variadic then Promote_variadic else Reject in
                     let* xs = check_actuals ~callee:name c policy s sig_.params args in
@@ -2735,8 +2807,9 @@ and check_actuals ?callee c policy span formals actuals =
                   then Ok (variadic_promote value)
                   else
                     error (Ast.expr_span expression)
-                      "aggregate arguments cannot be passed by value; pass `&x` as \
-                       `addr` or `handle[T]`")
+                      (Printf.sprintf
+                         "aggregate `%s` cannot be passed through C varargs"
+                         (Sema_types.diagnostic_ty_name (Hir.expr_ty value))))
                 rest
         in
         Ok (List.rev_append checked trailing)
@@ -2885,12 +2958,9 @@ let check_target (c : context) = function
                         through_view = expression_uses_view c x;
                       }
                 | None ->
-                    error (Ast.expr_span a)
-                      (Sema_types.missing_field_message n (Hir.Struct sn)))
-            | actual ->
-                error (Ast.expr_span a) (Sema_types.missing_field_message n actual))
-      | _ ->
-          error (Ast.expr_span a) (Sema_types.missing_field_message n (Hir.expr_ty x)))
+                    missing_field_error ~base:a c (Ast.expr_span a) n (Hir.Struct sn))
+            | actual -> missing_field_error ~base:a c (Ast.expr_span a) n actual)
+      | _ -> missing_field_error ~base:a c (Ast.expr_span a) n (Hir.expr_ty x))
 
 let target_ty c = function
   | Hir.ALocal binding -> Some binding.ty
@@ -3239,9 +3309,9 @@ let rec check_block (c : context) stmts =
   go [] stmts
 
 and check_stmt (c : context) = function
-  | Ast.Let { name; ty; init; span } -> (
+  | Ast.Let { name; ty; ty_span; init; span } -> (
       let* () = ensure_new_local name c span in
-      let* t = source_ty_in_context c span ty in
+      let* t = source_ty_in_context c ty_span ty in
       let* _ = Sema_limits.validate_object c.limits c.structs span t in
       let* x =
         match init with
@@ -3327,7 +3397,11 @@ and check_stmt (c : context) = function
       let* v = check_expr c (Some expected) e in
       let* () =
         if aggregate_value_type expected && aggregate_value_type (Hir.expr_ty v) then
-          error span "aggregate assignment is not supported; use `copy(dst, src)`"
+          error span
+            (if match expected with Hir.Array _ -> true | _ -> false then
+               "aggregate assignment is not supported for an array; use `copy(dst, \
+                src)`"
+             else "aggregate assignment is not supported; use `copy(dst, src)`")
         else
           ensure_expected ~context:(assignment_context target) ~expression:e
             (Hir.expr_ty v) expected (Ast.expr_span e)
@@ -3450,7 +3524,11 @@ and check_stmt (c : context) = function
       let* x =
         match (e, c.ret_ty) with
         | None, Hir.Void -> Ok None
-        | Some _, Hir.Void -> error span "void function cannot return a value"
+        | Some e, Hir.Void ->
+            let* value = check_expr c None e in
+            error (Ast.expr_span e)
+              (Printf.sprintf "void function cannot return a value of type `%s`"
+                 (Sema_types.diagnostic_ty_name (Hir.expr_ty value)))
         | Some e, t ->
             let* v = check_expr c (Some t) e in
             let* () =

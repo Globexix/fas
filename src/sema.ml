@@ -61,17 +61,23 @@ let extern_c_value_type = function
 
 let aggregate_value_type = function Hir.Array _ | Hir.Struct _ -> true | _ -> false
 
-let aggregate_parameter_error span name =
+let diagnostic_source_ty_name ty =
+  let name = String.concat "" (String.split_on_char ' ' (Ast.type_name ty)) in
+  if String.contains name '$' then "generic aggregate" else name
+
+let aggregate_parameter_error span name ty_name =
   error span
     (Printf.sprintf
-       "aggregate parameter `%s` cannot be passed by value; pass `&x` as `addr` or \
-        `handle[T]`"
-       name)
+       "aggregate parameter `%s` of type `%s` cannot be passed by value; pass `&x` as \
+        `addr` or `handle[T]`"
+       name ty_name)
 
-let aggregate_result_error span =
+let aggregate_result_error span ty_name =
   error span
-    "aggregate result cannot be returned by value; pass destination storage as `addr` \
-     or `handle[T]`"
+    (Printf.sprintf
+       "aggregate result `%s` cannot be returned by value; pass destination storage as \
+        `addr` or `handle[T]`"
+       ty_name)
 
 let always_aggregate_type named_types generic_params ty =
   let generic_type_names =
@@ -98,12 +104,16 @@ let validate_native_aggregate_signature span params converted ret =
     match (params, converted) with
     | [], [] -> Ok ()
     | (param : Ast.param) :: param_rest, (_, ty) :: converted_rest ->
-        if aggregate_value_type ty then aggregate_parameter_error param.span param.name
+        if aggregate_value_type ty then
+          aggregate_parameter_error param.span param.name
+            (diagnostic_source_ty_name param.ty)
         else validate_params param_rest converted_rest
     | _ -> error span "internal error: parameter list mismatch"
   in
   let* () = validate_params params converted in
-  if aggregate_value_type ret then aggregate_result_error span else Ok ()
+  if aggregate_value_type ret then
+    aggregate_result_error span (Sema_types.diagnostic_ty_name ret)
+  else Ok ()
 
 let validate_extern_c_signature span params converted ret =
   let rec validate_params params converted =
@@ -113,6 +123,7 @@ let validate_extern_c_signature span params converted ret =
         if extern_c_value_type ty then validate_params param_rest converted_rest
         else if aggregate_value_type ty then
           aggregate_parameter_error param.span param.name
+            (diagnostic_source_ty_name param.ty)
         else
           error param.span
             (Printf.sprintf
@@ -122,7 +133,8 @@ let validate_extern_c_signature span params converted ret =
   in
   let* () = validate_params params converted in
   if ret = Hir.Void || extern_c_value_type ret then Ok ()
-  else if aggregate_value_type ret then aggregate_result_error span
+  else if aggregate_value_type ret then
+    aggregate_result_error span (Sema_types.diagnostic_ty_name ret)
   else
     error span
       (Printf.sprintf "extern \"C\" cannot return `%s` by value; use an output pointer"
@@ -146,11 +158,11 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
   let specializations = Sema_specialization.create () in
   let declaration = function
     | Ast.Use _ -> None
-    | Ast.Opaque { name; span } | Ast.Struct { name; span; _ } ->
-        Some (name, Top_type, span)
-    | Ast.Const { name; span; _ } -> Some (name, Top_const, span)
+    | Ast.Opaque { name; span } -> Some (name, Top_type, span)
+    | Ast.Struct { name; name_span; _ } -> Some (name, Top_type, name_span)
+    | Ast.Const { name; name_span; _ } -> Some (name, Top_const, name_span)
     | Ast.Global { name; span; _ } -> Some (name, Top_global, span)
-    | Ast.Func { name; span; _ } -> Some (name, Top_function, span)
+    | Ast.Func { name; name_span; _ } -> Some (name, Top_function, name_span)
   in
   let rec validate_declarations next_id seen bindings = function
     | [] -> Ok (List.rev bindings)
@@ -188,7 +200,10 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                     | Top_function -> "function"
                     | Top_global -> "global"
                   in
-                  duplicate (Printf.sprintf "duplicate %s `%s`" label name)
+                  duplicate
+                    (if kind = Top_function then
+                       Printf.sprintf "duplicate function `%s` symbol" name
+                     else Printf.sprintf "duplicate %s `%s`" label name)
                 else duplicate (Printf.sprintf "duplicate declaration `%s`" name)))
   in
   let* top_level_bindings =
@@ -209,9 +224,9 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
         else
           collect_named_types (String_set.add name seen) ((name, Opaque_name) :: acc)
             rest
-    | Ast.Struct { name; generic_params; span; _ } :: rest ->
+    | Ast.Struct { name; name_span; generic_params; _ } :: rest ->
         if String_set.mem name seen then
-          error span (Printf.sprintf "duplicate type `%s`" name)
+          error name_span (Printf.sprintf "duplicate type `%s`" name)
         else
           let kind = if generic_params = [] then Struct_name else Generic_struct_name in
           collect_named_types (String_set.add name seen) ((name, kind) :: acc) rest
@@ -531,10 +546,14 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       (fun r item ->
         let* () = r in
         match item with
-        | Ast.Func { name; params; ret; variadic; linkage; span; generic_params; _ } ->
+        | Ast.Func
+            ({ name; params; ret; variadic; linkage; span; generic_params; _ } as func)
+          ->
+            let name_span = func.name_span in
+            let ret_span = func.ret_span in
             let* () = validate_binding_name span name in
             if String_set.mem name !declared_functions then
-              error span (Printf.sprintf "duplicate function `%s`" name)
+              error name_span (Printf.sprintf "duplicate function `%s` symbol" name)
             else if List.mem name arrays_names then
               error span (Printf.sprintf "duplicate declaration `%s`" name)
             else if name = "main" && generic_params <> [] then
@@ -562,9 +581,10 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                   with
                   | Some parameter ->
                       aggregate_parameter_error parameter.span parameter.name
+                        (diagnostic_source_ty_name parameter.ty)
                   | None ->
                       if always_aggregate_type named_types generic_params ret then
-                        aggregate_result_error span
+                        aggregate_result_error ret_span (diagnostic_source_ty_name ret)
                       else Ok ()
               in
               if variadic && linkage <> Ast.External_c then
@@ -576,14 +596,14 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                     (fun (param : Ast.param) -> source_obj param.span param.ty)
                     params
                 in
-                let* rt = source_return span ret in
+                let* rt = source_return ret_span ret in
                 let* () =
                   if name = "main" then validate_entry_signature span ps rt else Ok ()
                 in
                 let* () =
                   if linkage = Ast.External_c then
-                    validate_extern_c_signature span params ps rt
-                  else validate_native_aggregate_signature span params ps rt
+                    validate_extern_c_signature ret_span params ps rt
+                  else validate_native_aggregate_signature ret_span params ps rt
                 in
                 sigs := (name, { params = ps; ret = rt; variadic }) :: !sigs;
                 Ok ()
@@ -644,8 +664,9 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
   let hir_params params =
     List.mapi (fun id (name, ty) -> ({ Hir.name; ty; id } : Hir.local)) params
   in
-  let check_function_body ~name ~diagnostic_name ~description ~span ~params ~ret ~stmts
-      ~linkage ~variadic ~extra_consts ~spec_depth ~spec_trace ~require_return =
+  let check_function_body ~name ~diagnostic_name ~description ~span ~diagnostic_span
+      ~params ~ret ~stmts ~linkage ~variadic ~extra_consts ~spec_depth ~spec_trace
+      ~require_return =
     let context = make_context ~extra_consts ~spec_depth ~spec_trace ~ret_ty:ret in
     let* params =
       Result_list.map
@@ -658,9 +679,9 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
     let* body = Sema_check.check_block context stmts in
     let* () =
       if require_return && ret <> Hir.Void && (Hir.block_flow body).falls_through then
-        error span
-          (description ^ " `" ^ diagnostic_name
-         ^ "` may reach the end without returning")
+        error diagnostic_span
+          (description ^ " `" ^ diagnostic_name ^ "` returning `" ^ Hir.ty_name ret
+         ^ "` may reach the end without `return`")
       else Ok ()
     in
     Ok
@@ -669,8 +690,11 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
   in
   let add_func func = funcs := func :: !funcs in
   let check_func = function
-    | Ast.Func { name; params; ret; body; linkage; variadic; generic_params = []; span }
-      ->
+    | Ast.Func
+        ({ name; params; ret; body; linkage; variadic; generic_params = []; span; _ } as
+         func) ->
+        let name_span = func.name_span in
+        let ret_span = func.ret_span in
         let trace = specialization_trace specializations Function_specialization name in
         let diagnostic_name =
           specialization_source_name specializations Function_specialization name
@@ -685,7 +709,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
         in
         let description = if trace = [] then "function" else "specialized function" in
         let result =
-          let* ret = source_return span ret in
+          let* ret = source_return ret_span ret in
           let* params = source_params params in
           let linkage = hir_linkage linkage in
           match body with
@@ -701,9 +725,9 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                  }
                   : Hir.func)
           | Ast.Statements stmts ->
-              check_function_body ~name ~diagnostic_name ~description ~span ~params ~ret
-                ~stmts ~linkage ~variadic ~extra_consts:[] ~spec_depth ~spec_trace:trace
-                ~require_return:true
+              check_function_body ~name ~diagnostic_name ~description ~span
+                ~diagnostic_span:name_span ~params ~ret ~stmts ~linkage ~variadic
+                ~extra_consts:[] ~spec_depth ~spec_trace:trace ~require_return:true
         in
         let* func = result |> trace_result specializations trace in
         add_func func;
@@ -720,23 +744,25 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
             {
               item =
                 Ast.Func
-                  {
-                    params;
-                    ret;
-                    body = Ast.Statements stmts;
-                    linkage;
-                    variadic;
-                    span;
-                    _;
-                  };
+                  ({
+                     params;
+                     ret;
+                     body = Ast.Statements stmts;
+                     linkage;
+                     variadic;
+                     span;
+                     _;
+                   } as func);
               substitutions = [];
               values;
               staged_args = _;
             } ->
             let result =
               let source_params = params in
-              let* ret = source_ty_with_values named_types values span ret in
-              let* ret = if ret = Hir.Void then Ok ret else validate_object span ret in
+              let* ret = source_ty_with_values named_types values func.ret_span ret in
+              let* ret =
+                if ret = Hir.Void then Ok ret else validate_object func.ret_span ret
+              in
               let* params =
                 Result_list.map
                   (fun (parameter : Ast.param) ->
@@ -749,13 +775,15 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                   params
               in
               let* () =
-                validate_native_aggregate_signature span source_params params ret
+                validate_native_aggregate_signature func.ret_span source_params params
+                  ret
               in
               check_function_body ~name:sp.name
                 ~diagnostic_name:
                   (specialization_source_name specializations Function_specialization
                      sp.name)
-                ~description:"specialized function" ~span ~params ~ret ~stmts
+                ~description:"specialized function" ~span
+                ~diagnostic_span:func.name_span ~params ~ret ~stmts
                 ~linkage:(hir_linkage linkage) ~variadic ~extra_consts:values
                 ~spec_depth:(sp.depth + 1) ~spec_trace:sp.trace ~require_return:true
             in
