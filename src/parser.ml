@@ -510,6 +510,7 @@ module P = struct
     | Token.Kw_use ->
         let s = span p in
         ignore (bump p);
+        let path_span = span p in
         let* path = string p in
         if path = "C" || path = "asm" then
           let header_start = span p in
@@ -523,7 +524,7 @@ module P = struct
           Ok [ Ast.Use { path; c_header = Some header; span } ]
         else
           let* () = end_stmt p in
-          Ok [ Ast.Use { path; c_header = None; span = s } ]
+          Ok [ Ast.Use { path; c_header = None; span = path_span } ]
     | Token.Kw_const ->
         let* x = const_item p in
         Ok [ x ]

@@ -171,13 +171,13 @@ cat >"$USE_EDGES_TMP/paths/directory.fas/root.fas" <<'FAS'
 use "../directory.fas"
 FAS
 expect_failure "$OCAML_FAS" "$USE_EDGES_TMP/paths/absolute.fas"
-grep -F "absolute Fas dependency paths are not supported; use a path relative to this file" \
+grep -F "absolute Fas dependency path \`$USE_EDGES_TMP/project/deps/leaf.fas\` is not supported; use a \`relative path\`" \
   "$USE_EDGES_TMP/stderr" >/dev/null || fail "absolute dependency diagnostic changed"
 expect_failure "$OCAML_FAS" "$USE_EDGES_TMP/paths/extension.fas"
-grep -F 'Fas dependency paths must end in lowercase `.fas`; C headers use `use "C"` in v0.2' \
+grep -F 'Fas dependency path `library.FAS` must end in lowercase `.fas`' \
   "$USE_EDGES_TMP/stderr" >/dev/null || fail "extension diagnostic changed"
 expect_failure "$OCAML_FAS" "$USE_EDGES_TMP/paths/header.fas"
-grep -F 'Fas dependency paths must end in lowercase `.fas`; C headers use `use "C"` in v0.2' \
+grep -F 'Fas dependency path `library.h` must end in lowercase `.fas`' \
   "$USE_EDGES_TMP/stderr" >/dev/null || fail "C path guidance is missing"
 expect_failure "$OCAML_FAS" "$USE_EDGES_TMP/paths/directory.fas/root.fas"
 grep -F 'Fas dependency `../directory.fas` is a directory' "$USE_EDGES_TMP/stderr" >/dev/null \

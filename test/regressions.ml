@@ -3031,8 +3031,8 @@ let () =
   (match Driver.use_path_error "/opt/lib.fas" with
   | Some message
     when message
-         = "absolute Fas dependency paths are not supported; use a path relative to \
-            this file" ->
+         = "absolute Fas dependency path `/opt/lib.fas` is not supported; use a \
+            `relative path`" ->
       ()
   | _ -> failwith "use-absolute-path: unexpected validation result");
   (match Driver.use_path_error "lib\000.fas" with
@@ -3040,16 +3040,12 @@ let () =
   | _ -> failwith "use-nul-path: unexpected validation result");
   (match Driver.use_path_error "lib.FAS" with
   | Some message
-    when message
-         = "Fas dependency paths must end in lowercase `.fas`; C headers use `use \
-            \"C\"` in v0.2" ->
+    when message = "Fas dependency path `lib.FAS` must end in lowercase `.fas`" ->
       ()
   | _ -> failwith "use-extension-case: unexpected validation result");
   (match Driver.use_path_error "lib.h" with
   | Some message
-    when message
-         = "Fas dependency paths must end in lowercase `.fas`; C headers use `use \
-            \"C\"` in v0.2" ->
+    when message = "Fas dependency path `lib.h` must end in lowercase `.fas`" ->
       ()
   | _ -> failwith "use-c-header-path: unexpected validation result");
   if Option.is_some (Driver.use_path_error "lib/../ops.fas") then
@@ -3156,7 +3152,7 @@ let () =
       if
         relative_missing.primary.Span.file <> "relative-missing-root.fas"
         || relative_missing.Diag.message
-           <> "cannot read Fas dependency `absent.fas`: No such file or directory"
+           <> "cannot read Fas dependency path `absent.fas`: No such file or directory"
         || relative_missing.notes
            <> [ "include chain: relative-missing-root.fas -> absent.fas" ]
       then failwith "relative-include-path: path or include chain changed";
@@ -3164,10 +3160,10 @@ let () =
       let missing = driver_error use_missing_root in
       if
         missing.Diag.message
-        <> "cannot read Fas dependency `absent.fas`: No such file or directory"
+        <> "cannot read Fas dependency path `absent.fas`: No such file or directory"
         || missing.primary.Span.file <> use_missing_root
         || missing.primary.Span.line <> 1
-        || missing.primary.Span.column <> 1
+        || missing.primary.Span.column <> 5
         || missing.notes
            <> [
                 "include chain: " ^ use_missing_root ^ " -> "

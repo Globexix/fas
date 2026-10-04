@@ -58,12 +58,11 @@ let use_path_error path =
     Some "Fas dependency paths cannot contain NUL bytes"
   else if not (Filename.is_relative path) then
     Some
-      "absolute Fas dependency paths are not supported; use a path relative to this \
-       file"
+      (Printf.sprintf
+         "absolute Fas dependency path `%s` is not supported; use a `relative path`"
+         path)
   else if not (Filename.check_suffix path ".fas") then
-    Some
-      "Fas dependency paths must end in lowercase `.fas`; C headers use `use \"C\"` in \
-       v0.2"
+    Some (Printf.sprintf "Fas dependency path `%s` must end in lowercase `.fas`" path)
   else None
 
 let include_chain_note paths = "include chain: " ^ String.concat " -> " paths
@@ -241,8 +240,8 @@ let load_program ~limits root =
                 let diagnostics =
                   [
                     Diag.error primary
-                      (Printf.sprintf "cannot read Fas dependency `%s`: %s" spelling
-                         message);
+                      (Printf.sprintf "cannot read Fas dependency path `%s`: %s"
+                         spelling message);
                   ]
                 in
                 if Option.is_some use_span then
@@ -292,7 +291,8 @@ let load_program ~limits root =
             let diagnostics =
               [
                 Diag.error primary
-                  (Printf.sprintf "cannot read Fas dependency `%s`: %s" spelling message);
+                  (Printf.sprintf "cannot read Fas dependency path `%s`: %s" spelling
+                     message);
               ]
             in
             if Option.is_some use_span then Error (with_chain diagnostics file_chain)
