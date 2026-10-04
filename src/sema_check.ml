@@ -864,6 +864,30 @@ let shape_children = function
       [ left; right ]
   | _ -> []
 
+let unresolved_shape_cache_worthwhile expression =
+  let pending = ref [ expression ] in
+  let operators = ref 0 in
+  while !operators < 64 && !pending <> [] do
+    match !pending with
+    | current :: rest -> (
+        pending := rest;
+        match current with
+        | Ast.Unary ((Ast.Neg | Ast.Bit_not), operand, _) ->
+            incr operators;
+            pending := operand :: !pending
+        | Ast.Binary
+            ( ( Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and
+              | Ast.Bit_or | Ast.Bit_xor ),
+              left,
+              right,
+              _ ) ->
+            incr operators;
+            pending := left :: right :: !pending
+        | _ -> ())
+    | [] -> ()
+  done;
+  !operators = 64
+
 let build_unresolved_shapes expression =
   let shapes = Hashtbl.create 64 in
   let seen = Hashtbl.create 64 in
@@ -1280,7 +1304,8 @@ and raw_offset_expr c s access_ty index_payload =
 
 and check_expr (c : context) expected expression =
   let previous_depth = c.expression_depth in
-  if previous_depth = 0 then (
+  if previous_depth = 0 then c.unresolved_shapes_unique <- false;
+  if previous_depth = 0 && unresolved_shape_cache_worthwhile expression then (
     let shapes, unique = build_unresolved_shapes expression in
     c.unresolved_shapes <- shapes;
     c.unresolved_shapes_unique <- unique);
