@@ -1890,6 +1890,19 @@ and check_expr_inner ?destination (c : context) expected expression =
           Ok
             (Hir.Address (place.expr, address_type_for_expected c expected place.expr, s))
       | _ -> error s "cannot take the address of this expression")
+  | Ast.Sizeof_value (value, span) ->
+      let inferred_type =
+        match check_place c value with
+        | Ok place -> Some (Hir.expr_ty place.expr)
+        | Error _ -> None
+      in
+      let help =
+        Option.map
+          (fun ty ->
+            Printf.sprintf "write `sizeof[%s]`" (Sema_types.diagnostic_ty_name ty))
+          inferred_type
+      in
+      error ?help span "`sizeof` needs a type in brackets"
   | Ast.Sizeof (t, s) ->
       let* t, structs = query_layout_in_context c s t in
       let* size, _ = layout_diag s structs t in
@@ -3244,6 +3257,7 @@ let rec expression_mentions_name name = function
   | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Sizeof _
   | Ast.Alignof _ | Ast.Offsetof _ ->
       false
+  | Ast.Sizeof_value (value, _) -> expression_mentions_name name value
 
 let rec expression_takes_name_address name = function
   | Ast.Addr_of (value, _) ->
@@ -3277,6 +3291,7 @@ let rec expression_takes_name_address name = function
   | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Ident _
   | Ast.Sizeof _ | Ast.Alignof _ | Ast.Offsetof _ ->
       false
+  | Ast.Sizeof_value (value, _) -> expression_takes_name_address name value
 
 let target_takes_name_address name = function
   | Ast.Target_ident _ -> false

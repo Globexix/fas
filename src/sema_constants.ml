@@ -469,6 +469,24 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
           match resolve with
           | Some resolve -> resolve ~check_only n s
           | None -> error s (Printf.sprintf "unknown name `%s`" n)))
+  | Ast.Sizeof_value (value, span) ->
+      let operand_ty =
+        match value with
+        | Ast.Ident (name, _) -> (
+            match lookup name consts with
+            | Some (_, ty, _) -> Some ty
+            | None -> Option.map (fun (_, ty, _) -> ty) (lookup name arrays))
+        | Ast.Int_lit _ -> Some (Hir.Int Hir.I32)
+        | Ast.Bool_lit _ -> Some Hir.Bool
+        | _ -> None
+      in
+      let help =
+        Option.map
+          (fun ty ->
+            Printf.sprintf "write `sizeof[%s]`" (Sema_types.diagnostic_ty_name ty))
+          operand_ty
+      in
+      Error [ Diag.error ?help span "`sizeof` needs a type in brackets" ]
   | Ast.Unary (Ast.Neg, Ast.Int_lit (raw, is), s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error is m ]) in
       let t = Option.value ~default:(Hir.Int Hir.I32) expected in

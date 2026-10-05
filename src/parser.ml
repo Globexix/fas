@@ -1652,31 +1652,40 @@ module P = struct
               let* e = expression_argument p in
               Ok (Ast.Handle_from_addr (t, e, sp))
           | Some ((Names.Sizeof | Names.Alignof | Names.Offsetof) as operation), _ ->
-              let* () =
-                if at p Token.Lbracket then expected p Token.Lbracket
-                else
-                  let operation =
-                    match operation with
-                    | Names.Sizeof -> "sizeof"
-                    | Names.Alignof -> "alignof"
-                    | Names.Offsetof -> "offsetof"
-                    | _ -> assert false
-                  in
-                  error (span p)
-                    (Printf.sprintf "`%s` needs a type in brackets" operation)
+              let operation_name =
+                match operation with
+                | Names.Sizeof -> "sizeof"
+                | Names.Alignof -> "alignof"
+                | Names.Offsetof -> "offsetof"
+                | _ -> assert false
               in
-              delimited p (fun () ->
-                  let* t = ty p in
-                  if operation = Names.Offsetof then
-                    let* () = expected p Token.Comma in
-                    let* f = ident p in
-                    let* () = expected p Token.Rbracket in
-                    Ok (Ast.Offsetof (t, f, sp))
-                  else
-                    let* () = expected p Token.Rbracket in
-                    Ok
-                      (if operation = Names.Sizeof then Ast.Sizeof (t, sp)
-                       else Ast.Alignof (t, sp)))
+              if not (at p Token.Lbracket) then
+                if operation = Names.Sizeof then
+                  let operand =
+                    if at p Token.Lparen then expression_argument p else expr p
+                  in
+                  match operand with
+                  | Ok value -> Ok (Ast.Sizeof_value (value, sp))
+                  | Error _ ->
+                      error sp
+                        (Printf.sprintf "`%s` needs a type in brackets" operation_name)
+                else
+                  error sp
+                    (Printf.sprintf "`%s` needs a type in brackets" operation_name)
+              else
+                let* () = expected p Token.Lbracket in
+                delimited p (fun () ->
+                    let* t = ty p in
+                    if operation = Names.Offsetof then
+                      let* () = expected p Token.Comma in
+                      let* f = ident p in
+                      let* () = expected p Token.Rbracket in
+                      Ok (Ast.Offsetof (t, f, sp))
+                    else
+                      let* () = expected p Token.Rbracket in
+                      Ok
+                        (if operation = Names.Sizeof then Ast.Sizeof (t, sp)
+                         else Ast.Alignof (t, sp)))
           | Some Names.Splat, Token.Lparen ->
               let* e = expression_argument p in
               Ok (Ast.Splat (e, sp))

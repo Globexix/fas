@@ -212,6 +212,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         type_mentions names ty || expression_mentions names expression
     | Ast.Handle_from_addr (ty, expression, _) ->
         type_mentions names ty || expression_mentions names expression
+    | Ast.Sizeof_value (expression, _) -> expression_mentions names expression
     | Ast.Sizeof (ty, _) | Ast.Alignof (ty, _) | Ast.Offsetof (ty, _, _) ->
         type_mentions names ty
     | Ast.Field (expression, _, _) | Ast.Arrow_field (expression, _, _, _) ->
@@ -405,6 +406,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         validate_expression_names value_names type_names expression
     | Ast.Handle_from_addr (ty, expression, span) ->
         let* () = validate_type_names value_names type_names span ty in
+        validate_expression_names value_names type_names expression
+    | Ast.Sizeof_value (expression, _) ->
         validate_expression_names value_names type_names expression
     | Ast.Sizeof (ty, span) | Ast.Alignof (ty, span) | Ast.Offsetof (ty, _, span) ->
         validate_type_names value_names type_names span ty
@@ -638,6 +641,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Unary (_, expression, _)
     | Ast.Addr_of (expression, _)
     | Ast.Splat (expression, _)
+    | Ast.Sizeof_value (expression, _)
     | Ast.Field (expression, _, _)
     | Ast.Arrow_field (expression, _, _, _) ->
         has_generic_arguments expression
@@ -910,6 +914,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           in
           validate_non_dependent_expression c dependent None value
       | Ast.Field (value, _, _) | Ast.Arrow_field (value, _, _, _) ->
+          validate_non_dependent_expression c dependent None value
+      | Ast.Sizeof_value (value, _) ->
           validate_non_dependent_expression c dependent None value
       | Ast.Ternary (condition, yes, no, _) ->
           let* () = validate_non_dependent_expression c dependent None condition in
@@ -1692,6 +1698,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           resolve_expr ~values ~defer_const_structs substitutions depth base
         in
         Ok (Ast.Arrow_field (base, name, operator_span, field_span))
+    | Ast.Sizeof_value (value, span) ->
+        let* value =
+          resolve_expr ~values ~defer_const_structs substitutions depth value
+        in
+        Ok (Ast.Sizeof_value (value, span))
     | Ast.Addr_of (expression, span) ->
         let* expression =
           resolve_expr ~values ~defer_const_structs substitutions depth expression

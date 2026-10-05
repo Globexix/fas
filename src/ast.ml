@@ -34,6 +34,7 @@ and expr =
   | Addr_of of expr * Span.t
   | Handle_from_addr of ty * expr * Span.t
   | Sizeof of ty * Span.t
+  | Sizeof_value of expr * Span.t
   | Alignof of ty * Span.t
   | Offsetof of ty * string * Span.t
   | Splat of expr * Span.t
@@ -167,6 +168,7 @@ let rec expr_span = function
   | Addr_of (_, s)
   | Handle_from_addr (_, _, s)
   | Sizeof (_, s)
+  | Sizeof_value (_, s)
   | Alignof (_, s)
   | Offsetof (_, _, s)
   | Splat (_, s)
@@ -288,6 +290,7 @@ and expr_name = function
   | Handle_from_addr (t, e, _) ->
       "handle_from_addr[" ^ type_name t ^ "](" ^ expr_name e ^ ")"
   | Sizeof (t, _) -> "sizeof[" ^ type_name t ^ "]"
+  | Sizeof_value (e, _) -> "sizeof " ^ expr_name e
   | Alignof (t, _) -> "alignof[" ^ type_name t ^ "]"
   | Offsetof (t, f, _) -> "offsetof[" ^ type_name t ^ ", " ^ f ^ "]"
   | Splat (e, _) -> "splat(" ^ expr_name e ^ ")"
@@ -473,6 +476,9 @@ let render_program program =
         text "sizeof[";
         emit_ty ty;
         text "]"
+    | Sizeof_value (e, _) ->
+        text "sizeof ";
+        emit_expr e
     | Alignof (ty, _) ->
         text "alignof[";
         emit_ty ty;
@@ -767,6 +773,7 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
           go_ty at t;
           go_expr x
       | Sizeof (ty, _) | Alignof (ty, _) -> go_ty at ty
+      | Sizeof_value (expression, _) -> go_expr expression
       | Offsetof (ty, _, _) -> go_ty at ty
       | Splat (x, _) -> go_expr x
       | Ternary (c, a, b, _) ->

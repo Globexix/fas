@@ -114,6 +114,7 @@ let rec count_expanded_expr_type_nodes expr cap total =
     | Ast.Unary (_, value, _)
     | Ast.Addr_of (value, _)
     | Ast.Splat (value, _)
+    | Ast.Sizeof_value (value, _)
     | Ast.Field (value, _, _)
     | Ast.Arrow_field (value, _, _, _) ->
         count_expanded_expr_type_nodes value cap total

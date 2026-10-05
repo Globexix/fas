@@ -13076,9 +13076,20 @@ let () =
   let missing_element = "fn f() void { items arr[3] }\n" in
   pin "array-missing-element-type" missing_element 1 "fn f() void { items arr[3" 1
     "array type `arr` needs an element type after its length";
-  let sizeof_variable = "fn f() usize { return sizeof amount }\n" in
-  pin "sizeof-needs-type" sizeof_variable 1 "fn f() usize { return sizeof " 6
-    "`sizeof` needs a type in brackets";
+  parse_message "sizeof-needs-type" "`sizeof` needs a type in brackets"
+    "fn f() usize { return sizeof }\n";
+  let sizeof_name = "fn f() usize { a arr[4,u8]\nreturn sizeof a }\n" in
+  semantic_pin "sizeof-variable-type-help" sizeof_name 2 8 6
+    "`sizeof` needs a type in brackets" (Some "write `sizeof[arr[4, u8]]`");
+  semantic_accept "sizeof-variable-type-twin"
+    "fn f() usize { a arr[4,u8]\nreturn sizeof[arr[4,u8]] }\n";
+  let sizeof_parenthesized =
+    "fn f() usize { amount i16 = 0\nreturn sizeof(amount) }\n"
+  in
+  semantic_pin "sizeof-parenthesized-type-help" sizeof_parenthesized 2 8 6
+    "`sizeof` needs a type in brackets" (Some "write `sizeof[i16]`");
+  semantic_accept "sizeof-parenthesized-type-twin"
+    "fn f() usize { amount i16 = 0\nreturn sizeof[i16] }\n";
   pin "c-header-needs-delimiters" "use \"C\" math.h\n" 1 "use \"C\" " 4
     "C header path `math.h` needs quotes or angle brackets";
   syntax_pin "include-directive" "#include <stdint.h>\n" 1 1 1
