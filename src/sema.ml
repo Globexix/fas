@@ -76,6 +76,11 @@ let aggregate_result_error span ty_name =
         passed as `addr`"
        ty_name)
 
+let extern_c_struct_value_error span name =
+  error span
+    (Printf.sprintf
+       "C functions that take or return struct `%s` by value cannot be imported" name)
+
 let always_aggregate_type named_types generic_params ty =
   let generic_type_names =
     List.filter_map
@@ -112,15 +117,18 @@ let validate_native_aggregate_signature span params converted ret =
     aggregate_result_error span (Sema_types.diagnostic_ty_name ret)
   else Ok ()
 
-let validate_extern_c_signature span params converted ret =
+let validate_extern_c_signature ~bodyless span params converted ret =
   let rec validate_params params converted =
     match (params, converted) with
     | [], [] -> Ok ()
     | (param : Ast.param) :: param_rest, (_, ty) :: converted_rest ->
         if extern_c_value_type ty then validate_params param_rest converted_rest
         else if aggregate_value_type ty then
-          aggregate_parameter_error param.ty_span param.name
-            (diagnostic_source_ty_name param.ty)
+          match (bodyless, ty) with
+          | true, Hir.Struct name -> extern_c_struct_value_error param.ty_span name
+          | _ ->
+              aggregate_parameter_error param.ty_span param.name
+                (diagnostic_source_ty_name param.ty)
         else
           error param.ty_span
             (Printf.sprintf
@@ -131,7 +139,9 @@ let validate_extern_c_signature span params converted ret =
   let* () = validate_params params converted in
   if ret = Hir.Void || extern_c_value_type ret then Ok ()
   else if aggregate_value_type ret then
-    aggregate_result_error span (Sema_types.diagnostic_ty_name ret)
+    match (bodyless, ret) with
+    | true, Hir.Struct name -> extern_c_struct_value_error span name
+    | _ -> aggregate_result_error span (Sema_types.diagnostic_ty_name ret)
   else
     error span
       (Printf.sprintf "extern \"C\" cannot return `%s` by value; use an output pointer"
@@ -651,7 +661,8 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                 in
                 let* () =
                   (if linkage = Ast.External_c then
-                     validate_extern_c_signature ret_span params ps rt
+                     validate_extern_c_signature ~bodyless:(func.body = Ast.Declaration)
+                       ret_span params ps rt
                    else validate_native_aggregate_signature ret_span params ps rt)
                   |> trace_result specializations
                        (specialization_trace specializations Function_specialization

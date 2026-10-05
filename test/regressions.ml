@@ -2123,17 +2123,27 @@ let () =
     "function `spin` returning `i32` may reach the end without `return`"
     "fn spin() i32 { while true { break\n defer { while true { } } } }\n";
   semantic_error "extern-c-struct-parameter"
-    "aggregate parameter `value` of type `S` cannot be passed by value; pass `&x` as \
-     `addr` or `handle[T]`"
+    "C functions that take or return struct `S` by value cannot be imported"
     "struct S { x i64 }\nextern \"C\" { fn take(value S) void }\n";
   semantic_error "extern-c-array-parameter"
     "aggregate parameter `value` of type `arr[2,i64]` cannot be passed by value; pass \
      `&x` as `addr` or `handle[T]`"
     "extern \"C\" { fn take(value arr[2,i64]) void }\n";
   semantic_error "extern-c-struct-return"
-    "aggregate result `S` cannot be returned by value; pass destination storage as \
-     `addr` or `handle[T]`"
+    "C functions that take or return struct `S` by value cannot be imported"
     "struct S { x i64 }\nextern \"C\" { fn make() S }\n";
+  let extern_c_struct_parameter =
+    "struct Widget { data u8 }\nextern \"C\" { fn receive(item Widget) void }\n"
+  in
+  semantic_pin "extern-c-struct-parameter-import-diagnostic" extern_c_struct_parameter 2
+    (String.length "extern \"C\" { fn receive(item " + 1)
+    6 "C functions that take or return struct `Widget` by value cannot be imported" None;
+  let extern_c_struct_result =
+    "struct Packet { data u8 }\nextern \"C\" { fn produce() Packet }\n"
+  in
+  semantic_pin "extern-c-struct-result-import-diagnostic" extern_c_struct_result 2
+    (String.length "extern \"C\" { fn produce() " + 1)
+    6 "C functions that take or return struct `Packet` by value cannot be imported" None;
   semantic_error "extern-c-vector-parameter"
     "cannot use `vec[4, i32]` by value; use a pointer"
     "extern \"C\" { fn take(value vec[4,i32]) void }\n";
