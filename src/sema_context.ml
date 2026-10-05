@@ -114,7 +114,8 @@ let rec count_expanded_expr_type_nodes expr cap total =
     | Ast.Unary (_, value, _)
     | Ast.Addr_of (value, _)
     | Ast.Splat (value, _)
-    | Ast.Field (value, _, _) ->
+    | Ast.Field (value, _, _)
+    | Ast.Arrow_field (value, _, _, _) ->
         count_expanded_expr_type_nodes value cap total
     | Ast.Binary (_, left, right, _) ->
         count_expanded_expr_type_nodes right cap
@@ -174,7 +175,7 @@ and count_expanded_stmt_type_nodes stmt cap total =
         | Some expression -> count_expanded_expr_type_nodes expression cap total
         | None -> total)
     | Ast.View { place; _ } -> count_expanded_expr_type_nodes place cap total
-    | Ast.Assign (target, value, _) | Ast.Compound_assign (target, _, value, _) ->
+    | Ast.Assign (target, value, _) | Ast.Compound_assign (target, _, value, _, _) ->
         count_expanded_expr_type_nodes value cap
           (count_expanded_target_type_nodes target cap total)
     | Ast.Return (value, _) -> (
@@ -338,7 +339,7 @@ let specialization_declaration_id bindings kind span name =
 
 let validate_binding_name span name =
   if Names.reserved_binding_name name then
-    error span (Printf.sprintf "`%s` is reserved and cannot be used as a binding" name)
+    error span (Names.reserved_binding_message name)
   else Ok ()
 
 let const_params generic_params =

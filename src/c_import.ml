@@ -97,6 +97,19 @@ let error_location line =
                     (fun column -> (file, line, column))
                     (int_of_string_opt column))))
 
+let source_line path requested =
+  try
+    let input = open_in_bin path in
+    Fun.protect
+      ~finally:(fun () -> close_in_noerr input)
+      (fun () ->
+        let rec find line =
+          let text = input_line input in
+          if line = requested then Some text else find (line + 1)
+        in
+        find 1)
+  with End_of_file | Sys_error _ -> None
+
 let compilation_error ?source ?(headers = []) ?(prefix = "C compilation failed")
     fallback output =
   let line = Option.value ~default:(String.trim output) (first_error output) in
@@ -132,6 +145,13 @@ let compilation_error ?source ?(headers = []) ?(prefix = "C compilation failed")
     match error_location line with
     | Some (file, line, column) when Filename.check_suffix file ".fas" ->
         (Span.make ~file ~start_offset:0 ~end_offset:0 ~line ~column, [])
+    | Some (file, line, column) when prefix = "assembly failed" ->
+        let notes =
+          match source_line file line with
+          | Some text -> [ "source: " ^ text ]
+          | None -> []
+        in
+        (Span.make ~file ~start_offset:0 ~end_offset:0 ~line ~column, notes)
     | Some (file, line, column) ->
         let notes =
           if String.starts_with ~prefix:"fas-c-import-" (Filename.basename file) then []
@@ -1456,7 +1476,7 @@ let type_result ?(allow_arrays = false) ~alias_name ~alias_type_node ~resolve_al
           match type_node_id node with
           | Some id ->
               Option.fold ~none:(Error "anonymous records are not supported")
-                ~some:(fun name -> Ok (Ast.Named_type name))
+                ~some:(fun name -> Ok (Ast.Named_type (name, Span.synthetic)))
                 (Hashtbl.find_opt record_ids id)
           | None -> Error "anonymous records are not supported")
       | Some ("PointerType" | "BlockPointerType" | "ObjCObjectPointerType") -> (
@@ -1489,7 +1509,8 @@ let type_result ?(allow_arrays = false) ~alias_name ~alias_type_node ~resolve_al
                           ( Hashtbl.find_opt record_ids id,
                             Hashtbl.mem visible_record_ids id )
                         with
-                        | Some name, true -> Ok (Ast.Handle (Ast.Named_type name))
+                        | Some name, true ->
+                            Ok (Ast.Handle (Ast.Named_type (name, Span.synthetic)))
                         | _ -> Ok Ast.Addr)
                     | None -> Ok Ast.Addr)
                 | Some
@@ -2456,7 +2477,7 @@ let map_declarations ?(container = false) ~span declarations =
     Hashtbl.fold
       (fun name result acc ->
         match result with
-        | Ok (Ast.Named_type target) when target = name -> acc
+        | Ok (Ast.Named_type (target, _)) when target = name -> acc
         | Ok ty when not (Names.reserved_binding_name name) -> (name, ty) :: acc
         | Ok _ -> acc
         | Error _ -> acc)
@@ -2973,6 +2994,7 @@ let map_declarations ?(container = false) ~span declarations =
                           {
                             Ast.name = field_name;
                             ty;
+                            ty_span = span;
                             span;
                             offset = Some (base + relative);
                             unsupported_reason = reason;
@@ -3001,7 +3023,7 @@ let map_declarations ?(container = false) ~span declarations =
       records_by_name
   in
   let rec contains_const_fields = function
-    | Ast.Named_type name -> (
+    | Ast.Named_type (name, _) -> (
         match
           List.find_opt (fun (record, _, _, _, _, _) -> record = name) raw_records
         with
@@ -3042,8 +3064,8 @@ let map_declarations ?(container = false) ~span declarations =
       | Ast.Int Usize -> Some (Hir.Int Hir.Usize)
       | Ast.Int Isize -> Some (Hir.Int Hir.Isize)
       | Ast.Addr -> Some Hir.Addr
-      | Ast.Handle (Ast.Named_type name) -> Some (Hir.Handle name)
-      | Ast.Named_type name -> Some (Hir.Struct name)
+      | Ast.Handle (Ast.Named_type (name, _)) -> Some (Hir.Handle name)
+      | Ast.Named_type (name, _) -> Some (Hir.Struct name)
       | Ast.Array (length, ty) ->
           Option.bind (int_of_string_opt length) (fun n ->
               Option.map (fun ty -> Hir.Array (n, ty)) (convert ty))
@@ -3170,7 +3192,7 @@ let map_declarations ?(container = false) ~span declarations =
     | node :: _ -> Some node
   in
   let rec type_value_reason = function
-    | Ast.Named_type name -> record_value_reason name
+    | Ast.Named_type (name, _) -> record_value_reason name
     | Ast.Array (_, element) -> type_value_reason element
     | _ -> None
   in
@@ -3183,7 +3205,7 @@ let map_declarations ?(container = false) ~span declarations =
     @ Hashtbl.fold
         (fun name result acc ->
           match result with
-          | Ok (Ast.Named_type target)
+          | Ok (Ast.Named_type (target, _))
             when target <> name && Hashtbl.mem record_definitions target ->
               (name, target, record_value_reason target) :: acc
           | _ -> acc)
@@ -3463,7 +3485,7 @@ let map_declarations ?(container = false) ~span declarations =
             (children node)
       | Some "TypedefDecl", _ -> (
           match Hashtbl.find_opt aliases name with
-          | Some (Ok (Ast.Named_type target)) when target = name -> ()
+          | Some (Ok (Ast.Named_type (target, _))) when target = name -> ()
           | Some (Ok ty) ->
               add_item name
                 (declaration_spelling node name)
@@ -3585,7 +3607,12 @@ let map_declarations ?(container = false) ~span declarations =
                        params =
                          List.mapi
                            (fun index (_, ty) ->
-                             ({ Ast.name = "arg" ^ string_of_int index; ty; span }
+                             ({
+                                Ast.name = "arg" ^ string_of_int index;
+                                ty;
+                                ty_span = span;
+                                span;
+                              }
                                : Ast.param))
                            params;
                        ret;
@@ -3822,7 +3849,7 @@ let merge_imports mappings =
 
 let canonical_type aliases ty =
   let rec canonical = function
-    | Ast.Named_type name as ty ->
+    | Ast.Named_type (name, _) as ty ->
         Option.value ~default:ty (List.assoc_opt name aliases)
     | Ast.Handle inner -> Ast.Handle (canonical inner)
     | Ast.Array (length, inner) -> Ast.Array (length, canonical inner)
@@ -3830,6 +3857,10 @@ let canonical_type aliases ty =
     | ty -> ty
   in
   canonical ty
+
+let canonical_type_equal aliases left right =
+  Ast.type_name (canonical_type aliases left)
+  = Ast.type_name (canonical_type aliases right)
 
 let c_signature aliases = function
   | Ast.Func { params; ret; variadic; _ } ->
@@ -3894,8 +3925,7 @@ let reconcile_source ?(container_mismatch_to_clang = false) source_items importe
           match item with
           | Ast.Global
               { linkage = Ast.Export_c; init = Some _; ty = Ast.Array (_, actual); _ }
-            when canonical_type imported.aliases actual
-                 = canonical_type imported.aliases element ->
+            when canonical_type_equal imported.aliases actual element ->
               confirmed := name :: !confirmed;
               None
           | Ast.Global

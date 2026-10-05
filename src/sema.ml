@@ -19,7 +19,7 @@ let validate_generic_params named_types params =
         | Ast.Type_param { name; span } -> validate_binding_name span name
         | Ast.Const_param cp ->
             let* () = validate_binding_name cp.span cp.name in
-            let* t = source_ty_diag named_types cp.span cp.ty in
+            let* t = source_ty_diag named_types cp.ty_span cp.ty in
             if t = Hir.Bool || is_int t then Ok ()
             else error cp.span "const parameter type must be a scalar integer or bool")
       params
@@ -60,23 +60,20 @@ let extern_c_value_type = function
   | Hir.Void | Hir.Array _ | Hir.Vec _ | Hir.Struct _ | Hir.Opaque _ -> false
 
 let aggregate_value_type = function Hir.Array _ | Hir.Struct _ -> true | _ -> false
-
-let diagnostic_source_ty_name ty =
-  let name = String.concat "" (String.split_on_char ' ' (Ast.type_name ty)) in
-  if String.contains name '$' then "generic aggregate" else name
+let diagnostic_source_ty_name ty = Ast.type_name ty
 
 let aggregate_parameter_error span name ty_name =
   error span
     (Printf.sprintf
-       "aggregate parameter `%s` of type `%s` cannot be passed by value; pass `&x` as \
-        `addr` or `handle[T]`"
-       name ty_name)
+       "aggregate parameter `%s` of type `%s` cannot be passed by value; declare `%s` \
+        as `addr`"
+       name ty_name name)
 
 let aggregate_result_error span ty_name =
   error span
     (Printf.sprintf
-       "aggregate result `%s` cannot be returned by value; pass destination storage as \
-        `addr` or `handle[T]`"
+       "aggregate result `%s` cannot be returned by value; use destination storage \
+        passed as `addr`"
        ty_name)
 
 let always_aggregate_type named_types generic_params ty =
@@ -87,8 +84,8 @@ let always_aggregate_type named_types generic_params ty =
   in
   let rec is_aggregate = function
     | Ast.Array _ -> true
-    | Ast.Named_type name when List.mem name generic_type_names -> false
-    | Ast.Named_type name -> (
+    | Ast.Named_type (name, _) when List.mem name generic_type_names -> false
+    | Ast.Named_type (name, _) -> (
         match List.assoc_opt name named_types with
         | Some Struct_name | Some (C_record_name (_, None)) -> true
         | Some (Alias_name ty) -> is_aggregate ty
@@ -105,7 +102,7 @@ let validate_native_aggregate_signature span params converted ret =
     | [], [] -> Ok ()
     | (param : Ast.param) :: param_rest, (_, ty) :: converted_rest ->
         if aggregate_value_type ty then
-          aggregate_parameter_error param.span param.name
+          aggregate_parameter_error param.ty_span param.name
             (diagnostic_source_ty_name param.ty)
         else validate_params param_rest converted_rest
     | _ -> error span "internal error: parameter list mismatch"
@@ -122,10 +119,10 @@ let validate_extern_c_signature span params converted ret =
     | (param : Ast.param) :: param_rest, (_, ty) :: converted_rest ->
         if extern_c_value_type ty then validate_params param_rest converted_rest
         else if aggregate_value_type ty then
-          aggregate_parameter_error param.span param.name
+          aggregate_parameter_error param.ty_span param.name
             (diagnostic_source_ty_name param.ty)
         else
-          error param.span
+          error param.ty_span
             (Printf.sprintf
                "extern \"C\" parameter `%s` cannot use `%s` by value; use a pointer"
                param.name (Hir.ty_name ty))
@@ -202,7 +199,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                   in
                   duplicate
                     (if kind = Top_function then
-                       Printf.sprintf "duplicate function `%s` symbol" name
+                       Printf.sprintf "duplicate function `%s`" name
                      else Printf.sprintf "duplicate %s `%s`" label name)
                 else duplicate (Printf.sprintf "duplicate declaration `%s`" name)))
   in
@@ -387,7 +384,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                 if String_set.mem f.name seen then
                   error f.span (Printf.sprintf "duplicate field `%s`" f.name)
                 else
-                  let* ty = source_ty_diag named_types f.span f.ty in
+                  let* ty = source_ty_diag named_types f.ty_span f.ty in
                   collect_fields (String_set.add f.name seen) ((f.name, ty) :: out)
                     fields
           in
@@ -403,6 +400,51 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
   in
   let* structs_src = collect_structs named_types [] program.Ast.items in
   let build structs_src =
+    let rec mentions_type target = function
+      | Ast.Named_type (name, _) -> name = target
+      | Ast.Handle ty | Ast.Array (_, ty) | Ast.Vec (_, ty) -> mentions_type target ty
+      | Ast.Applied_type (_, arguments, _) ->
+          List.exists
+            (function
+              | Ast.Type_arg ty | Ast.Type_or_index ty -> mentions_type target ty
+              | _ -> false)
+            arguments
+      | _ -> false
+    in
+    let rec contains_void = function
+      | Ast.Void -> true
+      | Ast.Handle ty | Ast.Array (_, ty) | Ast.Vec (_, ty) -> contains_void ty
+      | _ -> false
+    in
+    let layout_error_span message =
+      let target =
+        let extract prefix =
+          if not (String.starts_with ~prefix message) then None
+          else
+            let start = String.length prefix in
+            match String.index_from_opt message start '`' with
+            | Some stop -> Some (String.sub message start (stop - start))
+            | None -> None
+        in
+        match extract "opaque type `" with
+        | Some _ as name -> name
+        | None -> extract "recursive by-value struct `"
+      in
+      let field_matches (field : Ast.field) =
+        if message = "void has no object layout" then contains_void field.ty
+        else
+          Option.fold ~none:false ~some:(fun name -> mentions_type name field.ty) target
+      in
+      program.items
+      |> List.find_map (function
+        | Ast.Struct { fields; _ } ->
+            List.find_map
+              (fun (field : Ast.field) ->
+                if field_matches field then Some field.ty_span else None)
+              fields
+        | _ -> None)
+      |> Option.value ~default:Span.synthetic
+    in
     let cache =
       Hir.struct_layout_cache ~unions:union_names ~field_offsets ~field_reasons
         ~byte_storage ~struct_sizes structs_src
@@ -412,7 +454,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       | (name, _, _) :: xs ->
           let* s =
             Hir.compute_struct_cached cache name
-            |> Result.map_error (fun m -> [ Diag.error Span.synthetic m ])
+            |> Result.map_error (fun m -> [ Diag.error (layout_error_span m) m ])
             |> trace_result specializations
                  (specialization_trace specializations Struct_specialization name)
           in
@@ -528,7 +570,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       (Sema_static_env.storage_items symbolic_names program.items)
   in
   let source_params =
-    map_params (fun (param : Ast.param) -> source_obj param.span param.ty)
+    map_params (fun (param : Ast.param) -> source_obj param.ty_span param.ty)
   in
   let sigs = ref [] and declared_functions = ref String_set.empty in
   let validate_entry_signature span params ret =
@@ -553,7 +595,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
             let ret_span = func.ret_span in
             let* () = validate_binding_name span name in
             if String_set.mem name !declared_functions then
-              error name_span (Printf.sprintf "duplicate function `%s` symbol" name)
+              error name_span (Printf.sprintf "duplicate function `%s`" name)
             else if List.mem name arrays_names then
               error span (Printf.sprintf "duplicate declaration `%s`" name)
             else if name = "main" && generic_params <> [] then
@@ -580,7 +622,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                       params
                   with
                   | Some parameter ->
-                      aggregate_parameter_error parameter.span parameter.name
+                      aggregate_parameter_error parameter.ty_span parameter.name
                         (diagnostic_source_ty_name parameter.ty)
                   | None ->
                       if always_aggregate_type named_types generic_params ret then
@@ -593,7 +635,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
               else
                 let* ps =
                   map_params
-                    (fun (param : Ast.param) -> source_obj param.span param.ty)
+                    (fun (param : Ast.param) -> source_obj param.ty_span param.ty)
                     params
                 in
                 let* rt = source_return ret_span ret in
@@ -601,9 +643,12 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                   if name = "main" then validate_entry_signature span ps rt else Ok ()
                 in
                 let* () =
-                  if linkage = Ast.External_c then
-                    validate_extern_c_signature ret_span params ps rt
-                  else validate_native_aggregate_signature ret_span params ps rt
+                  (if linkage = Ast.External_c then
+                     validate_extern_c_signature ret_span params ps rt
+                   else validate_native_aggregate_signature ret_span params ps rt)
+                  |> trace_result specializations
+                       (specialization_trace specializations Function_specialization
+                          name)
                 in
                 sigs := (name, { params = ps; ret = rt; variadic }) :: !sigs;
                 Ok ()
@@ -767,10 +812,10 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                 Result_list.map
                   (fun (parameter : Ast.param) ->
                     let* ty =
-                      source_ty_with_values named_types values parameter.span
+                      source_ty_with_values named_types values parameter.ty_span
                         parameter.ty
                     in
-                    let* ty = validate_object parameter.span ty in
+                    let* ty = validate_object parameter.ty_span ty in
                     Ok (parameter.name, ty))
                   params
               in

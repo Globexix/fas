@@ -120,7 +120,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     result
   in
   let ambiguous_name = function
-    | Ast.Named_type name | Ast.Applied_type (name, _, _) -> Some name
+    | Ast.Named_type (name, _) | Ast.Applied_type (name, _, _) -> Some name
     | _ -> None
   in
   let is_shadowed_argument = function
@@ -185,7 +185,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Handle ty -> type_mentions names ty
     | Ast.Applied_type (_, arguments, _) ->
         List.exists (generic_argument_mentions names) arguments
-    | Ast.Named_type name -> List.mem name names
+    | Ast.Named_type (name, _) -> List.mem name names
     | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Addr -> false
   and generic_argument_mentions names = function
     | Ast.Type_arg ty | Ast.Type_or_index ty -> type_mentions names ty
@@ -214,7 +214,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         type_mentions names ty || expression_mentions names expression
     | Ast.Sizeof (ty, _) | Ast.Alignof (ty, _) | Ast.Offsetof (ty, _, _) ->
         type_mentions names ty
-    | Ast.Field (expression, _, _) -> expression_mentions names expression
+    | Ast.Field (expression, _, _) | Ast.Arrow_field (expression, _, _, _) ->
+        expression_mentions names expression
     | Ast.Ternary (condition, yes, no, _) ->
         expression_mentions names condition
         || expression_mentions names yes || expression_mentions names no
@@ -245,23 +246,23 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               else error span (Printf.sprintf "unknown name `%s`" length)
         in
         validate_type_names value_names type_names span ty
-    | Ast.Named_type name when Names.reserved_float_name name ->
-        error span "reserved for v0.5 floating point"
-    | Ast.Named_type name when String_set.mem name !local_values ->
-        error span (Printf.sprintf "`%s` is a value, not a type" name)
-    | Ast.Named_type name -> (
+    | Ast.Named_type (name, type_span) when Names.reserved_float_name name ->
+        error type_span (Names.reserved_float_message name)
+    | Ast.Named_type (name, type_span) when String_set.mem name !local_values ->
+        error type_span (Printf.sprintf "`%s` is a value, not a type" name)
+    | Ast.Named_type (name, type_span) -> (
         match nearest_kind value_names type_names name with
         | Some (`Type _) -> Ok ()
         | Some (`Value _) ->
-            error span (Printf.sprintf "`%s` is a value, not a type" name)
+            error type_span (Printf.sprintf "`%s` is a value, not a type" name)
         | Some (`Function _) ->
-            error span (Printf.sprintf "`%s` is a function, not a type" name)
+            error type_span (Printf.sprintf "`%s` is a function, not a type" name)
         | None ->
             Error
               [
                 unknown_type_error
                   (String_set.elements type_names @ !generic_type_names)
-                  span name;
+                  type_span name;
               ])
     | Ast.Applied_type (name, arguments, application_span) ->
         if String_set.mem name value_names then
@@ -407,7 +408,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         validate_expression_names value_names type_names expression
     | Ast.Sizeof (ty, span) | Ast.Alignof (ty, span) | Ast.Offsetof (ty, _, span) ->
         validate_type_names value_names type_names span ty
-    | Ast.Field (expression, _, _) ->
+    | Ast.Field (expression, _, _) | Ast.Arrow_field (expression, _, _, _) ->
         validate_expression_names value_names type_names expression
     | Ast.Ternary (condition, yes, no, _) ->
         let* () = validate_expression_names value_names type_names condition in
@@ -446,7 +447,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           error span (Printf.sprintf "duplicate local `%s`" name)
         else
           let* () =
-            Diag.local_type_error name
+            Diag.local_type_error ~span name
               (validate_type_names value_names type_names span ty)
           in
           let* () = validate_binding_name span name in
@@ -464,8 +465,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         else
           let* () = validate_expression_names value_names type_names place in
           Ok (String_set.add name value_names, String_set.add name scope_names)
-    | Ast.Assign (target, expression, _) | Ast.Compound_assign (target, _, expression, _)
-      ->
+    | Ast.Assign (target, expression, _)
+    | Ast.Compound_assign (target, _, expression, _, _) ->
         let* () = validate_target_names value_names type_names target in
         let* () = validate_expression_names value_names type_names expression in
         Ok (value_names, scope_names)
@@ -637,7 +638,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Unary (_, expression, _)
     | Ast.Addr_of (expression, _)
     | Ast.Splat (expression, _)
-    | Ast.Field (expression, _, _) ->
+    | Ast.Field (expression, _, _)
+    | Ast.Arrow_field (expression, _, _, _) ->
         has_generic_arguments expression
     | Ast.Binary (_, left, right, _) ->
         has_generic_arguments left || has_generic_arguments right
@@ -664,7 +666,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         false
   in
   let rec substitute_validation_type substitutions = function
-    | Ast.Named_type name as ty ->
+    | Ast.Named_type (name, _) as ty ->
         Option.value ~default:ty (List.assoc_opt name substitutions)
     | Ast.Addr -> Ast.Addr
     | Ast.Handle ty -> Ast.Handle (substitute_validation_type substitutions ty)
@@ -759,10 +761,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                     | Ast.Type_arg ty when not (type_mentions dependent ty) ->
                         resolve_arguments ((name, ty) :: substitutions) values
                           parameters arguments
-                    | Ast.Name_arg (argument_name, _)
+                    | Ast.Name_arg (argument_name, argument_span)
                       when not (List.mem argument_name dependent) ->
                         resolve_arguments
-                          ((name, Ast.Named_type argument_name) :: substitutions)
+                          ((name, Ast.Named_type (argument_name, argument_span))
+                          :: substitutions)
                           values parameters arguments
                     | _ -> Ok None)
                 | Ast.Const_param parameter :: parameters, argument :: arguments ->
@@ -892,7 +895,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                     true
                 | _ -> false
               in
-              if valid then Ok () else error span "illegal cast target type"
+              if valid then Ok ()
+              else error span (Sema_types.cast_target_error kind destination)
           in
           validate_non_dependent_expression c dependent None value
       | Ast.Handle_from_addr (destination, value, span) ->
@@ -905,7 +909,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               |> Result.map (fun _ -> ())
           in
           validate_non_dependent_expression c dependent None value
-      | Ast.Field (value, _, _) ->
+      | Ast.Field (value, _, _) | Ast.Arrow_field (value, _, _, _) ->
           validate_non_dependent_expression c dependent None value
       | Ast.Ternary (condition, yes, no, _) ->
           let* () = validate_non_dependent_expression c dependent None condition in
@@ -987,7 +991,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             Ok ()
           in
           Ok (List.filter (fun dependent_name -> dependent_name <> name) dependent)
-    | (Ast.Assign (target, value, _) | Ast.Compound_assign (target, _, value, _)) as
+    | (Ast.Assign (target, value, _) | Ast.Compound_assign (target, _, value, _, _)) as
       statement ->
         if target_mentions dependent target then
           let* () = validate_non_dependent_expression c dependent None value in
@@ -1156,29 +1160,29 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         in
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Vec (length, ty))
-    | Ast.Named_type name when Names.reserved_float_name name ->
-        error span "reserved for v0.5 floating point"
-    | Ast.Named_type name -> (
+    | Ast.Named_type (name, type_span) when Names.reserved_float_name name ->
+        error type_span (Names.reserved_float_message name)
+    | Ast.Named_type (name, type_span) -> (
         if String_set.mem name !local_values then
-          error span (Printf.sprintf "`%s` is a value, not a type" name)
+          error type_span (Printf.sprintf "`%s` is a value, not a type" name)
         else
           match List.assoc_opt name substitutions with
           | Some ty -> Ok ty
           | None ->
               if List.mem_assoc name struct_templates then
-                error span
+                error type_span
                   (Printf.sprintf "generic struct `%s` requires type arguments" name)
               else if
                 String_set.mem name named_type_names
                 || List.mem name !generic_type_names
-              then Ok (Ast.Named_type name)
+              then Ok (Ast.Named_type (name, type_span))
               else
                 Error
                   [
                     unknown_type_error
                       (String_set.elements named_type_names
                       @ !generic_type_names @ List.map fst eval_named_types)
-                      span name;
+                      type_span name;
                   ])
     | Ast.Applied_type (name, _, _) when String_set.mem name !local_values ->
         error span (Printf.sprintf "`%s` is a value, not a type" name)
@@ -1191,7 +1195,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             else error span (Printf.sprintf "unknown generic struct `%s`" name)
         | Some (Ast.Struct ({ generic_params; _ } as template)) ->
             if List.length arguments <> List.length generic_params then
-              error span
+              error application_span
                 (Printf.sprintf "wrong number of generic arguments to `%s`" name)
             else if defer_const_structs && has_const_params generic_params then
               let rec resolve_arguments resolved params arguments =
@@ -1205,7 +1209,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                             span ty
                       | Ast.Name_arg (name, _) ->
                           resolve_ty ~values ~defer_const_structs substitutions depth
-                            span (Ast.Named_type name)
+                            span
+                            (Ast.Named_type (name, span))
                       | Ast.Const_arg expression ->
                           error (Ast.expr_span expression) "expected a type argument"
                     in
@@ -1245,7 +1250,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                             span ty
                       | Ast.Name_arg (name, _) ->
                           resolve_ty ~values ~defer_const_structs substitutions depth
-                            span (Ast.Named_type name)
+                            span
+                            (Ast.Named_type (name, span))
                       | Ast.Const_arg expression ->
                           error (Ast.expr_span expression) "expected a type argument"
                     in
@@ -1329,7 +1335,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                   Sema_specialization.request specializations ~limits ~depth ~span
                     ~description:"struct specialization" specialization
                 in
-                Ok (Ast.Named_type specialization.name)
+                Ok (Ast.Named_type (specialization.name, span))
         | Some _ -> error span "internal error: generic struct template is malformed")
   and resolve_expr ?(values = []) ?(defer_const_structs = false) substitutions depth =
     function
@@ -1374,7 +1380,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           | Ast.Name_arg (name, name_span) ->
               let* ty =
                 resolve_ty ~values ~defer_const_structs substitutions depth name_span
-                  (Ast.Named_type name)
+                  (Ast.Named_type (name, name_span))
               in
               Ok (Ast.Type_arg ty)
           | Ast.Const_arg expression ->
@@ -1422,9 +1428,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                       | Ast.Type_arg ty | Ast.Type_or_index ty ->
                           resolve_ty ~values ~defer_const_structs substitutions depth
                             span ty
-                      | Ast.Name_arg (name, _) ->
+                      | Ast.Name_arg (name, name_span) ->
                           resolve_ty ~values ~defer_const_structs substitutions depth
-                            span (Ast.Named_type name)
+                            name_span
+                            (Ast.Named_type (name, name_span))
                       | Ast.Const_arg expression ->
                           error (Ast.expr_span expression) "expected a type argument"
                     in
@@ -1680,6 +1687,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           resolve_expr ~values ~defer_const_structs substitutions depth base
         in
         Ok (Ast.Field (base, name, span))
+    | Ast.Arrow_field (base, name, operator_span, field_span) ->
+        let* base =
+          resolve_expr ~values ~defer_const_structs substitutions depth base
+        in
+        Ok (Ast.Arrow_field (base, name, operator_span, field_span))
     | Ast.Addr_of (expression, span) ->
         let* expression =
           resolve_expr ~values ~defer_const_structs substitutions depth expression
@@ -1824,14 +1836,14 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             resolve_expr ~values ~defer_const_structs substitutions depth expression
           in
           Ok (Ast.Assign (target, expression, span))
-      | Ast.Compound_assign (target, op, expression, span) ->
+      | Ast.Compound_assign (target, op, expression, span, operator_span) ->
           let* target =
             resolve_target ~values ~defer_const_structs substitutions depth target
           in
           let* expression =
             resolve_expr ~values ~defer_const_structs substitutions depth expression
           in
-          Ok (Ast.Compound_assign (target, op, expression, span))
+          Ok (Ast.Compound_assign (target, op, expression, span, operator_span))
       | Ast.Return (expression, span) ->
           let* expression =
             match expression with

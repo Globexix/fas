@@ -7,6 +7,7 @@ let rec symbolic_expression names = function
   | Ast.Cast (_, _, x, _)
   | Ast.Handle_from_addr (_, x, _)
   | Ast.Field (x, _, _)
+  | Ast.Arrow_field (x, _, _, _)
   | Ast.Splat (x, _) ->
       symbolic_expression names x
   | Ast.Binary (_, x, y, _) ->
@@ -25,7 +26,7 @@ let names items =
   let rec address_type seen = function
     | Ast.Addr | Ast.Handle _ | Ast.Vec _ -> true
     | Ast.Array (_, element) -> address_type seen element
-    | Ast.Named_type name when not (List.mem name seen) ->
+    | Ast.Named_type (name, _) when not (List.mem name seen) ->
         List.exists
           (function
             | Ast.Struct { name = actual; fields; is_union; _ } when name = actual ->
@@ -90,6 +91,20 @@ let declarations ~source_obj names items =
 let address_value c ty expression =
   let error span message = Error [ Diag.error span message ] in
   let ( let* ) x f = match x with Ok v -> f v | Error _ as e -> e in
+  let c_string_error span =
+    let help =
+      match expression with
+      | Ast.String_lit (false, text, _)
+        when String.for_all
+               (fun character ->
+                 let code = Char.code character in
+                 code >= 32 && code <= 126 && character <> '"' && character <> '\\')
+               text ->
+          Some (Printf.sprintf "write `c\"%s\"`" text)
+      | _ -> None
+    in
+    Error [ Diag.error ?help span "address constants require a C string literal" ]
+  in
   let rec place = function
     | Ast.Ident (name, span) -> (
         match Sema_context.lookup_global name c.Sema_context.globals with
@@ -115,6 +130,9 @@ let address_value c ty expression =
         | _ ->
             error span
               "address initializer requires static storage and constant selectors")
+    | Ast.Arrow_field (_, _, _, field_span) ->
+        error field_span
+          "address initializer requires static storage and constant selectors"
     | Ast.Select (base, [ argument ], span) -> (
         let* name, ty, previous = place base in
         let* index = Sema_check.select_value_arg span argument in
@@ -153,24 +171,27 @@ let address_value c ty expression =
         in
         if c_literal expression then
           Ok (Hir.Global_address (".str." ^ string_of_int id, 0))
-        else error span "address constants require a C string literal"
+        else c_string_error span
     | Hir.Address _ ->
         let rec target = function
           | Ast.Addr_of (base, _) -> place base
           | Ast.Handle_from_addr (_, value, _) -> target value
           | Ast.Call (_, [ value ], _) -> target value
-          | value -> error (Ast.expr_span value) "address constants are storable only"
+          | value ->
+              error (Ast.expr_span value)
+                "address constants can only be stored in `addr` or `handle[T]` slots"
         in
         let* name, _, offset = target expression in
         Ok (Hir.Global_address (name, offset))
     | Hir.Function_address (name, _) -> Ok (Hir.Global_address (name, 0))
     | Hir.Call (Hir.Builtin (Hir.Handle_from_addr _), [ value ], _, _) -> address value
-    | value -> error (Hir.expr_span value) "address constants are storable only"
+    | value ->
+        error (Hir.expr_span value)
+          "address constants can only be stored in `addr` or `handle[T]` slots"
   in
   let* () =
     match expression with
-    | Ast.String_lit (false, _, span) ->
-        error span "address constants require a C string literal"
+    | Ast.String_lit (false, _, span) -> c_string_error span
     | _ -> Ok ()
   in
   let record_handle_address =

@@ -152,7 +152,7 @@ let c_export_diagnostic (program : Ast.program) message =
             program.items
         in
         let rec find visited = function
-          | Ast.Named_type name when not (List.mem name visited) ->
+          | Ast.Named_type (name, _) when not (List.mem name visited) ->
               Option.bind (List.assoc_opt name structs) (fun fields ->
                   match
                     List.find_opt
@@ -165,7 +165,7 @@ let c_export_diagnostic (program : Ast.program) message =
                         (fun (field : Ast.field) -> find (name :: visited) field.Ast.ty)
                         fields)
           | Ast.Applied_type (name, args, _) -> (
-              let from_fields = find visited (Ast.Named_type name) in
+              let from_fields = find visited (Ast.Named_type (name, Span.synthetic)) in
               match
                 List.find_map
                   (function Ast.Type_arg ty -> find visited ty | _ -> None)
@@ -876,10 +876,7 @@ let run_unprotected ?header_output config =
                           in
                           if Filename.check_suffix path ".s" then
                             Ok (Printf.sprintf ".include %S\n" path)
-                          else
-                            Ok
-                              (Printf.sprintf "#line %d %S\n%s\n" span.Span.line source
-                                 text)
+                          else Ok (Printf.sprintf "#line 1 %S\n%s\n" path text)
                       | Ast.C_system _ ->
                           Error
                             [

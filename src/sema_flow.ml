@@ -124,8 +124,7 @@ let local_names flow =
 let ensure_new_local name flow span =
   let* () =
     if Names.reserved_binding_name name then
-      error span
-        (Printf.sprintf "`%s` is reserved and cannot be used as a binding" name)
+      error span (Names.reserved_binding_message name)
     else Ok ()
   in
   let scope =

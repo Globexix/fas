@@ -221,7 +221,7 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
         match vec_cap_error length ty with
         | Some message -> add_error message
         | None -> Ok (Hir.Vec (length, ty)))
-    | Ast.Named_type name -> (
+    | Ast.Named_type (name, type_span) -> (
         match List.assoc_opt name type_bindings with
         | Some ty -> Ok ty
         | None -> (
@@ -234,21 +234,26 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
                   (Printf.sprintf "generic struct `%s` requires type arguments" name)
             | _ ->
                 source_ty_with_values ~globals named_types (const_bindings @ consts) at
-                  (Ast.Named_type name)))
-    | Ast.Applied_type (name, arguments, _) ->
-        let* structure = instantiate type_bindings const_bindings name at arguments in
+                  (Ast.Named_type (name, type_span))))
+    | Ast.Applied_type (name, arguments, application_span) ->
+        let* structure =
+          instantiate type_bindings const_bindings name application_span arguments
+        in
         Ok (Hir.Struct structure)
   and resolve_length const_bindings at raw =
     match int_of_string_opt raw with
     | Some length when length >= 0 -> Ok length
-    | Some _ -> add_error "negative aggregate length"
+    | Some length ->
+        add_error (Printf.sprintf "aggregate length cannot be negative: `%d`" length)
     | None -> (
         let values = const_bindings @ consts in
         match resolve_aggregate_length ~globals values at raw with
         | Ok resolved -> (
             match int_of_string_opt resolved with
             | Some length when length >= 0 -> Ok length
-            | Some _ -> add_error "negative aggregate length"
+            | Some length ->
+                add_error
+                  (Printf.sprintf "aggregate length cannot be negative: `%d`" length)
             | None -> evaluate values (Ast.Ident (raw, at)) None |> length_value at)
         | Error diagnostics -> Error diagnostics)
   and length_value at = function
@@ -258,13 +263,18 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
           Error [ Diag.error at "aggregate length must be an integer" ]
         else if is_unsigned ty then
           if Int64.unsigned_compare value (Int64.of_int max_int) > 0 then
-            Error [ Diag.error at "aggregate length is not a machine integer" ]
+            Error [ Diag.error at "aggregate length must be an integer constant" ]
           else Ok (Int64.to_int value)
         else
           let value = sign_extend_value ty value in
-          if value < 0L then Error [ Diag.error at "negative aggregate length" ]
+          if value < 0L then
+            Error
+              [
+                Diag.error at
+                  (Printf.sprintf "aggregate length cannot be negative: `%Ld`" value);
+              ]
           else if value > Int64.of_int max_int then
-            Error [ Diag.error at "aggregate length is not a machine integer" ]
+            Error [ Diag.error at "aggregate length must be an integer constant" ]
           else Ok (Int64.to_int value)
   and instantiate outer_type_bindings outer_const_bindings name at arguments =
     match List.assoc_opt name templates with
@@ -275,9 +285,13 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
         | _ -> add_error (Printf.sprintf "unknown generic struct `%s`" name))
     | Some (params, fields, align) -> (
         if List.length arguments <> List.length params then
-          add_error (Printf.sprintf "wrong number of generic arguments to `%s`" name)
+          Error
+            [
+              Diag.error at
+                (Printf.sprintf "wrong number of generic arguments to `%s`" name);
+            ]
         else if params = [] && arguments <> [] then
-          add_error (Printf.sprintf "struct `%s` is not generic" name)
+          Error [ Diag.error at (Printf.sprintf "struct `%s` is not generic" name) ]
         else
           let rec bind type_bindings const_bindings params arguments =
             match (params, arguments) with
@@ -287,9 +301,9 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
                   match argument with
                   | Ast.Type_arg ty | Ast.Type_or_index ty ->
                       resolve_type outer_type_bindings outer_const_bindings at ty
-                  | Ast.Name_arg (type_name, _) ->
+                  | Ast.Name_arg (type_name, type_span) ->
                       resolve_type outer_type_bindings outer_const_bindings at
-                        (Ast.Named_type type_name)
+                        (Ast.Named_type (type_name, type_span))
                   | Ast.Const_arg expression ->
                       Error
                         [
@@ -454,7 +468,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
       | None -> (
           match resolve with
           | Some resolve -> resolve ~check_only n s
-          | None -> global_error s "constant expression requires a known constant"))
+          | None -> error s (Printf.sprintf "unknown name `%s`" n)))
   | Ast.Unary (Ast.Neg, Ast.Int_lit (raw, is), s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error is m ]) in
       let t = Option.value ~default:(Hir.Int Hir.I32) expected in
@@ -524,7 +538,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
                 "right" r rt;
             ]
         else Ok (Hir.Bool, if rv <> 0L then 1L else 0L)
-  | Ast.Binary (((Ast.Shl | Ast.Shr) as op), l, r, s) ->
+  | Ast.Binary (((Ast.Shl | Ast.Shr) as op), l, r, _s) ->
       let* lt, lv =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
           ~globals ?resolve consts
@@ -538,14 +552,12 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
       let* () =
         match lt with
         | Hir.Int _ -> Ok ()
-        | _ -> error s "shift value must be an integer or integer vector"
+        | _ -> Error [ Sema_types.shift_value_error op (Ast.expr_span l) lt ]
       in
       let* () =
         match rt with
         | Hir.Int _ -> Ok ()
-        | Hir.Vec (_, Hir.Bool) -> error s "shift count must be an integer"
-        | Hir.Vec _ -> error s "shift count must be a scalar integer for a scalar value"
-        | _ -> error s "shift count must be an integer"
+        | _ -> Error [ Sema_types.shift_count_error op (Ast.expr_span r) rt ]
       in
       let bits = match lt with Hir.Int k -> int_bits k | _ -> 64 in
       let k = Int64.to_int (Int64.logand rv (Int64.of_int (bits - 1))) in
@@ -608,7 +620,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
           (not check_only) && op = Ast.Div
           && (not (is_unsigned lt))
           && signed_lv = signed_min && signed_rv = Int64.minus_one
-        then error s "signed division overflow in constant expression"
+        then error s "signed division overflow"
         else
           let cmp =
             if is_unsigned lt || lt = Hir.Addr then Int64.unsigned_compare lv rv
@@ -710,7 +722,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
       in
       let* () =
         if cast_legal k st dt then Ok ()
-        else error s "illegal cast for source and destination widths"
+        else Error [ Sema_types.cast_error ~expression:e k st dt s ]
       in
       let* () =
         if ((st = Hir.Bool || is_int st) && (dt = Hir.Bool || is_int dt)) || reshaped
@@ -762,7 +774,16 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
           in
           Ok (Hir.Bool, if result then 1L else 0L)
       | Ok _ -> error (Ast.expr_span arg) "builtin argument must be a bool vector"
-      | Error e -> Error e)
+      | Error e -> (
+          match
+            const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
+              ~globals ?resolve consts None ~check_only arg
+          with
+          | Ok (actual, _) ->
+              error (Ast.expr_span arg)
+                (Printf.sprintf "`%s` needs a bool vector, got `%s`" name
+                   (Sema_types.diagnostic_ty_name actual))
+          | Error _ -> Error e))
   | Ast.Call (Ast.Ident (name, _), [ arg ], _s)
     when name = "reduce_sum" || name = "reduce_min" || name = "reduce_max"
          || name = "reduce_and" || name = "reduce_or" || name = "reduce_xor" -> (
@@ -801,8 +822,20 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
             | _ -> 0L
           in
           Ok (ty, result)
-      | Ok _ -> error (Ast.expr_span arg) "reduction argument must be an integer vector"
-      | Error e -> Error e)
+      | Ok (actual, _) ->
+          error (Ast.expr_span arg)
+            (Printf.sprintf "`%s` needs an integer vector, got `%s`" name
+               (Sema_types.diagnostic_ty_name actual))
+      | Error e -> (
+          match
+            const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
+              ~globals ?resolve consts None ~check_only arg
+          with
+          | Ok (actual, _) ->
+              error (Ast.expr_span arg)
+                (Printf.sprintf "`%s` needs an integer vector, got `%s`" name
+                   (Sema_types.diagnostic_ty_name actual))
+          | Error _ -> Error e))
   | Ast.Call (Ast.Ident (name, _), args, s) -> (
       let* vals =
         Result_list.map
@@ -813,9 +846,22 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
       in
       match (name, vals) with
       | ("rotl" | "rotr"), [ (t, x); (count_ty, n) ] ->
+          let count_expression = List.nth args 1 in
           let* () =
-            if is_int t && is_int count_ty then Ok ()
-            else error s "builtin shift arguments must be integers"
+            if is_int t then Ok ()
+            else
+              Error
+                [ Sema_types.rotate_value_error name (Ast.expr_span (List.hd args)) t ]
+          in
+          let* () =
+            if is_int count_ty then Ok ()
+            else
+              Error
+                [
+                  Sema_types.rotate_count_error name
+                    (Ast.expr_span count_expression)
+                    count_ty;
+                ]
           in
           let bits = match t with Hir.Int q -> int_bits q | _ -> 64 in
           let k = Int64.to_int (Int64.logand n (Int64.of_int (bits - 1))) in
@@ -851,9 +897,33 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
       | ("add_sat" | "sub_sat" | "mul_hi"), [ (t, x); (t2, y) ] -> (
           match t with
           | Hir.Int kind when t = t2 -> Ok (t, mask_value t (sat_or_mulhi name kind x y))
-          | Hir.Int _ -> error s "builtin arguments must have the same type"
-          | _ -> error s "builtin arguments must be integers or integer vectors")
-      | _ -> global_error s "invalid constant builtin call")
+          | Hir.Int _ ->
+              error
+                (Ast.expr_span (List.nth args 1))
+                (Printf.sprintf
+                   "argument 2 of `%s` is `%s`, expected the type of argument 1 (`%s`)"
+                   name
+                   (Sema_types.diagnostic_ty_name t2)
+                   (Sema_types.diagnostic_ty_name t))
+          | _ ->
+              error
+                (Ast.expr_span (List.hd args))
+                (Printf.sprintf "`%s` needs an integer or integer vector, got `%s`" name
+                   (Sema_types.diagnostic_ty_name t)))
+      | _ ->
+          let display_name =
+            match String.index_opt name '$' with
+            | Some index
+              when String.starts_with ~prefix:"$spec$"
+                     (String.sub name index (String.length name - index)) ->
+                String.sub name 0 index
+            | _ -> name
+          in
+          if Option.is_some (Names.value_operation name) then
+            global_error s (Printf.sprintf "invalid constant builtin call to `%s`" name)
+          else
+            global_error s
+              (Printf.sprintf "call to `%s` is not a constant expression" display_name))
   | Ast.Sizeof (t, s) ->
       let evaluate values expression expected =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
@@ -909,15 +979,25 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
     vector_const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
       ~globals ?resolve consts ~check_only
   in
+  let evaluate_peer peer expression =
+    match (peer, unresolved_shape_of expression) with
+    | Hir.Vec _, Some Unresolved_int ->
+        let* ty, value =
+          const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
+            ~globals ?resolve consts None ~check_only expression
+        in
+        Ok (ty, [ value ])
+    | _ -> evaluate (Some peer) expression
+  in
   let pair left right =
     match (unresolved_shape_of left, unresolved_shape_of right) with
     | Some _, None ->
         let* rt, rv = evaluate expected right in
-        let* lt, lv = evaluate (Some rt) left in
+        let* lt, lv = evaluate_peer rt left in
         Ok (lt, lv, rt, rv)
     | _ ->
         let* lt, lv = evaluate expected left in
-        let* rt, rv = evaluate (Some lt) right in
+        let* rt, rv = evaluate_peer lt right in
         Ok (lt, lv, rt, rv)
   in
   match expression with
@@ -965,19 +1045,21 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
           in
           let* () = ensure_expected actual element (Ast.expr_span expression) in
           Ok (ty, List.init lanes (fun _ -> lane_mask element value))
-      | _ -> error span "splat requires a vector type context")
+      | _ ->
+          error span
+            "`splat` needs a vector type from its destination or another operand")
   | Ast.Unary (Ast.Not, value, _span) -> (
       let* ty, values = evaluate expected value in
       match ty with
       | Hir.Vec (_, Hir.Bool) ->
           Ok (ty, List.map (fun value -> if value = 0L then 1L else 0L) values)
       | _ -> Error [ Sema_types.logical_not_error value ty ])
-  | Ast.Binary (((Ast.Shl | Ast.Shr) as op), value, count, span) ->
+  | Ast.Binary (((Ast.Shl | Ast.Shr) as op), value, count, _span) ->
       let* ty, values = evaluate expected value in
       let* element =
         match lane_type ty with
         | Some (Hir.Int _ as element) -> Ok element
-        | _ -> error span "shift value must be an integer or integer vector"
+        | _ -> Error [ Sema_types.shift_value_error op (Ast.expr_span value) ty ]
       in
       let* count_ty, counts =
         match evaluate None count with
@@ -993,11 +1075,16 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
       let* per_lane =
         match count_ty with
         | Hir.Int _ -> Ok (List.map (fun _ -> List.hd counts) values)
-        | Hir.Vec (count_lanes, Hir.Int _) ->
+        | Hir.Vec (count_lanes, (Hir.Int _ as count_element)) ->
             if count_lanes = List.length values then Ok counts
-            else error span "shift count lanes must match the value lanes"
-        | Hir.Vec (_, Hir.Bool) -> error span "shift count must be an integer"
-        | _ -> error span "shift count must be an integer"
+            else
+              Error
+                [
+                  Sema_types.shift_count_lanes_error op (Ast.expr_span count)
+                    (Hir.Vec (count_lanes, count_element))
+                    (Hir.Vec (List.length values, count_element));
+                ]
+        | _ -> Error [ Sema_types.shift_count_error op (Ast.expr_span count) count_ty ]
       in
       let bits = Option.get (integer_value_bit_width element) in
       let apply amount value =
@@ -1063,7 +1150,7 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
               && (not (is_unsigned element))
               && lane_signed element left = signed_min
               && lane_signed element right = Int64.minus_one
-            then Some "signed division overflow in constant expression"
+            then Some "signed division overflow"
             else first_offense left_rest right_rest
         | _ -> None
       in
@@ -1148,19 +1235,23 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
             else Int64.of_int (leading64 value - (64 - bits))
       in
       Ok (ty, List.map (fun value -> lane_mask (Hir.Int kind) (apply value)) values)
-  | Ast.Call (Ast.Ident (name, _), [ value; count ], span)
+  | Ast.Call (Ast.Ident (name, _), [ value; count_expression ], _span)
     when List.mem name [ "rotl"; "rotr" ] ->
       let* ty, values = evaluate expected value in
       let* element =
         match lane_type ty with
         | Some (Hir.Int _ as element) -> Ok element
-        | _ -> error span "builtin shift value must be an integer vector"
+        | _ -> Error [ Sema_types.rotate_value_error name (Ast.expr_span value) ty ]
       in
       let* count_ty, count =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
-          ~globals ?resolve consts None ~check_only count
+          ~globals ?resolve consts None ~check_only count_expression
       in
-      if not (is_int count_ty) then error span "builtin shift count must be an integer"
+      if not (is_int count_ty) then
+        Error
+          [
+            Sema_types.rotate_count_error name (Ast.expr_span count_expression) count_ty;
+          ]
       else
         let bits = Option.get (integer_value_bit_width element) in
         let amount = Int64.to_int (Int64.logand count (Int64.of_int (bits - 1))) in
@@ -1202,32 +1293,67 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
                 lane_mask element source.(Int64.to_int v)
               else 0L)
             idx_values )
-  | Ast.Call (Ast.Ident (name, _), [ a; b; sel ], span) when name = "shuffle" ->
+  | Ast.Call (Ast.Ident (name, _), [ a; b; sel ], _span) when name = "shuffle" ->
       let* at, avalues, bt, bvalues = pair a b in
       let* () =
         if at = bt then Ok ()
-        else error span "builtin arguments must have the same type"
+        else
+          error (Ast.expr_span b)
+            (Printf.sprintf
+               "argument 2 of `shuffle` is `%s`, expected the type of argument 1 (`%s`)"
+               (Sema_types.diagnostic_ty_name bt)
+               (Sema_types.diagnostic_ty_name at))
       in
       let* n, element =
         match at with
         | Hir.Vec (n, ((Hir.Int _ | Hir.Bool) as e)) -> Ok (n, e)
-        | _ -> error span "shuffle operands must be vectors"
+        | _ ->
+            error (Ast.expr_span a)
+              (Printf.sprintf
+                 "argument 1 of `shuffle` must be an integer or bool vector, got `%s`"
+                 (Sema_types.diagnostic_ty_name at))
       in
       let* sel_ty, sel_values =
         match evaluate None (shuffle_selector_expression sel) with
         | Ok result -> Ok result
-        | Error _ ->
-            error span "shuffle indices must be a compile-time constant integer vector"
+        | Error diagnostics -> Error diagnostics
       in
       let* sel_elem =
         match sel_ty with
         | Hir.Vec (_, (Hir.Int _ as e)) -> Ok e
         | _ ->
-            error span "shuffle indices must be a compile-time constant integer vector"
+            error (Ast.expr_span sel)
+              (Printf.sprintf
+                 "shuffle indices must be a compile-time constant integer vector, got \
+                  `%s`"
+                 (Sema_types.diagnostic_ty_name sel_ty))
       in
       let* () =
         if shuffle_indices_in_range sel_elem n sel_values then Ok ()
-        else error span "shuffle index out of range"
+        else
+          let signed =
+            match sel_elem with
+            | Hir.Int (Hir.I8 | Hir.I16 | Hir.I32 | Hir.I64 | Hir.Isize) -> true
+            | _ -> false
+          in
+          let bad =
+            List.find_opt
+              (fun value ->
+                let value =
+                  if signed then sign_extend_value sel_elem value else value
+                in
+                Int64.compare value 0L < 0
+                || Int64.compare value (Int64.of_int (2 * n)) >= 0)
+              sel_values
+          in
+          error (Ast.expr_span sel)
+            (Printf.sprintf "shuffle index `%s` is out of range for %d lanes"
+               (match bad with
+               | Some value when signed ->
+                   Int64.to_string (sign_extend_value sel_elem value)
+               | Some value -> Printf.sprintf "%Lu" value
+               | None -> "?")
+               (2 * n))
       in
       let source = Array.of_list (avalues @ bvalues) in
       Ok
@@ -1270,11 +1396,19 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
       let* lanes =
         match mask_ty with
         | Hir.Vec (n, Hir.Bool) -> Ok n
-        | _ -> error span "select mask must be a bool vector"
+        | _ ->
+            error (Ast.expr_span m)
+              (Printf.sprintf "argument 1 of `select` is `%s`, expected a bool vector"
+                 (Sema_types.diagnostic_ty_name mask_ty))
       in
       let* () =
         if yes_ty = no_ty then Ok ()
-        else error span "builtin arguments must have the same type"
+        else
+          error (Ast.expr_span z)
+            (Printf.sprintf
+               "argument 3 of `select` is `%s`, expected the type of argument 2 (`%s`)"
+               (Sema_types.diagnostic_ty_name no_ty)
+               (Sema_types.diagnostic_ty_name yes_ty))
       in
       let* element =
         match yes_ty with
@@ -1287,17 +1421,25 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
             (fun mv (yv, nv) -> lane_mask element (if mv <> 0L then yv else nv))
             mask_values
             (List.combine yes_values no_values) )
-  | Ast.Call (Ast.Ident (name, _), [ left; right ], span)
+  | Ast.Call (Ast.Ident (name, _), [ left; right ], _span)
     when List.mem name [ "add_sat"; "sub_sat"; "mul_hi" ] ->
       let* left_ty, left_values, right_ty, right_values = pair left right in
       let* () =
         if left_ty = right_ty then Ok ()
-        else error span "builtin arguments must have the same type"
+        else
+          error (Ast.expr_span right)
+            (Printf.sprintf
+               "argument 2 of `%s` is `%s`, expected the type of argument 1 (`%s`)" name
+               (Sema_types.diagnostic_ty_name right_ty)
+               (Sema_types.diagnostic_ty_name left_ty))
       in
       let* kind =
         match lane_type left_ty with
         | Some (Hir.Int k) -> Ok k
-        | _ -> error span "builtin arguments must be integers or integer vectors"
+        | _ ->
+            error (Ast.expr_span left)
+              (Printf.sprintf "`%s` needs an integer or integer vector, got `%s`" name
+                 (Sema_types.diagnostic_ty_name left_ty))
       in
       Ok
         ( left_ty,
@@ -1354,7 +1496,8 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
       in
       let* () =
         if cast_legal kind source destination then Ok ()
-        else error span "illegal cast for source and destination widths"
+        else
+          Error [ Sema_types.cast_error ~expression:value kind source destination span ]
       in
       if kind = Ast.Bitcast then
         let* values =
@@ -1432,12 +1575,18 @@ let resolve_scalar_declarations ?(globals = []) ?(array_lengths = [])
             else
               let () = Hashtbl.add visiting name () in
               let result =
-                let* actual_ty, value =
-                  const_expr ~structs ~named_types ~generic_structs ~array_lengths
-                    ~globals ~resolve [] (Some ty) initial_value
+                let result =
+                  let* actual_ty, value =
+                    const_expr ~structs ~named_types ~generic_structs ~array_lengths
+                      ~globals ~resolve [] (Some ty) initial_value
+                  in
+                  if Hir.ty_equal actual_ty ty then Ok (ty, value)
+                  else error declaration_span "constant initializer type mismatch"
                 in
-                if Hir.ty_equal actual_ty ty then Ok (ty, value)
-                else error declaration_span "constant initializer type mismatch"
+                Result.map_error
+                  (List.map (fun diagnostic ->
+                       { diagnostic with Diag.primary = declaration_span }))
+                  result
               in
               Hashtbl.remove visiting name;
               match result with
@@ -1448,7 +1597,7 @@ let resolve_scalar_declarations ?(globals = []) ?(array_lengths = [])
                       _;
                     };
                   ] ->
-                  error (Ast.expr_span initial_value)
+                  error declaration_span
                     (Printf.sprintf
                        "constant `%s` initializer uses nonconstant value `%s`" name
                        (Ast.expr_name initial_value))

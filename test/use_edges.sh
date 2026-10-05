@@ -150,7 +150,7 @@ FAS
 expect_failure "$OCAML_FAS" "$USE_EDGES_TMP/duplicates/root.fas"
 grep -F "first definition is at $USE_EDGES_TMP/duplicates/one.fas:1:4" \
   "$USE_EDGES_TMP/stderr" >/dev/null || fail "duplicate omitted the first definition site"
-grep -F "$USE_EDGES_TMP/duplicates/two.fas:1:4: error: duplicate function \`shared\` symbol" \
+grep -F "$USE_EDGES_TMP/duplicates/two.fas:1:4: error: duplicate function \`shared\`" \
   "$USE_EDGES_TMP/stderr" >/dev/null || fail "duplicate omitted the second definition site"
 grep -F "include chain: $USE_EDGES_TMP/duplicates/root.fas -> $USE_EDGES_TMP/duplicates/one.fas" \
   "$USE_EDGES_TMP/stderr" >/dev/null || fail "duplicate omitted first include chain"

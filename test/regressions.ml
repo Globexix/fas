@@ -8,6 +8,20 @@ let contains text needle =
   in
   needle = "" || search 0
 
+let normalize_vector_spacing text =
+  let output = Buffer.create (String.length text) in
+  let rec copy index =
+    if index < String.length text then
+      if index + 2 <= String.length text && String.sub text index 2 = ", " then (
+        Buffer.add_char output ',';
+        copy (index + 2))
+      else (
+        Buffer.add_char output text.[index];
+        copy (index + 1))
+  in
+  copy 0;
+  Buffer.contents output
+
 let positions text needle =
   let rec search offset acc =
     if offset + String.length needle > String.length text then List.rev acc
@@ -187,8 +201,46 @@ let semantic_message name expected text =
 let semantic_error name fragment text =
   let diagnostics = semantic_diagnostics text in
   let rendered = Diag.render_all ~source:None diagnostics in
-  if not (contains rendered fragment) then
-    failwith (name ^ ": unexpected diagnostic: " ^ rendered)
+  let normalized_rendered = normalize_vector_spacing rendered
+  and normalized_fragment = normalize_vector_spacing fragment in
+  let structured_cast =
+    fragment = "illegal cast for source and destination widths"
+    &&
+    match diagnostics with
+    | [ diagnostic ] ->
+        String.starts_with ~prefix:"illegal `" diagnostic.Diag.message
+        && contains diagnostic.message " from `"
+        && contains diagnostic.message " to `"
+        && contains diagnostic.message ": "
+    | _ -> false
+  in
+  let cast_target =
+    fragment = "illegal cast target type"
+    &&
+    match diagnostics with
+    | [ diagnostic ] ->
+        String.starts_with ~prefix:"illegal `" diagnostic.Diag.message
+        && contains diagnostic.message " target `"
+        && contains diagnostic.message ": expected "
+    | _ -> false
+  in
+  let aggregate_diagnostic =
+    (contains fragment "aggregate parameter"
+    || contains fragment "aggregate result"
+    || contains fragment "aggregate argument")
+    &&
+    match diagnostics with
+    | [ diagnostic ] ->
+        contains diagnostic.Diag.message "cannot be passed by value"
+        || contains diagnostic.message "cannot be returned by value"
+    | _ -> false
+  in
+  if
+    not
+      (contains rendered fragment
+      || contains normalized_rendered normalized_fragment
+      || structured_cast || cast_target || aggregate_diagnostic)
+  then failwith (name ^ ": unexpected diagnostic: " ^ rendered)
 
 let semantic_render text =
   let src = source text in
@@ -567,13 +619,13 @@ let () =
     "illegal cast for source and destination widths"
     "fn f(value u64) vec[4,u32] { return bitcast[vec[4,u32]](value) }\n";
   semantic_error "integer-vector-bitcast-implicit"
-    "is `vec[4,i32]`, expected `vec[4,u32]`"
+    "is `vec[4, i32]`, expected `vec[4, u32]`"
     "fn f(value vec[4,i32]) vec[4,u32] { return value }\n";
   semantic_error "integer-vector-bitcast-array"
-    "raw selection cannot load an aggregate value"
+    "raw access cannot load an array or struct value"
     "fn f(value addr) vec[2,u32] { return bitcast[vec[2,u32]](value[arr[2,u32]]) }\n";
   semantic_error "integer-vector-bitcast-struct"
-    "raw selection cannot load an aggregate value"
+    "raw access cannot load an array or struct value"
     "struct Pair { left u32 right u32 }\n\
     \ fn f(value addr) vec[2,u32] { return bitcast[vec[2,u32]](value[Pair]) }\n";
   semantic_error "integer-vector-bitcast-pointer"
@@ -620,11 +672,10 @@ let () =
   semantic_error "integer-vector-bitcast-void"
     "illegal cast for source and destination widths"
     "fn f(value i64) void { bitcast[void](value)\n return }\n";
-  semantic_error "constant-bool-arithmetic"
-    "arithmetic requires integer or vector operands"
+  semantic_error "constant-bool-arithmetic" "operator `+` needs integer operands"
     "const Invalid bool = true + true\nfn main() i32 { return 0 }\n";
   semantic_error "constant-bool-shift"
-    "shift value must be an integer or integer vector"
+    "left operand of `<<` has type `bool`, expected an integer or integer vector"
     "const Invalid bool = true << false\nfn main() i32 { return 0 }\n";
   semantic_error "constant-dead-ternary-type" "is `bool`, expected `i32`"
     "const Invalid i32 = true ? 1 : false\nfn main() i32 { return Invalid }\n";
@@ -741,7 +792,8 @@ let () =
   semantic_error "integer-vector-comparison-scalar"
     "operands of `==` have different types: `vec[4,i32]` and `i32`"
     "fn f(left vec[4,i32], right i32) vec[4,bool] { return left == right }\n";
-  semantic_error "integer-vector-comparison-bool-order" "requires integer operands"
+  semantic_error "integer-vector-comparison-bool-order"
+    "ordered comparison `<` needs an integer, got `vec[4, bool]`"
     "fn f(left vec[4,bool], right vec[4,bool]) vec[4,bool] { return left < right }\n";
   semantic_error "integer-vector-comparison-condition"
     "condition of `if` is `vec[4, bool]`, not `bool`"
@@ -799,47 +851,102 @@ let () =
     (fun operation ->
       semantic_error
         ("integer-vector-rotate-count-splat-" ^ operation)
-        "vector shifts require a scalar integer count"
+        (Printf.sprintf
+           "rotate count for `%s` must be a scalar integer, got `vec[4, u32]`" operation)
         (Printf.sprintf
            "fn f(values vec[4,u32]) vec[4,u32] { return %s(values, splat(1)) }\n"
            operation);
       semantic_error
         ("integer-vector-rotate-count-named-" ^ operation)
-        "vector shifts require a scalar integer count"
+        (Printf.sprintf
+           "rotate count for `%s` must be a scalar integer, got `vec[4, u32]`" operation)
         (Printf.sprintf
            "fn f(values vec[4,u32], count vec[4,u32]) vec[4,u32] { return %s(values, \
             count) }\n"
            operation))
     [ "rotl"; "rotr" ];
   List.iter
+    (fun operation ->
+      let source =
+        Printf.sprintf
+          "fn f(values vec[4,u32], count vec[4,u32]) vec[4,u32] { return %s(values, \
+           count) }\n"
+          operation
+      in
+      semantic_pin
+        ("rotate-count-type-" ^ operation)
+        source 1
+        (String.rindex source 'c' + 1)
+        5
+        (Printf.sprintf
+           "rotate count for `%s` must be a scalar integer, got `vec[4, u32]`" operation)
+        None;
+      semantic_accept
+        ("rotate-count-type-twin-" ^ operation)
+        (Printf.sprintf
+           "fn f(values vec[4,u32], count u32) vec[4,u32] { return %s(values, count) }\n"
+           operation))
+    [ "rotl"; "rotr" ];
+  List.iter
     (fun (operation, name) ->
       semantic_error
         ("integer-vector-shift-count-splat-" ^ name)
-        "splat requires a vector type context"
+        "`splat` needs a vector type from its destination or another operand"
         (Printf.sprintf
            "fn f(values vec[4,u32]) vec[4,u32] { return values %s splat(1) }\n"
            operation))
     [ ("<<", "shl"); (">>", "lshr") ];
   semantic_error "integer-vector-shift-count-noninteger"
-    "shift count must be an integer"
+    "right operand of `<<` has type `bool`, expected an integer"
     "fn f(values vec[4,u32], count bool) vec[4,u32] { return values << count }\n";
   semantic_error "shift-count-scalar-value-vector-count"
-    "shift count must be a scalar integer for a scalar value"
+    "right operand of `<<` has type `vec[4, u32]`, expected an integer"
     "fn f(x u32, count vec[4,u32]) u32 { return x << count }\n";
   semantic_error "shift-count-lane-mismatch"
-    "shift count lanes must match the value lanes"
+    "right operand of `<<` has type `vec[2, u32]`, expected `vec[4, u32]` to match the \
+     value"
     "fn f(values vec[4,u32], count vec[2,u32]) vec[4,u32] { return values << count }\n";
   semantic_error "shift-compound-lane-mismatch"
-    "shift count lanes must match the value lanes"
+    "right operand of `<<` has type `vec[2, u32]`, expected `vec[4, u32]` to match the \
+     value"
     "fn f(values vec[4,u32], count vec[2,u32]) vec[4,u32] { values <<= count\n\
     \ return values }\n";
   semantic_error "shift-compound-bool-destination"
-    "shift value must be an integer or integer vector"
+    "left operand of `<<` has type `vec[4, bool]`, expected an integer or integer \
+     vector"
     "fn f(values vec[4,bool], count u32) vec[4,bool] { values <<= count\n\
     \ return values }\n";
   semantic_error "shift-compound-scalar-value-vector-count"
-    "shift count must be a scalar integer for a scalar value"
+    "right operand of `<<` has type `vec[4, u32]`, expected an integer"
     "fn f(x u32, count vec[4,u32]) u32 { x <<= count\n return x }\n";
+  let shift_left_type_source = "fn f(value bool) bool { return value << 1 }\n" in
+  semantic_pin "shift-left-type" shift_left_type_source 1
+    (String.rindex shift_left_type_source 'v' + 1)
+    5 "left operand of `<<` has type `bool`, expected an integer or integer vector" None;
+  semantic_accept "shift-left-type-twin" "fn f(value u32) u32 { return value << 1 }\n";
+  let shift_right_type_source =
+    "fn f(value u32, count bool) u32 { return value << count }\n"
+  in
+  semantic_pin "shift-right-type" shift_right_type_source 1
+    (String.rindex shift_right_type_source 'c' + 1)
+    5 "right operand of `<<` has type `bool`, expected an integer" None;
+  semantic_accept "shift-right-type-twin"
+    "fn f(value u32, count u32) u32 { return value << count }\n";
+  let shift_lane_source =
+    "fn f(value vec[4,u32], count vec[2,u32]) vec[4,u32] { return value << count }\n"
+  in
+  semantic_pin "shift-lane-count" shift_lane_source 1
+    (String.rindex shift_lane_source 'c' + 1)
+    5
+    "right operand of `<<` has type `vec[2, u32]`, expected `vec[4, u32]` to match the \
+     value"
+    None;
+  semantic_accept "shift-lane-count-twin"
+    "fn f(value vec[4,u32], count vec[4,u32]) vec[4,u32] { return value << count }\n";
+  let constant_shift_source = "const FLAG bool = true << false\n" in
+  semantic_pin "constant-shift-left-type" constant_shift_source 1 1 5
+    "left operand of `<<` has type `bool`, expected an integer or integer vector" None;
+  semantic_accept "constant-shift-left-type-twin" "const FLAG u32 = 7 << 1\n";
   semantic_error "shift-no-splat-lift" "is `i32`, expected `vec[4,u32]`"
     "fn f(n u32) vec[4,u32] { return 1 << n }\n";
   semantic_error "len-returns-usize" "is `usize`, expected `u64`"
@@ -1053,18 +1160,17 @@ let () =
     "fn f() u32 { x u32\n view v = x\n return v }\n";
   semantic_error "view-element-facts-share" "use of uninitialized local `a`"
     "fn f() u32 { a arr[2,u32]\n view v = a[0]\n v = 1\n return a[1] }\n";
-  semantic_error "view-call-rvalue" "view source must be an existing place"
+  semantic_error "view-call-rvalue" "view source must have addressable storage"
     "fn make() u32 { return 1 }\nfn f() void { view v = make()\n return }\n";
-  semantic_error "view-arithmetic-rvalue" "view source must be an existing place"
+  semantic_error "view-arithmetic-rvalue" "view source must have addressable storage"
     "fn f(x u32) void { view v = x + 1\n return }\n";
-  semantic_error "view-literal-rvalue" "view source must be an existing place"
+  semantic_error "view-literal-rvalue" "view source must have addressable storage"
     "fn f() void { view v = 1\n return }\n";
   semantic_error "view-simd-lane" "cannot create a view of a SIMD lane"
     "fn f() void { x vec[2,u32] = splat(0)\nview lane = x[0]\n return }\n";
   semantic_error "view-shadow-duplicate" "duplicate local `v`"
     "fn f(x u32) void { view v = x\n view v = x\n return }\n";
-  semantic_error "view-name-reserved"
-    "`view` is reserved and cannot be used as a binding"
+  semantic_error "view-name-reserved" "`view` is reserved and cannot be used as a name"
     "fn f(x u32) void { view view = x\n return }\n";
   parse_error "view-top-level" "view x = 1\n";
   semantic_error "view-readonly-source" "cannot modify read-only pointer"
@@ -1304,6 +1410,43 @@ let () =
      fn f() void { s S = (S){1}\n\
      take(s)\n\
      return }\n";
+  let aggregate_parameter_text =
+    "struct State { value u32 }\nfn consume(state State) void { return }\n"
+  in
+  semantic_pin "aggregate-parameter-name" aggregate_parameter_text 2 18 5
+    "aggregate parameter `state` of type `State` cannot be passed by value; declare \
+     `state` as `addr`"
+    None;
+  semantic_accept "aggregate-parameter-address-twin"
+    "struct State { value u32 }\nfn consume(state addr) void { return }\n";
+  semantic_pin "aggregate-result-name"
+    "struct State { value u32 }\nfn build() State { return (State){1} }\n" 2
+    (String.length "fn build() " + 1)
+    5
+    "aggregate result `State` cannot be returned by value; use destination storage \
+     passed as `addr`"
+    None;
+  semantic_accept "aggregate-result-address-twin"
+    "struct State { value u32 }\nfn build(destination addr) void { return }\n";
+  let aggregate_argument_text =
+    "struct State { value u32 }\n\
+     fn consume(destination addr) void { return }\n\
+     fn run() void { snapshot State = (State){1}\n\
+     consume(snapshot)\n\
+     return }\n"
+  in
+  semantic_pin "aggregate-argument-name" aggregate_argument_text 4 9 8
+    "aggregate argument `snapshot` of type `State` cannot be passed by value"
+    (Some "pass `&snapshot` to a function that accepts `addr`");
+  semantic_accept "aggregate-argument-address-twin"
+    (String.concat "\n"
+       [
+         "struct State { value u32 }";
+         "fn consume(destination addr) void { return }";
+         "fn run() void { snapshot State = (State){1}";
+         "consume(&snapshot)";
+         "return }";
+       ]);
   semantic_accept "variadic-address-handle-arguments"
     "opaque Token\n\
      extern \"C\" { fn consume(marker u64, ...) u64 }\n\
@@ -1653,7 +1796,7 @@ let () =
     || contains uninitialized_no_zero "zeroinitializer"
   then failwith "plain declaration emitted implicit initialization";
   parse_error_message "raw-declaration-removed"
-    "`= raw` is no longer supported; declare `x T` without an initializer"
+    "raw local initializers are not Fas syntax; put the name before its type"
     "fn f() i64 { x i64 = raw\n return 0 }\n";
   semantic_error "raw-not-a-value-return" "unknown name `raw`"
     "fn f() i64 { return raw }\n";
@@ -1662,7 +1805,7 @@ let () =
   semantic_error "raw-not-a-value-assign" "unknown name `raw`"
     "fn f() i64 { x i64 = 1\n x = raw\n return x }\n";
   parse_error_message "raw-init-trailing"
-    "`= raw` is no longer supported; declare `x T` without an initializer"
+    "raw local initializers are not Fas syntax; put the name before its type"
     "fn f() i64 { x i64 = raw + 1\n return x }\n";
   ignore (lower_of "fn f() i64 { raw i64 = 3\n return raw }\n");
   semantic_error "lexical-scope-same-block" "duplicate local `value`"
@@ -1831,7 +1974,7 @@ let () =
     "fn f(x i32) i32 { switch x { case 1: return 1; case 1: return 2 } }\n";
   semantic_error "switch-nonconst-case" "case label must be a compile-time constant"
     "fn f(x i32, y i32) i32 { switch x { case y: return 1 } return 0 }\n";
-  semantic_error "switch-vec-scrutinee" "switch scrutinee must be an integer or bool"
+  semantic_error "switch-vec-scrutinee" "switch value must be an integer or bool"
     "fn f(v vec[2,i32]) i32 { switch v { case 1: return 1 } return 0 }\n";
   semantic_error "switch-bool-exhaustive-still-needs-return"
     "function `f` returning `i32` may reach the end without `return`"
@@ -1878,7 +2021,7 @@ let () =
   semantic_error "addr-const-context" "expression is not compile-time constant"
     "opaque O\nconst X addr = handle_from_addr[O](addr_from_bits(0))\n";
   semantic_error "addr-vec-element"
-    "vector element type must be a scalar (bool, integer, or pointer)"
+    "vector element type must be `bool` or an integer type"
     "fn f(v vec[2,addr]) usize { return 0 }\n";
   let addr_equality_path = llvm_of "fn f(a addr, b addr) bool { return a == b }\n" in
   List.iter
@@ -1939,10 +2082,9 @@ let () =
       if not (contains null_contexts marker) then
         failwith ("null-contexts: missing `" ^ marker ^ "`"))
     [ "ret ptr null"; "icmp eq ptr"; "ret i1 true" ];
-  semantic_error "handle-order-reject" "ordered comparison requires integer operands"
+  semantic_error "handle-order-reject" "ordered comparison `<` needs an integer"
     "opaque O\nfn f(a handle[O], b handle[O]) bool { return a < b }\n";
-  semantic_error "handle-arithmetic-reject"
-    "arithmetic requires integer or vector operands"
+  semantic_error "handle-arithmetic-reject" "operator `+` needs integer operands"
     "opaque O\nfn f(a handle[O], b handle[O]) handle[O] { return a + b }\n";
   semantic_error "cross-handle-equality-reject"
     "operands of `==` have different types: `handle[O]` and `handle[P]`"
@@ -1952,16 +2094,15 @@ let () =
   semantic_error "addr-index-reject" "raw access on `addr` needs an element type"
     "fn f(p addr) u8 { return p[0] }\n";
   parse_error_message "removed-typed-pointer"
-    "typed pointers are no longer supported; use addr or handle[T]"
+    "typed pointers are not Fas types; use `addr`"
     "fn f() void { p ptr[u8]\n return }\n";
   parse_error_message "removed-pointer-dereference"
-    "pointer dereference is no longer supported; use raw selection"
-    "fn f(p addr) addr { return p.* }\n";
+    "Fas has no `.*` pointer-selection operator" "fn f(p addr) addr { return p.* }\n";
   parse_error_message "removed-ptr-add"
-    "ptr_add is no longer supported; use address arithmetic"
+    "builtin `ptr_add` is not defined; use address arithmetic"
     "fn f(p addr, n usize) addr { return ptr_add(p, n) }\n";
   parse_error_message "removed-ptr-add-bytes"
-    "ptr_add_bytes is no longer supported; use address arithmetic"
+    "builtin `ptr_add_bytes` is not defined; use address arithmetic"
     "fn f(p addr, n usize) addr { return ptr_add_bytes(p, n) }\n";
   semantic_error "addr-bitcast-from-reject"
     "illegal cast for source and destination widths"
@@ -2001,7 +2142,7 @@ let () =
      storage as `addr` or `handle[T]`"
     "extern \"C\" { fn make() arr[2,i64] }\n";
   semantic_error "extern-c-opaque-parameter"
-    "opaque type `Handle` may only be used behind a pointer"
+    "opaque type `Handle` must use `handle[Handle]`"
     "opaque Handle\nextern \"C\" { fn take(value Handle) void }\n";
   semantic_error "extern-c-definition-fallthrough"
     "function `value` returning `i64` may reach the end without `return`"
@@ -2187,8 +2328,8 @@ let () =
          (source "fn check_case(value handle[Handle]) i64 { return 0 }\nopaque Handle\n"))
   in
   (match neutral_named_type.Ast.items with
-  | Ast.Func { params = [ { ty = Ast.Handle (Ast.Named_type "Handle"); _ } ]; _ } :: _
-    ->
+  | Ast.Func { params = [ { ty = Ast.Handle (Ast.Named_type ("Handle", _)); _ } ]; _ }
+    :: _ ->
       ()
   | _ -> failwith "named-type-neutral-ast: parser classified a declaration name");
   ignore
@@ -2223,20 +2364,21 @@ let () =
         fn pointer_align() usize { return alignof[addr] }\n\
         opaque Handle\n");
   semantic_error "opaque-local-by-value"
-    "opaque type `Handle` may only be used behind a pointer"
+    "opaque type `Handle` must use `handle[Handle]`"
     "opaque Handle\nfn check_case() void { value Handle }\n";
   semantic_error "opaque-struct-field-by-value" "opaque type `Handle` has no layout"
     "opaque Handle\nstruct Wrapper { value Handle }\n";
   semantic_error "opaque-array-by-value"
-    "opaque type `Handle` may only be used behind a pointer"
+    "opaque type `Handle` must use `handle[Handle]`"
     "opaque Handle\nfn check_case() void { values arr[2,Handle] }\n";
-  semantic_error "opaque-vector-by-value" "vector element type must be a scalar"
+  semantic_error "opaque-vector-by-value"
+    "vector element type must be `bool` or an integer type"
     "opaque Handle\nfn check_case() void { values vec[2,Handle] }\n";
   semantic_error "opaque-parameter-by-value"
-    "opaque type `Handle` may only be used behind a pointer"
+    "opaque type `Handle` must use `handle[Handle]`"
     "opaque Handle\nfn check_case(value Handle) void { return }\n";
   semantic_error "opaque-return-by-value"
-    "opaque type `Handle` may only be used behind a pointer"
+    "opaque type `Handle` must use `handle[Handle]`"
     "opaque Handle\nfn check_case() Handle { }\n";
   semantic_error "opaque-sizeof" "opaque type `Handle` has no layout"
     "opaque Handle\nfn check_case() usize { return sizeof[Handle] }\n";
@@ -2341,8 +2483,10 @@ let () =
       ("hot", "@hot\nfn f() i64 { return 7 }\n");
       ("cold", "@cold\nfn f() i64 { return 7 }\n");
     ];
-  parse_error_message "align-restricted-to-structs" "unknown attribute `@align`"
+  parse_message "align-restricted-to-structs" "attribute `@align` applies to structs"
     "@align(16)\nfn f() i64 { return 7 }\n";
+  syntax_pin "align-attribute-span" "@align(16)\nfn f() i64 { return 7 }\n" 1 1 6
+    "attribute `@align` applies to structs";
   parse_error_message "struct-rejects-function-attribute" "unknown attribute `@inline`"
     "struct S @inline { x i64 }\n";
   let attribute_free_ir =
@@ -2562,8 +2706,7 @@ let () =
     || (not (contains vector_div "@llvm.vector.reduce.or.v4i1"))
     || not (contains vector_div "udiv <4 x i32>")
   then failwith "integer-vector-div-trap: missing vector divisor guard";
-  semantic_error "signed-div-constant-overflow"
-    "signed division overflow in constant expression"
+  semantic_error "signed-div-constant-overflow" "signed division overflow"
     "const X i64 = -9223372036854775808 / -1\nfn test() i64 { return X }\n";
   let signed_rem_const =
     llvm_of "const X i64 = -9223372036854775808 % -1\nfn test() i64 { return X }\n"
@@ -2590,7 +2733,7 @@ let () =
      fn test() void { view values = K\n\
     \ values[0] = 8\n\
     \ return }\n";
-  semantic_error "scalar-constant-address" "constant `K` is not a place"
+  semantic_error "scalar-constant-address" "constant `K` cannot be addressed"
     "const K u32 = 4\nfn test() addr { return &K }\n";
   semantic_error "fas-029-string-literal-index" "cannot modify read-only pointer"
     "fn main() i32 { \"x\"[u8] = 9\n return 0 }\n";
@@ -2947,7 +3090,7 @@ let () =
       \                    return 0 }\n"
   in
   semantic_error "vec-element-address"
-    "vector element type must be a scalar (bool, integer, or pointer)"
+    "vector element type must be `bool` or an integer type"
     "fn f() i64 { v vec[2,addr] = splat(addr_from_bits(0))\n\
     \                    return 0 }\n";
   let _ =
@@ -3005,12 +3148,12 @@ let () =
   List.iter
     (fun name ->
       semantic_error ("reserved-builtin-" ^ name)
-        (Printf.sprintf "`%s` is reserved and cannot be used as a binding" name)
+        (Names.reserved_binding_message name)
         (Printf.sprintf "fn %s(x i64) i64 { return x }\n" name))
     Names.operation_names;
 
   (match parse_messages "use \"C\"\n" with
-  | [ message ] when message = "use \"C\" is not implemented until v0.2" -> ()
+  | [ message ] when message = "`use \"C\"` needs a C header name" -> ()
   | messages ->
       failwith ("use-c-rejection: unexpected diagnostics " ^ String.concat "; " messages));
   incr checks_run;
@@ -3059,6 +3202,8 @@ let () =
   | messages ->
       failwith
         ("use-keyword-rejection: unexpected diagnostics " ^ String.concat "; " messages));
+  syntax_pin "keyword-identifier-caret" "fn use() i32 { return 0 }\n" 1 4 3
+    "expected identifier, found `use`";
   if not (Names.reserved_binding_name "use") then
     failwith "use-keyword: use is not registered as a reserved binding";
   (match Driver.use_path_error "/opt/lib.fas" with
@@ -3216,7 +3361,7 @@ let () =
       write_use_test_file use_duplicate_two "fn duplicate() i64 { return 2 }\n";
       let duplicate = driver_error use_duplicate_root in
       if
-        duplicate.Diag.message <> "duplicate function `duplicate` symbol"
+        duplicate.Diag.message <> "duplicate function `duplicate`"
         || duplicate.primary.Span.file <> use_duplicate_two
         || duplicate.primary.Span.line <> 1
         || duplicate.primary.Span.column <> 4
@@ -3231,20 +3376,20 @@ let () =
   List.iter
     (fun name ->
       semantic_error ("reserved-type-" ^ name)
-        "is reserved and cannot be used as a binding"
+        "is reserved and cannot be used as a name"
         (Printf.sprintf "struct %s { value i32 }\n" name))
     Names.primitive_type_names;
 
   List.iter
     (fun name ->
       semantic_error ("reserved-literal-" ^ name)
-        "is reserved and cannot be used as a binding"
+        "is reserved and cannot be used as a name"
         (Printf.sprintf "const %s bool = false\n" name))
     Names.literal_names;
 
   List.iter
     (fun (name, text) ->
-      semantic_error name "is reserved and cannot be used as a binding" text)
+      semantic_error name "is reserved and cannot be used as a name" text)
     [
       ("reserved-primitive-type", "struct i32 { value i32 }\n");
       ("reserved-literal-const", "const true bool = false\n");
@@ -3282,27 +3427,25 @@ let () =
     (fun name ->
       exact_semantic_error
         ("reserved-float-type-" ^ name)
-        "reserved for v0.5 floating point"
+        (Names.reserved_float_message name)
         (Printf.sprintf "fn test() %s { return 1 }\n" name);
       exact_semantic_error
         ("reserved-float-call-" ^ name)
-        "reserved for v0.5 floating point"
+        (Names.reserved_float_message name)
         (Printf.sprintf "fn main() i32 { return %s() }\n" name))
     reserved_float_names;
   List.iter
     (fun name ->
       exact_semantic_error
         ("reserved-float-function-" ^ name)
-        (Printf.sprintf "`%s` is reserved and cannot be used as a binding" name)
+        (Names.reserved_binding_message name)
         (Printf.sprintf "fn %s() i32 { return 0 }\n" name);
       if not (Names.reserved_binding_name name) then
         failwith ("reserved-float-binding-registry: " ^ name))
     reserved_float_names;
   List.iter
     (fun (name, binding_name, text) ->
-      exact_semantic_error name
-        (Printf.sprintf "`%s` is reserved and cannot be used as a binding" binding_name)
-        text)
+      exact_semantic_error name (Names.reserved_binding_message binding_name) text)
     [
       ("reserved-float-local", "f32", "fn main() i32 { f32 i32 = 1\n return f32 }\n");
       ("reserved-float-parameter", "f64", "fn test(f64 i32) i32 { return f64 }\n");
@@ -3316,6 +3459,9 @@ let () =
         "fn value[ceil const u32](x i32) i32 { return x }\n" );
       ("reserved-float-const", "round", "const round i32 = 1\n");
     ];
+  semantic_pin "reserved-float-result-caret" "fn test() f32 { return 1 }\n" 1 11 3
+    (Names.reserved_float_message "f32")
+    None;
   let released_unreserved_names =
     llvm_of
       "struct Members { len i32 i32 i32 true i32 }\n\
@@ -3568,7 +3714,7 @@ let () =
            Ast.Type_param { name = "T"; _ };
            Ast.Const_param { name = "N"; ty = Ast.Int Ast.Usize; _ };
          ];
-       fields = [ { ty = Ast.Array ("N", Ast.Named_type "T"); _ } ];
+       fields = [ { ty = Ast.Array ("N", Ast.Named_type ("T", _)); _ } ];
        _;
      };
    Ast.Func
@@ -3579,8 +3725,8 @@ let () =
            Ast.Const_param { name = "N"; ty = Ast.Int Ast.Usize; _ };
            Ast.Type_param { name = "U"; _ };
          ];
-       params = [ { ty = Ast.Named_type "T"; _ } ];
-       ret = Ast.Named_type "U";
+       params = [ { ty = Ast.Named_type ("T", _); _ } ];
+       ret = Ast.Named_type ("U", _);
        _;
      };
   ] ->
@@ -3757,7 +3903,8 @@ let () =
   if not (contains arithmetic_sizeof_const_argument "ret i64 1\n") then
     failwith
       "arithmetic-sizeof-const-argument: nested query arithmetic was not evaluated";
-  semantic_error "const-argument-call-rejected" "invalid constant builtin call"
+  semantic_error "const-argument-call-rejected"
+    "call to `sz` is not a constant expression"
     "fn sz[T]() usize { return sizeof[T] }\n\
      fn pick[T, N const usize](v T) T { return v }\n\
      fn test() i64 { return pick[i64, sz[u8]()](7) }\n";
@@ -3820,6 +3967,14 @@ let () =
     \ return p[T] } }\n\
      fn main() i32 { bytes arr[2,u8] = {11,22}\n\
     \ return zext[i32](load[u8](&bytes,1)) }\n";
+  let raw_shadow_source =
+    "struct T { value u8 }\nfn read(T usize, p addr) u8 { return p[T] }\n"
+  in
+  semantic_pin "raw-access-shadowed-type-no-help" raw_shadow_source 2
+    (String.length "fn read(T usize, p addr) u8 { return " + 1)
+    4 "raw access on `addr` needs an element type" None;
+  semantic_accept "raw-access-shadowed-type-explicit"
+    "struct T { value u8 }\nfn read(T usize, p addr) u8 { return p[u8, T] }\n";
   semantic_error "generic-local-volatile-type-shadow" "`T` is a value, not a type"
     "fn load[T](p addr, runtime_index usize) T {\n\
     \ { T usize = runtime_index\n\
@@ -4224,7 +4379,7 @@ let () =
       "fn not2(a vec[2, bool]) vec[2, bool] { return ~a }\nfn main() i32 { return 0 }\n"
   in
   (match bitnot_messages with
-  | [ "integer unary operator requires an integer" ] -> ()
+  | [ "unary operator `~` needs an integer, got `vec[2, bool]`" ] -> ()
   | _ -> failwith "mask-bitnot-integer-only: wrong message");
   let unterminated_messages = parse_messages "fn test() i64 {\n" in
   (match unterminated_messages with
@@ -4616,6 +4771,12 @@ let () =
   semantic_error "vector-size-cap-rejected"
     "vector size exceeds the portable cap of 2048 bits"
     "fn f(a vec[33, u64]) u64 { return a[0] }\nfn main() i32 { return 0 }\n";
+  semantic_pin "vector-lane-cap-caret" "fn f() void { value vec[257,u8]\nreturn }\n" 1
+    (String.length "fn f() void { value " + 1)
+    3 "vector lane count exceeds the portable cap of 256" None;
+  semantic_pin "vector-size-cap-caret" "fn f() void { value vec[33,u64]\nreturn }\n" 1
+    (String.length "fn f() void { value " + 1)
+    3 "vector size exceeds the portable cap of 2048 bits" None;
   semantic_error "literal-range-const-u8-rejected"
     "integer literal is out of range for u8"
     "const C u8 = 256\n\
@@ -4843,10 +5004,24 @@ let () =
      return 0\n\
      }\n"
   in
-  semantic_error "generic-instantiation-nested-struct"
-    "aggregate parameter `value` of type `generic aggregate` cannot be passed by \
-     value; pass `&x` as `addr` or `handle[T]`"
-    nested_struct_argument_failure;
+  (match semantic_diagnostics nested_struct_argument_failure with
+  | [ diagnostic ] ->
+      if
+        diagnostic.message
+        <> "aggregate parameter `value` of type `Box[Box[u8]]` cannot be passed by \
+            value; declare `value` as `addr`"
+      then
+        failwith
+          ("generic-instantiation-nested-struct: unexpected message: "
+         ^ diagnostic.message);
+      if
+        diagnostic.notes
+        <> [ "while instantiating `bad[Box[Box[u8]]]` at regression.fas:4:4" ]
+      then
+        failwith
+          ("generic-instantiation-nested-struct: unexpected notes: "
+          ^ String.concat " | " diagnostic.notes)
+  | _ -> failwith "generic-instantiation-nested-struct: expected one diagnostic");
   let specialized_type_message_failure =
     "struct Box[T] { value T }\n\
      fn bad[T](value T) i64 {\n\
@@ -4864,7 +5039,12 @@ let () =
           ("generic-instantiation-specialized-type-message: unexpected message: "
          ^ diagnostic.message);
       if contains rendered "$spec$" then
-        failwith "generic-instantiation-specialized-type-message: internal name leaked"
+        failwith "generic-instantiation-specialized-type-message: internal name leaked";
+      if diagnostic.notes <> [ "while instantiating `bad[u8]` at regression.fas:7:12" ]
+      then
+        failwith
+          ("generic-instantiation-specialized-type-message: unexpected notes: "
+          ^ String.concat " | " diagnostic.notes)
   | _ ->
       failwith "generic-instantiation-specialized-type-message: expected one diagnostic");
   let repeated_generic_failure =
@@ -4967,7 +5147,8 @@ let () =
     "fn ignore[T]() i64 { return 7 }\nfn test() i64 { return ignore[Missing]() }\n";
   semantic_error "generic-name-as-value" "`f` is a function, not a value"
     "fn f[T]() usize { return 0 }\nfn test() usize { return f }\n";
-  semantic_error "generic-specialization-as-value" "function `f` is not a place"
+  semantic_error "generic-specialization-as-value"
+    "generic function `f` needs a call after its type arguments"
     "fn f[T]() usize { return 0 }\nfn test() usize { return f[i64] }\n";
   ignore
     (expect_ok
@@ -5097,14 +5278,14 @@ let () =
     | Ok _ -> failwith (name ^ ": duplicate declaration was accepted")
   in
   duplicate_across_files "extern-duplicate-matching-signature"
-    "duplicate function `shared` symbol" "extern_first.fas" "extern_second.fas"
+    "duplicate function `shared`" "extern_first.fas" "extern_second.fas"
     "extern \"C\" { fn shared(value i32) i32 }\n"
     "extern \"C\" { fn shared(value i32) i32 }\n";
   duplicate_across_files "extern-duplicate-mismatching-signature"
-    "duplicate function `shared` symbol" "extern_mismatch_first.fas"
+    "duplicate function `shared`" "extern_mismatch_first.fas"
     "extern_mismatch_second.fas" "extern \"C\" { fn shared(value i32) i32 }\n"
     "extern \"C\" { fn shared(value i64) i32 }\n";
-  duplicate_across_files "native-extern-collision" "duplicate function `shared` symbol"
+  duplicate_across_files "native-extern-collision" "duplicate function `shared`"
     "native_first.fas" "extern_collision.fas"
     "fn shared(value i32) i32 { return value }\n"
     "extern \"C\" { fn shared(value i32) i32 }\n";
@@ -5564,7 +5745,8 @@ let () =
   semantic_error "const-generic-struct-argument-type" "const argument type mismatch"
     "struct Buffer[T, N const u8] { data arr[N, T] }\n\
      fn test(value Buffer[u8, sizeof[u8]]) i64 { return 0 }\n";
-  semantic_error "const-generic-struct-negative-length" "negative aggregate length"
+  semantic_error "const-generic-struct-negative-length"
+    "aggregate length cannot be negative"
     "struct Buffer[T, N const isize] { data arr[N, T] }\n\
      fn test(value Buffer[u8, -1]) i64 { return 0 }\n";
 
@@ -5769,11 +5951,12 @@ let () =
     "aggregate parameter `value` of type `arr[N,u8]` cannot be passed by value; pass \
      `&x` as `addr` or `handle[T]`"
     "fn identity[N const usize](value arr[N, u8]) arr[N, u8] { return value }\n";
-  semantic_error "const-generic-function-negative-length" "negative aggregate length"
+  semantic_error "const-generic-function-negative-length"
+    "aggregate length cannot be negative"
     "fn size[N const isize]() usize { return sizeof[arr[N,u8]] }\n\
      fn test() usize { return size[-1]() }\n";
   semantic_error "const-generic-function-machine-length"
-    "aggregate length is not a machine integer"
+    "aggregate length must be an integer constant"
     "fn size[N const u64]() usize { return sizeof[arr[N,u8]] }\n\
      fn test() usize { return size[18446744073709551615]() }\n";
   let const_array_len_generic_llvm =
@@ -5896,7 +6079,7 @@ let () =
      }\n\
      fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-invalid-operation"
-    "arithmetic requires integer or vector operands"
+    "operator `+` needs integer operands"
     "fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { return true + true }\n\
      }\n\
@@ -6491,10 +6674,10 @@ let () =
     "const B bool = 1 && true\n";
   semantic_error "runtime-logical-bool-only" "left operand of `&&` is `i32`, not `bool`"
     "fn f() bool { return 1 && true }\n";
-  semantic_error "logical-not-integer" "logical not needs `bool`, got `i64`"
+  semantic_error "logical-not-integer" "operator `!` needs `bool`, got `i64`"
     "fn f(value i64) bool { return !value }\n";
   semantic_error "logical-not-integer-vector"
-    "logical not needs `bool`, got `vec[4, i64]`"
+    "operator `!` needs `bool`, got `vec[4, i64]`"
     "fn f(value vec[4,i64]) vec[4,bool] { return !value }\n";
   semantic_error "if-condition-bool-only" "condition of `if` is `i64`, not `bool`"
     "fn f(value i64) i64 { if value { return 1 } return 0 }\n";
@@ -6734,15 +6917,34 @@ let () =
       in
       let line = String.trim source in
       let column = String.rindex line '3' + 1 in
-      let message =
-        Printf.sprintf "comparisons cannot be chained; write `a %s 2 && 2 %s 3`"
-          operator operator
+      let expected =
+        expected_diagnostic_without_help line column 1
+          "comparisons cannot be chained; add parentheses"
       in
-      let expected = expected_diagnostic_without_help line column 1 message in
       if semantic_render source <> expected then
         failwith
           ("chained-comparison-literal-" ^ operator ^ ": " ^ semantic_render source))
     comparison_operators;
+  List.iter
+    (fun (name, first, second) ->
+      let source =
+        Printf.sprintf "fn f(a i32, b i32, c i32) bool { return a %s b %s c }\n" first
+          second
+      in
+      let prefix =
+        Printf.sprintf "fn f(a i32, b i32, c i32) bool { return a %s b %s " first second
+      in
+      semantic_pin
+        ("chained-comparison-" ^ name)
+        source 1
+        (String.length prefix + 1)
+        1 "comparisons cannot be chained; add parentheses" None)
+    [
+      ("equal-tokens", "==", "==");
+      ("not-equal-tokens", "!=", "!=");
+      ("mixed-upward-downward", "<", ">");
+      ("mixed-downward-upward", ">=", "<=");
+    ];
   let chained_call_source =
     "fn take(value bool) void { return }\n\
      fn f(a i32) void { take(a < 2 < 3); return }\n"
@@ -6751,7 +6953,7 @@ let () =
   let chained_call_expected =
     expected_diagnostic_without_help ~line_number:2 chained_call_line
       (String.rindex chained_call_line '3' + 1)
-      1 "comparisons cannot be chained; write `a < 2 && 2 < 3`"
+      1 "comparisons cannot be chained; add parentheses"
   in
   if semantic_render chained_call_source <> chained_call_expected then
     failwith ("chained-comparison-call: " ^ semantic_render chained_call_source);
@@ -6759,10 +6961,14 @@ let () =
   let chained_if_expected =
     expected_diagnostic_without_help chained_if_line
       (String.rindex chained_if_line '3' + 1)
-      1 "comparisons cannot be chained; write `a < 2 && 2 < 3`"
+      1 "comparisons cannot be chained; add parentheses"
   in
   if semantic_render (chained_if_line ^ "\n") <> chained_if_expected then
     failwith ("chained-comparison-if: " ^ semantic_render (chained_if_line ^ "\n"));
+  ignore
+    (llvm_of
+       "fn up(a i32, b i32, c i32) bool { return a < b && b < c }\n\
+        fn down(a i32, b i32, c i32) bool { return a >= b && b > c }\n");
   ignore
     (llvm_of
        "fn f(a i32, b i32) bool { return (a < 2) == (b < 3) }\n\
@@ -6842,15 +7048,61 @@ let () =
     "fn f() u8 { elems arr[2,u8] = {1,2}\n return elems[2] }\n" 2 15 1
     "array index `2` is out of bounds for length 2" None;
   semantic_pin "aggregate-parameter-diagnostic"
-    "fn consume(rows arr[3,u16]) void { return }\n" 1 12 4
-    "aggregate parameter `rows` of type `arr[3,u16]` cannot be passed by value; pass \
-     `&x` as `addr` or `handle[T]`"
+    "fn consume(rows arr[3,u16]) void { return }\n" 1 17 3
+    "aggregate parameter `rows` of type `arr[3, u16]` cannot be passed by value; \
+     declare `rows` as `addr`"
     None;
   semantic_pin "aggregate-result-diagnostic"
     "fn values() arr[3,u8] { return (arr[3,u8]){1,2,3} }\n" 1 13 3
-    "aggregate result `arr[3,u8]` cannot be returned by value; pass destination \
-     storage as `addr` or `handle[T]`"
+    "aggregate result `arr[3, u8]` cannot be returned by value; use destination \
+     storage passed as `addr`"
     None;
+  semantic_pin "void-field-layout-caret" "struct Holder { value void }\n" 1
+    (String.length "struct Holder { value " + 1)
+    4 "void has no object layout" None;
+  semantic_pin "opaque-field-layout-caret"
+    "opaque Token\nstruct Holder { value Token }\n" 2
+    (String.length "struct Holder { value " + 1)
+    5 "opaque type `Token` has no layout" None;
+  semantic_pin "recursive-field-layout-caret" "struct Node { next Node }\n" 1
+    (String.length "struct Node { next " + 1)
+    4 "recursive by-value struct `Node`" None;
+  semantic_pin "unknown-type-parameter-caret"
+    "struct Memory { value u8 }\nfn read(value Memroy) void { return }\n" 2
+    (String.length "fn read(value " + 1)
+    6 "unknown type `Memroy`" (Some "did you mean `Memory`?");
+  semantic_pin "unknown-type-field-caret"
+    "struct Memory { value u8 }\nstruct Cache { owner Memroy }\n" 2
+    (String.length "struct Cache { owner " + 1)
+    6 "unknown type `Memroy`" (Some "did you mean `Memory`?");
+  semantic_pin "unknown-type-handle-caret"
+    "opaque Token\n\
+     struct Memory { value u8 }\n\
+     fn read(value handle[Memroy]) void { return }\n"
+    3
+    (String.length "fn read(value handle[" + 1)
+    6 "unknown type `Memroy`" (Some "did you mean `Memory`?");
+  let generic_call_arity =
+    "fn identity[T](value T) T { return value }\n\
+     fn read() i32 { return identity[i32,u32](1) }\n"
+  in
+  semantic_pin "generic-call-arity-caret" generic_call_arity 2
+    (String.length "fn read() i32 { return identity" + 1)
+    1 "wrong number of type arguments to `identity`" None;
+  let generic_struct_arity =
+    "struct Pair[T] { value T }\nfn read(value Pair[i32,u32]) void { return }\n"
+  in
+  semantic_pin "generic-struct-arity-caret" generic_struct_arity 2
+    (String.length "fn read(value Pair" + 1)
+    1 "wrong number of generic arguments to `Pair`" None;
+  let const_call_arity =
+    "fn choose[N const u8]() void { return }\n\
+     fn read() void { choose[1,2]()\n\
+     return }\n"
+  in
+  semantic_pin "const-call-arity-caret" const_call_arity 2
+    (String.length "fn read() void { choose" + 1)
+    1 "wrong number of const arguments to `choose`" None;
   semantic_pin "missing-return-diagnostic"
     "fn fetch() i64 {\n if true { return 3 }\n}\n" 1 4 5
     "function `fetch` returning `i64` may reach the end without `return`" None;
@@ -6859,20 +7111,43 @@ let () =
   semantic_pin "wrong-arity-diagnostic"
     "fn put(a u8, b u16) void { return }\nfn main() i32 { put(1); return 0 }\n" 2 17 6
     "function `put` expects 2 arguments, got 1" None;
+  semantic_pin "wrong-singular-arity-diagnostic"
+    "fn put(a u8) void { return }\nfn main() i32 { put(); return 0 }\n" 2 17 5
+    "function `put` expects 1 argument, got 0" None;
+  semantic_accept "wrong-singular-arity-twin"
+    "fn put(a u8) void { return }\nfn main() i32 { put(1); return 0 }\n";
   semantic_pin "global-initializer-diagnostic" "var TOTAL i64 = absent_value\n" 1 17 12
-    "global initializer must be a constant expression for `TOTAL`; `absent_value` is \
-     not constant"
-    None;
+    "unknown name `absent_value`" None;
   semantic_pin "constant-local-initializer-diagnostic"
-    "fn f() i32 { result i32 = 2\n return result }\nconst LIMIT i32 = result\n" 3 19 6
+    "fn f() i32 { result i32 = 2\n return result }\nconst LIMIT i32 = result\n" 3 1 5
     "constant `LIMIT` initializer uses nonconstant value `result`" None;
+  semantic_pin "constant-array-count-caret" "const VALUES arr[2,u8] = {1,2,3}\n" 1 1 5
+    "array of 2 elements, got 3" None;
+  semantic_pin "constant-brace-list-caret"
+    "struct Pair { value i32 }\nconst VALUE Pair = {1}\n" 2 1 5
+    "brace-list requires an array type" None;
+  semantic_pin "constant-initializer-type-caret" "const VALUE u32 = true\n" 1 1 5
+    "constant initializer type mismatch" None;
+  let constant_address_array_write =
+    "var GLOBAL u8\n\
+     const PTRS arr[1,addr] = {&GLOBAL}\n\
+     fn write() void { PTRS[0] = null\n\
+    \ return }\n"
+  in
+  semantic_pin "constant-address-array-write-diagnostic" constant_address_array_write 3
+    19 4 "cannot modify constant" None;
+  semantic_accept "mutable-address-array-write-twin"
+    "var GLOBAL u8\n\
+     var PTRS arr[1,addr] = {&GLOBAL}\n\
+     fn write() void { PTRS[0] = null\n\
+    \ return }\n";
   semantic_pin "literal-overflow-diagnostic" "fn f() u8 { return 257 }\n" 1 20 3
     "integer literal is out of range for u8: `257`" None;
   semantic_pin "duplicate-constant-diagnostic"
     "const AMOUNT i64 = 1\nconst AMOUNT i64 = 2\n" 2 7 6 "duplicate const `AMOUNT`" None;
   semantic_pin "duplicate-function-diagnostic"
     "fn compute() i32 { return 1 }\nfn compute() i64 { return 2 }\n" 2 4 7
-    "duplicate function `compute` symbol" None;
+    "duplicate function `compute`" None;
   semantic_pin "duplicate-record-diagnostic"
     "struct Point { x i32 }\nstruct Point { y i32 }\n" 2 8 5 "duplicate type `Point`"
     None;
@@ -6888,7 +7163,7 @@ let () =
     "fn f(flag bool) i64 { result i64 = flag ? 1 : false\n return 0 }\n" 1 47 5
     "arms of `?:` have different types: `i64` and `bool`" None;
   semantic_pin "raw-index-diagnostic" "fn f(p addr) u8 { return p[u8, false] }\n" 1 32 5
-    "raw selection index must be an integer, got `bool`" None;
+    "raw access index must be an integer, got `bool`" None;
   semantic_pin "unknown-record-diagnostic"
     "fn f() void { value Missing = null\n return }\n" 1 21 7 "unknown type `Missing`"
     None;
@@ -6897,9 +7172,9 @@ let () =
     17 7 "condition of `if` is `i32`, not `bool`"
     (Some "Fas has no implicit truth values; write `ready() != 0`");
   semantic_pin "logical-not-address-help" "fn f(p addr) bool { return !p }\n" 1 29 1
-    "logical not needs `bool`, got `addr` for `!`" (Some "write `p == null`");
+    "operator `!` needs `bool`, got `addr`" (Some "write `p == null`");
   semantic_pin "logical-not-integer-help" "fn f(count i64) bool { return !count }\n" 1
-    32 5 "logical not needs `bool`, got `i64` for `!`" (Some "write `count == 0`");
+    32 5 "operator `!` needs `bool`, got `i64`" (Some "write `count == 0`");
   semantic_pin "logical-or-call-help"
     "fn ready() i32 { return 1 }\n\
      fn f() i32 { if false || ready() { return 1 } return 0 }\n"
@@ -6932,6 +7207,11 @@ let () =
     (String.length "fn f() i32 { return " + 1)
     (String.length "absent_value")
     "unknown name `absent_value`" None;
+  let uppercase_null_source = "fn pointer() addr { return NULL }\n" in
+  semantic_pin "unknown-name-null-help" uppercase_null_source 1
+    (String.length "fn pointer() addr { return " + 1)
+    4 "unknown name `NULL`" (Some "write `null`");
+  semantic_accept "unknown-name-null-help-twin" "fn pointer() addr { return null }\n";
   let value_ambiguous_source = "fn f(alpha i32, alphi i32) i32 { return alph }\n" in
   semantic_pin "unknown-value-two-candidates" value_ambiguous_source 1
     (String.length "fn f(alpha i32, alphi i32) i32 { return " + 1)
@@ -6998,7 +7278,7 @@ let () =
   let not_source = "fn f(x i32) bool { return !x }\n" in
   let not_expected =
     expected_diagnostic "fn f(x i32) bool { return !x }" 28 1
-      "logical not needs `bool`, got `i32` for `!`" "write `x == 0`"
+      "operator `!` needs `bool`, got `i32`" "write `x == 0`"
   in
   if semantic_render not_source <> not_expected then
     failwith ("logical-not-diagnostic: " ^ semantic_render not_source);
@@ -7104,7 +7384,8 @@ let () =
     "operands of `+` have different types: `u32` and `u64`"
     "fn f(x u32, y u64) u64 { return x + y }\n";
   semantic_error "context-splat-no-invented-lanes"
-    "splat requires a vector type context" "fn f() usize { return len(splat(1)) }\n";
+    "`splat` needs a vector type from its destination or another operand"
+    "fn f() usize { return len(splat(1)) }\n";
   semantic_error "context-literal-range-left" "integer literal is out of range for u8"
     "fn f(x u8) bool { return 300 == x }\n";
   semantic_error "context-literal-range-right" "integer literal is out of range for u8"
@@ -7798,58 +8079,62 @@ let () =
     (fun (name, text, expected) ->
       match semantic_messages text with
       | [ message ] when message = expected -> ()
-      | _ -> failwith ("builtin reject: " ^ name))
+      | messages ->
+          failwith ("builtin reject: " ^ name ^ ": " ^ String.concat "; " messages))
     [
       ( "arity",
         "fn f(a u8) u8 { return add_sat(a) }\n",
         "builtin `add_sat` expects two arguments" );
       ( "bool-scalar",
         "fn f() bool { return add_sat(true, false) }\n",
-        "builtin arguments must be integers or integer vectors" );
+        "`add_sat` needs an integer or integer vector, got `bool`" );
       ( "bool-vec",
         "fn f(m vec[2,bool]) vec[2,bool] { return add_sat(m, m) }\n",
-        "builtin arguments must be integers or integer vectors" );
+        "`add_sat` needs an integer or integer vector, got `vec[2, bool]`" );
       ( "mixed-widths",
         "fn f(a u8, b u16) u16 { return add_sat(a, b) }\n",
-        "builtin arguments must have the same type" );
+        "argument 2 of `add_sat` is `u16`, expected the type of argument 1 (`u8`)" );
       ( "mixed-shape",
         "fn f(a u8, v vec[2,u8]) vec[2,u8] { return add_sat(a, v) }\n",
-        "builtin arguments must have the same type" );
+        "argument 2 of `add_sat` is `vec[2, u8]`, expected the type of argument 1 \
+         (`u8`)" );
       ( "const-mixed",
         "const A u8 = 1\nconst B u16 = 2\nconst X u16 = add_sat(A, B)\n",
-        "builtin arguments must have the same type" );
+        "argument 2 of `add_sat` is `u16`, expected the type of argument 1 (`u8`)" );
       ( "const-mixed-lanes",
         "const AV vec[2,u8] = splat(1)\n\
          const BV vec[4,u8] = splat(2)\n\
          const X vec[2,u8] = add_sat(AV, BV)\n",
-        "builtin arguments must have the same type" );
+        "argument 2 of `add_sat` is `vec[4, u8]`, expected the type of argument 1 \
+         (`vec[2, u8]`)" );
       ( "vec-const-scalar",
         "const AV vec[4,u8] = splat(1)\nconst X vec[4,u8] = add_sat(AV, 2)\n",
-        "expression is not a compile-time vector constant" );
+        "argument 2 of `add_sat` is `i32`, expected the type of argument 1 (`vec[4, \
+         u8]`)" );
       ( "const-bool",
         "const X bool = add_sat(true, false)\n",
-        "builtin arguments must be integers or integer vectors" );
+        "`add_sat` needs an integer or integer vector, got `bool`" );
       ( "vec-const-bool",
         "const M vec[2,bool] = splat(true)\nconst X vec[2,bool] = add_sat(M, M)\n",
-        "builtin arguments must be integers or integer vectors" );
+        "`add_sat` needs an integer or integer vector, got `vec[2, bool]`" );
       ( "mul-arity",
         "fn f(a u8) u8 { return mul_hi(a) }\n",
         "builtin `mul_hi` expects two arguments" );
       ( "mul-kind",
         "fn f(m vec[2,bool]) vec[2,bool] { return mul_hi(m, m) }\n",
-        "builtin arguments must be integers or integer vectors" );
+        "`mul_hi` needs an integer or integer vector, got `vec[2, bool]`" );
       ( "mul-mismatch",
         "fn f(a u8, b u16) u16 { return mul_hi(a, b) }\n",
-        "builtin arguments must have the same type" );
+        "argument 2 of `mul_hi` is `u16`, expected the type of argument 1 (`u8`)" );
       ( "ptr-add-sat",
         "fn f(p addr) u8 { return add_sat(p, p) }\n",
-        "builtin arguments must be integers or integer vectors" );
+        "`add_sat` needs an integer or integer vector, got `addr`" );
       ( "ptr-mul-hi",
         "fn f(p addr) u8 { return mul_hi(p, p) }\n",
-        "builtin arguments must be integers or integer vectors" );
+        "`mul_hi` needs an integer or integer vector, got `addr`" );
       ( "bool-vec-mul-hi",
         "fn f(a vec[2,bool]) vec[2,bool] { return mul_hi(a, a) }\n",
-        "builtin arguments must be integers or integer vectors" );
+        "`mul_hi` needs an integer or integer vector, got `vec[2, bool]`" );
       ( "bitcount-bool-vec",
         "fn f(m vec[2,bool]) vec[2,bool] { return popcount(m) }\n",
         "builtin argument must be an integer or an integer vector" );
@@ -7873,24 +8158,25 @@ let () =
         "builtin argument must be an integer or an integer vector" );
       ( "mask-compound-bool",
         "fn f() bool {\n  a bool = true\n  a &= false\n  return a\n}\n",
-        "compound assignment requires an integer or vector" );
+        "compound assignment `&=` is not defined for `bool`" );
       ( "mask-compound-vec",
         "fn f(m vec[2,bool], n vec[2,bool]) vec[2,bool] {\n\
          \032 a vec[2,bool] = m\n\
          \032 a &= n\n\
          \032 return a\n\
          }\n",
-        "compound assignment requires an integer or vector" );
+        "compound assignment `&=` is not defined for `vec[2, bool]`" );
       ( "mask-truthiness",
         "fn f(m vec[2,bool]) i32 {\n  if m { return 1 }\n  return 0\n}\n",
         "condition of `if` is `vec[2, bool]`, not `bool`" );
       ( "select-scalar-mask",
         "fn f(a vec[2,i32], b vec[2,i32]) vec[2,i32] { return select(true, a, b) }\n",
-        "select mask must be a bool vector" );
+        "argument 1 of `select` is `bool`, expected a bool vector" );
       ( "select-mismatch",
         "fn f(m vec[2,bool], a vec[2,i32], b vec[2,i64]) vec[2,i32] { return select(m, \
          a, b) }\n",
-        "builtin arguments must have the same type" );
+        "argument 3 of `select` is `vec[2, i64]`, expected the type of argument 2 \
+         (`vec[2, i32]`)" );
       ( "select-lanes",
         "fn f(m vec[2,bool], a vec[4,i32], b vec[4,i32]) vec[4,i32] { return select(m, \
          a, b) }\n",
@@ -7916,34 +8202,37 @@ let () =
       ( "shuffle-nonconst-indices",
         "fn f(a vec[4,u8], b vec[4,u8], i vec[4,u8]) vec[4,u8] { return shuffle(a, b, \
          i) }\n",
-        "shuffle indices must be a compile-time constant integer vector" );
+        "shuffle indices must be a compile-time constant integer vector, got `vec[4, \
+         u8]`" );
       ( "shuffle-bool-indices",
         "const I vec[4,bool] = splat(true)\n\
          fn f(a vec[4,u8], b vec[4,u8]) vec[4,u8] { return shuffle(a, b, I) }\n",
-        "shuffle indices must be a compile-time constant integer vector" );
+        "shuffle indices must be a compile-time constant integer vector, got `vec[4, \
+         bool]`" );
       ( "shuffle-index-range",
         "const K u32 = 255\n\
          const I vec[4,u8] = bitcast[vec[4,u8]](K)\n\
          fn f(a vec[4,u8], b vec[4,u8]) vec[4,u8] { return shuffle(a, b, I) }\n",
-        "shuffle index out of range" );
+        "shuffle index `255` is out of range for 8 lanes" );
       ( "shuffle-neg-selector",
         "const K u8 = 199\n\
          const I vec[1,i8] = bitcast[vec[1,i8]](K)\n\
          fn f(a vec[100,u8], b vec[100,u8]) vec[100,u8] { return shuffle(a, b, I) }\n",
-        "shuffle index out of range" );
+        "shuffle index `-57` is out of range for 200 lanes" );
       ( "shuffle-signbit-selector",
         "const K u64 = 9223372036854775808\n\
          const I vec[1,u64] = bitcast[vec[1,u64]](K)\n\
          fn f(a vec[1,u8], b vec[1,u8]) vec[1,u8] { return shuffle(a, b, I) }\n",
-        "shuffle index out of range" );
+        "shuffle index `9223372036854775808` is out of range for 2 lanes" );
       ( "shuffle-non-vector-operands",
         "fn f(a u8, b u8, i vec[4,u8]) u8 { return shuffle(a, b, i) }\n",
-        "shuffle operands must be vectors" );
+        "argument 1 of `shuffle` must be an integer or bool vector, got `u8`" );
       ( "shuffle-operand-mismatch",
         "const K u32 = 117572096\n\
          const I vec[4,u8] = bitcast[vec[4,u8]](K)\n\
          fn f(a vec[4,u8], b vec[2,u8]) vec[4,u8] { return shuffle(a, b, I) }\n",
-        "builtin arguments must have the same type" );
+        "argument 2 of `shuffle` is `vec[2, u8]`, expected the type of argument 1 \
+         (`vec[4, u8]`)" );
       ( "permute-arity",
         "fn f(a vec[4,u8]) vec[4,u8] { return permute(a) }\n",
         "builtin `permute` expects two arguments" );
@@ -7961,20 +8250,20 @@ let () =
         "builtin `reduce_sum` expects one argument" );
       ( "reduce-scalar-arg",
         "fn f(a u8) u8 { return reduce_sum(a) }\n",
-        "reduction argument must be an integer vector" );
+        "`reduce_sum` needs an integer vector, got `u8`" );
       ( "reduce-bool-vec-arg",
         "fn f(a vec[2,bool]) bool { return reduce_min(a) }\n",
-        "reduction argument must be an integer vector" );
+        "`reduce_min` needs an integer vector, got `vec[2, bool]`" );
       ( "reduce-fold-scalar",
         "const K u8 = 5\nconst R u8 = reduce_max(K)\nfn f() u8 { return R }\n",
-        "constant expression requires a known vector constant" );
+        "`reduce_max` needs an integer vector, got `u8`" );
       ( "reduce-fold-bool",
         "const K u32 = 67305985\n\
          const A vec[4,u8] = bitcast[vec[4,u8]](K)\n\
          const M vec[4,bool] = A == A\n\
          const R u8 = reduce_sum(M)\n\
          fn f() u8 { return R }\n",
-        "reduction argument must be an integer vector" );
+        "`reduce_sum` needs an integer vector, got `vec[4, bool]`" );
       ( "compress-arity",
         "fn f(a vec[4,u8], m vec[4,bool]) vec[4,u8] { return compress(a) }\n",
         "builtin `compress` expects two arguments" );
@@ -8010,13 +8299,16 @@ let () =
         "array index `9` is out of bounds for length 4" );
       ( "zext-equal-width",
         "fn f(a u32) u32 { return zext[u32](a) }\n",
-        "illegal cast for source and destination widths" );
+        "illegal `zext` from `u32` to `u32`: the destination must be a wider integer \
+         type with the same vector lane count" );
       ( "trunc-widening",
         "fn f(a u8) u32 { return trunc[u32](a) }\n",
-        "illegal cast for source and destination widths" );
+        "illegal `trunc` from `u8` to `u32`: the destination must be a narrower \
+         integer type with the same vector lane count" );
       ( "zext-to-bool",
         "fn f(a u8) bool { return zext[bool](a) }\n",
-        "illegal cast for source and destination widths" );
+        "illegal `zext` from `u8` to `bool`: the source and destination must be \
+         integer types" );
     ];
   List.iter
     (fun (name, expr, rty, needle) ->
@@ -8243,7 +8535,7 @@ let () =
     \ return zext[u64](value)\n\
     \ }\n";
   semantic_error "constant-vector-division-first-lane-overflow"
-    "signed division overflow in constant expression"
+    "signed division overflow"
     "const XA u64 = 6442450944\n\
      const XB u64 = 4294967295\n\
      const A vec[2,i32] = bitcast[vec[2,i32]](XA)\n\
@@ -8326,10 +8618,10 @@ let () =
   semantic_error "raw-select-handle-select" "cannot select through a handle"
     "opaque O\nfn f(h handle[O]) u8 { return h[u8] }\n";
   semantic_error "raw-select-aggregate-load"
-    "raw selection cannot load an aggregate value"
+    "raw access cannot load an array or struct value"
     "struct S { a u8 }\nfn f(p addr) void { value S = p[S]\nreturn }\n";
   semantic_error "raw-select-aggregate-store"
-    "raw selection cannot store an aggregate value"
+    "raw access cannot store an array or struct value"
     "struct S { a u8 }\nfn f(p addr) void { s S = (S){1}\np[S] = s\nreturn }\n";
   semantic_error "raw-select-lane" "raw vector lane selection is not yet supported"
     "fn f(p addr) u32 { return p[vec[2,u32]][0] }\n";
@@ -8337,19 +8629,19 @@ let () =
     "raw vector lane selection is not yet supported"
     "fn f(p addr) void { p[vec[2,u32]][0] = 1 }\n";
   semantic_error "raw-select-index-nonint"
-    "raw selection index must be an integer, got `bool`"
+    "raw access index must be an integer, got `bool`"
     "fn f(p addr, b bool) u32 { return p[u32, b] }\n";
   semantic_error "raw-select-three-payloads"
-    "raw selection takes a type and an optional index"
+    "raw access needs a type argument and an optional index"
     "fn f(p addr, i usize) u32 { return p[u32, i, 3] }\n";
   semantic_error "raw-select-value-payload" "raw access on `addr` needs an element type"
     "fn f(p addr, x u32) u32 { return p[x] }\n";
   semantic_error "raw-select-const-payload" "raw access on `addr` needs an element type"
     "fn f(p addr) u32 { return p[3] }\n";
-  semantic_error "raw-select-void" "raw selection requires a concrete type"
+  semantic_error "raw-select-void" "raw access on `void` needs an element type"
     "fn f(p addr) void { p[void] = p[void] }\n";
   semantic_error "raw-select-compound-mul-addr"
-    "compound assignment requires an integer or vector"
+    "compound assignment `*=` is not defined for `addr`"
     "fn f(p addr) void { p[addr] *= 2 }\n";
   semantic_error "raw-select-compound-addr-bad"
     "right operand of `+=` is `bool`; `addr` arithmetic needs a scalar integer offset"
@@ -8829,28 +9121,33 @@ let () =
     "fn f(destination addr, source addr) void {\n\
      copy[arr[2,u8]](destination, source)\n\
      return }\n";
-  semantic_error "copy-non-aggregate-operands" "copy requires array or struct places"
+  semantic_error "copy-non-aggregate-operands"
+    "argument 1 of `copy` has type `i32`, expected an array or struct"
     "fn f() void { destination i32 = 1\n\
      source i32 = 2\n\
      copy(destination, source)\n\
      return }\n";
-  semantic_error "copy-vector-operands" "copy requires array or struct places"
+  semantic_error "copy-vector-operands"
+    "argument 1 of `copy` has type `vec[2, u32]`, expected an array or struct"
     "fn f() void { destination vec[2,u32] = splat(1)\n\
      source vec[2,u32] = splat(2)\n\
      copy(destination, source)\n\
      return }\n";
   semantic_error "copy-mismatched-aggregate-types"
-    "copy operands must have identical types"
+    "argument 2 of `copy` has type `arr[3, u32]`, expected `arr[2, u32]` to match \
+     argument 1"
     "fn f() void { destination arr[2,u32]\n\
      source arr[3,u32]\n\
      copy(destination, source)\n\
      return }\n";
-  semantic_error "copy-rvalue-destination" "copy operands must be existing places"
+  semantic_error "copy-rvalue-destination"
+    "argument 1 of `copy` must be an existing array or struct"
     "struct S { value i64 }\n\
      fn f(condition bool) void { source S = {1}\n\
      copy(condition ? source : source, source)\n\
      return }\n";
-  semantic_error "copy-rvalue-source" "copy operands must be existing places"
+  semantic_error "copy-rvalue-source"
+    "argument 2 of `copy` must be an existing array or struct"
     "struct S { value i64 }\n\
      fn f(condition bool) void { destination S = {1}\n\
      copy(destination, condition ? destination : destination)\n\
@@ -8906,7 +9203,7 @@ let () =
     "fn f() i32 { values arr[2,arr[2,i32]] = {{}, {1, 2}}\n\
      return values[0][1] + values[1][1] }\n";
   semantic_error "construction-empty-scalar"
-    "construction needs an array, struct or vector type"
+    "initializer needs an array, struct, or vector type"
     "fn f() void { value i32 = {}\nreturn }\n";
   semantic_error "construction-empty-array-nonzero-count" "array of 5 elements, got 1"
     "fn f() void { values arr[5,u8] = {0}\nreturn }\n";
@@ -8959,21 +9256,20 @@ let () =
     "wrong number of vector literal lanes"
     "fn f() void { value vec[2,i32] = (vec[2,i32]){1}\nreturn }\n";
   semantic_error "construction-scalar-literal-destination"
-    "construction needs an array, struct or vector type"
+    "initializer needs an array, struct, or vector type"
     "fn f() void { value u32 = {1}\nreturn }\n";
   semantic_error "construction-entry-type-mismatch" "is `bool`, expected `i32`"
     "struct S { flag i32 }\nfn f() void { value S = {true}\nreturn }\n";
-  semantic_error "construction-explicit-type-mismatch"
-    "aggregate construction type does not match destination"
+  semantic_error "construction-explicit-type-mismatch" "initializer type"
     "struct A { value i32 }\n\
      struct B { value i32 }\n\
      fn f() void { value A = (B){1}\n\
      return }\n";
   semantic_error "construction-brace-needs-destination"
-    "aggregate construction needs a destination"
+    "array, struct, or vector initializer needs a destination type"
     "fn consume(pointer addr) i32 { return 0 }\nfn f() i32 { return consume({43}) }\n";
   semantic_error "construction-aggregate-expression-needs-destination"
-    "aggregate construction needs a destination"
+    "array, struct, or vector initializer needs a destination type"
     "struct S { value i32 }\n\
      fn consume(pointer addr) i32 { return 0 }\n\
      fn f() i32 { return consume((S){47}) }\n";
@@ -9033,19 +9329,22 @@ let () =
      fn check_case(p addr, i vec[3,i8], m vec[3,bool], v vec[3,u16]) void { \
      store[u16](p, i, m, v)\n\
      return }\n";
-  let simd_memory_type_error =
-    "SIMD memory element type must be a scalar integer or bool"
-  in
-  semantic_error "simd-memory-aggregate-element" simd_memory_type_error
+  semantic_error "simd-memory-aggregate-element"
+    "builtin `masked_load` needs an integer or bool memory element type, got `arr[2, \
+     u32]`"
     "fn f(p addr, m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
      masked_load[arr[2,u32]](p, m, v) }\n";
-  semantic_error "simd-memory-address-element" simd_memory_type_error
+  semantic_error "simd-memory-address-element"
+    "builtin `masked_load` needs an integer or bool memory element type, got `addr`"
     "fn f(p addr, m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
      masked_load[addr](p, m, v) }\n";
-  semantic_error "simd-memory-vector-element" simd_memory_type_error
+  semantic_error "simd-memory-vector-element"
+    "builtin `masked_load` needs an integer or bool memory element type, got `vec[2, \
+     u32]`"
     "fn f(p addr, m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
      masked_load[vec[2,u32]](p, m, v) }\n";
-  semantic_error "simd-memory-handle-element" simd_memory_type_error
+  semantic_error "simd-memory-handle-element"
+    "builtin `gather` needs an integer or bool memory element type, got `handle[Token]`"
     "opaque Token\n\
      fn f(p addr, i vec[2,i8], m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
      gather[handle[Token]](p, i, m, v) }\n";
@@ -9161,6 +9460,8 @@ let () =
   semantic_message "global-function-name-collision" "duplicate declaration `Value`"
     "var Value i32\nfn Value() i32 { return 0 }\n";
   parse_message "global-reserved-var" "expected identifier, found `var`" "var var i32\n";
+  syntax_pin "keyword-identifier-caret" "var var i32\n" 1 5 3
+    "expected identifier, found `var`";
   parse_message "native-struct-keyword-field-rejected" "expected identifier, found `fn`"
     "struct S { fn i32 }\n";
   semantic_message "global-initializer-not-constant"
@@ -9225,7 +9526,8 @@ let () =
   semantic_message "address-constants-scalar-slot"
     "global initializer must be a constant expression for `P`; `&G` is not constant"
     "var G i32\nvar P i32 = &G\n";
-  semantic_message "address-constants-arithmetic" "address constants are storable only"
+  semantic_message "address-constants-arithmetic"
+    "address constants can only be stored in `addr` or `handle[T]` slots"
     "var G i32\nvar P addr = &G + 1\n";
   semantic_message "address-constants-comparison"
     "global initializer must be a constant expression for `P`; `&G == &G` is not \
@@ -9240,32 +9542,38 @@ let () =
      not constant"
     "var G i32\nconst P usize = bitcast[usize](&G)\n";
   semantic_message "address-constants-array-length"
-    "aggregate length is not a machine integer"
+    "aggregate length must be an integer constant"
     "var G i32\nconst P addr = &G\nvar A arr[P,i32]\n";
-  semantic_message "address-constants-switch-case" "global `P` is not a constant"
+  semantic_message "address-constants-switch-case"
+    "address constant `P` cannot be used as a case label"
     "var G i32\n\
      const P addr = &G\n\
      fn f() i32 { switch 0 { case P: return 1 }\n\
      return 0 }\n";
   parse_message "address-constants-sizeof-value" "expected a type, found `&`"
     "var G i32\nconst P usize = sizeof[&G]\n";
-  semantic_message "address-constants-table-copy" "address constants are storable only"
+  semantic_message "address-constants-table-copy"
+    "address constants can only be stored in `addr` or `handle[T]` slots"
     "var G i32\nconst P arr[1,addr] = {&G}\nconst Q arr[1,addr] = {P[0]}\n";
-  semantic_message "address-constants-function-target" "function `f` is not a place"
+  semantic_message "address-constants-function-target"
+    "function `f` must be called to produce a value"
     "fn f() void { return }\nvar P addr = &f\n";
   semantic_message "address-constants-scalar-constant-target"
-    "constant `G` is not a place" "const G i32 = 1\nvar P addr = &G\n";
+    "constant `G` cannot be addressed" "const G i32 = 1\nvar P addr = &G\n";
   semantic_message "address-constants-vector-constant-target"
     "cannot take the address of this expression"
     "const G vec[2,i32] = splat(1)\nvar P addr = &G\n";
-  semantic_message "address-constants-ordinary-string"
-    "address constants require a C string literal" "var P addr = \"x\"\n";
+  let ordinary_address_string = "var P addr = \"x\"\n" in
+  semantic_pin "address-constants-ordinary-string" ordinary_address_string 1
+    (String.index ordinary_address_string '"' + 1)
+    3 "address constants require a C string literal" (Some "write `c\"x\"`");
+  semantic_accept "address-constants-ordinary-string-twin" "var P addr = c\"x\"\n";
   semantic_message "address-constants-local-target" "unknown name `Local`"
     "fn f() void { Local i32 = 1\nreturn }\nvar P addr = &Local\n";
   semantic_message "address-constants-handle-ordinary-string"
     "address constants require a C string literal"
     "opaque Token\nvar P handle[Token] = handle_from_addr[Token](\"x\")\n";
-  semantic_message "address-constants-readonly-table" "cannot modify read-only pointer"
+  semantic_message "address-constants-readonly-table" "cannot modify constant"
     "var G i32\nconst P arr[1,addr] = {&G}\nfn f() void { P[0] = null\nreturn }\n";
   let relocatable =
     llvm_of
@@ -9301,8 +9609,7 @@ let () =
   semantic_message "constant-global-record-initializer-arity"
     "record `Pair` has 1 field, got 2"
     "struct Pair { x i32 }\nconst Item Pair = {1, 2}\n";
-  semantic_message "global-opaque-object"
-    "opaque type `Token` may only be used behind a pointer"
+  semantic_message "global-opaque-object" "opaque type `Token` must use `handle[Token]`"
     "opaque Token\nvar Value Token\n";
   parse_message "global-local-var"
     "`var` declares globals; locals are declared as `name Type = value`"
@@ -9879,7 +10186,7 @@ let () =
   in
   incr checks_run;
   (match stat_second_parameter c_stat_typedef with
-  | Some (Ast.Handle (Ast.Named_type "stat_base")) -> ()
+  | Some (Ast.Handle (Ast.Named_type ("stat_base", _))) -> ()
   | Some _ -> failwith "stat_t did not become the imported stat() handle type"
   | None -> failwith "sys/stat.h stat() was not imported with stat_t");
   c_semantic_accept "c-import-stat-typedef-handle" (stat_source, c_stat_typedef)
@@ -10375,12 +10682,14 @@ let () =
              (Ast.type_name expected) (Ast.type_name actual))
     | None -> failwith ("C alias was not imported: " ^ name)
   in
-  require_c_alias "PointerRecordPointer" (Ast.Handle (Ast.Named_type "PointerRecord"));
-  require_c_alias "PointerUnionPointer" (Ast.Handle (Ast.Named_type "PointerUnion"));
+  require_c_alias "PointerRecordPointer"
+    (Ast.Handle (Ast.Named_type ("PointerRecord", Span.synthetic)));
+  require_c_alias "PointerUnionPointer"
+    (Ast.Handle (Ast.Named_type ("PointerUnion", Span.synthetic)));
   require_c_alias "AnonymousRecordPointer" Ast.Addr;
   require_c_alias "PointerCollision" Ast.Addr;
   require_c_alias "IncompletePointer"
-    (Ast.Handle (Ast.Named_type "IncompletePointerTarget"));
+    (Ast.Handle (Ast.Named_type ("IncompletePointerTarget", Span.synthetic)));
   c_semantic_accept "c-import-record-pointer-typedefs" pointer_enum_types
     "fn pointers() bool { return pointer_record_value(null) == 0 && \
      pointer_union_value(null) == 0 && anonymous_pointer_is_null(null) != 0 && \
@@ -10419,7 +10728,8 @@ let () =
      var NativeTimespecStorage NativeTimespec\n\
      fn native_address() addr { return &NativeTimespecStorage }\n";
   c_semantic_message "c-import-record-address-different-handle"
-    "argument 2 of `clock_gettime` is `addr`, expected `handle[timespec]`"
+    "argument 2 of `clock_gettime` is `addr` to `FasOtherTimespec`, expected \
+     `handle[timespec]`"
     time_record_handles
     "fn wrong_record() i32 { ts FasOtherTimespec\nreturn clock_gettime(1, &ts) }\n";
   let record_import = snd record_import_cases in
@@ -10460,13 +10770,13 @@ let () =
             record_import.items)
        <> 1
     || List.assoc_opt "FasAlias" record_import.aliases
-       <> Some (Ast.Named_type "FasAliasRecord")
+       <> Some (Ast.Named_type ("FasAliasRecord", Span.synthetic))
   then failwith "tag and typedef did not preserve one C record identity";
   let nested_fields, _ = require_struct "FasNestedRecord" in
   if
     List.map (fun (field : Ast.field) -> (field.name, field.ty)) nested_fields
     <> [
-         ("inner", Ast.Named_type "FasInnerRecord");
+         ("inner", Ast.Named_type ("FasInnerRecord", Span.synthetic));
          ("values", Ast.Array ("2", Ast.Int Ast.I32));
        ]
   then failwith "nested record or array field type was not imported";
@@ -10474,7 +10784,7 @@ let () =
   if
     List.map (fun (field : Ast.field) -> (field.name, field.ty)) self_fields
     <> [
-         ("next", Ast.Handle (Ast.Named_type "FasSelfRecord"));
+         ("next", Ast.Handle (Ast.Named_type ("FasSelfRecord", Span.synthetic)));
          ("value", Ast.Int Ast.I32);
        ]
   then failwith "self-referential record pointer did not map to a handle";
@@ -10876,7 +11186,10 @@ let () =
       output_string output
         "extern int fas_imported_global;\n\
          int fas_imported_function(int value);\n\
-         extern int fas_incomplete[];\n";
+         extern int fas_incomplete[];\n\
+         typedef struct FasIncompleteNamedRecord { int value; } \
+         FasIncompleteNamedRecord;\n\
+         extern FasIncompleteNamedRecord fas_incomplete_named[];\n";
       close_out output;
       let imported =
         let span =
@@ -10894,7 +11207,10 @@ let () =
         parse_file definition_source
           "extern \"C\" { var fas_imported_global i32 = 7\n\
            fn fas_imported_function(value i32) i32 { return value }\n\
-           var fas_incomplete arr[3,i32] = {1,2,3} }\n"
+           var fas_incomplete arr[3,i32] = {1,2,3}\n\
+           var fas_incomplete_named arr[3,FasIncompleteNamedRecord] = \
+           {(FasIncompleteNamedRecord){1},(FasIncompleteNamedRecord){2},(FasIncompleteNamedRecord){3}} \
+           }\n"
       in
       let reconciled =
         expect_ok (C_import.reconcile_source definitions.items imported)
@@ -10909,6 +11225,7 @@ let () =
             | _ -> false)
           reconciled.items
         || List.mem_assoc "fas_incomplete" reconciled.unsupported
+        || List.mem_assoc "fas_incomplete_named" reconciled.unsupported
       then failwith "matching C definitions retained conflicting imports";
       let mismatching =
         parse_file definition_source
@@ -11739,7 +12056,7 @@ let () =
     "asm fn old(x i32) i32 { movl $1, %eax; ret }\n";
   semantic_accept "asm-is-an-ordinary-binding" "fn f() i32 { asm i32 = 7\n return asm }";
   parse_message "assembly-unit-missing-terminator"
-    "C container is missing terminator `END`" "use \"asm\" <<END\n.text\n";
+    "assembly unit is missing terminator `END`" "use \"asm\" <<END\n.text\n";
   parse_message "assembly-unit-nested-container" "assembly unit must be at top level"
     "fn f() void {\nuse \"asm\" <<END\n.text\nEND\n}\n";
   parse_message "assembly-unit-nested-path" "assembly unit must be at top level"
@@ -11805,8 +12122,11 @@ let () =
         (Printf.sprintf "\nuse \"asm\" %S\n" (Filename.basename assembly_cpp));
       (match Driver.run (cli_run [ "--emit-ir"; assembly_root ]) with
       | Error [ diagnostic ]
-        when diagnostic.primary.Span.file = assembly_root
-             && diagnostic.primary.Span.line = 2 ->
+        when diagnostic.Diag.message
+             = "assembly failed: invalid instruction mnemonic 'invalid_opcode'"
+             && diagnostic.primary.Span.file = assembly_cpp
+             && diagnostic.primary.Span.line = 1
+             && diagnostic.notes = [ "source: invalid_opcode %rax" ] ->
           ()
       | _ -> failwith "assembly .S error location changed");
       write assembly_root
@@ -11900,13 +12220,62 @@ let () =
   semantic_message "builtin-store-literal-range"
     "integer literal is out of range for u8: `256`"
     "fn f(p addr) void { volatile_store[u8](p, 256)\nreturn }\n";
-  semantic_message "builtin-select-type-mismatch"
-    "builtin arguments must have the same type"
-    "fn f(m vec[4,bool], a vec[4,u8], b vec[4,u32]) vec[4,u8] { return select(m, a, b) }\n";
-  semantic_message "builtin-shuffle-type-mismatch"
-    "builtin arguments must have the same type"
+  let select_runtime_type_mismatch =
+    "fn f(m vec[4,bool], a vec[4,u8], b vec[4,u32]) vec[4,u8] { return select(m, a, b) }\n"
+  in
+  semantic_pin "builtin-select-type-mismatch" select_runtime_type_mismatch 1
+    (String.length
+       "fn f(m vec[4,bool], a vec[4,u8], b vec[4,u32]) vec[4,u8] { return select(m, a, "
+    + 1)
+    1
+    "argument 3 of `select` is `vec[4, u32]`, expected the type of argument 2 (`vec[4, \
+     u8]`)"
+    None;
+  let select_runtime_type_twin =
+    "fn f(m vec[4,bool], a vec[4,u8], b vec[4,u8]) vec[4,u8] { return select(m, a, b) }\n"
+  in
+  semantic_accept "builtin-select-type-mismatch-twin" select_runtime_type_twin;
+  let shuffle_runtime_type_mismatch =
     "fn f(a vec[4,u8], b vec[4,u32]) vec[4,u8] { return shuffle(a, b, (vec[4,u8]){0, \
      1, 2, 3}) }\n"
+  in
+  semantic_pin "builtin-shuffle-type-mismatch" shuffle_runtime_type_mismatch 1
+    (String.length "fn f(a vec[4,u8], b vec[4,u32]) vec[4,u8] { return shuffle(a, " + 1)
+    1
+    "argument 2 of `shuffle` is `vec[4, u32]`, expected the type of argument 1 \
+     (`vec[4, u8]`)"
+    None;
+  semantic_accept "builtin-shuffle-type-mismatch-twin"
+    "fn f(a vec[4,u8], b vec[4,u8]) vec[4,u8] { return shuffle(a, b, (vec[4,u8]){0, 1, \
+     2, 3}) }\n";
+  let select_constant_mask_type =
+    "const MASK vec[2,i32] = {0, 1}\n\
+     const LEFT vec[2,i32] = {1, 2}\n\
+     const RIGHT vec[2,i32] = {3, 4}\n\
+     const RESULT vec[2,i32] = select(MASK, LEFT, RIGHT)\n"
+  in
+  semantic_pin "builtin-select-constant-mask-type" select_constant_mask_type 4 1 5
+    "argument 1 of `select` is `vec[2, i32]`, expected a bool vector" None;
+  semantic_accept "builtin-select-constant-mask-twin"
+    "const MASK vec[2,bool] = {true, false}\n\
+     const LEFT vec[2,i32] = {1, 2}\n\
+     const RIGHT vec[2,i32] = {3, 4}\n\
+     const RESULT vec[2,i32] = select(MASK, LEFT, RIGHT)\n";
+  let select_constant_value_type =
+    "const MASK vec[2,bool] = {true, false}\n\
+     const LEFT vec[2,i32] = {1, 2}\n\
+     const RIGHT vec[2,i64] = {3, 4}\n\
+     const RESULT vec[2,i32] = select(MASK, LEFT, RIGHT)\n"
+  in
+  semantic_pin "builtin-select-constant-value-type" select_constant_value_type 4 1 5
+    "argument 3 of `select` is `vec[2, i64]`, expected the type of argument 2 (`vec[2, \
+     i32]`)"
+    None;
+  semantic_accept "builtin-select-constant-value-twin"
+    "const MASK vec[2,bool] = {true, false}\n\
+     const LEFT vec[2,i32] = {1, 2}\n\
+     const RIGHT vec[2,i32] = {3, 4}\n\
+     const RESULT vec[2,i32] = select(MASK, LEFT, RIGHT)\n"
 
 let () =
   semantic_accept "bitcast-literal-default-i32"
@@ -11914,7 +12283,8 @@ let () =
      const W vec[2,u16] = bitcast[vec[2,u16]](-1)\n\
      fn f() u8 { return bitcast[vec[4,u8]](0x00010203)[0] + V[1] }\n";
   semantic_message "bitcast-literal-equal-bits"
-    "illegal cast for source and destination widths"
+    "illegal `bitcast` from `i32` to `u64`: the source is 32 bits and the destination \
+     is 64 bits"
     "fn f() u64 { return bitcast[u64](1) }\n"
 
 let () =
@@ -11930,9 +12300,11 @@ let () =
      i vec[4,u32] = ok ? splat(0) : v\n\
      j vec[4,u32] = ok ? v : {1, 2, 3, 4}\n\
      return a + b + e + g + h + i + j }\n";
-  semantic_message "vector-peer-no-typed-peer" "splat requires a vector type context"
+  semantic_message "vector-peer-no-typed-peer"
+    "`splat` needs a vector type from its destination or another operand"
     "fn f() void { add_sat(splat(1), splat(2))\nreturn }\n";
-  semantic_message "vector-peer-scalar-peer" "splat requires a vector type context"
+  semantic_message "vector-peer-scalar-peer"
+    "`splat` needs a vector type from its destination or another operand"
     "fn f(k u32) void { add_sat(k, splat(2))\nreturn }\n";
   semantic_message "vector-peer-wrong-width" "wrong number of vector literal lanes"
     "fn f(v vec[4,u32]) vec[4,bool] { return v == {1, 2} }\n";
@@ -11952,16 +12324,75 @@ let () =
     (fun selector ->
       semantic_message
         ("shuffle-brace-range-" ^ selector)
-        "shuffle index out of range"
+        ("shuffle index `" ^ selector ^ "` is out of range for 8 lanes")
         ("fn f(v vec[4,u32]) vec[1,u32] { return shuffle(v, v, {" ^ selector ^ "}) }\n"))
     [ "-1"; "8" ];
   semantic_message "shuffle-brace-nonconstant"
     "shuffle indices must be a compile-time constant integer vector"
     "fn f(v vec[4,u32], i u32) vec[2,u32] { return shuffle(v, v, {0, i}) }\n";
-  semantic_message "shuffle-brace-const-nonconstant"
-    "shuffle indices must be a compile-time constant integer vector"
+  let shuffle_missing_const =
     "const V vec[4,u32] = {1, 2, 3, 4}\n\
      const R vec[2,u32] = shuffle(V, V, {0, missing})\n"
+  in
+  semantic_pin "shuffle-brace-const-nonconstant" shuffle_missing_const 2 1 5
+    "unknown name `missing`" None;
+  let reduce_runtime_scalar =
+    "fn maximum(value i16) i16 { return reduce_max(value) }\n"
+  in
+  semantic_pin "reduce-scalar-runtime-agreement" reduce_runtime_scalar 1
+    (String.length "fn maximum(value i16) i16 { return reduce_max(" + 1)
+    5 "`reduce_max` needs an integer vector, got `i16`" None;
+  semantic_accept "reduce-scalar-runtime-agreement-twin"
+    "fn maximum(value vec[4,i16]) i16 { return reduce_max(value) }\n";
+  let reduce_constant_scalar =
+    "const SAMPLE i16 = 9\nconst MAXIMUM i16 = reduce_max(SAMPLE)\n"
+  in
+  semantic_pin "reduce-scalar-constant-agreement" reduce_constant_scalar 2 1 5
+    "`reduce_max` needs an integer vector, got `i16`" None;
+  semantic_accept "reduce-scalar-constant-agreement-twin"
+    "const SAMPLE vec[4,i16] = {1, 2, 3, 4}\nconst MAXIMUM i16 = reduce_max(SAMPLE)\n";
+  let add_sat_runtime_scalar =
+    "fn saturate(value vec[4,u8]) vec[4,u8] { return add_sat(value, 2) }\n"
+  in
+  semantic_pin "add-sat-vector-scalar-runtime-agreement" add_sat_runtime_scalar 1
+    (String.length "fn saturate(value vec[4,u8]) vec[4,u8] { return add_sat(value, " + 1)
+    1 "argument 2 of `add_sat` is `i32`, expected the type of argument 1 (`vec[4, u8]`)"
+    None;
+  semantic_accept "add-sat-vector-scalar-runtime-agreement-twin"
+    "fn saturate(value vec[4,u8]) vec[4,u8] { return add_sat(value, splat(2)) }\n";
+  let add_sat_constant_scalar =
+    "const INPUT vec[4,u8] = splat(1)\nconst OUTPUT vec[4,u8] = add_sat(INPUT, 2)\n"
+  in
+  semantic_pin "add-sat-vector-scalar-constant-agreement" add_sat_constant_scalar 2 1 5
+    "argument 2 of `add_sat` is `i32`, expected the type of argument 1 (`vec[4, u8]`)"
+    None;
+  semantic_accept "add-sat-vector-scalar-constant-agreement-twin"
+    "const INPUT vec[4,u8] = splat(1)\n\
+     const OUTPUT vec[4,u8] = add_sat(INPUT, splat(2))\n";
+  let shuffle_missing_index =
+    "fn read(value vec[4,u32]) vec[2,u32] { return shuffle(value, value, {0, \
+     absent_index}) }\n"
+  in
+  semantic_pin "shuffle-inline-unknown-index" shuffle_missing_index 1
+    (String.length
+       "fn read(value vec[4,u32]) vec[2,u32] { return shuffle(value, value, {0, "
+    + 1)
+    12 "unknown name `absent_index`" None;
+  semantic_accept "shuffle-inline-unknown-index-twin"
+    "const PRESENT_INDEX i64 = 1\n\
+     fn read(value vec[4,u32]) vec[2,u32] { return shuffle(value, value, {0, \
+     PRESENT_INDEX}) }\n";
+  semantic_accept "shuffle-inline-const-index"
+    "const SLOT i64 = 2\n\
+     fn read(value vec[4,u32]) vec[2,u32] { return shuffle(value, value, {0, SLOT}) }\n"
+
+let () =
+  let bool_vector_compound =
+    "fn combine(left vec[2,bool], right vec[2,bool]) void { left &= right\nreturn }\n"
+  in
+  semantic_pin "bool-vector-compound-assignment" bool_vector_compound 1
+    (String.index bool_vector_compound '&' + 1)
+    2 "compound assignment `&=` is not defined for `vec[2, bool]`" None
 
 let () =
   let dir = Filename.dirname (fst (c_import_fixture "container_followup.h")) in
@@ -12036,7 +12467,10 @@ let () =
         (fun name ->
           semantic_message
             ("generic-slot-" ^ name ^ "-" ^ ty)
-            "SIMD memory element type must be a scalar integer or bool"
+            (Printf.sprintf
+               "builtin `%s` needs an integer or bool memory element type, got `%s`"
+               name
+               (String.split_on_char ',' ty |> String.concat ", "))
             (body (name ^ "[" ^ ty ^ "](p, 0, 0, 0)")))
         [
           "masked_load";
@@ -12051,9 +12485,15 @@ let () =
         (body ("handle_from_addr[" ^ ty ^ "](p)"));
       List.iter
         (fun name ->
+          let reason =
+            if name = "bitcast" then
+              "both types must be bool, integer, or integer-vector types of equal width"
+            else "the source and destination must be integer types"
+          in
+          let printed_ty = String.split_on_char ',' ty |> String.concat ", " in
           semantic_message
             ("generic-slot-conversion-" ^ name ^ "-" ^ ty)
-            "illegal cast for source and destination widths"
+            (Printf.sprintf "illegal `%s` from `i32` to `%s`: %s" name printed_ty reason)
             (body (name ^ "[" ^ ty ^ "](1)")))
         [ "bitcast"; "zext"; "sext"; "trunc" ])
     [ "Ring[4]"; "arr[4,u32]" ];
@@ -12131,8 +12571,8 @@ let () =
         "`var` declares globals; locals are declared as `name Type = value`" generic;
       pin "x := 5" ":" "locals are declared as `name Type = value`; Fas has no `:=`"
         generic;
-      pin "x++" "+" "Fas has no `++`; write `x += 1`" generic;
-      pin "x--" "-" "Fas has no `--`; write `x -= 1`" generic)
+      pin "x++" "++" "Fas has no postfix `++` operator; write `x += 1`" generic;
+      pin "x--" "--" "Fas has no postfix `--` operator; write `x -= 1`" generic)
     [ false; true ];
   List.iter
     (fun word ->
@@ -12157,7 +12597,10 @@ let () =
   List.iter
     (fun name ->
       semantic_message ("vector-type-slot-" ^ name)
-        "SIMD memory element type must be a scalar integer or bool"
+        (Printf.sprintf
+           "builtin `%s` needs an integer or bool memory element type, got `vec[4, \
+            u32]`"
+           name)
         ("fn f(p addr) void { " ^ name ^ "[vec[4,u32]](p, 0, 0, 0)\nreturn }"))
     [
       "masked_load";
@@ -12174,7 +12617,13 @@ let () =
     (fun name ->
       semantic_message
         ("vector-conversion-rejection-" ^ name)
-        "illegal cast for source and destination widths"
+        (Printf.sprintf "illegal `%s` from `i32` to `vec[4, u32]`: %s" name
+           (if name = "trunc" then
+              "the destination must be a narrower integer type with the same vector \
+               lane count"
+            else
+              "the destination must be a wider integer type with the same vector lane \
+               count"))
         ("fn f() void { " ^ name ^ "[vec[4,u32]](1)\nreturn }"))
     [ "zext"; "sext"; "trunc" ];
   List.iter
@@ -12342,8 +12791,7 @@ let () =
     "fn f() i32 { divisor i32 = 3 - 3\nreturn 81 % divisor }";
   semantic_accept "value-fact-unknown-divisor"
     "fn f(divisor i32) i32 { return 81 / divisor }";
-  semantic_message "value-fact-min-div-minus-one"
-    "signed division overflow in constant expression"
+  semantic_message "value-fact-min-div-minus-one" "signed division overflow"
     "fn f() i32 { value i32 = -2147483648\ndivisor i32 = -1\nreturn value / divisor }";
   semantic_accept "value-fact-min-rem-minus-one-is-defined"
     "fn f() i32 { value i32 = -2147483648\ndivisor i32 = -1\nreturn value % divisor }";
@@ -12630,7 +13078,7 @@ let () =
     "array type `arr` needs an element type after its length";
   let sizeof_variable = "fn f() usize { return sizeof amount }\n" in
   pin "sizeof-needs-type" sizeof_variable 1 "fn f() usize { return sizeof " 6
-    "`sizeof` takes a type in brackets; write `sizeof[i32]`";
+    "`sizeof` needs a type in brackets";
   pin "c-header-needs-delimiters" "use \"C\" math.h\n" 1 "use \"C\" " 4
     "C header path `math.h` needs quotes or angle brackets";
   syntax_pin "include-directive" "#include <stdint.h>\n" 1 1 1
@@ -12644,8 +13092,21 @@ let () =
     "C extern global declarations starting with `int` are not Fas syntax; use `extern \
      \"C\"` and `var`";
   let char_pointer = "fn accept(data char*) void { return }\n" in
-  pin "c-char-pointer-type" char_pointer 1 "fn accept(data char*" 1
+  syntax_pin "c-char-pointer-type-caret" char_pointer 1
+    (String.length "fn accept(data " + 1)
+    5 "C type `char*` is not a Fas type; use `addr`";
+  pin "c-char-pointer-type" char_pointer 1 "fn accept(data " 5
     "C type `char*` is not a Fas type; use `addr`";
+  let arrow_record =
+    "struct Pair { x i32 }\n\
+     fn read() i32 { value Pair = (Pair){1}\n\
+    \ return value->x }\n"
+  in
+  semantic_pin "c-arrow-record-field-name" arrow_record 3
+    (String.length " return value" + 1)
+    2 "operator `->` is not supported in Fas for field `x`" None;
+  semantic_accept "c-arrow-record-dot-twin"
+    "struct Pair { x i32 }\nfn read() i32 { value Pair = (Pair){1}\n return value.x }\n";
   let parameter_order = "fn combine(i64 first, i64 second) i64 { return first }\n" in
   pin "c-parameter-order" parameter_order 1 "fn combine(" 3
     "C parameter order puts `i64` before the name; Fas parameters put the name first";
@@ -12681,20 +13142,54 @@ let () =
   pin "c-goto" "fn f() void { goto finish\n return }\n" 1 "fn f() void { " 4
     "Fas has no `goto` labels; use `break` or `continue` in a loop";
   let arrow = "fn read(p addr) i32 { return p->value }\n" in
-  pin "c-arrow-field" arrow 1 "fn read(p addr) i32 { return p" 1
-    "Fas has no `->`; access field `value` with `.`";
+  semantic_pin "c-arrow-field" arrow 1
+    (String.index arrow '-' + 1)
+    2 "no field `value` on `addr`" (Some "write `p[T].value` with the record type");
+  semantic_accept "c-arrow-field-typed-twin"
+    "struct Point { value i32 }\nfn read(p addr) i32 { return p[Point].value }\n";
   let cast = "fn widen(p addr) u32 { return (u8*)p }\n" in
-  pin "c-cast" cast 1 "fn widen(p addr) u32 { return " 1
-    "C cast `(u8*)` is not Fas syntax; use `zext`, `sext` or `trunc`";
+  pin "c-cast" cast 1 "fn widen(p addr) u32 { return (u8*" 1
+    "C pointer casts are not Fas syntax; `addr` is untyped";
+  let addr_cast = "fn keep(p addr) addr { return (addr)p }\n" in
+  pin "c-addr-cast" addr_cast 1 "fn keep(p addr) addr { return (addr" 1
+    "C pointer casts are not Fas syntax; `addr` is untyped";
+  let integer_cast = "fn reinterpret(value i32) u32 { return (u32)value }\n" in
+  pin "c-integer-cast" integer_cast 1 "fn reinterpret(value i32) u32 { return " 1
+    "C cast `(u32)` is not Fas syntax; use `zext`, `sext`, `trunc` or `bitcast`";
   let dereference = "fn read(pointer addr) u8 { return *pointer }\n" in
   pin "c-star-dereference" dereference 1 "fn read(pointer addr) u8 { return " 1
     "Fas has no unary `*`; use typed `addr` selection";
   let prefix_increment = "fn increment(value i32) i32 { return ++value }\n" in
-  pin "c-prefix-increment" prefix_increment 1 "fn increment(value i32) i32 { return " 1
+  pin "c-prefix-increment" prefix_increment 1 "fn increment(value i32) i32 { return " 2
+    "Fas has no prefix `++` operator";
+  let prefix_decrement = "fn decrement(value i32) i32 { return --value }\n" in
+  pin "c-prefix-decrement" prefix_decrement 1 "fn decrement(value i32) i32 { return " 2
+    "Fas has no prefix `--` operator";
+  let postfix_expression = "fn increment(value i32) i32 { return value++ }\n" in
+  pin "c-postfix-increment-expression" postfix_expression 1
+    "fn increment(value i32) i32 { return value" 2 "Fas has no postfix `++` operator";
+  let postfix_decrement_expression =
+    "fn decrement(value i32) i32 { return value-- }\n"
+  in
+  pin "c-postfix-decrement-expression" postfix_decrement_expression 1
+    "fn decrement(value i32) i32 { return value" 2 "Fas has no postfix `--` operator";
+  let prefix_statement = "fn increment(value i32) void { ++value\n return }\n" in
+  pin "c-prefix-increment-statement" prefix_statement 1
+    "fn increment(value i32) void { " 2
     "Fas has no prefix `++` operator; write `value += 1`";
+  let prefix_decrement_statement =
+    "fn decrement(value i32) void { --value\n return }\n"
+  in
+  pin "c-prefix-decrement-statement" prefix_decrement_statement 1
+    "fn decrement(value i32) void { " 2
+    "Fas has no prefix `--` operator; write `value -= 1`";
+  semantic_accept "increment-statement-help-twin"
+    "fn increment(value i32) void { value += 1\nreturn }";
+  semantic_accept "decrement-statement-help-twin"
+    "fn decrement(value i32) void { value -= 1\nreturn }";
   let postfix_increment = "fn increment(value i32) void { value++\n return }\n" in
-  pin "c-postfix-increment" postfix_increment 1 "fn increment(value i32) void { value" 1
-    "Fas has no `++`; write `value += 1`";
+  pin "c-postfix-increment" postfix_increment 1 "fn increment(value i32) void { value" 2
+    "Fas has no postfix `++` operator; write `value += 1`";
   let chain =
     "fn f() void { left i32 = 0\n right i32 = 1\n left = right = 2\n return }\n"
   in
@@ -12743,6 +13238,35 @@ let () =
     (llvm_of "fn f() void { left i32 = 0\n right i32 = 1\n left = right\n return }\n");
   ignore (llvm_of "fn f() i32 { return 1 }\n");
   ignore (llvm_of "fn f() i32 { return 10 }\n");
-  ignore (llvm_of "fn f() i32 { return 0b101 }\n")
+  ignore (llvm_of "fn f() i32 { return 0b101 }\n");
+  let address_to_integer =
+    "fn bits(pointer addr) usize { return bitcast[usize](pointer) }\n"
+  in
+  semantic_pin "bitcast-address-to-integer" address_to_integer 1
+    (String.length "fn bits(pointer addr) usize { return " + 1)
+    7
+    "illegal `bitcast` from `addr` to `usize`: address-to-integer conversion uses \
+     `addr_bits`"
+    (Some "write `addr_bits(pointer)`");
+  semantic_accept "bitcast-address-to-integer-twin"
+    "fn bits(pointer addr) usize { return addr_bits(pointer) }\n";
+  let integer_to_address =
+    "fn pointer(bits usize) addr { return bitcast[addr](bits) }\n"
+  in
+  semantic_pin "bitcast-integer-to-address" integer_to_address 1
+    (String.length "fn pointer(bits usize) addr { return " + 1)
+    7
+    "illegal `bitcast` from `usize` to `addr`: integer-to-address conversion uses \
+     `addr_from_bits`"
+    (Some "write `addr_from_bits(bits)`");
+  semantic_accept "bitcast-integer-to-address-twin"
+    "fn pointer(bits usize) addr { return addr_from_bits(bits) }\n";
+  let void_cast = "fn invalid(value i32) void { zext[void](value)\nreturn }\n" in
+  semantic_pin "cast-void-target" void_cast 1
+    (String.length "fn invalid(value i32) void { " + 1)
+    4
+    "illegal `zext` from `i32` to `void`: the source and destination must be integer \
+     types"
+    None
 
 let () = Printf.printf "all regression checks: %d passed\n" !checks_run

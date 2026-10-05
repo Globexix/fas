@@ -5,7 +5,7 @@ type ty =
   | Handle of ty
   | Array of string * ty
   | Vec of string * ty
-  | Named_type of string
+  | Named_type of string * Span.t
   | Applied_type of string * generic_arg list * Span.t
   | Void
 
@@ -30,6 +30,7 @@ and expr =
   | Cast of cast_kind * ty * expr * Span.t
   | Select of expr * generic_arg list * Span.t
   | Field of expr * string * Span.t
+  | Arrow_field of expr * string * Span.t * Span.t
   | Addr_of of expr * Span.t
   | Handle_from_addr of ty * expr * Span.t
   | Sizeof of ty * Span.t
@@ -74,7 +75,7 @@ and stmt =
     }
   | View of { name : string; place : expr; span : Span.t }
   | Assign of assign_target * expr * Span.t
-  | Compound_assign of assign_target * binop * expr * Span.t
+  | Compound_assign of assign_target * binop * expr * Span.t * Span.t
   | Return of expr option * Span.t
   | If of expr * stmt list * stmt list option * Span.t
   | While of expr * stmt list * Span.t
@@ -94,13 +95,14 @@ and assign_target =
 and field = {
   name : string;
   ty : ty;
+  ty_span : Span.t;
   span : Span.t;
   offset : int option;
   unsupported_reason : string option;
 }
 
-and param = { name : string; ty : ty; span : Span.t }
-and const_param = { name : string; ty : ty; span : Span.t }
+and param = { name : string; ty : ty; ty_span : Span.t; span : Span.t }
+and const_param = { name : string; ty : ty; ty_span : Span.t; span : Span.t }
 
 and generic_param =
   | Type_param of { name : string; span : Span.t }
@@ -172,6 +174,11 @@ let rec expr_span = function
   | Array_lit (_, s)
   | Struct_lit (_, _, s) ->
       s
+  | Arrow_field (base, _, _, field_span) ->
+      let base_span = expr_span base in
+      Span.make ~file:base_span.Span.file ~start_offset:base_span.Span.start_offset
+        ~end_offset:field_span.Span.end_offset ~line:base_span.Span.line
+        ~column:base_span.Span.column
   | Field (base, _, field_span) ->
       let base_span = expr_span base in
       Span.make ~file:base_span.Span.file ~start_offset:base_span.Span.start_offset
@@ -179,7 +186,7 @@ let rec expr_span = function
         ~column:base_span.Span.column
 
 let rec index_expression = function
-  | Named_type name -> Ident (name, Span.synthetic)
+  | Named_type (name, span) -> Ident (name, span)
   | Applied_type (name, arguments, span) ->
       Select (Ident (name, span), List.map index_argument arguments, span)
   | _ -> failwith "internal error: ambiguous index requires a named type application"
@@ -192,7 +199,7 @@ let stmt_span = function
   | Let { span; _ }
   | View { span; _ }
   | Assign (_, _, span)
-  | Compound_assign (_, _, _, span)
+  | Compound_assign (_, _, _, span, _)
   | Return (_, span)
   | If (_, _, _, span)
   | While (_, _, span)
@@ -221,7 +228,7 @@ let rec type_name = function
   | Handle t -> "handle[" ^ type_name t ^ "]"
   | Array (n, t) -> "arr[" ^ n ^ ", " ^ type_name t ^ "]"
   | Vec (n, t) -> "vec[" ^ n ^ ", " ^ type_name t ^ "]"
-  | Named_type s -> s
+  | Named_type (s, _) -> s
   | Applied_type (name, args, _) ->
       name ^ "[" ^ String.concat ", " (List.map generic_arg_name args) ^ "]"
   | Void -> "void"
@@ -276,6 +283,7 @@ and expr_name = function
   | Select (a, args, _) ->
       expr_name a ^ "[" ^ String.concat ", " (List.map generic_arg_name args) ^ "]"
   | Field (a, n, _) -> expr_name a ^ "." ^ n
+  | Arrow_field (a, n, _, _) -> expr_name a ^ "->" ^ n
   | Addr_of (e, _) -> "&" ^ expr_name e
   | Handle_from_addr (t, e, _) ->
       "handle_from_addr[" ^ type_name t ^ "](" ^ expr_name e ^ ")"
@@ -349,7 +357,7 @@ let render_program program =
         text ", ";
         emit_ty inner;
         text "]"
-    | Named_type name -> add_name name
+    | Named_type (name, _) -> add_name name
     | Applied_type (name, args, _) ->
         add_name name;
         text "[";
@@ -448,6 +456,10 @@ let render_program program =
         emit_expr a;
         text ".";
         add_name name
+    | Arrow_field (a, name, _, _) ->
+        emit_expr a;
+        text "->";
+        add_name name
     | Addr_of (x, _) ->
         text "&";
         emit_expr x
@@ -518,7 +530,7 @@ let render_program program =
         text indent;
         text "<target> = ";
         emit_expr e
-    | Compound_assign (_, _, e, _) ->
+    | Compound_assign (_, _, e, _, _) ->
         text indent;
         text "<target> compound= ";
         emit_expr e
@@ -749,7 +761,7 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
       | Select (a, args, _) ->
           go_expr a;
           List.iter (go_generic_arg at) args
-      | Field (a, _, _) -> go_expr a
+      | Field (a, _, _) | Arrow_field (a, _, _, _) -> go_expr a
       | Addr_of (x, _) -> go_expr x
       | Handle_from_addr (t, x, _) ->
           go_ty at t;
@@ -786,7 +798,7 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
           go_ty span ty;
           Option.iter go_expr init
       | View { place; _ } -> go_expr place
-      | Assign (t, e, _) | Compound_assign (t, _, e, _) ->
+      | Assign (t, e, _) | Compound_assign (t, _, e, _, _) ->
           go_target t;
           go_expr e
       | Return (e, _) -> Option.iter go_expr e

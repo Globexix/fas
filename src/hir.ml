@@ -355,7 +355,7 @@ let scalar_bits target = function
   | Bool -> Ok 1
   | Int k -> Ok (int_bytes ~target k * 8)
   | Addr | Handle _ -> Ok (target.Target_layout.pointer_size * 8)
-  | _ -> Error "vector element type must be a scalar"
+  | _ -> Error "vector element type must be `bool` or an integer type"
 
 let layout ?(target = Target_layout.current) structs ty =
   let rec go visiting = function

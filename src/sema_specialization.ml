@@ -134,7 +134,7 @@ let rec diagnostic_type_of_ast specializations = function
       Diagnostic_array (length, diagnostic_type_of_ast specializations ty)
   | Ast.Vec (length, ty) ->
       Diagnostic_vec (length, diagnostic_type_of_ast specializations ty)
-  | Ast.Named_type name -> (
+  | Ast.Named_type (name, _) -> (
       match find_by_name specializations Struct_specialization name with
       | Some specialization -> (
           match current_instantiation_frame specialization.trace with
@@ -240,10 +240,29 @@ let append_instantiation_trace specializations trace diagnostics =
   let notes = List.map instantiation_note trace in
   List.map
     (fun (diagnostic : Diag.t) ->
+      let local_declaration_syntax =
+        List.exists
+          (fun name -> Diag.local_declaration_message name = Some diagnostic.message)
+          [
+            "let";
+            "auto";
+            "mut";
+            "int";
+            "char";
+            "short";
+            "long";
+            "unsigned";
+            "signed";
+            "float";
+            "double";
+          ]
+      in
       {
         diagnostic with
         message = source_facing_text specializations diagnostic.message;
-        notes = List.map (source_facing_text specializations) diagnostic.notes @ notes;
+        notes =
+          (List.map (source_facing_text specializations) diagnostic.notes
+          @ if local_declaration_syntax then [] else notes);
         help = Option.map (source_facing_text specializations) diagnostic.help;
       })
     diagnostics
@@ -373,7 +392,8 @@ let rec specialization_type_key = function
       in
       let key = specialization_type_key ty in
       "vec" ^ length ^ "_" ^ string_of_int (String.length key) ^ "_" ^ key
-  | Ast.Named_type name -> "named" ^ string_of_int (String.length name) ^ "_" ^ name
+  | Ast.Named_type (name, _) ->
+      "named" ^ string_of_int (String.length name) ^ "_" ^ name
   | Ast.Applied_type (name, _, _) ->
       "applied" ^ string_of_int (String.length name) ^ "_" ^ name
 

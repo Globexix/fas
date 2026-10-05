@@ -50,7 +50,7 @@ let logical_not_error expression ty =
     | _ -> None
   in
   Diag.error ?help (Ast.expr_span expression)
-    (Printf.sprintf "logical not needs `bool`, got `%s` for `!`" (Hir.ty_name ty))
+    (Printf.sprintf "operator `!` needs `bool`, got `%s`" (Hir.ty_name ty))
 
 let edit_distance left right =
   let left_length = String.length left in
@@ -115,10 +115,10 @@ let unknown_type_name message =
          (String.length message - String.length prefix - 1))
   else None
 
-let raw_access_needs_type_error ?(index = "i") base span =
+let raw_access_needs_type_error ?(index = "i") ?(allow_help = true) base span =
   let help =
-    match base with
-    | Ast.Ident (name, _) ->
+    match (allow_help, base) with
+    | true, Ast.Ident (name, _) ->
         Some
           (Printf.sprintf "write `%s[T, %s]`, e.g. `%s[u8, %s]`" name index name index)
     | _ -> None
@@ -173,9 +173,9 @@ let rec source_ty named_types = function
           | Some message -> Error message
           | None -> Ok (Hir.Vec (n, element)))
       | result -> result)
-  | Ast.Named_type name when Names.reserved_float_name name ->
-      Error "reserved for v0.5 floating point"
-  | Ast.Named_type name -> (
+  | Ast.Named_type (name, _) when Names.reserved_float_name name ->
+      Error (Names.reserved_float_message name)
+  | Ast.Named_type (name, _) -> (
       match List.assoc_opt name named_types with
       | Some Struct_name -> Ok (Hir.Struct name)
       | Some Generic_struct_name ->
@@ -192,11 +192,11 @@ let rec source_ty named_types = function
       Error "generic type application reached ordinary type checking"
 
 and handle_target named_types = function
-  | Ast.Named_type name -> (
+  | Ast.Named_type (name, _) -> (
       match List.assoc_opt name named_types with
       | Some (C_record_name (record, _)) -> Ok record
       | _ -> (
-          match source_ty named_types (Ast.Named_type name) with
+          match source_ty named_types (Ast.Named_type (name, Span.synthetic)) with
           | Ok (Hir.Opaque name) -> Ok name
           | Ok _ -> Error "handle type argument must be an opaque type"
           | Error message -> Error message))
@@ -209,18 +209,47 @@ and handle_target named_types = function
 and source_aggregate named_types make raw element =
   try
     let length = int_of_string raw in
-    if length < 0 then Error "negative aggregate length"
+    if length < 0 then
+      Error (Printf.sprintf "aggregate length cannot be negative: `%d`" length)
     else
       let* element = source_ty named_types element in
       Ok (make length element)
-  with Failure _ -> Error "aggregate length is not a machine integer"
+  with Failure _ -> Error "aggregate length must be an integer constant"
+
+let rec named_type_span name = function
+  | Ast.Named_type (candidate, span) when candidate = name -> Some span
+  | Ast.Handle ty | Ast.Array (_, ty) | Ast.Vec (_, ty) -> named_type_span name ty
+  | Ast.Applied_type (_, arguments, _) ->
+      List.find_map
+        (function
+          | Ast.Type_arg ty | Ast.Type_or_index ty -> named_type_span name ty
+          | _ -> None)
+        arguments
+  | _ -> None
+
+let rec reserved_float_span = function
+  | Ast.Named_type (name, span) when Names.reserved_float_name name -> Some (name, span)
+  | Ast.Handle ty | Ast.Array (_, ty) | Ast.Vec (_, ty) -> reserved_float_span ty
+  | Ast.Applied_type (_, arguments, _) ->
+      List.find_map
+        (function
+          | Ast.Type_arg ty | Ast.Type_or_index ty -> reserved_float_span ty | _ -> None)
+        arguments
+  | _ -> None
 
 let source_ty_diag named_types span ty =
   source_ty named_types ty
   |> Result.map_error (fun message ->
-      match unknown_type_name message with
-      | Some name -> [ unknown_type_error (List.map fst named_types) span name ]
-      | None -> [ Diag.error span message ])
+      match (unknown_type_name message, reserved_float_span ty) with
+      | Some name, _ ->
+          [
+            unknown_type_error (List.map fst named_types)
+              (Option.value ~default:span (named_type_span name ty))
+              name;
+          ]
+      | None, Some (name, type_span) ->
+          [ Diag.error type_span (Names.reserved_float_message name) ]
+      | None, None -> [ Diag.error span message ])
 
 let lookup name table = List.find_opt (fun (entry, _, _) -> entry = name) table
 
@@ -232,13 +261,14 @@ let resolve_aggregate_length ?(globals = []) values span length =
   | Some (_, ty, value) ->
       if Sema_numeric.is_unsigned ty then
         if Int64.unsigned_compare value (Int64.of_int max_int) > 0 then
-          error span "aggregate length is not a machine integer"
+          error span "aggregate length must be an integer constant"
         else Ok (Int64.to_string value)
       else
         let value = Sema_numeric.sign_extend_value ty value in
-        if value < 0L then error span "negative aggregate length"
+        if value < 0L then
+          error span (Printf.sprintf "aggregate length cannot be negative: `%Ld`" value)
         else if value > Int64.of_int max_int then
-          error span "aggregate length is not a machine integer"
+          error span "aggregate length must be an integer constant"
         else Ok (Int64.to_string value)
 
 let rec source_ty_with_values ?(globals = []) named_types values span = function
@@ -247,20 +277,22 @@ let rec source_ty_with_values ?(globals = []) named_types values span = function
       let* ty = source_ty_with_values ~globals named_types values span ty in
       try
         let length = int_of_string length in
-        if length < 0 then error span "negative aggregate length"
+        if length < 0 then
+          error span (Printf.sprintf "aggregate length cannot be negative: `%d`" length)
         else Ok (Hir.Array (length, ty))
-      with Failure _ -> error span "aggregate length is not a machine integer")
+      with Failure _ -> error span "aggregate length must be an integer constant")
   | Ast.Vec (length, ty) -> (
       let* length = resolve_aggregate_length ~globals values span length in
       let* ty = source_ty_with_values ~globals named_types values span ty in
       try
         let length = int_of_string length in
-        if length < 0 then error span "negative aggregate length"
+        if length < 0 then
+          error span (Printf.sprintf "aggregate length cannot be negative: `%d`" length)
         else
           match vec_cap_error length ty with
           | Some message -> error span message
           | None -> Ok (Hir.Vec (length, ty))
-      with Failure _ -> error span "aggregate length is not a machine integer")
+      with Failure _ -> error span "aggregate length must be an integer constant")
   | ty -> source_ty_diag named_types span ty
 
 let layout_diag span structs ty =
@@ -277,10 +309,111 @@ let field_info structs name field =
         struct_def.fields
 
 let compatible actual expected = Hir.ty_equal actual expected
+let diagnostic_ty_name ty = Hir.ty_name ty
 
-let diagnostic_ty_name ty =
-  Hir.ty_name ty |> String.split_on_char ',' |> List.map String.trim
-  |> String.concat ","
+let shift_operator_name = function
+  | Ast.Shl -> "<<"
+  | Ast.Shr -> ">>"
+  | _ -> assert false
+
+let shift_value_error operator span ty =
+  Diag.error span
+    (Printf.sprintf
+       "left operand of `%s` has type `%s`, expected an integer or integer vector"
+       (shift_operator_name operator)
+       (diagnostic_ty_name ty))
+
+let shift_count_error operator span ty =
+  Diag.error span
+    (Printf.sprintf "right operand of `%s` has type `%s`, expected an integer"
+       (shift_operator_name operator)
+       (diagnostic_ty_name ty))
+
+let shift_count_lanes_error operator span count_ty value_ty =
+  Diag.error span
+    (Printf.sprintf
+       "right operand of `%s` has type `%s`, expected `%s` to match the value"
+       (shift_operator_name operator)
+       (diagnostic_ty_name count_ty) (diagnostic_ty_name value_ty))
+
+let rotate_value_error name span ty =
+  Diag.error span
+    (Printf.sprintf "`%s` value must be an integer or integer vector, got `%s`" name
+       (diagnostic_ty_name ty))
+
+let rotate_count_error name span ty =
+  Diag.error span
+    (Printf.sprintf "rotate count for `%s` must be a scalar integer, got `%s`" name
+       (diagnostic_ty_name ty))
+
+let cast_name = function
+  | Ast.Zext -> "zext"
+  | Ast.Sext -> "sext"
+  | Ast.Trunc -> "trunc"
+  | Ast.Bitcast -> "bitcast"
+
+let cast_integer_value = function
+  | Hir.Int _ | Hir.Vec (_, Hir.Int _) -> true
+  | Hir.Bool | Hir.Addr | Hir.Handle _ | Hir.Array _ | Hir.Struct _ | Hir.Opaque _
+  | Hir.Void | Hir.Vec _ ->
+      false
+
+let cast_error ?expression kind source destination span =
+  let name = cast_name kind in
+  let source_name = diagnostic_ty_name source
+  and destination_name = diagnostic_ty_name destination in
+  let reason =
+    match (kind, source, destination) with
+    | Ast.Bitcast, Hir.Addr, Hir.Int Hir.Usize ->
+        "address-to-integer conversion uses `addr_bits`"
+    | Ast.Bitcast, Hir.Int Hir.Usize, Hir.Addr ->
+        "integer-to-address conversion uses `addr_from_bits`"
+    | Ast.Bitcast, _, _ -> (
+        match
+          ( Sema_numeric.integer_value_bit_width source,
+            Sema_numeric.integer_value_bit_width destination )
+        with
+        | Some source_bits, Some destination_bits when source_bits <> destination_bits
+          ->
+            Printf.sprintf "the source is %d bits and the destination is %d bits"
+              source_bits destination_bits
+        | _ ->
+            "both types must be bool, integer, or integer-vector types of equal width")
+    | (Ast.Zext | Ast.Sext), _, _
+      when not (cast_integer_value source && cast_integer_value destination) ->
+        "the source and destination must be integer types"
+    | (Ast.Zext | Ast.Sext), _, _ ->
+        "the destination must be a wider integer type with the same vector lane count"
+    | Ast.Trunc, _, _
+      when not (cast_integer_value source && cast_integer_value destination) ->
+        "the source and destination must be integer types"
+    | Ast.Trunc, _, _ ->
+        "the destination must be a narrower integer type with the same vector lane \
+         count"
+  in
+  let message =
+    Printf.sprintf "illegal `%s` from `%s` to `%s`: %s" name source_name
+      destination_name reason
+  in
+  let help =
+    match (kind, source, destination, expression) with
+    | Ast.Bitcast, Hir.Addr, Hir.Int Hir.Usize, Some (Ast.Ident (variable, _)) ->
+        Some (Printf.sprintf "write `addr_bits(%s)`" variable)
+    | Ast.Bitcast, Hir.Int Hir.Usize, Hir.Addr, Some (Ast.Ident (variable, _)) ->
+        Some (Printf.sprintf "write `addr_from_bits(%s)`" variable)
+    | _ -> None
+  in
+  Diag.error ?help span message
+
+let cast_target_error kind target =
+  let expected =
+    match kind with
+    | Ast.Zext | Ast.Sext -> "an integer or integer-vector type"
+    | Ast.Trunc -> "an integer or integer-vector type"
+    | Ast.Bitcast -> "a bool, integer, or integer-vector type"
+  in
+  Printf.sprintf "illegal `%s` target `%s`: expected %s" (cast_name kind)
+    (diagnostic_ty_name target) expected
 
 let missing_field_message ?record_name field receiver =
   match receiver with
@@ -300,8 +433,26 @@ let array_element_count_message expected actual =
 let aggregate_count_error_span span n xs =
   Option.fold ~none:span ~some:Ast.expr_span (List.nth_opt xs n)
 
-let ensure_expected ?(context = "value") ?expression actual expected span =
+let ensure_expected ?(context = "value") ?expression ?checked_expression actual expected
+    span =
   if compatible actual expected then Ok ()
+  else if
+    match (checked_expression, expected) with
+    | Some (Hir.Address (place, _, _)), Hir.Handle target -> (
+        match Hir.expr_ty place with
+        | Hir.Struct source -> source <> target
+        | _ -> false)
+    | _ -> false
+  then
+    let source_record =
+      match checked_expression with
+      | Some (Hir.Address (place, _, _)) -> diagnostic_ty_name (Hir.expr_ty place)
+      | _ -> assert false
+    in
+    Diag.error span
+      (Printf.sprintf "%s is `addr` to `%s`, expected `%s`" context source_record
+         (diagnostic_ty_name expected))
+    |> fun diagnostic -> Error [ diagnostic ]
   else
     let help =
       match (expression, actual, expected) with
@@ -351,6 +502,18 @@ let is_comparison = function
   | Ast.Bit_xor | Ast.And | Ast.Or | Ast.Shl | Ast.Shr ->
       false
 
+let ordering_direction = function
+  | Ast.Lt | Ast.Le -> Some `Ascending
+  | Ast.Gt | Ast.Ge -> Some `Descending
+  | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
+  | Ast.Bit_xor | Ast.Eq | Ast.Ne | Ast.And | Ast.Or | Ast.Shl | Ast.Shr ->
+      None
+
+let literal_expression = function
+  | Ast.Int_lit _ | Ast.Bool_lit _ -> true
+  | Ast.Unary (Ast.Neg, Ast.Int_lit _, _) -> true
+  | _ -> false
+
 let binary_widening_target left_expression right_expression left right =
   match (left, right, left_expression, right_expression) with
   | Hir.Int _, Hir.Int _, Some left_expression, Some right_expression
@@ -379,16 +542,22 @@ let binary_result_type ?left_expression ?right_expression ?result_expected span
     match (left_expression, right_expression) with
     | Some (Ast.Binary (inner_operation, first, middle, _)), Some last
       when is_comparison inner_operation && is_comparison operation && left <> right ->
-        Some
-          (Printf.sprintf "comparisons cannot be chained; write `%s && %s %s %s`"
-             (Ast.expr_name (Ast.Binary (inner_operation, first, middle, span)))
-             (Ast.expr_name middle)
-             (binary_operator_name operation)
-             (Ast.expr_name last))
+        let message =
+          match (ordering_direction inner_operation, ordering_direction operation) with
+          | Some inner_direction, Some outer_direction
+            when inner_direction = outer_direction && not (literal_expression middle) ->
+              Printf.sprintf "comparisons cannot be chained; write `%s && %s %s %s`"
+                (Ast.expr_name (Ast.Binary (inner_operation, first, middle, span)))
+                (Ast.expr_name middle)
+                (binary_operator_name operation)
+                (Ast.expr_name last)
+          | _ -> "comparisons cannot be chained; add parentheses"
+        in
+        Some (Diag.error (result_span right_expression) message)
     | _ -> None
   in
   match comparison_chain () with
-  | Some message -> error (result_span right_expression) message
+  | Some diagnostic -> Error [ diagnostic ]
   | None
     when (operation = Ast.Bit_and || operation = Ast.Bit_or || operation = Ast.Bit_xor)
          && (left = Hir.Addr || right = Hir.Addr) ->
@@ -456,23 +625,39 @@ let binary_result_type ?left_expression ?right_expression ?result_expected span
           | Hir.Vec (lanes, (Hir.Bool | Hir.Int _)) -> Ok (Hir.Vec (lanes, Hir.Bool))
           | Hir.Addr | Hir.Handle _ -> Ok Hir.Bool
           | _ when Sema_numeric.is_scalar left -> Ok Hir.Bool
-          | _ -> error span "equality requires scalar or integer/bool-vector operands")
+          | _ ->
+              error (result_span left_expression)
+                (Printf.sprintf "operator `%s` does not accept `%s`"
+                   (binary_operator_name operation)
+                   (diagnostic_ty_name left)))
       | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
           if Sema_numeric.is_int left || left = Hir.Addr then Ok Hir.Bool
           else
             match left with
             | Hir.Vec (lanes, Hir.Int _) -> Ok (Hir.Vec (lanes, Hir.Bool))
-            | _ -> error span "ordered comparison requires integer operands")
+            | _ ->
+                error (result_span left_expression)
+                  (Printf.sprintf "ordered comparison `%s` needs an integer, got `%s`"
+                     (binary_operator_name operation)
+                     (diagnostic_ty_name left)))
       | Ast.Bit_and | Ast.Bit_or | Ast.Bit_xor -> (
           if Sema_numeric.is_numeric left then Ok left
           else if left = Hir.Bool then Ok Hir.Bool
           else
             match left with
             | Hir.Vec (_, Hir.Bool) -> Ok left
-            | _ -> error span "arithmetic requires integer or vector operands")
+            | _ ->
+                error (result_span left_expression)
+                  (Printf.sprintf "operator `%s` needs integer operands, got `%s`"
+                     (binary_operator_name operation)
+                     (diagnostic_ty_name left)))
       | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem ->
           if Sema_numeric.is_numeric left then Ok left
-          else error span "arithmetic requires integer or vector operands"
+          else
+            error (result_span left_expression)
+              (Printf.sprintf "operator `%s` needs integer operands, got `%s`"
+                 (binary_operator_name operation)
+                 (diagnostic_ty_name left))
       | Ast.And | Ast.Or ->
           if left = Hir.Bool && right = Hir.Bool then Ok Hir.Bool
           else

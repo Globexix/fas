@@ -27,7 +27,9 @@ let visible_value_names c =
 
 let unknown_name_error visible kind span name =
   error
-    ?help:(similar_name_help visible name)
+    ?help:
+      (if kind = "name" && name = "NULL" then Some "write `null`"
+       else similar_name_help visible name)
     span
     ("unknown " ^ kind ^ " `" ^ name ^ "`")
 
@@ -764,18 +766,18 @@ let c_unsupported c span name =
     (List.assoc_opt name c.c_unsupported)
 
 let rec source_ty_in_context c span = function
-  | Ast.Named_type name when Option.is_some (lookup_local name c) ->
-      error span (Printf.sprintf "`%s` is a value, not a type" name)
-  | Ast.Named_type name -> (
+  | Ast.Named_type (name, type_span) when Option.is_some (lookup_local name c) ->
+      error type_span (Printf.sprintf "`%s` is a value, not a type" name)
+  | Ast.Named_type (name, type_span) -> (
       match lookup_top_level name c.top_level_bindings with
       | Some { declaration_kind = Top_const; _ } ->
-          error span (Printf.sprintf "`%s` is a constant, not a type" name)
+          error type_span (Printf.sprintf "`%s` is a constant, not a type" name)
       | Some { declaration_kind = Top_function; _ } ->
-          error span (Printf.sprintf "`%s` is a function, not a type" name)
+          error type_span (Printf.sprintf "`%s` is a function, not a type" name)
       | Some { declaration_kind = Top_global; _ } ->
-          error span (Printf.sprintf "`%s` is a global, not a type" name)
+          error type_span (Printf.sprintf "`%s` is a global, not a type" name)
       | Some { declaration_kind = Top_type; _ } | None ->
-          source_ty_diag c.named_types span (Ast.Named_type name))
+          source_ty_diag c.named_types type_span (Ast.Named_type (name, type_span)))
   | Ast.Array (length, ty) ->
       source_aggregate_in_context c span (fun n t -> Hir.Array (n, t)) length ty
   | Ast.Vec (length, ty) -> (
@@ -803,9 +805,10 @@ and source_aggregate_in_context c span make length element =
   in
   let* element = source_ty_in_context c span element in
   match int_of_string_opt length with
-  | Some length when length < 0 -> error span "negative aggregate length"
+  | Some length when length < 0 ->
+      error span (Printf.sprintf "aggregate length cannot be negative: `%d`" length)
   | Some length -> Ok (make length element)
-  | None -> error span "aggregate length is not a machine integer"
+  | None -> error span "aggregate length must be an integer constant"
 
 let intern_string c span s =
   let pool = c.string_pool in
@@ -849,14 +852,18 @@ let address_type_for_expected c expected place =
       ty
   | _ -> Hir.Addr
 
-let rec rooted_in_constant = function
+let rec rooted_in_constant c = function
   | Hir.Const_array _ | Hir.EVector _ -> true
+  | Hir.Global (name, _, _) -> (
+      match lookup_top_level name c.top_level_bindings with
+      | Some { declaration_kind = Top_const; _ } -> true
+      | _ -> false)
   | Hir.Index (a, _, _, _)
   | Hir.Field (a, _, _, _, _)
   | Hir.Address (a, _, _)
   | Hir.Cast (_, a, _, _) ->
-      rooted_in_constant a
-  | Hir.Ternary (_, a, b, _, _) -> rooted_in_constant a || rooted_in_constant b
+      rooted_in_constant c a
+  | Hir.Ternary (_, a, b, _, _) -> rooted_in_constant c a || rooted_in_constant c b
   | _ -> false
 
 let rec rooted_in_string_literal = function
@@ -870,14 +877,15 @@ let rec rooted_in_string_literal = function
       rooted_in_string_literal a || rooted_in_string_literal b
   | _ -> false
 
-let rec rooted_in_readonly_storage = function
+let rec rooted_in_readonly_storage c = function
   | Hir.EString _ -> true
   | Hir.Raw_select (a, _, _, _) | Hir.Index (a, _, _, _) | Hir.Field (a, _, _, _, _) ->
-      rooted_in_string_literal a || rooted_in_readonly_storage a
+      rooted_in_string_literal a || rooted_in_readonly_storage c a
   | Hir.Address (a, _, _) | Hir.Cast (_, a, _, _) ->
-      rooted_in_string_literal a || rooted_in_constant a || rooted_in_readonly_storage a
+      rooted_in_string_literal a || rooted_in_constant c a
+      || rooted_in_readonly_storage c a
   | Hir.Ternary (_, a, b, _, _) ->
-      rooted_in_readonly_storage a || rooted_in_readonly_storage b
+      rooted_in_readonly_storage c a || rooted_in_readonly_storage c b
   | _ -> false
 
 let rec inherited_view_access c = function
@@ -906,8 +914,8 @@ let rec readonly_global_place c = function
   | _ -> false
 
 let view_access_of_expr c expression =
-  if rooted_in_constant expression then Constant_access
-  else if rooted_in_readonly_storage expression || readonly_global_place c expression
+  if rooted_in_constant c expression then Constant_access
+  else if rooted_in_readonly_storage c expression || readonly_global_place c expression
   then Readonly_access
   else inherited_view_access c expression
 
@@ -1086,8 +1094,8 @@ let select_type_arg named_types span payload =
   match payload with
   | Ast.Type_arg t | Ast.Type_or_index t -> source_ty_diag named_types span t
   | Ast.Name_arg (name, name_span) ->
-      source_ty_diag named_types name_span (Ast.Named_type name)
-  | Ast.Const_arg e -> error (Ast.expr_span e) "raw selection requires a type argument"
+      source_ty_diag named_types name_span (Ast.Named_type (name, name_span))
+  | Ast.Const_arg e -> error (Ast.expr_span e) "raw access requires a type argument"
 
 let normalize_offset_expr structs span (e : Hir.expr) =
   match Hir.expr_ty e with
@@ -1177,20 +1185,23 @@ let rec check_place (c : context) expr =
               Ok { expr = Hir.Const_array (n, t, s); root = None; path = None }
           | Some (_, (Hir.Vec _ as t), values) ->
               Ok { expr = Hir.EVector (values, t, s); root = None; path = None }
-          | Some _ -> error s (Printf.sprintf "constant `%s` is not a place" n)
+          | Some _ -> error s (Printf.sprintf "constant `%s` cannot be addressed" n)
           | None -> (
               match lookup_top_level n c.top_level_bindings with
               | Some { declaration_kind = Top_const; _ } -> (
                   match lookup_global n c.globals with
                   | Some (_, ((Hir.Array _ | Hir.Struct _) as ty), _) ->
                       Ok { expr = Hir.Global (n, ty, s); root = None; path = None }
-                  | _ -> error s (Printf.sprintf "constant `%s` is not a place" n))
+                  | _ -> error s (Printf.sprintf "constant `%s` cannot be addressed" n))
               | Some { declaration_kind = Top_type; _ } ->
-                  error s (Printf.sprintf "type `%s` is not a place" n)
+                  error s (Printf.sprintf "type `%s` cannot be used as a value" n)
               | Some { declaration_kind = Top_function; _ } ->
                   if List.mem n c.external_c_functions then
                     Ok { expr = Hir.Function_address (n, s); root = None; path = None }
-                  else error s (Printf.sprintf "function `%s` is not a place" n)
+                  else
+                    error s
+                      (Printf.sprintf "function `%s` must be called to produce a value"
+                         n)
               | Some { declaration_kind = Top_global; _ } -> (
                   match lookup_global n c.globals with
                   | Some (_, ty, _) ->
@@ -1198,149 +1209,179 @@ let rec check_place (c : context) expr =
                   | None -> error s "internal error: global declaration is missing")
               | None -> unknown_name_error (visible_value_names c) "name" s n)))
   | Ast.Select (a, args, s) -> (
-      let* base = check_place c a in
-      match (Hir.expr_ty base.expr, args) with
-      | Hir.Vec _, [ _ ]
-        when match base.expr with Hir.Raw_select _ -> true | _ -> false ->
-          error s "raw vector lane selection is not yet supported"
-      | Hir.Addr, [ Ast.Const_arg index ] ->
-          Error
-            [ Sema_types.raw_access_needs_type_error ~index:(Ast.expr_name index) a s ]
-      | Hir.Addr, [ Ast.Name_arg (name, _) ]
-        when Option.is_some (lookup_local name c)
-             ||
-             match lookup_top_level name c.top_level_bindings with
-             | Some { declaration_kind = Top_const | Top_global; _ } -> true
+      match a with
+      | Ast.Ident (name, _)
+        when match List.assoc_opt name c.templates with
+             | Some (Ast.Func _) -> true
              | _ -> false ->
-          Error [ Sema_types.raw_access_needs_type_error ~index:name a s ]
-      | Hir.Addr, [ Ast.Name_arg (name, name_span) ]
-        when Result.is_error (Sema_types.source_ty c.named_types (Ast.Named_type name))
-        -> (
-          match Sema_types.source_ty c.named_types (Ast.Named_type name) with
-          | Ok _ -> Error [ Sema_types.raw_access_needs_type_error a s ]
-          | Error message -> (
-              match Sema_types.unknown_type_name message with
-              | Some _ ->
-                  Error
-                    [
-                      Sema_types.unknown_type_error (List.map fst c.named_types)
-                        name_span name;
-                    ]
-              | None -> Error [ Sema_types.raw_access_needs_type_error a s ]))
-      | (Hir.Array (length, e) | Hir.Vec (length, e)), [ payload ] -> (
-          let* i = select_value_arg s payload in
-          let* checked_index = check_expr c None i in
-          if not (is_int (Hir.expr_ty checked_index)) then
-            index_type_error "array index" i (Hir.expr_ty checked_index)
-          else
-            match static_index i with
-            | Known (ty, value)
-              when let value = sign_extend_value ty value in
-                   (value < 0L || value >= Int64.of_int length)
-                   && Sema_flow.proof_checks_enabled c.flow ->
-                error (Ast.expr_span i)
-                  (Printf.sprintf "array index `%s` is out of bounds for length %d"
-                     (if is_unsigned ty then
-                        Printf.sprintf "%Lu" (sign_extend_value ty value)
-                      else Int64.to_string (sign_extend_value ty value))
-                     length)
-            | Known (ty, value) ->
-                let value = sign_extend_value ty value in
-                let index = Int64.to_int value in
-                let path =
-                  match (base.root, base.path) with
-                  | Some _, Some (Exact path) -> Some (Exact (path @ [ Element index ]))
-                  | Some _, Some (Dynamic_prefix path) -> Some (Dynamic_prefix path)
-                  | _ -> None
-                in
-                Ok
-                  {
-                    expr =
-                      Hir.Index (base.expr, Hir.EInt (value, ty, Ast.expr_span i), e, s);
-                    root = base.root;
-                    path;
-                  }
-            | Dynamic ->
-                let fact = value_fact c checked_index in
-                if
-                  Sema_flow.proof_checks_enabled c.flow
-                  && fact <> None
-                  && index_outside (Hir.expr_ty checked_index) (Option.get fact) length
-                then
-                  error (Ast.expr_span i)
-                    (Printf.sprintf "array index is out of bounds for length %d" length)
-                else
-                  let index_expr =
-                    match fact with
-                    | Some fact when fact_single (Hir.expr_ty checked_index) fact ->
-                        Hir.EInt (fact.low, Hir.expr_ty checked_index, Ast.expr_span i)
-                    | _ -> checked_index
-                  in
-                  let known =
-                    match fact with
-                    | Some fact when fact_single (Hir.expr_ty checked_index) fact ->
-                        true
-                    | _ -> false
-                  in
-                  let value_path =
-                    match (base.root, base.path, known) with
-                    | Some _, Some (Exact path), true ->
-                        Some
-                          (Exact
-                             (path @ [ Element (Int64.to_int (Option.get fact).low) ]))
-                    | Some _, Some (Exact path), false -> Some (Dynamic_prefix path)
-                    | Some _, Some (Dynamic_prefix path), _ ->
-                        Some (Dynamic_prefix path)
-                    | _ -> None
-                  in
-                  Ok
-                    {
-                      expr = Hir.Index (base.expr, index_expr, e, s);
-                      root = base.root;
-                      path = value_path;
-                    })
-      | (Hir.Array _ | Hir.Vec _), _ -> error s "array index takes one expression"
-      | Hir.Addr, [ type_payload ] ->
-          let* () =
-            match (base.root, base.path) with
-            | Some binding, Some path -> require_place_state binding path c s
-            | _ -> Ok ()
-          in
-          let* t = select_type_arg c.named_types s type_payload in
-          let* () =
-            match t with
-            | Hir.Void -> error s "raw selection requires a concrete type"
-            | _ -> Ok ()
-          in
-          let* offset = raw_offset_expr c s t None in
-          Ok
-            {
-              expr = Hir.Raw_select (base.expr, offset, t, s);
-              root = base.root;
-              path = base.path;
-            }
-      | Hir.Addr, [ type_payload; index_payload ] ->
-          let* () =
-            match (base.root, base.path) with
-            | Some binding, Some path -> require_place_state binding path c s
-            | _ -> Ok ()
-          in
-          let* t = select_type_arg c.named_types s type_payload in
-          let* () =
-            match t with
-            | Hir.Void -> error s "raw selection requires a concrete type"
-            | _ -> Ok ()
-          in
-          let* offset = raw_offset_expr c s t (Some index_payload) in
-          Ok
-            {
-              expr = Hir.Raw_select (base.expr, offset, t, s);
-              root = base.root;
-              path = base.path;
-            }
-      | Hir.Addr, _ -> error s "raw selection takes a type and an optional index"
-      | Hir.Handle _, _ -> error s "cannot select through a handle"
-      | _ -> error s "cannot index this type")
+          error s
+            (Printf.sprintf
+               "generic function `%s` needs a call after its type arguments" name)
+      | _ -> (
+          let* base = check_place c a in
+          match (Hir.expr_ty base.expr, args) with
+          | Hir.Vec _, [ _ ]
+            when match base.expr with Hir.Raw_select _ -> true | _ -> false ->
+              error s "raw vector lane selection is not yet supported"
+          | Hir.Addr, [ Ast.Const_arg index ] ->
+              Error
+                [
+                  Sema_types.raw_access_needs_type_error ~index:(Ast.expr_name index) a
+                    s;
+                ]
+          | Hir.Addr, [ Ast.Name_arg (name, _) ]
+            when Option.is_some (lookup_local name c)
+                 ||
+                 match lookup_top_level name c.top_level_bindings with
+                 | Some { declaration_kind = Top_const | Top_global; _ } -> true
+                 | _ -> false ->
+              Error
+                [
+                  Sema_types.raw_access_needs_type_error
+                    ~allow_help:
+                      (not
+                         (Option.is_some (lookup_local name c)
+                         && List.mem_assoc name c.named_types))
+                    ~index:name a s;
+                ]
+          | Hir.Addr, [ Ast.Name_arg (name, name_span) ]
+            when Result.is_error
+                   (Sema_types.source_ty c.named_types
+                      (Ast.Named_type (name, name_span))) -> (
+              match
+                Sema_types.source_ty c.named_types (Ast.Named_type (name, name_span))
+              with
+              | Ok _ -> Error [ Sema_types.raw_access_needs_type_error a s ]
+              | Error message -> (
+                  match Sema_types.unknown_type_name message with
+                  | Some _ ->
+                      Error
+                        [
+                          Sema_types.unknown_type_error (List.map fst c.named_types)
+                            name_span name;
+                        ]
+                  | None -> Error [ Sema_types.raw_access_needs_type_error a s ]))
+          | (Hir.Array (length, e) | Hir.Vec (length, e)), [ payload ] -> (
+              let* i = select_value_arg s payload in
+              let* checked_index = check_expr c None i in
+              if not (is_int (Hir.expr_ty checked_index)) then
+                index_type_error "array index" i (Hir.expr_ty checked_index)
+              else
+                match static_index i with
+                | Known (ty, value)
+                  when let value = sign_extend_value ty value in
+                       (value < 0L || value >= Int64.of_int length)
+                       && Sema_flow.proof_checks_enabled c.flow ->
+                    error (Ast.expr_span i)
+                      (Printf.sprintf "array index `%s` is out of bounds for length %d"
+                         (if is_unsigned ty then
+                            Printf.sprintf "%Lu" (sign_extend_value ty value)
+                          else Int64.to_string (sign_extend_value ty value))
+                         length)
+                | Known (ty, value) ->
+                    let value = sign_extend_value ty value in
+                    let index = Int64.to_int value in
+                    let path =
+                      match (base.root, base.path) with
+                      | Some _, Some (Exact path) ->
+                          Some (Exact (path @ [ Element index ]))
+                      | Some _, Some (Dynamic_prefix path) -> Some (Dynamic_prefix path)
+                      | _ -> None
+                    in
+                    Ok
+                      {
+                        expr =
+                          Hir.Index
+                            (base.expr, Hir.EInt (value, ty, Ast.expr_span i), e, s);
+                        root = base.root;
+                        path;
+                      }
+                | Dynamic ->
+                    let fact = value_fact c checked_index in
+                    if
+                      Sema_flow.proof_checks_enabled c.flow
+                      && fact <> None
+                      && index_outside (Hir.expr_ty checked_index) (Option.get fact)
+                           length
+                    then
+                      error (Ast.expr_span i)
+                        (Printf.sprintf "array index is out of bounds for length %d"
+                           length)
+                    else
+                      let index_expr =
+                        match fact with
+                        | Some fact when fact_single (Hir.expr_ty checked_index) fact ->
+                            Hir.EInt
+                              (fact.low, Hir.expr_ty checked_index, Ast.expr_span i)
+                        | _ -> checked_index
+                      in
+                      let known =
+                        match fact with
+                        | Some fact when fact_single (Hir.expr_ty checked_index) fact ->
+                            true
+                        | _ -> false
+                      in
+                      let value_path =
+                        match (base.root, base.path, known) with
+                        | Some _, Some (Exact path), true ->
+                            Some
+                              (Exact
+                                 (path
+                                 @ [ Element (Int64.to_int (Option.get fact).low) ]))
+                        | Some _, Some (Exact path), false -> Some (Dynamic_prefix path)
+                        | Some _, Some (Dynamic_prefix path), _ ->
+                            Some (Dynamic_prefix path)
+                        | _ -> None
+                      in
+                      Ok
+                        {
+                          expr = Hir.Index (base.expr, index_expr, e, s);
+                          root = base.root;
+                          path = value_path;
+                        })
+          | (Hir.Array _ | Hir.Vec _), _ -> error s "array index takes one expression"
+          | Hir.Addr, [ type_payload ] ->
+              let* () =
+                match (base.root, base.path) with
+                | Some binding, Some path -> require_place_state binding path c s
+                | _ -> Ok ()
+              in
+              let* t = select_type_arg c.named_types s type_payload in
+              let* () =
+                match t with
+                | Hir.Void -> error s "raw access on `void` needs an element type"
+                | _ -> Ok ()
+              in
+              let* offset = raw_offset_expr c s t None in
+              Ok
+                {
+                  expr = Hir.Raw_select (base.expr, offset, t, s);
+                  root = base.root;
+                  path = base.path;
+                }
+          | Hir.Addr, [ type_payload; index_payload ] ->
+              let* () =
+                match (base.root, base.path) with
+                | Some binding, Some path -> require_place_state binding path c s
+                | _ -> Ok ()
+              in
+              let* t = select_type_arg c.named_types s type_payload in
+              let* () =
+                match t with
+                | Hir.Void -> error s "raw access on `void` needs an element type"
+                | _ -> Ok ()
+              in
+              let* offset = raw_offset_expr c s t (Some index_payload) in
+              Ok
+                {
+                  expr = Hir.Raw_select (base.expr, offset, t, s);
+                  root = base.root;
+                  path = base.path;
+                }
+          | Hir.Addr, _ ->
+              error s "raw access needs a type argument and an optional index"
+          | Hir.Handle _, _ -> error s "cannot select through a handle"
+          | _ -> error s "cannot index this type"))
   | Ast.Field (a, n, s) -> (
       let* base = check_place c a in
       match base.expr with
@@ -1385,6 +1426,13 @@ let rec check_place (c : context) expr =
                     }
               | None -> missing_field_error ~base:a c s n (Hir.Struct sn))
           | actual -> missing_field_error ~base:a c (Ast.expr_span a) n actual))
+  | Ast.Arrow_field (base, field, operator_span, _) ->
+      let* value = check_expr c None base in
+      if Hir.expr_ty value = Hir.Addr then
+        missing_field_error ~base c operator_span field Hir.Addr
+      else
+        error operator_span
+          (Printf.sprintf "operator `->` is not supported in Fas for field `%s`" field)
   | e ->
       let* checked = check_expr c None e in
       Ok { expr = checked; root = None; path = None }
@@ -1396,7 +1444,7 @@ and raw_offset_expr c s access_ty index_payload =
       let* i = select_value_arg s payload in
       let* idx = check_expr c None i in
       if not (is_int (Hir.expr_ty idx)) then
-        index_type_error "raw selection index" i (Hir.expr_ty idx)
+        index_type_error "raw access index" i (Hir.expr_ty idx)
       else
         let* norm = normalize_offset_expr c.structs s idx in
         let* size, _ = layout_diag s c.structs access_ty in
@@ -1547,7 +1595,10 @@ and check_expr_inner ?destination (c : context) expected expression =
       match op with
       | Ast.Neg | Ast.Bit_not ->
           if not (is_int (Hir.expr_ty te)) then
-            error s "integer unary operator requires an integer"
+            let operator = if op = Ast.Neg then "-" else "~" in
+            error (Ast.expr_span e)
+              (Printf.sprintf "unary operator `%s` needs an integer, got `%s`" operator
+                 (Sema_types.diagnostic_ty_name (Hir.expr_ty te)))
           else Ok (Hir.Unary (op, te, Hir.expr_ty te, s))
       | Ast.Not ->
           let result_ty = Hir.expr_ty te in
@@ -1625,19 +1676,26 @@ and check_expr_inner ?destination (c : context) expected expression =
         let* () =
           match at with
           | Hir.Int _ | Hir.Vec (_, Hir.Int _) -> Ok ()
-          | _ -> error s "shift value must be an integer or integer vector"
+          | _ -> Error [ Sema_types.shift_value_error op (Ast.expr_span l) at ]
         in
         let* () =
           match (at, Hir.expr_ty b) with
-          | Hir.Vec (lanes, _), Hir.Vec (count_lanes, Hir.Int _) ->
+          | Hir.Vec (lanes, _), Hir.Vec (count_lanes, (Hir.Int _ as count_element)) ->
               if lanes = count_lanes then Ok ()
-              else error s "shift count lanes must match the value lanes"
+              else
+                Error
+                  [
+                    Sema_types.shift_count_lanes_error op (Ast.expr_span r)
+                      (Hir.expr_ty b)
+                      (Hir.Vec (lanes, count_element));
+                  ]
           | Hir.Vec _, Hir.Int _ -> Ok ()
           | Hir.Int _, Hir.Int _ -> Ok ()
-          | _, Hir.Vec (_, Hir.Bool) -> error s "shift count must be an integer"
-          | (Hir.Int _ | Hir.Vec _), Hir.Vec _ ->
-              error s "shift count must be a scalar integer for a scalar value"
-          | _ -> error s "shift count must be an integer"
+          | _, (Hir.Vec _ as count_ty) | _, (Hir.Bool as count_ty) ->
+              Error [ Sema_types.shift_count_error op (Ast.expr_span r) count_ty ]
+          | _ ->
+              Error
+                [ Sema_types.shift_count_error op (Ast.expr_span r) (Hir.expr_ty b) ]
         in
         Ok (Hir.Binary (op, a, b, at, s))
       else
@@ -1720,8 +1778,7 @@ and check_expr_inner ?destination (c : context) expected expression =
             in
             if division_by_zero then
               error s "division by zero is not a defined runtime operation"
-            else if minimum_division_overflow then
-              error s "signed division overflow in constant expression"
+            else if minimum_division_overflow then error s "signed division overflow"
             else Ok (Hir.Binary (op, a, b, result_ty, s)))
   | Ast.Call (fn, args, s) -> check_call c None fn args s
   | Ast.Handle_from_addr (t, e, s) -> (
@@ -1754,13 +1811,13 @@ and check_expr_inner ?destination (c : context) expected expression =
       let* x = check_expr c None e in
       let from = Hir.expr_ty x in
       if cast_legal k from t then Ok (Hir.Cast (k, x, t, s))
-      else error s "illegal cast for source and destination widths"
+      else Error [ Sema_types.cast_error ~expression:e k from t s ]
   | Ast.Select (a, args, s) ->
       let* place = check_place c (Ast.Select (a, args, s)) in
       let* () =
         match place.expr with
         | Hir.Raw_select (_, _, (Hir.Struct _ | Hir.Array _), _) ->
-            error s "raw selection cannot load an aggregate value"
+            error s "raw access cannot load an array or struct value"
         | _ -> Ok ()
       in
       let* () =
@@ -1789,6 +1846,11 @@ and check_expr_inner ?destination (c : context) expected expression =
           || expression_uses_view c place.expr
         then check_place_access c s ~write:false place.expr
         else Ok ()
+      in
+      Ok place.expr
+  | Ast.Arrow_field (base, field, operator_span, field_span) ->
+      let* place =
+        check_place c (Ast.Arrow_field (base, field, operator_span, field_span))
       in
       Ok place.expr
   | Ast.Addr_of (e, s) -> (
@@ -1842,7 +1904,8 @@ and check_expr_inner ?destination (c : context) expected expression =
           let* x = check_expr c (Some elem) e in
           if equal (Hir.expr_ty x) elem then Ok (Hir.Splat (x, Hir.Vec (n, elem), s))
           else error s "splat element type mismatch"
-      | _ -> error s "splat requires a vector type context")
+      | _ ->
+          error s "`splat` needs a vector type from its destination or another operand")
   | Ast.Ternary (q, a, b, s) -> (
       let* tq = check_expr c None q in
       if Hir.expr_ty tq <> Hir.Bool then
@@ -1908,13 +1971,13 @@ and check_expr_inner ?destination (c : context) expected expression =
       match expected with
       | Some (Hir.Vec (lanes, element) as literal_type) ->
           vector_literal literal_type lanes element entries s
-      | _ -> error s "aggregate construction needs a destination")
+      | _ -> error s "array, struct, or vector initializer needs a destination type")
   | Ast.Struct_lit (source_type, xs, s) -> (
       let* literal_type = source_ty_in_context c s source_type in
       match literal_type with
       | Hir.Vec (lanes, element) -> vector_literal literal_type lanes element xs s
       | Hir.Array _ | Hir.Struct _ ->
-          error s "aggregate construction needs a destination"
+          error s "array, struct, or vector initializer needs a destination type"
       | Hir.Opaque n -> error s (Printf.sprintf "opaque type `%s` is not a struct" n)
       | _ -> error s "aggregate literal requires an array, struct, or vector type")
 
@@ -2030,7 +2093,7 @@ and check_initializer ?(constant = false) ?destination c expected expression =
                              Printf.sprintf "field `%s` of record `%s`" field.name name
                            ))
                          definition.fields entries))
-          | _ -> error span "construction needs an array, struct or vector type"
+          | _ -> error span "initializer needs an array, struct, or vector type"
         in
         let rec check acc = function
           | [] -> Ok (List.rev acc)
@@ -2077,9 +2140,13 @@ and check_initializer ?(constant = false) ?destination c expected expression =
       | Hir.Vec _ -> vector_value ()
       | Hir.Array _ | Hir.Struct _ ->
           if not (Hir.ty_equal source_type expected) then
-            error span "aggregate construction type does not match destination"
+            error span
+              (Printf.sprintf
+                 "initializer type `%s` does not match destination type `%s`"
+                 (Sema_types.diagnostic_ty_name source_type)
+                 (Sema_types.diagnostic_ty_name expected))
           else aggregate_entries expected entries span
-      | _ -> error span "construction needs an array, struct or vector type")
+      | _ -> error span "initializer needs an array, struct, or vector type")
   | _ when match expected with Hir.Vec _ -> true | _ -> false -> vector_value ()
   | _ ->
       let* value = check_expr c (Some expected) expression in
@@ -2128,7 +2195,7 @@ and volatile_access_type c name span arguments =
     match arguments with
     | [ Ast.Type_arg ty ] -> source_ty_in_context c span ty
     | [ Ast.Name_arg (name, name_span) ] ->
-        source_ty_in_context c name_span (Ast.Named_type name)
+        source_ty_in_context c name_span (Ast.Named_type (name, name_span))
     | _ -> error span (Printf.sprintf "builtin `%s` expects one type argument" name)
   in
   match access_ty with
@@ -2145,12 +2212,16 @@ and simd_memory_access_type c name span arguments =
     match arguments with
     | [ Ast.Type_arg ty ] -> source_ty_in_context c span ty
     | [ Ast.Name_arg (name, name_span) ] ->
-        source_ty_in_context c name_span (Ast.Named_type name)
+        source_ty_in_context c name_span (Ast.Named_type (name, name_span))
     | _ -> error span (Printf.sprintf "builtin `%s` expects one type argument" name)
   in
   match access_ty with
   | Hir.Bool | Hir.Int _ -> Ok access_ty
-  | _ -> error span "SIMD memory element type must be a scalar integer or bool"
+  | _ ->
+      error span
+        (Printf.sprintf
+           "builtin `%s` needs an integer or bool memory element type, got `%s`" name
+           (Sema_types.diagnostic_ty_name access_ty))
 
 and check_simd_memory_args c name access_ty args span =
   let indexed =
@@ -2244,9 +2315,9 @@ and check_call c _expected fn args s =
          && Option.is_some (List.assoc_opt name c.c_unsupported) ->
       Option.get (c_unsupported c span name)
   | Ast.Ident (name, _) when Names.reserved_float_name name ->
-      error s "reserved for v0.5 floating point"
+      error s (Names.reserved_float_message name)
   | Ast.Generic_args (Ast.Ident (name, _), _, _) when Names.reserved_float_name name ->
-      error s "reserved for v0.5 floating point"
+      error s (Names.reserved_float_message name)
   | Ast.Generic_args (Ast.Ident (name, _), generic_args, application_span)
     when name = "handle_from_addr" -> (
       match generic_args with
@@ -2258,7 +2329,7 @@ and check_call c _expected fn args s =
           check_handle_from_addr c name opaque_name args s
       | [ Ast.Name_arg (type_name, name_span) ] ->
           let* opaque_name =
-            handle_target c.named_types (Ast.Named_type type_name)
+            handle_target c.named_types (Ast.Named_type (type_name, name_span))
             |> Result.map_error (fun message -> [ Diag.error name_span message ])
           in
           check_handle_from_addr c name opaque_name args s
@@ -2510,9 +2581,20 @@ and check_call c _expected fn args s =
                 | _ -> false
               in
               if not valid_operand then
-                error s "builtin arguments must be integers or integer vectors"
+                error
+                  (Ast.expr_span (List.nth args 0))
+                  (Printf.sprintf "`%s` needs an integer or integer vector, got `%s`"
+                     name
+                     (Sema_types.diagnostic_ty_name (Hir.expr_ty a)))
               else if Hir.expr_ty b2 <> Hir.expr_ty a then
-                error s "builtin arguments must have the same type"
+                error
+                  (Ast.expr_span (List.nth args 1))
+                  (Printf.sprintf
+                     "argument 2 of `%s` is `%s`, expected the type of argument 1 \
+                      (`%s`)"
+                     name
+                     (Sema_types.diagnostic_ty_name (Hir.expr_ty b2))
+                     (Sema_types.diagnostic_ty_name (Hir.expr_ty a)))
               else Ok (Hir.Call (Hir.Builtin b, [ a; b2 ], Hir.expr_ty a, s))
         | Hir.Any | Hir.All -> (
             if List.length args <> 1 then
@@ -2532,7 +2614,11 @@ and check_call c _expected fn args s =
               match Hir.expr_ty a with
               | Hir.Vec (_, (Hir.Int _ as e)) ->
                   Ok (Hir.Call (Hir.Builtin b, [ a ], e, s))
-              | _ -> error s "reduction argument must be an integer vector")
+              | actual ->
+                  error
+                    (Ast.expr_span (List.hd args))
+                    (Printf.sprintf "`%s` needs an integer vector, got `%s`" name
+                       (Sema_types.diagnostic_ty_name actual)))
         | Hir.Compress | Hir.Expand -> (
             if List.length args <> 2 then
               error s (Printf.sprintf "builtin `%s` expects two arguments" name)
@@ -2560,10 +2646,21 @@ and check_call c _expected fn args s =
                 match Hir.expr_ty m with Hir.Vec (n, Hir.Bool) -> Some n | _ -> None
               in
               match mask_lanes with
-              | None -> error s "select mask must be a bool vector"
+              | None ->
+                  error
+                    (Ast.expr_span (List.nth args 0))
+                    (Printf.sprintf
+                       "argument 1 of `select` is `%s`, expected a bool vector"
+                       (Sema_types.diagnostic_ty_name (Hir.expr_ty m)))
               | Some n -> (
                   if Hir.expr_ty y <> Hir.expr_ty z then
-                    error s "builtin arguments must have the same type"
+                    error
+                      (Ast.expr_span (List.nth args 2))
+                      (Printf.sprintf
+                         "argument 3 of `select` is `%s`, expected the type of \
+                          argument 2 (`%s`)"
+                         (Sema_types.diagnostic_ty_name (Hir.expr_ty z))
+                         (Sema_types.diagnostic_ty_name (Hir.expr_ty y)))
                   else
                     match Hir.expr_ty y with
                     | Hir.Vec (n2, (Hir.Int _ | Hir.Bool)) when n2 = n ->
@@ -2580,28 +2677,71 @@ and check_call c _expected fn args s =
               let ok_vec =
                 match at with Hir.Vec (_, (Hir.Int _ | Hir.Bool)) -> true | _ -> false
               in
-              if not ok_vec then error s "shuffle operands must be vectors"
+              if not ok_vec then
+                error
+                  (Ast.expr_span (List.nth args 0))
+                  (Printf.sprintf
+                     "argument 1 of `shuffle` must be an integer or bool vector, got \
+                      `%s`"
+                     (Sema_types.diagnostic_ty_name at))
               else if Hir.expr_ty b2 <> at then
-                error s "builtin arguments must have the same type"
+                error
+                  (Ast.expr_span (List.nth args 1))
+                  (Printf.sprintf
+                     "argument 2 of `shuffle` is `%s`, expected the type of argument 1 \
+                      (`%s`)"
+                     (Sema_types.diagnostic_ty_name (Hir.expr_ty b2))
+                     (Sema_types.diagnostic_ty_name at))
               else
                 let visible_consts =
                   List.filter
                     (fun (name, _, _) -> Option.is_none (lookup_local name c))
                     c.consts
                 in
+                let selector = shuffle_selector_expression (List.nth args 2) in
                 match
                   vector_const_expr
                     ~array_lengths:(static_array_lengths c.top_level_bindings c.globals)
                     ~structs:c.structs ~named_types:c.named_types
                     ~generic_structs:c.generic_structs
                     ~globals:(List.map (fun (name, _, _) -> name) c.globals)
-                    ~arrays:c.arrays visible_consts None
-                    (shuffle_selector_expression (List.nth args 2))
+                    ~arrays:c.arrays visible_consts None selector
                 with
                 | Ok ((Hir.Vec (m, (Hir.Int _ as sel_elem)) as sty), values) ->
                     let n = match at with Hir.Vec (n, _) -> n | _ -> 0 in
                     let in_range = shuffle_indices_in_range sel_elem n values in
-                    if not in_range then error s "shuffle index out of range"
+                    if not in_range then
+                      let bad_index =
+                        List.find_opt
+                          (fun value ->
+                            let value =
+                              if
+                                match sel_elem with
+                                | Hir.Int
+                                    (Hir.I8 | Hir.I16 | Hir.I32 | Hir.I64 | Hir.Isize)
+                                  ->
+                                    true
+                                | _ -> false
+                              then sign_extend_value sel_elem value
+                              else value
+                            in
+                            Int64.compare value 0L < 0
+                            || Int64.compare value (Int64.of_int (2 * n)) >= 0)
+                          values
+                      in
+                      error
+                        (Ast.expr_span (List.nth args 2))
+                        (Printf.sprintf
+                           "shuffle index `%s` is out of range for %d lanes"
+                           (match bad_index with
+                           | Some value -> (
+                               match sel_elem with
+                               | Hir.Int
+                                   (Hir.I8 | Hir.I16 | Hir.I32 | Hir.I64 | Hir.Isize) ->
+                                   Int64.to_string (sign_extend_value sel_elem value)
+                               | _ -> Printf.sprintf "%Lu" value)
+                           | None -> "?")
+                           (2 * n))
                     else
                       let elem = match at with Hir.Vec (_, e) -> e | _ -> Hir.Bool in
                       let result_ty = Hir.Vec (m, elem) in
@@ -2614,9 +2754,37 @@ and check_call c _expected fn args s =
                              [ a; b2; Hir.EVector (values, sty, s) ],
                              result_ty,
                              s ))
-                | _ ->
-                    error s
-                      "shuffle indices must be a compile-time constant integer vector")
+                | Error diagnostics -> (
+                    match check_expr c None selector with
+                    | Ok value ->
+                        error
+                          (Ast.expr_span (List.nth args 2))
+                          (Printf.sprintf
+                             "shuffle indices must be a compile-time constant integer \
+                              vector, got `%s`"
+                             (Sema_types.diagnostic_ty_name (Hir.expr_ty value)))
+                    | Error _ ->
+                        let local_value name =
+                          Option.is_some (lookup_local name c)
+                          && List.exists
+                               (fun (diagnostic : Diag.t) ->
+                                 diagnostic.message
+                                 = Printf.sprintf "unknown name `%s`" name)
+                               diagnostics
+                        in
+                        if List.exists local_value (Sema_flow.local_names c.flow) then
+                          error
+                            (Ast.expr_span (List.nth args 2))
+                            "shuffle indices must be a compile-time constant integer \
+                             vector"
+                        else Error diagnostics)
+                | Ok (actual, _) ->
+                    error
+                      (Ast.expr_span (List.nth args 2))
+                      (Printf.sprintf
+                         "shuffle indices must be a compile-time constant integer \
+                          vector, got `%s`"
+                         (Sema_types.diagnostic_ty_name actual)))
         | Hir.Permute ->
             if List.length args <> 2 then
               error s (Printf.sprintf "builtin `%s` expects two arguments" name)
@@ -2686,7 +2854,7 @@ and check_call c _expected fn args s =
                          Hir.Handle opaque_name,
                          s ))
               | _ -> error s "handle_from_addr argument must be an addr")
-        | _ -> (
+        | _ ->
             if List.length args <> 2 then
               error s (Printf.sprintf "builtin `%s` expects two arguments" name)
             else
@@ -2699,25 +2867,36 @@ and check_call c _expected fn args s =
                 | _ -> false
               in
               if not valid_operand then
-                error s
-                  "builtin arguments must be an integer or integer vector and an \
-                   integer shift"
+                Error
+                  [
+                    Sema_types.rotate_value_error name
+                      (Ast.expr_span (List.hd args))
+                      (Hir.expr_ty a);
+                  ]
               else
                 let count = List.hd (List.tl args) in
-                match count with
-                | Ast.Splat _ -> error s "vector shifts require a scalar integer count"
-                | _ -> (
-                    let* b2 = check_expr c None count in
-                    if is_int (Hir.expr_ty b2) then
-                      Ok (Hir.Call (Hir.Builtin b, [ a; b2 ], Hir.expr_ty a, s))
-                    else
-                      match Hir.expr_ty b2 with
-                      | Hir.Vec _ ->
-                          error s "vector shifts require a scalar integer count"
-                      | _ ->
-                          error s
-                            "builtin arguments must be an integer or integer vector \
-                             and an integer shift"))
+                let count_expected =
+                  match count with Ast.Splat _ -> Some (Hir.expr_ty a) | _ -> None
+                in
+                let* b2 = check_expr c count_expected count in
+                if is_int (Hir.expr_ty b2) then
+                  Ok (Hir.Call (Hir.Builtin b, [ a; b2 ], Hir.expr_ty a, s))
+                else
+                  let operation =
+                    if name = "rotl" || name = "rotr" then "rotate" else "shift"
+                  in
+                  Error
+                    [
+                      (if operation = "rotate" then
+                         Sema_types.rotate_count_error name (Ast.expr_span count)
+                           (Hir.expr_ty b2)
+                       else
+                         Diag.error (Ast.expr_span count)
+                           (Printf.sprintf
+                              "shift count for `%s` must be a scalar integer, got `%s`"
+                              name
+                              (Sema_types.diagnostic_ty_name (Hir.expr_ty b2))));
+                    ]
       in
       match builtin with
       | Some b
@@ -2753,9 +2932,11 @@ and check_call c _expected fn args s =
                     ((not sig_.variadic) && List.length args <> List.length sig_.params)
                     || (sig_.variadic && List.length args < List.length sig_.params)
                   then
+                    let count = List.length sig_.params in
                     error s
-                      (Printf.sprintf "function `%s` expects %d arguments, got %d" name
-                         (List.length sig_.params) (List.length args))
+                      (Printf.sprintf "function `%s` expects %d %s, got %d" name count
+                         (if count = 1 then "argument" else "arguments")
+                         (List.length args))
                   else
                     let policy = if sig_.variadic then Promote_variadic else Reject in
                     let* xs = check_actuals ~callee:name c policy s sig_.params args in
@@ -2817,17 +2998,31 @@ and check_actuals ?callee c policy span formals actuals =
         let* value = check_expr c (Some expected) expression in
         let* () =
           if aggregate_value_type (Hir.expr_ty value) then
-            error (Ast.expr_span expression)
-              "aggregate arguments cannot be passed by value; pass `&x` as `addr` or \
-               `handle[T]`"
+            let name, help =
+              match expression with
+              | Ast.Ident (name, _) ->
+                  ( name,
+                    Some
+                      (Printf.sprintf "pass `&%s` to a function that accepts `addr`"
+                         name) )
+              | _ -> (Ast.expr_name expression, None)
+            in
+            Error
+              [
+                Diag.error ?help (Ast.expr_span expression)
+                  (Printf.sprintf
+                     "aggregate argument `%s` of type `%s` cannot be passed by value"
+                     name
+                     (Sema_types.diagnostic_ty_name (Hir.expr_ty value)));
+              ]
           else
             let context =
               match callee with
               | Some name -> Printf.sprintf "argument %d of `%s`" index name
               | None -> Printf.sprintf "argument %d" index
             in
-            ensure_expected ~context ~expression (Hir.expr_ty value) expected
-              (Ast.expr_span expression)
+            ensure_expected ~context ~expression ~checked_expression:value
+              (Hir.expr_ty value) expected (Ast.expr_span expression)
         in
         loop (index + 1) (value :: checked) formal_rest actual_rest
     | _ -> error span "wrong number of arguments"
@@ -2885,7 +3080,7 @@ let check_target (c : context) = function
       let access = view_access_of_expr c x in
       match x with
       | Hir.Raw_select (_, _, (Hir.Struct _ | Hir.Array _), _) ->
-          error (Ast.expr_span a) "raw selection cannot store an aggregate value"
+          error (Ast.expr_span a) "raw access cannot store an array or struct value"
       | Hir.Raw_select (base, off, t, _) ->
           let* () = check_place_access c (Ast.expr_span a) ~write:true x in
           if access = Readonly_access then
@@ -2923,7 +3118,7 @@ let check_target (c : context) = function
       let access = view_access_of_expr c x in
       match x with
       | Hir.Raw_select (_, _, (Hir.Struct _ | Hir.Array _), _) ->
-          error (Ast.expr_span a) "raw selection cannot store an aggregate value"
+          error (Ast.expr_span a) "raw access cannot store an array or struct value"
       | Hir.Raw_select (base, off, t, _) ->
           let* () = check_place_access c (Ast.expr_span a) ~write:true x in
           if access = Readonly_access then
@@ -3011,6 +3206,7 @@ let rec expression_mentions_name name = function
   | Ast.Unary (_, value, _)
   | Ast.Cast (_, _, value, _)
   | Ast.Field (value, _, _)
+  | Ast.Arrow_field (value, _, _, _)
   | Ast.Addr_of (value, _)
   | Ast.Handle_from_addr (_, value, _)
   | Ast.Splat (value, _) ->
@@ -3042,6 +3238,7 @@ let rec expression_takes_name_address name = function
   | Ast.Unary (_, value, _)
   | Ast.Cast (_, _, value, _)
   | Ast.Field (value, _, _)
+  | Ast.Arrow_field (value, _, _, _)
   | Ast.Handle_from_addr (_, value, _)
   | Ast.Splat (value, _) ->
       expression_takes_name_address name value
@@ -3084,9 +3281,9 @@ let rec statement_changes_name name = function
       Option.fold ~none:false ~some:(expression_takes_name_address name) init
   | Ast.View { place; _ } -> expression_mentions_name name place
   | Ast.Assign (Ast.Target_ident (found, _), value, _)
-  | Ast.Compound_assign (Ast.Target_ident (found, _), _, value, _) ->
+  | Ast.Compound_assign (Ast.Target_ident (found, _), _, value, _, _) ->
       found = name || expression_takes_name_address name value
-  | Ast.Assign (target, value, _) | Ast.Compound_assign (target, _, value, _) ->
+  | Ast.Assign (target, value, _) | Ast.Compound_assign (target, _, value, _, _) ->
       target_takes_name_address name target || expression_takes_name_address name value
   | Ast.Return (value, _) ->
       Option.fold ~none:false ~some:(expression_takes_name_address name) value
@@ -3129,7 +3326,7 @@ let loop_induction c init condition step body =
       Some condition,
       Some
         (Ast.Compound_assign
-           (Ast.Target_ident (name, _), ((Ast.Add | Ast.Sub) as step_op), rhs, _)) )
+           (Ast.Target_ident (name, _), ((Ast.Add | Ast.Sub) as step_op), rhs, _, _)) )
     when name = binding.name && is_int binding.ty -> (
       let comparison =
         match condition with
@@ -3232,22 +3429,46 @@ let check_copy c args span =
     let* source = check_place c source_arg in
     let* () =
       if existing_place destination.expr && existing_place source.expr then Ok ()
-      else error span "copy operands must be existing places"
+      else if not (existing_place destination.expr) then
+        error
+          (Ast.expr_span destination_arg)
+          "argument 1 of `copy` must be an existing array or struct"
+      else
+        error (Ast.expr_span source_arg)
+          "argument 2 of `copy` must be an existing array or struct"
     in
     let destination_ty = Hir.expr_ty destination.expr
     and source_ty = Hir.expr_ty source.expr in
     let* () =
-      if copy_is_aggregate destination_ty && copy_is_aggregate source_ty then Ok ()
-      else error span "copy requires array or struct places"
+      if copy_is_aggregate destination_ty then
+        if copy_is_aggregate source_ty then Ok ()
+        else
+          error (Ast.expr_span source_arg)
+            (Printf.sprintf
+               "argument 2 of `copy` has type `%s`, expected an array or struct"
+               (Sema_types.diagnostic_ty_name source_ty))
+      else
+        error
+          (Ast.expr_span destination_arg)
+          (Printf.sprintf
+             "argument 1 of `copy` has type `%s`, expected an array or struct"
+             (Sema_types.diagnostic_ty_name destination_ty))
     in
     let* () =
       if Hir.ty_equal destination_ty source_ty then Ok ()
-      else error span "copy operands must have identical types"
+      else
+        error (Ast.expr_span source_arg)
+          (Printf.sprintf
+             "argument 2 of `copy` has type `%s`, expected `%s` to match argument 1"
+             (Sema_types.diagnostic_ty_name source_ty)
+             (Sema_types.diagnostic_ty_name destination_ty))
     in
     let* () =
       match view_access_of_expr c destination.expr with
-      | Readonly_access -> error span "cannot modify read-only pointer"
-      | Constant_access -> error span "cannot modify constant"
+      | Readonly_access ->
+          error (Ast.expr_span destination_arg) "cannot modify read-only pointer"
+      | Constant_access ->
+          error (Ast.expr_span destination_arg) "cannot modify constant"
       | Mutable_access -> Ok ()
     in
     let* () = check_place_access c span ~write:true destination.expr in
@@ -3312,7 +3533,7 @@ and check_stmt (c : context) = function
   | Ast.Let { name; ty; ty_span; init; span } -> (
       let* () = ensure_new_local name c span in
       let* t = source_ty_in_context c ty_span ty in
-      let* _ = Sema_limits.validate_object c.limits c.structs span t in
+      let* _ = Sema_limits.validate_object c.limits c.structs ty_span t in
       let* x =
         match init with
         | None -> Ok None
@@ -3375,7 +3596,7 @@ and check_stmt (c : context) = function
           | _ -> false
         then error (Ast.expr_span place) "cannot create a view of a SIMD lane"
         else if addressable place_info.expr then Ok ()
-        else error (Ast.expr_span place) "view source must be an existing place"
+        else error (Ast.expr_span place) "view source must have addressable storage"
       in
       let* () = check_place_access c span ~write:false place_info.expr in
       let* binding = add_local name (Hir.expr_ty place_info.expr) c span in
@@ -3431,7 +3652,13 @@ and check_stmt (c : context) = function
       | Some binding, _ -> Sema_flow.note_binding_write c.flow binding.id
       | _ -> ());
       Ok (Hir.Assign (target, v, span))
-  | Ast.Compound_assign (t, op, e, span) ->
+  | Ast.Compound_assign (t, op, e, span, operator_span) ->
+      let target_span =
+        match t with
+        | Ast.Target_ident (_, target_span) | Ast.Target_field (_, _, target_span) ->
+            target_span
+        | Ast.Target_select (expression, _) -> Ast.expr_span expression
+      in
       let* checked_target = check_target c t in
       let target = checked_target.target in
       let* et =
@@ -3450,7 +3677,10 @@ and check_stmt (c : context) = function
       in
       let* () =
         if et = Hir.Addr && not is_addr_step then
-          error span "compound assignment requires an integer or vector"
+          error operator_span
+            (Printf.sprintf "compound assignment `%s` is not defined for `%s`"
+               (compound_operator op)
+               (Sema_types.diagnostic_ty_name et))
         else Ok ()
       in
       let* v = check_expr c (if is_shift || is_addr_step then None else Some et) e in
@@ -3459,18 +3689,25 @@ and check_stmt (c : context) = function
           let* () =
             match et with
             | Hir.Int _ | Hir.Vec (_, Hir.Int _) -> Ok ()
-            | _ -> error span "shift value must be an integer or integer vector"
+            | _ -> Error [ Sema_types.shift_value_error op target_span et ]
           in
           match (et, Hir.expr_ty v) with
-          | Hir.Vec (lanes, _), Hir.Vec (count_lanes, Hir.Int _) ->
+          | Hir.Vec (lanes, _), Hir.Vec (count_lanes, (Hir.Int _ as count_element)) ->
               if lanes = count_lanes then Ok ()
-              else error span "shift count lanes must match the value lanes"
+              else
+                Error
+                  [
+                    Sema_types.shift_count_lanes_error op (Ast.expr_span e)
+                      (Hir.expr_ty v)
+                      (Hir.Vec (lanes, count_element));
+                  ]
           | Hir.Vec _, Hir.Int _ -> Ok ()
           | Hir.Int _, Hir.Int _ -> Ok ()
-          | _, Hir.Vec (_, Hir.Bool) -> error span "shift count must be an integer"
-          | (Hir.Int _ | Hir.Vec _), Hir.Vec _ ->
-              error span "shift count must be a scalar integer for a scalar value"
-          | _ -> error span "shift count must be an integer"
+          | _, (Hir.Vec _ as count_ty) | _, (Hir.Bool as count_ty) ->
+              Error [ Sema_types.shift_count_error op (Ast.expr_span e) count_ty ]
+          | _ ->
+              Error
+                [ Sema_types.shift_count_error op (Ast.expr_span e) (Hir.expr_ty v) ]
         else if is_addr_step then
           match Hir.expr_ty v with
           | Hir.Int _ -> Ok ()
@@ -3488,7 +3725,10 @@ and check_stmt (c : context) = function
       in
       let* v = if is_addr_step then normalize_offset_expr c.structs span v else Ok v in
       if (not (is_numeric et)) && not is_addr_step then
-        error span "compound assignment requires an integer or vector"
+        error operator_span
+          (Printf.sprintf "compound assignment `%s` is not defined for `%s`"
+             (compound_operator op)
+             (Sema_types.diagnostic_ty_name et))
       else (
         (match (target, is_addr_step) with
         | Hir.ALocal binding, true when binding.ty = Hir.Addr ->
@@ -3781,7 +4021,9 @@ and check_stmt (c : context) = function
       let* te = check_expr c None e in
       let et = Hir.expr_ty te in
       if not (is_int et || et = Hir.Bool) then
-        error s "switch scrutinee must be an integer or bool"
+        error s
+          (Printf.sprintf "switch value must be an integer or bool, got `%s`"
+             (Sema_types.diagnostic_ty_name et))
       else
         let before = Sema_flow.snapshot c.flow
         and seen = ref []
@@ -3810,8 +4052,32 @@ and check_stmt (c : context) = function
                   | [ diagnostic ]
                     when String.starts_with ~prefix:"global `" diagnostic.Diag.message
                          && String.ends_with ~suffix:" is not a constant"
-                              diagnostic.Diag.message ->
-                      [ diagnostic ]
+                              diagnostic.Diag.message -> (
+                      let prefix = "global `" in
+                      let first = String.length prefix in
+                      let stop =
+                        String.index_from_opt diagnostic.Diag.message first '`'
+                      in
+                      match stop with
+                      | Some stop -> (
+                          let name =
+                            String.sub diagnostic.message first (stop - first)
+                          in
+                          match
+                            ( lookup_top_level name c.top_level_bindings,
+                              lookup_global name c.globals )
+                          with
+                          | ( Some { declaration_kind = Top_const; _ },
+                              Some (_, Hir.Addr, _) ) ->
+                              [
+                                Diag.error diagnostic.primary
+                                  (Printf.sprintf
+                                     "address constant `%s` cannot be used as a case \
+                                      label"
+                                     name);
+                              ]
+                          | _ -> [ diagnostic ])
+                      | None -> [ diagnostic ])
                   | _ ->
                       [
                         Diag.error (Ast.expr_span k)

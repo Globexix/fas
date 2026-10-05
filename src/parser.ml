@@ -96,7 +96,15 @@ let extract_containers source =
   let extract_container i tag =
     let payload_start = min n (line_end i + 1) in
     match find_terminator tag payload_start with
-    | None -> container_error i ("C container is missing terminator `" ^ tag ^ "`")
+    | None ->
+        let stop = line_end i in
+        let path_start = skip_while stop (fun c -> c = ' ' || c = '\t') (i + 3) in
+        let kind =
+          if path_start + 5 <= stop && String.sub text path_start 5 = "\"asm\"" then
+            "assembly unit"
+          else "C container"
+        in
+        container_error i (kind ^ " is missing terminator `" ^ tag ^ "`")
     | Some (terminator_start, after_terminator) ->
         c_containers :=
           ( i,
@@ -202,11 +210,11 @@ module P = struct
         ]
 
   let ident p =
-    match (bump p).kind with
+    let token = bump p in
+    match token.kind with
     | Token.Ident s -> Ok s
     | t ->
-        Error
-          [ Diag.error (peek p).span ("expected identifier, found " ^ Token.show t) ]
+        Error [ Diag.error token.span ("expected identifier, found " ^ Token.show t) ]
 
   let field_ident p =
     let token = bump p in
@@ -287,7 +295,9 @@ module P = struct
         true
     | _ -> false
 
-  let type_word name = c_type_word name || List.mem name Names.scalar_type_names
+  let type_word name =
+    c_type_word name || List.mem name Names.scalar_type_names || name = "addr"
+
   let error span message = Error [ Diag.error span message ]
 
   let c_array_declaration p =
@@ -332,10 +342,7 @@ module P = struct
     | Token.Ident "ptr" ->
         let s = span p in
         ignore (bump p);
-        Error
-          [
-            Diag.error s "typed pointers are no longer supported; use addr or handle[T]";
-          ]
+        Error [ Diag.error s "typed pointers are not Fas types; use `addr`" ]
     | Token.Ident name when Names.type_constructor name = Some Names.Address ->
         ignore (bump p);
         Ok Ast.Addr
@@ -383,14 +390,19 @@ module P = struct
         | "isize" -> Ok (Ast.Int Ast.Isize)
         | _ -> assert false)
     | Token.Ident "char" when (peek_n p 1).kind = Token.Star ->
-        error (peek_n p 2).span "C type `char*` is not a Fas type; use `addr`"
+        let first = (peek p).span and last = (peek_n p 1).span in
+        error
+          (Span.make ~file:first.Span.file ~start_offset:first.Span.start_offset
+             ~end_offset:last.Span.end_offset ~line:first.Span.line
+             ~column:first.Span.column)
+          "C type `char*` is not a Fas type; use `addr`"
     | Token.Ident s ->
-        ignore (bump p);
+        let token = bump p in
         if at p Token.Lbracket then
           let span = span p in
           let* args = generic_args p in
           Ok (Ast.Applied_type (s, args, span))
-        else Ok (Ast.Named_type s)
+        else Ok (Ast.Named_type (s, token.span))
     | t -> Error [ Diag.error (span p) ("expected a type, found " ^ Token.show t) ]
 
   and select_payloads p =
@@ -506,7 +518,7 @@ module P = struct
         | Some fragment when fragment.Ast.tag = tag -> Ok (Ast.C_fragment fragment)
         | _ -> Error [ Diag.error use_span "C container extraction failed" ])
     | Token.Newline | Token.Eof ->
-        Error [ Diag.error use_span "use \"C\" is not implemented until v0.2" ]
+        Error [ Diag.error use_span "`use \"C\"` needs a C header name" ]
     | Token.Lt ->
         ignore (bump p);
         let rec path parts =
@@ -596,8 +608,19 @@ module P = struct
     | Token.At ->
         let s = span p in
         let* () = expected p Token.At in
+        let name_span = span p in
         let* name = ident p in
-        Error [ Diag.error s ("unknown attribute `@" ^ name ^ "`") ]
+        let attribute_span =
+          Span.make ~file:s.Span.file ~start_offset:s.Span.start_offset
+            ~end_offset:name_span.Span.end_offset ~line:s.Span.line
+            ~column:s.Span.column
+        in
+        Error
+          [
+            Diag.error attribute_span
+              (if name = "align" then "attribute `@align` applies to structs"
+               else "unknown attribute `@" ^ name ^ "`");
+          ]
     | t ->
         Error
           [ Diag.error (span p) ("expected a top-level item, found " ^ Token.show t) ]
@@ -715,6 +738,7 @@ module P = struct
       else
         let fs = span p in
         let* n = ident p in
+        let ty_span = span p in
         let* t = ty p in
         let* () =
           if eat p Token.Comma then (
@@ -728,6 +752,7 @@ module P = struct
           (({
               Ast.name = n;
               ty = t;
+              ty_span;
               span = fs;
               offset = None;
               unsupported_reason = None;
@@ -768,8 +793,9 @@ module P = struct
             let* n = ident p in
             let* next =
               if eat p Token.Kw_const then
+                let ty_span = span p in
                 let* t = ty p in
-                Ok (Ast.Const_param { Ast.name = n; ty = t; span = s })
+                Ok (Ast.Const_param { Ast.name = n; ty = t; ty_span; span = s })
               else Ok (Ast.Type_param { name = n; span = s })
             in
             if eat p Token.Comma then go (next :: acc)
@@ -823,8 +849,9 @@ module P = struct
                        name)
               | _ ->
                   let* name = ident p in
+                  let ty_span = span p in
                   let* t = ty p in
-                  let param : Ast.param = { Ast.name; ty = t; span = ps } in
+                  let param : Ast.param = { Ast.name; ty = t; ty_span; span = ps } in
                   ignore (eat p Token.Comma);
                   params (param :: acc) variadic
           in
@@ -1007,6 +1034,54 @@ module P = struct
         error (span p) "Fas has no `goto` labels; use `break` or `continue` in a loop"
     | Token.Ident "do" when (peek_n p 1).kind = Token.Lbrace ->
         error (peek_n p 1).span "C `do`/`while` loops are not Fas syntax; use `while`"
+    | (Token.Plus | Token.Minus) as op
+      when (peek_n p 1).kind = op
+           && (peek p).span.Span.end_offset = (peek_n p 1).span.Span.start_offset
+           && (match (peek_n p 2).kind with Token.Ident _ -> true | _ -> false)
+           &&
+           match (peek_n p 3).kind with
+           | Token.Newline | Token.Semi | Token.Rbrace | Token.Eof -> true
+           | _ -> false ->
+        let name = match (peek_n p 2).kind with Token.Ident name -> name | _ -> "x" in
+        let operator = if op = Token.Plus then "++" else "--" in
+        let assignment = if op = Token.Plus then "+=" else "-=" in
+        let first = (peek p).span and last = (peek_n p 1).span in
+        let operator_span =
+          Span.make ~file:first.Span.file ~start_offset:first.Span.start_offset
+            ~end_offset:last.Span.end_offset ~line:first.Span.line
+            ~column:first.Span.column
+        in
+        Error
+          [
+            Diag.error operator_span
+              (Printf.sprintf "Fas has no prefix `%s` operator; write `%s %s 1`"
+                 operator name assignment);
+          ]
+    | Token.Ident name
+      when (match (peek_n p 1).kind with
+             | Token.Plus | Token.Minus -> true
+             | _ -> false)
+           && (peek_n p 2).kind = (peek_n p 1).kind
+           && (peek_n p 1).span.Span.end_offset = (peek_n p 2).span.Span.start_offset
+           &&
+           match (peek_n p 3).kind with
+           | Token.Newline | Token.Semi | Token.Rbrace | Token.Eof -> true
+           | _ -> false ->
+        let op = (peek_n p 1).kind in
+        let operator = if op = Token.Plus then "++" else "--" in
+        let assignment = if op = Token.Plus then "+=" else "-=" in
+        let first = (peek_n p 1).span and last = (peek_n p 2).span in
+        let operator_span =
+          Span.make ~file:first.Span.file ~start_offset:first.Span.start_offset
+            ~end_offset:last.Span.end_offset ~line:first.Span.line
+            ~column:first.Span.column
+        in
+        Error
+          [
+            Diag.error operator_span
+              (Printf.sprintf "Fas has no postfix `%s` operator; write `%s %s 1`"
+                 operator name assignment);
+          ]
     | Token.Ident "view" -> view_statement p true
     | Token.Ident _ -> (
         match c_array_declaration p with
@@ -1092,7 +1167,8 @@ module P = struct
             Error
               [
                 Diag.error (span p)
-                  "`= raw` is no longer supported; declare `x T` without an initializer";
+                  "raw local initializers are not Fas syntax; put the name before its \
+                   type";
               ]
         | _ ->
             let* e = expr p in
@@ -1116,11 +1192,12 @@ module P = struct
     let* lhs = expr p in
     match compound_op (peek p).kind with
     | Some op ->
+        let operator_span = (peek p).span in
         ignore (bump p);
         let* rhs = expr p in
         let* t = target lhs in
         let* () = finish_statement p consume_end in
-        Ok (Ast.Compound_assign (t, op, rhs, s))
+        Ok (Ast.Compound_assign (t, op, rhs, s, operator_span))
     | None ->
         if eat p Token.Assign then
           let* rhs = expr p in
@@ -1271,11 +1348,17 @@ module P = struct
       | Token.Minus
         when (peek_n p 1).kind = Token.Gt
              && (peek p).span.Span.end_offset = (peek_n p 1).span.Span.start_offset ->
-          let field =
-            match (peek_n p 2).kind with Token.Ident field -> field | _ -> "field"
+          let first = (peek p).span and last = (peek_n p 1).span in
+          let operator_span =
+            Span.make ~file:first.Span.file ~start_offset:first.Span.start_offset
+              ~end_offset:last.Span.end_offset ~line:first.Span.line
+              ~column:first.Span.column
           in
-          error (span p)
-            (Printf.sprintf "Fas has no `->`; access field `%s` with `.`" field)
+          ignore (bump p);
+          ignore (bump p);
+          let field_span = span p in
+          let* field = ident p in
+          go (Ast.Arrow_field (lhs, field, operator_span, field_span))
       | k when List.mem_assoc k ops ->
           let op = List.assoc k ops in
           let s = span p in
@@ -1312,11 +1395,13 @@ module P = struct
       when (peek_n p 1).kind = op
            && (peek p).span.Span.end_offset = (peek_n p 1).span.Span.start_offset ->
         let operator = if op = Token.Plus then "++" else "--" in
-        let assignment = if op = Token.Plus then "+=" else "-=" in
-        let name = match (peek_n p 2).kind with Token.Ident name -> name | _ -> "x" in
-        error (span p)
-          (Printf.sprintf "Fas has no prefix `%s` operator; write `%s %s 1`" operator
-             name assignment)
+        let first = (peek p).span and last = (peek_n p 1).span in
+        let operator_span =
+          Span.make ~file:first.Span.file ~start_offset:first.Span.start_offset
+            ~end_offset:last.Span.end_offset ~line:first.Span.line
+            ~column:first.Span.column
+        in
+        error operator_span (Printf.sprintf "Fas has no prefix `%s` operator" operator)
     | Token.Star -> error (span p) "Fas has no unary `*`; use typed `addr` selection"
     | Token.Amp ->
         let s = span p in
@@ -1398,25 +1483,23 @@ module P = struct
       | (Token.Plus | Token.Minus) as op
         when (peek_n p 1).kind = op
              && (peek p).span.Span.end_offset = (peek_n p 1).span.Span.start_offset ->
-          let name = match e with Ast.Ident (name, _) -> name | _ -> "x" in
-          let operator, assignment =
-            if op = Token.Plus then ("++", "+=") else ("--", "-=")
+          let operator = if op = Token.Plus then "++" else "--" in
+          let first = (peek p).span and last = (peek_n p 1).span in
+          let operator_span =
+            Span.make ~file:first.Span.file ~start_offset:first.Span.start_offset
+              ~end_offset:last.Span.end_offset ~line:first.Span.line
+              ~column:first.Span.column
           in
           Error
             [
-              Diag.error (span p)
-                (Printf.sprintf "Fas has no `%s`; write `%s %s 1`" operator name
-                   assignment);
+              Diag.error operator_span
+                (Printf.sprintf "Fas has no postfix `%s` operator" operator);
             ]
       | Token.Dot ->
           let s = span p in
           ignore (bump p);
           if eat p Token.Star then
-            Error
-              [
-                Diag.error s
-                  "pointer dereference is no longer supported; use raw selection";
-              ]
+            Error [ Diag.error s "Fas has no `.*` pointer-selection operator" ]
           else
             let* n, field_span = field_ident p in
             go (Ast.Field (e, n, field_span))
@@ -1484,9 +1567,19 @@ module P = struct
     match (peek p).kind with
     | Token.Lparen when Option.is_some (c_cast_type p) ->
         let cast = Option.get (c_cast_type p) in
-        error (span p)
-          (Printf.sprintf
-             "C cast `(%s)` is not Fas syntax; use `zext`, `sext` or `trunc`" cast)
+        let is_pointer = String.ends_with ~suffix:"*" cast || cast = "addr" in
+        let cast_span =
+          if is_pointer then
+            (peek_n p (if String.ends_with ~suffix:"*" cast then 3 else 2)).span
+          else span p
+        in
+        error cast_span
+          (if is_pointer then "C pointer casts are not Fas syntax; `addr` is untyped"
+           else
+             Printf.sprintf
+               "C cast `(%s)` is not Fas syntax; use `zext`, `sext`, `trunc` or \
+                `bitcast`"
+               cast)
     | Token.Lbrace ->
         let s = span p in
         let* () = expected p Token.Lbrace in
@@ -1570,8 +1663,7 @@ module P = struct
                     | _ -> assert false
                   in
                   error (span p)
-                    (Printf.sprintf "`%s` takes a type in brackets; write `%s[i32]`"
-                       operation operation)
+                    (Printf.sprintf "`%s` needs a type in brackets" operation)
               in
               delimited p (fun () ->
                   let* t = ty p in
@@ -1591,8 +1683,8 @@ module P = struct
           | None, Token.Lparen when n = "ptr_add" || n = "ptr_add_bytes" ->
               let message =
                 if n = "ptr_add_bytes" then
-                  "ptr_add_bytes is no longer supported; use address arithmetic"
-                else "ptr_add is no longer supported; use address arithmetic"
+                  "builtin `ptr_add_bytes` is not defined; use address arithmetic"
+                else "builtin `ptr_add` is not defined; use address arithmetic"
               in
               Error [ Diag.error sp message ]
           | _ -> Ok (Ast.Ident (n, sp)))

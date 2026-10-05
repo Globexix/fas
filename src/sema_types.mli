@@ -19,7 +19,15 @@ val logical_operand_error :
   ?help:string -> string -> string -> Ast.expr -> Hir.ty -> Diag.t
 
 val logical_not_error : Ast.expr -> Hir.ty -> Diag.t
-val raw_access_needs_type_error : ?index:string -> Ast.expr -> Span.t -> Diag.t
+val shift_value_error : Ast.binop -> Span.t -> Hir.ty -> Diag.t
+val shift_count_error : Ast.binop -> Span.t -> Hir.ty -> Diag.t
+val shift_count_lanes_error : Ast.binop -> Span.t -> Hir.ty -> Hir.ty -> Diag.t
+val rotate_value_error : string -> Span.t -> Hir.ty -> Diag.t
+val rotate_count_error : string -> Span.t -> Hir.ty -> Diag.t
+
+val raw_access_needs_type_error :
+  ?index:string -> ?allow_help:bool -> Ast.expr -> Span.t -> Diag.t
+
 val unknown_type_error : string list -> Span.t -> string -> Diag.t
 val similar_name_help : string list -> string -> string option
 val unknown_type_name : string -> string option
@@ -45,6 +53,11 @@ val layout_diag :
 val field_info : Hir.struct_def list -> string -> string -> Hir.field option
 val compatible : Hir.ty -> Hir.ty -> bool
 val diagnostic_ty_name : Hir.ty -> string
+
+val cast_error :
+  ?expression:Ast.expr -> Ast.cast_kind -> Hir.ty -> Hir.ty -> Span.t -> Diag.t
+
+val cast_target_error : Ast.cast_kind -> Hir.ty -> string
 val missing_field_message : ?record_name:string -> string -> Hir.ty -> string
 val record_field_count_message : string -> int -> int -> string
 val array_element_count_message : int -> int -> string
@@ -53,6 +66,7 @@ val aggregate_count_error_span : Span.t -> int -> Ast.expr list -> Span.t
 val ensure_expected :
   ?context:string ->
   ?expression:Ast.expr ->
+  ?checked_expression:Hir.expr ->
   Hir.ty ->
   Hir.ty ->
   Span.t ->

@@ -11,7 +11,8 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~generic_structs ~c
     let array_items, struct_items =
       match expression with
       | Ast.Array_lit (items, _) -> (Some items, Some (None, items))
-      | Ast.Struct_lit (Ast.Named_type name, items, _) -> (None, Some (Some name, items))
+      | Ast.Struct_lit (Ast.Named_type (name, _), items, _) ->
+          (None, Some (Some name, items))
       | _ -> (None, None)
     in
     let map wrap ty items =
@@ -59,7 +60,10 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~generic_structs ~c
           match struct_items with
           | Some (None, items) -> Some items
           | Some (Some actual, items)
-            when match Sema_types.source_ty named_types (Ast.Named_type actual) with
+            when match
+                   Sema_types.source_ty named_types
+                     (Ast.Named_type (actual, Span.synthetic))
+                 with
                  | Ok (Hir.Struct actual) -> actual = name
                  | _ -> false ->
               Some items
