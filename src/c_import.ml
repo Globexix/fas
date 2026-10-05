@@ -1432,7 +1432,15 @@ let type_result ?(allow_arrays = false) ~alias_name ~alias_type_node ~resolve_al
           match type_node_id node with
           | Some id when not (List.mem id seen) -> (
               match alias_name id with
-              | Some name -> resolve_alias name
+              | Some name -> (
+                  match resolve_alias name with
+                  | Error "over-aligned typedef has alignment greater than its size" ->
+                      Error
+                        (Printf.sprintf
+                           "over-aligned typedef `%s` has alignment greater than its \
+                            size"
+                           name)
+                  | result -> result)
               | None -> Error "typedef has no canonical type")
           | Some _ -> Error "recursive C typedef is not supported"
           | None -> Error "typedef has no canonical type")

@@ -1980,19 +1980,34 @@ and check_expr_inner ?destination (c : context) expected expression =
           Ok
             (Hir.Address (place.expr, address_type_for_expected c expected place.expr, s))
       | _ -> error s "cannot take the address of this expression")
-  | Ast.Sizeof_value (value, span) ->
-      let inferred_type =
-        match check_place c value with
-        | Ok place -> Some (Hir.expr_ty place.expr)
-        | Error _ -> None
-      in
-      let help =
-        Option.map
-          (fun ty ->
-            Printf.sprintf "write `sizeof[%s]`" (Sema_types.diagnostic_ty_name ty))
-          inferred_type
-      in
-      error ?help span "`sizeof` needs a type in brackets"
+  | Ast.Sizeof_value (value, span) -> (
+      match value with
+      | Ast.Ident (name, _)
+        when List.mem name Names.scalar_type_names
+             || List.mem name Names.reserved_float_type_names
+             ||
+             match List.assoc_opt name c.named_types with
+             | Some
+                 ( Struct_name | Opaque_name | C_record_name _ | Alias_name _
+                 | Unsupported_name _ ) ->
+                 true
+             | _ -> false ->
+          error
+            ~help:(Printf.sprintf "write `sizeof[%s]`" name)
+            span "`sizeof` needs a type in brackets"
+      | _ ->
+          let inferred_type =
+            match check_place c value with
+            | Ok place -> Some (Hir.expr_ty place.expr)
+            | Error _ -> None
+          in
+          let help =
+            Option.map
+              (fun ty ->
+                Printf.sprintf "write `sizeof[%s]`" (Sema_types.diagnostic_ty_name ty))
+              inferred_type
+          in
+          error ?help span "`sizeof` needs a type in brackets")
   | Ast.Sizeof (t, s) ->
       let* t, structs = query_layout_in_context c s t in
       let* size, _ = layout_diag s structs t in

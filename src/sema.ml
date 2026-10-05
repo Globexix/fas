@@ -66,14 +66,28 @@ let aggregate_parameter_error span name ty_name =
   error span
     (Printf.sprintf
        "aggregate parameter `%s` of type `%s` cannot be passed by value; declare `%s` \
-        as `addr`"
+        as `addr` and pass `&value`"
        name ty_name name)
 
 let aggregate_result_error span ty_name =
   error span
     (Printf.sprintf
-       "aggregate result `%s` cannot be returned by value; use destination storage \
-        passed as `addr`"
+       "aggregate result `%s` cannot be returned by value; return `void` and take the \
+        destination as an `addr` parameter"
+       ty_name)
+
+let extern_c_aggregate_parameter_error span name ty_name =
+  error span
+    (Printf.sprintf
+       "aggregate parameter `%s` of type `%s` cannot be passed by value; pass `&x` as \
+        `addr` or `handle[T]`"
+       name ty_name)
+
+let extern_c_aggregate_result_error span ty_name =
+  error span
+    (Printf.sprintf
+       "aggregate result `%s` cannot be returned by value; pass destination storage as \
+        `addr` or `handle[T]`"
        ty_name)
 
 let extern_c_struct_value_error span name =
@@ -127,7 +141,7 @@ let validate_extern_c_signature ~bodyless span params converted ret =
           match (bodyless, ty) with
           | true, Hir.Struct name -> extern_c_struct_value_error param.ty_span name
           | _ ->
-              aggregate_parameter_error param.ty_span param.name
+              extern_c_aggregate_parameter_error param.ty_span param.name
                 (diagnostic_source_ty_name param.ty)
         else
           error param.ty_span
@@ -141,7 +155,7 @@ let validate_extern_c_signature ~bodyless span params converted ret =
   else if aggregate_value_type ret then
     match (bodyless, ret) with
     | true, Hir.Struct name -> extern_c_struct_value_error span name
-    | _ -> aggregate_result_error span (Sema_types.diagnostic_ty_name ret)
+    | _ -> extern_c_aggregate_result_error span (Sema_types.diagnostic_ty_name ret)
   else
     error span
       (Printf.sprintf "extern \"C\" cannot return `%s` by value; use an output pointer"

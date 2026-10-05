@@ -1355,47 +1355,47 @@ let () =
        \ copy(t, a)\n\
        \ return t[0] }\n");
   semantic_error "aggregate-direct-return"
-    "aggregate result `S` cannot be returned by value; pass destination storage as \
-     `addr` or `handle[T]`"
+    "aggregate result `S` cannot be returned by value; return `void` and take the \
+     destination as an `addr` parameter"
     "struct S { x i64 }\nfn f() S { s S\nreturn s }\n";
   semantic_error "aggregate-parameter"
-    "aggregate parameter `value` of type `S` cannot be passed by value; pass `&x` as \
-     `addr` or `handle[T]`"
+    "aggregate parameter `value` of type `S` cannot be passed by value; declare \
+     `value` as `addr` and pass `&value`"
     "struct S { x i64 }\nfn f(value S) void { return }\n";
   semantic_error "aggregate-array-parameter"
-    "aggregate parameter `value` of type `arr[4,u32]` cannot be passed by value; pass \
-     `&x` as `addr` or `handle[T]`"
+    "aggregate parameter `value` of type `arr[4,u32]` cannot be passed by value; \
+     declare `value` as `addr` and pass `&value`"
     "fn f(value arr[4,u32]) void { return }\n";
   semantic_error "aggregate-result"
-    "aggregate result `S` cannot be returned by value; pass destination storage as \
-     `addr` or `handle[T]`"
+    "aggregate result `S` cannot be returned by value; return `void` and take the \
+     destination as an `addr` parameter"
     "struct S { x i64 }\nfn f() S { s S\nreturn s }\n";
   semantic_error "aggregate-array-result"
-    "aggregate result `arr[4,u32]` cannot be returned by value; pass destination \
-     storage as `addr` or `handle[T]`"
+    "aggregate result `arr[4,u32]` cannot be returned by value; return `void` and take \
+     the destination as an `addr` parameter"
     "fn f() arr[4,u32] { value arr[4,u32]\nreturn value }\n";
   let generic_aggregate_parameter_error =
-    "aggregate parameter `x` of type `arr[N,u8]` cannot be passed by value; pass `&x` \
-     as `addr` or `handle[T]`"
+    "aggregate parameter `x` of type `arr[N,u8]` cannot be passed by value; declare \
+     `x` as `addr` and pass `&value`"
   in
   semantic_error "generic-array-parameter-by-value" generic_aggregate_parameter_error
     "fn take[N const usize](x arr[N,u8]) void { return }\n";
   semantic_error "generic-struct-parameter-by-value"
-    "aggregate parameter `r` of type `Ring[N]` cannot be passed by value; pass `&x` as \
-     `addr` or `handle[T]`"
+    "aggregate parameter `r` of type `Ring[N]` cannot be passed by value; declare `r` \
+     as `addr` and pass `&value`"
     "struct Ring[N const usize] { data arr[N,u8] }\n\
      fn take[N const usize](r Ring[N]) void { return }\n";
   semantic_error "generic-known-struct-parameter-by-value"
-    "aggregate parameter `value` of type `S` cannot be passed by value; pass `&x` as \
-     `addr` or `handle[T]`"
+    "aggregate parameter `value` of type `S` cannot be passed by value; declare \
+     `value` as `addr` and pass `&value`"
     "struct S { value i32 }\nfn take[N const usize](value S) void { return }\n";
   semantic_error "generic-array-result-by-value"
-    "aggregate result `arr[N,u8]` cannot be returned by value; pass destination \
-     storage as `addr` or `handle[T]`"
+    "aggregate result `arr[N,u8]` cannot be returned by value; return `void` and take \
+     the destination as an `addr` parameter"
     "fn make[N const usize]() arr[N,u8] { value arr[N,u8]\nreturn value }\n";
   semantic_error "generic-struct-result-by-value"
-    "aggregate result `Ring[N]` cannot be returned by value; pass destination storage \
-     as `addr` or `handle[T]`"
+    "aggregate result `Ring[N]` cannot be returned by value; return `void` and take \
+     the destination as an `addr` parameter"
     "struct Ring[N const usize] { data arr[N,u8] }\n\
      fn make[N const usize]() Ring[N] { value Ring[N]\n\
      return value }\n";
@@ -1416,7 +1416,7 @@ let () =
   in
   semantic_pin "aggregate-parameter-name" aggregate_parameter_text 2 18 5
     "aggregate parameter `state` of type `State` cannot be passed by value; declare \
-     `state` as `addr`"
+     `state` as `addr` and pass `&value`"
     None;
   semantic_accept "aggregate-parameter-address-twin"
     "struct State { value u32 }\nfn consume(state addr) void { return }\n";
@@ -1424,8 +1424,8 @@ let () =
     "struct State { value u32 }\nfn build() State { return (State){1} }\n" 2
     (String.length "fn build() " + 1)
     5
-    "aggregate result `State` cannot be returned by value; use destination storage \
-     passed as `addr`"
+    "aggregate result `State` cannot be returned by value; return `void` and take the \
+     destination as an `addr` parameter"
     None;
   semantic_accept "aggregate-result-address-twin"
     "struct State { value u32 }\nfn build(destination addr) void { return }\n";
@@ -5038,7 +5038,7 @@ let () =
       if
         diagnostic.message
         <> "aggregate parameter `value` of type `Box[Box[u8]]` cannot be passed by \
-            value; declare `value` as `addr`"
+            value; declare `value` as `addr` and pass `&value`"
       then
         failwith
           ("generic-instantiation-nested-struct: unexpected message: "
@@ -5981,8 +5981,8 @@ let () =
     || contains const_generic_function_type_llvm "@aggregate_metrics("
   then failwith "const-generic-function-type-template: template reached LLVM output";
   semantic_error "const-generic-function-type-mismatch"
-    "aggregate parameter `value` of type `arr[N,u8]` cannot be passed by value; pass \
-     `&x` as `addr` or `handle[T]`"
+    "aggregate parameter `value` of type `arr[N,u8]` cannot be passed by value; \
+     declare `value` as `addr` and pass `&value`"
     "fn identity[N const usize](value arr[N, u8]) arr[N, u8] { return value }\n";
   semantic_message "const-generic-function-negative-length"
     "array length cannot be negative: `-2`"
@@ -7145,12 +7145,12 @@ let () =
   semantic_pin "aggregate-parameter-diagnostic"
     "fn consume(rows arr[3,u16]) void { return }\n" 1 17 3
     "aggregate parameter `rows` of type `arr[3, u16]` cannot be passed by value; \
-     declare `rows` as `addr`"
+     declare `rows` as `addr` and pass `&value`"
     None;
   semantic_pin "aggregate-result-diagnostic"
     "fn values() arr[3,u8] { return (arr[3,u8]){1,2,3} }\n" 1 13 3
-    "aggregate result `arr[3, u8]` cannot be returned by value; use destination \
-     storage passed as `addr`"
+    "aggregate result `arr[3, u8]` cannot be returned by value; return `void` and take \
+     the destination as an `addr` parameter"
     None;
   semantic_pin "void-field-layout-caret" "struct Holder { value void }\n" 1
     (String.length "struct Holder { value " + 1)
@@ -9831,10 +9831,12 @@ let () =
     ("C declaration `FasOveraligned` is not supported: " ^ overaligned_reason)
     c_overaligned "fn probe(value FasOveraligned) void { return }\n";
   c_semantic_message "c-import-overaligned-typedef-c-global"
-    ("C declaration `fas_overaligned_global` is not supported: " ^ overaligned_reason)
+    "C declaration `fas_overaligned_global` is not supported: over-aligned typedef \
+     `FasOveraligned` has alignment greater than its size"
     c_overaligned "fn probe() i32 { return fas_overaligned_global }\n";
   c_semantic_message "c-import-overaligned-typedef-c-parameter"
-    ("C declaration `fas_overaligned_parameter` is not supported: " ^ overaligned_reason)
+    "C declaration `fas_overaligned_parameter` is not supported: over-aligned typedef \
+     `FasOveraligned` has alignment greater than its size"
     c_overaligned "fn probe() i32 { return fas_overaligned_parameter(0) }\n";
   c_semantic_message "c-import-unrepresentable-record-stride"
     "C declaration `FasUnrepresentableStride` is not supported: record layout differs \
@@ -13215,6 +13217,11 @@ let () =
   let missing_element = "fn f() void { items arr[3] }\n" in
   pin "array-missing-element-type" missing_element 1 "fn f() void { items arr[3" 1
     "array type `arr` needs an element type after its length";
+  let sizeof_type = "fn f() usize { return sizeof i32 }\n" in
+  semantic_pin "sizeof-type-operand-help" sizeof_type 1
+    (String.length "fn f() usize { return " + 1)
+    6 "`sizeof` needs a type in brackets" (Some "write `sizeof[i32]`");
+  semantic_accept "sizeof-type-operand-twin" "fn f() usize { return sizeof[i32] }\n";
   parse_message "sizeof-needs-type" "`sizeof` needs a type in brackets"
     "fn f() usize { return sizeof }\n";
   let sizeof_name = "fn f() usize { a arr[4,u8]\nreturn sizeof a }\n" in
@@ -13300,12 +13307,22 @@ let () =
     (Some "write `p[T].value` with the record type");
   semantic_accept "c-arrow-field-typed-twin"
     "struct Point { value i32 }\nfn read(p addr) i32 { return p[Point].value }\n";
-  let cast = "fn widen(p addr) u32 { return (u8*)p }\n" in
-  pin "c-cast" cast 1 "fn widen(p addr) u32 { return (u8*" 1
-    "C pointer casts are not Fas syntax; `addr` is untyped";
+  let cast = "fn widen(p addr) u8 { return (u8*)p }\n" in
+  semantic_pin "c-cast-value" cast 1
+    (String.length "fn widen(p addr) u8 { return " + 1)
+    5 "C pointer cast `(u8*)` is not Fas syntax; `addr` is untyped"
+    (Some "write `p[u8]`");
+  semantic_accept "c-cast-value-twin" "fn widen(p addr) u8 { return p[u8] }\n";
+  let cast_address = "fn keep(p addr) addr { q addr = (u8*)p\nreturn q }\n" in
+  semantic_pin "c-cast-address" cast_address 1
+    (String.length "fn keep(p addr) addr { q addr = " + 1)
+    5 "C pointer cast `(u8*)` is not Fas syntax; `addr` is untyped" (Some "write `p`");
+  semantic_accept "c-cast-address-twin"
+    "fn keep(p addr) addr { q addr = p\nreturn q }\n";
   let addr_cast = "fn keep(p addr) addr { return (addr)p }\n" in
-  pin "c-addr-cast" addr_cast 1 "fn keep(p addr) addr { return (addr" 1
-    "C pointer casts are not Fas syntax; `addr` is untyped";
+  syntax_pin "c-addr-cast" addr_cast 1
+    (String.length "fn keep(p addr) addr { return " + 1)
+    6 "C pointer cast `(addr)` is not Fas syntax; `addr` is untyped";
   let integer_cast = "fn reinterpret(value i32) u32 { return (u32)value }\n" in
   pin "c-integer-cast" integer_cast 1 "fn reinterpret(value i32) u32 { return " 1
     "C cast `(u32)` is not Fas syntax; use `zext`, `sext`, `trunc` or `bitcast`";
@@ -13353,6 +13370,20 @@ let () =
   let prefix_decrement = "fn decrement(value i32) i32 { return --value }\n" in
   pin "c-prefix-decrement" prefix_decrement 1 "fn decrement(value i32) i32 { return " 2
     "Fas has no prefix `--` operator";
+  let for_postfix = "fn f() void { i i32 = 0\nfor ; ; i++ { break }\nreturn }\n" in
+  syntax_pin "for-step-postfix-increment" for_postfix 2
+    (String.length "for ; ; i" + 1)
+    2 "Fas has no postfix `++` operator; write `i += 1`";
+  semantic_accept "for-step-postfix-increment-twin"
+    "fn f() void { i i32 = 0\nfor ; ; i += 1 { break }\nreturn }\n";
+  let for_postfix_decrement =
+    "fn f() void { i i32 = 0\nfor ; ; i-- { break }\nreturn }\n"
+  in
+  syntax_pin "for-step-postfix-decrement" for_postfix_decrement 2
+    (String.length "for ; ; i" + 1)
+    2 "Fas has no postfix `--` operator; write `i -= 1`";
+  semantic_accept "for-step-postfix-decrement-twin"
+    "fn f() void { i i32 = 0\nfor ; ; i -= 1 { break }\nreturn }\n";
   let postfix_expression = "fn increment(value i32) i32 { return value++ }\n" in
   pin "c-postfix-increment-expression" postfix_expression 1
     "fn increment(value i32) i32 { return value" 2 "Fas has no postfix `++` operator";

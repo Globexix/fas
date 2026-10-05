@@ -1336,7 +1336,28 @@ module P = struct
   and for_clause_before_block p =
     let previous = p.block_expression_depth in
     p.block_expression_depth <- Some (p.depth + 1);
-    let result = for_clause p in
+    let result =
+      match ((peek p).kind, (peek_n p 1).kind, (peek_n p 2).kind) with
+      | Token.Ident name, ((Token.Plus | Token.Minus) as op), second
+        when second = op
+             && (peek_n p 1).span.Span.end_offset = (peek_n p 2).span.Span.start_offset
+        ->
+          let operator = if op = Token.Plus then "++" else "--" in
+          let assignment = if op = Token.Plus then "+=" else "-=" in
+          let first = (peek_n p 1).span and last = (peek_n p 2).span in
+          let operator_span =
+            Span.make ~file:first.Span.file ~start_offset:first.Span.start_offset
+              ~end_offset:last.Span.end_offset ~line:first.Span.line
+              ~column:first.Span.column
+          in
+          Error
+            [
+              Diag.error operator_span
+                (Printf.sprintf "Fas has no postfix `%s` operator; write `%s %s 1`"
+                   operator name assignment);
+            ]
+      | _ -> for_clause p
+    in
     p.block_expression_depth <- previous;
     result
 
@@ -1614,18 +1635,36 @@ module P = struct
     | Token.Lparen when Option.is_some (c_cast_type p) ->
         let cast = Option.get (c_cast_type p) in
         let is_pointer = String.ends_with ~suffix:"*" cast || cast = "addr" in
-        let cast_span =
-          if is_pointer then
-            (peek_n p (if String.ends_with ~suffix:"*" cast then 3 else 2)).span
-          else span p
+        let first = span p in
+        let last =
+          (peek_n p (if String.ends_with ~suffix:"*" cast then 3 else 2)).span
         in
-        error cast_span
-          (if is_pointer then "C pointer casts are not Fas syntax; `addr` is untyped"
-           else
-             Printf.sprintf
-               "C cast `(%s)` is not Fas syntax; use `zext`, `sext`, `trunc` or \
-                `bitcast`"
-               cast)
+        let cast_span =
+          Span.make ~file:first.Span.file ~start_offset:first.Span.start_offset
+            ~end_offset:last.Span.end_offset ~line:first.Span.line
+            ~column:first.Span.column
+        in
+        if String.ends_with ~suffix:"*" cast then (
+          ignore (bump p);
+          ignore (bump p);
+          ignore (bump p);
+          ignore (bump p);
+          let* value = unary p in
+          let type_name = String.sub cast 0 (String.length cast - 1) in
+          Ok
+            (Ast.C_dereference
+               (value, Some ("__fas_c_pointer_cast__:" ^ type_name), cast_span)))
+        else
+          error
+            (if is_pointer then cast_span else first)
+            (if is_pointer then
+               Printf.sprintf
+                 "C pointer cast `(%s)` is not Fas syntax; `addr` is untyped" cast
+             else
+               Printf.sprintf
+                 "C cast `(%s)` is not Fas syntax; use `zext`, `sext`, `trunc` or \
+                  `bitcast`"
+                 cast)
     | Token.Lbrace ->
         let s = span p in
         let* () = expected p Token.Lbrace in

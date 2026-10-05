@@ -40,6 +40,22 @@ let c_pointer_selection_help value type_hint expected =
   | _ -> None
 
 let c_pointer_selection_diagnostic expected = function
+  | Ast.C_dereference (Ast.Ident (name, _), Some marker, span)
+    when String.starts_with ~prefix:"__fas_c_pointer_cast__:" marker ->
+      let cast_type =
+        String.sub marker
+          (String.length "__fas_c_pointer_cast__:")
+          (String.length marker - String.length "__fas_c_pointer_cast__:")
+      in
+      let help =
+        if expected = Some Hir.Addr then Some (Printf.sprintf "write `%s`" name)
+        else if List.mem cast_type Names.scalar_type_names then
+          Some (Printf.sprintf "write `%s[%s]`" name cast_type)
+        else None
+      in
+      Diag.error ?help span
+        (Printf.sprintf "C pointer cast `(%s*)` is not Fas syntax; `addr` is untyped"
+           cast_type)
   | Ast.C_dereference (value, type_hint, span) ->
       Diag.error
         ?help:(c_pointer_selection_help value type_hint expected)
