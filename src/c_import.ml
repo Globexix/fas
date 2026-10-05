@@ -146,12 +146,7 @@ let compilation_error ?source ?(headers = []) ?(prefix = "C compilation failed")
     | Some (file, line, column) when Filename.check_suffix file ".fas" ->
         (Span.make ~file ~start_offset:0 ~end_offset:0 ~line ~column, [])
     | Some (file, line, column) when prefix = "assembly failed" ->
-        let notes =
-          match source_line file line with
-          | Some text -> [ "source: " ^ text ]
-          | None -> []
-        in
-        (Span.make ~file ~start_offset:0 ~end_offset:0 ~line ~column, notes)
+        (Span.make ~file ~start_offset:0 ~end_offset:0 ~line ~column, [])
     | Some (file, line, column) ->
         let notes =
           if String.starts_with ~prefix:"fas-c-import-" (Filename.basename file) then []

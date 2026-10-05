@@ -9555,19 +9555,19 @@ let () =
      store[u16](p, i, m, v)\n\
      return }\n";
   semantic_error "simd-memory-aggregate-element"
-    "builtin `masked_load` needs an integer or bool element type, got `arr[2, u32]`"
+    "`masked_load` needs an integer or bool element type, got `arr[2, u32]`"
     "fn f(p addr, m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
      masked_load[arr[2,u32]](p, m, v) }\n";
   semantic_error "simd-memory-address-element"
-    "builtin `masked_load` needs an integer or bool element type, got `addr`"
+    "`masked_load` needs an integer or bool element type, got `addr`"
     "fn f(p addr, m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
      masked_load[addr](p, m, v) }\n";
   semantic_error "simd-memory-vector-element"
-    "builtin `masked_load` needs an integer or bool element type, got `vec[2, u32]`"
+    "`masked_load` needs an integer or bool element type, got `vec[2, u32]`"
     "fn f(p addr, m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
      masked_load[vec[2,u32]](p, m, v) }\n";
   semantic_error "simd-memory-handle-element"
-    "builtin `gather` needs an integer or bool element type, got `handle[Token]`"
+    "`gather` needs an integer or bool element type, got `handle[Token]`"
     "opaque Token\n\
      fn f(p addr, i vec[2,i8], m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
      gather[handle[Token]](p, i, m, v) }\n";
@@ -12371,7 +12371,7 @@ let () =
              = "assembly failed: invalid instruction mnemonic 'invalid_opcode'"
              && diagnostic.primary.Span.file = assembly_cpp
              && diagnostic.primary.Span.line = 1
-             && diagnostic.notes = [ "source: invalid_opcode %rax" ] ->
+             && diagnostic.notes = [] ->
           ()
       | _ -> failwith "assembly .S error location changed");
       write assembly_root
@@ -12768,8 +12768,7 @@ let () =
         (fun name ->
           semantic_message
             ("generic-slot-" ^ name ^ "-" ^ ty)
-            (Printf.sprintf
-               "builtin `%s` needs an integer or bool element type, got `%s`" name
+            (Printf.sprintf "`%s` needs an integer or bool element type, got `%s`" name
                (String.split_on_char ',' ty |> String.concat ", "))
             (body (name ^ "[" ^ ty ^ "](p, 0, 0, 0)")))
         [
@@ -12898,8 +12897,8 @@ let () =
   List.iter
     (fun name ->
       semantic_message ("vector-type-slot-" ^ name)
-        (Printf.sprintf
-           "builtin `%s` needs an integer or bool element type, got `vec[4, u32]`" name)
+        (Printf.sprintf "`%s` needs an integer or bool element type, got `vec[4, u32]`"
+           name)
         ("fn f(p addr) void { " ^ name ^ "[vec[4,u32]](p, 0, 0, 0)\nreturn }"))
     [
       "masked_load";

@@ -2522,8 +2522,7 @@ and simd_memory_access_type c name span arguments =
   | Hir.Bool | Hir.Int _ -> Ok access_ty
   | _ ->
       error span
-        (Printf.sprintf "builtin `%s` needs an integer or bool element type, got `%s`"
-           name
+        (Printf.sprintf "`%s` needs an integer or bool element type, got `%s`" name
            (Sema_types.diagnostic_ty_name access_ty))
 
 and check_simd_memory_args c name access_ty args span =
