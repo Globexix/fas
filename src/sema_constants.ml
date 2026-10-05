@@ -1593,18 +1593,12 @@ let resolve_scalar_declarations ?(globals = []) ?(array_lengths = [])
             else
               let () = Hashtbl.add visiting name () in
               let result =
-                let result =
-                  let* actual_ty, value =
-                    const_expr ~structs ~named_types ~generic_structs ~array_lengths
-                      ~globals ~resolve [] (Some ty) initial_value
-                  in
-                  if Hir.ty_equal actual_ty ty then Ok (ty, value)
-                  else error declaration_span "constant initializer type mismatch"
+                let* actual_ty, value =
+                  const_expr ~structs ~named_types ~generic_structs ~array_lengths
+                    ~globals ~resolve [] (Some ty) initial_value
                 in
-                Result.map_error
-                  (List.map (fun diagnostic ->
-                       { diagnostic with Diag.primary = declaration_span }))
-                  result
+                if Hir.ty_equal actual_ty ty then Ok (ty, value)
+                else error declaration_span "constant initializer type mismatch"
               in
               Hashtbl.remove visiting name;
               match result with
@@ -1612,10 +1606,11 @@ let resolve_scalar_declarations ?(globals = []) ?(array_lengths = [])
                   [
                     {
                       Diag.message = "constant expression requires a known constant";
+                      primary;
                       _;
                     };
                   ] ->
-                  error declaration_span
+                  error primary
                     (Printf.sprintf
                        "constant `%s` initializer uses nonconstant value `%s`" name
                        (Ast.expr_name initial_value))

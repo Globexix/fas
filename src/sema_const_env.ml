@@ -11,11 +11,14 @@ let collect ?(global_names = []) ?(array_lengths = []) ?(generic_structs = [])
   let consts_names =
     ref (String_set.of_list (List.map (fun (n, _, _) -> n) scalar_consts))
   and arrays_names = ref String_set.empty in
-  let const_value declaration_span name expression result =
+  let const_value name expression result =
     match result with
-    | Error [ { Diag.issue = Diag.Not_constant; _ } ]
-    | Error [ { Diag.message = "constant expression requires a known constant"; _ } ] ->
-        error declaration_span
+    | Error [ { Diag.issue = Diag.Not_constant; primary; _ } ]
+    | Error
+        [
+          { Diag.message = "constant expression requires a known constant"; primary; _ };
+        ] ->
+        error primary
           (Printf.sprintf "constant `%s` initializer uses nonconstant value `%s`" name
              (Ast.expr_name expression))
     | result -> result
@@ -88,7 +91,7 @@ let collect ?(global_names = []) ?(array_lengths = []) ?(generic_structs = [])
             | _, Ast.Array_lit _ -> error span "brace-list requires an array type"
             | _, _ ->
                 let* vt, v =
-                  const_value span name value
+                  const_value name value
                     (const_expr ~array_lengths ~structs ~named_types ~generic_structs
                        ~globals:global_names ~arrays:!arrays !consts (Some t) value)
                 in
@@ -98,9 +101,7 @@ let collect ?(global_names = []) ?(array_lengths = []) ?(generic_structs = [])
                   Ok ())
                 else error span "constant initializer type mismatch"
           in
-          Result.map_error
-            (List.map (fun diagnostic -> { diagnostic with Diag.primary = span }))
-            result
+          result
     | _ -> Ok ()
   in
   let* () = Result_list.iter eval_const_item program.items in

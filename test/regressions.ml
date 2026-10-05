@@ -944,7 +944,7 @@ let () =
   semantic_accept "shift-lane-count-twin"
     "fn f(value vec[4,u32], count vec[4,u32]) vec[4,u32] { return value << count }\n";
   let constant_shift_source = "const FLAG bool = true << false\n" in
-  semantic_pin "constant-shift-left-type" constant_shift_source 1 1 5
+  semantic_pin "constant-shift-left-type" constant_shift_source 1 19 4
     "left operand of `<<` has type `bool`, expected an integer or integer vector" None;
   semantic_accept "constant-shift-left-type-twin" "const FLAG u32 = 7 << 1\n";
   semantic_error "shift-no-splat-lift" "is `i32`, expected `vec[4,u32]`"
@@ -2020,9 +2020,6 @@ let () =
     "fn f(p addr) addr { return handle_from_addr(p) }\n";
   semantic_error "addr-const-context" "expression is not compile-time constant"
     "opaque O\nconst X addr = handle_from_addr[O](addr_from_bits(0))\n";
-  semantic_error "addr-vec-element"
-    "vector element type must be `bool` or an integer type"
-    "fn f(v vec[2,addr]) usize { return 0 }\n";
   let addr_equality_path = llvm_of "fn f(a addr, b addr) bool { return a == b }\n" in
   List.iter
     (fun marker ->
@@ -3089,10 +3086,6 @@ let () =
       \                    x bool = b[0]\n\
       \                    return 0 }\n"
   in
-  semantic_error "vec-element-address"
-    "vector element type must be `bool` or an integer type"
-    "fn f() i64 { v vec[2,addr] = splat(addr_from_bits(0))\n\
-    \                    return 0 }\n";
   let _ =
     lower_of
       "fn f(n i32) i32 {\n\
@@ -7119,7 +7112,7 @@ let () =
   semantic_pin "global-initializer-diagnostic" "var TOTAL i64 = absent_value\n" 1 17 12
     "unknown name `absent_value`" None;
   semantic_pin "constant-local-initializer-diagnostic"
-    "fn f() i32 { result i32 = 2\n return result }\nconst LIMIT i32 = result\n" 3 1 5
+    "fn f() i32 { result i32 = 2\n return result }\nconst LIMIT i32 = result\n" 3 19 6
     "constant `LIMIT` initializer uses nonconstant value `result`" None;
   semantic_pin "constant-array-count-caret" "const VALUES arr[2,u8] = {1,2,3}\n" 1 1 5
     "array of 2 elements, got 3" None;
@@ -12254,7 +12247,7 @@ let () =
      const RIGHT vec[2,i32] = {3, 4}\n\
      const RESULT vec[2,i32] = select(MASK, LEFT, RIGHT)\n"
   in
-  semantic_pin "builtin-select-constant-mask-type" select_constant_mask_type 4 1 5
+  semantic_pin "builtin-select-constant-mask-type" select_constant_mask_type 4 34 4
     "argument 1 of `select` is `vec[2, i32]`, expected a bool vector" None;
   semantic_accept "builtin-select-constant-mask-twin"
     "const MASK vec[2,bool] = {true, false}\n\
@@ -12267,7 +12260,7 @@ let () =
      const RIGHT vec[2,i64] = {3, 4}\n\
      const RESULT vec[2,i32] = select(MASK, LEFT, RIGHT)\n"
   in
-  semantic_pin "builtin-select-constant-value-type" select_constant_value_type 4 1 5
+  semantic_pin "builtin-select-constant-value-type" select_constant_value_type 4 46 5
     "argument 3 of `select` is `vec[2, i64]`, expected the type of argument 2 (`vec[2, \
      i32]`)"
     None;
@@ -12334,7 +12327,7 @@ let () =
     "const V vec[4,u32] = {1, 2, 3, 4}\n\
      const R vec[2,u32] = shuffle(V, V, {0, missing})\n"
   in
-  semantic_pin "shuffle-brace-const-nonconstant" shuffle_missing_const 2 1 5
+  semantic_pin "shuffle-brace-const-nonconstant" shuffle_missing_const 2 40 7
     "unknown name `missing`" None;
   let reduce_runtime_scalar =
     "fn maximum(value i16) i16 { return reduce_max(value) }\n"
@@ -12347,7 +12340,7 @@ let () =
   let reduce_constant_scalar =
     "const SAMPLE i16 = 9\nconst MAXIMUM i16 = reduce_max(SAMPLE)\n"
   in
-  semantic_pin "reduce-scalar-constant-agreement" reduce_constant_scalar 2 1 5
+  semantic_pin "reduce-scalar-constant-agreement" reduce_constant_scalar 2 32 6
     "`reduce_max` needs an integer vector, got `i16`" None;
   semantic_accept "reduce-scalar-constant-agreement-twin"
     "const SAMPLE vec[4,i16] = {1, 2, 3, 4}\nconst MAXIMUM i16 = reduce_max(SAMPLE)\n";
@@ -12363,7 +12356,7 @@ let () =
   let add_sat_constant_scalar =
     "const INPUT vec[4,u8] = splat(1)\nconst OUTPUT vec[4,u8] = add_sat(INPUT, 2)\n"
   in
-  semantic_pin "add-sat-vector-scalar-constant-agreement" add_sat_constant_scalar 2 1 5
+  semantic_pin "add-sat-vector-scalar-constant-agreement" add_sat_constant_scalar 2 41 1
     "argument 2 of `add_sat` is `i32`, expected the type of argument 1 (`vec[4, u8]`)"
     None;
   semantic_accept "add-sat-vector-scalar-constant-agreement-twin"
@@ -13104,9 +13097,11 @@ let () =
      \"C\"` and `var`";
   let char_pointer = "fn accept(data char*) void { return }\n" in
   syntax_pin "c-char-pointer-type-caret" char_pointer 1
-    (String.length "fn accept(data " + 1)
-    5 "C type `char*` is not a Fas type; use `addr`";
-  pin "c-char-pointer-type" char_pointer 1 "fn accept(data " 5
+    (String.length "fn accept(data char*" + 1)
+    1 "C type `char*` is not a Fas type; use `addr`";
+  pin "vector-addr-element-caret" "fn f(v vec[2,addr]) usize { return 0 }\n" 1
+    "fn f(v vec[2," 4 "vector element type must be `bool` or an integer type";
+  pin "c-char-pointer-type" char_pointer 1 "fn accept(data char*" 1
     "C type `char*` is not a Fas type; use `addr`";
   let arrow_record =
     "struct Pair { x i32 }\n\

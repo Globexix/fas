@@ -372,9 +372,14 @@ module P = struct
         delimited p (fun () ->
             let* n = aggregate_length p in
             let* () = expected p Token.Comma in
+            let element_span = span p in
             let* t = ty p in
             let* () = expected p Token.Rbracket in
-            Ok (Ast.Vec (n, t)))
+            match t with
+            | Ast.Addr ->
+                error element_span
+                  "vector element type must be `bool` or an integer type"
+            | _ -> Ok (Ast.Vec (n, t)))
     | Token.Ident s when List.mem s Names.scalar_type_names -> (
         ignore (bump p);
         match s with
@@ -391,11 +396,14 @@ module P = struct
         | _ -> assert false)
     | Token.Ident "char" when (peek_n p 1).kind = Token.Star ->
         let first = (peek p).span and last = (peek_n p 1).span in
-        error
-          (Span.make ~file:first.Span.file ~start_offset:first.Span.start_offset
-             ~end_offset:last.Span.end_offset ~line:first.Span.line
-             ~column:first.Span.column)
-          "C type `char*` is not a Fas type; use `addr`"
+        let primary =
+          if (peek_n p 2).kind = Token.Rparen then (peek_n p 2).span
+          else
+            Span.make ~file:first.Span.file ~start_offset:first.Span.start_offset
+              ~end_offset:last.Span.end_offset ~line:first.Span.line
+              ~column:first.Span.column
+        in
+        error primary "C type `char*` is not a Fas type; use `addr`"
     | Token.Ident s ->
         let token = bump p in
         if at p Token.Lbracket then
