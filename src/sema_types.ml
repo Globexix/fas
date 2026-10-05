@@ -95,7 +95,8 @@ let logical_not_error expression ty =
     | _ -> None
   in
   Diag.error ?help (Ast.expr_span expression)
-    (Printf.sprintf "operator `!` needs `bool`, got `%s`" (Hir.ty_name ty))
+    (Printf.sprintf "operator `!` needs `bool` or a bool vector, got `%s`"
+       (Hir.ty_name ty))
 
 let edit_distance left right =
   let left_length = String.length left in
@@ -441,6 +442,20 @@ let shift_count_lanes_error operator span count_ty value_ty =
        (shift_operator_name operator)
        (diagnostic_ty_name count_ty) (diagnostic_ty_name value_ty))
 
+let shift_count_splat_error operator value count =
+  let scalar_count =
+    match count with
+    | Ast.Splat (element, _) -> Ast.expr_name element
+    | _ -> assert false
+  in
+  Diag.error
+    ~help:
+      (Printf.sprintf "write `%s %s %s`" (Ast.expr_name value)
+         (shift_operator_name operator)
+         scalar_count)
+    (Ast.expr_span count)
+    (Printf.sprintf "the shift count `%s` has no vector type" (Ast.expr_name count))
+
 let rotate_value_error name span ty =
   Diag.error span
     (Printf.sprintf "`%s` value must be an integer or integer vector, got `%s`" name
@@ -734,7 +749,8 @@ let binary_result_type ?left_expression ?right_expression ?result_expected
               || match left with Hir.Vec (_, Hir.Int _) -> true | _ -> false) ->
       let error_span = if left = right then result_span left_expression else span in
       error error_span
-        (Printf.sprintf "ordered comparison `%s` needs an integer, got `%s`"
+        (Printf.sprintf
+           "ordered comparison `%s` needs an integer or integer vector, got `%s`"
            (binary_operator_name operation)
            (diagnostic_ty_name left))
   | None
@@ -816,7 +832,9 @@ let binary_result_type ?left_expression ?right_expression ?result_expected
             | Hir.Vec (lanes, Hir.Int _) -> Ok (Hir.Vec (lanes, Hir.Bool))
             | _ ->
                 error (result_span left_expression)
-                  (Printf.sprintf "ordered comparison `%s` needs an integer, got `%s`"
+                  (Printf.sprintf
+                     "ordered comparison `%s` needs an integer or integer vector, got \
+                      `%s`"
                      (binary_operator_name operation)
                      (diagnostic_ty_name left)))
       | Ast.Bit_and | Ast.Bit_or | Ast.Bit_xor -> (
@@ -827,14 +845,16 @@ let binary_result_type ?left_expression ?right_expression ?result_expected
             | Hir.Vec (_, Hir.Bool) -> Ok left
             | _ ->
                 error (result_span left_expression)
-                  (Printf.sprintf "operator `%s` needs integer operands, got `%s`"
+                  (Printf.sprintf
+                     "operator `%s` needs integer or integer vector operands, got `%s`"
                      (binary_operator_name operation)
                      (diagnostic_ty_name left)))
       | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem ->
           if Sema_numeric.is_numeric left then Ok left
           else
             error (result_span left_expression)
-              (Printf.sprintf "operator `%s` needs integer operands, got `%s`"
+              (Printf.sprintf
+                 "operator `%s` needs integer or integer vector operands, got `%s`"
                  (binary_operator_name operation)
                  (diagnostic_ty_name left))
       | Ast.And | Ast.Or ->

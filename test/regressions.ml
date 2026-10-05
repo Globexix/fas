@@ -672,7 +672,8 @@ let () =
   semantic_error "integer-vector-bitcast-void"
     "illegal cast for source and destination widths"
     "fn f(value i64) void { bitcast[void](value)\n return }\n";
-  semantic_error "constant-bool-arithmetic" "operator `+` needs integer operands"
+  semantic_error "constant-bool-arithmetic"
+    "operator `+` needs integer or integer vector operands"
     "const Invalid bool = true + true\nfn main() i32 { return 0 }\n";
   semantic_error "constant-bool-shift"
     "left operand of `<<` has type `bool`, expected an integer or integer vector"
@@ -793,7 +794,7 @@ let () =
     "operands of `==` have different types: `vec[4,i32]` and `i32`"
     "fn f(left vec[4,i32], right i32) vec[4,bool] { return left == right }\n";
   semantic_error "integer-vector-comparison-bool-order"
-    "ordered comparison `<` needs an integer, got `vec[4, bool]`"
+    "ordered comparison `<` needs an integer or integer vector, got `vec[4, bool]`"
     "fn f(left vec[4,bool], right vec[4,bool]) vec[4,bool] { return left < right }\n";
   semantic_error "integer-vector-comparison-condition"
     "condition of `if` is `vec[4, bool]`, not `bool`"
@@ -891,7 +892,7 @@ let () =
     (fun (operation, name) ->
       semantic_error
         ("integer-vector-shift-count-splat-" ^ name)
-        "`splat` needs a vector type from its destination or another operand"
+        "the shift count `splat(1)` has no vector type"
         (Printf.sprintf
            "fn f(values vec[4,u32]) vec[4,u32] { return values %s splat(1) }\n"
            operation))
@@ -2082,7 +2083,8 @@ let () =
     [ "ret ptr null"; "icmp eq ptr"; "ret i1 true" ];
   semantic_error "handle-order-reject" "ordered comparison `<` needs an integer"
     "opaque O\nfn f(a handle[O], b handle[O]) bool { return a < b }\n";
-  semantic_error "handle-arithmetic-reject" "operator `+` needs integer operands"
+  semantic_error "handle-arithmetic-reject"
+    "operator `+` needs integer or integer vector operands"
     "opaque O\nfn f(a handle[O], b handle[O]) handle[O] { return a + b }\n";
   semantic_error "cross-handle-equality-reject"
     "operands of `==` have different types: `handle[O]` and `handle[P]`"
@@ -4408,7 +4410,8 @@ let () =
       "fn not2(a vec[2, bool]) vec[2, bool] { return ~a }\nfn main() i32 { return 0 }\n"
   in
   (match bitnot_messages with
-  | [ "unary operator `~` needs an integer, got `vec[2, bool]`" ] -> ()
+  | [ "unary operator `~` needs an integer or integer vector, got `vec[2, bool]`" ] ->
+      ()
   | _ -> failwith "mask-bitnot-integer-only: wrong message");
   let unterminated_messages = parse_messages "fn test() i64 {\n" in
   (match unterminated_messages with
@@ -6134,7 +6137,7 @@ let () =
      }\n\
      fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-invalid-operation"
-    "operator `+` needs integer operands"
+    "operator `+` needs integer or integer vector operands"
     "fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { return true + true }\n\
      }\n\
@@ -6729,10 +6732,11 @@ let () =
     "const B bool = 1 && true\n";
   semantic_error "runtime-logical-bool-only" "left operand of `&&` is `i32`, not `bool`"
     "fn f() bool { return 1 && true }\n";
-  semantic_error "logical-not-integer" "operator `!` needs `bool`, got `i64`"
+  semantic_error "logical-not-integer"
+    "operator `!` needs `bool` or a bool vector, got `i64`"
     "fn f(value i64) bool { return !value }\n";
   semantic_error "logical-not-integer-vector"
-    "operator `!` needs `bool`, got `vec[4, i64]`"
+    "operator `!` needs `bool` or a bool vector, got `vec[4, i64]`"
     "fn f(value vec[4,i64]) vec[4,bool] { return !value }\n";
   semantic_error "if-condition-bool-only" "condition of `if` is `i64`, not `bool`"
     "fn f(value i64) i64 { if value { return 1 } return 0 }\n";
@@ -7043,7 +7047,7 @@ let () =
        (String.length "fn compare(x i64, y i64, z i64) bool { return (x <= y) ")
        '<'
     + 1)
-    2 "ordered comparison `<=` needs an integer, got `bool`" None;
+    2 "ordered comparison `<=` needs an integer or integer vector, got `bool`" None;
   semantic_pin "comparison-parenthesized-equality-type"
     "fn compare(x i64, y i64, z i32) bool { return (x != y) == z }\n" 1
     (String.length "fn compare(x i64, y i64, z i32) bool { return (x != y) == " + 1)
@@ -7051,7 +7055,7 @@ let () =
   semantic_pin "comparison-parenthesized-ordering-bool"
     "fn compare(x i64, y i64) bool { return (x >= y) >= true }\n" 1
     (String.index "fn compare(x i64, y i64) bool { return (x >= y) >= true }" '>' + 1)
-    2 "ordered comparison `>=` needs an integer, got `bool`" None;
+    2 "ordered comparison `>=` needs an integer or integer vector, got `bool`" None;
   semantic_pin "comparison-equality-chain-bool-right"
     "fn compare(x i32, y i32) bool { return x == y == true }\n" 1
     (String.length "fn compare(x i32, y i32) bool { return x == y == " + 1)
@@ -7298,9 +7302,15 @@ let () =
     17 7 "condition of `if` is `i32`, not `bool`"
     (Some "Fas has no implicit truth values; write `ready() != 0`");
   semantic_pin "logical-not-address-help" "fn f(p addr) bool { return !p }\n" 1 29 1
-    "operator `!` needs `bool`, got `addr`" (Some "write `p == null`");
+    "operator `!` needs `bool` or a bool vector, got `addr`" (Some "write `p == null`");
   semantic_pin "logical-not-integer-help" "fn f(count i64) bool { return !count }\n" 1
-    32 5 "operator `!` needs `bool`, got `i64`" (Some "write `count == 0`");
+    32 5 "operator `!` needs `bool` or a bool vector, got `i64`"
+    (Some "write `count == 0`");
+  let bool_vector_bitnot = "fn f(mask vec[4,bool]) vec[4,bool] { return ~mask }\n" in
+  semantic_pin "bitnot-bool-vector-help" bool_vector_bitnot 1
+    (String.index bool_vector_bitnot '~' + 2)
+    4 "unary operator `~` needs an integer or integer vector, got `vec[4, bool]`"
+    (Some "write `!mask`");
   semantic_pin "logical-or-call-help"
     "fn ready() i32 { return 1 }\n\
      fn f() i32 { if false || ready() { return 1 } return 0 }\n"
@@ -7404,7 +7414,7 @@ let () =
   let not_source = "fn f(x i32) bool { return !x }\n" in
   let not_expected =
     expected_diagnostic "fn f(x i32) bool { return !x }" 28 1
-      "operator `!` needs `bool`, got `i32`" "write `x == 0`"
+      "operator `!` needs `bool` or a bool vector, got `i32`" "write `x == 0`"
   in
   if semantic_render not_source <> not_expected then
     failwith ("logical-not-diagnostic: " ^ semantic_render not_source);
@@ -7510,7 +7520,8 @@ let () =
     "operands of `+` have different types: `u32` and `u64`"
     "fn f(x u32, y u64) u64 { return x + y }\n";
   semantic_error "context-splat-no-invented-lanes"
-    "`splat` needs a vector type from its destination or another operand"
+    "`splat` needs a vector destination or operand to determine its lane count; the \
+     call result does not provide one"
     "fn f() usize { return len(splat(1)) }\n";
   semantic_error "context-literal-range-left" "integer literal is out of range for u8"
     "fn f(x u8) bool { return 300 == x }\n";
@@ -12467,11 +12478,41 @@ let () =
      j vec[4,u32] = ok ? v : {1, 2, 3, 4}\n\
      return a + b + e + g + h + i + j }\n";
   semantic_message "vector-peer-no-typed-peer"
-    "`splat` needs a vector type from its destination or another operand"
+    "`splat` needs a vector destination or operand to determine its lane count; the \
+     call result does not provide one"
     "fn f() void { add_sat(splat(1), splat(2))\nreturn }\n";
+  semantic_message "vector-result-does-not-infer-splat"
+    "`splat` needs a vector destination or operand to determine its lane count; the \
+     call result does not provide one"
+    "fn f() vec[4,u32] { return add_sat(splat(1), splat(2)) }\n";
   semantic_message "vector-peer-scalar-peer"
-    "`splat` needs a vector type from its destination or another operand"
+    "`splat` needs a vector destination or operand to determine its lane count; the \
+     call result does not provide one"
     "fn f(k u32) void { add_sat(k, splat(2))\nreturn }\n";
+  semantic_message "splat-rejects-type-argument" "`splat` takes no type argument"
+    "fn f() u8 { return splat[u8](1) }\n";
+  let shift_splat_source =
+    "fn f(values vec[4,u32]) vec[4,u32] { return values << splat(1) }\n"
+  in
+  semantic_pin "shift-splat-vector-count" shift_splat_source 1
+    (String.length "fn f(values vec[4,u32]) vec[4,u32] { return values << " + 1)
+    5 "the shift count `splat(1)` has no vector type" (Some "write `values << 1`");
+  let const_shift_splat_source =
+    "const VALUES vec[4,u32] = {1, 2, 3, 4}\n\
+     const RESULT vec[4,u32] = VALUES << splat(1)\n"
+  in
+  semantic_pin "constant-shift-splat-vector-count" const_shift_splat_source 2
+    (String.length "const RESULT vec[4,u32] = VALUES << " + 1)
+    5 "the shift count `splat(1)` has no vector type" (Some "write `VALUES << 1`");
+  semantic_message "logical-not-vector-type"
+    "operator `!` needs `bool` or a bool vector, got `vec[4, i64]`"
+    "fn f(value vec[4,i64]) vec[4,bool] { return !value }\n";
+  semantic_message "ordered-comparison-vector-type"
+    "ordered comparison `<` needs an integer or integer vector, got `vec[4, bool]`"
+    "fn f(value vec[4,bool]) vec[4,bool] { return value < value }\n";
+  semantic_message "addition-vector-type"
+    "operator `+` needs integer or integer vector operands, got `vec[4, bool]`"
+    "fn f(value vec[4,bool]) vec[4,bool] { return value + value }\n";
   semantic_message "vector-peer-wrong-width" "wrong number of vector literal lanes"
     "fn f(v vec[4,u32]) vec[4,bool] { return v == {1, 2} }\n";
   semantic_accept "vector-peer-folding-reverse-arms"

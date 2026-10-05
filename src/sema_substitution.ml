@@ -366,6 +366,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           arguments
     | Ast.Generic_args (Ast.Ident ("copy", _), _, span) ->
         error span "copy takes no type arguments"
+    | Ast.Generic_args (Ast.Ident ("splat", _), _, span) ->
+        error span "`splat` takes no type argument"
     | Ast.Generic_args (Ast.Ident (name, span), arguments, application_span) ->
         let* () =
           match nearest_kind value_names type_names name with
@@ -1475,6 +1477,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         Ok (Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span))
     | Ast.Generic_args (Ast.Ident ("copy", _), _, span) ->
         error span "copy takes no type arguments"
+    | Ast.Generic_args (Ast.Ident ("splat", _), _, span) ->
+        error span "`splat` takes no type argument"
     | Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span) -> (
         let arguments = List.map bind_argument arguments in
         match List.assoc_opt name function_templates with

@@ -27,6 +27,7 @@ val logical_not_error : Ast.expr -> Hir.ty -> Diag.t
 val shift_value_error : Ast.binop -> Span.t -> Hir.ty -> Diag.t
 val shift_count_error : Ast.binop -> Span.t -> Hir.ty -> Diag.t
 val shift_count_lanes_error : Ast.binop -> Span.t -> Hir.ty -> Hir.ty -> Diag.t
+val shift_count_splat_error : Ast.binop -> Ast.expr -> Ast.expr -> Diag.t
 val rotate_value_error : string -> Span.t -> Hir.ty -> Diag.t
 val rotate_count_error : string -> Span.t -> Hir.ty -> Diag.t
 

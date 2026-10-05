@@ -1639,9 +1639,22 @@ and check_expr_inner ?destination (c : context) expected expression =
       | Ast.Neg | Ast.Bit_not ->
           if not (is_int (Hir.expr_ty te)) then
             let operator = if op = Ast.Neg then "-" else "~" in
-            error (Ast.expr_span e)
-              (Printf.sprintf "unary operator `%s` needs an integer, got `%s`" operator
-                 (Sema_types.diagnostic_ty_name (Hir.expr_ty te)))
+            let help =
+              match (op, e, Hir.expr_ty te) with
+              | Ast.Bit_not, Ast.Ident (name, _), Hir.Vec (_, Hir.Bool) ->
+                  Some (Printf.sprintf "write `!%s`" name)
+              | _ -> None
+            in
+            let expectation =
+              if op = Ast.Bit_not then "an integer or integer vector" else "an integer"
+            in
+            Error
+              [
+                Diag.error ?help (Ast.expr_span e)
+                  (Printf.sprintf "unary operator `%s` needs %s, got `%s`" operator
+                     expectation
+                     (Sema_types.diagnostic_ty_name (Hir.expr_ty te)));
+              ]
           else Ok (Hir.Unary (op, te, Hir.expr_ty te, s))
       | Ast.Not ->
           let result_ty = Hir.expr_ty te in
@@ -1714,33 +1727,39 @@ and check_expr_inner ?destination (c : context) expected expression =
             (match expected with Some (Hir.Int _) -> expected | _ -> None)
             l
         in
-        let* b = check_expr c None r in
         let at = Hir.expr_ty a in
         let* () =
           match at with
           | Hir.Int _ | Hir.Vec (_, Hir.Int _) -> Ok ()
           | _ -> Error [ Sema_types.shift_value_error op (Ast.expr_span l) at ]
         in
-        let* () =
-          match (at, Hir.expr_ty b) with
-          | Hir.Vec (lanes, _), Hir.Vec (count_lanes, (Hir.Int _ as count_element)) ->
-              if lanes = count_lanes then Ok ()
-              else
-                Error
-                  [
-                    Sema_types.shift_count_lanes_error op (Ast.expr_span r)
-                      (Hir.expr_ty b)
-                      (Hir.Vec (lanes, count_element));
-                  ]
-          | Hir.Vec _, Hir.Int _ -> Ok ()
-          | Hir.Int _, Hir.Int _ -> Ok ()
-          | _, (Hir.Vec _ as count_ty) | _, (Hir.Bool as count_ty) ->
-              Error [ Sema_types.shift_count_error op (Ast.expr_span r) count_ty ]
-          | _ ->
-              Error
-                [ Sema_types.shift_count_error op (Ast.expr_span r) (Hir.expr_ty b) ]
-        in
-        Ok (Hir.Binary (op, a, b, at, s))
+        match (at, r) with
+        | Hir.Vec _, Ast.Splat _ -> Error [ Sema_types.shift_count_splat_error op l r ]
+        | _ ->
+            let* b = check_expr c None r in
+            let* () =
+              match (at, Hir.expr_ty b) with
+              | Hir.Vec (lanes, _), Hir.Vec (count_lanes, (Hir.Int _ as count_element))
+                ->
+                  if lanes = count_lanes then Ok ()
+                  else
+                    Error
+                      [
+                        Sema_types.shift_count_lanes_error op (Ast.expr_span r)
+                          (Hir.expr_ty b)
+                          (Hir.Vec (lanes, count_element));
+                      ]
+              | Hir.Vec _, Hir.Int _ -> Ok ()
+              | Hir.Int _, Hir.Int _ -> Ok ()
+              | _, (Hir.Vec _ as count_ty) | _, (Hir.Bool as count_ty) ->
+                  Error [ Sema_types.shift_count_error op (Ast.expr_span r) count_ty ]
+              | _ ->
+                  Error
+                    [
+                      Sema_types.shift_count_error op (Ast.expr_span r) (Hir.expr_ty b);
+                    ]
+            in
+            Ok (Hir.Binary (op, a, b, at, s))
       else
         let comparison_chain =
           is_comparison_operator op
@@ -2036,7 +2055,9 @@ and check_expr_inner ?destination (c : context) expected expression =
           if equal (Hir.expr_ty x) elem then Ok (Hir.Splat (x, Hir.Vec (n, elem), s))
           else error s "splat element type mismatch"
       | _ ->
-          error s "`splat` needs a vector type from its destination or another operand")
+          error s
+            "`splat` needs a vector destination or operand to determine its lane \
+             count; the call result does not provide one")
   | Ast.Ternary (q, a, b, s) -> (
       let* tq = check_expr c None q in
       if Hir.expr_ty tq <> Hir.Bool then
@@ -2470,6 +2491,8 @@ and check_call c _expected fn args s =
   | Ast.Generic_args (Ast.Ident (name, _), _, _)
     when name = "masked_store" || name = "scatter" || name = "scatter_bytes" ->
       error s (name ^ " is statement-only")
+  | Ast.Generic_args (Ast.Ident ("splat", _), _, _) ->
+      error s "`splat` takes no type argument"
   | Ast.Generic_args (Ast.Ident (name, _), generic_args, application_span)
     when name = "masked_load" || name = "gather" || name = "gather_bytes" ->
       let* access_ty = simd_memory_access_type c name application_span generic_args in

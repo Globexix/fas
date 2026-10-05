@@ -1156,7 +1156,8 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
           Ok (ty, List.init lanes (fun _ -> lane_mask element value))
       | _ ->
           error span
-            "`splat` needs a vector type from its destination or another operand")
+            "`splat` needs a vector destination or operand to determine its lane \
+             count; the call result does not provide one")
   | Ast.Unary (Ast.Not, value, _span) -> (
       let* ty, values = evaluate expected value in
       match ty with
@@ -1171,15 +1172,19 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
         | _ -> Error [ Sema_types.shift_value_error op (Ast.expr_span value) ty ]
       in
       let* count_ty, counts =
-        match evaluate None count with
-        | Ok (count_ty, counts) -> Ok (count_ty, counts)
-        | Error _ -> (
-            match
-              const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
-                ~globals ?resolve consts None ~check_only count
-            with
-            | Ok (count_ty, count_value) -> Ok (count_ty, [ count_value ])
-            | Error diagnostics -> Error diagnostics)
+        match (ty, count) with
+        | Hir.Vec _, Ast.Splat _ ->
+            Error [ Sema_types.shift_count_splat_error op value count ]
+        | _ -> (
+            match evaluate None count with
+            | Ok (count_ty, counts) -> Ok (count_ty, counts)
+            | Error _ -> (
+                match
+                  const_expr ~structs ~named_types ~generic_structs ~arrays
+                    ~array_lengths ~globals ?resolve consts None ~check_only count
+                with
+                | Ok (count_ty, count_value) -> Ok (count_ty, [ count_value ])
+                | Error diagnostics -> Error diagnostics))
       in
       let* per_lane =
         match count_ty with
