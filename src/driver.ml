@@ -59,8 +59,7 @@ let use_path_error path =
   else if not (Filename.is_relative path) then
     Some
       (Printf.sprintf
-         "absolute Fas dependency path `%s` is not supported; use a `relative path`"
-         path)
+         "absolute Fas dependency path `%s` is not supported; use a relative path" path)
   else if not (Filename.check_suffix path ".fas") then
     Some (Printf.sprintf "Fas dependency path `%s` must end in lowercase `.fas`" path)
   else None
@@ -105,12 +104,7 @@ let add_include_chains chains diagnostics =
           files
         |> List.sort_uniq String.compare
       in
-      let message =
-        if notes <> [] && String.starts_with ~prefix:"unknown name `" diagnostic.message
-        then diagnostic.message ^ "; see include chain"
-        else diagnostic.message
-      in
-      { diagnostic with Diag.message; notes = diagnostic.notes @ notes })
+      { diagnostic with notes = diagnostic.notes @ notes })
     diagnostics
 
 let c_export_diagnostic (program : Ast.program) message =

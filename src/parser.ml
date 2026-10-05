@@ -1300,7 +1300,7 @@ module P = struct
           | Token.Rbrace ->
               let* () = expected p Token.Rbrace in
               Ok (Ast.Switch (scr, List.rev arms, Option.map snd default, s))
-          | _ -> Error [ Diag.error (span p) "expected case, default, or `}`" ]
+          | _ -> Error [ Diag.error (span p) "expected `case`, `default`, or `}`" ]
         in
         cases [] None)
 
@@ -1410,7 +1410,7 @@ module P = struct
             ~column:first.Span.column
         in
         error operator_span (Printf.sprintf "Fas has no prefix `%s` operator" operator)
-    | Token.Star -> error (span p) "Fas has no unary `*`; use typed `addr` selection"
+    | Token.Star -> error (span p) "Fas has no unary `*`; use typed `addr[T]` selection"
     | Token.Amp ->
         let s = span p in
         within_nesting p s "unary nesting exceeds the configured limit" (fun () ->

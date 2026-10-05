@@ -3205,7 +3205,7 @@ let () =
   | Some message
     when message
          = "absolute Fas dependency path `/opt/lib.fas` is not supported; use a \
-            `relative path`" ->
+            relative path" ->
       ()
   | _ -> failwith "use-absolute-path: unexpected validation result");
   (match Driver.use_path_error "lib\000.fas" with
@@ -3241,6 +3241,11 @@ let () =
   in
   let use_duplicate_one = Filename.concat use_limit_directory "one.fas" in
   let use_duplicate_two = Filename.concat use_limit_directory "two.fas" in
+  let use_unknown_root = Filename.concat use_limit_directory "unknown-root.fas" in
+  let use_unknown_child = Filename.concat use_limit_directory "unknown-child.fas" in
+  let use_unknown_grandchild =
+    Filename.concat use_limit_directory "unknown-grandchild.fas"
+  in
   let write_use_test_file path contents =
     let channel = open_out_bin path in
     Fun.protect
@@ -3266,6 +3271,9 @@ let () =
           use_duplicate_root;
           use_duplicate_one;
           use_duplicate_two;
+          use_unknown_root;
+          use_unknown_child;
+          use_unknown_grandchild;
           use_relative_root;
           use_relative_missing_root;
         ];
@@ -3366,7 +3374,20 @@ let () =
                 "include chain: " ^ use_duplicate_root ^ " -> " ^ use_duplicate_one;
                 "include chain: " ^ use_duplicate_root ^ " -> " ^ use_duplicate_two;
               ]
-      then failwith "use-duplicate-sites: diagnostic or include chains changed");
+      then failwith "use-duplicate-sites: diagnostic or include chains changed";
+      write_use_test_file use_unknown_root "use \"unknown-child.fas\"\n";
+      write_use_test_file use_unknown_child "use \"unknown-grandchild.fas\"\n";
+      write_use_test_file use_unknown_grandchild "fn unknown() i32 { return absent }\n";
+      let unknown = driver_error use_unknown_root in
+      if
+        unknown.Diag.message <> "unknown name `absent`"
+        || unknown.primary.Span.file <> use_unknown_grandchild
+        || unknown.notes
+           <> [
+                "include chain: " ^ use_unknown_root ^ " -> " ^ use_unknown_child
+                ^ " -> " ^ use_unknown_grandchild;
+              ]
+      then failwith "use-unknown-name-chain: message or include chain changed");
 
   List.iter
     (fun name ->
@@ -4092,7 +4113,7 @@ let () =
   if not (contains literal_underscores "ret i64 256\n") then
     failwith "literal-bases: underscore-separated literal did not evaluate to 256";
   semantic_error "generic-args-missing-rejected"
-    "generic function `f` requires arguments"
+    "generic function `f` expects 1 generic argument, got 0"
     "fn f[N const usize]() usize { return N }\nfn test() usize { return f() }\n";
   semantic_error "generic-args-extra-rejected"
     "generic function `f` expects 1 generic argument, got 2"
@@ -4385,7 +4406,7 @@ let () =
     parse_messages "fn test() i64 { n i64 = 0\n switch n { foo }\n return 0 }\n"
   in
   (match case_messages with
-  | [ "expected case, default, or `}`" ] -> ()
+  | [ "expected `case`, `default`, or `}`" ] -> ()
   | _ -> failwith "switch-case-parse: wrong message");
   let separator_messages =
     parse_messages "fn test() i64 { x i64 = 1 y i64 = 2\n return x }\n"
@@ -5138,7 +5159,7 @@ let () =
   semantic_error "unknown-generic-function" "unknown generic function `identity`"
     "fn test() i64 { return identity[i64](1) }\n";
   semantic_error "generic-function-missing-type-arguments"
-    "generic function `identity` requires arguments"
+    "generic function `identity` expects 1 generic argument, got 0"
     "fn identity[T](value T) T { return value }\nfn test() i64 { return identity(1) }\n";
   semantic_error "generic-function-unknown-type-argument" "unknown type `Missing`"
     "fn ignore[T]() i64 { return 7 }\nfn test() i64 { return ignore[Missing]() }\n";
@@ -7400,7 +7421,7 @@ let () =
   semantic_error "context-literal-range-right" "integer literal is out of range for u8"
     "fn f(x u8) bool { return x == 300 }\n";
   semantic_error "context-generic-call-needs-explicit-arguments"
-    "generic function `id` requires arguments"
+    "generic function `id` expects 1 generic argument, got 0"
     "fn id[N const u64](x u64) u64 { return x }\nfn f() u64 { return id(1) }\n";
   ignore (llvm_of "fn f(x u32, y u64) u64 { return zext[u64](x) + y }\n");
   ignore (llvm_of "fn f(x i32, y i64) i64 { return sext[i64](x) + y }\n");
@@ -8632,10 +8653,9 @@ let () =
   semantic_error "raw-select-aggregate-store"
     "raw access cannot store an array or struct value"
     "struct S { a u8 }\nfn f(p addr) void { s S = (S){1}\np[S] = s\nreturn }\n";
-  semantic_error "raw-select-lane" "raw vector lane selection is not yet supported"
+  semantic_error "raw-select-lane" "raw vector lane selection is not supported"
     "fn f(p addr) u32 { return p[vec[2,u32]][0] }\n";
-  semantic_error "raw-select-lane-store"
-    "raw vector lane selection is not yet supported"
+  semantic_error "raw-select-lane-store" "raw vector lane selection is not supported"
     "fn f(p addr) void { p[vec[2,u32]][0] = 1 }\n";
   semantic_error "raw-select-index-nonint"
     "raw access index must be an integer, got `bool`"
@@ -8847,7 +8867,7 @@ let () =
     "fn f(p addr) u32 { return volatile_load[arr[2,u32]](p) }\n";
   semantic_error "volatile-struct" volatile_type_error
     "struct S { value u32 }\nfn f(p addr) void { volatile_load[S](p)\nreturn }\n";
-  semantic_error "volatile-store-expression" "volatile_store is statement-only"
+  semantic_error "volatile-store-expression" "`volatile_store` is statement-only"
     "fn f(p addr) u32 { return volatile_store[u32](p, 1) }\n";
   semantic_error "volatile-load-type-argument" "expects one type argument"
     "fn f(p addr) u32 { return volatile_load(p) }\n";
@@ -9691,9 +9711,7 @@ let () =
     "struct Holder { value FasAlignmentEqualsSize }\n\
      var stored FasAlignmentEqualsSize = 7\n\
      fn probe(value FasAlignmentEqualsSize) FasAlignmentEqualsSize { return value }\n";
-  let overaligned_reason =
-    "over-aligned typedef `FasOveraligned` has alignment greater than its size"
-  in
+  let overaligned_reason = "over-aligned typedef has alignment greater than its size" in
   c_semantic_message "c-import-overaligned-typedef-type"
     ("C declaration `FasOveraligned` is not supported: " ^ overaligned_reason)
     c_overaligned "fn probe() FasOveraligned { return 0 }\n";
@@ -13187,7 +13205,7 @@ let () =
     "C cast `(u32)` is not Fas syntax; use `zext`, `sext`, `trunc` or `bitcast`";
   let dereference = "fn read(pointer addr) u8 { return *pointer }\n" in
   pin "c-star-dereference" dereference 1 "fn read(pointer addr) u8 { return " 1
-    "Fas has no unary `*`; use typed `addr` selection";
+    "Fas has no unary `*`; use typed `addr[T]` selection";
   let prefix_increment = "fn increment(value i32) i32 { return ++value }\n" in
   pin "c-prefix-increment" prefix_increment 1 "fn increment(value i32) i32 { return " 2
     "Fas has no prefix `++` operator";

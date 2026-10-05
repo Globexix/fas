@@ -1245,7 +1245,7 @@ let rec check_place (c : context) expr =
           match (Hir.expr_ty base.expr, args) with
           | Hir.Vec _, [ _ ]
             when match base.expr with Hir.Raw_select _ -> true | _ -> false ->
-              error s "raw vector lane selection is not yet supported"
+              error s "raw vector lane selection is not supported"
           | Hir.Addr, [ Ast.Const_arg index ] ->
               Error
                 [
@@ -2429,7 +2429,7 @@ and check_call c _expected fn args s =
           (Hir.Call
              (Hir.Builtin (Hir.Volatile_load access_ty), [ pointer ], access_ty, s))
   | Ast.Generic_args (Ast.Ident ("volatile_store", _), _, _) ->
-      error s "volatile_store is statement-only"
+      error s "`volatile_store` is statement-only"
   | Ast.Generic_args (Ast.Ident (name, _), generic_args, application_span) -> (
       match lookup_local name c with
       | Some _ -> error s (Printf.sprintf "`%s` is a value, not a function" name)
@@ -2962,9 +2962,16 @@ and check_call c _expected fn args s =
               match lookup_sig name c with
               | None -> (
                   match List.assoc_opt name c.templates with
-                  | Some _ ->
-                      error s
-                        (Printf.sprintf "generic function `%s` requires arguments" name)
+                  | Some item -> (
+                      match item with
+                      | Ast.Func { generic_params; _ } ->
+                          error s
+                            (generic_arity_message "generic function" name
+                               (List.length generic_params) 0)
+                      | _ ->
+                          error s
+                            "internal error: non-function in generic function template \
+                             table")
                   | None ->
                       if
                         Option.is_some (lookup name c.consts)

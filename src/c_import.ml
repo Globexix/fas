@@ -2188,7 +2188,7 @@ let map_declarations ?(container = false) ~span declarations =
             let result =
               Error
                 (Printf.sprintf
-                   "over-aligned typedef `%s` has alignment greater than its size" name)
+                   "over-aligned typedef has alignment greater than its size")
             in
             Hashtbl.replace aliases name result;
             Hashtbl.remove aliases_being_resolved name;
