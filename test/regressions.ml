@@ -1360,11 +1360,11 @@ let () =
     "struct S { x i64 }\nfn f() S { s S\nreturn s }\n";
   semantic_error "aggregate-parameter"
     "aggregate parameter `value` of type `S` cannot be passed by value; declare \
-     `value` as `addr` and pass `&value`"
+     `value` as `addr`; callers pass the struct's address with `&`"
     "struct S { x i64 }\nfn f(value S) void { return }\n";
   semantic_error "aggregate-array-parameter"
     "aggregate parameter `value` of type `arr[4,u32]` cannot be passed by value; \
-     declare `value` as `addr` and pass `&value`"
+     declare `value` as `addr`; callers pass the struct's address with `&`"
     "fn f(value arr[4,u32]) void { return }\n";
   semantic_error "aggregate-result"
     "aggregate result `S` cannot be returned by value; return `void` and take the \
@@ -1376,18 +1376,18 @@ let () =
     "fn f() arr[4,u32] { value arr[4,u32]\nreturn value }\n";
   let generic_aggregate_parameter_error =
     "aggregate parameter `x` of type `arr[N,u8]` cannot be passed by value; declare \
-     `x` as `addr` and pass `&value`"
+     `x` as `addr`; callers pass the struct's address with `&`"
   in
   semantic_error "generic-array-parameter-by-value" generic_aggregate_parameter_error
     "fn take[N const usize](x arr[N,u8]) void { return }\n";
   semantic_error "generic-struct-parameter-by-value"
     "aggregate parameter `r` of type `Ring[N]` cannot be passed by value; declare `r` \
-     as `addr` and pass `&value`"
+     as `addr`; callers pass the struct's address with `&`"
     "struct Ring[N const usize] { data arr[N,u8] }\n\
      fn take[N const usize](r Ring[N]) void { return }\n";
   semantic_error "generic-known-struct-parameter-by-value"
     "aggregate parameter `value` of type `S` cannot be passed by value; declare \
-     `value` as `addr` and pass `&value`"
+     `value` as `addr`; callers pass the struct's address with `&`"
     "struct S { value i32 }\nfn take[N const usize](value S) void { return }\n";
   semantic_error "generic-array-result-by-value"
     "aggregate result `arr[N,u8]` cannot be returned by value; return `void` and take \
@@ -1416,7 +1416,7 @@ let () =
   in
   semantic_pin "aggregate-parameter-name" aggregate_parameter_text 2 18 5
     "aggregate parameter `state` of type `State` cannot be passed by value; declare \
-     `state` as `addr` and pass `&value`"
+     `state` as `addr`; callers pass the struct's address with `&`"
     None;
   semantic_accept "aggregate-parameter-address-twin"
     "struct State { value u32 }\nfn consume(state addr) void { return }\n";
@@ -5038,7 +5038,8 @@ let () =
       if
         diagnostic.message
         <> "aggregate parameter `value` of type `Box[Box[u8]]` cannot be passed by \
-            value; declare `value` as `addr` and pass `&value`"
+            value; declare `value` as `addr`; callers pass the struct's address with \
+            `&`"
       then
         failwith
           ("generic-instantiation-nested-struct: unexpected message: "
@@ -5982,7 +5983,7 @@ let () =
   then failwith "const-generic-function-type-template: template reached LLVM output";
   semantic_error "const-generic-function-type-mismatch"
     "aggregate parameter `value` of type `arr[N,u8]` cannot be passed by value; \
-     declare `value` as `addr` and pass `&value`"
+     declare `value` as `addr`; callers pass the struct's address with `&`"
     "fn identity[N const usize](value arr[N, u8]) arr[N, u8] { return value }\n";
   semantic_message "const-generic-function-negative-length"
     "array length cannot be negative: `-2`"
@@ -7145,7 +7146,7 @@ let () =
   semantic_pin "aggregate-parameter-diagnostic"
     "fn consume(rows arr[3,u16]) void { return }\n" 1 17 3
     "aggregate parameter `rows` of type `arr[3, u16]` cannot be passed by value; \
-     declare `rows` as `addr` and pass `&value`"
+     declare `rows` as `addr`; callers pass the struct's address with `&`"
     None;
   semantic_pin "aggregate-result-diagnostic"
     "fn values() arr[3,u8] { return (arr[3,u8]){1,2,3} }\n" 1 13 3
@@ -9657,7 +9658,12 @@ let () =
     "global initializer must be a constant expression for `P`; `&G` is not constant"
     "var G i32\nvar P i32 = &G\n";
   semantic_pin "address-constants-arithmetic" "var G arr[2,i32]\nvar P addr = &G + 1\n"
-    2 14 1 "address constant `&G` cannot be used in arithmetic; write `&G[k]`" None;
+    2 14 1 "address constant `&G` cannot be used in arithmetic" (Some "write `&G[k]`");
+  semantic_pin "address-constants-struct-arithmetic"
+    "struct Point { x i32 }\nvar G Point\nvar P addr = &G + 1\n" 3 14 1
+    "address constant `&G` cannot be used in arithmetic" (Some "write `&G.field`");
+  semantic_pin "address-constants-scalar-arithmetic" "var G i32\nvar P addr = &G + 1\n"
+    2 14 1 "address constant `&G` cannot be used in arithmetic" None;
   semantic_accept "address-constants-arithmetic-twin"
     "var G arr[2,i32]\nvar P addr = &G[1]\n";
   semantic_message "address-constants-comparison"
@@ -9685,7 +9691,7 @@ let () =
     "var G i32\nconst P usize = sizeof[&G]\n";
   semantic_pin "address-constants-table-copy"
     "var G i32\nconst P arr[1,addr] = {&G}\nconst Q arr[1,addr] = {P[0]}\n" 3 24 4
-    "P[0] is not an address constant; write `&G`, `&G.field`, `&G[k]`, `c\"...\"` or \
+    "`P[0]` is not an address constant; write `&G`, `&G.field`, `&G[k]`, `c\"...\"` or \
      `null`"
     None;
   semantic_pin "address-constants-function-target"

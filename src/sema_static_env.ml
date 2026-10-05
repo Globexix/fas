@@ -200,15 +200,25 @@ let address_value c ty expression =
     | Hir.Call (Hir.Builtin (Hir.Handle_from_addr _), [ value ], _, _) -> address value
     | value -> (
         match expression with
-        | Ast.Binary ((Ast.Add | Ast.Sub), (Ast.Addr_of _ as address), _, _) ->
-            error (Ast.expr_span address)
-              (Printf.sprintf
-                 "address constant `%s` cannot be used in arithmetic; write `&G[k]`"
-                 (Ast.expr_name address))
+        | Ast.Binary ((Ast.Add | Ast.Sub), (Ast.Addr_of (target, _) as address), _, _)
+          ->
+            let help =
+              match place target with
+              | Ok (_, Hir.Array _, _) ->
+                  Some (Printf.sprintf "write `&%s[k]`" (Ast.expr_name target))
+              | Ok (_, Hir.Struct _, _) ->
+                  Some (Printf.sprintf "write `&%s.field`" (Ast.expr_name target))
+              | _ -> None
+            in
+            let message =
+              Printf.sprintf "address constant `%s` cannot be used in arithmetic"
+                (Ast.expr_name address)
+            in
+            Error [ Diag.error ?help (Ast.expr_span address) message ]
         | Ast.Select (_, [ Ast.Const_arg _ ], _) ->
             error (Ast.expr_span expression)
               (Printf.sprintf
-                 "%s is not an address constant; write `&G`, `&G.field`, `&G[k]`, \
+                 "`%s` is not an address constant; write `&G`, `&G.field`, `&G[k]`, \
                   `c\"...\"` or `null`"
                  (Ast.expr_name expression))
         | _ ->
