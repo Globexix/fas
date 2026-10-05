@@ -9629,9 +9629,10 @@ let () =
   semantic_message "address-constants-scalar-slot"
     "global initializer must be a constant expression for `P`; `&G` is not constant"
     "var G i32\nvar P i32 = &G\n";
-  semantic_message "address-constants-arithmetic"
-    "address constants can only be stored in `addr` or `handle[T]` slots"
-    "var G i32\nvar P addr = &G + 1\n";
+  semantic_pin "address-constants-arithmetic" "var G arr[2,i32]\nvar P addr = &G + 1\n"
+    2 14 1 "address constant `&G` cannot be used in arithmetic; write `&G[k]`" None;
+  semantic_accept "address-constants-arithmetic-twin"
+    "var G arr[2,i32]\nvar P addr = &G[1]\n";
   semantic_message "address-constants-comparison"
     "global initializer must be a constant expression for `P`; `&G == &G` is not \
      constant"
@@ -9655,9 +9656,11 @@ let () =
      return 0 }\n";
   parse_message "address-constants-sizeof-value" "expected a type, found `&`"
     "var G i32\nconst P usize = sizeof[&G]\n";
-  semantic_message "address-constants-table-copy"
-    "address constants can only be stored in `addr` or `handle[T]` slots"
-    "var G i32\nconst P arr[1,addr] = {&G}\nconst Q arr[1,addr] = {P[0]}\n";
+  semantic_pin "address-constants-table-copy"
+    "var G i32\nconst P arr[1,addr] = {&G}\nconst Q arr[1,addr] = {P[0]}\n" 3 24 4
+    "P[0] is not an address constant; write `&G`, `&G.field`, `&G[k]`, `c\"...\"` or \
+     `null`"
+    None;
   semantic_message "address-constants-function-target"
     "function `f` must be called to produce a value"
     "fn f() void { return }\nvar P addr = &f\n";

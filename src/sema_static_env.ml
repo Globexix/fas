@@ -198,9 +198,22 @@ let address_value c ty expression =
         Ok (Hir.Global_address (name, offset))
     | Hir.Function_address (name, _) -> Ok (Hir.Global_address (name, 0))
     | Hir.Call (Hir.Builtin (Hir.Handle_from_addr _), [ value ], _, _) -> address value
-    | value ->
-        error (Hir.expr_span value)
-          "address constants can only be stored in `addr` or `handle[T]` slots"
+    | value -> (
+        match expression with
+        | Ast.Binary ((Ast.Add | Ast.Sub), (Ast.Addr_of _ as address), _, _) ->
+            error (Ast.expr_span address)
+              (Printf.sprintf
+                 "address constant `%s` cannot be used in arithmetic; write `&G[k]`"
+                 (Ast.expr_name address))
+        | Ast.Select (_, [ Ast.Const_arg _ ], _) ->
+            error (Ast.expr_span expression)
+              (Printf.sprintf
+                 "%s is not an address constant; write `&G`, `&G.field`, `&G[k]`, \
+                  `c\"...\"` or `null`"
+                 (Ast.expr_name expression))
+        | _ ->
+            error (Hir.expr_span value)
+              "address constants can only be stored in `addr` or `handle[T]` slots")
   in
   let* () =
     match expression with
