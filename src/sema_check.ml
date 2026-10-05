@@ -1426,13 +1426,26 @@ let rec check_place (c : context) expr =
                     }
               | None -> missing_field_error ~base:a c s n (Hir.Struct sn))
           | actual -> missing_field_error ~base:a c (Ast.expr_span a) n actual))
-  | Ast.Arrow_field (base, field, operator_span, _) ->
+  | Ast.Arrow_field (base, field, operator_span, _) -> (
       let* value = check_expr c None base in
-      if Hir.expr_ty value = Hir.Addr then
-        missing_field_error ~base c operator_span field Hir.Addr
-      else
-        error operator_span
-          (Printf.sprintf "operator `->` is not supported in Fas for field `%s`" field)
+      match Hir.expr_ty value with
+      | Hir.Addr ->
+          let help =
+            match base with
+            | Ast.Ident (name, _) ->
+                Some (Printf.sprintf "write `%s[T].%s` with the record type" name field)
+            | _ -> None
+          in
+          error ?help operator_span
+            (Printf.sprintf "Fas has no `->`; use typed `addr` selection for field `%s`"
+               field)
+      | Hir.Struct _ ->
+          error operator_span
+            (Printf.sprintf "Fas has no `->`; access field `%s` with `.`" field)
+      | _ ->
+          error operator_span
+            (Printf.sprintf "Fas has no `->`; field `%s` needs a record or `addr`" field)
+      )
   | e ->
       let* checked = check_expr c None e in
       Ok { expr = checked; root = None; path = None }

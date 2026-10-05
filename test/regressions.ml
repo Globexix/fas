@@ -13104,7 +13104,7 @@ let () =
   in
   semantic_pin "c-arrow-record-field-name" arrow_record 3
     (String.length " return value" + 1)
-    2 "operator `->` is not supported in Fas for field `x`" None;
+    2 "Fas has no `->`; access field `x` with `.`" None;
   semantic_accept "c-arrow-record-dot-twin"
     "struct Pair { x i32 }\nfn read() i32 { value Pair = (Pair){1}\n return value.x }\n";
   let parameter_order = "fn combine(i64 first, i64 second) i64 { return first }\n" in
@@ -13144,7 +13144,8 @@ let () =
   let arrow = "fn read(p addr) i32 { return p->value }\n" in
   semantic_pin "c-arrow-field" arrow 1
     (String.index arrow '-' + 1)
-    2 "no field `value` on `addr`" (Some "write `p[T].value` with the record type");
+    2 "Fas has no `->`; use typed `addr` selection for field `value`"
+    (Some "write `p[T].value` with the record type");
   semantic_accept "c-arrow-field-typed-twin"
     "struct Point { value i32 }\nfn read(p addr) i32 { return p[Point].value }\n";
   let cast = "fn widen(p addr) u32 { return (u8*)p }\n" in
