@@ -1030,27 +1030,35 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
           else
             global_error s
               (Printf.sprintf "call to `%s` is not a constant expression" display_name))
-  | Ast.Sizeof (t, s) ->
+  | Ast.Sizeof (source_type, s) ->
       let evaluate values expression expected =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
           ~globals ?resolve values expected ~check_only ~validate_dead expression
       in
       let* t, layout_structs =
         query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate consts s
-          t
+          source_type
       in
-      let* n, _ = layout_diag s layout_structs t in
+      let type_span =
+        Option.value ~default:s
+          (Sema_types.opaque_source_span named_types [] source_type)
+      in
+      let* n, _ = layout_diag type_span layout_structs t in
       Ok (Hir.Int Hir.Usize, Int64.of_int n)
-  | Ast.Alignof (t, s) ->
+  | Ast.Alignof (source_type, s) ->
       let evaluate values expression expected =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
           ~globals ?resolve values expected ~check_only ~validate_dead expression
       in
       let* t, layout_structs =
         query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate consts s
-          t
+          source_type
       in
-      let* _, n = layout_diag s layout_structs t in
+      let type_span =
+        Option.value ~default:s
+          (Sema_types.opaque_source_span named_types [] source_type)
+      in
+      let* _, n = layout_diag type_span layout_structs t in
       Ok (Hir.Int Hir.Usize, Int64.of_int n)
   | Ast.Offsetof (source_ty, n, s) -> (
       let evaluate values expression expected =

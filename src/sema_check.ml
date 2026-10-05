@@ -782,16 +782,16 @@ let rec source_ty_in_context c span = function
       source_aggregate_in_context c "array" length.span
         (fun n t -> Hir.Array (n, t))
         length.text ty
-  | Ast.Vec (length, ty) -> (
+  | Ast.Vec (length, element_ty) -> (
       let* result =
         source_aggregate_in_context c "vector" length.span
           (fun n t -> Hir.Vec (n, t))
-          length.text ty
+          length.text element_ty
       in
       match result with
       | Hir.Vec (n, element) -> (
           match Sema_types.vec_cap_error n element with
-          | Some message -> error span message
+          | Some message -> error (Sema_types.source_type_span span element_ty) message
           | None -> Ok result)
       | _ -> Ok result)
   | ty -> source_ty_diag c.named_types span ty
@@ -1157,10 +1157,57 @@ let select_value_arg span payload =
 
 let select_type_arg named_types span payload =
   match payload with
+  | Ast.Type_arg (Ast.Named_type ("void", _))
+  | Ast.Type_or_index (Ast.Named_type ("void", _)) ->
+      Ok Hir.Void
   | Ast.Type_arg t | Ast.Type_or_index t -> source_ty_diag named_types span t
   | Ast.Name_arg (name, name_span) ->
       source_ty_diag named_types name_span (Ast.Named_type (name, name_span))
   | Ast.Const_arg e -> error (Ast.expr_span e) "raw access requires a type argument"
+
+let select_type_payload_span fallback = function
+  | Ast.Type_arg (Ast.Named_type ("void", span))
+  | Ast.Type_or_index (Ast.Named_type ("void", span)) ->
+      span
+  | _ -> fallback
+
+let rec view_source_span expression =
+  let span =
+    match expression with
+    | Ast.Parenthesized (_, span) -> span
+    | _ -> Ast.expr_span expression
+  in
+  let children =
+    match expression with
+    | Ast.Unary (_, value, _)
+    | Ast.C_dereference (value, _, _)
+    | Ast.C_dot_star (value, _)
+    | Ast.Parenthesized (value, _)
+    | Ast.Cast (_, _, value, _)
+    | Ast.Addr_of (value, _)
+    | Ast.Handle_from_addr (_, value, _)
+    | Ast.Sizeof_value (value, _)
+    | Ast.Splat (value, _) ->
+        [ value ]
+    | Ast.Binary (_, left, right, _) -> [ left; right ]
+    | Ast.Generic_args (callee, _, _) -> [ callee ]
+    | Ast.Ternary (condition, yes, no, _) -> [ condition; yes; no ]
+    | Ast.Array_lit (values, _) | Ast.Struct_lit (_, values, _) -> values
+    | _ -> []
+  in
+  let spans = span :: List.map view_source_span children in
+  let first =
+    List.fold_left
+      (fun best item ->
+        if item.Span.start_offset < best.Span.start_offset then item else best)
+      span spans
+  in
+  let last_offset =
+    List.fold_left
+      (fun best item -> max best item.Span.end_offset)
+      span.Span.end_offset spans
+  in
+  { first with Span.end_offset = last_offset }
 
 let normalize_offset_expr structs span (e : Hir.expr) =
   match Hir.expr_ty e with
@@ -1414,7 +1461,10 @@ let rec check_place (c : context) expr =
               let* t = select_type_arg c.named_types s type_payload in
               let* () =
                 match t with
-                | Hir.Void -> error s "raw access on `void` needs an element type"
+                | Hir.Void ->
+                    error
+                      (select_type_payload_span s type_payload)
+                      "raw access on `void` needs an element type"
                 | _ -> Ok ()
               in
               let* offset = raw_offset_expr c s t None in
@@ -1433,7 +1483,10 @@ let rec check_place (c : context) expr =
               let* t = select_type_arg c.named_types s type_payload in
               let* () =
                 match t with
-                | Hir.Void -> error s "raw access on `void` needs an element type"
+                | Hir.Void ->
+                    error
+                      (select_type_payload_span s type_payload)
+                      "raw access on `void` needs an element type"
                 | _ -> Ok ()
               in
               let* offset = raw_offset_expr c s t (Some index_payload) in
@@ -1496,14 +1549,24 @@ let rec check_place (c : context) expr =
       match Hir.expr_ty value with
       | Hir.Addr ->
           let help =
-            match base with
-            | Ast.Ident (name, _) ->
-                Some (Printf.sprintf "write `%s[T].%s` with the record type" name field)
+            let records =
+              List.filter
+                (fun (record : Hir.struct_def) ->
+                  List.exists
+                    (fun (candidate : Hir.field) ->
+                      candidate.name = field
+                      && Option.is_none candidate.unsupported_reason)
+                    record.fields)
+                c.structs
+            in
+            match records with
+            | [ record ] ->
+                Some
+                  (Printf.sprintf "read field `%s` through an `addr` as `%s[%s].%s`"
+                     field (Ast.expr_name base) record.name field)
             | _ -> None
           in
-          error ?help operator_span
-            (Printf.sprintf "Fas has no `->`; use typed `addr` selection for field `%s`"
-               field)
+          error ?help operator_span "Fas has no `->` operator"
       | Hir.Struct _ ->
           error operator_span
             (Printf.sprintf "Fas has no `->`; access field `%s` with `.`" field)
@@ -2068,13 +2131,21 @@ and check_expr_inner ?destination (c : context) expected expression =
               inferred_type
           in
           error ?help span "`sizeof` needs a type in brackets")
-  | Ast.Sizeof (t, s) ->
-      let* t, structs = query_layout_in_context c s t in
-      let* size, _ = layout_diag s structs t in
+  | Ast.Sizeof (source_type, s) ->
+      let* t, structs = query_layout_in_context c s source_type in
+      let type_span =
+        Option.value ~default:s
+          (Sema_types.opaque_source_span c.named_types [] source_type)
+      in
+      let* size, _ = layout_diag type_span structs t in
       Ok (Hir.Sizeof (t, size, s))
-  | Ast.Alignof (t, s) ->
-      let* t, structs = query_layout_in_context c s t in
-      let* _, a = layout_diag s structs t in
+  | Ast.Alignof (source_type, s) ->
+      let* t, structs = query_layout_in_context c s source_type in
+      let type_span =
+        Option.value ~default:s
+          (Sema_types.opaque_source_span c.named_types [] source_type)
+      in
+      let* _, a = layout_diag type_span structs t in
       Ok (Hir.Alignof (t, a, s))
   | Ast.Offsetof (source_ty, n, s) -> (
       let* t, structs = query_layout_in_context c s source_ty in
@@ -2164,15 +2235,30 @@ and check_expr_inner ?destination (c : context) expected expression =
       match expected with
       | Some (Hir.Vec (lanes, element) as literal_type) ->
           vector_literal literal_type lanes element entries s
-      | _ -> error s "array, struct, or vector initializer needs a destination type")
+      | _ ->
+          error
+            ?help:
+              (match expected with
+              | Some Hir.Addr -> Some "store it in a local and pass `&local`"
+              | _ -> None)
+            s "array, struct, or vector initializer needs a destination type")
   | Ast.Struct_lit (source_type, xs, s) -> (
       let* literal_type = source_ty_in_context c s source_type in
       match literal_type with
       | Hir.Vec (lanes, element) -> vector_literal literal_type lanes element xs s
       | Hir.Array _ | Hir.Struct _ ->
-          error s "array, struct, or vector initializer needs a destination type"
+          error
+            ?help:
+              (match expected with
+              | Some Hir.Addr -> Some "store it in a local and pass `&local`"
+              | _ -> None)
+            s "array, struct, or vector initializer needs a destination type"
       | Hir.Opaque n -> error s (Printf.sprintf "opaque type `%s` is not a struct" n)
-      | _ -> error s "aggregate literal requires an array, struct, or vector type")
+      | _ ->
+          error s
+            (Printf.sprintf
+               "initializer needs an array, struct, or vector type, got `%s`"
+               (Sema_types.diagnostic_ty_name literal_type)))
 
 and check_same_operands c left right =
   let contextual expression = Option.is_some (unresolved_shape_of c expression) in
@@ -2210,6 +2296,30 @@ and check_initializer ?(constant = false) ?destination c expected expression =
         when Hir.ty_equal actual expected && Hir.ty_equal actual (Hir.expr_ty value) ->
           Ok (`Value (Hir.EVector (lanes, expected, Ast.expr_span expression)))
       | _ -> Ok (`Value value)
+  in
+  let scalar_initializer_error ty entries span =
+    let help =
+      let scalar = match ty with Hir.Bool | Hir.Int _ -> true | _ -> false in
+      match entries with
+      | [ entry ]
+        when scalar
+             &&
+             match entry with
+             | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Unary (Ast.Neg, Ast.Int_lit _, _) ->
+                 true
+             | _ -> false -> (
+          let before = Sema_flow.snapshot c.flow in
+          let result = check_expr c (Some ty) entry in
+          Sema_flow.restore c.flow before;
+          match result with
+          | Ok value when Hir.ty_equal (Hir.expr_ty value) ty ->
+              Some (Printf.sprintf "write `%s`" (Ast.expr_name entry))
+          | _ -> None)
+      | _ -> None
+    in
+    error ?help span
+      (Printf.sprintf "initializer needs an array, struct, or vector type, got `%s`"
+         (Sema_types.diagnostic_ty_name ty))
   in
   let aggregate_entries ty entries span =
     match (ty, entries) with
@@ -2286,7 +2396,7 @@ and check_initializer ?(constant = false) ?destination c expected expression =
                              Printf.sprintf "field `%s` of record `%s`" field.name name
                            ))
                          definition.fields entries))
-          | _ -> error span "initializer needs an array, struct, or vector type"
+          | _ -> scalar_initializer_error ty entries span
         in
         let rec check acc = function
           | [] -> Ok (List.rev acc)
@@ -2339,7 +2449,7 @@ and check_initializer ?(constant = false) ?destination c expected expression =
                  (Sema_types.diagnostic_ty_name source_type)
                  (Sema_types.diagnostic_ty_name expected))
           else aggregate_entries expected entries span
-      | _ -> error span "initializer needs an array, struct, or vector type")
+      | _ -> scalar_initializer_error source_type entries span)
   | _ when match expected with Hir.Vec _ -> true | _ -> false -> vector_value ()
   | _ ->
       let* value = check_expr c (Some expected) expression in
@@ -2412,8 +2522,8 @@ and simd_memory_access_type c name span arguments =
   | Hir.Bool | Hir.Int _ -> Ok access_ty
   | _ ->
       error span
-        (Printf.sprintf
-           "builtin `%s` needs an integer or bool memory element type, got `%s`" name
+        (Printf.sprintf "builtin `%s` needs an integer or bool element type, got `%s`"
+           name
            (Sema_types.diagnostic_ty_name access_ty))
 
 and check_simd_memory_args c name access_ty args span =
@@ -3765,7 +3875,12 @@ and check_stmt (c : context) = function
   | Ast.Let { name; ty; ty_span; init; span } -> (
       let* () = ensure_new_local name c span in
       let* t = source_ty_in_context c ty_span ty in
-      let* _ = Sema_limits.validate_object c.limits c.structs ty_span t in
+      let* _ =
+        Sema_limits.validate_object
+          ?opaque_span:(Sema_types.opaque_source_span c.named_types [] ty)
+          ?vector_element_span:(Sema_types.vector_element_source_span ty_span ty)
+          c.limits c.structs ty_span t
+      in
       let* x =
         match init with
         | None -> Ok None
@@ -3828,7 +3943,24 @@ and check_stmt (c : context) = function
           | _ -> false
         then error (Ast.expr_span place) "cannot create a view of a SIMD lane"
         else if addressable place_info.expr then Ok ()
-        else error (Ast.expr_span place) "view source must have addressable storage"
+        else
+          let source_kind =
+            match place with
+            | Ast.Call _ -> "a function call"
+            | Ast.Binary _ | Ast.Ternary _ | Ast.Unary _ -> "a computed value"
+            | Ast.Int_lit _ -> "an integer literal"
+            | Ast.Bool_lit _ -> "a bool literal"
+            | Ast.Null _ -> "a null literal"
+            | Ast.String_lit _ -> "a string literal"
+            | Ast.Array_lit _ | Ast.Struct_lit _ -> "an aggregate literal"
+            | Ast.Splat _ -> "a splat"
+            | Ast.Cast _ -> "a cast"
+            | Ast.Addr_of _ -> "an address value"
+            | _ -> "an expression"
+          in
+          error (view_source_span place)
+            (Printf.sprintf "view needs a local, field, element or raw access, not %s"
+               source_kind)
       in
       let* () = check_place_access c span ~write:false place_info.expr in
       let* binding = add_local name (Hir.expr_ty place_info.expr) c span in

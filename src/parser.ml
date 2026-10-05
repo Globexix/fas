@@ -425,7 +425,13 @@ module P = struct
         in
         go [])
 
-  and select_payload p = generic_arg p
+  and select_payload p =
+    match (peek p).kind with
+    | Token.Ident "void" ->
+        let type_span = span p in
+        ignore (bump p);
+        Ok (Ast.Type_arg (Ast.Named_type ("void", type_span)))
+    | _ -> generic_arg p
 
   and generic_args p =
     let* () = expected p Token.Lbracket in

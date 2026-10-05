@@ -6,7 +6,7 @@ let error span message = Error [ Diag.error span message ]
 let rec object_type (structs : Hir.struct_def list) = function
   | Hir.Void -> Error "void is not an object type"
   | Hir.Opaque name ->
-      Error ("opaque type `" ^ name ^ "` must use `handle[" ^ name ^ "]`")
+      Error ("opaque type `" ^ name ^ "` can only be held as `handle[" ^ name ^ "]`")
   | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ -> Ok ()
   | Hir.Array (length, element) ->
       if length < 0 then Error "negative array length" else object_type structs element
@@ -56,10 +56,18 @@ let aggregate_within_limit limits structs ty =
   in
   Option.is_some (count [] ty)
 
-let validate_object limits structs span ty =
+let validate_object ?opaque_span ?vector_element_span limits structs span ty =
   let* () =
     object_type structs ty
-    |> Result.map_error (fun message -> [ Diag.error span message ])
+    |> Result.map_error (fun message ->
+        let primary =
+          if String.starts_with ~prefix:"opaque type " message then
+            Option.value ~default:span opaque_span
+          else if String.starts_with ~prefix:"vector element type" message then
+            Option.value ~default:span vector_element_span
+          else span
+        in
+        [ Diag.error primary message ])
   in
   let* size, alignment =
     Hir.layout structs ty

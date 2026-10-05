@@ -247,6 +247,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         validate_aggregate_length_names value_names type_names span "vector" length ty
     | Ast.Named_type (name, type_span) when Names.reserved_float_name name ->
         error type_span (Names.reserved_float_message name)
+    | Ast.Named_type ("void", _) -> Ok ()
     | Ast.Named_type (name, type_span) when String_set.mem name !local_values ->
         error type_span (Printf.sprintf "`%s` is a value, not a type" name)
     | Ast.Named_type (name, type_span) -> (
@@ -308,6 +309,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         then Ok ()
         else error span (Printf.sprintf "unknown name `%s`" name)
   and validate_selection_argument_names value_names type_names span = function
+    | Ast.Type_arg (Ast.Named_type ("void", _)) -> Ok ()
     | Ast.Type_or_index ty -> (
         match ambiguous_name ty with
         | Some name -> (
@@ -1228,6 +1230,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         in
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Vec ({ length_info with text = length }, ty))
+    | Ast.Named_type ("void", type_span) -> Ok (Ast.Named_type ("void", type_span))
     | Ast.Named_type (name, type_span) when Names.reserved_float_name name ->
         error type_span (Names.reserved_float_message name)
     | Ast.Named_type (name, type_span) -> (
@@ -1741,6 +1744,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           Result_list.map
             (fun arg ->
               match arg with
+              | Ast.Type_arg (Ast.Named_type ("void", _) as ty) -> Ok (Ast.Type_arg ty)
               | (Ast.Type_or_index _ | Ast.Name_arg _) when is_shadowed_argument arg ->
                   Ok arg
               | _ -> (

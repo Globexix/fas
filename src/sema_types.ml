@@ -223,6 +223,7 @@ let rec source_ty named_types = function
           | Some message -> Error message
           | None -> Ok (Hir.Vec (n, element)))
       | result -> result)
+  | Ast.Named_type ("void", _) -> Ok Hir.Void
   | Ast.Named_type (name, _) when Names.reserved_float_name name ->
       Error (Names.reserved_float_message name)
   | Ast.Named_type (name, _) -> (
@@ -288,6 +289,48 @@ let rec reserved_float_span = function
         arguments
   | _ -> None
 
+let rec source_type_span_opt = function
+  | Ast.Named_type (_, span) | Ast.Applied_type (_, _, span) -> Some span
+  | Ast.Handle ty -> source_type_span_opt ty
+  | Ast.Array (length, ty) | Ast.Vec (length, ty) -> (
+      match source_type_span_opt ty with
+      | Some _ as span -> span
+      | None -> Some length.span)
+  | _ -> None
+
+let source_type_span fallback ty =
+  Option.value ~default:fallback (source_type_span_opt ty)
+
+let rec opaque_source_span named_types seen = function
+  | Ast.Named_type (name, span) when not (List.mem name seen) -> (
+      match List.assoc_opt name named_types with
+      | Some Opaque_name -> Some span
+      | Some (Alias_name ty) ->
+          Option.map (fun _ -> span) (opaque_source_span named_types (name :: seen) ty)
+      | _ -> None)
+  | Ast.Array (_, ty) | Ast.Vec (_, ty) -> opaque_source_span named_types seen ty
+  | Ast.Applied_type (_, arguments, _) ->
+      List.find_map
+        (function
+          | Ast.Type_arg ty | Ast.Type_or_index ty ->
+              opaque_source_span named_types seen ty
+          | _ -> None)
+        arguments
+  | _ -> None
+
+let rec vector_element_source_span fallback = function
+  | Ast.Vec (_, (Ast.Vec _ as inner)) -> vector_element_source_span fallback inner
+  | Ast.Vec (_, inner) -> Some (source_type_span fallback inner)
+  | Ast.Array (_, inner) | Ast.Handle inner -> vector_element_source_span fallback inner
+  | Ast.Applied_type (_, arguments, _) ->
+      List.find_map
+        (function
+          | Ast.Type_arg ty | Ast.Type_or_index ty ->
+              vector_element_source_span fallback ty
+          | _ -> None)
+        arguments
+  | _ -> None
+
 let source_ty_diag named_types span ty =
   source_ty named_types ty
   |> Result.map_error (fun message ->
@@ -321,6 +364,8 @@ let source_ty_diag named_types span ty =
                 | _ -> None
               in
               Option.value ~default:span (bad_length_span ty)
+            else if String.starts_with ~prefix:"vector element type" message then
+              Option.value ~default:span (vector_element_source_span span ty)
             else span
           in
           [ Diag.error primary message ])
@@ -384,7 +429,14 @@ let rec source_ty_with_values ?(globals = []) named_types values span = function
   | ty -> source_ty_diag named_types span ty
 
 let layout_diag span structs ty =
-  Hir.layout structs ty |> Result.map_error (fun message -> [ Diag.error span message ])
+  Hir.layout structs ty
+  |> Result.map_error (fun message ->
+      let help =
+        match ty with
+        | Hir.Opaque name -> Some (Printf.sprintf "write `handle[%s]`" name)
+        | _ -> None
+      in
+      [ Diag.error ?help span message ])
 
 let field_info structs name field =
   match

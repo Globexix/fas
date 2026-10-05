@@ -12,6 +12,9 @@ type const_values = (string * Hir.ty * int64) list
 val source_ty : named_types -> Ast.ty -> (Hir.ty, string) result
 val handle_target : named_types -> Ast.ty -> (string, string) result
 val source_ty_diag : named_types -> Span.t -> Ast.ty -> (Hir.ty, Diag.t list) result
+val source_type_span : Span.t -> Ast.ty -> Span.t
+val vector_element_source_span : Span.t -> Ast.ty -> Span.t option
+val opaque_source_span : named_types -> string list -> Ast.ty -> Span.t option
 val vec_cap_error : int -> Hir.ty -> string option
 val condition_error : string -> Ast.expr -> Hir.ty -> Diag.t
 

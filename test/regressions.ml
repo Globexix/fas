@@ -1162,12 +1162,20 @@ let () =
     "fn f() u32 { x u32\n view v = x\n return v }\n";
   semantic_error "view-element-facts-share" "use of uninitialized local `a`"
     "fn f() u32 { a arr[2,u32]\n view v = a[0]\n v = 1\n return a[1] }\n";
-  semantic_error "view-call-rvalue" "view source must have addressable storage"
-    "fn make() u32 { return 1 }\nfn f() void { view v = make()\n return }\n";
-  semantic_error "view-arithmetic-rvalue" "view source must have addressable storage"
-    "fn f(x u32) void { view v = x + 1\n return }\n";
-  semantic_error "view-literal-rvalue" "view source must have addressable storage"
-    "fn f() void { view v = 1\n return }\n";
+  let view_call =
+    "fn make() u32 { return 1 }\nfn f() void { view v = make()\n return }\n"
+  in
+  semantic_pin "view-call-rvalue" view_call 2
+    (String.length "fn f() void { view v = " + 1)
+    6 "view needs a local, field, element or raw access, not a function call" None;
+  let view_arithmetic = "fn f(x u32) void { view v = x + 1\n return }\n" in
+  semantic_pin "view-arithmetic-rvalue" view_arithmetic 1
+    (String.length "fn f(x u32) void { view v = " + 1)
+    5 "view needs a local, field, element or raw access, not a computed value" None;
+  let view_literal = "fn f() void { view v = 1\n return }\n" in
+  semantic_pin "view-literal-rvalue" view_literal 1
+    (String.length "fn f() void { view v = " + 1)
+    1 "view needs a local, field, element or raw access, not an integer literal" None;
   semantic_error "view-simd-lane" "cannot create a view of a SIMD lane"
     "fn f() void { x vec[2,u32] = splat(0)\nview lane = x[0]\n return }\n";
   semantic_error "view-shadow-duplicate" "duplicate local `v`"
@@ -2155,7 +2163,7 @@ let () =
      storage as `addr` or `handle[T]`"
     "extern \"C\" { fn make() arr[2,i64] }\n";
   semantic_error "extern-c-opaque-parameter"
-    "opaque type `Handle` must use `handle[Handle]`"
+    "opaque type `Handle` can only be held as `handle[Handle]`"
     "opaque Handle\nextern \"C\" { fn take(value Handle) void }\n";
   semantic_error "extern-c-definition-fallthrough"
     "function `value` returning `i64` may reach the end without `return`"
@@ -2377,26 +2385,52 @@ let () =
         fn pointer_align() usize { return alignof[addr] }\n\
         opaque Handle\n");
   semantic_error "opaque-local-by-value"
-    "opaque type `Handle` must use `handle[Handle]`"
+    "opaque type `Handle` can only be held as `handle[Handle]`"
     "opaque Handle\nfn check_case() void { value Handle }\n";
-  semantic_error "opaque-struct-field-by-value" "opaque type `Handle` has no layout"
-    "opaque Handle\nstruct Wrapper { value Handle }\n";
-  semantic_error "opaque-array-by-value"
-    "opaque type `Handle` must use `handle[Handle]`"
-    "opaque Handle\nfn check_case() void { values arr[2,Handle] }\n";
-  semantic_error "opaque-vector-by-value"
-    "vector element type must be `bool` or an integer type"
-    "opaque Handle\nfn check_case() void { values vec[2,Handle] }\n";
+  let opaque_struct_field = "opaque Handle\nstruct Wrapper { value Handle }\n" in
+  semantic_pin "opaque-struct-field-by-value" opaque_struct_field 2
+    (String.length "struct Wrapper { value " + 1)
+    6 "opaque type `Handle` has no layout" (Some "write `handle[Handle]`");
+  semantic_accept "opaque-struct-field-handle-twin"
+    "opaque Handle\nstruct Wrapper { value handle[Handle] }\n";
+  let opaque_array = "opaque Handle\nfn check_case() void { values arr[2,Handle] }\n" in
+  let opaque_array_line = "fn check_case() void { values arr[2,Handle] }" in
+  semantic_pin "opaque-array-by-value" opaque_array 2
+    (String.index_from opaque_array_line (String.index opaque_array_line '[' + 1) 'H'
+    + 1)
+    6 "opaque type `Handle` can only be held as `handle[Handle]`" None;
+  let opaque_vector =
+    "opaque Handle\nfn check_case() void { values vec[2,Handle] }\n"
+  in
+  let opaque_vector_line = "fn check_case() void { values vec[2,Handle] }" in
+  semantic_pin "opaque-vector-by-value" opaque_vector 2
+    (String.index_from opaque_vector_line (String.index opaque_vector_line '[' + 1) 'H'
+    + 1)
+    6 "vector element type must be `bool` or an integer type" None;
   semantic_error "opaque-parameter-by-value"
-    "opaque type `Handle` must use `handle[Handle]`"
+    "opaque type `Handle` can only be held as `handle[Handle]`"
     "opaque Handle\nfn check_case(value Handle) void { return }\n";
   semantic_error "opaque-return-by-value"
-    "opaque type `Handle` must use `handle[Handle]`"
+    "opaque type `Handle` can only be held as `handle[Handle]`"
     "opaque Handle\nfn check_case() Handle { }\n";
-  semantic_error "opaque-sizeof" "opaque type `Handle` has no layout"
-    "opaque Handle\nfn check_case() usize { return sizeof[Handle] }\n";
-  semantic_error "opaque-alignof" "opaque type `Handle` has no layout"
-    "opaque Handle\nfn check_case() usize { return alignof[Handle] }\n";
+  let opaque_sizeof =
+    "opaque Handle\nfn check_case() usize { return sizeof[Handle] }\n"
+  in
+  let opaque_sizeof_line = "fn check_case() usize { return sizeof[Handle] }" in
+  semantic_pin "opaque-sizeof" opaque_sizeof 2
+    (String.index_from opaque_sizeof_line (String.index opaque_sizeof_line '[' + 1) 'H'
+    + 1)
+    6 "opaque type `Handle` has no layout" (Some "write `handle[Handle]`");
+  let opaque_alignof =
+    "opaque Handle\nfn check_case() usize { return alignof[Handle] }\n"
+  in
+  let opaque_alignof_line = "fn check_case() usize { return alignof[Handle] }" in
+  semantic_pin "opaque-alignof" opaque_alignof 2
+    (String.index_from opaque_alignof_line
+       (String.index opaque_alignof_line '[' + 1)
+       'H'
+    + 1)
+    6 "opaque type `Handle` has no layout" (Some "write `handle[Handle]`");
   semantic_error "opaque-implicit-erasure" "is `handle[Handle]`, expected `addr`"
     "opaque Handle\nfn check_case(value handle[Handle]) addr { return value }\n";
   ignore
@@ -7171,7 +7205,7 @@ let () =
   semantic_pin "opaque-field-layout-caret"
     "opaque Token\nstruct Holder { value Token }\n" 2
     (String.length "struct Holder { value " + 1)
-    5 "opaque type `Token` has no layout" None;
+    5 "opaque type `Token` has no layout" (Some "write `handle[Token]`");
   semantic_pin "recursive-field-layout-caret" "struct Node { next Node }\n" 1
     (String.length "struct Node { next " + 1)
     4 "recursive by-value struct `Node`" None;
@@ -7253,7 +7287,7 @@ let () =
   let global_opaque_type = "opaque Token\nvar ITEM Token\n" in
   semantic_pin "global-opaque-type-caret" global_opaque_type 2
     (String.length "var ITEM " + 1)
-    5 "opaque type `Token` must use `handle[Token]`" None;
+    5 "opaque type `Token` can only be held as `handle[Token]`" None;
   let global_array_length = "var ITEMS arr[18446744073709551615,u8]\n" in
   semantic_pin "global-array-length-caret" global_array_length 1
     (String.length "var ITEMS arr[" + 1)
@@ -7378,6 +7412,23 @@ let () =
   semantic_pin "address-field-help" address_field_source 2
     (String.length "fn read(q addr) i32 { return " + 1)
     1 "no field `x` on `addr`" (Some "write `q[T].x` with the record type");
+  let arrow_field_source =
+    "struct Point { value i32 }\nfn read(p addr) i32 { return p->value }\n"
+  in
+  semantic_pin "arrow-field-help" arrow_field_source 2
+    (String.index "fn read(p addr) i32 { return p->value }" '-' + 1)
+    2 "Fas has no `->` operator"
+    (Some "read field `value` through an `addr` as `p[Point].value`");
+  semantic_accept "arrow-field-help-twin"
+    "struct Point { value i32 }\nfn read(p addr) i32 { return p[Point].value }\n";
+  let ambiguous_arrow_field =
+    "struct Point { value i32 }\n\
+     struct Other { value i32 }\n\
+     fn read(p addr) i32 { return p->value }\n"
+  in
+  semantic_pin "arrow-field-ambiguous-help" ambiguous_arrow_field 3
+    (String.index "fn read(p addr) i32 { return p->value }" '-' + 1)
+    2 "Fas has no `->` operator" None;
   let array_too_many_source =
     "fn f() void { data arr[3,u16] = {2,3,5,7}\n return }\n"
   in
@@ -8774,8 +8825,10 @@ let () =
     "fn f(p addr, x u32) u32 { return p[x] }\n";
   semantic_error "raw-select-const-payload" "raw access on `addr` needs an element type"
     "fn f(p addr) u32 { return p[3] }\n";
-  semantic_error "raw-select-void" "raw access on `void` needs an element type"
-    "fn f(p addr) void { p[void] = p[void] }\n";
+  let raw_void = "fn f(p addr) void { p[void] = p[void] }\n" in
+  let raw_void_index = String.index_from raw_void (String.index raw_void '[' + 1) 'v' in
+  semantic_pin "raw-select-void" raw_void 1 (raw_void_index + 1) 4
+    "raw access on `void` needs an element type" None;
   semantic_error "raw-select-compound-mul-addr"
     "compound assignment `*=` is not defined for `addr`"
     "fn f(p addr) void { p[addr] *= 2 }\n";
@@ -9351,7 +9404,7 @@ let () =
     "fn f() i32 { values arr[2,arr[2,i32]] = {{}, {1, 2}}\n\
      return values[0][1] + values[1][1] }\n";
   semantic_error "construction-empty-scalar"
-    "initializer needs an array, struct, or vector type"
+    "initializer needs an array, struct, or vector type, got `i32`"
     "fn f() void { value i32 = {}\nreturn }\n";
   semantic_error "construction-empty-array-nonzero-count" "array of 5 elements, got 1"
     "fn f() void { values arr[5,u8] = {0}\nreturn }\n";
@@ -9403,9 +9456,15 @@ let () =
   semantic_error "construction-vector-entry-count"
     "wrong number of vector literal lanes"
     "fn f() void { value vec[2,i32] = (vec[2,i32]){1}\nreturn }\n";
-  semantic_error "construction-scalar-literal-destination"
-    "initializer needs an array, struct, or vector type"
-    "fn f() void { value u32 = {1}\nreturn }\n";
+  let scalar_literal_destination = "fn f() void { value u32 = {1}\nreturn }\n" in
+  semantic_pin "construction-scalar-literal-destination" scalar_literal_destination 1
+    (String.index_from scalar_literal_destination
+       (String.index scalar_literal_destination '=' + 1)
+       '{'
+    + 1)
+    1 "initializer needs an array, struct, or vector type, got `u32`" (Some "write `1`");
+  semantic_accept "construction-scalar-literal-destination-twin"
+    "fn f() void { value u32 = 1\nreturn }\n";
   semantic_error "construction-entry-type-mismatch" "is `bool`, expected `i32`"
     "struct S { flag i32 }\nfn f() void { value S = {true}\nreturn }\n";
   semantic_error "construction-explicit-type-mismatch" "initializer type"
@@ -9413,14 +9472,32 @@ let () =
      struct B { value i32 }\n\
      fn f() void { value A = (B){1}\n\
      return }\n";
-  semantic_error "construction-brace-needs-destination"
-    "array, struct, or vector initializer needs a destination type"
-    "fn consume(pointer addr) i32 { return 0 }\nfn f() i32 { return consume({43}) }\n";
-  semantic_error "construction-aggregate-expression-needs-destination"
-    "array, struct, or vector initializer needs a destination type"
+  let brace_needs_destination =
+    "fn consume(pointer addr) i32 { return 0 }\nfn f() i32 { return consume({43}) }\n"
+  in
+  semantic_pin "construction-brace-needs-destination" brace_needs_destination 2
+    (String.length "fn f() i32 { return consume(" + 1)
+    1 "array, struct, or vector initializer needs a destination type"
+    (Some "store it in a local and pass `&local`");
+  semantic_accept "construction-brace-needs-destination-twin"
+    "fn consume(pointer addr) i32 { return 0 }\n\
+     fn f() i32 { local arr[1,i32] = {43}\n\
+     return consume(&local) }\n";
+  let aggregate_expression_needs_destination =
     "struct S { value i32 }\n\
      fn consume(pointer addr) i32 { return 0 }\n\
-     fn f() i32 { return consume((S){47}) }\n";
+     fn f() i32 { return consume((S){47}) }\n"
+  in
+  semantic_pin "construction-aggregate-expression-needs-destination"
+    aggregate_expression_needs_destination 3
+    (String.length "fn f() i32 { return consume(" + 1)
+    1 "array, struct, or vector initializer needs a destination type"
+    (Some "store it in a local and pass `&local`");
+  semantic_accept "construction-aggregate-expression-needs-destination-twin"
+    "struct S { value i32 }\n\
+     fn consume(pointer addr) i32 { return 0 }\n\
+     fn f() i32 { local S = (S){47}\n\
+     return consume(&local) }\n";
   semantic_error "construction-new-name-not-in-scope" "unknown name `value`"
     "fn f() i32 { value arr[1,i32] = {value[0]}\nreturn 0 }\n";
 
@@ -9478,21 +9555,19 @@ let () =
      store[u16](p, i, m, v)\n\
      return }\n";
   semantic_error "simd-memory-aggregate-element"
-    "builtin `masked_load` needs an integer or bool memory element type, got `arr[2, \
-     u32]`"
+    "builtin `masked_load` needs an integer or bool element type, got `arr[2, u32]`"
     "fn f(p addr, m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
      masked_load[arr[2,u32]](p, m, v) }\n";
   semantic_error "simd-memory-address-element"
-    "builtin `masked_load` needs an integer or bool memory element type, got `addr`"
+    "builtin `masked_load` needs an integer or bool element type, got `addr`"
     "fn f(p addr, m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
      masked_load[addr](p, m, v) }\n";
   semantic_error "simd-memory-vector-element"
-    "builtin `masked_load` needs an integer or bool memory element type, got `vec[2, \
-     u32]`"
+    "builtin `masked_load` needs an integer or bool element type, got `vec[2, u32]`"
     "fn f(p addr, m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
      masked_load[vec[2,u32]](p, m, v) }\n";
   semantic_error "simd-memory-handle-element"
-    "builtin `gather` needs an integer or bool memory element type, got `handle[Token]`"
+    "builtin `gather` needs an integer or bool element type, got `handle[Token]`"
     "opaque Token\n\
      fn f(p addr, i vec[2,i8], m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
      gather[handle[Token]](p, i, m, v) }\n";
@@ -9772,7 +9847,8 @@ let () =
   semantic_message "constant-global-record-initializer-arity"
     "record `Pair` has 1 field, got 2"
     "struct Pair { x i32 }\nconst Item Pair = {1, 2}\n";
-  semantic_message "global-opaque-object" "opaque type `Token` must use `handle[Token]`"
+  semantic_message "global-opaque-object"
+    "opaque type `Token` can only be held as `handle[Token]`"
     "opaque Token\nvar Value Token\n";
   parse_message "global-local-var"
     "`var` declares globals; locals are declared as `name Type = value`"
@@ -12693,8 +12769,7 @@ let () =
           semantic_message
             ("generic-slot-" ^ name ^ "-" ^ ty)
             (Printf.sprintf
-               "builtin `%s` needs an integer or bool memory element type, got `%s`"
-               name
+               "builtin `%s` needs an integer or bool element type, got `%s`" name
                (String.split_on_char ',' ty |> String.concat ", "))
             (body (name ^ "[" ^ ty ^ "](p, 0, 0, 0)")))
         [
@@ -12824,9 +12899,7 @@ let () =
     (fun name ->
       semantic_message ("vector-type-slot-" ^ name)
         (Printf.sprintf
-           "builtin `%s` needs an integer or bool memory element type, got `vec[4, \
-            u32]`"
-           name)
+           "builtin `%s` needs an integer or bool element type, got `vec[4, u32]`" name)
         ("fn f(p addr) void { " ^ name ^ "[vec[4,u32]](p, 0, 0, 0)\nreturn }"))
     [
       "masked_load";
@@ -13390,8 +13463,7 @@ let () =
   let arrow = "fn read(p addr) i32 { return p->value }\n" in
   semantic_pin "c-arrow-field" arrow 1
     (String.index arrow '-' + 1)
-    2 "Fas has no `->`; use typed `addr` selection for field `value`"
-    (Some "write `p[T].value` with the record type");
+    2 "Fas has no `->` operator" None;
   semantic_accept "c-arrow-field-typed-twin"
     "struct Point { value i32 }\nfn read(p addr) i32 { return p[Point].value }\n";
   let cast = "fn widen(p addr) u8 { return (u8*)p }\n" in

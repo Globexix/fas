@@ -473,7 +473,22 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       | Some field when message = "void has no object layout" ->
           Diag.error field.ty_span
             (Printf.sprintf "field `%s` cannot have type `void`" field.name)
-      | Some field -> Diag.error field.ty_span message
+      | Some field ->
+          let opaque_name =
+            if String.starts_with ~prefix:"opaque type `" message then
+              let start = String.length "opaque type `" in
+              Option.map
+                (fun stop -> String.sub message start (stop - start))
+                (String.index_from_opt message start '`')
+            else None
+          in
+          let primary =
+            Option.value ~default:field.ty_span
+              (Sema_types.opaque_source_span named_types [] field.ty)
+          in
+          Diag.error
+            ?help:(Option.map (Printf.sprintf "write `handle[%s]`") opaque_name)
+            primary message
       | None -> Diag.error Span.synthetic message
     in
     let cache =
@@ -494,9 +509,12 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
     go [] structs_src
   in
   let* structs = build structs_src in
-  let source_obj span t =
-    let* t = source_ty_diag named_types span t in
-    Sema_limits.validate_object limits structs span t
+  let source_obj span source_type =
+    let* t = source_ty_diag named_types span source_type in
+    Sema_limits.validate_object
+      ?opaque_span:(Sema_types.opaque_source_span named_types [] source_type)
+      ?vector_element_span:(Sema_types.vector_element_source_span span source_type)
+      limits structs span t
   in
   let map_params convert params =
     Result_list.map
