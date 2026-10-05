@@ -463,6 +463,20 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
 let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
     ?(arrays = []) ?(array_lengths = []) ?(globals = []) ?resolve consts expected
     ?(check_only = false) ?(validate_dead = true) expression =
+  let result =
+    const_expr_inner ~structs ~named_types ~generic_structs ~arrays ~array_lengths
+      ~globals ?resolve consts expected ~check_only ~validate_dead expression
+  in
+  match (expression, result) with
+  | Ast.Binary (op, left, right, span), Error _ -> (
+      match Sema_types.comparison_chain_diagnostic span op left right with
+      | Some diagnostic -> Error [ diagnostic ]
+      | None -> result)
+  | _ -> result
+
+and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
+    ?(arrays = []) ?(array_lengths = []) ?(globals = []) ?resolve consts expected
+    ?(check_only = false) ?(validate_dead = true) expression =
   match expression with
   | (Ast.C_dereference _ | Ast.C_dot_star _) as expression ->
       Error [ Sema_types.c_pointer_selection_diagnostic expected expression ]
@@ -1084,6 +1098,20 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
   | expr -> global_error (Ast.expr_span expr) "expression is not compile-time constant"
 
 and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
+    ?(arrays = []) ?(array_lengths = []) ?(globals = []) ?resolve consts expected
+    ?(check_only = false) expression =
+  let result =
+    vector_const_expr_inner ~structs ~named_types ~generic_structs ~arrays
+      ~array_lengths ~globals ?resolve consts expected ~check_only expression
+  in
+  match (expression, result) with
+  | Ast.Binary (op, left, right, span), Error _ -> (
+      match Sema_types.comparison_chain_diagnostic span op left right with
+      | Some diagnostic -> Error [ diagnostic ]
+      | None -> result)
+  | _ -> result
+
+and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
     ?(arrays = []) ?(array_lengths = []) ?(globals = []) ?resolve consts expected
     ?(check_only = false) expression =
   let lane_type = function Hir.Vec (_, element) -> Some element | _ -> None in

@@ -1607,7 +1607,12 @@ and check_expr ?destination (c : context) expected expression =
   c.expression_depth <- previous_depth + 1;
   let result = check_expr_inner ?destination c expected expression in
   c.expression_depth <- previous_depth;
-  result
+  match (expression, result) with
+  | Ast.Binary (op, left, right, span), Error _ -> (
+      match Sema_types.comparison_chain_diagnostic span op left right with
+      | Some diagnostic -> Error [ diagnostic ]
+      | None -> result)
+  | _ -> result
 
 and check_expr_inner ?destination (c : context) expected expression =
   let peer_handle_type expression =

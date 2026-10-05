@@ -733,6 +733,28 @@ let is_comparison = function
   | Ast.Bit_xor | Ast.And | Ast.Or | Ast.Shl | Ast.Shr ->
       false
 
+let is_simple_comparison_operand = function
+  | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Ident _ -> true
+  | _ -> false
+
+let comparison_chain_diagnostic span operation left right =
+  match left with
+  | Ast.Binary (inner_operation, first, middle, _)
+    when is_comparison inner_operation && is_comparison operation ->
+      let help =
+        if is_simple_comparison_operand middle && is_simple_comparison_operand right
+        then
+          Some
+            (Printf.sprintf "write `%s %s %s && %s %s %s`" (Ast.expr_name first)
+               (binary_operator_name inner_operation)
+               (Ast.expr_name middle) (Ast.expr_name middle)
+               (binary_operator_name operation)
+               (Ast.expr_name right))
+        else None
+      in
+      Some (Diag.error ?help span "comparisons cannot be chained")
+  | _ -> None
+
 let ordering_direction = function
   | Ast.Lt | Ast.Le -> Some `Ascending
   | Ast.Gt | Ast.Ge -> Some `Descending

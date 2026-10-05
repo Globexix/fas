@@ -92,6 +92,9 @@ val ensure_expected :
 
 val binary_operator_name : Ast.binop -> string
 
+val comparison_chain_diagnostic :
+  Span.t -> Ast.binop -> Ast.expr -> Ast.expr -> Diag.t option
+
 val binary_result_type :
   ?left_expression:Ast.expr ->
   ?right_expression:Ast.expr ->
