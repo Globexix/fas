@@ -1,10 +1,12 @@
+type aggregate_length = { text : string; span : Span.t }
+
 type ty =
   | Bool
   | Int of int_kind
   | Addr
   | Handle of ty
-  | Array of string * ty
-  | Vec of string * ty
+  | Array of aggregate_length * ty
+  | Vec of aggregate_length * ty
   | Named_type of string * Span.t
   | Applied_type of string * generic_arg list * Span.t
   | Void
@@ -120,9 +122,17 @@ and c_header = C_quoted of string | C_system of string | C_fragment of c_fragmen
 
 and item =
   | Use of { path : string; c_header : c_header option; span : Span.t }
-  | Const of { name : string; name_span : Span.t; ty : ty; value : expr; span : Span.t }
+  | Const of {
+      name : string;
+      name_span : Span.t;
+      ty_span : Span.t;
+      ty : ty;
+      value : expr;
+      span : Span.t;
+    }
   | Global of {
       name : string;
+      ty_span : Span.t;
       ty : ty;
       init : expr option;
       linkage : global_linkage;
@@ -154,7 +164,10 @@ and item =
 
 type program = { items : item list }
 
-let const_item name name_span ty value span = Const { name; name_span; ty; value; span }
+let const_item name name_span ty value span =
+  Const { name; name_span; ty_span = name_span; ty; value; span }
+
+let aggregate_length text span = { text; span }
 
 let rec expr_span = function
   | Int_lit (_, s)
@@ -233,8 +246,8 @@ let rec type_name = function
   | Int Isize -> "isize"
   | Addr -> "addr"
   | Handle t -> "handle[" ^ type_name t ^ "]"
-  | Array (n, t) -> "arr[" ^ n ^ ", " ^ type_name t ^ "]"
-  | Vec (n, t) -> "vec[" ^ n ^ ", " ^ type_name t ^ "]"
+  | Array (n, t) -> "arr[" ^ n.text ^ ", " ^ type_name t ^ "]"
+  | Vec (n, t) -> "vec[" ^ n.text ^ ", " ^ type_name t ^ "]"
   | Named_type (s, _) -> s
   | Applied_type (name, args, _) ->
       name ^ "[" ^ String.concat ", " (List.map generic_arg_name args) ^ "]"
@@ -358,13 +371,13 @@ let render_program program =
         text "]"
     | Array (n, inner) ->
         text "arr[";
-        add_name n;
+        add_name n.text;
         text ", ";
         emit_ty inner;
         text "]"
     | Vec (n, inner) ->
         text "vec[";
-        add_name n;
+        add_name n.text;
         text ", ";
         emit_ty inner;
         text "]"

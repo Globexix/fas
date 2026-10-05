@@ -18,6 +18,8 @@ val condition_error : string -> Ast.expr -> Hir.ty -> Diag.t
 val c_pointer_selection_help :
   Ast.expr -> string option -> Hir.ty option -> string option
 
+val c_pointer_selection_diagnostic : Hir.ty option -> Ast.expr -> Diag.t
+
 val logical_operand_error :
   ?help:string -> string -> string -> Ast.expr -> Hir.ty -> Diag.t
 

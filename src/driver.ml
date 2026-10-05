@@ -125,7 +125,7 @@ let c_export_diagnostic (program : Ast.program) message =
   let export =
     List.find_map
       (function
-        | Ast.Global { name; ty; linkage = Ast.Export_c; init = Some _; span }
+        | Ast.Global { name; ty; linkage = Ast.Export_c; init = Some _; span; _ }
           when name = export_name ->
             Some (span, [ ty ])
         | Ast.Func { name; params; ret; linkage = Ast.External_c; body; span; _ }

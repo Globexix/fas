@@ -779,10 +779,14 @@ let rec source_ty_in_context c span = function
       | Some { declaration_kind = Top_type; _ } | None ->
           source_ty_diag c.named_types type_span (Ast.Named_type (name, type_span)))
   | Ast.Array (length, ty) ->
-      source_aggregate_in_context c span (fun n t -> Hir.Array (n, t)) length ty
+      source_aggregate_in_context c length.span
+        (fun n t -> Hir.Array (n, t))
+        length.text ty
   | Ast.Vec (length, ty) -> (
       let* result =
-        source_aggregate_in_context c span (fun n t -> Hir.Vec (n, t)) length ty
+        source_aggregate_in_context c length.span
+          (fun n t -> Hir.Vec (n, t))
+          length.text ty
       in
       match result with
       | Hir.Vec (n, element) -> (
@@ -1539,14 +1543,8 @@ and check_expr_inner ?destination (c : context) expected expression =
   in
   match expression with
   | Ast.Parenthesized (value, _) -> check_expr c expected value
-  | Ast.C_dereference (value, type_hint, span) ->
-      error
-        ?help:(Sema_types.c_pointer_selection_help value type_hint expected)
-        span "Fas has no unary `*`; read through an `addr` with `p[T]`"
-  | Ast.C_dot_star (value, span) ->
-      error
-        ?help:(Sema_types.c_pointer_selection_help value None expected)
-        span "Fas has no `.*`; read through an `addr` with `p[T]`"
+  | (Ast.C_dereference _ | Ast.C_dot_star _) as expression ->
+      Error [ Sema_types.c_pointer_selection_diagnostic expected expression ]
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in

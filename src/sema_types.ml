@@ -27,22 +27,28 @@ let truthiness_help expression ty =
   | _ -> None
 
 let c_pointer_selection_help value type_hint expected =
-  let name = match value with Ast.Ident (name, _) -> Some name | _ -> None in
   let type_name =
-    match type_hint with
-    | Some name when List.mem name Names.scalar_type_names && name <> "void" ->
+    match (type_hint, expected) with
+    | Some name, _ when List.mem name Names.scalar_type_names && name <> "void" ->
         Some name
-    | Some _ -> None
-    | None -> (
-        match expected with
-        | Some ((Hir.Bool | Hir.Int _) as ty) ->
-            let name = Hir.ty_name ty in
-            if List.mem name Names.scalar_type_names then Some name else None
-        | _ -> None)
+    | None, Some ((Hir.Bool | Hir.Int _) as ty) -> Some (Hir.ty_name ty)
+    | _ -> None
   in
-  match (name, type_name) with
-  | Some name, Some type_name -> Some (Printf.sprintf "write `%s[%s]`" name type_name)
+  match (value, type_name) with
+  | Ast.Ident (name, _), Some type_name ->
+      Some (Printf.sprintf "write `%s[%s]`" name type_name)
   | _ -> None
+
+let c_pointer_selection_diagnostic expected = function
+  | Ast.C_dereference (value, type_hint, span) ->
+      Diag.error
+        ?help:(c_pointer_selection_help value type_hint expected)
+        span "Fas has no unary `*`; read through an `addr` with `p[T]`"
+  | Ast.C_dot_star (value, span) ->
+      Diag.error
+        ?help:(c_pointer_selection_help value None expected)
+        span "Fas has no `.*`; read through an `addr` with `p[T]`"
+  | _ -> assert false
 
 let rec expression_start_span = function
   | Ast.Binary (_, left, _, _)
@@ -186,10 +192,14 @@ let rec source_ty named_types = function
   | Ast.Handle ty ->
       Result.map (fun name -> Hir.Handle name) (handle_target named_types ty)
   | Ast.Array (length, ty) ->
-      source_aggregate named_types (fun n element -> Hir.Array (n, element)) length ty
+      source_aggregate named_types
+        (fun n element -> Hir.Array (n, element))
+        length.text ty
   | Ast.Vec (length, ty) -> (
       match
-        source_aggregate named_types (fun n element -> Hir.Vec (n, element)) length ty
+        source_aggregate named_types
+          (fun n element -> Hir.Vec (n, element))
+          length.text ty
       with
       | Ok (Hir.Vec (n, element)) -> (
           match vec_cap_error n element with
@@ -272,7 +282,27 @@ let source_ty_diag named_types span ty =
           ]
       | None, Some (name, type_span) ->
           [ Diag.error type_span (Names.reserved_float_message name) ]
-      | None, None -> [ Diag.error span message ])
+      | None, None ->
+          let primary =
+            if String.starts_with ~prefix:"aggregate length" message then
+              let rec bad_length_span = function
+                | Ast.Array (length, element) | Ast.Vec (length, element) -> (
+                    match int_of_string_opt length.text with
+                    | Some value when value >= 0 -> bad_length_span element
+                    | Some _ | None -> Some length.span)
+                | Ast.Handle inner -> bad_length_span inner
+                | Ast.Applied_type (_, arguments, _) ->
+                    List.find_map
+                      (function
+                        | Ast.Type_arg ty | Ast.Type_or_index ty -> bad_length_span ty
+                        | _ -> None)
+                      arguments
+                | _ -> None
+              in
+              Option.value ~default:span (bad_length_span ty)
+            else span
+          in
+          [ Diag.error primary message ])
 
 let lookup name table = List.find_opt (fun (entry, _, _) -> entry = name) table
 
@@ -295,27 +325,35 @@ let resolve_aggregate_length ?(globals = []) values span length =
         else Ok (Int64.to_string value)
 
 let rec source_ty_with_values ?(globals = []) named_types values span = function
-  | Ast.Array (length, ty) -> (
-      let* length = resolve_aggregate_length ~globals values span length in
+  | Ast.Array (length_info, ty) -> (
+      let* length =
+        resolve_aggregate_length ~globals values length_info.span length_info.text
+      in
       let* ty = source_ty_with_values ~globals named_types values span ty in
       try
         let length = int_of_string length in
         if length < 0 then
-          error span (Printf.sprintf "aggregate length cannot be negative: `%d`" length)
+          error length_info.span
+            (Printf.sprintf "aggregate length cannot be negative: `%d`" length)
         else Ok (Hir.Array (length, ty))
-      with Failure _ -> error span "aggregate length must be an integer constant")
-  | Ast.Vec (length, ty) -> (
-      let* length = resolve_aggregate_length ~globals values span length in
+      with Failure _ ->
+        error length_info.span "aggregate length must be an integer constant")
+  | Ast.Vec (length_info, ty) -> (
+      let* length =
+        resolve_aggregate_length ~globals values length_info.span length_info.text
+      in
       let* ty = source_ty_with_values ~globals named_types values span ty in
       try
         let length = int_of_string length in
         if length < 0 then
-          error span (Printf.sprintf "aggregate length cannot be negative: `%d`" length)
+          error length_info.span
+            (Printf.sprintf "aggregate length cannot be negative: `%d`" length)
         else
           match vec_cap_error length ty with
-          | Some message -> error span message
+          | Some message -> error length_info.span message
           | None -> Ok (Hir.Vec (length, ty))
-      with Failure _ -> error span "aggregate length must be an integer constant")
+      with Failure _ ->
+        error length_info.span "aggregate length must be an integer constant")
   | ty -> source_ty_diag named_types span ty
 
 let layout_diag span structs ty =

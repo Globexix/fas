@@ -72,10 +72,18 @@ let ordinary_program names (program : Ast.program) =
 let storage_items names items =
   List.filter_map
     (function
-      | Ast.Const { name; ty; value; span; name_span = _ } when List.mem name names ->
+      | Ast.Const { name; ty_span; ty; value; span; name_span = _ }
+        when List.mem name names ->
           Some
             (Ast.Global
-               { name; ty; init = Some value; span; linkage = Ast.Internal_global })
+               {
+                 name;
+                 ty_span;
+                 ty;
+                 init = Some value;
+                 span;
+                 linkage = Ast.Internal_global;
+               })
       | Ast.Global _ as item -> Some item
       | _ -> None)
     items
@@ -83,11 +91,11 @@ let storage_items names items =
 let declarations ~source_obj names items =
   Result_list.map
     (function
-      | Ast.Global { name; ty; linkage; span; _ } ->
+      | Ast.Global { name; ty_span; ty; linkage; _ } ->
           Result.map
             (fun ty ->
               (name, ty, if List.mem name names then Ast.Import_const_c else linkage))
-            (source_obj span ty)
+            (source_obj ty_span ty)
       | _ ->
           Error
             [ Diag.error Span.synthetic "internal error: invalid static declaration" ])
@@ -226,6 +234,6 @@ let address_value c ty expression =
 let source_array_lengths items =
   List.filter_map
     (function
-      | Ast.Const { name; ty = Ast.Array (length, _); _ } -> Some (name, length)
+      | Ast.Const { name; ty = Ast.Array (length, _); _ } -> Some (name, length.text)
       | _ -> None)
     items

@@ -25,12 +25,12 @@ let collect ?(global_names = []) ?(array_lengths = []) ?(generic_structs = [])
     | result -> result
   in
   let eval_const_item = function
-    | Ast.Const { name; name_span; ty; value; span } ->
+    | Ast.Const { name; name_span; ty_span; ty; value; span } ->
         if String_set.mem name !consts_names then Ok ()
         else if String_set.mem name !arrays_names then
           error name_span (Printf.sprintf "duplicate const `%s`" name)
         else
-          let* t = source_obj span ty in
+          let* t = source_obj ty_span ty in
           let result =
             match (t, value) with
             | Hir.Array (_, (Hir.Bool | Hir.Int _)), Ast.Array_lit ([], _) -> (
@@ -43,7 +43,9 @@ let collect ?(global_names = []) ?(array_lengths = []) ?(generic_structs = [])
                 | None -> error span "internal error: invalid zero array initializer")
             | Hir.Array (n, elem), Ast.Array_lit (xs, _) ->
                 if List.length xs <> n then
-                  error span (Sema_types.array_element_count_message n (List.length xs))
+                  error
+                    (Sema_types.aggregate_count_error_span (Ast.expr_span value) n xs)
+                    (Sema_types.array_element_count_message n (List.length xs))
                 else
                   let rec values acc = function
                     | [] -> Ok (List.rev acc)
@@ -74,12 +76,16 @@ let collect ?(global_names = []) ?(array_lengths = []) ?(generic_structs = [])
                       else List.length definition.fields
                     in
                     if List.length xs <> expected then
-                      error span
+                      error
+                        (Sema_types.aggregate_count_error_span (Ast.expr_span value)
+                           expected xs)
                         (Sema_types.record_field_count_message (Ast.type_name ty)
                            expected (List.length xs))
-                    else error span "brace-list requires an array type"
-                | None -> error span "brace-list requires an array type")
-            | Hir.Array _, _ -> error span "const array needs a brace-list initializer"
+                    else error (Ast.expr_span value) "brace-list requires an array type"
+                | None ->
+                    error (Ast.expr_span value) "brace-list requires an array type")
+            | Hir.Array _, _ ->
+                error (Ast.expr_span value) "const array needs a brace-list initializer"
             | (Hir.Vec _ as vector_ty), _ ->
                 let* actual_ty, values =
                   vector_const_expr ~array_lengths ~structs ~named_types
@@ -93,7 +99,8 @@ let collect ?(global_names = []) ?(array_lengths = []) ?(generic_structs = [])
                 else
                   error (Ast.expr_span value)
                     (constant_initializer_type_message actual_ty vector_ty)
-            | _, Ast.Array_lit _ -> error span "brace-list requires an array type"
+            | _, Ast.Array_lit _ ->
+                error (Ast.expr_span value) "brace-list requires an array type"
             | _, _ ->
                 let* vt, v =
                   const_value name value

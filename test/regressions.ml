@@ -3732,7 +3732,7 @@ let () =
            Ast.Type_param { name = "T"; _ };
            Ast.Const_param { name = "N"; ty = Ast.Int Ast.Usize; _ };
          ];
-       fields = [ { ty = Ast.Array ("N", Ast.Named_type ("T", _)); _ } ];
+       fields = [ { ty = Ast.Array ({ text = "N"; _ }, Ast.Named_type ("T", _)); _ } ];
        _;
      };
    Ast.Func
@@ -7200,11 +7200,26 @@ let () =
   semantic_pin "constant-local-initializer-diagnostic"
     "fn f() i32 { result i32 = 2\n return result }\nconst LIMIT i32 = result\n" 3 19 6
     "constant `LIMIT` initializer uses nonconstant value `result`" None;
-  semantic_pin "constant-array-count-caret" "const VALUES arr[2,u8] = {1,2,3}\n" 1 1 5
-    "array of 2 elements, got 3" None;
-  semantic_pin "constant-brace-list-caret"
-    "struct Pair { value i32 }\nconst VALUE Pair = {1}\n" 2 1 5
-    "brace-list requires an array type" None;
+  let constant_array_count = "const ITEMS arr[2,u8] = {4,5,6}\n" in
+  semantic_pin "constant-array-count-caret" constant_array_count 1
+    (String.index constant_array_count '6' + 1)
+    1 "array of 2 elements, got 3" None;
+  let constant_record_count = "struct Cell { value i32 }\nconst CELL Cell = {1, 2}\n" in
+  semantic_pin "constant-record-count-caret" constant_record_count 2
+    (String.index "const CELL Cell = {1, 2}" '2' + 1)
+    1 "record `Cell` has 1 field, got 2" None;
+  let constant_brace_list = "struct Entry { value u8 }\nconst ITEM Entry = {7}\n" in
+  semantic_pin "constant-brace-list-caret" constant_brace_list 2
+    (String.index "const ITEM Entry = {7}" '{' + 1)
+    1 "brace-list requires an array type" None;
+  let global_opaque_type = "opaque Token\nvar ITEM Token\n" in
+  semantic_pin "global-opaque-type-caret" global_opaque_type 2
+    (String.length "var ITEM " + 1)
+    5 "opaque type `Token` must use `handle[Token]`" None;
+  let global_array_length = "var ITEMS arr[18446744073709551615,u8]\n" in
+  semantic_pin "global-array-length-caret" global_array_length 1
+    (String.length "var ITEMS arr[" + 1)
+    20 "aggregate length must be an integer constant" None;
   semantic_pin "constant-initializer-type-caret" "const VALUE u32 = true\n" 1 19 4
     "constant initializer has type `bool`, expected `u32`" None;
   let constant_address_array_write =
@@ -10857,7 +10872,7 @@ let () =
     List.map (fun (field : Ast.field) -> (field.name, field.ty)) nested_fields
     <> [
          ("inner", Ast.Named_type ("FasInnerRecord", Span.synthetic));
-         ("values", Ast.Array ("2", Ast.Int Ast.I32));
+         ("values", Ast.Array (Ast.aggregate_length "2" Span.synthetic, Ast.Int Ast.I32));
        ]
   then failwith "nested record or array field type was not imported";
   let self_fields, _ = require_struct "FasSelfRecord" in

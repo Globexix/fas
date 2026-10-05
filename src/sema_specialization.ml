@@ -131,9 +131,9 @@ let rec diagnostic_type_of_ast specializations = function
   | Ast.Addr -> Diagnostic_addr
   | Ast.Handle ty -> Diagnostic_handle (diagnostic_type_of_ast specializations ty)
   | Ast.Array (length, ty) ->
-      Diagnostic_array (length, diagnostic_type_of_ast specializations ty)
+      Diagnostic_array (length.Ast.text, diagnostic_type_of_ast specializations ty)
   | Ast.Vec (length, ty) ->
-      Diagnostic_vec (length, diagnostic_type_of_ast specializations ty)
+      Diagnostic_vec (length.Ast.text, diagnostic_type_of_ast specializations ty)
   | Ast.Named_type (name, _) -> (
       match find_by_name specializations Struct_specialization name with
       | Some specialization -> (
@@ -382,13 +382,13 @@ let rec specialization_type_key = function
       "handle" ^ string_of_int (String.length key) ^ "_" ^ key
   | Ast.Array (length, ty) ->
       let length =
-        try string_of_int (int_of_string length) with Failure _ -> length
+        try string_of_int (int_of_string length.text) with Failure _ -> length.text
       in
       let key = specialization_type_key ty in
       "arr" ^ length ^ "_" ^ string_of_int (String.length key) ^ "_" ^ key
   | Ast.Vec (length, ty) ->
       let length =
-        try string_of_int (int_of_string length) with Failure _ -> length
+        try string_of_int (int_of_string length.text) with Failure _ -> length.text
       in
       let key = specialization_type_key ty in
       "vec" ^ length ^ "_" ^ string_of_int (String.length key) ^ "_" ^ key

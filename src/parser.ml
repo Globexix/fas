@@ -269,8 +269,9 @@ module P = struct
         Error [ Diag.error (peek p).span ("expected integer, found " ^ Token.show t) ]
 
   let aggregate_length p =
-    match (bump p).kind with
-    | Token.Int s | Token.Ident s -> Ok s
+    let token = bump p in
+    match token.kind with
+    | Token.Int s | Token.Ident s -> Ok (s, token.span)
     | t ->
         Error
           [
@@ -357,7 +358,7 @@ module P = struct
         ignore (bump p);
         let* () = expected p Token.Lbracket in
         delimited p (fun () ->
-            let* n = aggregate_length p in
+            let* n, length_span = aggregate_length p in
             let* () =
               if at p Token.Rbracket then
                 error (span p) "array type `arr` needs an element type after its length"
@@ -365,12 +366,12 @@ module P = struct
             in
             let* t = ty p in
             let* () = expected p Token.Rbracket in
-            Ok (Ast.Array (n, t)))
+            Ok (Ast.Array (Ast.aggregate_length n length_span, t)))
     | Token.Ident name when Names.type_constructor name = Some Names.Vector ->
         ignore (bump p);
         let* () = expected p Token.Lbracket in
         delimited p (fun () ->
-            let* n = aggregate_length p in
+            let* n, length_span = aggregate_length p in
             let* () = expected p Token.Comma in
             let element_span = span p in
             let* t = ty p in
@@ -379,7 +380,7 @@ module P = struct
             | Ast.Addr ->
                 error element_span
                   "vector element type must be `bool` or an integer type"
-            | _ -> Ok (Ast.Vec (n, t)))
+            | _ -> Ok (Ast.Vec (Ast.aggregate_length n length_span, t)))
     | Token.Ident s when List.mem s Names.scalar_type_names -> (
         ignore (bump p);
         match s with
@@ -646,11 +647,13 @@ module P = struct
              c_type)
     | _ ->
         let* name = ident p in
+        let ty_span = span p in
         let* ty = ty p in
         let* () = expected p Token.Assign in
         skip_newlines p;
         let* value =
           if at p Token.Lbrace then
+            let value_span = span p in
             let* () = expected p Token.Lbrace in
             delimited p (fun () ->
                 let rec es acc =
@@ -671,11 +674,11 @@ module P = struct
                 in
                 let* xs = es [] in
                 let* () = expected p Token.Rbrace in
-                Ok (Ast.Array_lit (xs, s)))
+                Ok (Ast.Array_lit (xs, value_span)))
           else expr p
         in
         let* () = end_stmt p in
-        Ok (Ast.Const { name; name_span; ty; value; span = s })
+        Ok (Ast.Const { name; name_span; ty_span; ty; value; span = s })
 
   and global_item p linkage =
     let s = span p in
@@ -686,6 +689,7 @@ module P = struct
         error (span p) "global `var` declarations need an explicit type before `=`"
       else Ok ()
     in
+    let ty_span = span p in
     let* ty = ty p in
     let* init =
       if eat p Token.Assign then (
@@ -701,7 +705,7 @@ module P = struct
       | (Ast.Export_c | Ast.Import_c | Ast.Import_const_c), None -> Ast.Import_c
     in
     let* () = end_stmt p in
-    Ok (Ast.Global { name; ty; init; linkage; span = s })
+    Ok (Ast.Global { name; ty_span; ty; init; linkage; span = s })
 
   and struct_item p =
     let s = span p in

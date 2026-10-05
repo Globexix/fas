@@ -125,13 +125,13 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~generic_structs ~c
   in
   let rec globals acc = function
     | [] -> Ok (List.rev acc)
-    | Ast.Global { name; ty; init; linkage; span } :: rest ->
-        let* ty = source_obj span ty in
+    | Ast.Global { name; ty_span; ty; init; linkage; _ } :: rest ->
+        let* ty = source_obj ty_span ty in
         let* init_value =
           match init with
           | None -> Ok None
           | Some expression ->
-              let* value = evaluate name span ty expression in
+              let* value = evaluate name (Ast.expr_span expression) ty expression in
               Ok (Some value)
         in
         globals

@@ -13,14 +13,14 @@ let ( let* ) result continuation =
 
 let lookup name table = List.find_opt (fun (entry, _, _) -> entry = name) table
 
-let c_pointer_selection_error value type_hint expected span operator =
-  let help = Sema_types.c_pointer_selection_help value type_hint expected in
-  Diag.error ?help span operator
-
 let shuffle_selector_expression = function
   | Ast.Array_lit (entries, span) ->
       Ast.Struct_lit
-        (Ast.Vec (string_of_int (List.length entries), Ast.Int Ast.I64), entries, span)
+        ( Ast.Vec
+            ( Ast.aggregate_length (string_of_int (List.length entries)) span,
+              Ast.Int Ast.I64 ),
+          entries,
+          span )
   | expression -> expression
 
 let shuffle_indices_in_range lane_ty n values =
@@ -216,11 +216,11 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
         | Hir.Opaque name -> Ok (Hir.Handle name)
         | _ -> add_error "handle type argument must be an opaque type")
     | Ast.Array (length, ty) ->
-        let* length = resolve_length const_bindings at length in
+        let* length = resolve_length const_bindings length.span length.text in
         let* ty = resolve_type type_bindings const_bindings at ty in
         Ok (Hir.Array (length, ty))
     | Ast.Vec (length, ty) -> (
-        let* length = resolve_length const_bindings at length in
+        let* length = resolve_length const_bindings length.span length.text in
         let* ty = resolve_type type_bindings const_bindings at ty in
         match vec_cap_error length ty with
         | Some message -> add_error message
@@ -453,18 +453,8 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
     ?(arrays = []) ?(array_lengths = []) ?(globals = []) ?resolve consts expected
     ?(check_only = false) ?(validate_dead = true) expression =
   match expression with
-  | Ast.C_dereference (value, type_hint, span) ->
-      Error
-        [
-          c_pointer_selection_error value type_hint expected span
-            "Fas has no unary `*`; read through an `addr` with `p[T]`";
-        ]
-  | Ast.C_dot_star (value, span) ->
-      Error
-        [
-          c_pointer_selection_error value None expected span
-            "Fas has no `.*`; read through an `addr` with `p[T]`";
-        ]
+  | (Ast.C_dereference _ | Ast.C_dot_star _) as expression ->
+      Error [ Sema_types.c_pointer_selection_diagnostic expected expression ]
   | Ast.Parenthesized (value, _) ->
       const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths ~globals
         ?resolve consts expected ~check_only ~validate_dead value
@@ -1106,18 +1096,8 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
         Ok (lt, lv, rt, rv)
   in
   match expression with
-  | Ast.C_dereference (value, type_hint, span) ->
-      Error
-        [
-          c_pointer_selection_error value type_hint expected span
-            "Fas has no unary `*`; read through an `addr` with `p[T]`";
-        ]
-  | Ast.C_dot_star (value, span) ->
-      Error
-        [
-          c_pointer_selection_error value None expected span
-            "Fas has no `.*`; read through an `addr` with `p[T]`";
-        ]
+  | (Ast.C_dereference _ | Ast.C_dot_star _) as expression ->
+      Error [ Sema_types.c_pointer_selection_diagnostic expected expression ]
   | Ast.Parenthesized (value, _) -> evaluate expected value
   | Ast.Ident (name, span) -> (
       match lookup name arrays with
@@ -1659,7 +1639,7 @@ let resolve_scalar_declarations ?(globals = []) ?(array_lengths = [])
   let declarations =
     List.filter_map
       (function
-        | Ast.Const { name; ty; value; span; _ } -> Some (name, (ty, value, span))
+        | Ast.Const { name; ty_span; ty; value; _ } -> Some (name, (ty, value, ty_span))
         | _ -> None)
       items
   in

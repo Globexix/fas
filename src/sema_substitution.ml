@@ -181,7 +181,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   in
   let rec type_mentions names = function
     | Ast.Array (length, ty) | Ast.Vec (length, ty) ->
-        List.mem length names || type_mentions names ty
+        List.mem length.Ast.text names || type_mentions names ty
     | Ast.Handle ty -> type_mentions names ty
     | Ast.Applied_type (_, arguments, _) ->
         List.exists (generic_argument_mentions names) arguments
@@ -243,11 +243,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Addr -> Ok ()
     | Ast.Array (length, ty) | Ast.Vec (length, ty) ->
         let* () =
-          match parse_integer length with
+          match parse_integer length.Ast.text with
           | Ok _ -> Ok ()
           | Error _ ->
-              if String_set.mem length value_names then Ok ()
-              else error span (Printf.sprintf "unknown name `%s`" length)
+              if String_set.mem length.text value_names then Ok ()
+              else error length.span (Printf.sprintf "unknown name `%s`" length.text)
         in
         validate_type_names value_names type_names span ty
     | Ast.Named_type (name, type_span) when Names.reserved_float_name name ->
@@ -1171,26 +1171,28 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Handle ty ->
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Handle ty)
-    | Ast.Array (length, ty) ->
+    | Ast.Array (length_info, ty) ->
         let* length =
-          if String_set.mem length !shadowed_constants then
-            error span (Printf.sprintf "`%s` is not a compile-time constant" length)
+          if String_set.mem length_info.text !shadowed_constants then
+            error length_info.span
+              (Printf.sprintf "`%s` is not a compile-time constant" length_info.text)
           else
-            resolve_aggregate_length ~globals:global_names (values @ eval_consts) span
-              length
+            resolve_aggregate_length ~globals:global_names (values @ eval_consts)
+              length_info.span length_info.text
         in
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
-        Ok (Ast.Array (length, ty))
-    | Ast.Vec (length, ty) ->
+        Ok (Ast.Array ({ length_info with text = length }, ty))
+    | Ast.Vec (length_info, ty) ->
         let* length =
-          if String_set.mem length !shadowed_constants then
-            error span (Printf.sprintf "`%s` is not a compile-time constant" length)
+          if String_set.mem length_info.text !shadowed_constants then
+            error length_info.span
+              (Printf.sprintf "`%s` is not a compile-time constant" length_info.text)
           else
-            resolve_aggregate_length ~globals:global_names (values @ eval_consts) span
-              length
+            resolve_aggregate_length ~globals:global_names (values @ eval_consts)
+              length_info.span length_info.text
         in
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
-        Ok (Ast.Vec (length, ty))
+        Ok (Ast.Vec ({ length_info with text = length }, ty))
     | Ast.Named_type (name, type_span) when Names.reserved_float_name name ->
         error type_span (Names.reserved_float_message name)
     | Ast.Named_type (name, type_span) -> (
@@ -2153,14 +2155,14 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         in
         Ok (Ast.Struct { item with fields })
     | Ast.Opaque _ as item -> Ok item
-    | Ast.Const ({ ty; value; span; _ } as item) ->
-        let* ty = resolve_ty ~values:eval_consts [] 0 span ty in
+    | Ast.Const ({ ty; value; ty_span; _ } as item) ->
+        let* ty = resolve_ty ~values:eval_consts [] 0 ty_span ty in
         let* value =
           with_preserved_layout_queries (fun () -> resolve_expr [] 0 value)
         in
         Ok (Ast.Const { item with ty; value })
-    | Ast.Global ({ ty; init; span; _ } as item) ->
-        let* ty = resolve_ty ~values:eval_consts [] 0 span ty in
+    | Ast.Global ({ ty; init; ty_span; _ } as item) ->
+        let* ty = resolve_ty ~values:eval_consts [] 0 ty_span ty in
         let* init =
           match init with
           | None -> Ok None

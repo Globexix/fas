@@ -1538,7 +1538,9 @@ let type_result ?(allow_arrays = false) ~alias_name ~alias_type_node ~resolve_al
           match (size, child_type node) with
           | Some size, Some element when size >= 0 ->
               Result.map
-                (fun ty -> Ast.Array (string_of_int size, ty))
+                (fun ty ->
+                  Ast.Array
+                    (Ast.aggregate_length (string_of_int size) Span.synthetic, ty))
                 (resolve seen element)
           | _ -> Error "array types are not supported by value")
       | Some "IncompleteArrayType" -> Error "arrays of unknown size are not supported"
@@ -2857,7 +2859,13 @@ let map_declarations ?(container = false) ~span declarations =
           | Some (Floating bits) ->
               let bytes = (bits + 7) / 8 in
               if bytes <> 0 && count > max_int / bytes then None
-              else Some (Ast.Array (string_of_int (count * bytes), Ast.Int Ast.U8))
+              else
+                Some
+                  (Ast.Array
+                     ( Ast.aggregate_length
+                         (string_of_int (count * bytes))
+                         Span.synthetic,
+                       Ast.Int Ast.U8 ))
           | _ -> None)
       | _ -> None
     in
@@ -3067,7 +3075,7 @@ let map_declarations ?(container = false) ~span declarations =
       | Ast.Handle (Ast.Named_type (name, _)) -> Some (Hir.Handle name)
       | Ast.Named_type (name, _) -> Some (Hir.Struct name)
       | Ast.Array (length, ty) ->
-          Option.bind (int_of_string_opt length) (fun n ->
+          Option.bind (int_of_string_opt length.text) (fun n ->
               Option.map (fun ty -> Hir.Array (n, ty)) (convert ty))
       | _ -> None
     in
@@ -3679,6 +3687,7 @@ let map_declarations ?(container = false) ~span declarations =
                   (Ast.Global
                      {
                        name;
+                       ty_span = span;
                        ty;
                        init = None;
                        linkage =
@@ -3936,7 +3945,8 @@ let reconcile_source ?(container_mismatch_to_clang = false) source_items importe
                    (Printf.sprintf
                       "C declaration `%s` has type `arr[?, %s]`, but Fas declares `%s`"
                       name (Ast.type_name element)
-                      (Ast.type_name (Ast.Array ("?", actual)))))
+                      (Ast.type_name
+                         (Ast.Array (Ast.aggregate_length "?" Span.synthetic, actual)))))
           | _ -> Some (duplicate ()))
       | _ -> Some (duplicate ())
   in
