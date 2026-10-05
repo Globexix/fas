@@ -779,12 +779,12 @@ let rec source_ty_in_context c span = function
       | Some { declaration_kind = Top_type; _ } | None ->
           source_ty_diag c.named_types type_span (Ast.Named_type (name, type_span)))
   | Ast.Array (length, ty) ->
-      source_aggregate_in_context c length.span
+      source_aggregate_in_context c "array" length.span
         (fun n t -> Hir.Array (n, t))
         length.text ty
   | Ast.Vec (length, ty) -> (
       let* result =
-        source_aggregate_in_context c length.span
+        source_aggregate_in_context c "vector" length.span
           (fun n t -> Hir.Vec (n, t))
           length.text ty
       in
@@ -796,23 +796,23 @@ let rec source_ty_in_context c span = function
       | _ -> Ok result)
   | ty -> source_ty_diag c.named_types span ty
 
-and source_aggregate_in_context c span make length element =
+and source_aggregate_in_context c kind span make length element =
   let* length =
     match int_of_string_opt length with
     | Some _ -> Ok length
     | None when Option.is_some (lookup_local length c) ->
         error span (Printf.sprintf "`%s` is not a compile-time constant" length)
     | None ->
-        resolve_aggregate_length
+        resolve_aggregate_length ~kind
           ~globals:(List.map (fun (name, _, _) -> name) c.globals)
           c.consts span length
   in
   let* element = source_ty_in_context c span element in
   match int_of_string_opt length with
   | Some length when length < 0 ->
-      error span (Printf.sprintf "aggregate length cannot be negative: `%d`" length)
+      error span (Printf.sprintf "%s length cannot be negative: `%d`" kind length)
   | Some length -> Ok (make length element)
-  | None -> error span "aggregate length must be an integer constant"
+  | None -> error span (Printf.sprintf "%s length must be an integer constant" kind)
 
 let intern_string c span s =
   let pool = c.string_pool in

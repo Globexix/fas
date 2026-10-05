@@ -5778,8 +5778,8 @@ let () =
   semantic_error "const-generic-struct-argument-type" "const argument type mismatch"
     "struct Buffer[T, N const u8] { data arr[N, T] }\n\
      fn test(value Buffer[u8, sizeof[u8]]) i64 { return 0 }\n";
-  semantic_error "const-generic-struct-negative-length"
-    "aggregate length cannot be negative"
+  semantic_message "const-generic-struct-negative-length"
+    "array length cannot be negative: `-1`"
     "struct Buffer[T, N const isize] { data arr[N, T] }\n\
      fn test(value Buffer[u8, -1]) i64 { return 0 }\n";
 
@@ -5984,14 +5984,29 @@ let () =
     "aggregate parameter `value` of type `arr[N,u8]` cannot be passed by value; pass \
      `&x` as `addr` or `handle[T]`"
     "fn identity[N const usize](value arr[N, u8]) arr[N, u8] { return value }\n";
-  semantic_error "const-generic-function-negative-length"
-    "aggregate length cannot be negative"
+  semantic_message "const-generic-function-negative-length"
+    "array length cannot be negative: `-2`"
     "fn size[N const isize]() usize { return sizeof[arr[N,u8]] }\n\
-     fn test() usize { return size[-1]() }\n";
-  semantic_error "const-generic-function-machine-length"
-    "aggregate length must be an integer constant"
+     fn test() usize { return size[-2]() }\n";
+  semantic_message "const-generic-function-machine-length"
+    "array length `9223372036854775808` is too large"
     "fn size[N const u64]() usize { return sizeof[arr[N,u8]] }\n\
-     fn test() usize { return size[18446744073709551615]() }\n";
+     fn test() usize { return size[9223372036854775808]() }\n";
+  let sizeof_large_array_source =
+    "fn f() usize { return sizeof[arr[9223372036854775808,u8]] }\n"
+  in
+  semantic_pin "sizeof-large-array-length" sizeof_large_array_source 1
+    (String.index sizeof_large_array_source '9' + 1)
+    19 "array length `9223372036854775808` is too large" None;
+  let sizeof_negative_array_source =
+    "const N isize = -2\nfn f() usize { return sizeof[arr[N,u8]] }\n"
+  in
+  semantic_pin "sizeof-negative-array-length" sizeof_negative_array_source 2
+    (String.index_from sizeof_negative_array_source
+       (String.index sizeof_negative_array_source '\n' + 1)
+       'N'
+    - String.index sizeof_negative_array_source '\n')
+    1 "array length cannot be negative: `-2`" None;
   let const_array_len_generic_llvm =
     llvm_of
       "const DATA arr[3, u8] = { 10, 20, 30 }\n\
@@ -7229,7 +7244,7 @@ let () =
   let global_array_length = "var ITEMS arr[18446744073709551615,u8]\n" in
   semantic_pin "global-array-length-caret" global_array_length 1
     (String.length "var ITEMS arr[" + 1)
-    20 "aggregate length must be an integer constant" None;
+    20 "array length `18446744073709551615` is too large" None;
   semantic_pin "constant-initializer-type-caret" "const VALUE u32 = true\n" 1 19 4
     "constant initializer has type `bool`, expected `u32`" None;
   let constant_address_array_write =
@@ -9646,7 +9661,7 @@ let () =
      not constant"
     "var G i32\nconst P usize = bitcast[usize](&G)\n";
   semantic_message "address-constants-array-length"
-    "aggregate length must be an integer constant"
+    "array length must be an integer constant"
     "var G i32\nconst P addr = &G\nvar A arr[P,i32]\n";
   semantic_message "address-constants-switch-case"
     "address constant `P` cannot be used as a case label"

@@ -136,6 +136,22 @@ let parse_integer raw =
         digits;
       Ok !value)
 
+let integer_exceeds_max_int raw =
+  match parse_integer raw with
+  | Ok value -> Int64.unsigned_compare value (Int64.of_int max_int) > 0
+  | Error message -> message = "integer literal overflows 64 bits"
+
+let unsigned_int64_to_string value =
+  let rec digits value =
+    if Int64.unsigned_compare value 10L < 0 then
+      String.make 1 (Char.chr (48 + Int64.to_int value))
+    else
+      let quotient = Int64.unsigned_div value 10L in
+      let remainder = Int64.unsigned_rem value 10L in
+      digits quotient ^ String.make 1 (Char.chr (48 + Int64.to_int remainder))
+  in
+  digits value
+
 let mask_value ty value =
   match ty with
   | Hir.Bool -> if value = 0L then 0L else 1L

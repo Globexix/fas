@@ -241,15 +241,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   let rec validate_type_names value_names type_names span = function
     | Ast.Handle ty -> validate_type_names value_names type_names span ty
     | Ast.Addr -> Ok ()
-    | Ast.Array (length, ty) | Ast.Vec (length, ty) ->
-        let* () =
-          match parse_integer length.Ast.text with
-          | Ok _ -> Ok ()
-          | Error _ ->
-              if String_set.mem length.text value_names then Ok ()
-              else error length.span (Printf.sprintf "unknown name `%s`" length.text)
-        in
-        validate_type_names value_names type_names span ty
+    | Ast.Array (length, ty) ->
+        validate_aggregate_length_names value_names type_names span "array" length ty
+    | Ast.Vec (length, ty) ->
+        validate_aggregate_length_names value_names type_names span "vector" length ty
     | Ast.Named_type (name, type_span) when Names.reserved_float_name name ->
         error type_span (Names.reserved_float_message name)
     | Ast.Named_type (name, type_span) when String_set.mem name !local_values ->
@@ -278,6 +273,22 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             (validate_generic_argument_names value_names type_names application_span)
             arguments
     | Ast.Bool | Ast.Void | Ast.Int _ -> Ok ()
+  and validate_aggregate_length_names value_names type_names span kind length ty =
+    let too_large = integer_exceeds_max_int length.Ast.text in
+    let* () =
+      match parse_integer length.text with
+      | Ok _ when too_large ->
+          error length.span
+            (Printf.sprintf "%s length `%s` is too large" kind length.text)
+      | Ok _ -> Ok ()
+      | Error _ when too_large ->
+          error length.span
+            (Printf.sprintf "%s length `%s` is too large" kind length.text)
+      | Error _ ->
+          if String_set.mem length.text value_names then Ok ()
+          else error length.span (Printf.sprintf "unknown name `%s`" length.text)
+    in
+    validate_type_names value_names type_names span ty
   and validate_generic_argument_names value_names type_names fallback_span = function
     | Ast.Type_or_index (Ast.Applied_type (name, _, _) as ty) -> (
         match nearest_kind value_names type_names name with
@@ -1177,8 +1188,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             error length_info.span
               (Printf.sprintf "`%s` is not a compile-time constant" length_info.text)
           else
-            resolve_aggregate_length ~globals:global_names (values @ eval_consts)
-              length_info.span length_info.text
+            resolve_aggregate_length ~kind:"array" ~globals:global_names
+              (values @ eval_consts) length_info.span length_info.text
         in
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Array ({ length_info with text = length }, ty))
@@ -1188,8 +1199,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             error length_info.span
               (Printf.sprintf "`%s` is not a compile-time constant" length_info.text)
           else
-            resolve_aggregate_length ~globals:global_names (values @ eval_consts)
-              length_info.span length_info.text
+            resolve_aggregate_length ~kind:"vector" ~globals:global_names
+              (values @ eval_consts) length_info.span length_info.text
         in
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Vec ({ length_info with text = length }, ty))

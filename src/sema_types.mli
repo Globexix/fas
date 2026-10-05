@@ -39,6 +39,7 @@ val unknown_type_name : string -> string option
 
 val resolve_aggregate_length :
   ?globals:string list ->
+  ?kind:string ->
   const_values ->
   Span.t ->
   string ->

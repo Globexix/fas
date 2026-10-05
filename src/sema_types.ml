@@ -192,12 +192,12 @@ let rec source_ty named_types = function
   | Ast.Handle ty ->
       Result.map (fun name -> Hir.Handle name) (handle_target named_types ty)
   | Ast.Array (length, ty) ->
-      source_aggregate named_types
+      source_aggregate named_types "array"
         (fun n element -> Hir.Array (n, element))
         length.text ty
   | Ast.Vec (length, ty) -> (
       match
-        source_aggregate named_types
+        source_aggregate named_types "vector"
           (fun n element -> Hir.Vec (n, element))
           length.text ty
       with
@@ -239,15 +239,16 @@ and handle_target named_types = function
       | Ok _ -> Error "handle type argument must be an opaque type"
       | Error message -> Error message)
 
-and source_aggregate named_types make raw element =
-  try
-    let length = int_of_string raw in
-    if length < 0 then
-      Error (Printf.sprintf "aggregate length cannot be negative: `%d`" length)
-    else
+and source_aggregate named_types kind make raw element =
+  match int_of_string_opt raw with
+  | Some length when length < 0 ->
+      Error (Printf.sprintf "%s length cannot be negative: `%d`" kind length)
+  | Some length ->
       let* element = source_ty named_types element in
       Ok (make length element)
-  with Failure _ -> Error "aggregate length must be an integer constant"
+  | None when Sema_numeric.integer_exceeds_max_int raw ->
+      Error (Printf.sprintf "%s length `%s` is too large" kind raw)
+  | None -> Error (Printf.sprintf "%s length must be an integer constant" kind)
 
 let rec named_type_span name = function
   | Ast.Named_type (candidate, span) when candidate = name -> Some span
@@ -284,7 +285,10 @@ let source_ty_diag named_types span ty =
           [ Diag.error type_span (Names.reserved_float_message name) ]
       | None, None ->
           let primary =
-            if String.starts_with ~prefix:"aggregate length" message then
+            if
+              String.starts_with ~prefix:"array length" message
+              || String.starts_with ~prefix:"vector length" message
+            then
               let rec bad_length_span = function
                 | Ast.Array (length, element) | Ast.Vec (length, element) -> (
                     match int_of_string_opt length.text with
@@ -306,54 +310,60 @@ let source_ty_diag named_types span ty =
 
 let lookup name table = List.find_opt (fun (entry, _, _) -> entry = name) table
 
-let resolve_aggregate_length ?(globals = []) values span length =
+let resolve_aggregate_length ?(globals = []) ?(kind = "array") values span length =
   match lookup length values with
   | None when List.mem length globals ->
       error span (Printf.sprintf "global `%s` is not a constant" length)
+  | None when Sema_numeric.integer_exceeds_max_int length ->
+      error span (Printf.sprintf "%s length `%s` is too large" kind length)
   | None -> Ok length
   | Some (_, ty, value) ->
       if Sema_numeric.is_unsigned ty then
         if Int64.unsigned_compare value (Int64.of_int max_int) > 0 then
-          error span "aggregate length must be an integer constant"
+          error span
+            (Printf.sprintf "%s length `%s` is too large" kind
+               (Sema_numeric.unsigned_int64_to_string value))
         else Ok (Int64.to_string value)
       else
         let value = Sema_numeric.sign_extend_value ty value in
         if value < 0L then
-          error span (Printf.sprintf "aggregate length cannot be negative: `%Ld`" value)
+          error span (Printf.sprintf "%s length cannot be negative: `%Ld`" kind value)
         else if value > Int64.of_int max_int then
-          error span "aggregate length must be an integer constant"
+          error span (Printf.sprintf "%s length `%Ld` is too large" kind value)
         else Ok (Int64.to_string value)
 
 let rec source_ty_with_values ?(globals = []) named_types values span = function
   | Ast.Array (length_info, ty) -> (
       let* length =
-        resolve_aggregate_length ~globals values length_info.span length_info.text
+        resolve_aggregate_length ~kind:"array" ~globals values length_info.span
+          length_info.text
       in
       let* ty = source_ty_with_values ~globals named_types values span ty in
       try
         let length = int_of_string length in
         if length < 0 then
           error length_info.span
-            (Printf.sprintf "aggregate length cannot be negative: `%d`" length)
+            (Printf.sprintf "array length cannot be negative: `%d`" length)
         else Ok (Hir.Array (length, ty))
       with Failure _ ->
-        error length_info.span "aggregate length must be an integer constant")
+        error length_info.span "array length must be an integer constant")
   | Ast.Vec (length_info, ty) -> (
       let* length =
-        resolve_aggregate_length ~globals values length_info.span length_info.text
+        resolve_aggregate_length ~kind:"vector" ~globals values length_info.span
+          length_info.text
       in
       let* ty = source_ty_with_values ~globals named_types values span ty in
       try
         let length = int_of_string length in
         if length < 0 then
           error length_info.span
-            (Printf.sprintf "aggregate length cannot be negative: `%d`" length)
+            (Printf.sprintf "vector length cannot be negative: `%d`" length)
         else
           match vec_cap_error length ty with
           | Some message -> error length_info.span message
           | None -> Ok (Hir.Vec (length, ty))
       with Failure _ ->
-        error length_info.span "aggregate length must be an integer constant")
+        error length_info.span "vector length must be an integer constant")
   | ty -> source_ty_diag named_types span ty
 
 let layout_diag span structs ty =

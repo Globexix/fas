@@ -216,11 +216,11 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
         | Hir.Opaque name -> Ok (Hir.Handle name)
         | _ -> add_error "handle type argument must be an opaque type")
     | Ast.Array (length, ty) ->
-        let* length = resolve_length const_bindings length.span length.text in
+        let* length = resolve_length "array" const_bindings length.span length.text in
         let* ty = resolve_type type_bindings const_bindings at ty in
         Ok (Hir.Array (length, ty))
     | Ast.Vec (length, ty) -> (
-        let* length = resolve_length const_bindings length.span length.text in
+        let* length = resolve_length "vector" const_bindings length.span length.text in
         let* ty = resolve_type type_bindings const_bindings at ty in
         match vec_cap_error length ty with
         | Some message -> add_error message
@@ -244,30 +244,38 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
           instantiate type_bindings const_bindings name application_span arguments
         in
         Ok (Hir.Struct structure)
-  and resolve_length const_bindings at raw =
+  and resolve_length kind const_bindings at raw =
     match int_of_string_opt raw with
     | Some length when length >= 0 -> Ok length
     | Some length ->
-        add_error (Printf.sprintf "aggregate length cannot be negative: `%d`" length)
+        add_error (Printf.sprintf "%s length cannot be negative: `%d`" kind length)
+    | None when integer_exceeds_max_int raw ->
+        Error [ Diag.error at (Printf.sprintf "%s length `%s` is too large" kind raw) ]
     | None -> (
         let values = const_bindings @ consts in
-        match resolve_aggregate_length ~globals values at raw with
+        match resolve_aggregate_length ~kind ~globals values at raw with
         | Ok resolved -> (
             match int_of_string_opt resolved with
             | Some length when length >= 0 -> Ok length
             | Some length ->
                 add_error
-                  (Printf.sprintf "aggregate length cannot be negative: `%d`" length)
-            | None -> evaluate values (Ast.Ident (raw, at)) None |> length_value at)
+                  (Printf.sprintf "%s length cannot be negative: `%d`" kind length)
+            | None -> evaluate values (Ast.Ident (raw, at)) None |> length_value kind at
+            )
         | Error diagnostics -> Error diagnostics)
-  and length_value at = function
+  and length_value kind at = function
     | Error diagnostics -> Error diagnostics
     | Ok (ty, value) ->
         if not (is_int ty) then
-          Error [ Diag.error at "aggregate length must be an integer" ]
+          Error [ Diag.error at (Printf.sprintf "%s length must be an integer" kind) ]
         else if is_unsigned ty then
           if Int64.unsigned_compare value (Int64.of_int max_int) > 0 then
-            Error [ Diag.error at "aggregate length must be an integer constant" ]
+            Error
+              [
+                Diag.error at
+                  (Printf.sprintf "%s length `%s` is too large" kind
+                     (unsigned_int64_to_string value));
+              ]
           else Ok (Int64.to_int value)
         else
           let value = sign_extend_value ty value in
@@ -275,10 +283,13 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
             Error
               [
                 Diag.error at
-                  (Printf.sprintf "aggregate length cannot be negative: `%Ld`" value);
+                  (Printf.sprintf "%s length cannot be negative: `%Ld`" kind value);
               ]
           else if value > Int64.of_int max_int then
-            Error [ Diag.error at "aggregate length must be an integer constant" ]
+            Error
+              [
+                Diag.error at (Printf.sprintf "%s length `%Ld` is too large" kind value);
+              ]
           else Ok (Int64.to_int value)
   and instantiate outer_type_bindings outer_const_bindings name at arguments =
     match List.assoc_opt name templates with

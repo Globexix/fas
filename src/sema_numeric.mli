@@ -6,6 +6,8 @@ val is_scalar : Hir.ty -> bool
 val is_numeric : Hir.ty -> bool
 val cast_legal : Ast.cast_kind -> Hir.ty -> Hir.ty -> bool
 val parse_integer : string -> (int64, string) result
+val integer_exceeds_max_int : string -> bool
+val unsigned_int64_to_string : int64 -> string
 val mask_value : Hir.ty -> int64 -> int64
 val fits_literal : Hir.ty -> int64 -> bool
 val fits_negative_literal : Hir.ty -> int64 -> bool
