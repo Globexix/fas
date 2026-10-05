@@ -66,7 +66,7 @@ let aggregate_parameter_error span name ty_name =
   error span
     (Printf.sprintf
        "aggregate parameter `%s` of type `%s` cannot be passed by value; declare `%s` \
-        as `addr`; callers pass the struct's address with `&`"
+        as `addr`; callers pass its address with `&`"
        name ty_name name)
 
 let aggregate_result_error span ty_name =

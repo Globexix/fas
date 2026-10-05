@@ -1370,11 +1370,11 @@ let () =
     "struct S { x i64 }\nfn f() S { s S\nreturn s }\n";
   semantic_error "aggregate-parameter"
     "aggregate parameter `value` of type `S` cannot be passed by value; declare \
-     `value` as `addr`; callers pass the struct's address with `&`"
+     `value` as `addr`; callers pass its address with `&`"
     "struct S { x i64 }\nfn f(value S) void { return }\n";
   semantic_error "aggregate-array-parameter"
     "aggregate parameter `value` of type `arr[4,u32]` cannot be passed by value; \
-     declare `value` as `addr`; callers pass the struct's address with `&`"
+     declare `value` as `addr`; callers pass its address with `&`"
     "fn f(value arr[4,u32]) void { return }\n";
   semantic_error "aggregate-result"
     "aggregate result `S` cannot be returned by value; return `void` and take the \
@@ -1386,18 +1386,18 @@ let () =
     "fn f() arr[4,u32] { value arr[4,u32]\nreturn value }\n";
   let generic_aggregate_parameter_error =
     "aggregate parameter `x` of type `arr[N,u8]` cannot be passed by value; declare \
-     `x` as `addr`; callers pass the struct's address with `&`"
+     `x` as `addr`; callers pass its address with `&`"
   in
   semantic_error "generic-array-parameter-by-value" generic_aggregate_parameter_error
     "fn take[N const usize](x arr[N,u8]) void { return }\n";
   semantic_error "generic-struct-parameter-by-value"
     "aggregate parameter `r` of type `Ring[N]` cannot be passed by value; declare `r` \
-     as `addr`; callers pass the struct's address with `&`"
+     as `addr`; callers pass its address with `&`"
     "struct Ring[N const usize] { data arr[N,u8] }\n\
      fn take[N const usize](r Ring[N]) void { return }\n";
   semantic_error "generic-known-struct-parameter-by-value"
     "aggregate parameter `value` of type `S` cannot be passed by value; declare \
-     `value` as `addr`; callers pass the struct's address with `&`"
+     `value` as `addr`; callers pass its address with `&`"
     "struct S { value i32 }\nfn take[N const usize](value S) void { return }\n";
   semantic_error "generic-array-result-by-value"
     "aggregate result `arr[N,u8]` cannot be returned by value; return `void` and take \
@@ -1426,7 +1426,7 @@ let () =
   in
   semantic_pin "aggregate-parameter-name" aggregate_parameter_text 2 18 5
     "aggregate parameter `state` of type `State` cannot be passed by value; declare \
-     `state` as `addr`; callers pass the struct's address with `&`"
+     `state` as `addr`; callers pass its address with `&`"
     None;
   semantic_accept "aggregate-parameter-address-twin"
     "struct State { value u32 }\nfn consume(state addr) void { return }\n";
@@ -5077,8 +5077,7 @@ let () =
       if
         diagnostic.message
         <> "aggregate parameter `value` of type `Box[Box[u8]]` cannot be passed by \
-            value; declare `value` as `addr`; callers pass the struct's address with \
-            `&`"
+            value; declare `value` as `addr`; callers pass its address with `&`"
       then
         failwith
           ("generic-instantiation-nested-struct: unexpected message: "
@@ -6022,7 +6021,7 @@ let () =
   then failwith "const-generic-function-type-template: template reached LLVM output";
   semantic_error "const-generic-function-type-mismatch"
     "aggregate parameter `value` of type `arr[N,u8]` cannot be passed by value; \
-     declare `value` as `addr`; callers pass the struct's address with `&`"
+     declare `value` as `addr`; callers pass its address with `&`"
     "fn identity[N const usize](value arr[N, u8]) arr[N, u8] { return value }\n";
   semantic_message "const-generic-function-negative-length"
     "array length cannot be negative: `-2`"
@@ -7192,7 +7191,7 @@ let () =
   semantic_pin "aggregate-parameter-diagnostic"
     "fn consume(rows arr[3,u16]) void { return }\n" 1 17 3
     "aggregate parameter `rows` of type `arr[3, u16]` cannot be passed by value; \
-     declare `rows` as `addr`; callers pass the struct's address with `&`"
+     declare `rows` as `addr`; callers pass its address with `&`"
     None;
   semantic_pin "aggregate-result-diagnostic"
     "fn values() arr[3,u8] { return (arr[3,u8]){1,2,3} }\n" 1 13 3
