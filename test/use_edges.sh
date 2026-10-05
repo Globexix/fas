@@ -171,7 +171,7 @@ cat >"$USE_EDGES_TMP/paths/directory.fas/root.fas" <<'FAS'
 use "../directory.fas"
 FAS
 expect_failure "$OCAML_FAS" "$USE_EDGES_TMP/paths/absolute.fas"
-grep -F "absolute Fas dependency path \`$USE_EDGES_TMP/project/deps/leaf.fas\` is not supported; use a \`relative path\`" \
+grep -F "absolute Fas dependency path \`$USE_EDGES_TMP/project/deps/leaf.fas\` is not supported; use a relative path" \
   "$USE_EDGES_TMP/stderr" >/dev/null || fail "absolute dependency diagnostic changed"
 expect_failure "$OCAML_FAS" "$USE_EDGES_TMP/paths/extension.fas"
 grep -F 'Fas dependency path `library.FAS` must end in lowercase `.fas`' \
