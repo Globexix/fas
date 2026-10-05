@@ -206,8 +206,17 @@ let address_value c ty expression =
               match place target with
               | Ok (_, Hir.Array _, _) ->
                   Some (Printf.sprintf "write `&%s[k]`" (Ast.expr_name target))
-              | Ok (_, Hir.Struct _, _) ->
-                  Some (Printf.sprintf "write `&%s.field`" (Ast.expr_name target))
+              | Ok (_, Hir.Struct name, _) -> (
+                  match
+                    List.find_opt
+                      (fun (definition : Hir.struct_def) -> definition.name = name)
+                      c.structs
+                  with
+                  | Some { fields = [ field ]; _ } ->
+                      Some
+                        (Printf.sprintf "write `&%s.%s`" (Ast.expr_name target)
+                           field.name)
+                  | Some _ | None -> None)
               | _ -> None
             in
             let message =

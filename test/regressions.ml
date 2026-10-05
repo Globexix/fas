@@ -9678,11 +9678,16 @@ let () =
     2 14 1 "address constant `&G` cannot be used in arithmetic" (Some "write `&G[k]`");
   semantic_pin "address-constants-struct-arithmetic"
     "struct Point { x i32 }\nvar G Point\nvar P addr = &G + 1\n" 3 14 1
-    "address constant `&G` cannot be used in arithmetic" (Some "write `&G.field`");
+    "address constant `&G` cannot be used in arithmetic" (Some "write `&G.x`");
+  semantic_pin "address-constants-multifield-arithmetic"
+    "struct Point { x i32 y i32 }\nvar G Point\nvar P addr = &G + 1\n" 3 14 1
+    "address constant `&G` cannot be used in arithmetic" None;
   semantic_pin "address-constants-scalar-arithmetic" "var G i32\nvar P addr = &G + 1\n"
     2 14 1 "address constant `&G` cannot be used in arithmetic" None;
   semantic_accept "address-constants-arithmetic-twin"
     "var G arr[2,i32]\nvar P addr = &G[1]\n";
+  semantic_accept "address-constants-struct-arithmetic-twin"
+    "struct Point { x i32 }\nvar G Point\nvar P addr = &G.x\n";
   semantic_message "address-constants-comparison"
     "global initializer must be a constant expression for `P`; `&G == &G` is not \
      constant"
