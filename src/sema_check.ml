@@ -1948,6 +1948,14 @@ and check_expr_inner ?destination (c : context) expected expression =
         check_place c (Ast.Arrow_field (base, field, operator_span, field_span))
       in
       Ok place.expr
+  | Ast.Addr_of (Ast.Ident (name, _), s)
+    when Option.is_none (lookup_local name c)
+         && Option.value ~default:false
+              (Option.map
+                 (fun binding -> binding.declaration_kind = Top_function)
+                 (lookup_top_level name c.top_level_bindings))
+         && not (List.mem name c.external_c_functions) ->
+      error s "only `extern \"C\"` functions have an address"
   | Ast.Addr_of (e, s) -> (
       let* place = check_place c e in
       (match (place.root, place.path) with

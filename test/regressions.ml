@@ -9661,9 +9661,11 @@ let () =
     "P[0] is not an address constant; write `&G`, `&G.field`, `&G[k]`, `c\"...\"` or \
      `null`"
     None;
-  semantic_message "address-constants-function-target"
-    "function `f` must be called to produce a value"
-    "fn f() void { return }\nvar P addr = &f\n";
+  semantic_pin "address-constants-function-target"
+    "fn f() void { return }\nvar P addr = &f\n" 2 14 1
+    "only `extern \"C\"` functions have an address" None;
+  semantic_accept "address-constants-c-function-target"
+    "extern \"C\" { fn f() void }\nvar P addr = &f\n";
   semantic_message "address-constants-scalar-constant-target"
     "constant `G` cannot be addressed" "const G i32 = 1\nvar P addr = &G\n";
   semantic_message "address-constants-vector-constant-target"
