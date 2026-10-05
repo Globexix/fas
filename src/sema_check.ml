@@ -2720,14 +2720,20 @@ and check_call c _expected fn args s =
                      name
                      (Sema_types.diagnostic_ty_name (Hir.expr_ty a)))
               else if Hir.expr_ty b2 <> Hir.expr_ty a then
-                error
-                  (Ast.expr_span (List.nth args 1))
-                  (Printf.sprintf
-                     "argument 2 of `%s` is `%s`, expected the type of argument 1 \
-                      (`%s`)"
-                     name
-                     (Sema_types.diagnostic_ty_name (Hir.expr_ty b2))
-                     (Sema_types.diagnostic_ty_name (Hir.expr_ty a)))
+                match
+                  Sema_types.integer_literal_vector_argument_error name
+                    (List.nth args 1) (Hir.expr_ty a)
+                with
+                | Some diagnostic -> Error [ diagnostic ]
+                | None ->
+                    error
+                      (Ast.expr_span (List.nth args 1))
+                      (Printf.sprintf
+                         "argument 2 of `%s` is `%s`, expected the type of argument 1 \
+                          (`%s`)"
+                         name
+                         (Sema_types.diagnostic_ty_name (Hir.expr_ty b2))
+                         (Sema_types.diagnostic_ty_name (Hir.expr_ty a)))
               else Ok (Hir.Call (Hir.Builtin b, [ a; b2 ], Hir.expr_ty a, s))
         | Hir.Any | Hir.All -> (
             if List.length args <> 1 then

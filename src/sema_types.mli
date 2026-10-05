@@ -67,6 +67,9 @@ val constant_array_element_type_message : Hir.ty -> Hir.ty -> string
 val cast_error :
   ?expression:Ast.expr -> Ast.cast_kind -> Hir.ty -> Hir.ty -> Span.t -> Diag.t
 
+val integer_literal_vector_argument_error :
+  string -> Ast.expr -> Hir.ty -> Diag.t option
+
 val cast_target_error : Ast.cast_kind -> Hir.ty -> string
 val missing_field_message : ?record_name:string -> string -> Hir.ty -> string
 val record_field_count_message : string -> int -> int -> string

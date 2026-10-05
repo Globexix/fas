@@ -936,7 +936,15 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 | _ -> false
               in
               if valid then Ok ()
-              else error span (Sema_types.cast_target_error kind destination)
+              else
+                match check_expr c None value with
+                | Ok checked ->
+                    Error
+                      [
+                        Sema_types.cast_error ~expression:value kind
+                          (Hir.expr_ty checked) destination span;
+                      ]
+                | Error _ -> error span (Sema_types.cast_target_error kind destination)
           in
           validate_non_dependent_expression c dependent None value
       | Ast.Handle_from_addr (destination, value, span) ->
@@ -1144,6 +1152,20 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     in
     let context =
       make_legality_context (Option.value ~default:Hir.Void expected_return)
+    in
+    let* () =
+      Result_list.iter
+        (function
+          | Ast.Type_param _ -> Ok ()
+          | Ast.Const_param ({ name; ty; span; _ } : Ast.const_param) ->
+              let* ty =
+                source_ty_with_values ~globals:global_names eval_named_types eval_consts
+                  span ty
+              in
+              let* binding = add_local name ty context span in
+              mark_init binding context;
+              Ok ())
+        generic_params
     in
     let rec add_parameters dependent = function
       | [] -> Ok dependent

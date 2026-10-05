@@ -1536,11 +1536,15 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
       let* () =
         if left_ty = right_ty then Ok ()
         else
-          error (Ast.expr_span right)
-            (Printf.sprintf
-               "argument 2 of `%s` is `%s`, expected the type of argument 1 (`%s`)" name
-               (Sema_types.diagnostic_ty_name right_ty)
-               (Sema_types.diagnostic_ty_name left_ty))
+          match Sema_types.integer_literal_vector_argument_error name right left_ty with
+          | Some diagnostic -> Error [ diagnostic ]
+          | None ->
+              error (Ast.expr_span right)
+                (Printf.sprintf
+                   "argument 2 of `%s` is `%s`, expected the type of argument 1 (`%s`)"
+                   name
+                   (Sema_types.diagnostic_ty_name right_ty)
+                   (Sema_types.diagnostic_ty_name left_ty))
       in
       let* kind =
         match lane_type left_ty with

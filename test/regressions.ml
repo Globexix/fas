@@ -209,8 +209,8 @@ let semantic_error name fragment text =
     match diagnostics with
     | [ diagnostic ] ->
         String.starts_with ~prefix:"illegal `" diagnostic.Diag.message
-        && contains diagnostic.message " from `"
-        && contains diagnostic.message " to `"
+        && contains diagnostic.message " from "
+        && contains diagnostic.message " to "
         && contains diagnostic.message ": "
     | _ -> false
   in
@@ -6056,24 +6056,30 @@ let () =
   then failwith "const-dependent-if: specialization branches were not selected";
   if contains const_dependent_if "br i1" then
     failwith "const-dependent-if: selected specializations retained runtime branches";
-  semantic_error "nondependent-specialization-condition" "unknown name `Missing`"
-    "const Flag bool = false\n\
-     fn choose[N const i32]() i32 {\n\
-    \ if Flag { return Missing }\n\
-    \ return 3\n\
-     }\n\
-     fn main() i32 { return choose[1]() }\n";
-  semantic_error "unselected-specialization-unknown-value" "unknown name `Missing`"
-    "fn choose[N const i32]() i32 {\n\
-    \ if N == 1 { return 7 } else { return Missing }\n\
-     }\n\
-     fn main() i32 { return choose[1]() }\n";
-  semantic_error "unselected-specialization-unknown-function"
-    "unknown function `missing`"
-    "fn choose[N const i32]() i32 {\n\
-    \ if N == 1 { return 7 } else { return missing() }\n\
-     }\n\
-     fn main() i32 { return choose[1]() }\n";
+  let () =
+    semantic_error "nondependent-specialization-condition" "unknown name `Missing`"
+      "const Flag bool = false\n\
+       fn choose[N const i32]() i32 {\n\
+      \ if Flag { return Missing }\n\
+      \ return 3\n\
+       }\n\
+       fn main() i32 { return choose[1]() }\n"
+  in
+  let () =
+    semantic_error "unselected-specialization-unknown-value" "unknown name `Missing`"
+      "fn choose[N const i32]() i32 {\n\
+      \ if N == 1 { return 7 } else { return Missing }\n\
+       }\n\
+       fn main() i32 { return choose[1]() }\n"
+  in
+  let () =
+    semantic_error "unselected-specialization-unknown-function"
+      "unknown function `missing`"
+      "fn choose[N const i32]() i32 {\n\
+      \ if N == 1 { return 7 } else { return missing() }\n\
+       }\n\
+       fn main() i32 { return choose[1]() }\n"
+  in
   semantic_error "unselected-specialization-unknown-generic"
     "unknown generic function `missing`"
     "fn choose[N const i32]() i32 {\n\
@@ -6175,7 +6181,7 @@ let () =
      }\n\
      fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-fixed-cast-target"
-    "illegal cast target type"
+    "illegal cast for source and destination widths"
     "fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { return zext[void](N) }\n\
      }\n\
@@ -8229,8 +8235,7 @@ let () =
          (`vec[2, u8]`)" );
       ( "vec-const-scalar",
         "const AV vec[4,u8] = splat(1)\nconst X vec[4,u8] = add_sat(AV, 2)\n",
-        "argument 2 of `add_sat` is `i32`, expected the type of argument 1 (`vec[4, \
-         u8]`)" );
+        "argument 2 of `add_sat` is an integer literal, expected `vec[4, u8]`" );
       ( "const-bool",
         "const X bool = add_sat(true, false)\n",
         "`add_sat` needs an integer or integer vector, got `bool`" );
@@ -8419,12 +8424,11 @@ let () =
         "array index `9` is out of bounds for length 4" );
       ( "zext-equal-width",
         "fn f(a u32) u32 { return zext[u32](a) }\n",
-        "illegal `zext` from `u32` to `u32`: the destination must be a wider integer \
-         type with the same vector lane count" );
+        "illegal `zext` from `u32` to `u32`: the value already has type `u32`" );
       ( "trunc-widening",
         "fn f(a u8) u32 { return trunc[u32](a) }\n",
         "illegal `trunc` from `u8` to `u32`: the destination must be a narrower \
-         integer type with the same vector lane count" );
+         integer type" );
       ( "zext-to-bool",
         "fn f(a u8) bool { return zext[bool](a) }\n",
         "illegal `zext` from `u8` to `bool`: the source and destination must be \
@@ -12430,9 +12434,24 @@ let () =
      const W vec[2,u16] = bitcast[vec[2,u16]](-1)\n\
      fn f() u8 { return bitcast[vec[4,u8]](0x00010203)[0] + V[1] }\n";
   semantic_message "bitcast-literal-equal-bits"
-    "illegal `bitcast` from `i32` to `u64`: the source is 32 bits and the destination \
-     is 64 bits"
-    "fn f() u64 { return bitcast[u64](1) }\n"
+    "illegal `bitcast` from integer literal `1` to `u64`: the source is 32 bits and \
+     the destination is 64 bits"
+    "fn f() u64 { return bitcast[u64](1) }\n";
+  semantic_message "zext-literal-source"
+    "illegal `zext` from integer literal `256` to `u8`: the destination must be a \
+     wider integer type"
+    "fn f() u8 { return zext[u8](256) }\n";
+  semantic_message "bitcast-vector-literal-source"
+    "illegal `bitcast` from integer literal `204` to `vec[8, bool]`: the source is 32 \
+     bits and the destination is 8 bits"
+    "fn f() vec[8,bool] { return bitcast[vec[8,bool]](204) }\n";
+  semantic_message "generic-cast-target-template"
+    "illegal `zext` from `i32` to `void`: the source and destination must be integer \
+     types"
+    "fn choose[N const i32]() i32 {\n\
+     if N == 1 { return 7 } else { return zext[void](N) }\n\
+     }\n\
+     fn main() i32 { return choose[1]() }\n"
 
 let () =
   semantic_accept "vector-peer-context-all-slots"
@@ -12503,16 +12522,16 @@ let () =
   in
   semantic_pin "add-sat-vector-scalar-runtime-agreement" add_sat_runtime_scalar 1
     (String.length "fn saturate(value vec[4,u8]) vec[4,u8] { return add_sat(value, " + 1)
-    1 "argument 2 of `add_sat` is `i32`, expected the type of argument 1 (`vec[4, u8]`)"
-    None;
+    1 "argument 2 of `add_sat` is an integer literal, expected `vec[4, u8]`"
+    (Some "write `splat(2)`");
   semantic_accept "add-sat-vector-scalar-runtime-agreement-twin"
     "fn saturate(value vec[4,u8]) vec[4,u8] { return add_sat(value, splat(2)) }\n";
   let add_sat_constant_scalar =
     "const INPUT vec[4,u8] = splat(1)\nconst OUTPUT vec[4,u8] = add_sat(INPUT, 2)\n"
   in
   semantic_pin "add-sat-vector-scalar-constant-agreement" add_sat_constant_scalar 2 41 1
-    "argument 2 of `add_sat` is `i32`, expected the type of argument 1 (`vec[4, u8]`)"
-    None;
+    "argument 2 of `add_sat` is an integer literal, expected `vec[4, u8]`"
+    (Some "write `splat(2)`");
   semantic_accept "add-sat-vector-scalar-constant-agreement-twin"
     "const INPUT vec[4,u8] = splat(1)\n\
      const OUTPUT vec[4,u8] = add_sat(INPUT, splat(2))\n";
@@ -12640,7 +12659,8 @@ let () =
           let printed_ty = String.split_on_char ',' ty |> String.concat ", " in
           semantic_message
             ("generic-slot-conversion-" ^ name ^ "-" ^ ty)
-            (Printf.sprintf "illegal `%s` from `i32` to `%s`: %s" name printed_ty reason)
+            (Printf.sprintf "illegal `%s` from integer literal `1` to `%s`: %s" name
+               printed_ty reason)
             (body (name ^ "[" ^ ty ^ "](1)")))
         [ "bitcast"; "zext"; "sext"; "trunc" ])
     [ "Ring[4]"; "arr[4,u32]" ];
@@ -12764,7 +12784,8 @@ let () =
     (fun name ->
       semantic_message
         ("vector-conversion-rejection-" ^ name)
-        (Printf.sprintf "illegal `%s` from `i32` to `vec[4, u32]`: %s" name
+        (Printf.sprintf "illegal `%s` from integer literal `1` to `vec[4, u32]`: %s"
+           name
            (if name = "trunc" then
               "the destination must be a narrower integer type with the same vector \
                lane count"
@@ -13486,6 +13507,39 @@ let () =
     (Some "write `addr_from_bits(bits)`");
   semantic_accept "bitcast-integer-to-address-twin"
     "fn pointer(bits usize) addr { return addr_from_bits(bits) }\n";
+  let trunc_wider = "fn widen(value u8) u32 { return trunc[u32](value) }\n" in
+  semantic_pin "trunc-wider-help" trunc_wider 1
+    (String.length "fn widen(value u8) u32 { return " + 1)
+    5
+    "illegal `trunc` from `u8` to `u32`: the destination must be a narrower integer \
+     type"
+    (Some "write `zext[u32](value)`");
+  let zext_narrower = "fn narrow(value u32) u8 { return zext[u8](value) }\n" in
+  semantic_pin "zext-narrower-help" zext_narrower 1
+    (String.length "fn narrow(value u32) u8 { return " + 1)
+    4 "illegal `zext` from `u32` to `u8`: the destination must be a wider integer type"
+    (Some "write `trunc[u8](value)`");
+  let usize_zext_u64 = "fn widen(value usize) u64 { return zext[u64](value) }\n" in
+  semantic_pin "zext-usize-u64-help" usize_zext_u64 1
+    (String.length "fn widen(value usize) u64 { return " + 1)
+    4
+    "illegal `zext` from `usize` to `u64`: the source and destination have the same \
+     width; use `bitcast`"
+    (Some "write `bitcast[u64](value)`");
+  let zext_address = "fn bits(pointer addr) usize { return zext[usize](pointer) }\n" in
+  semantic_pin "zext-address-help" zext_address 1
+    (String.length "fn bits(pointer addr) usize { return " + 1)
+    4
+    "illegal `zext` from `addr` to `usize`: address-to-integer conversion uses \
+     `addr_bits`"
+    (Some "write `addr_bits(pointer)`");
+  let trunc_address = "fn pointer(bits usize) addr { return trunc[addr](bits) }\n" in
+  semantic_pin "trunc-address-help" trunc_address 1
+    (String.length "fn pointer(bits usize) addr { return " + 1)
+    5
+    "illegal `trunc` from `usize` to `addr`: integer-to-address conversion uses \
+     `addr_from_bits`"
+    (Some "write `addr_from_bits(bits)`");
   let void_cast = "fn invalid(value i32) void { zext[void](value)\nreturn }\n" in
   semantic_pin "cast-void-target" void_cast 1
     (String.length "fn invalid(value i32) void { " + 1)

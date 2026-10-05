@@ -463,15 +463,50 @@ let cast_integer_value = function
   | Hir.Void | Hir.Vec _ ->
       false
 
+let integer_literal_value = function
+  | Ast.Int_lit (raw, _) ->
+      Option.map
+        (fun value -> (false, value))
+        (Result.to_option (Sema_numeric.parse_integer raw))
+  | Ast.Unary (Ast.Neg, Ast.Int_lit (raw, _), _) ->
+      Option.map
+        (fun value -> (true, value))
+        (Result.to_option (Sema_numeric.parse_integer raw))
+  | _ -> None
+
+let integer_literal_vector_argument_error name expression expected =
+  match (integer_literal_value expression, expected) with
+  | Some (negative, magnitude), Hir.Vec (_, (Hir.Int _ as element))
+    when (if negative then Sema_numeric.fits_negative_literal
+          else Sema_numeric.fits_literal)
+           element magnitude ->
+      Some
+        (Diag.error
+           ~help:(Printf.sprintf "write `splat(%s)`" (Ast.expr_name expression))
+           (Ast.expr_span expression)
+           (Printf.sprintf "argument 2 of `%s` is an integer literal, expected `%s`"
+              name (diagnostic_ty_name expected)))
+  | _ -> None
+
 let cast_error ?expression kind source destination span =
   let name = cast_name kind in
-  let source_name = diagnostic_ty_name source
-  and destination_name = diagnostic_ty_name destination in
+  let source_name, destination_name =
+    ( (match expression with
+      | Some expression when Option.is_some (integer_literal_value expression) ->
+          Printf.sprintf "integer literal `%s`" (Ast.expr_name expression)
+      | _ -> Printf.sprintf "`%s`" (diagnostic_ty_name source)),
+      Printf.sprintf "`%s`" (diagnostic_ty_name destination) )
+  in
+  let scalar_integer_pair =
+    match (source, destination) with Hir.Int _, Hir.Int _ -> true | _ -> false
+  in
+  let lane_clause =
+    if scalar_integer_pair then "" else " with the same vector lane count"
+  in
   let reason =
     match (kind, source, destination) with
-    | Ast.Bitcast, Hir.Addr, Hir.Int Hir.Usize ->
-        "address-to-integer conversion uses `addr_bits`"
-    | Ast.Bitcast, Hir.Int Hir.Usize, Hir.Addr ->
+    | _, Hir.Addr, Hir.Int Hir.Usize -> "address-to-integer conversion uses `addr_bits`"
+    | _, Hir.Int Hir.Usize, Hir.Addr ->
         "integer-to-address conversion uses `addr_from_bits`"
     | Ast.Bitcast, _, _ -> (
         match
@@ -487,25 +522,44 @@ let cast_error ?expression kind source destination span =
     | (Ast.Zext | Ast.Sext), _, _
       when not (cast_integer_value source && cast_integer_value destination) ->
         "the source and destination must be integer types"
+    | (Ast.Zext | Ast.Sext | Ast.Trunc), _, _ when Hir.ty_equal source destination ->
+        Printf.sprintf "the value already has type `%s`" (diagnostic_ty_name source)
+    | Ast.Zext, Hir.Int Hir.Usize, Hir.Int Hir.U64 ->
+        "the source and destination have the same width; use `bitcast`"
     | (Ast.Zext | Ast.Sext), _, _ ->
-        "the destination must be a wider integer type with the same vector lane count"
+        "the destination must be a wider integer type" ^ lane_clause
     | Ast.Trunc, _, _
       when not (cast_integer_value source && cast_integer_value destination) ->
         "the source and destination must be integer types"
-    | Ast.Trunc, _, _ ->
-        "the destination must be a narrower integer type with the same vector lane \
-         count"
+    | Ast.Trunc, _, _ -> "the destination must be a narrower integer type" ^ lane_clause
   in
   let message =
-    Printf.sprintf "illegal `%s` from `%s` to `%s`: %s" name source_name
-      destination_name reason
+    Printf.sprintf "illegal `%s` from %s to %s: %s" name source_name destination_name
+      reason
   in
   let help =
     match (kind, source, destination, expression) with
-    | Ast.Bitcast, Hir.Addr, Hir.Int Hir.Usize, Some (Ast.Ident (variable, _)) ->
+    | _, Hir.Addr, Hir.Int Hir.Usize, Some (Ast.Ident (variable, _)) ->
         Some (Printf.sprintf "write `addr_bits(%s)`" variable)
-    | Ast.Bitcast, Hir.Int Hir.Usize, Hir.Addr, Some (Ast.Ident (variable, _)) ->
+    | _, Hir.Int Hir.Usize, Hir.Addr, Some (Ast.Ident (variable, _)) ->
         Some (Printf.sprintf "write `addr_from_bits(%s)`" variable)
+    | Ast.Trunc, Hir.Int _, Hir.Int _, Some (Ast.Ident (variable, _))
+      when Option.get (Sema_numeric.integer_value_bit_width destination)
+           > Option.get (Sema_numeric.integer_value_bit_width source) ->
+        let extension = if Sema_numeric.is_unsigned source then "zext" else "sext" in
+        Some
+          (Printf.sprintf "write `%s[%s](%s)`" extension
+             (diagnostic_ty_name destination)
+             variable)
+    | (Ast.Zext | Ast.Sext), Hir.Int _, Hir.Int _, Some (Ast.Ident (variable, _))
+      when Option.get (Sema_numeric.integer_value_bit_width destination)
+           < Option.get (Sema_numeric.integer_value_bit_width source) ->
+        Some
+          (Printf.sprintf "write `trunc[%s](%s)`"
+             (diagnostic_ty_name destination)
+             variable)
+    | Ast.Zext, Hir.Int Hir.Usize, Hir.Int Hir.U64, Some (Ast.Ident (variable, _)) ->
+        Some (Printf.sprintf "write `bitcast[u64](%s)`" variable)
     | _ -> None
   in
   Diag.error ?help span message
