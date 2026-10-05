@@ -7619,8 +7619,7 @@ let () =
     "operands of `+` have different types: `u32` and `u64`"
     "fn f(x u32, y u64) u64 { return x + y }\n";
   semantic_error "context-splat-no-invented-lanes"
-    "`splat` needs a vector destination or operand to determine its lane count; the \
-     call result does not provide one"
+    "`splat` needs a vector destination or vector operand to determine its lane count"
     "fn f() usize { return len(splat(1)) }\n";
   semantic_error "context-literal-range-left" "integer literal is out of range for u8"
     "fn f(x u8) bool { return 300 == x }\n";
@@ -12618,16 +12617,13 @@ let () =
      j vec[4,u32] = ok ? v : {1, 2, 3, 4}\n\
      return a + b + e + g + h + i + j }\n";
   semantic_message "vector-peer-no-typed-peer"
-    "`splat` needs a vector destination or operand to determine its lane count; the \
-     call result does not provide one"
+    "`splat` needs a vector destination or vector operand to determine its lane count"
     "fn f() void { add_sat(splat(1), splat(2))\nreturn }\n";
   semantic_message "vector-result-does-not-infer-splat"
-    "`splat` needs a vector destination or operand to determine its lane count; the \
-     call result does not provide one"
+    "`splat` needs a vector destination or vector operand to determine its lane count"
     "fn f() vec[4,u32] { return add_sat(splat(1), splat(2)) }\n";
   semantic_message "vector-peer-scalar-peer"
-    "`splat` needs a vector destination or operand to determine its lane count; the \
-     call result does not provide one"
+    "`splat` needs a vector destination or vector operand to determine its lane count"
     "fn f(k u32) void { add_sat(k, splat(2))\nreturn }\n";
   semantic_message "splat-rejects-type-argument" "`splat` takes no type argument"
     "fn f() u8 { return splat[u8](1) }\n";

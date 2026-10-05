@@ -2173,8 +2173,8 @@ and check_expr_inner ?destination (c : context) expected expression =
           else error s "splat element type mismatch"
       | _ ->
           error s
-            "`splat` needs a vector destination or operand to determine its lane \
-             count; the call result does not provide one")
+            "`splat` needs a vector destination or vector operand to determine its \
+             lane count")
   | Ast.Ternary (q, a, b, s) -> (
       let* tq = check_expr c None q in
       if Hir.expr_ty tq <> Hir.Bool then

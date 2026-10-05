@@ -1192,8 +1192,8 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
           Ok (ty, List.init lanes (fun _ -> lane_mask element value))
       | _ ->
           error span
-            "`splat` needs a vector destination or operand to determine its lane \
-             count; the call result does not provide one")
+            "`splat` needs a vector destination or vector operand to determine its \
+             lane count")
   | Ast.Unary (Ast.Not, value, _span) -> (
       let* ty, values = evaluate expected value in
       match ty with
