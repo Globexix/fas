@@ -13533,7 +13533,7 @@ let () =
   let addr_cast = "fn keep(p addr) addr { return (addr)p }\n" in
   syntax_pin "c-addr-cast" addr_cast 1
     (String.length "fn keep(p addr) addr { return " + 1)
-    6 "C pointer cast `(addr)` is not Fas syntax; `addr` is untyped";
+    6 "C cast `(addr)` is not Fas syntax";
   let integer_cast = "fn reinterpret(value i32) u32 { return (u32)value }\n" in
   pin "c-integer-cast" integer_cast 1 "fn reinterpret(value i32) u32 { return " 1
     "C cast `(u32)` is not Fas syntax; use `zext`, `sext`, `trunc` or `bitcast`";

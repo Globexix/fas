@@ -1664,8 +1664,10 @@ module P = struct
           error
             (if is_pointer then cast_span else first)
             (if is_pointer then
-               Printf.sprintf
-                 "C pointer cast `(%s)` is not Fas syntax; `addr` is untyped" cast
+               if cast = "addr" then "C cast `(addr)` is not Fas syntax"
+               else
+                 Printf.sprintf
+                   "C pointer cast `(%s)` is not Fas syntax; `addr` is untyped" cast
              else
                Printf.sprintf
                  "C cast `(%s)` is not Fas syntax; use `zext`, `sext`, `trunc` or \
