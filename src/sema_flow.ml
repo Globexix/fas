@@ -63,6 +63,7 @@ type t = {
   locals : (string, binding) Hashtbl.t list ref;
   view_origins : (int, (binding * place_path) option) Hashtbl.t;
   view_accesses : (int, view_access) Hashtbl.t;
+  view_readonly_names : (int, string) Hashtbl.t;
   mutable initialized : init_state State_map.t;
   mutable values : value_state;
   mutable addresses : address_state;
@@ -91,6 +92,7 @@ let create ~initial_scope structs =
     locals = ref (if initial_scope then [ Hashtbl.create 8 ] else []);
     view_origins = Hashtbl.create 16;
     view_accesses = Hashtbl.create 16;
+    view_readonly_names = Hashtbl.create 16;
     initialized = State_map.empty;
     values = State_map.empty;
     addresses = State_map.empty;
@@ -153,6 +155,9 @@ let view_origin flow binding =
 let view_access flow binding =
   Option.value ~default:Mutable_access (Hashtbl.find_opt flow.view_accesses binding.id)
 
+let view_readonly_name flow binding =
+  Hashtbl.find_opt flow.view_readonly_names binding.id
+
 let is_view flow binding = Hashtbl.mem flow.view_origins binding.id
 
 let invalidate_induction_for_binding flow id =
@@ -162,12 +167,15 @@ let invalidate_induction_for_binding flow id =
         if loop.induction_binding = Some id then loop.induction_valid <- false)
       flow.loop_init_flows
 
-let bind_view flow binding root path access =
+let bind_view flow binding root path access readonly_name =
   let origin =
     match (root, path) with Some root, Some path -> Some (root, path) | _ -> None
   in
   Hashtbl.replace flow.view_origins binding.id origin;
   Hashtbl.replace flow.view_accesses binding.id access;
+  Option.iter
+    (fun name -> Hashtbl.replace flow.view_readonly_names binding.id name)
+    readonly_name;
   Option.iter
     (fun (root, _) ->
       invalidate_induction_for_binding flow root.id;

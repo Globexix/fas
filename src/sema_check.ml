@@ -913,6 +913,29 @@ let rec readonly_global_place c = function
   | Hir.Field (base, _, _, _, _) -> readonly_global_place c base
   | _ -> false
 
+let rec readonly_imported_constant_name c = function
+  | Hir.Global (name, ty, _) when aggregate_value_type ty -> (
+      match lookup_global name c.globals with
+      | Some (_, _, Ast.Import_const_c) -> Some name
+      | _ -> None)
+  | Hir.Index (base, _, _, _) when aggregate_value_type (Hir.expr_ty base) ->
+      readonly_imported_constant_name c base
+  | Hir.Field (base, _, _, _, _) -> readonly_imported_constant_name c base
+  | Hir.Local (binding, _) when Sema_flow.is_view c.flow binding ->
+      Sema_flow.view_readonly_name c.flow binding
+  | Hir.Ternary (_, yes, no, _, _) -> (
+      match
+        (readonly_imported_constant_name c yes, readonly_imported_constant_name c no)
+      with
+      | Some yes, Some no when yes = no -> Some yes
+      | _ -> None)
+  | _ -> None
+
+let readonly_write_error c span expression =
+  match readonly_imported_constant_name c expression with
+  | Some name -> error span (Printf.sprintf "cannot modify constant `%s`" name)
+  | None -> error span "cannot modify read-only pointer"
+
 let view_access_of_expr c expression =
   if rooted_in_constant c expression then Constant_access
   else if rooted_in_readonly_storage c expression || readonly_global_place c expression
@@ -2425,7 +2448,9 @@ and check_call c _expected fn args s =
               if has_type_params generic_params then
                 error s "type-generic call reached ordinary type checking"
               else if List.length generic_args <> List.length const_params then
-                error s (Printf.sprintf "wrong number of const arguments to `%s`" name)
+                error s
+                  (generic_arity_message "generic function" name
+                     (List.length const_params) (List.length generic_args))
               else
                 let* cargs = Result_list.map (generic_const_argument s) generic_args in
                 let rec eval acc cps actual =
@@ -2958,10 +2983,8 @@ and check_call c _expected fn args s =
                     ((not sig_.variadic) && List.length args <> List.length sig_.params)
                     || (sig_.variadic && List.length args < List.length sig_.params)
                   then
-                    let count = List.length sig_.params in
                     error s
-                      (Printf.sprintf "function `%s` expects %d %s, got %d" name count
-                         (if count = 1 then "argument" else "arguments")
+                      (function_arity_message name (List.length sig_.params)
                          (List.length args))
                   else
                     let policy = if sig_.variadic then Promote_variadic else Reject in
@@ -2994,13 +3017,18 @@ and check_call c _expected fn args s =
   | _ -> error s "call target must be a function name"
 
 and check_actuals ?callee c policy span formals actuals =
+  let expected_count = List.length formals and actual_count = List.length actuals in
+  let arity_error () =
+    match callee with
+    | Some name -> error span (function_arity_message name expected_count actual_count)
+    | None -> error span "wrong number of arguments"
+  in
   let rec loop index checked formals actuals =
     match (formals, actuals) with
     | [], rest ->
         let* trailing =
           match policy with
-          | Reject ->
-              if rest = [] then Ok [] else error span "wrong number of arguments"
+          | Reject -> if rest = [] then Ok [] else arity_error ()
           | Promote_variadic ->
               Result_list.map
                 (fun expression ->
@@ -3051,7 +3079,7 @@ and check_actuals ?callee c policy span formals actuals =
               (Hir.expr_ty value) expected (Ast.expr_span expression)
         in
         loop (index + 1) (value :: checked) formal_rest actual_rest
-    | _ -> error span "wrong number of arguments"
+    | _ -> arity_error ()
   in
   loop 1 [] formals actuals
 
@@ -3060,7 +3088,7 @@ let check_target (c : context) = function
       match lookup_local n c with
       | Some b -> (
           match view_access c.flow b with
-          | Readonly_access -> error span "cannot modify read-only pointer"
+          | Readonly_access -> readonly_write_error c span (Hir.Local (b, span))
           | Constant_access -> error span "cannot modify constant"
           | Mutable_access ->
               let root, path =
@@ -3109,8 +3137,7 @@ let check_target (c : context) = function
           error (Ast.expr_span a) "raw access cannot store an array or struct value"
       | Hir.Raw_select (base, off, t, _) ->
           let* () = check_place_access c (Ast.expr_span a) ~write:true x in
-          if access = Readonly_access then
-            error (Ast.expr_span a) "cannot modify read-only pointer"
+          if access = Readonly_access then readonly_write_error c (Ast.expr_span a) x
           else if access = Constant_access then
             error (Ast.expr_span a) "cannot modify constant"
           else
@@ -3122,8 +3149,7 @@ let check_target (c : context) = function
                 through_view = expression_uses_view c x;
               }
       | Hir.Index (base, index, _, _) -> (
-          if access = Readonly_access then
-            error (Ast.expr_span a) "cannot modify read-only pointer"
+          if access = Readonly_access then readonly_write_error c (Ast.expr_span a) x
           else if access = Constant_access then
             error (Ast.expr_span a) "cannot modify constant"
           else
@@ -3147,8 +3173,7 @@ let check_target (c : context) = function
           error (Ast.expr_span a) "raw access cannot store an array or struct value"
       | Hir.Raw_select (base, off, t, _) ->
           let* () = check_place_access c (Ast.expr_span a) ~write:true x in
-          if access = Readonly_access then
-            error (Ast.expr_span a) "cannot modify read-only pointer"
+          if access = Readonly_access then readonly_write_error c (Ast.expr_span a) x
           else if access = Constant_access then
             error (Ast.expr_span a) "cannot modify constant"
           else
@@ -3163,7 +3188,7 @@ let check_target (c : context) = function
           if access = Constant_access then
             error (Ast.expr_span a) "cannot modify constant"
           else if access = Readonly_access then
-            error (Ast.expr_span a) "cannot modify read-only pointer"
+            readonly_write_error c (Ast.expr_span a) x
           else
             match Hir.expr_ty base with
             | Hir.Struct sn -> (
@@ -3494,7 +3519,7 @@ let check_copy c args span =
     let* () =
       match view_access_of_expr c destination.expr with
       | Readonly_access ->
-          error (Ast.expr_span destination_arg) "cannot modify read-only pointer"
+          readonly_write_error c (Ast.expr_span destination_arg) destination.expr
       | Constant_access ->
           error (Ast.expr_span destination_arg) "cannot modify constant"
       | Mutable_access -> Ok ()
@@ -3628,12 +3653,15 @@ and check_stmt (c : context) = function
       in
       let* () = check_place_access c span ~write:false place_info.expr in
       let* binding = add_local name (Hir.expr_ty place_info.expr) c span in
+      let readonly_name = readonly_imported_constant_name c place_info.expr in
       let root, path =
         match place_info.expr with
         | Hir.Raw_select _ -> (None, None)
         | _ -> (place_info.root, place_info.path)
       in
-      bind_view c.flow binding root path (view_access_of_expr c place_info.expr);
+      bind_view c.flow binding root path
+        (view_access_of_expr c place_info.expr)
+        readonly_name;
       Ok (Hir.View (binding, place_info.expr, span))
   | Ast.Assign (t, e, span) ->
       let* checked_target = check_target c t in
@@ -3884,7 +3912,7 @@ and check_stmt (c : context) = function
         else
           match view_access_of_expr c (List.hd checked) with
           | Constant_access -> error call_span "cannot modify constant"
-          | Readonly_access -> error call_span "cannot modify read-only pointer"
+          | Readonly_access -> readonly_write_error c call_span (List.hd checked)
           | Mutable_access -> Ok ()
       in
       (match no_active_lanes with

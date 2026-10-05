@@ -53,6 +53,10 @@ val layout_diag :
 val field_info : Hir.struct_def list -> string -> string -> Hir.field option
 val compatible : Hir.ty -> Hir.ty -> bool
 val diagnostic_ty_name : Hir.ty -> string
+val function_arity_message : string -> int -> int -> string
+val generic_arity_message : string -> string -> int -> int -> string
+val constant_initializer_type_message : Hir.ty -> Hir.ty -> string
+val constant_array_element_type_message : Hir.ty -> Hir.ty -> string
 
 val cast_error :
   ?expression:Ast.expr -> Ast.cast_kind -> Hir.ty -> Hir.ty -> Span.t -> Diag.t

@@ -1,5 +1,6 @@
 open Sema_constants
 open Sema_context
+open Sema_types
 module String_set = Set.Make (String)
 
 let error span message = Error [ Diag.error span message ]
@@ -53,7 +54,9 @@ let collect ?(global_names = []) ?(array_lengths = []) ?(generic_structs = [])
                             !consts (Some elem) x
                         in
                         if equal vt elem then values (v :: acc) rest
-                        else error span "const array element type mismatch"
+                        else
+                          error (Ast.expr_span x)
+                            (constant_array_element_type_message vt elem)
                   in
                   let* vs = values [] xs in
                   arrays := (name, t, vs) :: !arrays;
@@ -87,7 +90,9 @@ let collect ?(global_names = []) ?(array_lengths = []) ?(generic_structs = [])
                   arrays := (name, vector_ty, values) :: !arrays;
                   arrays_names := String_set.add name !arrays_names;
                   Ok ())
-                else error span "constant initializer type mismatch"
+                else
+                  error (Ast.expr_span value)
+                    (constant_initializer_type_message actual_ty vector_ty)
             | _, Ast.Array_lit _ -> error span "brace-list requires an array type"
             | _, _ ->
                 let* vt, v =
@@ -99,7 +104,8 @@ let collect ?(global_names = []) ?(array_lengths = []) ?(generic_structs = [])
                   consts := (name, t, v) :: !consts;
                   consts_names := String_set.add name !consts_names;
                   Ok ())
-                else error span "constant initializer type mismatch"
+                else
+                  error (Ast.expr_span value) (constant_initializer_type_message vt t)
           in
           result
     | _ -> Ok ()

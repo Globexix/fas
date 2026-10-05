@@ -1,4 +1,5 @@
 open Sema_constants
+open Sema_types
 
 let error span message = Error [ Diag.error span message ]
 
@@ -29,7 +30,7 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~generic_structs ~c
             ~globals:global_names consts (Some ty) expression
         in
         if not (Hir.ty_equal actual ty) then
-          error span "constant initializer type mismatch"
+          error (Ast.expr_span expression) (constant_initializer_type_message actual ty)
         else
           Ok
             (match ty with
@@ -42,7 +43,7 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~generic_structs ~c
             ~arrays ~globals:global_names consts (Some ty) expression
         in
         if not (Hir.ty_equal actual ty) then
-          error span "constant initializer type mismatch"
+          error (Ast.expr_span expression) (constant_initializer_type_message actual ty)
         else Ok (Hir.Global_vector values)
     | Hir.Array (length, element) -> (
         match array_items with

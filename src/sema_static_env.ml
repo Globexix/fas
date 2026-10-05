@@ -1,3 +1,5 @@
+open Sema_types
+
 let rec symbolic_expression names = function
   | Ast.Addr_of _ | Ast.String_lit (true, _, _) -> true
   | Ast.Ident (name, _) -> List.mem name names
@@ -214,7 +216,8 @@ let address_value c ty expression =
       expression
   in
   if not (record_handle_address || Hir.ty_equal ty (Hir.expr_ty checked)) then
-    error (Ast.expr_span expression) "constant initializer type mismatch"
+    error (Ast.expr_span expression)
+      (constant_initializer_type_message (Hir.expr_ty checked) ty)
   else address checked
 
 let source_array_lengths items =

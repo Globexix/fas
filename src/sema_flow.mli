@@ -30,10 +30,17 @@ val ensure_new_local : string -> t -> Span.t -> (unit, Diag.t list) result
 val add_local : string -> Hir.ty -> t -> Span.t -> (binding, Diag.t list) result
 val view_origin : t -> binding -> (binding * place_path) option
 val view_access : t -> binding -> view_access
+val view_readonly_name : t -> binding -> string option
 val is_view : t -> binding -> bool
 
 val bind_view :
-  t -> binding -> binding option -> place_path option -> view_access -> unit
+  t ->
+  binding ->
+  binding option ->
+  place_path option ->
+  view_access ->
+  string option ->
+  unit
 
 val push : t -> unit
 val pop : t -> unit

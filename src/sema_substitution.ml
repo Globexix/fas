@@ -365,7 +365,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           | Some (Ast.Func { generic_params; _ }) ->
               if List.length arguments <> List.length generic_params then
                 error application_span
-                  (Printf.sprintf "wrong number of generic arguments to `%s`" name)
+                  (generic_arity_message "generic function" name
+                     (List.length generic_params) (List.length arguments))
               else
                 Result_list.iter
                   (fun (parameter, argument) ->
@@ -725,7 +726,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 && List.length arguments <> List.length signature.params
                 || signature.variadic
                    && List.length arguments < List.length signature.params
-              then error span (Printf.sprintf "wrong number of arguments to `%s`" name)
+              then
+                error span
+                  (function_arity_message name
+                     (List.length signature.params)
+                     (List.length arguments))
               else
                 let rec validate_arguments formals arguments =
                   match (formals, arguments) with
@@ -739,7 +744,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                           argument
                       in
                       validate_arguments formals arguments
-                  | _ -> error span "wrong number of arguments"
+                  | _ ->
+                      error span
+                        (function_arity_message name
+                           (List.length signature.params)
+                           (List.length arguments))
                 in
                 let* () = validate_arguments signature.params arguments in
                 match expected with
@@ -831,7 +840,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                       params
                   in
                   if List.length formals <> List.length arguments then
-                    error span (Printf.sprintf "wrong number of arguments to `%s`" name)
+                    error span
+                      (function_arity_message name (List.length formals)
+                         (List.length arguments))
                   else
                     let* () =
                       Result_list.iter
@@ -1202,7 +1213,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         | Some (Ast.Struct ({ generic_params; _ } as template)) ->
             if List.length arguments <> List.length generic_params then
               error application_span
-                (Printf.sprintf "wrong number of generic arguments to `%s`" name)
+                (generic_arity_message "generic struct" name
+                   (List.length generic_params) (List.length arguments))
             else if defer_const_structs && has_const_params generic_params then
               let rec resolve_arguments resolved params arguments =
                 match (params, arguments) with
@@ -1408,13 +1420,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             else error span (Printf.sprintf "unknown generic function `%s`" name)
         | Some (Ast.Func ({ generic_params; _ } as template)) ->
             if List.length arguments <> List.length generic_params then
-              let kind =
-                if has_const_params generic_params then
-                  if has_type_params generic_params then "generic" else "const"
-                else "type"
-              in
               error span
-                (Printf.sprintf "wrong number of %s arguments to `%s`" kind name)
+                (generic_arity_message "generic function" name
+                   (List.length generic_params) (List.length arguments))
             else
               let rec resolve_arguments types bindings consts staged diagnostic resolved
                   params arguments =

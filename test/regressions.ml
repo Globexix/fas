@@ -960,7 +960,8 @@ let () =
         const Alignment usize = alignof[Measure]\n\
         const Offset usize = offsetof[Measure,right]\n\
         fn size() usize { return Size + Alignment + Offset }\n");
-  semantic_error "const-sizeof-returns-usize" "constant initializer type mismatch"
+  semantic_error "const-sizeof-returns-usize"
+    "constant initializer has type `usize`, expected `u64`"
     "const Size u64 = sizeof[u8]\nfn size() u64 { return Size }\n";
   let usize_specialization =
     llvm_of
@@ -2240,7 +2241,7 @@ let () =
        fn test() u64 { return id[3](2, 4) }\n"
   in
   (match arity_messages with
-  | [ "wrong number of arguments" ] -> ()
+  | [ "function `id` expects 1 argument, got 2" ] -> ()
   | _ -> failwith "const-specialization-arity: wrong message");
   semantic_error "fas-008-i64-positive-overflow"
     "integer literal is out of range for i64"
@@ -2992,7 +2993,8 @@ let () =
   semantic_error "const-env-array-length-mismatch" "array of 2 elements, got 3"
     "const A arr[2, i64] = {1, 2, 3}\n";
   semantic_error "const-env-array-element-type-mismatch"
-    "const array element type mismatch" "const A arr[2, i64] = {1, true}\n";
+    "constant array element has type `bool`, expected `i64`"
+    "const A arr[2, i64] = {1, true}\n";
   semantic_error "const-env-array-needs-brace-list"
     "const array needs a brace-list initializer" "const A arr[2, i64] = 5\n";
   semantic_error "const-env-brace-list-requires-array"
@@ -4092,7 +4094,8 @@ let () =
   semantic_error "generic-args-missing-rejected"
     "generic function `f` requires arguments"
     "fn f[N const usize]() usize { return N }\nfn test() usize { return f() }\n";
-  semantic_error "generic-args-extra-rejected" "wrong number of const arguments to `f`"
+  semantic_error "generic-args-extra-rejected"
+    "generic function `f` expects 1 generic argument, got 2"
     "fn f[N const usize]() usize { return N }\nfn test() usize { return f[1, 2]() }\n";
   semantic_error "generic-kind-type-for-const-rejected" "expected a const argument"
     "fn f[N const usize]() usize { return N }\nfn test() usize { return f[i64]() }\n";
@@ -4963,7 +4966,7 @@ let () =
   in
   (match semantic_diagnostics generic_struct_layout_failure with
   | [ diagnostic ] ->
-      if diagnostic.message <> "void has no object layout" then
+      if diagnostic.message <> "field `value` cannot have type `void`" then
         failwith "generic-instantiation-struct-layout: root message changed";
       if diagnostic.notes <> [ "while instantiating `Bad[u8]` at regression.fas:2:18" ]
       then
@@ -5123,7 +5126,8 @@ let () =
       then
         failwith
           ("const-generic-specialization-span: missing source excerpt: " ^ rendered));
-  semantic_error "generic-function-arity" "wrong number of type arguments to `pair`"
+  semantic_error "generic-function-arity"
+    "generic function `pair` expects 2 generic arguments, got 1"
     "fn pair[A, B](value A) A { return value }\nfn test() i64 { return pair[i64](1) }\n";
   semantic_error "generic-function-argument-kind" "expected a type argument"
     "fn identity[T](value T) T { return value }\n\
@@ -5289,7 +5293,8 @@ let () =
         fn value[N const u8]() u8 { return N }\n\
         fn test() u8 { return value[NARROW]() }\n");
   semantic_error "forward-constant-type-preservation"
-    "constant initializer type mismatch" "const NARROW u8 = WIDE\nconst WIDE u16 = 7\n";
+    "constant initializer has type `u16`, expected `u8`"
+    "const NARROW u8 = WIDE\nconst WIDE u16 = 7\n";
   semantic_error "forward-constant-cycle" "cyclic constant dependency"
     "const LEFT usize = RIGHT\nconst RIGHT usize = LEFT\n";
   let forward_array_scalar =
@@ -5423,7 +5428,8 @@ let () =
              (Diag.render_all ~source:None diagnostics)
              "const specialization count limit exceeded")
       then failwith "mixed-generic-count-limit: unexpected diagnostic");
-  semantic_error "mixed-generic-arity" "wrong number of generic arguments to `identity`"
+  semantic_error "mixed-generic-arity"
+    "generic function `identity` expects 2 generic arguments, got 1"
     "fn identity[T, N const usize](value T) T { return value }\n\
      fn test() i64 { return identity[i64](1) }\n";
   semantic_error "mixed-generic-type-argument-kind" "expected a type argument"
@@ -5610,7 +5616,8 @@ let () =
   semantic_error "generic-struct-bare-use"
     "generic struct `Box` requires type arguments"
     "struct Box[T] { value T }\nfn test(value Box) i64 { return 0 }\n";
-  semantic_error "generic-struct-arity" "wrong number of generic arguments to `Pair`"
+  semantic_error "generic-struct-arity"
+    "generic struct `Pair` expects 2 generic arguments, got 1"
     "struct Pair[A, B] { first A second B }\n\
      fn test(value Pair[i64]) i64 { return 0 }\n";
   semantic_error "generic-struct-argument-kind" "expected a type argument"
@@ -5729,7 +5736,7 @@ let () =
   if not (contains issue33_llvm "alloca %\"struct.Bytes$spec$c7:usize:3\"") then
     failwith "const-generic-struct-llvm-use: local specialization type was not quoted";
   semantic_error "const-generic-struct-arity"
-    "wrong number of generic arguments to `Buffer`"
+    "generic struct `Buffer` expects 2 generic arguments, got 1"
     "struct Buffer[T, N const usize] { data arr[N, T] }\n\
      fn test(value Buffer[u8]) i64 { return 0 }\n";
   semantic_error "const-generic-struct-argument-kind" "expected a const argument"
@@ -6132,7 +6139,7 @@ let () =
      }\n\
      fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-wrong-generic-arity"
-    "wrong number of generic arguments"
+    "generic function `plain` expects 1 generic argument, got 2"
     "fn plain[T](value T) T { return value }\n\
      fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { return plain[i32, i32](1) }\n\
@@ -7052,7 +7059,7 @@ let () =
     None;
   semantic_pin "void-field-layout-caret" "struct Holder { value void }\n" 1
     (String.length "struct Holder { value " + 1)
-    4 "void has no object layout" None;
+    4 "field `value` cannot have type `void`" None;
   semantic_pin "opaque-field-layout-caret"
     "opaque Token\nstruct Holder { value Token }\n" 2
     (String.length "struct Holder { value " + 1)
@@ -7081,13 +7088,22 @@ let () =
   in
   semantic_pin "generic-call-arity-caret" generic_call_arity 2
     (String.length "fn read() i32 { return identity" + 1)
-    1 "wrong number of type arguments to `identity`" None;
+    1 "generic function `identity` expects 1 generic argument, got 2" None;
+  let generic_runtime_arity =
+    "fn id[N const usize](value i32) i32 { return value }\n\
+     fn read() i32 { return id[3](2, 4) }\n"
+  in
+  semantic_pin "generic-runtime-call-arity" generic_runtime_arity 2 24 11
+    "function `id` expects 1 argument, got 2" None;
+  semantic_accept "generic-runtime-call-arity-twin"
+    "fn id[N const usize](value i32) i32 { return value }\n\
+     fn read() i32 { return id[3](2) }\n";
   let generic_struct_arity =
     "struct Pair[T] { value T }\nfn read(value Pair[i32,u32]) void { return }\n"
   in
   semantic_pin "generic-struct-arity-caret" generic_struct_arity 2
     (String.length "fn read(value Pair" + 1)
-    1 "wrong number of generic arguments to `Pair`" None;
+    1 "generic struct `Pair` expects 1 generic argument, got 2" None;
   let const_call_arity =
     "fn choose[N const u8]() void { return }\n\
      fn read() void { choose[1,2]()\n\
@@ -7095,7 +7111,7 @@ let () =
   in
   semantic_pin "const-call-arity-caret" const_call_arity 2
     (String.length "fn read() void { choose" + 1)
-    1 "wrong number of const arguments to `choose`" None;
+    1 "generic function `choose` expects 1 generic argument, got 2" None;
   semantic_pin "missing-return-diagnostic"
     "fn fetch() i64 {\n if true { return 3 }\n}\n" 1 4 5
     "function `fetch` returning `i64` may reach the end without `return`" None;
@@ -7119,8 +7135,8 @@ let () =
   semantic_pin "constant-brace-list-caret"
     "struct Pair { value i32 }\nconst VALUE Pair = {1}\n" 2 1 5
     "brace-list requires an array type" None;
-  semantic_pin "constant-initializer-type-caret" "const VALUE u32 = true\n" 1 1 5
-    "constant initializer type mismatch" None;
+  semantic_pin "constant-initializer-type-caret" "const VALUE u32 = true\n" 1 19 4
+    "constant initializer has type `bool`, expected `u32`" None;
   let constant_address_array_write =
     "var GLOBAL u8\n\
      const PTRS arr[1,addr] = {&GLOBAL}\n\
@@ -10423,14 +10439,16 @@ let () =
     (fun name ->
       c_semantic_message
         ("c-import-array-readonly-" ^ name)
-        "cannot modify read-only pointer" c_matrix
+        (Printf.sprintf "cannot modify constant `%s`" name)
+        c_matrix
         ("fn probe() void { " ^ name ^ "[0] = null }\n"))
     [ "fas_array_readonly_pointer_elements" ];
   List.iter
     (fun name ->
       c_semantic_message
         ("c-import-array-readonly-" ^ name)
-        "cannot modify read-only pointer" c_matrix
+        (Printf.sprintf "cannot modify constant `%s`" name)
+        c_matrix
         ("fn probe() void { " ^ name ^ "[0] = 1 }\n"))
     [ "fas_array_readonly"; "fas_array_readonly_alias" ];
   c_semantic_message "c-import-array-bounds"
@@ -10439,10 +10457,12 @@ let () =
   c_semantic_message "c-import-array-nested-bounds"
     "array index `8` is out of bounds for length 8" c_matrix
     "fn probe() i8 { return fas_array_names[0][8] }\n";
-  c_semantic_message "c-import-array-readonly-view" "cannot modify read-only pointer"
-    c_matrix "fn probe() void { view values = fas_array_readonly; values[0] = 1 }\n";
-  c_semantic_message "c-import-array-readonly-copy" "cannot modify read-only pointer"
-    c_matrix "fn probe() void { copy(fas_array_readonly, fas_array_global) }\n";
+  c_semantic_message "c-import-array-readonly-view"
+    "cannot modify constant `fas_array_readonly`" c_matrix
+    "fn probe() void { view values = fas_array_readonly; values[0] = 1 }\n";
+  c_semantic_message "c-import-array-readonly-copy"
+    "cannot modify constant `fas_array_readonly`" c_matrix
+    "fn probe() void { copy(fas_array_readonly, fas_array_global) }\n";
   c_semantic_accept "c-import-array-readonly-pointer-target" c_matrix
     "fn probe() void { fas_array_readonly_pointer_elements[0][i32] = 1 }\n";
   c_semantic_accept "c-import-function-pointer-global-is-addr" c_matrix
@@ -10910,16 +10930,18 @@ let () =
      const Nested arr[1,arr[1,handle[FasInnerRecord]]] = {{&fas_address_nested.inner}}\n\
      var Indexed arr[1,handle[FasSelfRecord]] = {&fas_address_self_array[1]}\n";
   c_semantic_message "address-constants-different-imported-record"
-    "constant initializer type mismatch" record_import_cases
-    "var P handle[FasTagRecord] = &fas_address_self\n";
+    (Printf.sprintf "constant initializer has type `%s`, expected `%s`" "addr"
+       "handle[FasTagRecord]")
+    record_import_cases "var P handle[FasTagRecord] = &fas_address_self\n";
   c_semantic_message "address-constants-native-record-handle"
-    "constant initializer type mismatch" record_import_cases
+    "constant initializer has type `addr`, expected `handle[FasSelfRecord]`"
+    record_import_cases
     "struct NativeAddressRecord { value i32 }\n\
      var G NativeAddressRecord = {1}\n\
      var P handle[FasSelfRecord] = &G\n";
   c_semantic_message "address-constants-scalar-record-handle"
-    "constant initializer type mismatch" record_import_cases
-    "var G i32 = 1\nvar P handle[FasSelfRecord] = &G\n";
+    "constant initializer has type `addr`, expected `handle[FasSelfRecord]`"
+    record_import_cases "var G i32 = 1\nvar P handle[FasSelfRecord] = &G\n";
   let imported_record_addresses =
     match
       c_semantic_result record_import_cases

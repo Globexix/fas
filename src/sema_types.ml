@@ -311,6 +311,24 @@ let field_info structs name field =
 let compatible actual expected = Hir.ty_equal actual expected
 let diagnostic_ty_name ty = Hir.ty_name ty
 
+let function_arity_message name expected actual =
+  Printf.sprintf "function `%s` expects %d %s, got %d" name expected
+    (if expected = 1 then "argument" else "arguments")
+    actual
+
+let generic_arity_message kind name expected actual =
+  Printf.sprintf "%s `%s` expects %d generic argument%s, got %d" kind name expected
+    (if expected = 1 then "" else "s")
+    actual
+
+let constant_initializer_type_message actual expected =
+  Printf.sprintf "constant initializer has type `%s`, expected `%s`"
+    (diagnostic_ty_name actual) (diagnostic_ty_name expected)
+
+let constant_array_element_type_message actual expected =
+  Printf.sprintf "constant array element has type `%s`, expected `%s`"
+    (diagnostic_ty_name actual) (diagnostic_ty_name expected)
+
 let shift_operator_name = function
   | Ast.Shl -> "<<"
   | Ast.Shr -> ">>"

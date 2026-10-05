@@ -416,7 +416,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       | Ast.Handle ty | Ast.Array (_, ty) | Ast.Vec (_, ty) -> contains_void ty
       | _ -> false
     in
-    let layout_error_span message =
+    let layout_error_field message =
       let target =
         let extract prefix =
           if not (String.starts_with ~prefix message) then None
@@ -440,10 +440,17 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
         | Ast.Struct { fields; _ } ->
             List.find_map
               (fun (field : Ast.field) ->
-                if field_matches field then Some field.ty_span else None)
+                if field_matches field then Some field else None)
               fields
         | _ -> None)
-      |> Option.value ~default:Span.synthetic
+    in
+    let layout_error_diagnostic message =
+      match layout_error_field message with
+      | Some field when message = "void has no object layout" ->
+          Diag.error field.ty_span
+            (Printf.sprintf "field `%s` cannot have type `void`" field.name)
+      | Some field -> Diag.error field.ty_span message
+      | None -> Diag.error Span.synthetic message
     in
     let cache =
       Hir.struct_layout_cache ~unions:union_names ~field_offsets ~field_reasons
@@ -454,7 +461,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       | (name, _, _) :: xs ->
           let* s =
             Hir.compute_struct_cached cache name
-            |> Result.map_error (fun m -> [ Diag.error (layout_error_span m) m ])
+            |> Result.map_error (fun m -> [ layout_error_diagnostic m ])
             |> trace_result specializations
                  (specialization_trace specializations Struct_specialization name)
           in

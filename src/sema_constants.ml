@@ -288,7 +288,8 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
           Error
             [
               Diag.error at
-                (Printf.sprintf "wrong number of generic arguments to `%s`" name);
+                (generic_arity_message "generic struct" name (List.length params)
+                   (List.length arguments));
             ]
         else if params = [] && arguments <> [] then
           Error [ Diag.error at (Printf.sprintf "struct `%s` is not generic" name) ]
@@ -1598,7 +1599,9 @@ let resolve_scalar_declarations ?(globals = []) ?(array_lengths = [])
                     ~globals ~resolve [] (Some ty) initial_value
                 in
                 if Hir.ty_equal actual_ty ty then Ok (ty, value)
-                else error declaration_span "constant initializer type mismatch"
+                else
+                  error (Ast.expr_span initial_value)
+                    (constant_initializer_type_message actual_ty ty)
               in
               Hashtbl.remove visiting name;
               match result with
