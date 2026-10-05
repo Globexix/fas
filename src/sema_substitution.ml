@@ -194,6 +194,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   and expression_mentions names = function
     | Ast.Ident (name, _) -> List.mem name names
     | Ast.Unary (_, expression, _)
+    | Ast.Parenthesized (expression, _)
     | Ast.Addr_of (expression, _)
     | Ast.Splat (expression, _) ->
         expression_mentions names expression
@@ -314,6 +315,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             error span (Printf.sprintf "`%s` is a function, not a value" name)
         | None -> error span (Printf.sprintf "unknown name `%s`" name))
     | Ast.Unary (_, expression, _)
+    | Ast.Parenthesized (expression, _)
     | Ast.Addr_of (expression, _)
     | Ast.Splat (expression, _) ->
         validate_expression_names value_names type_names expression
@@ -640,6 +642,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   let rec has_generic_arguments = function
     | Ast.Generic_args _ -> true
     | Ast.Unary (_, expression, _)
+    | Ast.Parenthesized (expression, _)
     | Ast.Addr_of (expression, _)
     | Ast.Splat (expression, _)
     | Ast.Sizeof_value (expression, _)
@@ -704,7 +707,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             (Ast.expr_span expression)
     else
       match expression with
-      | Ast.Unary (_, value, _) | Ast.Addr_of (value, _) | Ast.Splat (value, _) ->
+      | Ast.Unary (_, value, _)
+      | Ast.Parenthesized (value, _)
+      | Ast.Addr_of (value, _)
+      | Ast.Splat (value, _) ->
           validate_non_dependent_expression c dependent None value
       | Ast.Binary (_, left, right, _) ->
           let* () = validate_non_dependent_expression c dependent None left in
@@ -1365,6 +1371,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           resolve_expr ~values ~defer_const_structs substitutions depth expression
         in
         Ok (Ast.Unary (op, expression, span))
+    | Ast.Parenthesized (expression, span) ->
+        let* expression =
+          resolve_expr ~values ~defer_const_structs substitutions depth expression
+        in
+        Ok (Ast.Parenthesized (expression, span))
     | Ast.Binary (op, left, right, span) ->
         let* left =
           resolve_expr ~values ~defer_const_structs substitutions depth left

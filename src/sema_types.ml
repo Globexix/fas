@@ -28,6 +28,7 @@ let truthiness_help expression ty =
 
 let rec expression_start_span = function
   | Ast.Binary (_, left, _, _) | Ast.Unary (_, left, _) -> expression_start_span left
+  | Ast.Parenthesized (value, _) -> expression_start_span value
   | expression -> Ast.expr_span expression
 
 let condition_error construct expression ty =
@@ -527,11 +528,6 @@ let ordering_direction = function
   | Ast.Bit_xor | Ast.Eq | Ast.Ne | Ast.And | Ast.Or | Ast.Shl | Ast.Shr ->
       None
 
-let literal_expression = function
-  | Ast.Int_lit _ | Ast.Bool_lit _ -> true
-  | Ast.Unary (Ast.Neg, Ast.Int_lit _, _) -> true
-  | _ -> false
-
 let binary_widening_target left_expression right_expression left right =
   match (left, right, left_expression, right_expression) with
   | Hir.Int _, Hir.Int _, Some left_expression, Some right_expression
@@ -551,31 +547,56 @@ let binary_widening_help = function
            name)
   | _ -> None
 
-let binary_result_type ?left_expression ?right_expression ?result_expected span
-    operation left right =
+let binary_result_type ?left_expression ?right_expression ?result_expected
+    ?(comparison_chain_rewrite_valid = true) span operation left right =
   let result_span expression =
     match expression with Some expression -> Ast.expr_span expression | None -> span
   in
   let comparison_chain () =
     match (left_expression, right_expression) with
     | Some (Ast.Binary (inner_operation, first, middle, _)), Some last
-      when is_comparison inner_operation && is_comparison operation && left <> right ->
+      when is_comparison inner_operation && is_comparison operation ->
         let message =
           match (ordering_direction inner_operation, ordering_direction operation) with
           | Some inner_direction, Some outer_direction
-            when inner_direction = outer_direction && not (literal_expression middle) ->
+            when inner_direction = outer_direction
+                 && left = Hir.Bool && Sema_numeric.is_int right
+                 && comparison_chain_rewrite_valid ->
               Printf.sprintf "comparisons cannot be chained; write `%s && %s %s %s`"
                 (Ast.expr_name (Ast.Binary (inner_operation, first, middle, span)))
                 (Ast.expr_name middle)
                 (binary_operator_name operation)
                 (Ast.expr_name last)
-          | _ -> "comparisons cannot be chained; add parentheses"
+          | _
+            when (operation = Ast.Eq || operation = Ast.Ne)
+                 && left = Hir.Bool && right = Hir.Bool ->
+              "comparisons cannot be chained; add parentheses"
+          | _ -> ""
         in
-        Some (Diag.error (result_span right_expression) message)
+        if message = "" then None
+        else Some (Diag.error (result_span right_expression) message)
     | _ -> None
+  in
+  let parenthesized_comparison =
+    match left_expression with
+    | Some (Ast.Parenthesized (Ast.Binary (inner, _, _, _), _)) -> is_comparison inner
+    | _ -> false
   in
   match comparison_chain () with
   | Some diagnostic -> Error [ diagnostic ]
+  | None
+    when parenthesized_comparison
+         && (match operation with
+           | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> true
+           | _ -> false)
+         && not
+              (Sema_numeric.is_int left || left = Hir.Addr
+              || match left with Hir.Vec (_, Hir.Int _) -> true | _ -> false) ->
+      let error_span = if left = right then result_span left_expression else span in
+      error error_span
+        (Printf.sprintf "ordered comparison `%s` needs an integer, got `%s`"
+           (binary_operator_name operation)
+           (diagnostic_ty_name left))
   | None
     when (operation = Ast.Bit_and || operation = Ast.Bit_or || operation = Ast.Bit_xor)
          && (left = Hir.Addr || right = Hir.Addr) ->

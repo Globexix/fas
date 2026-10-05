@@ -1617,7 +1617,7 @@ module P = struct
              "Fas struct initializers are positional; designated initializer `.%s` is \
               not supported"
              field)
-    | Token.Lparen ->
+    | Token.Lparen -> (
         let s = span p in
         if starts_struct_literal p then
           let* () = expected p Token.Lparen in
@@ -1632,7 +1632,12 @@ module P = struct
           Ok (Ast.Struct_lit (t, elements, s))
         else
           let* e = expression_argument p in
-          Ok e
+          match e with
+          | Ast.Parenthesized _
+          | Ast.Binary ((Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge), _, _, _)
+            ->
+              Ok (Ast.Parenthesized (e, s))
+          | _ -> Ok e)
     | Token.Ident n -> (
         let sp = span p in
         ignore (bump p);

@@ -6938,10 +6938,16 @@ let () =
       in
       let line = String.trim source in
       let column = String.rindex line '3' + 1 in
-      let expected =
-        expected_diagnostic_without_help line column 1
-          "comparisons cannot be chained; add parentheses"
+      let message =
+        match operator with
+        | "<" | "<=" | ">" | ">=" ->
+            Printf.sprintf "comparisons cannot be chained; write `a %s 2 && 2 %s 3`"
+              operator operator
+        | _ ->
+            Printf.sprintf "operands of `%s` have different types: `bool` and `i32`"
+              operator
       in
+      let expected = expected_diagnostic_without_help line column 1 message in
       if semantic_render source <> expected then
         failwith
           ("chained-comparison-literal-" ^ operator ^ ": " ^ semantic_render source))
@@ -6955,11 +6961,14 @@ let () =
       let prefix =
         Printf.sprintf "fn f(a i32, b i32, c i32) bool { return a %s b %s " first second
       in
+      let message =
+        Printf.sprintf "operands of `%s` have different types: `bool` and `i32`" second
+      in
       semantic_pin
         ("chained-comparison-" ^ name)
         source 1
         (String.length prefix + 1)
-        1 "comparisons cannot be chained; add parentheses" None)
+        1 message None)
     [
       ("equal-tokens", "==", "==");
       ("not-equal-tokens", "!=", "!=");
@@ -6974,7 +6983,7 @@ let () =
   let chained_call_expected =
     expected_diagnostic_without_help ~line_number:2 chained_call_line
       (String.rindex chained_call_line '3' + 1)
-      1 "comparisons cannot be chained; add parentheses"
+      1 "comparisons cannot be chained; write `a < 2 && 2 < 3`"
   in
   if semantic_render chained_call_source <> chained_call_expected then
     failwith ("chained-comparison-call: " ^ semantic_render chained_call_source);
@@ -6982,7 +6991,7 @@ let () =
   let chained_if_expected =
     expected_diagnostic_without_help chained_if_line
       (String.rindex chained_if_line '3' + 1)
-      1 "comparisons cannot be chained; add parentheses"
+      1 "comparisons cannot be chained; write `a < 2 && 2 < 3`"
   in
   if semantic_render (chained_if_line ^ "\n") <> chained_if_expected then
     failwith ("chained-comparison-if: " ^ semantic_render (chained_if_line ^ "\n"));
@@ -6994,6 +7003,44 @@ let () =
     (llvm_of
        "fn f(a i32, b i32) bool { return (a < 2) == (b < 3) }\n\
         fn g(a i32) bool { return (a < 2) == true }\n");
+  semantic_pin "comparison-parenthesized-ordering-type"
+    "fn compare(x i64, y i64, z i64) bool { return (x <= y) <= z }\n" 1
+    (String.index_from "fn compare(x i64, y i64, z i64) bool { return (x <= y) <= z }"
+       (String.length "fn compare(x i64, y i64, z i64) bool { return (x <= y) ")
+       '<'
+    + 1)
+    2 "ordered comparison `<=` needs an integer, got `bool`" None;
+  semantic_pin "comparison-parenthesized-equality-type"
+    "fn compare(x i64, y i64, z i32) bool { return (x != y) == z }\n" 1
+    (String.length "fn compare(x i64, y i64, z i32) bool { return (x != y) == " + 1)
+    1 "operands of `==` have different types: `bool` and `i32`" None;
+  semantic_pin "comparison-parenthesized-ordering-bool"
+    "fn compare(x i64, y i64) bool { return (x >= y) >= true }\n" 1
+    (String.index "fn compare(x i64, y i64) bool { return (x >= y) >= true }" '>' + 1)
+    2 "ordered comparison `>=` needs an integer, got `bool`" None;
+  semantic_pin "comparison-equality-chain-bool-right"
+    "fn compare(x i32, y i32) bool { return x == y == true }\n" 1
+    (String.length "fn compare(x i32, y i32) bool { return x == y == " + 1)
+    4 "comparisons cannot be chained; add parentheses" None;
+  semantic_pin "comparison-chain-constant" "const Result bool = 4 <= 8 <= 12\n" 1
+    (String.length "const Result bool = 4 <= 8 <= " + 1)
+    2 "comparisons cannot be chained; write `4 <= 8 && 8 <= 12`" None;
+  semantic_pin "comparison-chain-mismatched-types-constant"
+    "const Mid i32 = 8\nconst Last i64 = 12\nconst Result bool = 4 <= Mid <= Last\n" 3
+    (String.length "const Result bool = 4 <= Mid <= " + 1)
+    4 "operands of `<=` have different types: `bool` and `i64`" None;
+  semantic_pin "comparison-chain-mismatched-types-runtime"
+    "fn compare(mid i32, last i64) bool { return 4 <= mid <= last }\n" 1
+    (String.length "fn compare(mid i32, last i64) bool { return 4 <= mid <= " + 1)
+    4 "operands of `<=` have different types: `bool` and `i64`" None;
+  semantic_accept "comparison-parenthesized-equality-twin"
+    "fn compare(x i64, y i64) bool { return (x != y) == true }\n";
+  semantic_accept "comparison-equality-chain-bool-twin"
+    "fn compare(x i32, y i32) bool { return (x == y) == true }\n";
+  semantic_accept "comparison-chain-rewrite-twin"
+    "fn compare(x i64, y i64, z i64) bool { return x <= y && y <= z }\n";
+  semantic_accept "comparison-chain-constant-rewrite-twin"
+    "const Result bool = 4 <= 8 && 8 <= 12\n";
   let binary_widening_bad_context =
     "fn f(c i64, a i32) i32 { x i32 = c + a; return x }\n"
   in

@@ -1538,6 +1538,7 @@ and check_expr_inner ?destination (c : context) expected expression =
       Ok (Hir.Vector_lit (entries, literal_type, span))
   in
   match expression with
+  | Ast.Parenthesized (value, _) -> check_expr c expected value
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
@@ -1742,6 +1743,12 @@ and check_expr_inner ?destination (c : context) expected expression =
           | Ast.Binary (inner, _, _, _) -> is_comparison_operator inner
           | _ -> false
         in
+        let parenthesized_comparison =
+          match l with
+          | Ast.Parenthesized (Ast.Binary (inner, _, _, _), _) ->
+              is_comparison_operator inner
+          | _ -> false
+        in
         let address_peer_type =
           match (expected, l, r) with
           | None, Ast.Addr_of _, Ast.Addr_of _ | Some _, _, _ -> None
@@ -1763,7 +1770,7 @@ and check_expr_inner ?destination (c : context) expected expression =
               in
               let* a = check_expr c left_expected l in
               let right_expected =
-                if comparison_chain then None
+                if comparison_chain || parenthesized_comparison then None
                 else contextual_peer_type c op (Hir.expr_ty a) r
               in
               let* b = check_expr c right_expected r in
@@ -1771,6 +1778,52 @@ and check_expr_inner ?destination (c : context) expected expression =
         in
         let at = Hir.expr_ty a in
         let bt = Hir.expr_ty b in
+        let comparison_chain_rewrite_valid =
+          match (op, l) with
+          | ( (Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge),
+              Ast.Binary
+                (((Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge) as inner), first, middle, _) ) ->
+              let snapshot = Sema_flow.snapshot c.flow in
+              let check_pair operation left right =
+                match (unresolved_shape_of c left, unresolved_shape_of c right) with
+                | Some _, None ->
+                    let* right_value = check_expr c None right in
+                    let* left_value =
+                      check_expr c
+                        (contextual_peer_type c operation (Hir.expr_ty right_value) left)
+                        left
+                    in
+                    Ok (left_value, right_value)
+                | _ ->
+                    let* left_value = check_expr c None left in
+                    let* right_value =
+                      check_expr c
+                        (contextual_peer_type c operation (Hir.expr_ty left_value) right)
+                        right
+                    in
+                    Ok (left_value, right_value)
+              in
+              let rewrite_result =
+                let* first_value, middle_value = check_pair inner first middle in
+                let* _ =
+                  binary_result_type ~left_expression:first ~right_expression:middle s
+                    inner (Hir.expr_ty first_value) (Hir.expr_ty middle_value)
+                in
+                let* last_value =
+                  check_expr c
+                    (contextual_peer_type c op (Hir.expr_ty middle_value) r)
+                    r
+                in
+                let* _ =
+                  binary_result_type ~left_expression:middle ~right_expression:r s op
+                    (Hir.expr_ty middle_value) (Hir.expr_ty last_value)
+                in
+                Ok ()
+              in
+              Sema_flow.restore c.flow snapshot;
+              Result.is_ok rewrite_result
+          | _ -> true
+        in
         match (op, at, bt) with
         | (Ast.Add | Ast.Sub), Hir.Addr, Hir.Int _ ->
             let* off = normalize_offset_expr c.structs s b in
@@ -1789,7 +1842,7 @@ and check_expr_inner ?destination (c : context) expected expression =
         | _ ->
             let* result_ty =
               binary_result_type ~left_expression:l ~right_expression:r
-                ?result_expected:expected s op at bt
+                ?result_expected:expected ~comparison_chain_rewrite_valid s op at bt
             in
             let facts_enabled = Sema_flow.proof_checks_enabled c.flow in
             let divisor_fact = value_fact c b in
@@ -3262,6 +3315,7 @@ let copy_is_aggregate = function Hir.Array _ | Hir.Struct _ -> true | _ -> false
 let rec expression_mentions_name name = function
   | Ast.Ident (found, _) -> found = name
   | Ast.Unary (_, value, _)
+  | Ast.Parenthesized (value, _)
   | Ast.Cast (_, _, value, _)
   | Ast.Field (value, _, _)
   | Ast.Arrow_field (value, _, _, _)
@@ -3295,6 +3349,7 @@ let rec expression_takes_name_address name = function
   | Ast.Addr_of (value, _) ->
       expression_mentions_name name value || expression_takes_name_address name value
   | Ast.Unary (_, value, _)
+  | Ast.Parenthesized (value, _)
   | Ast.Cast (_, _, value, _)
   | Ast.Field (value, _, _)
   | Ast.Arrow_field (value, _, _, _)

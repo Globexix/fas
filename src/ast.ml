@@ -24,6 +24,7 @@ and expr =
   | String_lit of bool * string * Span.t
   | Ident of string * Span.t
   | Unary of unop * expr * Span.t
+  | Parenthesized of expr * Span.t
   | Binary of binop * expr * expr * Span.t
   | Call of expr * expr list * Span.t
   | Generic_args of expr * generic_arg list * Span.t
@@ -176,6 +177,7 @@ let rec expr_span = function
   | Array_lit (_, s)
   | Struct_lit (_, _, s) ->
       s
+  | Parenthesized (e, _) -> expr_span e
   | Arrow_field (base, _, _, field_span) ->
       let base_span = expr_span base in
       Span.make ~file:base_span.Span.file ~start_offset:base_span.Span.start_offset
@@ -249,6 +251,7 @@ and expr_name = function
   | Ident (s, _) -> s
   | Unary (op, e, _) ->
       (match op with Neg -> "-" | Not -> "!" | Bit_not -> "~") ^ expr_name e
+  | Parenthesized (e, _) -> "(" ^ expr_name e ^ ")"
   | Binary (op, l, r, _) ->
       expr_name l ^ " "
       ^ (match op with
@@ -397,6 +400,10 @@ let render_program program =
     | Unary (op, x, _) ->
         text (match op with Neg -> "-" | Not -> "!" | Bit_not -> "~");
         emit_expr x
+    | Parenthesized (x, _) ->
+        text "(";
+        emit_expr x;
+        text ")"
     | Binary (op, l, r, _) ->
         emit_expr l;
         text " ";
@@ -752,6 +759,7 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
       | Ident (name, _) -> identifiers := name :: !identifiers
       | Int_lit _ | Bool_lit _ | Null _ | String_lit _ -> ()
       | Unary (_, x, _) -> go_expr x
+      | Parenthesized (x, _) -> go_expr x
       | Binary (_, l, r, _) ->
           go_expr l;
           go_expr r

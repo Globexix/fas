@@ -447,7 +447,11 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
 
 let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
     ?(arrays = []) ?(array_lengths = []) ?(globals = []) ?resolve consts expected
-    ?(check_only = false) ?(validate_dead = true) = function
+    ?(check_only = false) ?(validate_dead = true) expression =
+  match expression with
+  | Ast.Parenthesized (value, _) ->
+      const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths ~globals
+        ?resolve consts expected ~check_only ~validate_dead value
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
@@ -591,6 +595,20 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
       in
       Ok (lt, mask_value lt v)
   | Ast.Binary (op, l, r, s) ->
+      let comparison_chain =
+        match l with
+        | Ast.Binary ((Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge), _, _, _) ->
+            true
+        | _ -> false
+      in
+      let parenthesized_comparison =
+        match l with
+        | Ast.Parenthesized
+            ( Ast.Binary ((Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge), _, _, _),
+              _ ) ->
+            true
+        | _ -> false
+      in
       let* (lt, lv), (rt, rv) =
         let hint = operand_type_hint op expected l r in
         match (unresolved_shape_of l, unresolved_shape_of r) with
@@ -614,13 +632,65 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
             let* rt, rv =
               const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
                 ~globals ?resolve consts
-                (contextual_peer_type op lt r)
+                (if comparison_chain || parenthesized_comparison then None
+                 else contextual_peer_type op lt r)
                 ~check_only ~validate_dead r
             in
             Ok ((lt, lv), (rt, rv))
       in
+      let comparison_chain_rewrite_valid =
+        match (op, l) with
+        | ( (Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge),
+            Ast.Binary (((Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge) as inner), first, middle, _)
+          ) ->
+            let check_pair _operation left right =
+              match (unresolved_shape_of left, unresolved_shape_of right) with
+              | Some _, None ->
+                  let* right_ty, _ =
+                    const_expr ~structs ~named_types ~generic_structs ~arrays
+                      ~array_lengths ~globals ?resolve consts None ~check_only:true
+                      right
+                  in
+                  let* left_ty, _ =
+                    const_expr ~structs ~named_types ~generic_structs ~arrays
+                      ~array_lengths ~globals ?resolve consts (Some right_ty)
+                      ~check_only:true left
+                  in
+                  Ok (left_ty, right_ty)
+              | _ ->
+                  let* left_ty, _ =
+                    const_expr ~structs ~named_types ~generic_structs ~arrays
+                      ~array_lengths ~globals ?resolve consts None ~check_only:true left
+                  in
+                  let* right_ty, _ =
+                    const_expr ~structs ~named_types ~generic_structs ~arrays
+                      ~array_lengths ~globals ?resolve consts (Some left_ty)
+                      ~check_only:true right
+                  in
+                  Ok (left_ty, right_ty)
+            in
+            let rewrite_result =
+              let* first_ty, middle_ty = check_pair inner first middle in
+              let* _ =
+                binary_result_type ~left_expression:first ~right_expression:middle s
+                  inner first_ty middle_ty
+              in
+              let* last_ty, _ =
+                const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
+                  ~globals ?resolve consts (Some middle_ty) ~check_only:true r
+              in
+              let* _ =
+                binary_result_type ~left_expression:middle ~right_expression:r s op
+                  middle_ty last_ty
+              in
+              Ok ()
+            in
+            Result.is_ok rewrite_result
+        | _ -> true
+      in
       let* result_ty =
-        binary_result_type ~left_expression:l ~right_expression:r s op lt rt
+        binary_result_type ~left_expression:l ~right_expression:r
+          ~comparison_chain_rewrite_valid s op lt rt
       in
       if (not check_only) && (op = Ast.Div || op = Ast.Rem) && rv = 0L then
         error s "division by zero in constant expression"
@@ -1020,6 +1090,7 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
         Ok (lt, lv, rt, rv)
   in
   match expression with
+  | Ast.Parenthesized (value, _) -> evaluate expected value
   | Ast.Ident (name, span) -> (
       match lookup name arrays with
       | Some (_, (Hir.Vec _ as ty), values) -> Ok (ty, values)

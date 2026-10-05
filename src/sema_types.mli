@@ -82,6 +82,7 @@ val binary_result_type :
   ?left_expression:Ast.expr ->
   ?right_expression:Ast.expr ->
   ?result_expected:Hir.ty ->
+  ?comparison_chain_rewrite_valid:bool ->
   Span.t ->
   Ast.binop ->
   Hir.ty ->

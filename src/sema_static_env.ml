@@ -6,6 +6,7 @@ let rec symbolic_expression names = function
   | Ast.Array_lit (items, _) | Ast.Struct_lit (_, items, _) ->
       List.exists (symbolic_expression names) items
   | Ast.Unary (_, x, _)
+  | Ast.Parenthesized (x, _)
   | Ast.Cast (_, _, x, _)
   | Ast.Handle_from_addr (_, x, _)
   | Ast.Field (x, _, _)
