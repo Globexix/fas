@@ -12609,6 +12609,17 @@ let () =
     2 "compound assignment `&=` is not defined for `vec[2, bool]`" None
 
 let () =
+  let bool_compound =
+    "fn combine(left bool, right bool) bool { left &= right\nreturn left }\n"
+  in
+  semantic_pin "bool-compound-help" bool_compound 1
+    (String.index bool_compound '&' + 1)
+    2 "compound assignment `&=` is not defined for `bool`"
+    (Some "write `left = left & right`");
+  semantic_accept "bool-compound-help-twin"
+    "fn combine(left bool, right bool) bool { left = left & right\nreturn left }\n"
+
+let () =
   let dir = Filename.dirname (fst (c_import_fixture "container_followup.h")) in
   let file = Filename.concat dir "container_order_cases.fas" in
   let span = Span.make ~file ~start_offset:0 ~end_offset:0 ~line:30 ~column:1 in

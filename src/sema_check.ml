@@ -3960,7 +3960,13 @@ and check_stmt (c : context) = function
       in
       let* v = if is_addr_step then normalize_offset_expr c.structs span v else Ok v in
       if (not (is_numeric et)) && not is_addr_step then
-        error operator_span
+        let help =
+          match (et, op, t) with
+          | Hir.Bool, Ast.Bit_and, Ast.Target_ident (name, _) ->
+              Some (Printf.sprintf "write `%s = %s & %s`" name name (Ast.expr_name e))
+          | _ -> None
+        in
+        error ?help operator_span
           (Printf.sprintf "compound assignment `%s` is not defined for `%s`"
              (compound_operator op)
              (Sema_types.diagnostic_ty_name et))
