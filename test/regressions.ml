@@ -1796,8 +1796,8 @@ let () =
     contains uninitialized_no_zero "memset"
     || contains uninitialized_no_zero "zeroinitializer"
   then failwith "plain declaration emitted implicit initialization";
-  parse_error_message "raw-declaration-removed"
-    "raw local initializers are not Fas syntax; put the name before its type"
+  parse_message "raw-declaration-removed"
+    "Fas has no `= raw`; write `x i64` to declare without initializing"
     "fn f() i64 { x i64 = raw\n return 0 }\n";
   semantic_error "raw-not-a-value-return" "unknown name `raw`"
     "fn f() i64 { return raw }\n";
@@ -1805,8 +1805,8 @@ let () =
     "fn g(x i64) i64 { return x }\nfn f() i64 { return g(raw) }\n";
   semantic_error "raw-not-a-value-assign" "unknown name `raw`"
     "fn f() i64 { x i64 = 1\n x = raw\n return x }\n";
-  parse_error_message "raw-init-trailing"
-    "raw local initializers are not Fas syntax; put the name before its type"
+  parse_message "raw-init-trailing"
+    "Fas has no `= raw`; write `x i64` to declare without initializing"
     "fn f() i64 { x i64 = raw + 1\n return x }\n";
   ignore (lower_of "fn f() i64 { raw i64 = 3\n return raw }\n");
   semantic_error "lexical-scope-same-block" "duplicate local `value`"
@@ -9258,18 +9258,30 @@ let () =
      source arr[3,u32]\n\
      copy(destination, source)\n\
      return }\n";
-  semantic_error "copy-rvalue-destination"
-    "argument 1 of `copy` must be an existing array or struct"
+  let copy_ternary_destination_source =
     "struct S { value i64 }\n\
      fn f(condition bool) void { source S = {1}\n\
      copy(condition ? source : source, source)\n\
-     return }\n";
-  semantic_error "copy-rvalue-source"
-    "argument 2 of `copy` must be an existing array or struct"
+     return }\n"
+  in
+  let copy_ternary_destination_line = "copy(condition ? source : source, source)" in
+  semantic_pin "copy-rvalue-destination" copy_ternary_destination_source 3
+    (String.index copy_ternary_destination_line '(' + 2)
+    (String.length "condition ? source : source")
+    "argument 1 of `copy` cannot be a `?:` expression; name the array or struct" None;
+  let copy_ternary_source_source =
     "struct S { value i64 }\n\
      fn f(condition bool) void { destination S = {1}\n\
      copy(destination, condition ? destination : destination)\n\
-     return }\n";
+     return }\n"
+  in
+  let copy_ternary_source_line =
+    "copy(destination, condition ? destination : destination)"
+  in
+  semantic_pin "copy-rvalue-source" copy_ternary_source_source 3
+    (String.index copy_ternary_source_line ',' + 3)
+    (String.length "condition ? destination : destination")
+    "argument 2 of `copy` cannot be a `?:` expression; name the array or struct" None;
   semantic_error "copy-constant-destination" "cannot modify constant"
     "const Values arr[2,u32] = {7, 9}\n\
      fn f() void { source arr[2,u32]\n\

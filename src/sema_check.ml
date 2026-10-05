@@ -3326,6 +3326,15 @@ let local_path place =
 
 let copy_is_aggregate = function Hir.Array _ | Hir.Struct _ -> true | _ -> false
 
+let rec copy_ternary_span = function
+  | Ast.Ternary (condition, _, alternate, _) ->
+      let first = Ast.expr_span condition and last = Ast.expr_span alternate in
+      Some
+        (Span.make ~file:first.file ~start_offset:first.start_offset
+           ~end_offset:last.end_offset ~line:first.line ~column:first.column)
+  | Ast.Parenthesized (expression, _) -> copy_ternary_span expression
+  | _ -> None
+
 let rec expression_mentions_name name = function
   | Ast.Ident (found, _) -> found = name
   | Ast.Unary (_, value, _)
@@ -3558,6 +3567,18 @@ let check_copy c args span =
   if List.length args <> 2 then error span "builtin `copy` expects two arguments"
   else
     let destination_arg = List.nth args 0 and source_arg = List.nth args 1 in
+    let reject_ternary argument_index expression =
+      match copy_ternary_span expression with
+      | Some ternary_span ->
+          error ternary_span
+            (Printf.sprintf
+               "argument %d of `copy` cannot be a `?:` expression; name the array or \
+                struct"
+               argument_index)
+      | None -> Ok ()
+    in
+    let* () = reject_ternary 1 destination_arg in
+    let* () = reject_ternary 2 source_arg in
     let* destination = check_place c destination_arg in
     let* source = check_place c source_arg in
     let* () =

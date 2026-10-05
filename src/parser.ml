@@ -1179,8 +1179,9 @@ module P = struct
             Error
               [
                 Diag.error (span p)
-                  "raw local initializers are not Fas syntax; put the name before its \
-                   type";
+                  (Printf.sprintf
+                     "Fas has no `= raw`; write `%s %s` to declare without initializing"
+                     name (Ast.type_name ty));
               ]
         | _ ->
             let* e = expr p in
