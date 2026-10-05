@@ -13,6 +13,10 @@ let ( let* ) result continuation =
 
 let lookup name table = List.find_opt (fun (entry, _, _) -> entry = name) table
 
+let c_pointer_selection_error value type_hint expected span operator =
+  let help = Sema_types.c_pointer_selection_help value type_hint expected in
+  Diag.error ?help span operator
+
 let shuffle_selector_expression = function
   | Ast.Array_lit (entries, span) ->
       Ast.Struct_lit
@@ -449,6 +453,18 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
     ?(arrays = []) ?(array_lengths = []) ?(globals = []) ?resolve consts expected
     ?(check_only = false) ?(validate_dead = true) expression =
   match expression with
+  | Ast.C_dereference (value, type_hint, span) ->
+      Error
+        [
+          c_pointer_selection_error value type_hint expected span
+            "Fas has no unary `*`; read through an `addr` with `p[T]`";
+        ]
+  | Ast.C_dot_star (value, span) ->
+      Error
+        [
+          c_pointer_selection_error value None expected span
+            "Fas has no `.*`; read through an `addr` with `p[T]`";
+        ]
   | Ast.Parenthesized (value, _) ->
       const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths ~globals
         ?resolve consts expected ~check_only ~validate_dead value
@@ -1090,6 +1106,18 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
         Ok (lt, lv, rt, rv)
   in
   match expression with
+  | Ast.C_dereference (value, type_hint, span) ->
+      Error
+        [
+          c_pointer_selection_error value type_hint expected span
+            "Fas has no unary `*`; read through an `addr` with `p[T]`";
+        ]
+  | Ast.C_dot_star (value, span) ->
+      Error
+        [
+          c_pointer_selection_error value None expected span
+            "Fas has no `.*`; read through an `addr` with `p[T]`";
+        ]
   | Ast.Parenthesized (value, _) -> evaluate expected value
   | Ast.Ident (name, span) -> (
       match lookup name arrays with

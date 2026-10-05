@@ -1539,6 +1539,14 @@ and check_expr_inner ?destination (c : context) expected expression =
   in
   match expression with
   | Ast.Parenthesized (value, _) -> check_expr c expected value
+  | Ast.C_dereference (value, type_hint, span) ->
+      error
+        ?help:(Sema_types.c_pointer_selection_help value type_hint expected)
+        span "Fas has no unary `*`; read through an `addr` with `p[T]`"
+  | Ast.C_dot_star (value, span) ->
+      error
+        ?help:(Sema_types.c_pointer_selection_help value None expected)
+        span "Fas has no `.*`; read through an `addr` with `p[T]`"
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
@@ -3315,6 +3323,8 @@ let copy_is_aggregate = function Hir.Array _ | Hir.Struct _ -> true | _ -> false
 let rec expression_mentions_name name = function
   | Ast.Ident (found, _) -> found = name
   | Ast.Unary (_, value, _)
+  | Ast.C_dereference (value, _, _)
+  | Ast.C_dot_star (value, _)
   | Ast.Parenthesized (value, _)
   | Ast.Cast (_, _, value, _)
   | Ast.Field (value, _, _)
@@ -3349,6 +3359,8 @@ let rec expression_takes_name_address name = function
   | Ast.Addr_of (value, _) ->
       expression_mentions_name name value || expression_takes_name_address name value
   | Ast.Unary (_, value, _)
+  | Ast.C_dereference (value, _, _)
+  | Ast.C_dot_star (value, _)
   | Ast.Parenthesized (value, _)
   | Ast.Cast (_, _, value, _)
   | Ast.Field (value, _, _)

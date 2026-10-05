@@ -24,6 +24,8 @@ and expr =
   | String_lit of bool * string * Span.t
   | Ident of string * Span.t
   | Unary of unop * expr * Span.t
+  | C_dereference of expr * string option * Span.t
+  | C_dot_star of expr * Span.t
   | Parenthesized of expr * Span.t
   | Binary of binop * expr * expr * Span.t
   | Call of expr * expr list * Span.t
@@ -177,6 +179,7 @@ let rec expr_span = function
   | Array_lit (_, s)
   | Struct_lit (_, _, s) ->
       s
+  | C_dereference (_, _, s) | C_dot_star (_, s) -> s
   | Parenthesized (e, _) -> expr_span e
   | Arrow_field (base, _, _, field_span) ->
       let base_span = expr_span base in
@@ -251,6 +254,8 @@ and expr_name = function
   | Ident (s, _) -> s
   | Unary (op, e, _) ->
       (match op with Neg -> "-" | Not -> "!" | Bit_not -> "~") ^ expr_name e
+  | C_dereference (e, _, _) -> "*" ^ expr_name e
+  | C_dot_star (e, _) -> expr_name e ^ ".*"
   | Parenthesized (e, _) -> "(" ^ expr_name e ^ ")"
   | Binary (op, l, r, _) ->
       expr_name l ^ " "
@@ -400,6 +405,12 @@ let render_program program =
     | Unary (op, x, _) ->
         text (match op with Neg -> "-" | Not -> "!" | Bit_not -> "~");
         emit_expr x
+    | C_dereference (x, _, _) ->
+        text "*";
+        emit_expr x
+    | C_dot_star (x, _) ->
+        emit_expr x;
+        text ".*"
     | Parenthesized (x, _) ->
         text "(";
         emit_expr x;
@@ -758,7 +769,7 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
       match e with
       | Ident (name, _) -> identifiers := name :: !identifiers
       | Int_lit _ | Bool_lit _ | Null _ | String_lit _ -> ()
-      | Unary (_, x, _) -> go_expr x
+      | Unary (_, x, _) | C_dereference (x, _, _) | C_dot_star (x, _) -> go_expr x
       | Parenthesized (x, _) -> go_expr x
       | Binary (_, l, r, _) ->
           go_expr l;

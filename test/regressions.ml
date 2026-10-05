@@ -2094,8 +2094,10 @@ let () =
   parse_error_message "removed-typed-pointer"
     "typed pointers are not Fas types; use `addr`"
     "fn f() void { p ptr[u8]\n return }\n";
-  parse_error_message "removed-pointer-dereference"
-    "Fas has no `.*` pointer-selection operator" "fn f(p addr) addr { return p.* }\n";
+  let dot_star = "fn f(p addr) addr { return p.* }\n" in
+  semantic_pin "removed-pointer-dereference" dot_star 1
+    (String.index dot_star '.' + 1)
+    2 "Fas has no `.*`; read through an `addr` with `p[T]`" None;
   parse_error_message "removed-ptr-add"
     "builtin `ptr_add` is not defined; use address arithmetic"
     "fn f(p addr, n usize) addr { return ptr_add(p, n) }\n";
@@ -13250,9 +13252,44 @@ let () =
   let integer_cast = "fn reinterpret(value i32) u32 { return (u32)value }\n" in
   pin "c-integer-cast" integer_cast 1 "fn reinterpret(value i32) u32 { return " 1
     "C cast `(u32)` is not Fas syntax; use `zext`, `sext`, `trunc` or `bitcast`";
-  let dereference = "fn read(pointer addr) u8 { return *pointer }\n" in
-  pin "c-star-dereference" dereference 1 "fn read(pointer addr) u8 { return " 1
-    "Fas has no unary `*`; use typed `addr[T]` selection";
+  let dereference = "fn fetch(address addr) u8 { return *address }\n" in
+  semantic_pin "c-star-dereference" dereference 1
+    (String.index dereference '*' + 1)
+    1 "Fas has no unary `*`; read through an `addr` with `p[T]`"
+    (Some "write `address[u8]`");
+  semantic_accept "c-star-dereference-typed-twin"
+    "fn fetch(address addr) u8 { return address[u8] }\n";
+  let dereference_assignment =
+    "fn store(address addr) void { *address = 1\n return }\n"
+  in
+  syntax_pin "c-star-dereference-assignment" dereference_assignment 1
+    (String.index dereference_assignment '*' + 1)
+    1 "Fas has no unary `*`; read through an `addr` with `p[T]`";
+  let typed_dereference = "fn fetch(address addr) i32 { return *(i32*)address }\n" in
+  semantic_pin "c-typed-star-dereference" typed_dereference 1
+    (String.index typed_dereference '*' + 1)
+    1 "Fas has no unary `*`; read through an `addr` with `p[T]`"
+    (Some "write `address[i32]`");
+  semantic_accept "c-typed-star-dereference-twin"
+    "fn fetch(address addr) i32 { return address[i32] }\n";
+  let dot_star_read = "fn fetch(address addr) i32 { return address.* }\n" in
+  semantic_pin "c-dot-star-dereference" dot_star_read 1
+    (String.index dot_star_read '.' + 1)
+    2 "Fas has no `.*`; read through an `addr` with `p[T]`"
+    (Some "write `address[i32]`");
+  semantic_accept "c-dot-star-dereference-twin"
+    "fn fetch(address addr) i32 { return address[i32] }\n";
+  let dot_star_assignment =
+    "fn store(address addr) void { address.* = 1\n return }\n"
+  in
+  syntax_pin "c-dot-star-dereference-assignment" dot_star_assignment 1
+    (String.index dot_star_assignment '.' + 1)
+    2 "Fas has no `.*`; read through an `addr` with `p[T]`";
+  let constant_dereference = "var address addr = null\nconst VALUE u8 = *address\n" in
+  semantic_pin "constant-c-star-dereference" constant_dereference 2
+    (String.index "const VALUE u8 = *address" '*' + 1)
+    1 "Fas has no unary `*`; read through an `addr` with `p[T]`"
+    (Some "write `address[u8]`");
   let prefix_increment = "fn increment(value i32) i32 { return ++value }\n" in
   pin "c-prefix-increment" prefix_increment 1 "fn increment(value i32) i32 { return " 2
     "Fas has no prefix `++` operator";

@@ -1193,6 +1193,11 @@ module P = struct
     | Ast.Ident (n, span) -> Ok (Ast.Target_ident (n, span))
     | Ast.Select (a, args, _) -> Ok (Ast.Target_select (a, args))
     | Ast.Field (a, n, span) -> Ok (Ast.Target_field (a, n, span))
+    | Ast.C_dereference (_, _, span) ->
+        Error
+          [ Diag.error span "Fas has no unary `*`; read through an `addr` with `p[T]`" ]
+    | Ast.C_dot_star (_, span) ->
+        Error [ Diag.error span "Fas has no `.*`; read through an `addr` with `p[T]`" ]
     | _ -> Error [ Diag.error (Ast.expr_span e) "invalid assignment target" ]
 
   and assignment_or_expr_with_end p consume_end =
@@ -1410,7 +1415,29 @@ module P = struct
             ~column:first.Span.column
         in
         error operator_span (Printf.sprintf "Fas has no prefix `%s` operator" operator)
-    | Token.Star -> error (span p) "Fas has no unary `*`; use typed `addr[T]` selection"
+    | Token.Star ->
+        let operator_span = span p in
+        within_nesting p operator_span "unary nesting exceeds the configured limit"
+          (fun () ->
+            ignore (bump p);
+            let* cast_type, value =
+              match c_cast_type p with
+              | Some cast when String.ends_with ~suffix:"*" cast || cast = "addr" ->
+                  ignore (bump p);
+                  ignore (bump p);
+                  if String.ends_with ~suffix:"*" cast then ignore (bump p);
+                  ignore (bump p);
+                  let* value = unary p in
+                  let cast_type =
+                    if cast = "addr" then None
+                    else Some (String.sub cast 0 (String.length cast - 1))
+                  in
+                  Ok (cast_type, value)
+              | _ ->
+                  let* value = unary p in
+                  Ok (None, value)
+            in
+            Ok (Ast.C_dereference (value, cast_type, operator_span)))
     | Token.Amp ->
         let s = span p in
         within_nesting p s "unary nesting exceeds the configured limit" (fun () ->
@@ -1506,8 +1533,14 @@ module P = struct
       | Token.Dot ->
           let s = span p in
           ignore (bump p);
-          if eat p Token.Star then
-            Error [ Diag.error s "Fas has no `.*` pointer-selection operator" ]
+          if at p Token.Star then (
+            let star = span p in
+            ignore (bump p);
+            let operator_span =
+              Span.make ~file:s.Span.file ~start_offset:s.Span.start_offset
+                ~end_offset:star.Span.end_offset ~line:s.Span.line ~column:s.Span.column
+            in
+            go (Ast.C_dot_star (e, operator_span)))
           else
             let* n, field_span = field_ident p in
             go (Ast.Field (e, n, field_span))

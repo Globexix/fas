@@ -112,6 +112,8 @@ let rec count_expanded_expr_type_nodes expr cap total =
     | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Ident _ ->
         total
     | Ast.Unary (_, value, _)
+    | Ast.C_dereference (value, _, _)
+    | Ast.C_dot_star (value, _)
     | Ast.Parenthesized (value, _)
     | Ast.Addr_of (value, _)
     | Ast.Splat (value, _)

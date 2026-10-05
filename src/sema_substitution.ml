@@ -194,6 +194,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   and expression_mentions names = function
     | Ast.Ident (name, _) -> List.mem name names
     | Ast.Unary (_, expression, _)
+    | Ast.C_dereference (expression, _, _)
+    | Ast.C_dot_star (expression, _)
     | Ast.Parenthesized (expression, _)
     | Ast.Addr_of (expression, _)
     | Ast.Splat (expression, _) ->
@@ -315,6 +317,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             error span (Printf.sprintf "`%s` is a function, not a value" name)
         | None -> error span (Printf.sprintf "unknown name `%s`" name))
     | Ast.Unary (_, expression, _)
+    | Ast.C_dereference (expression, _, _)
+    | Ast.C_dot_star (expression, _)
     | Ast.Parenthesized (expression, _)
     | Ast.Addr_of (expression, _)
     | Ast.Splat (expression, _) ->
@@ -642,6 +646,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   let rec has_generic_arguments = function
     | Ast.Generic_args _ -> true
     | Ast.Unary (_, expression, _)
+    | Ast.C_dereference (expression, _, _)
+    | Ast.C_dot_star (expression, _)
     | Ast.Parenthesized (expression, _)
     | Ast.Addr_of (expression, _)
     | Ast.Splat (expression, _)
@@ -708,6 +714,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     else
       match expression with
       | Ast.Unary (_, value, _)
+      | Ast.C_dereference (value, _, _)
+      | Ast.C_dot_star (value, _)
       | Ast.Parenthesized (value, _)
       | Ast.Addr_of (value, _)
       | Ast.Splat (value, _) ->
@@ -1371,6 +1379,16 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           resolve_expr ~values ~defer_const_structs substitutions depth expression
         in
         Ok (Ast.Unary (op, expression, span))
+    | Ast.C_dereference (expression, type_hint, span) ->
+        let* expression =
+          resolve_expr ~values ~defer_const_structs substitutions depth expression
+        in
+        Ok (Ast.C_dereference (expression, type_hint, span))
+    | Ast.C_dot_star (expression, span) ->
+        let* expression =
+          resolve_expr ~values ~defer_const_structs substitutions depth expression
+        in
+        Ok (Ast.C_dot_star (expression, span))
     | Ast.Parenthesized (expression, span) ->
         let* expression =
           resolve_expr ~values ~defer_const_structs substitutions depth expression

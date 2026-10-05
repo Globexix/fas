@@ -26,8 +26,30 @@ let truthiness_help expression ty =
            (Ast.expr_name expression))
   | _ -> None
 
+let c_pointer_selection_help value type_hint expected =
+  let name = match value with Ast.Ident (name, _) -> Some name | _ -> None in
+  let type_name =
+    match type_hint with
+    | Some name when List.mem name Names.scalar_type_names && name <> "void" ->
+        Some name
+    | Some _ -> None
+    | None -> (
+        match expected with
+        | Some ((Hir.Bool | Hir.Int _) as ty) ->
+            let name = Hir.ty_name ty in
+            if List.mem name Names.scalar_type_names then Some name else None
+        | _ -> None)
+  in
+  match (name, type_name) with
+  | Some name, Some type_name -> Some (Printf.sprintf "write `%s[%s]`" name type_name)
+  | _ -> None
+
 let rec expression_start_span = function
-  | Ast.Binary (_, left, _, _) | Ast.Unary (_, left, _) -> expression_start_span left
+  | Ast.Binary (_, left, _, _)
+  | Ast.Unary (_, left, _)
+  | Ast.C_dereference (left, _, _)
+  | Ast.C_dot_star (left, _) ->
+      expression_start_span left
   | Ast.Parenthesized (value, _) -> expression_start_span value
   | expression -> Ast.expr_span expression
 

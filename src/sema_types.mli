@@ -15,6 +15,9 @@ val source_ty_diag : named_types -> Span.t -> Ast.ty -> (Hir.ty, Diag.t list) re
 val vec_cap_error : int -> Hir.ty -> string option
 val condition_error : string -> Ast.expr -> Hir.ty -> Diag.t
 
+val c_pointer_selection_help :
+  Ast.expr -> string option -> Hir.ty option -> string option
+
 val logical_operand_error :
   ?help:string -> string -> string -> Ast.expr -> Hir.ty -> Diag.t
 
