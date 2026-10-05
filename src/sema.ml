@@ -76,19 +76,36 @@ let aggregate_result_error span ty_name =
         destination as an `addr` parameter"
        ty_name)
 
-let extern_c_aggregate_parameter_error span name ty_name =
-  error span
-    (Printf.sprintf
-       "aggregate parameter `%s` of type `%s` cannot be passed by value; pass `&x` as \
-        `addr` or `handle[T]`"
-       name ty_name)
+let extern_c_handle_name named_types = function
+  | Ast.Named_type (name, _) -> (
+      match List.assoc_opt name named_types with
+      | Some (C_record_name (_, None)) -> Some name
+      | _ -> None)
+  | _ -> None
 
-let extern_c_aggregate_result_error span ty_name =
+let extern_c_aggregate_parameter_error span name ty_name handle_name =
+  let handle_suffix =
+    match handle_name with
+    | Some name -> Printf.sprintf " or `handle[%s]`" name
+    | None -> ""
+  in
   error span
     (Printf.sprintf
-       "aggregate result `%s` cannot be returned by value; pass destination storage as \
-        `addr` or `handle[T]`"
-       ty_name)
+       "aggregate parameter `%s` of type `%s` cannot be passed by value; declare `%s` \
+        as `addr`%s"
+       name ty_name name handle_suffix)
+
+let extern_c_aggregate_result_error span ty_name handle_name =
+  let handle_suffix =
+    match handle_name with
+    | Some name -> Printf.sprintf " or `handle[%s]`" name
+    | None -> ""
+  in
+  error span
+    (Printf.sprintf
+       "aggregate result `%s` cannot be returned by value; return `void` and take the \
+        destination as an `addr`%s parameter"
+       ty_name handle_suffix)
 
 let extern_c_struct_value_error span name =
   error span
@@ -131,7 +148,8 @@ let validate_native_aggregate_signature span params converted ret =
     aggregate_result_error span (Sema_types.diagnostic_ty_name ret)
   else Ok ()
 
-let validate_extern_c_signature ~bodyless span params converted ret =
+let validate_extern_c_signature ~named_types ~ret_source ~bodyless span params converted
+    ret =
   let rec validate_params params converted =
     match (params, converted) with
     | [], [] -> Ok ()
@@ -143,6 +161,7 @@ let validate_extern_c_signature ~bodyless span params converted ret =
           | _ ->
               extern_c_aggregate_parameter_error param.ty_span param.name
                 (diagnostic_source_ty_name param.ty)
+                (extern_c_handle_name named_types param.ty)
         else
           error param.ty_span
             (Printf.sprintf
@@ -155,7 +174,10 @@ let validate_extern_c_signature ~bodyless span params converted ret =
   else if aggregate_value_type ret then
     match (bodyless, ret) with
     | true, Hir.Struct name -> extern_c_struct_value_error span name
-    | _ -> extern_c_aggregate_result_error span (Sema_types.diagnostic_ty_name ret)
+    | _ ->
+        extern_c_aggregate_result_error span
+          (Sema_types.diagnostic_ty_name ret)
+          (extern_c_handle_name named_types ret_source)
   else
     error span
       (Printf.sprintf "extern \"C\" cannot return `%s` by value; use an output pointer"
@@ -693,8 +715,8 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                 in
                 let* () =
                   (if linkage = Ast.External_c then
-                     validate_extern_c_signature ~bodyless:(func.body = Ast.Declaration)
-                       ret_span params ps rt
+                     validate_extern_c_signature ~named_types ~ret_source:ret
+                       ~bodyless:(func.body = Ast.Declaration) ret_span params ps rt
                    else validate_native_aggregate_signature ret_span params ps rt)
                   |> trace_result specializations
                        (specialization_trace specializations Function_specialization

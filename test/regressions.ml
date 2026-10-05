@@ -2137,8 +2137,8 @@ let () =
     "C functions that take or return struct `S` by value cannot be imported"
     "struct S { x i64 }\nextern \"C\" { fn take(value S) void }\n";
   semantic_error "extern-c-array-parameter"
-    "aggregate parameter `value` of type `arr[2,i64]` cannot be passed by value; pass \
-     `&x` as `addr` or `handle[T]`"
+    "aggregate parameter `value` of type `arr[2,i64]` cannot be passed by value; \
+     declare `value` as `addr`"
     "extern \"C\" { fn take(value arr[2,i64]) void }\n";
   semantic_error "extern-c-struct-return"
     "C functions that take or return struct `S` by value cannot be imported"
@@ -2159,8 +2159,8 @@ let () =
     "cannot use `vec[4, i32]` by value; use a pointer"
     "extern \"C\" { fn take(value vec[4,i32]) void }\n";
   semantic_error "extern-c-array-return"
-    "aggregate result `arr[2,i64]` cannot be returned by value; pass destination \
-     storage as `addr` or `handle[T]`"
+    "aggregate result `arr[2,i64]` cannot be returned by value; return `void` and take \
+     the destination as an `addr` parameter"
     "extern \"C\" { fn make() arr[2,i64] }\n";
   semantic_error "extern-c-opaque-parameter"
     "opaque type `Handle` can only be held as `handle[Handle]`"
@@ -2169,8 +2169,8 @@ let () =
     "function `value` returning `i64` may reach the end without `return`"
     "extern \"C\" { fn value() i64 { } }\n";
   semantic_error "extern-c-definition-struct-parameter"
-    "aggregate parameter `value` of type `S` cannot be passed by value; pass `&x` as \
-     `addr` or `handle[T]`"
+    "aggregate parameter `value` of type `S` cannot be passed by value; declare \
+     `value` as `addr`"
     "struct S { x i64 }\nextern \"C\" { fn take(value S) void { return } }\n";
   parse_error_message "extern-c-variadic-definition"
     "extern \"C\" function definitions cannot be variadic"
@@ -10583,6 +10583,17 @@ let () =
       ("FAS_EARLIER_LAST", Hir.Int Hir.I32, 1L);
     ];
   let c_records = c_import_fixture "records.h" in
+  c_semantic_message "extern-c-record-parameter-diagnostic"
+    "aggregate parameter `value` of type `FasAnonymousRecord` cannot be passed by \
+     value; declare `value` as `addr` or `handle[FasAnonymousRecord]`"
+    c_records
+    "extern \"C\" { fn consume_record(value FasAnonymousRecord) void { return } }\n";
+  c_semantic_message "extern-c-record-result-diagnostic"
+    "aggregate result `FasAnonymousRecord` cannot be returned by value; return `void` \
+     and take the destination as an `addr` or `handle[FasAnonymousRecord]` parameter"
+    c_records
+    "extern \"C\" { fn produce_record() FasAnonymousRecord { return \
+     (FasAnonymousRecord){1} } }\n";
   c_semantic_accept "c-import-typedef-anonymous-record-handle" c_records
     "fn probe(value handle[FasAnonymousRecord]) handle[FasAnonymousRecord] {\n\
     \     return fas_anonymous_record(value) }\n";
