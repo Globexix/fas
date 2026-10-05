@@ -30,6 +30,7 @@ val shift_count_lanes_error : Ast.binop -> Span.t -> Hir.ty -> Hir.ty -> Diag.t
 val shift_count_splat_error : Ast.binop -> Ast.expr -> Ast.expr -> Diag.t
 val rotate_value_error : string -> Span.t -> Hir.ty -> Diag.t
 val rotate_count_error : string -> Span.t -> Hir.ty -> Diag.t
+val signed_division_overflow_message : Hir.ty -> int64 -> int64 -> string
 
 val raw_access_needs_type_error :
   ?index:string -> ?allow_help:bool -> Ast.expr -> Span.t -> Diag.t

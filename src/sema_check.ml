@@ -935,10 +935,48 @@ let rec readonly_imported_constant_name c = function
       | _ -> None)
   | _ -> None
 
-let readonly_write_error c span expression =
-  match readonly_imported_constant_name c expression with
-  | Some name -> error span (Printf.sprintf "cannot modify constant `%s`" name)
-  | None -> error span "cannot modify read-only pointer"
+let rec readonly_storage_name c = function
+  | Hir.Const_array (name, _, _) -> Some name
+  | Hir.Address (base, _, _) | Hir.Cast (_, base, _, _) -> readonly_storage_name c base
+  | expression -> readonly_imported_constant_name c expression
+
+let readonly_string_source = function
+  | Ast.String_lit _ as source -> Some source
+  | Ast.Select ((Ast.String_lit _ as source), _, _) -> Some source
+  | _ -> None
+
+let rec readonly_view_name c = function
+  | Hir.Local (binding, _) when is_view c.flow binding -> Some binding.name
+  | Hir.Index (base, _, _, _) | Hir.Address (base, _, _) -> readonly_view_name c base
+  | _ -> None
+
+let is_fas_constant c name =
+  List.exists
+    (fun b -> b.declaration_name = name && b.declaration_kind = Top_const)
+    c.top_level_bindings
+
+let readonly_write_error ?source_expression c span expression =
+  let storage_name =
+    match (readonly_storage_name c expression, source_expression) with
+    | Some name, _ -> Some name
+    | None, Some (Ast.Ident (name, _)) when is_fas_constant c name -> Some name
+    | _ -> None
+  in
+  let through_view =
+    Option.fold ~none:""
+      ~some:(fun n -> " (through view `" ^ n ^ "`)")
+      (readonly_view_name c expression)
+  in
+  let message =
+    match (Option.bind source_expression readonly_string_source, storage_name) with
+    | Some source, _ ->
+        Printf.sprintf "cannot modify string literal `%s`" (Ast.expr_name source)
+    | None, Some name ->
+        if is_fas_constant c name then Printf.sprintf "cannot modify constant `%s`" name
+        else Printf.sprintf "cannot modify read-only C array `%s`" name
+    | _ -> "cannot modify read-only pointer"
+  in
+  error span (message ^ through_view)
 
 let view_access_of_expr c expression =
   if rooted_in_constant c expression then Constant_access
@@ -1892,7 +1930,10 @@ and check_expr_inner ?destination (c : context) expected expression =
             in
             if division_by_zero then
               error s "division by zero is not a defined runtime operation"
-            else if minimum_division_overflow then error s "signed division overflow"
+            else if minimum_division_overflow then
+              error s
+                (Sema_types.signed_division_overflow_message at
+                   (Option.get (value_fact c a)).low (Option.get divisor_fact).low)
             else Ok (Hir.Binary (op, a, b, result_ty, s)))
   | Ast.Call (fn, args, s) -> check_call c None fn args s
   | Ast.Handle_from_addr (t, e, s) -> (
@@ -3206,8 +3247,8 @@ let check_target (c : context) = function
       match lookup_local n c with
       | Some b -> (
           match view_access c.flow b with
-          | Readonly_access -> readonly_write_error c span (Hir.Local (b, span))
-          | Constant_access -> error span "cannot modify constant"
+          | Readonly_access | Constant_access ->
+              readonly_write_error c span (Hir.Local (b, span))
           | Mutable_access ->
               let root, path =
                 match view_origin c.flow b with
@@ -3255,9 +3296,8 @@ let check_target (c : context) = function
           error (Ast.expr_span a) "raw access cannot store an array or struct value"
       | Hir.Raw_select (base, off, t, _) ->
           let* () = check_place_access c (Ast.expr_span a) ~write:true x in
-          if access = Readonly_access then readonly_write_error c (Ast.expr_span a) x
-          else if access = Constant_access then
-            error (Ast.expr_span a) "cannot modify constant"
+          if access <> Mutable_access then
+            readonly_write_error ~source_expression:a c (Ast.expr_span a) x
           else
             Ok
               {
@@ -3267,9 +3307,8 @@ let check_target (c : context) = function
                 through_view = expression_uses_view c x;
               }
       | Hir.Index (base, index, _, _) -> (
-          if access = Readonly_access then readonly_write_error c (Ast.expr_span a) x
-          else if access = Constant_access then
-            error (Ast.expr_span a) "cannot modify constant"
+          if access <> Mutable_access then
+            readonly_write_error ~source_expression:a c (Ast.expr_span a) x
           else
             match Hir.expr_ty base with
             | Hir.Array (_, _) | Hir.Vec _ ->
@@ -3291,9 +3330,7 @@ let check_target (c : context) = function
           error (Ast.expr_span a) "raw access cannot store an array or struct value"
       | Hir.Raw_select (base, off, t, _) ->
           let* () = check_place_access c (Ast.expr_span a) ~write:true x in
-          if access = Readonly_access then readonly_write_error c (Ast.expr_span a) x
-          else if access = Constant_access then
-            error (Ast.expr_span a) "cannot modify constant"
+          if access <> Mutable_access then readonly_write_error c (Ast.expr_span a) x
           else
             Ok
               {
@@ -3303,10 +3340,7 @@ let check_target (c : context) = function
                 through_view = expression_uses_view c x;
               }
       | Hir.Field (base, _, _, _, _) -> (
-          if access = Constant_access then
-            error (Ast.expr_span a) "cannot modify constant"
-          else if access = Readonly_access then
-            readonly_write_error c (Ast.expr_span a) x
+          if access <> Mutable_access then readonly_write_error c (Ast.expr_span a) x
           else
             match Hir.expr_ty base with
             | Hir.Struct sn -> (
@@ -3663,11 +3697,11 @@ let check_copy c args span =
     in
     let* () =
       match view_access_of_expr c destination.expr with
-      | Readonly_access ->
-          readonly_write_error c (Ast.expr_span destination_arg) destination.expr
-      | Constant_access ->
-          error (Ast.expr_span destination_arg) "cannot modify constant"
       | Mutable_access -> Ok ()
+      | _ ->
+          readonly_write_error ~source_expression:destination_arg c
+            (Ast.expr_span destination_arg)
+            destination.expr
     in
     let* () = check_place_access c span ~write:true destination.expr in
     let* () = check_place_access c span ~write:false source.expr in
@@ -3798,7 +3832,7 @@ and check_stmt (c : context) = function
       in
       let* () = check_place_access c span ~write:false place_info.expr in
       let* binding = add_local name (Hir.expr_ty place_info.expr) c span in
-      let readonly_name = readonly_imported_constant_name c place_info.expr in
+      let readonly_name = readonly_storage_name c place_info.expr in
       let root, path =
         match place_info.expr with
         | Hir.Raw_select _ -> (None, None)
@@ -4056,9 +4090,10 @@ and check_stmt (c : context) = function
         if no_active_lanes then Ok ()
         else
           match view_access_of_expr c (List.hd checked) with
-          | Constant_access -> error call_span "cannot modify constant"
-          | Readonly_access -> readonly_write_error c call_span (List.hd checked)
           | Mutable_access -> Ok ()
+          | _ ->
+              readonly_write_error ~source_expression:(List.hd args) c call_span
+                (List.hd checked)
       in
       (match no_active_lanes with
       | true -> ()

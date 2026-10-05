@@ -726,7 +726,7 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
           (not check_only) && op = Ast.Div
           && (not (is_unsigned lt))
           && signed_lv = signed_min && signed_rv = Int64.minus_one
-        then error s "signed division overflow"
+        then error s (Sema_types.signed_division_overflow_message lt lv rv)
         else
           let cmp =
             if is_unsigned lt || lt = Hir.Addr then Int64.unsigned_compare lv rv
@@ -1264,7 +1264,7 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
               && (not (is_unsigned element))
               && lane_signed element left = signed_min
               && lane_signed element right = Int64.minus_one
-            then Some "signed division overflow"
+            then Some (Sema_types.signed_division_overflow_message element left right)
             else first_offense left_rest right_rest
         | _ -> None
       in

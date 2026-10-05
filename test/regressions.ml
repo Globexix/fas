@@ -1175,7 +1175,8 @@ let () =
   semantic_error "view-name-reserved" "`view` is reserved and cannot be used as a name"
     "fn f(x u32) void { view view = x\n return }\n";
   parse_error "view-top-level" "view x = 1\n";
-  semantic_error "view-readonly-source" "cannot modify read-only pointer"
+  semantic_error "view-readonly-source"
+    "cannot modify read-only pointer (through view `v`)"
     "fn f() void { view v = c\"read only\"[u8]\n v = 2\n return }\n";
   ignore
     (lower_of
@@ -2718,7 +2719,8 @@ let () =
     || (not (contains vector_div "@llvm.vector.reduce.or.v4i1"))
     || not (contains vector_div "udiv <4 x i32>")
   then failwith "integer-vector-div-trap: missing vector divisor guard";
-  semantic_error "signed-div-constant-overflow" "signed division overflow"
+  semantic_error "signed-div-constant-overflow"
+    "signed division `-9223372036854775808 / -1` overflows `i64`"
     "const X i64 = -9223372036854775808 / -1\nfn test() i64 { return X }\n";
   let signed_rem_const =
     llvm_of "const X i64 = -9223372036854775808 % -1\nfn test() i64 { return X }\n"
@@ -2747,7 +2749,7 @@ let () =
     \ return }\n";
   semantic_error "scalar-constant-address" "constant `K` cannot be addressed"
     "const K u32 = 4\nfn test() addr { return &K }\n";
-  semantic_error "fas-029-string-literal-index" "cannot modify read-only pointer"
+  semantic_error "fas-029-string-literal-index" "cannot modify string literal `\"x\"`"
     "fn main() i32 { \"x\"[u8] = 9\n return 0 }\n";
   let string_literals =
     llvm_of
@@ -7265,7 +7267,7 @@ let () =
     \ return }\n"
   in
   semantic_pin "constant-address-array-write-diagnostic" constant_address_array_write 3
-    19 4 "cannot modify constant" None;
+    19 4 "cannot modify constant `PTRS`" None;
   semantic_accept "mutable-address-array-write-twin"
     "var GLOBAL u8\n\
      var PTRS arr[1,addr] = {&GLOBAL}\n\
@@ -8670,7 +8672,7 @@ let () =
     \ return zext[u64](value)\n\
     \ }\n";
   semantic_error "constant-vector-division-first-lane-overflow"
-    "signed division overflow"
+    "signed division `-2147483648 / -1` overflows `i32`"
     "const XA u64 = 6442450944\n\
      const XB u64 = 4294967295\n\
      const A vec[2,i32] = bitcast[vec[2,i32]](XA)\n\
@@ -9303,7 +9305,7 @@ let () =
      fn f() void { source arr[2,u32]\n\
      copy(Values, source)\n\
      return }\n";
-  semantic_error "copy-readonly-destination" "cannot modify read-only pointer"
+  semantic_error "copy-readonly-destination" "cannot modify string literal `c\"ab\"`"
     "fn f(source addr) void {\ncopy(c\"ab\"[arr[2,u8]], source[arr[2,u8]])\nreturn }\n";
   semantic_error "copy-uninitialized-source" "use of uninitialized local `source`"
     "struct S { value i64 }\n\
@@ -9548,7 +9550,7 @@ let () =
     "const C arr[2,u32] = {3, 5}\n\
      fn f(m vec[2,bool], v vec[2,u32]) void { masked_store[u32](&C, m, v)\n\
      return }\n";
-  semantic_error "simd-memory-store-readonly" "cannot modify read-only pointer"
+  semantic_error "simd-memory-store-readonly" "cannot modify string literal `c\"data\"`"
     "fn f(m vec[4,bool], v vec[4,u8]) void { masked_store[u8](c\"data\", m, v)\n\
      return }\n";
   semantic_error "simd-memory-constant-context"
@@ -9729,7 +9731,7 @@ let () =
   semantic_message "address-constants-handle-ordinary-string"
     "address constants require a C string literal"
     "opaque Token\nvar P handle[Token] = handle_from_addr[Token](\"x\")\n";
-  semantic_message "address-constants-readonly-table" "cannot modify constant"
+  semantic_message "address-constants-readonly-table" "cannot modify constant `P`"
     "var G i32\nconst P arr[1,addr] = {&G}\nfn f() void { P[0] = null\nreturn }\n";
   let relocatable =
     llvm_of
@@ -10586,7 +10588,7 @@ let () =
     (fun name ->
       c_semantic_message
         ("c-import-array-readonly-" ^ name)
-        (Printf.sprintf "cannot modify constant `%s`" name)
+        (Printf.sprintf "cannot modify read-only C array `%s`" name)
         c_matrix
         ("fn probe() void { " ^ name ^ "[0] = null }\n"))
     [ "fas_array_readonly_pointer_elements" ];
@@ -10594,7 +10596,7 @@ let () =
     (fun name ->
       c_semantic_message
         ("c-import-array-readonly-" ^ name)
-        (Printf.sprintf "cannot modify constant `%s`" name)
+        (Printf.sprintf "cannot modify read-only C array `%s`" name)
         c_matrix
         ("fn probe() void { " ^ name ^ "[0] = 1 }\n"))
     [ "fas_array_readonly"; "fas_array_readonly_alias" ];
@@ -10605,10 +10607,10 @@ let () =
     "array index `8` is out of bounds for length 8" c_matrix
     "fn probe() i8 { return fas_array_names[0][8] }\n";
   c_semantic_message "c-import-array-readonly-view"
-    "cannot modify constant `fas_array_readonly`" c_matrix
-    "fn probe() void { view values = fas_array_readonly; values[0] = 1 }\n";
+    "cannot modify read-only C array `fas_array_readonly` (through view `values`)"
+    c_matrix "fn probe() void { view values = fas_array_readonly; values[0] = 1 }\n";
   c_semantic_message "c-import-array-readonly-copy"
-    "cannot modify constant `fas_array_readonly`" c_matrix
+    "cannot modify read-only C array `fas_array_readonly`" c_matrix
     "fn probe() void { copy(fas_array_readonly, fas_array_global) }\n";
   c_semantic_accept "c-import-array-readonly-pointer-target" c_matrix
     "fn probe() void { fas_array_readonly_pointer_elements[0][i32] = 1 }\n";
@@ -13000,7 +13002,8 @@ let () =
     "fn f() i32 { divisor i32 = 3 - 3\nreturn 81 % divisor }";
   semantic_accept "value-fact-unknown-divisor"
     "fn f(divisor i32) i32 { return 81 / divisor }";
-  semantic_message "value-fact-min-div-minus-one" "signed division overflow"
+  semantic_message "value-fact-min-div-minus-one"
+    "signed division `-2147483648 / -1` overflows `i32`"
     "fn f() i32 { value i32 = -2147483648\ndivisor i32 = -1\nreturn value / divisor }";
   semantic_accept "value-fact-min-rem-minus-one-is-defined"
     "fn f() i32 { value i32 = -2147483648\ndivisor i32 = -1\nreturn value % divisor }";

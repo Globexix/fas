@@ -466,6 +466,11 @@ let rotate_count_error name span ty =
     (Printf.sprintf "rotate count for `%s` must be a scalar integer, got `%s`" name
        (diagnostic_ty_name ty))
 
+let signed_division_overflow_message ty x y =
+  let signed = Sema_numeric.sign_extend_value ty in
+  Printf.sprintf "signed division `%Ld / %Ld` overflows `%s`" (signed x) (signed y)
+    (diagnostic_ty_name ty)
+
 let cast_name = function
   | Ast.Zext -> "zext"
   | Ast.Sext -> "sext"
