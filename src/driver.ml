@@ -550,7 +550,7 @@ let emit_tools_unprotected config program ir c_objects redirect =
           let* _ = build_assembly config llc opt_path asm_path in
           let* () = run_tool cc (executable_command config cc asm_path c_objects) in
           Ok ""
-      | Cli.Ir | Cli.Llvm | Cli.Header ->
+      | Cli.Ir | Cli.Ir_json | Cli.Llvm | Cli.Header ->
           invalid_arg "Driver.emit_tools: non-tool emission")
 
 let emit_tools config program ir c_objects redirect =
@@ -1071,6 +1071,7 @@ let run_unprotected ?header_output config =
                   declaration_headers
               in
               emit_text config (C_exports.header ~name ~headers declarations)
+          | Cli.Ir_json -> emit_text config (Ir_json.render ir)
           | Cli.Ir -> (
               match Ir.render_debug_bounded ~limits ir with
               | Ok text -> emit_text config text

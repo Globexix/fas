@@ -1,4 +1,4 @@
-type emit = Ir | Llvm | Asm | Obj | Header | Executable
+type emit = Ir | Ir_json | Llvm | Asm | Obj | Header | Executable
 
 type t = {
   input : string;
@@ -21,6 +21,7 @@ let usage =
   \  -o PATH       output path (default a.out, INPUT.o with -c, INPUT.s with -S)\n\
   \  --emit-header write an ABI-checked C header (stdout without -o)\n\
   \  --emit-ir     print the compiler's custom IR dump\n\
+  \  --emit-ir-json print the custom IR as JSON\n\
   \  --emit-llvm   print unoptimized LLVM IR after verification\n\
   \  --emit-asm, -S emit assembly\n\
   \  --emit-obj, -c emit object\n\
@@ -103,6 +104,10 @@ let parse argv =
           other_output := true;
           loop (i + 1) input output Ir keep optimization optimization_explicit debug
             no_inline_function
+      | "--emit-ir-json" ->
+          other_output := true;
+          loop (i + 1) input output Ir_json keep optimization optimization_explicit
+            debug no_inline_function
       | "--emit-llvm" ->
           other_output := true;
           loop (i + 1) input output Llvm keep optimization optimization_explicit debug

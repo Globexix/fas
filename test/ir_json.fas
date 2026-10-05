@@ -1,0 +1,17 @@
+struct Pair {
+    left i32
+    right i32
+}
+
+var Table arr[3,i32] = {7, -2, 9}
+var Item Pair = {4, 5}
+
+fn pick(x i32, y i32) i32 {
+    if x < y && x != 0 { return Table[1] + x }
+    switch y {
+        case 1: return Item.left
+        default: return x % y
+    }
+}
+
+fn main() i32 { return pick(3, 5) - 1 }

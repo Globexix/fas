@@ -135,7 +135,7 @@ temps_empty() {
 [ ! -s "$WORK/stderr" ] || fail "help wrote to stderr"
 "$OCAML_FAS" -h >"$WORK/short-help" 2>"$WORK/stderr"
 cmp "$WORK/help" "$WORK/short-help" >/dev/null || fail "-h differs from --help"
-for flag in -o --emit-header --emit-ir --emit-llvm --emit-asm -S --emit-obj -c --keep \
+for flag in -o --emit-header --emit-ir --emit-ir-json --emit-llvm --emit-asm -S --emit-obj -c --keep \
   -O0..-O3 -g --no-inline --sanitize=LIST -I -isystem -D -h --help; do
   grep -F -- "$flag" "$WORK/help" >/dev/null || fail "help omitted $flag"
 done
@@ -168,7 +168,7 @@ done
 expect_failure "$OCAML_FAS" "$WORK/part-a.fas" "$WORK/part-b.fas"
 grep -Fx 'multiple input files are not supported; use "path.fas" for dependencies' \
   "$WORK/stderr" >/dev/null || fail "multiple input diagnostic changed"
-for mode in -c -S --emit-ir --emit-llvm; do
+for mode in -c -S --emit-ir --emit-ir-json --emit-llvm; do
   expect_failure "$OCAML_FAS" "$WORK/link.fas" "$WORK/helper.c" "$mode"
   grep -Fx 'C inputs and link flags require an executable output' \
     "$WORK/stderr" >/dev/null || fail "$mode accepted C link inputs"
