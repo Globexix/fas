@@ -77,6 +77,34 @@ let c_import_system_fixture header =
     C_import.map_declarations ~alloc_size_parameters:!alloc_size_parameters
       ~span:Span.synthetic declarations )
 
+let c_import_alloc_size_fixture file =
+  let cwd = Sys.getcwd () in
+  let header =
+    match
+      List.find_opt Sys.file_exists
+        [
+          Filename.concat cwd ("test/c_import/" ^ file);
+          Filename.concat cwd ("c_import/" ^ file);
+        ]
+    with
+    | Some path -> path
+    | None -> failwith ("missing C import fixture " ^ file)
+  in
+  let source = Filename.concat (Filename.dirname header) "probe.fas" in
+  let alloc_size_parameters = ref [] in
+  let request =
+    C_import.
+      { spelling = Ast.C_quoted (Filename.basename header); span = Span.synthetic }
+  in
+  let declarations, _, _ =
+    expect_ok
+      (C_import.import ~alloc_size_out:alloc_size_parameters ~cc:"clang-22" ~debug:false
+         ~keep:false source [ request ])
+  in
+  ( source,
+    C_import.map_declarations ~alloc_size_parameters:!alloc_size_parameters
+      ~span:Span.synthetic declarations )
+
 let c_import_container ?(macro_names = []) name fragment_text =
   let source = Filename.temp_file ("fas-" ^ name ^ "-") ".fas" in
   let span = Span.make ~file:source ~start_offset:0 ~end_offset:0 ~line:1 ~column:1 in
@@ -9929,6 +9957,22 @@ let () =
 
   let c_matrix = c_import_fixture "matrix.h" in
   let c_stdlib = c_import_system_fixture "stdlib.h" in
+  let c_alloc_size_variable = c_import_alloc_size_fixture "alloc_size_variable.h" in
+  c_semantic_accept "alloc-size-variable-attribute-not-function" c_alloc_size_variable
+    "fn probe() void { p addr = plain_alloc(4)\np[u32, 1] = 1\nreturn }\n";
+  c_semantic_message "alloc-size-function-after-variable-retains-attribute"
+    "access outside object `marked_alloc(4)` (offset 4, size 4 bytes, object size 4)"
+    c_alloc_size_variable
+    "fn probe() void { p addr = marked_alloc(4)\np[u32, 1] = 1\nreturn }\n";
+  c_semantic_accept "alloc-size-typedef-attribute-not-function"
+    (c_import_alloc_size_fixture "alloc_size_typedef.h")
+    "fn probe() void { p addr = plain_alloc(4)\np[u32, 1] = 1\nreturn }\n";
+  c_semantic_accept "alloc-size-field-attribute-not-function"
+    (c_import_alloc_size_fixture "alloc_size_field.h")
+    "fn probe() void { p addr = plain_alloc(4)\np[u32, 1] = 1\nreturn }\n";
+  c_semantic_accept "alloc-size-parameter-attribute-not-function"
+    (c_import_alloc_size_fixture "alloc_size_parameter.h")
+    "fn probe() void { p addr = wrap(f, 4)\np[u32, 1] = 1\nreturn }\n";
   let _, c_stdlib_alloc_size = c_stdlib in
   let alloc_size_positions name =
     List.assoc_opt name c_stdlib_alloc_size.alloc_size_parameters

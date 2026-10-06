@@ -1111,6 +1111,7 @@ let has_c_name name node =
 
 let alloc_size_attributes text =
   let found = Hashtbl.create 32 and function_name = ref None in
+  let function_indent = ref None in
   let add name indices =
     if indices <> [] && List.length indices <= 2 then
       let previous = Option.value ~default:[] (Hashtbl.find_opt found name) in
@@ -1118,18 +1119,33 @@ let alloc_size_attributes text =
   in
   String.split_on_char '\n' text
   |> List.iter (fun line ->
-      match find_text line "FunctionDecl " 0 with
-      | Some start -> (
-          match find_text line "'" start with
-          | None -> function_name := None
+      let rec node_indent index =
+        if index = String.length line then None
+        else if line.[index] >= 'A' && line.[index] <= 'Z' then Some index
+        else node_indent (index + 1)
+      in
+      match node_indent 0 with
+      | Some indent when find_text line "FunctionDecl " indent = Some indent -> (
+          function_name := None;
+          function_indent := Some indent;
+          match find_text line "'" indent with
+          | None -> ()
           | Some finish ->
               function_name :=
                 Some
-                  (String.sub line start (finish - start)
+                  (String.sub line indent (finish - indent)
                   |> String.trim |> String.split_on_char ' ' |> List.rev |> List.hd))
-      | None -> (
-          match (!function_name, find_text line "AllocSizeAttr " 0) with
-          | Some name, Some start -> (
+      | Some indent -> (
+          (match !function_indent with
+          | Some active_indent when indent <= active_indent ->
+              function_name := None;
+              function_indent := None
+          | _ -> ());
+          match
+            (!function_name, !function_indent, find_text line "AllocSizeAttr " indent)
+          with
+          | Some name, Some active_indent, Some start when indent = active_indent + 2
+            -> (
               match String.index_from_opt line start '>' with
               | None -> ()
               | Some finish ->
@@ -1139,7 +1155,8 @@ let alloc_size_attributes text =
                     |> List.filter_map int_of_string_opt
                   in
                   add name indices)
-          | _ -> ()));
+          | _ -> ())
+      | None -> ());
   found
 
 let import ~cc ~debug ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
