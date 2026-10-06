@@ -66,12 +66,16 @@ let c_import_fixture file =
 
 let c_import_system_fixture header =
   let source = Filename.concat (Sys.getcwd ()) "test/ir_simple.fas" in
+  let alloc_size_parameters = ref [] in
   let declarations, _, _ =
     expect_ok
-      (C_import.import ~cc:"clang-22" ~debug:false ~keep:false source
+      (C_import.import ~alloc_size_out:alloc_size_parameters ~cc:"clang-22" ~debug:false
+         ~keep:false source
          [ C_import.{ spelling = Ast.C_system header; span = Span.synthetic } ])
   in
-  (source, C_import.map_declarations ~span:Span.synthetic declarations)
+  ( source,
+    C_import.map_declarations ~alloc_size_parameters:!alloc_size_parameters
+      ~span:Span.synthetic declarations )
 
 let c_import_container ?(macro_names = []) name fragment_text =
   let source = Filename.temp_file ("fas-" ^ name ^ "-") ".fas" in

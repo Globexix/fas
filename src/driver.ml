@@ -798,14 +798,16 @@ let run_unprotected ?header_output config =
             let rec import = function
               | [] -> Ok ()
               | (source, headers) :: rest ->
+                  let alloc_size_parameters = ref [] in
                   let* declarations, kept, artifacts =
-                    C_import.import ~cc ~debug:config.Cli.debug ~keep:config.Cli.keep
-                      ~retain:true ~c_flags:config.Cli.c_flags ~macro_names source
-                      headers
+                    C_import.import ~alloc_size_out:alloc_size_parameters ~cc
+                      ~debug:config.Cli.debug ~keep:config.Cli.keep ~retain:true
+                      ~c_flags:config.Cli.c_flags ~macro_names source headers
                   in
                   c_artifacts := artifacts @ !c_artifacts;
                   let mapped =
                     C_import.map_declarations ~span:(List.hd headers).C_import.span
+                      ~alloc_size_parameters:!alloc_size_parameters
                       ~container:
                         (List.exists
                            (fun header ->

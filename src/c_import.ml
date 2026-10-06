@@ -1142,8 +1142,8 @@ let alloc_size_attributes text =
           | _ -> ()));
   found
 
-let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) ?(macro_names = []) source
-    headers =
+let import ~cc ~debug ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
+    ?(macro_names = []) source headers =
   let unit_path = Filename.temp_file "fas-c-import-" ".c" in
   let json_path = Filename.temp_file "fas-c-import-" ".json" in
   let fragment_paths = ref [] in
@@ -1351,42 +1351,16 @@ let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) ?(macro_names = []
                                               !macro_paths message);
                                       ]
                                 | Ok alloc_size_nodes ->
-                                    let all_declarations =
-                                      List.map
-                                        (function
-                                          | C_import_json.Obj fields as node
-                                            when List.mem
-                                                   ( "kind",
-                                                     C_import_json.Str "FunctionDecl" )
-                                                   fields -> (
-                                              let name =
-                                                Option.value ~default:""
-                                                  (Option.bind
-                                                     (List.assoc_opt "name" fields)
-                                                     C_import_json.string)
-                                              in
-                                              match
-                                                Hashtbl.find_opt alloc_size_nodes name
-                                              with
-                                              | None -> node
-                                              | Some attributes ->
-                                                  C_import_json.Obj
-                                                    (( "fasAllocSize",
-                                                       C_import_json.Arr
-                                                         (List.map
-                                                            (fun indices ->
-                                                              C_import_json.Arr
-                                                                (List.map
-                                                                   (fun index ->
-                                                                     C_import_json.Num
-                                                                       (string_of_int
-                                                                          index))
-                                                                   indices))
-                                                            attributes) )
-                                                    :: fields))
-                                          | node -> node)
-                                        all_declarations
+                                    let alloc_size_parameters =
+                                      Hashtbl.fold
+                                        (fun name indices acc ->
+                                          (name, List.sort_uniq compare indices) :: acc)
+                                        alloc_size_nodes []
+                                      |> List.sort compare
                                     in
+                                    Option.iter
+                                      (fun output -> output := alloc_size_parameters)
+                                      alloc_size_out;
                                     completed := true;
                                     Ok
                                       ( all_declarations,
@@ -1955,7 +1929,8 @@ let clang_layouts text =
   in
   groups [] [] lines
 
-let map_declarations ?(container = false) ~span declarations =
+let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
+    declarations =
   let layout_dump =
     List.find_map
       (function
@@ -2644,7 +2619,6 @@ let map_declarations ?(container = false) ~span declarations =
   and unsupported = Hashtbl.create 128
   and manifest = Hashtbl.create 256
   and nonnull_parameters = Hashtbl.create 32
-  and alloc_size_parameters = Hashtbl.create 32
   and incomplete_arrays = Hashtbl.create 16
   and static_functions = Hashtbl.create 32
   and items = ref [] in
@@ -3676,25 +3650,6 @@ let map_declarations ?(container = false) ~span declarations =
              in
              Hashtbl.replace nonnull_parameters name
                (List.sort_uniq compare (previous @ nonnull_positions)));
-          let allocation_sizes =
-            Option.fold ~none:[] ~some:C_import_json.array (get "fasAllocSize" node)
-            |> List.filter_map (function
-              | C_import_json.Arr indices ->
-                  Some
-                    (List.filter_map
-                       (function
-                         | C_import_json.Num index -> int_of_string_opt index
-                         | _ -> None)
-                       indices)
-              | _ -> None)
-            |> List.filter (fun indices -> indices <> [] && List.length indices <= 2)
-          in
-          (if allocation_sizes <> [] then
-             let previous =
-               Option.value ~default:[] (Hashtbl.find_opt alloc_size_parameters name)
-             in
-             Hashtbl.replace alloc_size_parameters name
-               (List.sort_uniq compare (previous @ allocation_sizes)));
           let function_info = function_type node in
           let variadic =
             match function_info with
@@ -3962,11 +3917,7 @@ let map_declarations ?(container = false) ~span declarations =
         (fun name positions acc -> (name, positions) :: acc)
         nonnull_parameters []
       |> List.sort compare;
-    alloc_size_parameters =
-      Hashtbl.fold
-        (fun name indices acc -> (name, indices) :: acc)
-        alloc_size_parameters []
-      |> List.sort compare;
+    alloc_size_parameters;
     static_functions =
       Hashtbl.fold (fun _ static acc -> static :: acc) static_functions []
       |> List.sort (fun a b -> String.compare a.name b.name);
