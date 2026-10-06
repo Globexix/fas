@@ -2394,57 +2394,6 @@ let address_taken_locals body =
         root_local base
     | _ -> None
   in
-  let rec collect_views = function
-    | Hir.View (local, place, _) ->
-        Option.iter (Hashtbl.replace views local.id) (root_local place);
-        collect_views_expr place
-    | Hir.If (_, yes, no, _) ->
-        collect_views_list yes;
-        Option.iter collect_views_list no
-    | Hir.While (_, body, _) | Hir.Block (body, _) | Hir.Defer (body, _) ->
-        collect_views_list body
-    | Hir.For (init, _, step, body, _) ->
-        Option.iter collect_views init;
-        collect_views_list body;
-        Option.iter collect_views step
-    | Hir.Switch (_, arms, default, _) ->
-        List.iter (fun (_, body) -> collect_views_list body) arms;
-        Option.iter collect_views_list default
-    | Hir.Let (_, _, _)
-    | Hir.Let_construct (_, _, _)
-    | Hir.Copy (_, _, _, _, _)
-    | Hir.Volatile_store (_, _, _, _)
-    | Hir.Simd_store (_, _, _, _)
-    | Hir.Assign (_, _, _)
-    | Hir.Compound_assign (_, _, _, _, _)
-    | Hir.Return (_, _)
-    | Hir.Break _ | Hir.Continue _
-    | Hir.Expr (_, _) ->
-        ()
-  and collect_views_list statements = List.iter collect_views statements
-  and collect_views_expr = function
-    | Hir.Vector_lit (items, _, _) -> List.iter collect_views_expr items
-    | Hir.Unary (_, value, _, _)
-    | Hir.Cast (_, value, _, _)
-    | Hir.Splat (value, _, _)
-    | Hir.Address (value, _, _) ->
-        collect_views_expr value
-    | Hir.Binary (_, left, right, _, _)
-    | Hir.Index (left, right, _, _)
-    | Hir.Raw_select (left, right, _, _) ->
-        collect_views_expr left;
-        collect_views_expr right
-    | Hir.Call (_, args, _, _) -> List.iter collect_views_expr args
-    | Hir.Field (base, _, _, _, _) -> collect_views_expr base
-    | Hir.Ternary (condition, yes, no, _, _) ->
-        collect_views_expr condition;
-        collect_views_expr yes;
-        collect_views_expr no
-    | Hir.EInt _ | Hir.EBool _ | Hir.EVector _ | Hir.Null _ | Hir.EString _
-    | Hir.Local _ | Hir.Global _ | Hir.Function_address _ | Hir.Sizeof _ | Hir.Alignof _
-    | Hir.Offsetof _ | Hir.Const_array _ ->
-        ()
-  in
   let rec collect_expr = function
     | Hir.Address (place, _, _) ->
         Option.iter (fun id -> Hashtbl.replace addressed id ()) (root_local place);
@@ -2482,7 +2431,9 @@ let address_taken_locals body =
   and collect_stmt = function
     | Hir.Let (_, value, _) -> Option.iter collect_expr value
     | Hir.Let_construct (_, construction, _) -> collect_construction construction
-    | Hir.View (_, place, _) -> collect_expr place
+    | Hir.View (local, place, _) ->
+        Option.iter (Hashtbl.replace views local.id) (root_local place);
+        collect_expr place
     | Hir.Copy (destination, source, _, _, _) ->
         collect_expr destination;
         collect_expr source
@@ -2518,7 +2469,6 @@ let address_taken_locals body =
     | Hir.Break _ | Hir.Continue _ -> ()
     | Hir.Expr (value, _) -> collect_expr value
   and collect_list statements = List.iter collect_stmt statements in
-  collect_views_list body;
   collect_list body;
   addressed
 

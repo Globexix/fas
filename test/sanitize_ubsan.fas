@@ -1,0 +1,12 @@
+use "C" <<UB_C
+#include <limits.h>
+int fas_signed_overflow(void) {
+  volatile int value = INT_MAX;
+  return value + 1;
+}
+UB_C
+extern "C" { fn fas_signed_overflow() i32 }
+fn main() i32 {
+  fas_signed_overflow()
+  return 0
+}

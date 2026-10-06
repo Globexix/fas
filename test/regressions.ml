@@ -13429,7 +13429,40 @@ let () =
      other addr = null\n\
      return p != other }";
   semantic_accept "lifetime-outer-local-used-in-inner-block"
-    "fn f() u32 { value u32 = 1\np addr = &value\n{ p[u32] = 2 }\nreturn value }"
+    "fn f() u32 { value u32 = 1\np addr = &value\n{ p[u32] = 2 }\nreturn value }";
+  semantic_accept "sanitize-accept-oob-helper"
+    "fn write(p addr, index i32) void { p[i32, index] = 19 }\n\
+     fn main() i32 { values arr[2, i32] = {0, 0}\n\
+     write(&values[0], 2)\n\
+     return 0 }";
+  semantic_accept "sanitize-accept-use-after-scope-helper"
+    "fn hold(p addr) addr { return p }\n\
+     fn read_value(p addr) i32 { return p[i32, 0] }\n\
+     fn main() i32 { escaped addr = null\n\
+     { value i32 = 5\n\
+     escaped = hold(&value) }\n\
+     return read_value(escaped) - 5 }";
+  semantic_accept "sanitize-accept-stack-return-helper"
+    "fn hold(p addr) addr { return p }\n\
+     fn read_value(p addr) i32 { return p[i32, 0] }\n\
+     fn make() addr { value i32 = 5\n\
+     return hold(&value) }\n\
+     fn main() i32 { return read_value(make()) - 5 }";
+  semantic_accept "sanitize-accept-heap-overrun-helper"
+    "extern \"C\" { fn alloc_bytes(size usize) addr }\n\
+     fn write(p addr, index usize) void { p[u8, index] = 68 }\n\
+     fn main() i32 { p addr = alloc_bytes(1)\n\
+     write(p, 1)\n\
+     return 0 }";
+  semantic_accept "sanitize-accept-c-undefined-overflow"
+    "extern \"C\" { fn fas_signed_overflow() i32 }\n\
+     fn main() i32 { fas_signed_overflow()\n\
+     return 0 }";
+  semantic_accept "sanitize-accept-wrapping-arithmetic"
+    "fn main() i32 { value i32 = 2147483647\n\
+     value += 1\n\
+     if value < 0 { return 0 }\n\
+     return 1 }"
 
 let () =
   let pin name text line prefix width message =
