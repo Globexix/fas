@@ -35,15 +35,15 @@ fn check_array(p addr) bool { return p[i64,0] == 4 && p[i64,1] == 5 && p[i64,2] 
 fn pass_vector(x vec[3,i32]) vec[3,i32] { return x }
 
 fn main() i32 {
-    pair_source Pair = (Pair){11, -7}
+    pair_source Pair = {11, -7}
     if !check_pair(&pair_source) { return 1 }
-    big_source Big = (Big){1, 2, 3}
+    big_source Big = {1, 2, 3}
     if !check_big(&big_source) { return 2 }
-    aligned_source Aligned = (Aligned){9, 77}
+    aligned_source Aligned = {9, 77}
     if !check_aligned(&aligned_source) { return 3 }
-    nested_source Nested = (Nested){5, (Aligned){9, 77}, 6}
+    nested_source Nested = {5, {9, 77}, 6}
     if !check_nested(&nested_source) { return 4 }
-    empty_source Empty = (Empty){}
+    empty_source Empty = {}
     accept_empty(&empty_source)
     array arr[3,i64]
     copy(array, VALUES)

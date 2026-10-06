@@ -44,11 +44,11 @@ fn main() i32 {
     if c_i64(-9223372036854775808) != -9223372036854775808 || c_i64(9223372036854775807) != 9223372036854775807 {
         return 9
     }
-    pair Pair = (Pair){41, -12}
+    pair Pair = {41, -12}
     if c_check_pair(&pair) != 1 { return 10 }
     c_write_pair(&pair)
     if pair.left != 99 || pair.right != -44 { return 11 }
-    aligned Aligned = (Aligned){7, 1234}
+    aligned Aligned = {7, 1234}
     if c_check_aligned(&aligned) != 1 { return 12 }
     b bool = true
     u8_value u8 = 200

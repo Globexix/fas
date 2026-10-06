@@ -1538,12 +1538,12 @@ let () =
     "fn identity[T](value T) T { return value }\n";
   semantic_error "aggregate-declaration-copy"
     "aggregate value initialization is not supported; use `copy(dst, src)`"
-    "struct S { x i64 }\nfn f() void { s S = (S){1}\n t S = s\nreturn }\n";
+    "struct S { x i64 }\nfn f() void { s S = {1}\n t S = s\nreturn }\n";
   semantic_error "aggregate-argument"
     "aggregate arguments cannot be passed by value; pass `&x` as `addr` or `handle[T]`"
     "struct S { x i64 }\n\
      fn take(p addr) void { return }\n\
-     fn f() void { s S = (S){1}\n\
+     fn f() void { s S = {1}\n\
      take(s)\n\
      return }\n";
   let aggregate_parameter_text =
@@ -1556,7 +1556,10 @@ let () =
   semantic_accept "aggregate-parameter-address-twin"
     "struct State { value u32 }\nfn consume(state addr) void { return }\n";
   semantic_pin "aggregate-result-name"
-    "struct State { value u32 }\nfn build() State { return (State){1} }\n" 2
+    "struct State { value u32 }\n\
+     fn build() State { result State = {1}\n\
+    \ return result }\n"
+    2
     (String.length "fn build() " + 1)
     5
     "aggregate result `State` cannot be returned by value; return `void` and take the \
@@ -1567,7 +1570,7 @@ let () =
   let aggregate_argument_text =
     "struct State { value u32 }\n\
      fn consume(destination addr) void { return }\n\
-     fn run() void { snapshot State = (State){1}\n\
+     fn run() void { snapshot State = {1}\n\
      consume(snapshot)\n\
      return }\n"
   in
@@ -1579,7 +1582,7 @@ let () =
        [
          "struct State { value u32 }";
          "fn consume(destination addr) void { return }";
-         "fn run() void { snapshot State = (State){1}";
+         "fn run() void { snapshot State = {1}";
          "consume(&snapshot)";
          "return }";
        ]);
@@ -1611,7 +1614,7 @@ let () =
   let record_vararg =
     "struct Item { value i32 }\n\
      extern \"C\" { fn consume(marker i32, ...) void }\n\
-     fn pass() void { item Item = (Item){1}\n\
+     fn pass() void { item Item = {1}\n\
      consume(1, item)\n\
      return }\n"
   in
@@ -1641,8 +1644,8 @@ let () =
   semantic_error "aggregate-assignment"
     "aggregate assignment is not supported; use `copy(dst, src)`"
     "struct S { x i64 }\n\
-     fn f() void { source S = (S){1}\n\
-     destination S = (S){2}\n\
+     fn f() void { source S = {1}\n\
+     destination S = {2}\n\
      destination = source\n\
      return }\n";
   ignore
@@ -2220,20 +2223,20 @@ let () =
       if not (contains condition_forms marker) then
         failwith ("condition-forms: missing `" ^ marker ^ "`"))
     [ "icmp ult"; "icmp eq" ];
-  let nested_struct_literal_path =
+  let nested_struct_initializer_path =
     llvm_of
       "struct S { a u32 }\n\
        fn is(x u32) bool { return x == 1 }\n\
        fn f(x u32) void {\n\
-      \  literal S = (S) { x }\n\
+      \  literal S = { x }\n\
       \  if is(literal.a) { return }\n\
       \  return\n\
        }\n"
   in
   List.iter
     (fun marker ->
-      if not (contains nested_struct_literal_path marker) then
-        failwith ("nested-struct-literal-path: missing `" ^ marker ^ "`"))
+      if not (contains nested_struct_initializer_path marker) then
+        failwith ("nested-struct-initializer-path: missing `" ^ marker ^ "`"))
     [ "%struct.S"; "store i32" ];
   let null_contexts =
     llvm_of
@@ -2409,7 +2412,7 @@ let () =
        fn check_array(p addr) bool { return p[i64,0] == 1 && p[i64,1] == 2 }\n\
        fn pass_vector(value vec[3,i32]) vec[3,i32] { return value }\n\
        fn main() i32 {\n\
-       literal S = (S){1, 2}\n\
+       literal S = {1, 2}\n\
        if !check_struct(&literal) { return 1 }\n\
        a arr[2,i64]\n\
        copy(a, A)\n\
@@ -2526,7 +2529,7 @@ let () =
     (lower_of "fn check_case(value handle[Handle]) i64 { return 0 }\nopaque Handle\n");
   let forward_struct =
     llvm_of
-      "fn make() i64 { value Pair = (Pair){7, 9}\n\
+      "fn make() i64 { value Pair = {7, 9}\n\
       \ return value.right }\n\
        struct Pair { left i64 right i64 }\n"
   in
@@ -2534,8 +2537,7 @@ let () =
     failwith "forward-struct: declaration was not resolved before function checking";
   let use_file =
     ( "use.fas",
-      "fn read(object handle[Handle]) i64 { value Pair = (Pair){11}\n\
-      \ return value.x }\n" )
+      "fn read(object handle[Handle]) i64 { value Pair = {11}\n return value.x }\n" )
   in
   let declarations_file = ("types.fas", "opaque Handle\nstruct Pair { x i64 }\n") in
   List.iter
@@ -2543,7 +2545,8 @@ let () =
     [ [ use_file; declarations_file ]; [ declarations_file; use_file ] ];
   semantic_error "unknown-named-type" "unknown type `Missing`"
     "fn check_case(value handle[Missing]) i64 { return 0 }\n";
-  semantic_error "opaque-struct-literal" "opaque type `Handle` is not a struct"
+  parse_message "compound-literal-opaque"
+    "Fas has no compound literals; declare a typed local or `const`"
     "opaque Handle\nfn check_case() i64 { (Handle){}\n return 0 }\n";
   ignore
     (lower_of
@@ -3719,7 +3722,7 @@ let () =
   let released_unreserved_names =
     llvm_of
       "struct Members { len i32 i32 i32 true i32 }\n\
-       fn main() i32 { value Members = (Members){1, 2, 3}\n\
+       fn main() i32 { value Members = {1, 2, 3}\n\
        return value.len + value.i32 + value.true }\n"
   in
   if not (contains released_unreserved_names "%struct.Members = type") then
@@ -4059,7 +4062,7 @@ let () =
                     fn test() i64 { return first[i64, u8](7, 1) }\n")))));
   let nested_generic_function_source =
     "struct Box[T] { value T }\n\
-     fn inner[T](value T) T { result Box[T] = (Box[T]){value}\n\
+     fn inner[T](value T) T { result Box[T] = {value}\n\
      return result.value }\n\
      fn outer[T](value T) T { return inner[T](value) }\n\
      fn check_case() u8 { return outer[u8](3) }\n"
@@ -5255,7 +5258,7 @@ let () =
   let nested_struct_argument_failure =
     "struct Box[T] { value T }\n\
      fn bad[T](value T) T { return value + value }\n\
-     fn test() i64 { value Box[Box[u8]] = (Box[Box[u8]]){(Box[u8]){1}}\n\
+     fn test() i64 { value Box[Box[u8]] = {{1}}\n\
      bad[Box[Box[u8]]](value)\n\
      return 0\n\
      }\n"
@@ -5579,7 +5582,7 @@ let () =
      fn stamp[T, N const usize](value T) T { seen usize = N\n\
      return value }\n\
      fn wrap[T, N const usize](value T) T { seen usize = N\n\
-     result Box[T] = (Box[T]){stamp[T, N](value)}\n\
+     result Box[T] = {stamp[T, N](value)}\n\
      return result.value }\n\
      fn test() i64 { first i64 = wrap[i64, THREE](7)\n\
      return wrap[i64, THREE](first) }\n"
@@ -5816,10 +5819,10 @@ let () =
      struct Pair[A, B] { first A second B }\n\
      struct Wrapper[T] { boxed Box[T] }\n\
      fn test() usize {\n\
-    \ box Box[i64] = (Box[i64]){7, addr_from_bits(0)}\n\
-    \ pair64 Pair[i64, u8] = (Pair[i64, u8]){9, 1}\n\
-    \ pair32 Pair[u32, u8] = (Pair[u32, u8]){9, 1}\n\
-    \ wrapped Wrapper[u8] = (Wrapper[u8]){(Box[u8]){1, addr_from_bits(0)}}\n\
+    \ box Box[i64] = {7, addr_from_bits(0)}\n\
+    \ pair64 Pair[i64, u8] = {9, 1}\n\
+    \ pair32 Pair[u32, u8] = {9, 1}\n\
+    \ wrapped Wrapper[u8] = {{1, addr_from_bits(0)}}\n\
     \ return sizeof[Box[i64]] + sizeof[Pair[i64, u8]]\n\
      }\n"
   in
@@ -7458,7 +7461,7 @@ let () =
      declare `rows` as `addr`; callers pass its address with `&`"
     None;
   semantic_pin "aggregate-result-diagnostic"
-    "fn values() arr[3,u8] { return (arr[3,u8]){1,2,3} }\n" 1 13 3
+    "fn values() arr[3,u8] { result arr[3,u8] = {1,2,3}\n return result }\n" 1 13 3
     "aggregate result `arr[3, u8]` cannot be returned by value; return `void` and take \
      the destination as an `addr` parameter"
     None;
@@ -7703,10 +7706,10 @@ let () =
     (String.length "fn f() void { data arr[3,u16] = " + 1)
     1 "array of 3 elements, got 2" None;
   let record_too_many_source =
-    "struct Record { key u32 }\nfn f() void { item Record = (Record){3, 5}\n return }\n"
+    "struct Record { key u32 }\nfn f() void { item Record = {3, 5}\n return }\n"
   in
   semantic_pin "record-count-extra-caret" record_too_many_source 2
-    (String.length "fn f() void { item Record = (Record){3, " + 1)
+    (String.length "fn f() void { item Record = {3, " + 1)
     1 "record `Record` has 1 field, got 2" None;
   let record_too_few_source =
     "struct Record { key u32 value u32 }\nfn f() void { item Record = {3}\n return }\n"
@@ -7789,7 +7792,7 @@ let () =
   ignore
     (llvm_of
        "struct Pair[T] { left T right T }\n\
-        fn test() i64 { pair Pair[i64] = (Pair[i64]){12, 4}\n\
+        fn test() i64 { pair Pair[i64] = {12, 4}\n\
         return pair.left }\n");
 
   ignore (llvm_of "fn f(x u64) bool { return 1 == x }\n");
@@ -8984,7 +8987,7 @@ let () =
   semantic_error "cast-aggregate-zext" "illegal cast for source and destination widths"
     "struct Pair { left u32 right u32 }\n\
     \ fn f() u64 {\n\
-    \ value Pair = (Pair){1, 2}\n\
+    \ value Pair = {1, 2}\n\
     \ return zext[u64](value)\n\
     \ }\n";
   semantic_error "constant-vector-division-first-lane-overflow"
@@ -9075,7 +9078,7 @@ let () =
     "struct S { a u8 }\nfn f(p addr) void { value S = p[S]\nreturn }\n";
   semantic_error "raw-select-aggregate-store"
     "raw access cannot store an array or struct value"
-    "struct S { a u8 }\nfn f(p addr) void { s S = (S){1}\np[S] = s\nreturn }\n";
+    "struct S { a u8 }\nfn f(p addr) void { s S = {1}\np[S] = s\nreturn }\n";
   semantic_error "raw-select-lane" "raw vector lane selection is not supported"
     "fn f(p addr) u32 { return p[vec[2,u32]][0] }\n";
   semantic_error "raw-select-lane-store" "raw vector lane selection is not supported"
@@ -9119,11 +9122,7 @@ let () =
   if semantic_render handle_field_source <> handle_field_expected then
     failwith "handle-field-reject: receiver diagnostic span or message changed";
   let unknown_field_source =
-    "struct Pair { x i32 }\n\
-     fn main() i32 {\n\
-    \ p Pair = (Pair){ 1 }\n\
-    \ return p.missing\n\
-     }\n"
+    "struct Pair { x i32 }\nfn main() i32 {\n p Pair = { 1 }\n return p.missing\n}\n"
   in
   let unknown_field_line = " return p.missing" in
   let unknown_field_expected =
@@ -9640,7 +9639,7 @@ let () =
      if value.right { return value.left } else { return 0 } }\n";
   semantic_accept "construction-explicit-struct-initializer"
     "struct Pair { left i32 right i32 }\n\
-     fn f() i32 { value Pair = (Pair){5, 8}\n\
+     fn f() i32 { value Pair = {5, 8}\n\
      return value.left + value.right }\n";
   semantic_accept "construction-array-initializer"
     "fn f() i32 { values arr[3,i32] = {2, 3, 5}\n\
@@ -9653,13 +9652,14 @@ let () =
   semantic_accept "construction-explicit-nested-entry"
     "struct Cell { x i32 y i32 }\n\
      struct Board { cell Cell }\n\
-     fn f() i32 { board Board = {(Cell){19, 23}}\n\
+     fn f() i32 { board Board = {{19, 23}}\n\
      return board.cell.y }\n";
   semantic_accept "construction-explicit-array-initializer"
-    "fn f() i32 { values arr[2,i32] = (arr[2,i32]){19, 23}\nreturn values[1] }\n";
+    "fn f() i32 { values arr[2,i32] = {19, 23}\nreturn values[1] }\n";
   semantic_accept "construction-vector-literal-shuffle-selector"
-    "fn f() u32 { a vec[4,u32] = (vec[4,u32]){11, 13, 17, 19}\n\
-     b vec[4,u32] = shuffle(a, a, (vec[4,u32]){3, 2, 1, 0})\n\
+    "const indices vec[4,u32] = {3, 2, 1, 0}\n\
+     fn f() u32 { a vec[4,u32] = {11, 13, 17, 19}\n\
+     b vec[4,u32] = shuffle(a, a, indices)\n\
      return b[0] + b[1] + b[2] + b[3] }\n";
   semantic_accept "construction-local-facts-are-initialized"
     "struct S { left i32 right i32 }\n\
@@ -9705,8 +9705,7 @@ let () =
       (contains empty_exported_global_llvm "@screens = global [40 x i8] zeroinitializer")
   then failwith "empty exported aggregate did not emit a zero definition";
   semantic_accept "construction-vector-value"
-    "fn f() u32 { values vec[2,u32] = (vec[2,u32]){37, 41}\n\
-     return values[0] + values[1] }\n";
+    "fn f() u32 { values vec[2,u32] = {37, 41}\nreturn values[0] + values[1] }\n";
   semantic_accept "construction-contextual-vector"
     "fn f() u32 { values vec[4,u32] = {1, 2, 3, 4}\nreturn values[3] }\n";
   semantic_accept "construction-contextual-vector-in-struct"
@@ -9722,7 +9721,7 @@ let () =
     "struct Pair { left i32 right i32 }\nfn f() void { value Pair = {1}\nreturn }\n";
   semantic_error "construction-vector-entry-count"
     "wrong number of vector literal lanes"
-    "fn f() void { value vec[2,i32] = (vec[2,i32]){1}\nreturn }\n";
+    "fn f() void { value vec[2,i32] = {1}\nreturn }\n";
   let scalar_literal_destination = "fn f() void { value u32 = {1}\nreturn }\n" in
   semantic_pin "construction-scalar-literal-destination" scalar_literal_destination 1
     (String.index_from scalar_literal_destination
@@ -9734,11 +9733,33 @@ let () =
     "fn f() void { value u32 = 1\nreturn }\n";
   semantic_error "construction-entry-type-mismatch" "is `bool`, expected `i32`"
     "struct S { flag i32 }\nfn f() void { value S = {true}\nreturn }\n";
-  semantic_error "construction-explicit-type-mismatch" "initializer type"
-    "struct A { value i32 }\n\
-     struct B { value i32 }\n\
-     fn f() void { value A = (B){1}\n\
-     return }\n";
+  let compound_literal_error =
+    "Fas has no compound literals; declare a typed local or `const`"
+  in
+  List.iter
+    (fun (name, text) ->
+      let open_index = String.index_from text (String.index text '=' + 1) '(' in
+      syntax_pin name text 1 (open_index + 1) 1 compound_literal_error)
+    [
+      ( "compound-literal-vector",
+        "fn f() void { value vec[2,u8] = (vec[2,u8]){1, 2}\n return }\n" );
+      ( "compound-literal-array",
+        "fn f() void { value arr[2,u8] = (arr[2,u8]){1, 2}\n return }\n" );
+      ("compound-literal-struct", "fn f() void { value Pair = (Pair){1}\n return }\n");
+      ( "compound-literal-generic-instance",
+        "fn f() void { value Box[u8] = (Box[u8]){1}\n return }\n" );
+    ];
+  semantic_accept "typed-initializer-replacements"
+    "struct Pair { value u8 }\n\
+     struct Box[T] { value T }\n\
+     fn f(peer vec[2,u8]) vec[2,u8] {\n\
+     vector vec[2,u8] = {1, 2}\n\
+     array arr[2,u8] = {3, 4}\n\
+     pair Pair = {5}\n\
+     generic Box[u8] = {6}\n\
+     return peer + vector }\n";
+  semantic_accept "typed-brace-peer-replacement"
+    "fn f(value vec[2,u8]) vec[2,u8] { return value + {3, 4} }\n";
   let brace_needs_destination =
     "fn consume(pointer addr) i32 { return 0 }\nfn f() i32 { return consume({43}) }\n"
   in
@@ -9750,20 +9771,10 @@ let () =
     "fn consume(pointer addr) i32 { return 0 }\n\
      fn f() i32 { local arr[1,i32] = {43}\n\
      return consume(&local) }\n";
-  let aggregate_expression_needs_destination =
+  semantic_accept "construction-typed-aggregate-destination"
     "struct S { value i32 }\n\
      fn consume(pointer addr) i32 { return 0 }\n\
-     fn f() i32 { return consume((S){47}) }\n"
-  in
-  semantic_pin "construction-aggregate-expression-needs-destination"
-    aggregate_expression_needs_destination 3
-    (String.length "fn f() i32 { return consume(" + 1)
-    1 "array, struct, or vector initializer needs a destination type"
-    (Some "store it in a local and pass `&local`");
-  semantic_accept "construction-aggregate-expression-needs-destination-twin"
-    "struct S { value i32 }\n\
-     fn consume(pointer addr) i32 { return 0 }\n\
-     fn f() i32 { local S = (S){47}\n\
+     fn f() i32 { local S = {47}\n\
      return consume(&local) }\n";
   semantic_error "construction-new-name-not-in-scope" "unknown name `value`"
     "fn f() i32 { value arr[1,i32] = {value[0]}\nreturn 0 }\n";
@@ -10910,7 +10921,7 @@ let () =
   c_semantic_accept "c-import-enum-repro-and-abi" c_enum_types
     "const constant_tab arr[2,i32] = { S_X, S_Y }\n\
      extern \"C\" {\n\
-     var tab arr[1,info_t] = { (info_t){am_b, S_Y} }\n\
+     var tab arr[1,info_t] = { {am_b, S_Y} }\n\
      fn enum_result() i32 { return S_Y }\n\
      fn enum_roundtrip(value state_t) state_t { return c_enum_roundtrip(value) }\n\
      fn packed_roundtrip(value packed_t) packed_t { return c_packed_roundtrip(value) }\n\
@@ -10962,9 +10973,7 @@ let () =
   c_semantic_message "extern-c-record-result-diagnostic"
     "aggregate result `FasAnonymousRecord` cannot be returned by value; return `void` \
      and take the destination as an `addr` or `handle[FasAnonymousRecord]` parameter"
-    c_records
-    "extern \"C\" { fn produce_record() FasAnonymousRecord { return \
-     (FasAnonymousRecord){1} } }\n";
+    c_records "extern \"C\" { fn produce_record() FasAnonymousRecord { return {1} } }\n";
   c_semantic_accept "c-import-typedef-anonymous-record-handle" c_records
     "fn probe(value handle[FasAnonymousRecord]) handle[FasAnonymousRecord] {\n\
     \     return fas_anonymous_record(value) }\n";
@@ -11226,8 +11235,7 @@ let () =
         "C declaration `fas_shared_static` is not supported: conflicting C declarations"
         (static_left, collided) "fn call_static() i32 { return fas_shared_static(1) }\n");
   c_semantic_accept "c-import-anonymous-record-typedef-by-value" c_matrix
-    "fn anonymous() i32 { value FasAnonymous = (FasAnonymous){ 1 }\n\
-     return value.field }\n";
+    "fn anonymous() i32 { value FasAnonymous = { 1 }\nreturn value.field }\n";
   let record_import_cases = c_import_fixture "record_import_cases.h" in
   let collision_header =
     Filename.concat (Filename.dirname (fst record_import_cases)) "record_import_cases.h"
@@ -11578,7 +11586,7 @@ let () =
      return raw[FasFieldNamesRecord].handle + raw[FasFieldNamesRecord].len + \
      raw[FasFieldNamesRecord].view + raw[FasFieldNamesRecord].i32 }\n";
   c_semantic_accept "c-import-record-typedef-global-initializer" record_import_cases
-    "var AliasValue FasAlias = (FasAlias){7}\n";
+    "var AliasValue FasAlias = {7}\n";
   c_semantic_accept "address-constants-imported-record-handles" record_import_cases
     "var Direct handle[FasSelfRecord] = &fas_address_self\n\
      const Nested arr[1,arr[1,handle[FasInnerRecord]]] = {{&fas_address_nested.inner}}\n\
@@ -11877,9 +11885,7 @@ let () =
           "extern \"C\" { var fas_imported_global i32 = 7\n\
            fn fas_imported_function(value i32) i32 { return value }\n\
            var fas_incomplete arr[3,i32] = {1,2,3}\n\
-           var fas_incomplete_named arr[3,FasIncompleteNamedRecord] = \
-           {(FasIncompleteNamedRecord){1},(FasIncompleteNamedRecord){2},(FasIncompleteNamedRecord){3}} \
-           }\n"
+           var fas_incomplete_named arr[3,FasIncompleteNamedRecord] = {{1},{2},{3}} }\n"
       in
       let reconciled =
         expect_ok (C_import.reconcile_source definitions.items imported)
@@ -12878,11 +12884,12 @@ let () =
        ^ "(v, 1)[0] }\n"))
     [ "rotl"; "rotr" ];
   semantic_accept "builtin-vector-typed-operands"
-    "fn f(v vec[4,u32], m vec[4,bool], p addr) u32 {\n\
+    "const indices vec[4,u8] = {0, 1, 2, 3}\n\
+     fn f(v vec[4,u32], m vec[4,bool], p addr) u32 {\n\
      w vec[4,u32] = {1, 2, 3, 4}\n\
      x vec[4,u32] = add_sat(v, w) + sub_sat(v, w) + mul_hi(v, w)\n\
      y vec[4,u32] = select(m, x, w)\n\
-     z vec[4,u32] = shuffle(y, w, (vec[4,u8]){0, 1, 2, 3})\n\
+     z vec[4,u32] = shuffle(y, w, indices)\n\
      volatile_store[vec[4,u32]](p, z)\n\
      masked_store[u32](p, m, z)\n\
      return z[0] }\n";
@@ -12905,18 +12912,18 @@ let () =
   in
   semantic_accept "builtin-select-type-mismatch-twin" select_runtime_type_twin;
   let shuffle_runtime_type_mismatch =
-    "fn f(a vec[4,u8], b vec[4,u32]) vec[4,u8] { return shuffle(a, b, (vec[4,u8]){0, \
-     1, 2, 3}) }\n"
+    "const indices vec[4,u8] = {0, 1, 2, 3}\n\
+     fn f(a vec[4,u8], b vec[4,u32]) vec[4,u8] { return shuffle(a, b, indices) }\n"
   in
-  semantic_pin "builtin-shuffle-type-mismatch" shuffle_runtime_type_mismatch 1
+  semantic_pin "builtin-shuffle-type-mismatch" shuffle_runtime_type_mismatch 2
     (String.length "fn f(a vec[4,u8], b vec[4,u32]) vec[4,u8] { return shuffle(a, " + 1)
     1
     "argument 2 of `shuffle` is `vec[4, u32]`, expected the type of argument 1 \
      (`vec[4, u8]`)"
     None;
   semantic_accept "builtin-shuffle-type-mismatch-twin"
-    "fn f(a vec[4,u8], b vec[4,u8]) vec[4,u8] { return shuffle(a, b, (vec[4,u8]){0, 1, \
-     2, 3}) }\n";
+    "const indices vec[4,u8] = {0, 1, 2, 3}\n\
+     fn f(a vec[4,u8], b vec[4,u8]) vec[4,u8] { return shuffle(a, b, indices) }\n";
   let select_constant_mask_type =
     "const MASK vec[2,i32] = {0, 1}\n\
      const LEFT vec[2,i32] = {1, 2}\n\
@@ -12973,14 +12980,15 @@ let () =
 
 let () =
   semantic_accept "vector-peer-context-all-slots"
-    "fn f(v vec[4,u32], m vec[4,bool], ok bool) vec[4,u32] {\n\
+    "const indices vec[4,u8] = {0, 1, 2, 3}\n\
+     fn f(v vec[4,u32], m vec[4,bool], ok bool) vec[4,u32] {\n\
      a vec[4,u32] = add_sat(v, splat(37)) + sub_sat(splat(37), v)\n\
      b vec[4,u32] = mul_hi(v, {1, 2, 3, 4})\n\
      c vec[4,bool] = v == {1, 2, 3, 4}\n\
      d vec[4,bool] = {1, 2, 3, 4} == v\n\
      e vec[4,u32] = select(m, splat(0), v)\n\
      g vec[4,u32] = select(m, v, {1, 2, 3, 4})\n\
-     h vec[4,u32] = shuffle(splat(0), v, (vec[4,u8]){0, 1, 2, 3})\n\
+     h vec[4,u32] = shuffle(splat(0), v, indices)\n\
      i vec[4,u32] = if ok { splat(0) } else { v }\n\
      j vec[4,u32] = if ok { v } else { {1, 2, 3, 4} }\n\
      return a + b + e + g + h + i + j }\n";
@@ -13021,7 +13029,8 @@ let () =
     "fn f(v vec[4,u32]) vec[4,bool] { return v == {1, 2} }\n";
   semantic_accept "vector-peer-folding-reverse-arms"
     "const V vec[4,u32] = {1, 2, 3, 4}\n\
-     const A vec[4,u32] = select((vec[4,bool]){true, false, true, false}, splat(0), V)\n\
+     const MASK vec[4,bool] = {true, false, true, false}\n\
+     const A vec[4,u32] = select(MASK, splat(0), V)\n\
      const B vec[4,u32] = if true { splat(0) } else { V }\n\
      const D vec[4,u32] = if false { {0, 0, 0, 0} } else { V }\n\
      fn f() u32 { return A[1] + B[2] + D[3] }\n"
@@ -13870,15 +13879,13 @@ let () =
   pin "c-char-pointer-type" char_pointer 1 "fn accept(data char*" 1
     "C type `char*` is not a Fas type; use `addr`";
   let arrow_record =
-    "struct Pair { x i32 }\n\
-     fn read() i32 { value Pair = (Pair){1}\n\
-    \ return value->x }\n"
+    "struct Pair { x i32 }\nfn read() i32 { value Pair = {1}\n return value->x }\n"
   in
   semantic_pin "c-arrow-record-field-name" arrow_record 3
     (String.length " return value" + 1)
     2 "Fas has no `->`; access field `x` with `.`" None;
   semantic_accept "c-arrow-record-dot-twin"
-    "struct Pair { x i32 }\nfn read() i32 { value Pair = (Pair){1}\n return value.x }\n";
+    "struct Pair { x i32 }\nfn read() i32 { value Pair = {1}\n return value.x }\n";
   let parameter_order = "fn combine(i64 first, i64 second) i64 { return first }\n" in
   pin "c-parameter-order" parameter_order 1 "fn combine(" 3
     "C parameter order puts `i64` before the name; Fas parameters put the name first";

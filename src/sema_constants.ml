@@ -13,16 +13,6 @@ let ( let* ) result continuation =
 
 let lookup name table = List.find_opt (fun (entry, _, _) -> entry = name) table
 
-let shuffle_selector_expression = function
-  | Ast.Array_lit (entries, span) ->
-      Ast.Struct_lit
-        ( Ast.Vec
-            ( Ast.aggregate_length (string_of_int (List.length entries)) span,
-              Ast.Int Ast.I64 ),
-          entries,
-          span )
-  | expression -> expression
-
 let shuffle_indices_in_range lane_ty n values =
   let signed =
     match lane_ty with
@@ -1150,15 +1140,11 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
       match lookup name arrays with
       | Some (_, (Hir.Vec _ as ty), values) -> Ok (ty, values)
       | _ -> error span "constant expression requires a known vector constant")
-  | Ast.Struct_lit (_, elements, span) | Ast.Array_lit (elements, span) -> (
+  | Ast.Array_lit (elements, span) -> (
       let* vector_ty =
-        match expression with
-        | Ast.Struct_lit (source_type, _, _) ->
-            source_ty_with_values named_types consts span source_type
-        | _ -> (
-            match expected with
-            | Some (Hir.Vec _ as ty) -> Ok ty
-            | _ -> error span "expression is not a compile-time vector constant")
+        match expected with
+        | Some (Hir.Vec _ as ty) -> Ok ty
+        | _ -> error span "expression is not a compile-time vector constant"
       in
       match vector_ty with
       | Hir.Vec (lanes, element_ty) ->
@@ -1464,7 +1450,14 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
                  (Sema_types.diagnostic_ty_name at))
       in
       let* sel_ty, sel_values =
-        match evaluate None (shuffle_selector_expression sel) with
+        match
+          evaluate
+            (match sel with
+            | Ast.Array_lit (entries, _) ->
+                Some (Hir.Vec (List.length entries, Hir.Int Hir.I64))
+            | _ -> None)
+            sel
+        with
         | Ok result -> Ok result
         | Error diagnostics -> Error diagnostics
       in

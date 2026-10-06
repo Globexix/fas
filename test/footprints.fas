@@ -12,9 +12,9 @@ extern "C" {
   fn fas_write_footprints() void {
     p addr = footprint_buffer()
     (p + 4)[u32] = 287454020
-    (p + 20)[vec[3, u32]] = (vec[3, u32]){ 1, 2, 3 }
-    (p + 40)[vec[12, bool]] = (vec[12, bool]){ true, false, true, false, false, true, false, true, true, false, false, true }
-    (p + 60)[vec[5, u8]] = (vec[5, u8]){ 11, 22, 33, 44, 55 }
+    (p + 20)[vec[3, u32]] = { 1, 2, 3 }
+    (p + 40)[vec[12, bool]] = { true, false, true, false, false, true, false, true, true, false, false, true }
+    (p + 60)[vec[5, u8]] = { 11, 22, 33, 44, 55 }
     (p + 80)[Footprint].value = 1432778632
   }
 
@@ -38,22 +38,22 @@ extern "C" {
   }
 
   fn fas_guard_store(p addr) void {
-    p[vec[3, u32]] = (vec[3, u32]){ 305419896, 2271560481, 2309737967 }
+    p[vec[3, u32]] = { 305419896, 2271560481, 2309737967 }
   }
 
   fn fas_guard_load(p addr) i32 {
-    expected vec[3, u32] = (vec[3, u32]){ 305419896, 2271560481, 2309737967 }
+    expected vec[3, u32] = { 305419896, 2271560481, 2309737967 }
     actual vec[3, u32] = p[vec[3, u32]]
     if any(actual != expected) { return 1 }
     return 0
   }
 
   fn fas_guard_bool_store(p addr) void {
-    p[vec[17, bool]] = (vec[17, bool]){ true, false, true, false, false, true, false, true, true, false, true, false, true, false, true, false, true }
+    p[vec[17, bool]] = { true, false, true, false, false, true, false, true, true, false, true, false, true, false, true, false, true }
   }
 
   fn fas_guard_bool_load(p addr) i32 {
-    expected vec[17, bool] = (vec[17, bool]){ true, false, true, false, false, true, false, true, true, false, true, false, true, false, true, false, true }
+    expected vec[17, bool] = { true, false, true, false, false, true, false, true, true, false, true, false, true, false, true, false, true }
     actual vec[17, bool] = p[vec[17, bool]]
     if any(actual != expected) { return 1 }
     return 0

@@ -40,8 +40,6 @@ val resolve_scalar_declarations :
   Ast.item list ->
   (Sema_types.const_values, Diag.t list) result
 
-val shuffle_selector_expression : Ast.expr -> Ast.expr
-
 val query_layout :
   structs:Hir.struct_def list ->
   named_types:Sema_types.named_types ->

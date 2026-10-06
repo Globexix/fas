@@ -45,7 +45,6 @@ and expr =
   | Splat of expr * Span.t
   | Ternary of expr * expr * expr * Span.t
   | Array_lit of expr list * Span.t
-  | Struct_lit of ty * expr list * Span.t
 
 and unop = Neg | Not | Bit_not
 
@@ -189,8 +188,7 @@ let rec expr_span = function
   | Offsetof (_, _, s)
   | Splat (_, s)
   | Ternary (_, _, _, s)
-  | Array_lit (_, s)
-  | Struct_lit (_, _, s) ->
+  | Array_lit (_, s) ->
       s
   | C_dereference (_, _, s) | C_dot_star (_, s) -> s
   | Parenthesized (e, _) -> expr_span e
@@ -317,8 +315,6 @@ and expr_name = function
   | Splat (e, _) -> "splat(" ^ expr_name e ^ ")"
   | Ternary (c, a, b, _) -> expr_name c ^ " ? " ^ expr_name a ^ " : " ^ expr_name b
   | Array_lit (xs, _) -> "{" ^ String.concat ", " (List.map expr_name xs) ^ "}"
-  | Struct_lit (t, xs, _) ->
-      "(" ^ type_name t ^ "){" ^ String.concat ", " (List.map expr_name xs) ^ "}"
 
 let item_span = function
   | Use { span; _ }
@@ -532,12 +528,6 @@ let render_program program =
         emit_expr b
     | Array_lit (xs, _) ->
         text "{";
-        emit_comma_list emit_expr xs;
-        text "}"
-    | Struct_lit (ty, xs, _) ->
-        text "(";
-        emit_ty ty;
-        text "){";
         emit_comma_list emit_expr xs;
         text "}"
   and emit_stmt indent s =
@@ -812,10 +802,7 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
           go_expr c;
           go_expr a;
           go_expr b
-      | Array_lit (xs, _) -> List.iter go_expr xs
-      | Struct_lit (ty, xs, _) ->
-          go_ty at ty;
-          List.iter go_expr xs)
+      | Array_lit (xs, _) -> List.iter go_expr xs)
   and go_target = function
     | Target_ident (name, span) ->
         identifiers := name :: !identifiers;

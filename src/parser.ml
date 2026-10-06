@@ -1744,16 +1744,7 @@ module P = struct
     | Token.Lparen -> (
         let s = span p in
         if starts_struct_literal p then
-          let* () = expected p Token.Lparen in
-          let* t =
-            delimited p (fun () ->
-                let* t = ty p in
-                let* () = expected p Token.Rparen in
-                Ok t)
-          in
-          let* () = expected p Token.Lbrace in
-          let* elements = literal_elements p in
-          Ok (Ast.Struct_lit (t, elements, s))
+          error s "Fas has no compound literals; declare a typed local or `const`"
         else
           let* e = expression_argument p in
           match e with

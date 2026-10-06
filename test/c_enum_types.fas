@@ -4,7 +4,7 @@ use "C" <stdio.h>
 const constant_tab arr[2,i32] = { S_X, S_Y }
 
 extern "C" {
-  var tab arr[1,info_t] = { (info_t){am_b, S_Y} }
+  var tab arr[1,info_t] = { {am_b, S_Y} }
 
   fn main() i32 {
     if tab[0].ammo != am_b || tab[0].st != S_Y { return 1 }

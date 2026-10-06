@@ -156,11 +156,6 @@ let rec count_expanded_expr_type_nodes expr cap total =
         List.fold_left
           (fun total element -> count_expanded_expr_type_nodes element cap total)
           total elements
-    | Ast.Struct_lit (ty, elements, _) ->
-        List.fold_left
-          (fun total element -> count_expanded_expr_type_nodes element cap total)
-          (count_expanded_type_nodes ty cap total)
-          elements
 
 and count_expanded_arg_type_nodes argument cap total =
   if total >= cap then cap

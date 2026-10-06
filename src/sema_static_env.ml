@@ -3,8 +3,7 @@ open Sema_types
 let rec symbolic_expression names = function
   | Ast.Addr_of _ | Ast.String_lit (true, _, _) -> true
   | Ast.Ident (name, _) -> List.mem name names
-  | Ast.Array_lit (items, _) | Ast.Struct_lit (_, items, _) ->
-      List.exists (symbolic_expression names) items
+  | Ast.Array_lit (items, _) -> List.exists (symbolic_expression names) items
   | Ast.Unary (_, x, _)
   | Ast.C_dereference (x, _, _)
   | Ast.C_dot_star (x, _)

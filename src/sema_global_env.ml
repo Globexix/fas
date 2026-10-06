@@ -11,9 +11,7 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~generic_structs ~c
   let rec value span ty expression =
     let array_items, struct_items =
       match expression with
-      | Ast.Array_lit (items, _) -> (Some items, Some (None, items))
-      | Ast.Struct_lit (Ast.Named_type (name, _), items, _) ->
-          (None, Some (Some name, items))
+      | Ast.Array_lit (items, _) -> (Some items, Some items)
       | _ -> (None, None)
     in
     let map wrap ty items =
@@ -57,19 +55,7 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~generic_structs ~c
               (Sema_types.array_element_count_message length (List.length items))
         | None -> error span "global initializer must be a constant expression")
     | Hir.Struct name -> (
-        let items =
-          match struct_items with
-          | Some (None, items) -> Some items
-          | Some (Some actual, items)
-            when match
-                   Sema_types.source_ty named_types
-                     (Ast.Named_type (actual, Span.synthetic))
-                 with
-                 | Ok (Hir.Struct actual) -> actual = name
-                 | _ -> false ->
-              Some items
-          | _ -> None
-        in
+        let items = match struct_items with Some items -> Some items | _ -> None in
         match
           ( items,
             List.find_opt

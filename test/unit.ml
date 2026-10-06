@@ -1569,7 +1569,7 @@ let () =
      struct Pair { a i64 b i64 }\n\
      const K arr[2,u32] = { 1, 2 }\n\
      fn first(p addr, x i64) i64 { defer { printf(\"d\") } if p != addr_from_bits(0) { \
-     y Pair = (Pair){x, 2}\n\
+     y Pair = {x, 2}\n\
     \ return y.a } return if x == 0 { 3 } else { 4 } }\n\
      fn second() i64 { printf(\"s\")\n\
     \ return zext[i64](K[1]) }\n"

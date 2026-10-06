@@ -1273,7 +1273,7 @@ let rec view_source_span expression =
     | Ast.Binary (_, left, right, _) -> [ left; right ]
     | Ast.Generic_args (callee, _, _) -> [ callee ]
     | Ast.Ternary (condition, yes, no, _) -> [ condition; yes; no ]
-    | Ast.Array_lit (values, _) | Ast.Struct_lit (_, values, _) -> values
+    | Ast.Array_lit (values, _) -> values
     | _ -> []
   in
   let spans = span :: List.map view_source_span children in
@@ -2350,23 +2350,6 @@ and check_expr_inner ?destination (c : context) expected expression =
               | Some Hir.Addr -> Some "store it in a local and pass `&local`"
               | _ -> None)
             s "array, struct, or vector initializer needs a destination type")
-  | Ast.Struct_lit (source_type, xs, s) -> (
-      let* literal_type = source_ty_in_context c s source_type in
-      match literal_type with
-      | Hir.Vec (lanes, element) -> vector_literal literal_type lanes element xs s
-      | Hir.Array _ | Hir.Struct _ ->
-          error
-            ?help:
-              (match expected with
-              | Some Hir.Addr -> Some "store it in a local and pass `&local`"
-              | _ -> None)
-            s "array, struct, or vector initializer needs a destination type"
-      | Hir.Opaque n -> error s (Printf.sprintf "opaque type `%s` is not a struct" n)
-      | _ ->
-          error s
-            (Printf.sprintf
-               "initializer needs an array, struct, or vector type, got `%s`"
-               (Sema_types.diagnostic_ty_name literal_type)))
 
 and check_same_operands c left right =
   let contextual expression = Option.is_some (unresolved_shape_of c expression) in
@@ -2545,19 +2528,6 @@ and check_initializer ?(constant = false) ?destination c expected expression =
       match expected with
       | Hir.Vec _ -> vector_value ()
       | _ -> aggregate_entries expected entries span)
-  | Ast.Struct_lit (source_type, entries, span) -> (
-      let* source_type = source_ty_in_context c span source_type in
-      match source_type with
-      | Hir.Vec _ -> vector_value ()
-      | Hir.Array _ | Hir.Struct _ ->
-          if not (Hir.ty_equal source_type expected) then
-            error span
-              (Printf.sprintf
-                 "initializer type `%s` does not match destination type `%s`"
-                 (Sema_types.diagnostic_ty_name source_type)
-                 (Sema_types.diagnostic_ty_name expected))
-          else aggregate_entries expected entries span
-      | _ -> scalar_initializer_error source_type entries span)
   | _ when match expected with Hir.Vec _ -> true | _ -> false -> vector_value ()
   | _ ->
       let* value = check_expr c (Some expected) expression in
@@ -3118,14 +3088,19 @@ and check_call c _expected fn args s =
                     (fun (name, _, _) -> Option.is_none (lookup_local name c))
                     c.consts
                 in
-                let selector = shuffle_selector_expression (List.nth args 2) in
+                let selector = List.nth args 2 in
                 match
                   vector_const_expr
                     ~array_lengths:(static_array_lengths c.top_level_bindings c.globals)
                     ~structs:c.structs ~named_types:c.named_types
                     ~generic_structs:c.generic_structs
                     ~globals:(List.map (fun (name, _, _) -> name) c.globals)
-                    ~arrays:c.arrays visible_consts None selector
+                    ~arrays:c.arrays visible_consts
+                    (match selector with
+                    | Ast.Array_lit (entries, _) ->
+                        Some (Hir.Vec (List.length entries, Hir.Int Hir.I64))
+                    | _ -> None)
+                    selector
                 with
                 | Ok ((Hir.Vec (m, (Hir.Int _ as sel_elem)) as sty), values) ->
                     let n = match at with Hir.Vec (n, _) -> n | _ -> 0 in
@@ -3672,8 +3647,7 @@ let rec expression_mentions_name name = function
       expression_mentions_name name condition
       || expression_mentions_name name yes
       || expression_mentions_name name no
-  | Ast.Array_lit (values, _) | Ast.Struct_lit (_, values, _) ->
-      List.exists (expression_mentions_name name) values
+  | Ast.Array_lit (values, _) -> List.exists (expression_mentions_name name) values
   | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Sizeof _
   | Ast.Alignof _ | Ast.Offsetof _ ->
       false
@@ -3709,8 +3683,7 @@ let rec expression_takes_name_address name = function
       expression_takes_name_address name condition
       || expression_takes_name_address name yes
       || expression_takes_name_address name no
-  | Ast.Array_lit (values, _) | Ast.Struct_lit (_, values, _) ->
-      List.exists (expression_takes_name_address name) values
+  | Ast.Array_lit (values, _) -> List.exists (expression_takes_name_address name) values
   | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Ident _
   | Ast.Sizeof _ | Ast.Alignof _ | Ast.Offsetof _ ->
       false
@@ -4098,7 +4071,7 @@ and check_stmt (c : context) = function
                   | Ast.Bool_lit _ -> "a bool literal"
                   | Ast.Null _ -> "a null literal"
                   | Ast.String_lit _ -> "a string literal"
-                  | Ast.Array_lit _ | Ast.Struct_lit _ -> "an aggregate literal"
+                  | Ast.Array_lit _ -> "an aggregate literal"
                   | Ast.Splat _ -> "a splat"
                   | Ast.Cast _ -> "a cast"
                   | Ast.Addr_of _ -> "an address value"

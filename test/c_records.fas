@@ -28,7 +28,7 @@ extern "C" {
   }
 
   fn fas_read_c_filled() i32 {
-    record FasRecord = (FasRecord){0, 0, {0, 0}}
+    record FasRecord = {0, 0, {0, 0}}
     h handle[FasRecord] = handle_from_addr[FasRecord](&record)
     c_fill_record(h)
     raw addr = handle_addr(h)
@@ -36,7 +36,7 @@ extern "C" {
   }
 
   fn fas_pass_local_to_c() i32 {
-    record FasRecord = (FasRecord){3, 1001, {4, 5}}
+    record FasRecord = {3, 1001, {4, 5}}
     return c_check_record(handle_from_addr[FasRecord](&record))
   }
 

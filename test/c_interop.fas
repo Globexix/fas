@@ -53,7 +53,7 @@ fn main() i32 {
   if stat(path, &stat_result) != 0 { return 5 }
   if stat_result.st_size != 8 { return 6 }
 
-  clock_result timespec = (timespec){0, 0}
+  clock_result timespec = {0, 0}
   if clock_gettime(1, &clock_result) != 0 { return 7 }
   if clock_result.tv_sec < 0 { return 8 }
 

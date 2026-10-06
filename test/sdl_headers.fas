@@ -76,7 +76,7 @@ fn main() i32 {
         SDL_Quit()
         return 3
     }
-    rect SDL_Rect = (SDL_Rect){0, 0, 320, 200}
+    rect SDL_Rect = {0, 0, 320, 200}
     if SDL_FillRect(surface, handle_from_addr[SDL_Rect](&rect), 0) != 0 {
         SDL_FreeSurface(surface)
         SDL_DestroyWindow(window)

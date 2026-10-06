@@ -30,7 +30,7 @@ fn main() i32 {
   }
   if compressed_len == 0 { return 3 }
 
-  deflater z_stream = (z_stream){null, 0, 0, null, 0, 0, null, null, null, null, null, 0, 0, 0}
+  deflater z_stream = {null, 0, 0, null, 0, 0, null, null, null, null, null, 0, 0, 0}
   deflater.zalloc = null
   deflater.zfree = null
   deflater.opaque = null
@@ -43,7 +43,7 @@ fn main() i32 {
   deflated_len u64 = deflater.total_out
   if deflateEnd(&deflater) != Z_OK { return 6 }
 
-  inflater z_stream = (z_stream){null, 0, 0, null, 0, 0, null, null, null, null, null, 0, 0, 0}
+  inflater z_stream = {null, 0, 0, null, 0, 0, null, null, null, null, null, 0, 0, 0}
   inflater.zalloc = null
   inflater.zfree = null
   inflater.opaque = null

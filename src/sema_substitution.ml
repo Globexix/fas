@@ -224,8 +224,6 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         expression_mentions names condition
         || expression_mentions names yes || expression_mentions names no
     | Ast.Array_lit (elements, _) -> List.exists (expression_mentions names) elements
-    | Ast.Struct_lit (ty, elements, _) ->
-        type_mentions names ty || List.exists (expression_mentions names) elements
     | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ -> false
   in
   let shadowed_constant_error expression =
@@ -441,9 +439,6 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let* () = validate_expression_names value_names type_names yes in
         validate_expression_names value_names type_names no
     | Ast.Array_lit (elements, _) ->
-        Result_list.iter (validate_expression_names value_names type_names) elements
-    | Ast.Struct_lit (ty, elements, span) ->
-        let* () = validate_type_names value_names type_names span ty in
         Result_list.iter (validate_expression_names value_names type_names) elements
     | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ -> Ok ()
   in
@@ -691,8 +686,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Ternary (condition, yes, no, _) ->
         has_generic_arguments condition
         || has_generic_arguments yes || has_generic_arguments no
-    | Ast.Array_lit (values, _) | Ast.Struct_lit (_, values, _) ->
-        List.exists has_generic_arguments values
+    | Ast.Array_lit (values, _) -> List.exists has_generic_arguments values
     | Ast.Ident _ | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ ->
         false
   in
@@ -971,7 +965,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           let* () = validate_non_dependent_expression c dependent None condition in
           let* () = validate_non_dependent_expression c dependent expected yes in
           validate_non_dependent_expression c dependent expected no
-      | Ast.Array_lit (values, _) | Ast.Struct_lit (_, values, _) ->
+      | Ast.Array_lit (values, _) ->
           Result_list.iter (validate_non_dependent_expression c dependent None) values
       | Ast.Sizeof _ | Ast.Alignof _ | Ast.Offsetof _ | Ast.Ident _ | Ast.Int_lit _
       | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ ->
@@ -1848,14 +1842,6 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             elements
         in
         Ok (Ast.Array_lit (elements, span))
-    | Ast.Struct_lit (ty, elements, span) ->
-        let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
-        let* elements =
-          Result_list.map
-            (resolve_expr ~values ~defer_const_structs substitutions depth)
-            elements
-        in
-        Ok (Ast.Struct_lit (ty, elements, span))
   and resolve_target ?(values = []) ?(defer_const_structs = false) substitutions depth =
     function
     | Ast.Target_ident _ as target -> Ok target
