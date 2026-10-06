@@ -420,10 +420,13 @@ let render_ir ?(redirect = Fun.id) ?(sanitize_address = false) ir =
   | Ok text -> Ok text
   | Error message -> Error [ Diag.error Span.synthetic message ]
 
-let opt_pass level =
-  match Sys.getenv_opt "FAS_OPT_PASSES" with
-  | Some value when value <> "" -> value
-  | _ -> Printf.sprintf "default<O%d>" (optimization_level level)
+let opt_pass config =
+  let configured =
+    match Sys.getenv_opt "FAS_OPT_PASSES" with
+    | Some value when value <> "" -> value
+    | _ -> Printf.sprintf "default<O%d>" (optimization_level config.Cli.optimization)
+  in
+  if List.mem "address" config.Cli.sanitizers then "asan," ^ configured else configured
 
 let llc_opt level = Printf.sprintf "-O%d" (optimization_level level)
 
@@ -432,10 +435,7 @@ let verify_llvm opt file =
     ("LLVM verification with " ^ opt)
     [| opt; "-passes=verify"; file; "-disable-output" |]
 
-let pass_report level =
-  match Sys.getenv_opt "FAS_OPT_PASSES" with
-  | Some value when value <> "" -> value
-  | _ -> Printf.sprintf "default<O%d>" (optimization_level level)
+let pass_report config = opt_pass config
 
 let report_kept config paths opt llc cc =
   if config.Cli.keep then (
@@ -444,8 +444,7 @@ let report_kept config paths opt llc cc =
       (Printf.sprintf
          "fas: tools LLVM_OPT=%s LLVM_LLC=%s CC=%s; opt passes=%s; verify before and \
           after opt; llc %s"
-         opt llc cc
-         (pass_report config.Cli.optimization)
+         opt llc cc (pass_report config)
          (llc_opt config.Cli.optimization)))
 
 let executable_command config cc asm_path c_objects =
@@ -498,14 +497,7 @@ let emit_tools_unprotected config program ir c_objects redirect =
       let* () = verify_llvm opt ll_path in
       let* () =
         run_tool opt
-          [|
-            opt;
-            "-passes=" ^ opt_pass config.optimization;
-            ll_path;
-            "-S";
-            "-o";
-            opt_path;
-          |]
+          [| opt; "-passes=" ^ opt_pass config; ll_path; "-S"; "-o"; opt_path |]
       in
       let* () = verify_llvm opt opt_path in
       match config.emit with
