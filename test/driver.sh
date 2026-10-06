@@ -63,6 +63,13 @@ int c_link_probe(int value) {
   return value + (sin((double)value) > 0.0);
 }
 C
+cat >"$WORK/c-sanitize.fas" <<'FAS'
+use "C" <<SANITIZE_C
+int fas_sanitize_c(void) { return 5; }
+SANITIZE_C
+extern "C" { fn fas_sanitize_c() i32 }
+fn main() i32 { return fas_sanitize_c() - 5 }
+FAS
 cat >"$WORK/use-main.fas" <<'FAS'
 use "part-a.fas"
 use "part-b.fas"
@@ -180,6 +187,19 @@ grep -E "^fas: CC command: $CC [^ ]*fas-module-[^ ]*\\.s $WORK/helper.c -lm -o $
 asm_path=$(sed -n 's/^fas: CC command: [^ ]* \([^ ]*fas-module-[^ ]*\.s\) .*/\1/p' "$WORK/stderr")
 [ -s "$asm_path" ] || fail "--keep did not retain the exact assembly input"
 
+: >"$TOOL_LOG"
+"$OCAML_FAS" --sanitize=address --keep "$WORK/c-sanitize.fas" -o "$WORK/c-sanitize" \
+  >"$WORK/stdout" 2>"$WORK/stderr"
+grep -E '^cc --target=x86_64-unknown-linux-gnu -fPIC -O2 -fsanitize=address -c .*\.c -o ' \
+  "$TOOL_LOG" >/dev/null || fail "generated C input was not compiled with ASan"
+grep -E '^cc [^ ]*fas-module-[^ ]*\.s .* -fsanitize=address -o ' "$TOOL_LOG" >/dev/null \
+  || fail "generated C program link omitted ASan runtime"
+: >"$TOOL_LOG"
+"$OCAML_FAS" --sanitize=address --keep "$WORK/link.fas" "$WORK/helper.c" -lm \
+  -o "$WORK/address-c-link" >"$WORK/stdout" 2>"$WORK/stderr"
+grep -F -- "-fsanitize=address $WORK/helper.c -lm -o " "$TOOL_LOG" >/dev/null \
+  || fail "C input link omitted ASan runtime"
+
 "$OCAML_FAS" --emit-llvm -O2 "$WORK/good.fas" >"$WORK/raw.ll" 2>"$WORK/stderr"
 [ ! -s "$WORK/stderr" ] || fail "LLVM emission wrote diagnostics"
 grep -F "define i32 @main" "$WORK/raw.ll" >/dev/null || fail "LLVM emission omitted main"
@@ -206,6 +226,12 @@ fi
 "$OCAML_FAS" -c "$WORK/good.fas" -o "$WORK/good.o" >"$WORK/stdout" 2>"$WORK/stderr"
 [ -s "$WORK/good.o" ] || fail "-c did not produce an object"
 [ "$(od -An -tx1 -N4 "$WORK/good.o" | tr -d ' \n')" = "7f454c46" ] || fail "-c output is not ELF"
+: >"$TOOL_LOG"
+"$OCAML_FAS" --sanitize=address -c "$WORK/good.fas" -o "$WORK/address.o" >"$WORK/stdout" 2>"$WORK/stderr"
+[ -s "$WORK/address.o" ] || fail "sanitized -c did not produce an object"
+nm -u "$WORK/address.o" >"$WORK/address-symbols"
+grep -F "__asan_" "$WORK/address-symbols" >/dev/null || fail "sanitized object omitted ASan runtime references"
+if grep -F "cc " "$TOOL_LOG" >/dev/null; then fail "sanitized -c linked an executable"; fi
 "$OCAML_FAS" --emit-obj "$WORK/good.fas" -o "$WORK/alias.o" >"$WORK/stdout" 2>"$WORK/stderr"
 [ -s "$WORK/alias.o" ] || fail "--emit-obj did not produce an object"
 cp "$WORK/good.fas" "$WORK/auto.fas"

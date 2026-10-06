@@ -430,6 +430,9 @@ let opt_pass config =
 
 let llc_opt level = Printf.sprintf "-O%d" (optimization_level level)
 
+let c_sanitizer_flags config =
+  if List.mem "address" config.Cli.sanitizers then [ "-fsanitize=address" ] else []
+
 let verify_llvm opt file =
   run_tool
     ("LLVM verification with " ^ opt)
@@ -451,8 +454,8 @@ let executable_command config cc asm_path c_objects =
   let argv =
     Array.of_list
       (cc :: asm_path
-      :: (c_objects @ config.Cli.c_flags @ config.Cli.link_inputs
-        @ [ "-o"; config.Cli.output ]))
+      :: (c_objects @ config.Cli.c_flags @ c_sanitizer_flags config
+        @ config.Cli.link_inputs @ [ "-o"; config.Cli.output ]))
   in
   if config.Cli.debug || config.Cli.keep then
     prerr_endline ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
@@ -664,6 +667,9 @@ let compile_c_units config cc units adapters standard_headers declaration_header
                  llc_opt config.Cli.optimization;
                ]
               @ config.Cli.c_flags
+              @ (if Option.is_none unit.assembly && config.Cli.emit <> Cli.Header then
+                   c_sanitizer_flags config
+                 else [])
               @ (if Option.is_some unit.assembly then
                    [ "-iquote"; Filename.dirname unit.source ]
                  else [])
