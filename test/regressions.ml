@@ -2723,7 +2723,7 @@ let () =
       "noalias";
       "noundef align";
     ];
-  let cli_profile = cli_run [ "-debug"; "-no-inline"; "helper"; "profile.fas" ] in
+  let cli_profile = cli_run [ "-g"; "--no-inline"; "helper"; "profile.fas" ] in
   assert (cli_profile.Cli.no_inline_function = Some "helper");
   let cli_sanitizers =
     cli_run
@@ -2735,17 +2735,20 @@ let () =
   in
   assert (cli_sanitizers.Cli.sanitizers = [ "address"; "undefined" ]);
   let cli_profile_ordered =
-    cli_run [ "-O3"; "-debug"; "-no-inline"; "helper"; "profile.fas" ]
+    cli_run [ "-O3"; "-g"; "--no-inline"; "helper"; "profile.fas" ]
   in
   assert (cli_profile_ordered.Cli.optimization = 3);
-  cli_error "no-inline-missing-name" "requires a function name"
-    [ "-debug"; "-no-inline" ];
+  cli_error "no-inline-missing-name" "requires a function name" [ "-g"; "--no-inline" ];
   cli_error "no-inline-flag-name" "requires a function name"
-    [ "-debug"; "-no-inline"; "-O3"; "profile.fas" ];
-  cli_error "no-inline-needs-debug" "requires -debug"
+    [ "-g"; "--no-inline"; "-O3"; "profile.fas" ];
+  cli_error "no-inline-needs-g" "requires -g" [ "--no-inline"; "helper"; "profile.fas" ];
+  cli_error "removed-debug-option" "unknown option `-debug`; write `-g`"
+    [ "-debug"; "profile.fas" ];
+  cli_error "removed-no-inline-option"
+    "unknown option `-no-inline`; write `--no-inline`"
     [ "-no-inline"; "helper"; "profile.fas" ];
-  cli_error "no-inline-duplicate" "duplicate -no-inline"
-    [ "-debug"; "-no-inline"; "helper"; "-no-inline"; "other"; "profile.fas" ];
+  cli_error "no-inline-duplicate" "duplicate --no-inline"
+    [ "-g"; "--no-inline"; "helper"; "--no-inline"; "other"; "profile.fas" ];
   cli_error "sanitize-empty-list" "--sanitize requires a non-empty list"
     [ "--sanitize="; "profile.fas" ];
   cli_error "sanitize-unknown-name" "unknown sanitizer `memory`"
@@ -2772,7 +2775,7 @@ let () =
          fn test() i64 { return helper() }\n";
       close_out channel;
       let config =
-        cli_run [ "-debug"; "-O3"; "--emit-llvm"; "-no-inline"; "helper"; profile_path ]
+        cli_run [ "-g"; "-O3"; "--emit-llvm"; "--no-inline"; "helper"; profile_path ]
       in
       assert (config.Cli.optimization = 3);
       let profile_ir =
@@ -2785,7 +2788,7 @@ let () =
       if contains profile_ir "@other() noinline #0 {" then
         failwith "no-inline: attribute leaked to another function";
       let missing_config =
-        cli_run [ "-debug"; "--emit-llvm"; "-no-inline"; "missing"; profile_path ]
+        cli_run [ "-g"; "--emit-llvm"; "--no-inline"; "missing"; profile_path ]
       in
       match Driver.run missing_config with
       | Error diagnostics ->
@@ -2819,10 +2822,10 @@ let () =
       let config =
         cli_run
           [
-            "-debug";
+            "-g";
             "-O3";
             "--emit-llvm";
-            "-no-inline";
+            "--no-inline";
             generic_profile_name;
             generic_profile_path;
           ]
@@ -2847,7 +2850,7 @@ let () =
       close_out channel;
       let config =
         cli_run
-          [ "-debug"; "--emit-llvm"; "-no-inline"; "external"; external_profile_path ]
+          [ "-g"; "--emit-llvm"; "--no-inline"; "external"; external_profile_path ]
       in
       match Driver.run config with
       | Error diagnostics ->

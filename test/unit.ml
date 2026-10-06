@@ -1362,6 +1362,14 @@ let () =
   | Ok _ -> failwith "multiple input files: expected rejection");
   let header = expect_cli (Cli.parse [| "fas"; "--emit-header"; "root.fas" |]) in
   assert (header.emit = Cli.Header && not header.output_explicit);
+  let debug = expect_cli (Cli.parse [| "fas"; "-g"; "root.fas" |]) in
+  assert (debug.debug && debug.optimization = 0);
+  let debug_ordered = expect_cli (Cli.parse [| "fas"; "-O3"; "-g"; "root.fas" |]) in
+  assert (debug_ordered.debug && debug_ordered.optimization = 3);
+  let no_inline =
+    expect_cli (Cli.parse [| "fas"; "-g"; "--no-inline"; "helper"; "root.fas" |])
+  in
+  assert (no_inline.no_inline_function = Some "helper");
   List.iter
     (fun mode ->
       List.iter
@@ -1393,6 +1401,8 @@ let () =
     && cli_named_obj.output_explicit);
   (match Cli.parse [| "fas"; "--help" |] with
   | Ok Cli.Help ->
+      assert (contains Cli.usage "-g");
+      assert (contains Cli.usage "--no-inline");
       assert (contains Cli.usage "-I DIR, -isystem DIR, -D NAME[=VALUE]");
       assert (contains Cli.usage "--sanitize=LIST")
   | Ok (Cli.Run _) | Error _ -> assert false);
@@ -1435,6 +1445,15 @@ let () =
   | Error message -> assert (message = "-o - is not supported")
   | Ok _ -> assert false);
   (match Cli.parse [| "fas"; "--unknown" |] with Ok _ -> assert false | Error _ -> ());
+  List.iter
+    (fun (option, expected) ->
+      match Cli.parse [| "fas"; option; "root.fas" |] with
+      | Error message -> assert (message = expected)
+      | Ok _ -> assert false)
+    [
+      ("-debug", "unknown option `-debug`; write `-g`");
+      ("-no-inline", "unknown option `-no-inline`; write `--no-inline`");
+    ];
   let sema_error ?message text =
     let program = expect_ok (Parser.parse (source text)) in
     match Sema.check program with

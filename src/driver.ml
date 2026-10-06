@@ -574,13 +574,13 @@ let apply_no_inline config ir =
           Error
             [
               Diag.error Span.synthetic
-                (Printf.sprintf "-no-inline function `%s` was not emitted" name);
+                (Printf.sprintf "--no-inline function `%s` was not emitted" name);
             ]
       | Some f when f.blocks = [] ->
           Error
             [
               Diag.error Span.synthetic
-                (Printf.sprintf "-no-inline function `%s` is not a normal definition"
+                (Printf.sprintf "--no-inline function `%s` is not a normal definition"
                    name);
             ]
       | Some _ -> Ok { ir with Ir.no_inline_function = Some name })

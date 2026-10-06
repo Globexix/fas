@@ -192,7 +192,7 @@ fn main() i32 { return 0 }
 FAS
 TMPDIR="$USE_EDGES_TMP" "$OCAML_FAS" --emit-ir "$USE_EDGES_TMP/paths/c-import.fas" \
   >"$USE_EDGES_TMP/c-import.ir"
-TMPDIR="$USE_EDGES_TMP" "$OCAML_FAS" -debug --keep --emit-ir \
+TMPDIR="$USE_EDGES_TMP" "$OCAML_FAS" -g --keep --emit-ir \
   "$USE_EDGES_TMP/paths/c-import.fas" >"$USE_EDGES_TMP/c-import-keep.ir" \
   2>"$USE_EDGES_TMP/c-import-keep.log"
 grep -F "fas: Clang import command: $CC -x c -fsyntax-only -Xclang -ast-dump=json -Xclang -skip-function-bodies" \

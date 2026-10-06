@@ -26,8 +26,8 @@ let usage =
   \  --emit-obj, -c emit object\n\
   \  --keep        retain and report intermediate paths and active tool pipeline\n\
   \  -O0..-O3      set opt and llc optimization levels (default -O2)\n\
-  \  -debug        default to -O0; enables -no-inline; emits no DWARF info\n\
-  \  -no-inline NAME  add LLVM noinline to NAME (debug only)\n\
+  \  -g            default to -O0; enables --no-inline; emits no DWARF info\n\
+  \  --no-inline NAME  add LLVM noinline to NAME (debug only)\n\
   \  --sanitize=LIST instrument with address and/or undefined behavior sanitizers\n\
   \  -I DIR, -isystem DIR, -D NAME[=VALUE] (attached or separate)\n\
   \  LLVM_OPT, LLVM_LLC, CC select tools (defaults: opt-22, llc-22, clang-22)\n\
@@ -63,7 +63,7 @@ let parse argv =
       else if !link_inputs_rev <> [] && emit <> Executable then
         Error "C inputs and link flags require an executable output"
       else if Option.is_some no_inline_function && not debug then
-        Error "-no-inline requires -debug"
+        Error "--no-inline requires -g"
       else
         let input = Option.get input in
         let output_explicit = Option.is_some output in
@@ -137,18 +137,18 @@ let parse argv =
                     sanitizers := Some names;
                     loop (i + 1) input output emit keep optimization
                       optimization_explicit debug no_inline_function))
-      | "-debug" ->
+      | "-g" ->
           loop (i + 1) input output emit keep
             (if optimization_explicit then optimization else 0)
             optimization_explicit true no_inline_function
-      | "-no-inline" ->
-          if i + 1 >= n then Error "-no-inline requires a function name"
+      | "--no-inline" ->
+          if i + 1 >= n then Error "--no-inline requires a function name"
           else
             let name = argv.(i + 1) in
             if name = "" || name.[0] = '-' then
-              Error "-no-inline requires a function name"
+              Error "--no-inline requires a function name"
             else if Option.is_some no_inline_function then
-              Error "duplicate -no-inline option"
+              Error "duplicate --no-inline option"
             else
               loop (i + 2) input output emit keep optimization optimization_explicit
                 debug (Some name)
@@ -192,6 +192,8 @@ let parse argv =
           loop (i + 1) input output emit keep
             (Char.code flag.[2] - Char.code '0')
             true debug no_inline_function
+      | "-debug" -> Error "unknown option `-debug`; write `-g`"
+      | "-no-inline" -> Error "unknown option `-no-inline`; write `--no-inline`"
       | flag when String.length flag > 0 && flag.[0] = '-' ->
           Error ("unknown option: " ^ flag)
       | file when passthrough_file file ->

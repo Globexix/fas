@@ -136,7 +136,7 @@ temps_empty() {
 "$OCAML_FAS" -h >"$WORK/short-help" 2>"$WORK/stderr"
 cmp "$WORK/help" "$WORK/short-help" >/dev/null || fail "-h differs from --help"
 for flag in -o --emit-header --emit-ir --emit-llvm --emit-asm -S --emit-obj -c --keep \
-  -O0..-O3 -debug -no-inline --sanitize=LIST -I -isystem -D -h --help; do
+  -O0..-O3 -g --no-inline --sanitize=LIST -I -isystem -D -h --help; do
   grep -F -- "$flag" "$WORK/help" >/dev/null || fail "help omitted $flag"
 done
 if grep -F -- "--emit-ast" "$WORK/help" >/dev/null; then fail "help advertises removed --emit-ast"; fi
@@ -187,7 +187,7 @@ grep -F -- "cc " "$TOOL_LOG" >/dev/null || fail "CC override was ignored"
 temps_empty
 
 : >"$TOOL_LOG"
-"$OCAML_FAS" -debug --keep "$WORK/link.fas" "$WORK/helper.c" -lm -o "$WORK/link" \
+"$OCAML_FAS" -g --keep "$WORK/link.fas" "$WORK/helper.c" -lm -o "$WORK/link" \
   >"$WORK/stdout" 2>"$WORK/stderr"
 [ ! -s "$WORK/stdout" ] || fail "C link wrote to stdout"
 "$WORK/link" || fail "Fas C and libm link failed"
@@ -256,7 +256,7 @@ defer_line=$(grep -n -F "call void @observe" "$WORK/lifetime-address.ll" | tail 
 "$OCAML_FAS" --emit-ir "$WORK/good.fas" >"$WORK/custom.ir" 2>"$WORK/stderr"
 [ ! -s "$WORK/stderr" ] || fail "custom IR emission wrote diagnostics"
 grep -F "Module {" "$WORK/custom.ir" >/dev/null || fail "custom IR emission omitted module"
-"$OCAML_FAS" --emit-llvm -debug "$WORK/good.fas" >"$WORK/debug.ll" 2>"$WORK/stderr"
+"$OCAML_FAS" --emit-llvm -g "$WORK/good.fas" >"$WORK/debug.ll" 2>"$WORK/stderr"
 if grep -E 'llvm\.dbg|!DI[A-Za-z]+' "$WORK/debug.ll" >/dev/null; then
   fail "debug mode emitted DWARF metadata"
 fi
@@ -290,16 +290,16 @@ cp "$WORK/good.fas" "$WORK/auto.fas"
 [ ! -s "$WORK/stdout" ] && [ ! -s "$WORK/stderr" ] || fail "default object wrote diagnostics"
 
 : >"$TOOL_LOG"
-"$OCAML_FAS" -debug --keep "$WORK/good.fas" -o "$WORK/debug" >"$WORK/stdout" 2>"$WORK/stderr"
+"$OCAML_FAS" -g --keep "$WORK/good.fas" -o "$WORK/debug" >"$WORK/stdout" 2>"$WORK/stderr"
 [ ! -s "$WORK/stdout" ] || fail "--keep wrote to stdout"
 grep -F "fas: kept intermediates:" "$WORK/stderr" >/dev/null || fail "--keep omitted paths"
 grep -F "LLVM_OPT=$LLVM_OPT" "$WORK/stderr" >/dev/null || fail "--keep omitted tools"
-grep -F "passes=default<O0>" "$WORK/stderr" >/dev/null || fail "-debug did not default to O0"
-grep -F "llc -O0" "$WORK/stderr" >/dev/null || fail "-debug llc level missing"
-grep -F -- "llc -O0 -relocation-model=pic" "$TOOL_LOG" >/dev/null || fail "-debug llc PIC model missing"
+grep -F "passes=default<O0>" "$WORK/stderr" >/dev/null || fail "-g did not default to O0"
+grep -F "llc -O0" "$WORK/stderr" >/dev/null || fail "-g llc level missing"
+grep -F -- "llc -O0 -relocation-model=pic" "$TOOL_LOG" >/dev/null || fail "-g llc PIC model missing"
 [ -n "$(find "$TMPDIR" -mindepth 1 -print -quit)" ] || fail "--keep did not retain intermediates"
-"$OCAML_FAS" -debug -O3 --keep "$WORK/good.fas" -o "$WORK/debug-o3" >"$WORK/stdout" 2>"$WORK/stderr"
-grep -F "passes=default<O3>" "$WORK/stderr" >/dev/null || fail "-debug overrode explicit -O3"
+"$OCAML_FAS" -g -O3 --keep "$WORK/good.fas" -o "$WORK/debug-o3" >"$WORK/stdout" 2>"$WORK/stderr"
+grep -F "passes=default<O3>" "$WORK/stderr" >/dev/null || fail "-g overrode explicit -O3"
 find "$TMPDIR" -mindepth 1 -delete
 temps_empty
 FAS_OPT_PASSES='default<O1>' "$OCAML_FAS" --keep "$WORK/good.fas" -o "$WORK/custom-passes" >"$WORK/stdout" 2>"$WORK/stderr"
@@ -332,10 +332,10 @@ grep -F "CC=$WORK/cc-wrap" "$WORK/stderr" >/dev/null || fail "FAS_CC fallback wa
 find "$TMPDIR" -mindepth 1 -delete
 temps_empty
 
-"$OCAML_FAS" --emit-llvm -debug -no-inline helper "$WORK/good.fas" >"$WORK/noinline.ll" 2>"$WORK/stderr"
-grep -F "@helper() noinline #0 {" "$WORK/noinline.ll" >/dev/null || fail "-no-inline missed selected function"
-if grep -F "@main() noinline #0 {" "$WORK/noinline.ll" >/dev/null; then fail "-no-inline marked main"; fi
-expect_failure "$OCAML_FAS" -no-inline helper "$WORK/good.fas"
+"$OCAML_FAS" --emit-llvm -g --no-inline helper "$WORK/good.fas" >"$WORK/noinline.ll" 2>"$WORK/stderr"
+grep -F "@helper() noinline #0 {" "$WORK/noinline.ll" >/dev/null || fail "--no-inline missed selected function"
+if grep -F "@main() noinline #0 {" "$WORK/noinline.ll" >/dev/null; then fail "--no-inline marked main"; fi
+expect_failure "$OCAML_FAS" --no-inline helper "$WORK/good.fas"
 cp "$WORK/good.fas" "$WORK/same-path.fas"
 expect_failure "$OCAML_FAS" "$WORK/same-path.fas" -o "$WORK/same-path.fas"
 cmp "$WORK/good.fas" "$WORK/same-path.fas" >/dev/null || fail "input/output collision changed input"

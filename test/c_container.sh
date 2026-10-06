@@ -172,7 +172,7 @@ int linked_c_value(void) {
   return FAS_HEADER_VALUE + FAS_SYSTEM_VALUE + CONTAINER_VALUE;
 }
 C
-"$OCAML_FAS" -O2 -debug -I "$CONTAINER_TMP/include" \
+"$OCAML_FAS" -O2 -g -I "$CONTAINER_TMP/include" \
   -isystem"$CONTAINER_TMP/system" -D CONTAINER_VALUE=25 \
   "$CONTAINER_TMP/preprocessor.fas" "$CONTAINER_TMP/link-input.c" \
   -o "$CONTAINER_TMP/preprocessor" >"$CONTAINER_TMP/stdout" \
@@ -186,7 +186,7 @@ cat >"$CONTAINER_TMP/header-only.fas" <<'FAS'
 use "C" <stdint.h>
 fn main() i32 { return 0 }
 FAS
-"$OCAML_FAS" --keep -debug "$CONTAINER_TMP/header-only.fas" \
+"$OCAML_FAS" --keep -g "$CONTAINER_TMP/header-only.fas" \
   -o "$CONTAINER_TMP/header-only" >"$CONTAINER_TMP/stdout" \
   2>"$CONTAINER_TMP/stderr"
 "$CONTAINER_TMP/header-only" || fail "header-only program failed"
@@ -273,7 +273,7 @@ grep -F "$CONTAINER_TMP/header-error.fas:1:9: error: C compilation failed: expec
 grep -Fx "note: $CONTAINER_TMP/broken.h:1:21" "$CONTAINER_TMP/stderr" >/dev/null \
   || fail "header error omitted its foreign location"
 
-"$OCAML_FAS" --keep -debug "$CONTAINER_TMP/program.fas" \
+"$OCAML_FAS" --keep -g "$CONTAINER_TMP/program.fas" \
   -o "$CONTAINER_TMP/kept" >"$CONTAINER_TMP/stdout" 2>"$CONTAINER_TMP/stderr"
 grep -F "fas: kept C import unit:" "$CONTAINER_TMP/stderr" >/dev/null \
   || fail "--keep omitted the generated C unit"
@@ -286,6 +286,6 @@ bindings=$(sed -n 's/^fas: kept C bindings: //p' "$CONTAINER_TMP/stderr")
 grep -F "adapter for fas_static_value" "$bindings" >/dev/null \
   || fail "bindings manifest omitted the static adapter"
 grep -F "fas: CC command: $CC --target=x86_64-unknown-linux-gnu -fPIC -O0 -c " \
-  "$CONTAINER_TMP/stderr" >/dev/null || fail "-debug omitted the C compile command"
+  "$CONTAINER_TMP/stderr" >/dev/null || fail "-g omitted the C compile command"
 
 echo "c_container: automatic C build, object merge and mapped errors: ok"
