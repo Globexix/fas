@@ -3380,10 +3380,21 @@ and check_actuals ?callee c policy span formals actuals =
                     | _ -> false
                   then Ok (variadic_promote value)
                   else
-                    error (Ast.expr_span expression)
-                      (Printf.sprintf
-                         "aggregate `%s` cannot be passed through C varargs"
-                         (Sema_types.diagnostic_ty_name (Hir.expr_ty value))))
+                    let help =
+                      match (expression, Hir.expr_ty value) with
+                      | Ast.Ident (name, _), Hir.Array _ ->
+                          Some
+                            (Printf.sprintf "pass `&%s`; C passes arrays by address"
+                               name)
+                      | _ -> None
+                    in
+                    Error
+                      [
+                        Diag.error ?help (Ast.expr_span expression)
+                          (Printf.sprintf
+                             "aggregate `%s` cannot be passed through C varargs"
+                             (Sema_types.diagnostic_ty_name (Hir.expr_ty value)));
+                      ])
                 rest
         in
         Ok (List.rev_append checked trailing)

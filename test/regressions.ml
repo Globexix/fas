@@ -1510,6 +1510,50 @@ let () =
      fn pass() void { value vec[2,u32] = splat(0)\n\
      consume(1, value)\n\
      return }\n";
+  let array_vararg =
+    "extern \"C\" { fn consume(marker i32, ...) void }\n\
+     fn pass() void { fname arr[13,u8] = {0,0,0,0,0,0,0,0,0,0,0,0,0}\n\
+     consume(1, fname)\n\
+     return }\n"
+  in
+  let array_vararg_expected =
+    expected_diagnostic ~line_number:3 "consume(1, fname)" 12 5
+      "aggregate `arr[13, u8]` cannot be passed through C varargs"
+      "pass `&fname`; C passes arrays by address"
+  in
+  let array_vararg_rendered = semantic_render array_vararg in
+  if array_vararg_rendered <> array_vararg_expected then
+    failwith ("variadic-array-help: unexpected diagnostic: " ^ array_vararg_rendered);
+  let record_vararg =
+    "struct Item { value i32 }\n\
+     extern \"C\" { fn consume(marker i32, ...) void }\n\
+     fn pass() void { item Item = (Item){1}\n\
+     consume(1, item)\n\
+     return }\n"
+  in
+  let record_vararg_expected =
+    expected_diagnostic_without_help ~line_number:4 "consume(1, item)" 12 4
+      "aggregate `Item` cannot be passed through C varargs"
+  in
+  let record_vararg_rendered = semantic_render record_vararg in
+  if record_vararg_rendered <> record_vararg_expected then
+    failwith
+      ("variadic-record-no-help: unexpected diagnostic: " ^ record_vararg_rendered);
+  let array_expression_vararg =
+    "extern \"C\" { fn consume(marker i32, ...) void }\n\
+     fn pass() void { items arr[2,arr[2,u8]] = {{0,0},{0,0}}\n\
+     consume(1, items[0])\n\
+     return }\n"
+  in
+  let array_expression_vararg_expected =
+    expected_diagnostic_without_help ~line_number:3 "consume(1, items[0])" 12 8
+      "aggregate `arr[2, u8]` cannot be passed through C varargs"
+  in
+  let array_expression_vararg_rendered = semantic_render array_expression_vararg in
+  if array_expression_vararg_rendered <> array_expression_vararg_expected then
+    failwith
+      ("variadic-array-expression-no-help: unexpected diagnostic: "
+     ^ array_expression_vararg_rendered);
   semantic_error "aggregate-assignment"
     "aggregate assignment is not supported; use `copy(dst, src)`"
     "struct S { x i64 }\n\
