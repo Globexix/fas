@@ -1466,7 +1466,7 @@ let term_line terminator =
     terminator;
   Buffer.contents buffer
 
-let render_bounded ?(redirect = Fun.id) ~budget m =
+let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false) ~budget m =
   if budget < 0 then Error "rendered LLVM text budget must not be negative"
   else
     let buffer = Buffer.create 4096 in
@@ -1683,6 +1683,9 @@ let render_bounded ?(redirect = Fun.id) ~budget m =
                | Some name when name = f.name -> " noinline"
                | _ -> ""
              in
+             let sanitize_address =
+               if sanitize_address then " sanitize_address" else ""
+             in
              add "define ";
              add link;
              add (extension_name f.ret_extension);
@@ -1693,6 +1696,7 @@ let render_bounded ?(redirect = Fun.id) ~budget m =
              add_params (f.blocks <> []) f.variadic f.params;
              add ")";
              add no_inline;
+             add sanitize_address;
              if no_builtin_names <> [] then add " #0";
              add " {";
              newline ();

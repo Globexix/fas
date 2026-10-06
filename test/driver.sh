@@ -184,6 +184,12 @@ asm_path=$(sed -n 's/^fas: CC command: [^ ]* \([^ ]*fas-module-[^ ]*\.s\) .*/\1/
 [ ! -s "$WORK/stderr" ] || fail "LLVM emission wrote diagnostics"
 grep -F "define i32 @main" "$WORK/raw.ll" >/dev/null || fail "LLVM emission omitted main"
 grep -F "call i32 @helper" "$WORK/raw.ll" >/dev/null || fail "-O2 changed unoptimized LLVM emission"
+"$OCAML_FAS" --sanitize=address --emit-llvm "$WORK/link.fas" >"$WORK/address.ll" 2>"$WORK/stderr"
+grep -F "define i32 @main() sanitize_address {" "$WORK/address.ll" >/dev/null || fail "address sanitizer missed Fas definition"
+grep -F "declare i32 @c_link_probe(i32)" "$WORK/address.ll" >/dev/null || fail "address sanitizer changed external declaration"
+if grep -F "declare i32 @c_link_probe(i32) sanitize_address" "$WORK/address.ll" >/dev/null; then
+  fail "address sanitizer marked external declaration"
+fi
 "$OCAML_FAS" --emit-ir "$WORK/good.fas" >"$WORK/custom.ir" 2>"$WORK/stderr"
 [ ! -s "$WORK/stderr" ] || fail "custom IR emission wrote diagnostics"
 grep -F "Module {" "$WORK/custom.ir" >/dev/null || fail "custom IR emission omitted module"

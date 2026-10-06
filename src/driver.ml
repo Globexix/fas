@@ -412,8 +412,11 @@ let run_tool label argv =
 let remove path = try Sys.remove path with Sys_error _ -> ()
 let optimization_level level = max 0 (min 3 level)
 
-let render_ir ?(redirect = Fun.id) ir =
-  match Ir.render_bounded ~redirect ~budget:limits.Limits.max_rendered_ir_bytes ir with
+let render_ir ?(redirect = Fun.id) ?(sanitize_address = false) ir =
+  match
+    Ir.render_bounded ~redirect ~sanitize_address
+      ~budget:limits.Limits.max_rendered_ir_bytes ir
+  with
   | Ok text -> Ok text
   | Error message -> Error [ Diag.error Span.synthetic message ]
 
@@ -479,7 +482,9 @@ let build_assembly config llc opt_path asm_path =
 
 let emit_tools_unprotected config program ir c_objects redirect =
   let* () = ir_budget program (Ir.check_static_data_bytes ~limits ir) in
-  let* ll_text = render_ir ~redirect ir in
+  let* ll_text =
+    render_ir ~redirect ~sanitize_address:(List.mem "address" config.Cli.sanitizers) ir
+  in
   let ll_path = Filename.temp_file "fas-module-" ".ll" in
   let opt_path = Filename.temp_file "fas-opt-" ".ll" in
   let asm_path = Filename.temp_file "fas-module-" ".s" in
@@ -1054,7 +1059,11 @@ let run_unprotected ?header_output config =
               | Ok text -> emit_text config text
               | Error message -> Error [ Diag.error Span.synthetic message ])
           | Cli.Llvm ->
-              let* text = render_ir ~redirect ir in
+              let* text =
+                render_ir ~redirect
+                  ~sanitize_address:(List.mem "address" config.Cli.sanitizers)
+                  ir
+              in
               let opt, _, _ = tools () in
               let path = Filename.temp_file "fas-verify-" ".ll" in
               if config.Cli.keep then (
