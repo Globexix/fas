@@ -384,37 +384,62 @@ let layout ?(target = Target_layout.current) structs ty =
 type struct_layout_cache = {
   target : Target_layout.t;
   decls : (string * (string * ty) list * int option) list;
+  decl_index : (string, (string * ty) list * int option) Hashtbl.t;
   unions : string list;
+  union_index : (string, unit) Hashtbl.t;
   field_offsets : (string * (string * int) list) list;
+  field_offsets_index : (string, (string, int) Hashtbl.t) Hashtbl.t;
   field_reasons : (string * (string * string) list) list;
+  field_reasons_index : (string, (string, string) Hashtbl.t) Hashtbl.t;
   byte_storage : string list;
+  byte_storage_index : (string, unit) Hashtbl.t;
   struct_sizes : (string * int) list;
+  struct_sizes_index : (string, int) Hashtbl.t;
   definitions : (string, struct_def) Hashtbl.t;
 }
+
+let first_index entries = Hashtbl.of_seq (List.to_seq (List.rev entries))
+
+let nested_index entries =
+  first_index (List.map (fun (key, value) -> (key, first_index value)) entries)
 
 let struct_layout_cache ?(target = Target_layout.current) ?(unions = [])
     ?(field_offsets = []) ?(field_reasons = []) ?(byte_storage = [])
     ?(struct_sizes = []) decls =
+  let declarations =
+    List.map (fun (name, fields, align) -> (name, (fields, align))) decls
+  in
+  let union_index = first_index (List.map (fun name -> (name, ())) unions) in
+  let byte_storage_index =
+    first_index (List.map (fun name -> (name, ())) byte_storage)
+  in
   {
     target;
     decls;
+    decl_index = first_index declarations;
     unions;
+    union_index;
     field_offsets;
+    field_offsets_index = nested_index field_offsets;
     field_reasons;
+    field_reasons_index = nested_index field_reasons;
     byte_storage;
+    byte_storage_index;
     struct_sizes;
+    struct_sizes_index = first_index struct_sizes;
     definitions = Hashtbl.create (List.length decls);
   }
 
 let field_offset cache structure field =
-  Option.bind (List.assoc_opt structure cache.field_offsets) (List.assoc_opt field)
+  Option.bind (Hashtbl.find_opt cache.field_offsets_index structure) (fun fields ->
+      Hashtbl.find_opt fields field)
 
 let field_reason cache structure field =
-  Option.bind (List.assoc_opt structure cache.field_reasons) (List.assoc_opt field)
+  Option.bind (Hashtbl.find_opt cache.field_reasons_index structure) (fun fields ->
+      Hashtbl.find_opt fields field)
 
 let compute_struct_cached cache name =
   let target = cache.target in
-  let decls = cache.decls in
   let rec calc visiting n =
     match Hashtbl.find_opt cache.definitions n with
     | Some definition -> Ok (definition.fields, definition.size, definition.align)
@@ -422,18 +447,18 @@ let compute_struct_cached cache name =
         if List.mem n visiting then
           Error (Printf.sprintf "recursive by-value struct `%s`" n)
         else
-          match List.find_opt (fun (x, _, _) -> x = n) decls with
+          match Hashtbl.find_opt cache.decl_index n with
           | None -> Error (Printf.sprintf "unknown struct `%s`" n)
-          | Some (_, fields, explicit) ->
+          | Some (fields, explicit) ->
               let rec each off maxa out = function
                 | [] ->
-                    let byte_storage = List.mem n cache.byte_storage in
+                    let byte_storage = Hashtbl.mem cache.byte_storage_index n in
                     let align =
                       if byte_storage then Option.value ~default:1 explicit
                       else max maxa (Option.value ~default:1 explicit)
                     in
                     let* size =
-                      match List.assoc_opt n cache.struct_sizes with
+                      match Hashtbl.find_opt cache.struct_sizes_index n with
                       | Some size -> Ok size
                       | None -> Target_layout.round_up_size off align
                     in
@@ -444,7 +469,7 @@ let compute_struct_cached cache name =
                         size;
                         align;
                         is_union = false;
-                        byte_storage = List.mem n cache.byte_storage;
+                        byte_storage = Hashtbl.mem cache.byte_storage_index n;
                       }
                     in
                     Hashtbl.replace cache.definitions n definition;
@@ -475,13 +500,13 @@ let compute_struct_cached cache name =
               let union_fields max_size max_align out =
                 let rec go max_size max_align out = function
                   | [] ->
-                      let byte_storage = List.mem n cache.byte_storage in
+                      let byte_storage = Hashtbl.mem cache.byte_storage_index n in
                       let align =
                         if byte_storage then Option.value ~default:1 explicit
                         else max max_align (Option.value ~default:1 explicit)
                       in
                       let* size =
-                        match List.assoc_opt n cache.struct_sizes with
+                        match Hashtbl.find_opt cache.struct_sizes_index n with
                         | Some size -> Ok size
                         | None -> Target_layout.round_up_size max_size align
                       in
@@ -492,7 +517,7 @@ let compute_struct_cached cache name =
                           size;
                           align;
                           is_union = true;
-                          byte_storage = List.mem n cache.byte_storage;
+                          byte_storage = Hashtbl.mem cache.byte_storage_index n;
                         }
                       in
                       Hashtbl.replace cache.definitions n definition;
@@ -521,7 +546,7 @@ let compute_struct_cached cache name =
                 in
                 go max_size max_align out fields
               in
-              if List.mem n cache.unions then union_fields 0 1 []
+              if Hashtbl.mem cache.union_index n then union_fields 0 1 []
               else each 0 1 [] fields)
   and field_layout visiting = function
     | Bool -> Target_layout.integer target 1
@@ -547,8 +572,8 @@ let compute_struct_cached cache name =
       fields;
       size;
       align;
-      is_union = List.mem name cache.unions;
-      byte_storage = List.mem name cache.byte_storage;
+      is_union = Hashtbl.mem cache.union_index name;
+      byte_storage = Hashtbl.mem cache.byte_storage_index name;
     }
 
 let compute_struct ?target ?unions ?field_offsets ?field_reasons ?byte_storage decls

@@ -1,5 +1,5 @@
 type value =
-  | Obj of (string * value) list
+  | Obj of (string * value) list * (string, value) Hashtbl.t
   | Arr of value list
   | Str of string
   | Num of string
@@ -16,6 +16,9 @@ type input = {
   mutable presumed_file : string option;
   mutable presumed_line : string option;
 }
+
+let make_obj fields = Obj (fields, Hashtbl.of_seq (List.to_seq (List.rev fields)))
+let obj_fields = function Obj (fields, _) -> fields | _ -> []
 
 let refill i =
   if i.pos = i.size then (
@@ -249,7 +252,7 @@ and object_value ?(location = false) ?(range = false) i =
   space i;
   if peek i = '}' then (
     ignore (take i);
-    Obj (location_fields []))
+    make_obj (location_fields []))
   else
     let rec loop kind acc =
       expect i '"';
@@ -289,7 +292,7 @@ and object_value ?(location = false) ?(range = false) i =
             | None -> List.rev acc
             | Some value -> List.rev ((key, value) :: acc)
           in
-          Obj (location_fields fields)
+          make_obj (location_fields fields)
       | ',' ->
           loop kind (match value with None -> acc | Some value -> (key, value) :: acc)
       | _ -> failwith "invalid Clang JSON object"
@@ -324,7 +327,8 @@ let declaration i =
       space i;
       take i
     with
-    | '}' -> if keep then Some (Obj (List.rev (("kind", Str kind) :: acc))) else None
+    | '}' ->
+        if keep then Some (make_obj (List.rev (("kind", Str kind) :: acc))) else None
     | ',' ->
         expect i '"';
         let key = read_string i in
@@ -401,5 +405,5 @@ let declarations channel =
   in
   root []
 
-let field name = function Obj fields -> List.assoc_opt name fields | _ -> None
+let field name = function Obj (_, index) -> Hashtbl.find_opt index name | _ -> None
 let array = function Arr values -> values | _ -> []

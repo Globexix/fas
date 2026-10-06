@@ -447,6 +447,14 @@ let lower_function_error name fragment params body =
         failwith (name ^ ": unexpected diagnostic: " ^ rendered)
 
 let () =
+  if
+    C_import_json.field "name"
+      (C_import_json.make_obj
+         [ ("name", C_import_json.Str "first"); ("name", C_import_json.Str "last") ])
+    <> Some (C_import_json.Str "first")
+  then failwith "C import JSON field lookup no longer keeps the first key";
+  if Hashtbl.find_opt (Hir.first_index [ ("name", 1); ("name", 2) ]) "name" <> Some 1
+  then failwith "C import metadata lookup no longer keeps the first key";
   let long_sum = String.concat " + " (List.init 100_000 (fun _ -> "1")) in
   semantic_accept "long-arithmetic-expression"
     ("fn main() i32 { value i32 = 1\nreturn value + " ^ long_sum ^ " }\n");
@@ -11122,7 +11130,7 @@ let () =
   let rec duplicate_flattened_field_name active = function
     | C_import_json.Arr values ->
         C_import_json.Arr (List.map (duplicate_flattened_field_name active) values)
-    | C_import_json.Obj fields ->
+    | C_import_json.Obj (fields, _) ->
         let kind =
           match List.assoc_opt "kind" fields with
           | Some (C_import_json.Str kind) -> Some kind
@@ -11144,7 +11152,7 @@ let () =
               else (key, duplicate_flattened_field_name active value))
             fields
         in
-        C_import_json.Obj fields
+        C_import_json.make_obj fields
     | value -> value
   in
   let collision_declarations =

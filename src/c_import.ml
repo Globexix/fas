@@ -265,24 +265,35 @@ let macro_probe_types =
   ^ "unsigned int:6, long:7, unsigned long:8, long long:9, "
   ^ "unsigned long long:10, _Bool:11, char:12, default:0"
 
-let llvm_integer ir name =
-  let key = "@" ^ name in
+let llvm_integer_index ir =
+  let integers = Hashtbl.create 128
+  and value =
+    let rec find = function
+      | "constant" :: ty :: literal :: _ when String.starts_with ~prefix:"i" ty ->
+          let literal = String.trim literal in
+          Some
+            ( ty,
+              if String.ends_with ~suffix:"," literal then
+                String.sub literal 0 (String.length literal - 1)
+              else literal )
+      | _ :: rest -> find rest
+      | [] -> None
+    in
+    find
+  in
   String.split_on_char '\n' ir
-  |> List.find_map (fun line ->
-      if Option.is_none (find_text line key 0) then None
-      else
-        let rec value = function
-          | "constant" :: ty :: literal :: _ when String.starts_with ~prefix:"i" ty ->
-              let literal = String.trim literal in
-              Some
-                ( ty,
-                  if String.ends_with ~suffix:"," literal then
-                    String.sub literal 0 (String.length literal - 1)
-                  else literal )
-          | _ :: rest -> value rest
-          | [] -> None
-        in
-        value (String.split_on_char ' ' line |> List.filter (( <> ) "")))
+  |> List.iter (fun line ->
+      let line = String.trim line in
+      match String.index_opt line '=' with
+      | Some equal when String.starts_with ~prefix:"@" line -> (
+          let name = String.sub line 1 (equal - 1) |> String.trim in
+          let fields = String.split_on_char ' ' line |> List.filter (( <> ) "") in
+          match value fields with
+          | Some value when not (Hashtbl.mem integers name) ->
+              Hashtbl.add integers name value
+          | _ -> ())
+      | _ -> ());
+  integers
 
 let fas_macro_value width unsigned literal =
   let value = Int64.of_string literal in
@@ -358,6 +369,7 @@ let imported_macro_nodes ~cc ~c_flags ~source ~unit_path ~paths ~macro_names =
         in
         Result.map
           (fun (ir, candidates) ->
+            let integers = llvm_integer_index ir in
             let ast_path = Filename.temp_file "fas-c-macro-ast-" ".json" in
             paths := ast_path :: !paths;
             let ast_argv =
@@ -426,8 +438,8 @@ let imported_macro_nodes ~cc ~c_flags ~source ~unit_path ~paths ~macro_names =
             in
             let integer (i, (name, _)) =
               match
-                ( llvm_integer ir (prefix ^ string_of_int i),
-                  llvm_integer ir (prefix ^ "t_" ^ string_of_int i) )
+                ( Hashtbl.find_opt integers (prefix ^ string_of_int i),
+                  Hashtbl.find_opt integers (prefix ^ "t_" ^ string_of_int i) )
               with
               | Some (ty, literal), Some (_, id) when String.starts_with ~prefix:"i" ty
                 ->
@@ -449,7 +461,7 @@ let imported_macro_nodes ~cc ~c_flags ~source ~unit_path ~paths ~macro_names =
                   Option.map (fun value -> (i, value)) (integer (i, item)))
             in
             let node kind name extra =
-              C_import_json.Obj
+              C_import_json.make_obj
                 (("kind", C_import_json.Str kind)
                 :: ("name", C_import_json.Str name)
                 :: extra)
@@ -589,16 +601,17 @@ let imported_enum_nodes ~cc ~c_flags ~source ~unit_path ~paths declarations =
     in
     Result.map
       (fun (ir, candidates) ->
+        let integers = llvm_integer_index ir in
         List.filter_map
           (fun (i, (id, _)) ->
             Option.bind
-              (llvm_integer ir (prefix ^ string_of_int i))
+              (Hashtbl.find_opt integers (prefix ^ string_of_int i))
               (fun (_, code) ->
                 Option.bind (int_of_string_opt code) (fun code ->
                     Option.bind (macro_type code) (fun _ ->
                         Option.map
                           (fun (_, align) ->
-                            C_import_json.Obj
+                            C_import_json.make_obj
                               [
                                 ("kind", C_import_json.Str "FasEnumType");
                                 ("enumId", C_import_json.Str id);
@@ -606,7 +619,7 @@ let imported_enum_nodes ~cc ~c_flags ~source ~unit_path ~paths declarations =
                                   C_import_json.Str (string_of_int code) );
                                 ("align", C_import_json.Str align);
                               ])
-                          (llvm_integer ir (prefix ^ "a_" ^ string_of_int i))))))
+                          (Hashtbl.find_opt integers (prefix ^ "a_" ^ string_of_int i))))))
           (List.mapi (fun i candidate -> (i, candidate)) candidates))
       (run candidates)
 
@@ -928,7 +941,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declar
                     | Some (_, target, expression), Some type_of_expr ->
                         Option.map
                           (fun tree ->
-                            C_import_json.Obj
+                            C_import_json.make_obj
                               [
                                 ("kind", C_import_json.Str "FasTypeProbe");
                                 ("target", C_import_json.Str target);
@@ -945,7 +958,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declar
         (declarations @ probe_types
         @ List.map
             (fun record_name ->
-              C_import_json.Obj
+              C_import_json.make_obj
                 [
                   ("kind", C_import_json.Str "FasTypeCollision");
                   ("name", C_import_json.Str record_name);
@@ -1059,11 +1072,12 @@ let imported_typedef_layout_nodes ~cc ~c_flags ~source ~unit_path ~paths declara
     in
     Result.map
       (fun (ir, candidates) ->
+        let integers = llvm_integer_index ir in
         List.filter_map
           (fun (i, (kind, name, _, fields)) ->
             match
-              ( llvm_integer ir (prefix ^ "s_" ^ string_of_int i),
-                llvm_integer ir (prefix ^ "a_" ^ string_of_int i) )
+              ( Hashtbl.find_opt integers (prefix ^ "s_" ^ string_of_int i),
+                Hashtbl.find_opt integers (prefix ^ "a_" ^ string_of_int i) )
             with
             | Some (_, size), Some (_, align) -> (
                 match (int_of_string_opt size, int_of_string_opt align) with
@@ -1076,7 +1090,7 @@ let imported_typedef_layout_nodes ~cc ~c_flags ~source ~unit_path ~paths declara
                             (fun j field ->
                               Option.map
                                 (fun (_, value) -> field ^ ":" ^ value)
-                                (llvm_integer ir
+                                (Hashtbl.find_opt integers
                                    (prefix ^ "o_" ^ string_of_int i ^ "_"
                                   ^ string_of_int j)))
                             fields
@@ -1088,7 +1102,7 @@ let imported_typedef_layout_nodes ~cc ~c_flags ~source ~unit_path ~paths declara
                         ]
                     in
                     Some
-                      (C_import_json.Obj
+                      (C_import_json.make_obj
                          ([
                             ( "kind",
                               C_import_json.Str
@@ -1247,7 +1261,8 @@ let import ~cc ~debug ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
                         Option.bind (field "file" loc) string)
                   in
                   match (node, Option.bind origin (Hashtbl.find_opt origins)) with
-                  | Obj fields, Some header -> Obj (("fasHeader", Str header) :: fields)
+                  | Obj _, Some header ->
+                      make_obj (("fasHeader", Str header) :: obj_fields node)
                   | _ -> node)
                 declarations
             in
@@ -1336,7 +1351,7 @@ let import ~cc ~debug ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
                             | Ok macros -> (
                                 let all_declarations =
                                   declarations @ enum_types @ typedef_layouts
-                                  @ C_import_json.Obj
+                                  @ C_import_json.make_obj
                                       [
                                         ("kind", C_import_json.Str "FasLayoutDump");
                                         ("value", C_import_json.Str layouts);
@@ -1951,14 +1966,43 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
   let layout_dump =
     List.find_map
       (function
-        | C_import_json.Obj fields
-          when List.assoc_opt "kind" fields = Some (C_import_json.Str "FasLayoutDump")
-          ->
-            Option.bind (List.assoc_opt "value" fields) C_import_json.string
+        | node
+          when C_import_json.field "kind" node
+               = Some (C_import_json.Str "FasLayoutDump") ->
+            Option.bind (C_import_json.field "value" node) C_import_json.string
         | _ -> None)
       declarations
   in
   let layouts = Option.fold ~none:[] ~some:clang_layouts layout_dump in
+  let layouts_by_name = Hashtbl.create (List.length layouts)
+  and layouts_by_suffix = Hashtbl.create 32 in
+  List.iteri
+    (fun index layout ->
+      if not (Hashtbl.mem layouts_by_name layout.layout_name) then
+        Hashtbl.add layouts_by_name layout.layout_name (index, layout);
+      let rec last_suffix start found =
+        match find_text layout.layout_name "::(unnamed at " start with
+        | Some at -> last_suffix (at + 1) (Some at)
+        | None -> found
+      in
+      Option.iter
+        (fun at ->
+          let suffix =
+            String.sub layout.layout_name at (String.length layout.layout_name - at)
+          in
+          if not (Hashtbl.mem layouts_by_suffix suffix) then
+            Hashtbl.add layouts_by_suffix suffix (index, layout))
+        (last_suffix 0 None))
+    layouts;
+  let find_layout names suffix =
+    let exact = List.filter_map (Hashtbl.find_opt layouts_by_name) names in
+    let candidates =
+      exact @ Option.to_list (Option.bind suffix (Hashtbl.find_opt layouts_by_suffix))
+    in
+    match List.sort (fun (left, _) (right, _) -> compare left right) candidates with
+    | (_, layout) :: _ -> Some layout
+    | [] -> None
+  in
   let typedef_layouts = Hashtbl.create 16 in
   List.iter
     (fun node ->
@@ -2242,35 +2286,62 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
           Hashtbl.replace record_nodes_by_id id (Hashtbl.find record_nodes_by_id id)
       | _ -> ())
     all_nodes;
-  let same_record_typedef id _tag node = typedef_record_id node = Some id in
+  let ordinary_names = Hashtbl.create 128
+  and typedef_record_ids = Hashtbl.create 128
+  and reversed_record_typedef_names = Hashtbl.create 128 in
+  List.iter
+    (fun node ->
+      match string "kind" node with
+      | Some ("FunctionDecl" | "VarDecl") ->
+          Option.iter
+            (fun name -> Hashtbl.replace ordinary_names name ())
+            (record_name node)
+      | Some "TypedefDecl" -> (
+          match (record_name node, typedef_record_id node) with
+          | Some name, target ->
+              let previous =
+                Option.value ~default:[] (Hashtbl.find_opt typedef_record_ids name)
+              in
+              Hashtbl.replace typedef_record_ids name (target :: previous);
+              Option.iter
+                (fun id ->
+                  let previous =
+                    Option.value ~default:[]
+                      (Hashtbl.find_opt reversed_record_typedef_names id)
+                  in
+                  Hashtbl.replace reversed_record_typedef_names id (name :: previous))
+                target
+          | _ -> ())
+      | Some "EnumDecl" ->
+          List.iter
+            (fun child ->
+              if string "kind" child = Some "EnumConstantDecl" then
+                Option.iter
+                  (fun name -> Hashtbl.replace ordinary_names name ())
+                  (record_name child))
+            (children node)
+      | _ -> ())
+    nodes;
+  let record_typedef_names =
+    Hashtbl.create (Hashtbl.length reversed_record_typedef_names)
+  in
+  Hashtbl.iter
+    (fun id names -> Hashtbl.add record_typedef_names id (List.rev names))
+    reversed_record_typedef_names;
   let collides_with_ordinary tag id =
-    List.exists
-      (fun node ->
-        let name = record_name node in
-        match string "kind" node with
-        | Some ("FunctionDecl" | "VarDecl") -> name = Some tag
-        | Some "TypedefDecl" -> name = Some tag && not (same_record_typedef id tag node)
-        | Some "EnumDecl" ->
-            List.exists
-              (fun child ->
-                string "kind" child = Some "EnumConstantDecl"
-                && record_name child = Some tag)
-              (children node)
-        | _ -> false)
-      nodes
+    Hashtbl.mem ordinary_names tag
+    || Option.fold ~none:false
+         ~some:(List.exists (fun target -> target <> Some id))
+         (Hashtbl.find_opt typedef_record_ids tag)
   in
   Hashtbl.iter
     (fun id node ->
       match record_name node with
       | Some tag when collides_with_ordinary tag id ->
           let alias =
-            List.find_map
-              (fun candidate ->
-                match record_name candidate with
-                | Some name when name <> tag && same_record_typedef id tag candidate ->
-                    Some name
-                | _ -> None)
-              nodes
+            Option.bind
+              (Hashtbl.find_opt record_typedef_names id)
+              (List.find_opt (fun name -> name <> tag))
           in
           (match alias with
           | Some name ->
@@ -2449,19 +2520,23 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
     |> List.exists (fun qualifier ->
         List.mem qualifier [ "restrict"; "__restrict"; "__restrict__" ])
   in
-  let function_spells_restrict node =
-    Option.fold ~none:false
-      ~some:(fun function_name ->
-        List.exists
-          (fun declaration ->
-            string "kind" declaration = Some "FunctionDecl"
-            && record_name declaration = Some function_name
-            && List.exists
+  let restricted_function_names =
+    nodes
+    |> List.filter_map (fun declaration ->
+        match (string "kind" declaration, record_name declaration) with
+        | Some "FunctionDecl", Some name
+          when List.exists
                  (fun parameter ->
                    string "kind" parameter = Some "ParmVarDecl"
                    && parameter_spells_restrict parameter)
-                 (children declaration))
-          nodes)
+                 (children declaration) ->
+            Some (name, ())
+        | _ -> None)
+    |> Hir.first_index
+  in
+  let function_spells_restrict node =
+    Option.fold ~none:false
+      ~some:(Hashtbl.mem restricted_function_names)
       (record_name node)
   in
   let parameter_structural_qualifiers node =
@@ -2900,10 +2975,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
             let tag = Option.value ~default:"struct" (string "tagUsed" node) in
             let name = Printf.sprintf "%s (unnamed at %s:%d:%d)" tag file line col in
             let suffix = Printf.sprintf "::(unnamed at %s:%d:%d)" file line col in
-            List.find_opt
-              (fun layout ->
-                layout.layout_name = name || String.ends_with ~suffix layout.layout_name)
-              layouts
+            find_layout [ name ] (Some suffix)
         | _ -> None)
   in
   let record_layout ?anonymous_record node name =
@@ -2913,7 +2985,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
       match Option.bind anonymous_record anonymous_record_layout with
       | Some _ as layout -> layout
       | None -> (
-          match List.find_opt (fun layout -> layout.layout_name = direct) layouts with
+          match find_layout [ direct ] None with
           | Some layout -> Some layout
           | None ->
               let loc =
@@ -2948,14 +3020,8 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
                           Printf.sprintf "%s (unnamed at %s:%d:%d)" tag file line col;
                         ]
                       in
-                      List.find_opt
-                        (fun layout ->
-                          List.mem layout.layout_name spellings
-                          || String.ends_with
-                               ~suffix:
-                                 (Printf.sprintf "::(unnamed at %s:%d:%d)" file line col)
-                               layout.layout_name)
-                        layouts
+                      find_layout spellings
+                        (Some (Printf.sprintf "::(unnamed at %s:%d:%d)" file line col))
                   | _ -> None))
     in
     match base with
@@ -3176,11 +3242,13 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
         (name, node, fields, record_layout node name, reason, !blocked))
       records_by_name
   in
+  let raw_records_index =
+    Hir.first_index
+      (List.map (fun ((name, _, _, _, _, _) as record) -> (name, record)) raw_records)
+  in
   let rec contains_const_fields = function
     | Ast.Named_type (name, _) -> (
-        match
-          List.find_opt (fun (record, _, _, _, _, _) -> record = name) raw_records
-        with
+        match Hashtbl.find_opt raw_records_index name with
         | Some (_, _, fields, _, _, blocked) ->
             blocked
             || List.exists
@@ -3250,7 +3318,8 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
         in
         if offsets = [] then None else Some (name, offsets))
       raw_records
-  and field_reasons =
+  in
+  let field_reasons =
     List.filter_map
       (fun (name, _, fields, _, _, _) ->
         let reasons =
@@ -3276,6 +3345,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
         else Option.map (fun layout -> (name, Some layout.align)) layout)
       raw_records
   in
+  let alignments_index = Hir.first_index alignments in
   let struct_sizes =
     List.filter_map
       (fun (name, _, _, layout, reason, blocked) ->
@@ -3286,7 +3356,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
   let struct_declarations =
     List.map
       (fun (name, fields) ->
-        let align = List.assoc_opt name alignments |> Option.join in
+        let align = Hashtbl.find_opt alignments_index name |> Option.join in
         (name, fields, align))
       (List.filter_map candidate_fields raw_records)
   in
@@ -3305,24 +3375,30 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
               when clang.align > 0
                    && clang.size mod clang.align = 0
                    && clang.size = fas.size && clang.align = fas.align
-                   && List.for_all
-                        (fun (field : Hir.field) ->
-                          let offsets =
-                            Option.value ~default:clang.direct_offsets
-                              (List.assoc_opt name field_offsets)
-                          in
-                          List.assoc_opt field.name offsets = Some field.offset)
-                        fas.fields ->
+                   &&
+                   let offsets =
+                     Option.value
+                       ~default:(Hir.first_index clang.direct_offsets)
+                       (Hashtbl.find_opt layouts_cache.field_offsets_index name)
+                   in
+                   List.for_all
+                     (fun (field : Hir.field) ->
+                       Hashtbl.find_opt offsets field.name = Some field.offset)
+                     fas.fields ->
                 None
             | _ -> Some "record layout differs from C"
         in
         (name, node, fields, reason, blocked, fst (declaration_location node), layout))
       raw_records
   in
+  let record_results_index =
+    Hir.first_index
+      (List.map
+         (fun ((name, _, _, _, _, _, _) as result) -> (name, result))
+         record_results)
+  in
   let record_value_reason name =
-    match
-      List.find_opt (fun (record, _, _, _, _, _, _) -> record = name) record_results
-    with
+    match Hashtbl.find_opt record_results_index name with
     | Some (_, _, _, _, true, _, _) -> Some "const fields are not supported"
     | Some (_, _, _, Some reason, _, _, _) -> Some reason
     | Some _ -> None
@@ -3375,7 +3451,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
       let layout =
         if blocked || Option.is_some reason then None
         else
-          let align = List.assoc_opt name alignments |> Option.join in
+          let align = Hashtbl.find_opt alignments_index name |> Option.join in
           Some align
       in
       let item, signature =
@@ -3522,14 +3598,17 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
   in
   let top_enum_ids =
     nodes
-    |> List.filter (fun node -> string "kind" node = Some "EnumDecl")
-    |> List.filter_map (string "id")
+    |> List.filter_map (fun node ->
+        if string "kind" node = Some "EnumDecl" then
+          Option.map (fun id -> (id, ())) (string "id" node)
+        else None)
+    |> Hir.first_index
   in
   let nested_enum_nodes =
     all_nodes
     |> List.filter (fun node ->
         string "kind" node = Some "EnumDecl"
-        && not (List.mem (Option.value ~default:"" (string "id" node)) top_enum_ids))
+        && not (Hashtbl.mem top_enum_ids (Option.value ~default:"" (string "id" node))))
   in
   List.iter
     (fun node ->

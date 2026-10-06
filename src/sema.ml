@@ -293,10 +293,25 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
     named_types @ extras
   in
   let add_c_records named_types =
-    List.fold_left
-      (fun types (name, record, reason) ->
-        (name, C_record_name (record, reason)) :: List.remove_assoc name types)
-      named_types c_records
+    let seen = Hashtbl.create (List.length c_records) in
+    let records =
+      List.rev c_records
+      |> List.filter_map (fun (name, record, reason) ->
+          if Hashtbl.mem seen name then None
+          else (
+            Hashtbl.add seen name ();
+            Some (name, C_record_name (record, reason))))
+    in
+    let named_types =
+      List.filter
+        (fun (name, _) ->
+          if Hashtbl.mem seen name then (
+            Hashtbl.remove seen name;
+            false)
+          else true)
+        named_types
+    in
+    records @ named_types
   in
   let* named_types = collect_named_types String_set.empty [] program.Ast.items in
   let named_types = add_c_records (add_c_types named_types) in
