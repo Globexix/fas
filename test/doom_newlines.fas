@@ -87,7 +87,7 @@ fn main() i32 {
     checked i32 = identity[
         i32
     ](result)
-    linked i32 = sfx[1].link == &sfx[0] ? 1 : 0
+    linked i32 = if sfx[1].link == &sfx[0] { 1 } else { 0 }
     printf(c"%d %d %d %d\n", checked, values[2], weaponinfo[1].atkstate, linked)
     return 0
 }

@@ -2243,7 +2243,7 @@ and check_expr_inner ?destination (c : context) expected expression =
   | Ast.Ternary (q, a, b, s) -> (
       let* tq = check_expr c None q in
       if Hir.expr_ty tq <> Hir.Bool then
-        Error [ Sema_types.condition_error "?:" q (Hir.expr_ty tq) ]
+        Error [ Sema_types.condition_error "if" q (Hir.expr_ty tq) ]
       else
         let before_arms = Sema_flow.snapshot c.flow in
         let condition = condition_truth c tq
@@ -2295,11 +2295,12 @@ and check_expr_inner ?destination (c : context) expected expression =
         match result_ty with
         | None ->
             error (Ast.expr_span b)
-              (Printf.sprintf "arms of `?:` have different types: `%s` and `%s`"
+              (Printf.sprintf
+                 "if-expression branches have different types: `%s` and `%s`"
                  (Sema_types.diagnostic_ty_name at)
                  (Sema_types.diagnostic_ty_name bt))
         | Some _ when at = Hir.Void || bt = Hir.Void ->
-            error s "ternary arms cannot have void type"
+            error s "if-expression branches cannot have void type"
         | Some ty -> Ok (Hir.Ternary (tq, ta, tb, ty, s)))
   | Ast.Array_lit (entries, s) -> (
       match expected with
@@ -3596,8 +3597,8 @@ let local_path place =
 let copy_is_aggregate = function Hir.Array _ | Hir.Struct _ -> true | _ -> false
 
 let rec copy_ternary_span = function
-  | Ast.Ternary (condition, _, alternate, _) ->
-      let first = Ast.expr_span condition and last = Ast.expr_span alternate in
+  | Ast.Ternary (_, _, alternate, start) ->
+      let first = start and last = Ast.expr_span alternate in
       Some
         (Span.make ~file:first.file ~start_offset:first.start_offset
            ~end_offset:last.end_offset ~line:first.line ~column:first.column)
@@ -3841,7 +3842,7 @@ let check_copy c args span =
       | Some ternary_span ->
           error ternary_span
             (Printf.sprintf
-               "argument %d of `copy` cannot be a `?:` expression; name the array or \
+               "argument %d of `copy` cannot be an `if` expression; name the array or \
                 struct"
                argument_index)
       | None -> Ok ()

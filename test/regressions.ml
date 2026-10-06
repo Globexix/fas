@@ -728,8 +728,29 @@ let () =
     "left operand of `<<` has type `bool`, expected an integer or integer vector"
     "const Invalid bool = true << false\nfn main() i32 { return 0 }\n";
   semantic_error "constant-dead-ternary-type" "is `bool`, expected `i32`"
-    "const Invalid i32 = true ? 1 : false\nfn main() i32 { return Invalid }\n";
-  ignore (llvm_of "const Safe i32 = true ? 7 : 1 / 0\nfn main() i32 { return Safe }\n");
+    "const Invalid i32 = if true { 1 } else { false }\n\
+     fn main() i32 { return Invalid }\n";
+  ignore
+    (llvm_of
+       "const Safe i32 = if true { 7 } else { 1 / 0 }\nfn main() i32 { return Safe }\n");
+  semantic_accept "if-expression-contexts"
+    "var Global i32 = if true { 1 } else { 2 }\n\
+     const Chosen i32 = if false { 3 } else { 4 }\n\
+     fn identity(value i32) i32 { return value }\n\
+     fn value(c bool, d bool) i32 {\n\
+     local i32 = if c { 5 } else if d { 6 } else { Chosen }\n\
+     local = if d { 7 } else { local }\n\
+     local = (if c { local } else { Global }) + 1\n\
+     return identity(if c { local } else { Global })\n\
+     }\n\
+     const Lanes vec[4,u32] = {1, 2, 3, 4}\n\
+     const Selected vec[4,u32] = if false { splat(0) } else { Lanes }\n\
+     fn vector(c bool) vec[4,u32] {\n\
+     return if c { {4, 3, 2, 1} } else { Selected }\n\
+     }\n\
+     fn short_circuit(c bool) bool {\n\
+     return c && (if c { true } else { false }) || (if c { false } else { true })\n\
+     }\n";
   let vector_constants =
     llvm_of
       "const Bytes vec[4,u8] = splat(255)\n\
@@ -788,10 +809,10 @@ let () =
     "const Values vec[4,u8] = splat(1)\nfn main() i32 { &Values\n return 0 }\n";
   ignore
     (llvm_of
-       "const Safe vec[4,u8] = true ? splat(7) : splat(1) / splat(0)\n\
+       "const Safe vec[4,u8] = if true { splat(7) } else { splat(1) / splat(0) }\n\
         fn test() u8 { return Safe[0] }\n");
   semantic_error "constant-vector-dead-ternary-type" "is `bool`, expected `u8`"
-    "const Invalid vec[4,u8] = true ? splat(7) : splat(true)\n\
+    "const Invalid vec[4,u8] = if true { splat(7) } else { splat(true) }\n\
      fn main() i32 { return 0 }\n";
   semantic_error "runtime-logical-integer-left"
     "left operand of `&&` is `i32`, not `bool`"
@@ -1311,7 +1332,7 @@ let () =
     (lower_of
        "struct S { x i64 y i64 }\n\
         fn f(p bool) i64 { s S\n\
-       \ q addr = p ? &s : addr_from_bits(0)\n\
+       \ q addr = if p { &s } else { addr_from_bits(0) }\n\
         t S\n\
         copy(t, s)\n\
        \ return 0 }\n");
@@ -1319,7 +1340,7 @@ let () =
     "struct S { x i64 y i64 }\n\
      fn choose(x i64) i64 { return x }\n\
      fn f(p bool) i64 { s S\n\
-    \ t i64 = p ? choose(s.x) : s.x\n\
+    \ t i64 = if p { choose(s.x) } else { s.x }\n\
     \ return t }\n";
   semantic_error "place-init-binding-identity" "use of uninitialized local `x`"
     "fn test() i64 { { x i64 = 1 }\n { x i64\n y i64 = x\n }\n return 0 }\n";
@@ -2043,7 +2064,7 @@ let () =
         const Hidden i32 = 0\n\
         fn read(Hidden i32) i32 { values arr[2,i32]\n\
        \ values[Index] = 9\n\
-       \ return values[true ? Index : Hidden] }\n");
+       \ return values[if true { Index } else { Hidden }] }\n");
   semantic_error "lexical-scope-declaration-before-use" "unknown assignment target"
     "fn f() i64 { value = 1\n value i64 = 2\n return value }\n";
   semantic_error "void-value-return" "void function cannot return a value"
@@ -2531,7 +2552,7 @@ let () =
        "fn accept(value addr) void { return }\n\
         fn return_read_only(value addr) addr { return value }\n\
         fn choose(flag bool, mutable addr, read_only addr) addr {\n\
-       \ return flag ? mutable : read_only\n\
+       \ return if flag { mutable } else { read_only }\n\
         }\n\
         fn check_case(value addr) bool {\n\
        \ read_only addr = value\n\
@@ -2585,12 +2606,13 @@ let () =
         for ; condition; (value){ break }\n\
         return value\n\
         }\n");
-  semantic_error "fas-005-void-ternary" "ternary arms cannot have void type"
+  semantic_error "fas-005-void-if-expression"
+    "if-expression branches cannot have void type"
     "fn a() void { }\n\
      fn b() void { }\n\
      fn main() i32 {\n\
     \  c bool = true\n\
-    \  c ? a() : b()\n\
+    \  value i32 = if c { a() } else { b() }\n\
     \  return 0\n\
      }\n";
   parse_error "fas-006-noalias-parameter" "fn f(x noalias addr) i32 { return 0 }\n";
@@ -6888,10 +6910,39 @@ let () =
     "fn f(value addr) void { while value { break } }\n";
   semantic_error "for-condition-bool-only" "condition of `for` is `i32`, not `bool`"
     "fn f() void { for ; 1; (1) { break } }\n";
-  semantic_error "ternary-condition-bool-only" "condition of `?:` is `i64`, not `bool`"
-    "fn f(value i64) i64 { return value ? 1 : 0 }\n";
+  let removed_question = "fn f(c bool) i32 { return c ? 1 : 0 }" in
+  syntax_pin "removed-question-token" removed_question 1
+    (String.index removed_question '?' + 1)
+    1 "Fas has no `?:`; write `if c { a } else { b }`";
+  let missing_if_else = "fn f() i32 { return if true { 1 } }" in
+  syntax_pin "if-expression-requires-else" missing_if_else 1
+    (String.index missing_if_else '}' + 1)
+    1 "if-expression requires an `else` branch";
+  parse_error_message "if-expression-rejects-statements"
+    "expected an expression, found `return`"
+    "fn f() i32 { return if true { return 1 } else { 0 } }\n";
+  parse_error_message "if-expression-rejects-multiple-expressions"
+    "expected `}`, found `2`" "fn f() i32 { return if true { 1 2 } else { 0 } }\n";
+  let unparenthesized_if = "fn f(c bool) i32 { return if c { 1 } else { 2 } + 3 }\n" in
+  (match
+     parse_diagnostics "if-expression-needs-parentheses-before-operator"
+       unparenthesized_if
+   with
+  | [ diagnostic ]
+    when diagnostic.Diag.message
+         = "an if-expression cannot be followed by a binary operator"
+         && diagnostic.help = Some "parenthesize the if-expression before this operator"
+    ->
+      ()
+  | diagnostics ->
+      failwith
+        ("if-expression-needs-parentheses-before-operator: unexpected diagnostic: "
+        ^ Diag.render_all ~source:(Some (source unparenthesized_if)) diagnostics));
+  semantic_error "if-expression-condition-bool-only"
+    "condition of `if` is `i64`, not `bool`"
+    "fn f(value i64) i64 { return if value { 1 } else { 0 } }\n";
   semantic_error "constant-ternary-condition-bool-only"
-    "condition of `?:` is `i32`, not `bool`" "const X i64 = 1 ? 2 : 3\n";
+    "condition of `if` is `i32`, not `bool`" "const X i64 = if 1 { 2 } else { 3 }\n";
   let logical_source = "fn f(c i32) bool { return c && true }\n" in
   let logical_expected =
     expected_diagnostic "fn f(c i32) bool { return c && true }" 27 1
@@ -7480,8 +7531,8 @@ let () =
     "condition of `if` is `i32`, not `bool`"
     (Some "Fas has no implicit truth values; write `x << 2 != 0`");
   semantic_pin "ternary-arm-diagnostic"
-    "fn f(flag bool) i64 { result i64 = flag ? 1 : false\n return 0 }\n" 1 47 5
-    "arms of `?:` have different types: `i64` and `bool`" None;
+    "fn f(flag bool) i64 { result i64 = if flag { 1 } else { false }\n return 0 }\n" 1
+    57 5 "if-expression branches have different types: `i64` and `bool`" None;
   semantic_pin "raw-index-diagnostic" "fn f(p addr) u8 { return p[u8, false] }\n" 1 32 5
     "raw access index must be an integer, got `bool`" None;
   semantic_pin "unknown-record-diagnostic"
@@ -7643,11 +7694,11 @@ let () =
   in
   if semantic_render (while_line ^ "\n") <> while_expected then
     failwith ("while-condition-diagnostic: " ^ semantic_render (while_line ^ "\n"));
-  let ternary_line = "fn f(c i32) i32 { return c ? 1 : 0 }" in
+  let ternary_line = "fn f(c i32) i32 { return if c { 1 } else { 0 } }" in
   let ternary_expected =
     expected_diagnostic ternary_line
       (String.rindex ternary_line 'c' + 1)
-      1 "condition of `?:` is `i32`, not `bool`"
+      1 "condition of `if` is `i32`, not `bool`"
       "Fas has no implicit truth values; write `c != 0`"
   in
   if semantic_render (ternary_line ^ "\n") <> ternary_expected then
@@ -7656,7 +7707,7 @@ let () =
     (llvm_of
        "const Explicit bool = (1 != 0) && true\n\
         fn integer(value i64) i64 {\n\
-       \ if value != 0 { return (value != 0) ? 1 : 0 }\n\
+       \ if value != 0 { return if (value != 0) { 1 } else { 0 } }\n\
        \ return 0\n\
        \ }\n\
         fn pointer(value addr) bool {\n\
@@ -8665,7 +8716,10 @@ let () =
       ("rem-sign-positive", "7 % -3", "i32", "ret i32 1\n");
       ("rem-min-minus-one", "-9223372036854775808 % -1", "i64", "ret i64 0\n");
       ("trunc-negative-i64", "-7 / 3", "i64", "ret i64 -2\n");
-      ("cond-right-assoc", "false ? 2 : true ? 3 : 4", "i32", "ret i32 3\n");
+      ( "cond-right-assoc",
+        "if false { 2 } else { if true { 3 } else { 4 } }",
+        "i32",
+        "ret i32 3\n" );
       ("arith-left-assoc", "8 - 3 - 2", "i32", "ret i32 3\n");
       ("bitwise-above-comparison", "(6 & 3) == 2", "bool", "ret i1 true\n");
     ];
@@ -9192,7 +9246,7 @@ let () =
   semantic_accept "place-init-ternary-escape-unknown"
     "struct S { x i64 y i64 }\n\
      fn f(p bool) i64 { s S\n\
-     q addr = p ? &s : addr_from_bits(0)\n\
+     q addr = if p { &s } else { addr_from_bits(0) }\n\
      t S\n\
      copy(t, s)\n\
      return 0 }\n";
@@ -9485,27 +9539,29 @@ let () =
   let copy_ternary_destination_source =
     "struct S { value i64 }\n\
      fn f(condition bool) void { source S = {1}\n\
-     copy(condition ? source : source, source)\n\
+     copy(if condition { source } else { source }, source)\n\
      return }\n"
   in
-  let copy_ternary_destination_line = "copy(condition ? source : source, source)" in
+  let copy_ternary_destination_line =
+    "copy(if condition { source } else { source }, source)"
+  in
   semantic_pin "copy-rvalue-destination" copy_ternary_destination_source 3
     (String.index copy_ternary_destination_line '(' + 2)
-    (String.length "condition ? source : source")
-    "argument 1 of `copy` cannot be a `?:` expression; name the array or struct" None;
+    (String.length "if condition { source } else { source")
+    "argument 1 of `copy` cannot be an `if` expression; name the array or struct" None;
   let copy_ternary_source_source =
     "struct S { value i64 }\n\
      fn f(condition bool) void { destination S = {1}\n\
-     copy(destination, condition ? destination : destination)\n\
+     copy(destination, if condition { destination } else { destination })\n\
      return }\n"
   in
   let copy_ternary_source_line =
-    "copy(destination, condition ? destination : destination)"
+    "copy(destination, if condition { destination } else { destination })"
   in
   semantic_pin "copy-rvalue-source" copy_ternary_source_source 3
     (String.index copy_ternary_source_line ',' + 3)
-    (String.length "condition ? destination : destination")
-    "argument 2 of `copy` cannot be a `?:` expression; name the array or struct" None;
+    (String.length "if condition { destination } else { destination")
+    "argument 2 of `copy` cannot be an `if` expression; name the array or struct" None;
   semantic_error "copy-constant-destination" "cannot modify constant"
     "const Values arr[2,u32] = {7, 9}\n\
      fn f() void { source arr[2,u32]\n\
@@ -10139,7 +10195,7 @@ let () =
     "fn probe() void { p addr = null\nif p != null { strlen(p) }\nreturn }\n";
   c_semantic_accept "c-nonnull-unreachable-ternary-arm" c_nonnull
     "fn probe() usize { p addr = null\n\
-     n usize = p == null ? 0 : strlen(p)\n\
+     n usize = if p == null { 0 } else { strlen(p) }\n\
      return n }\n";
   c_semantic_accept "c-nonnull-unreachable-and-right" c_nonnull
     "fn probe() bool { p addr = null\nreturn p != null && strlen(p) == 0 }\n";
@@ -12500,7 +12556,7 @@ let () =
   let literal =
     "fn main() i32 { a arr[20,u32] = {"
     ^ String.concat "," (List.init 20 (fun i -> string_of_int i ^ " + 1"))
-    ^ "}\n return a[19] == 20 ? 0 : 1 }"
+    ^ "}\n return if a[19] == 20 { 0 } else { 1 } }"
   in
   semantic_accept "constant-local-literal-expressions" literal;
   if not (contains (llvm_of literal) "@.literal.") then
@@ -12818,8 +12874,8 @@ let () =
      e vec[4,u32] = select(m, splat(0), v)\n\
      g vec[4,u32] = select(m, v, {1, 2, 3, 4})\n\
      h vec[4,u32] = shuffle(splat(0), v, (vec[4,u8]){0, 1, 2, 3})\n\
-     i vec[4,u32] = ok ? splat(0) : v\n\
-     j vec[4,u32] = ok ? v : {1, 2, 3, 4}\n\
+     i vec[4,u32] = if ok { splat(0) } else { v }\n\
+     j vec[4,u32] = if ok { v } else { {1, 2, 3, 4} }\n\
      return a + b + e + g + h + i + j }\n";
   semantic_message "vector-peer-no-typed-peer"
     "`splat` needs a vector destination or vector operand to determine its lane count"
@@ -12859,8 +12915,8 @@ let () =
   semantic_accept "vector-peer-folding-reverse-arms"
     "const V vec[4,u32] = {1, 2, 3, 4}\n\
      const A vec[4,u32] = select((vec[4,bool]){true, false, true, false}, splat(0), V)\n\
-     const B vec[4,u32] = true ? splat(0) : V\n\
-     const D vec[4,u32] = false ? {0, 0, 0, 0} : V\n\
+     const B vec[4,u32] = if true { splat(0) } else { V }\n\
+     const D vec[4,u32] = if false { {0, 0, 0, 0} } else { V }\n\
      fn f() u32 { return A[1] + B[2] + D[3] }\n"
 
 let () =
@@ -13362,7 +13418,7 @@ let () =
      if divisor == 7 { divisor = 0 }\n\
      if divisor == 0 { return 0 }\n\
      quotient i32 = 91 / divisor\n\
-     return quotient == 13 ? 0 : 1 }";
+     return if quotient == 13 { 0 } else { 1 } }";
   semantic_accept "value-fact-init-for-reaches-initializer"
     "fn main() i32 { x u32\n\
      for i usize = 0; i < 2; i += 1 { if i == 1 { x = 3 } }\n\
@@ -13388,7 +13444,7 @@ let () =
      while lane < 128 { values[lane] = 0\n\
      lane += 1 }\n\
      (&values)[u16, 0] = 13\n\
-     return reduce_sum(values) == 13 ? 0 : 1 }";
+     return if reduce_sum(values) == 13 { 0 } else { 1 } }";
   semantic_accept "value-fact-init-while-fallback-lanes"
     "fn main() i32 { values arr[4,u32] = {1, 2, 3, 4}\n\
      fallback vec[4,u32]\n\
@@ -13397,7 +13453,7 @@ let () =
      lane += 1 }\n\
      mask vec[4,bool] = {true, true, true, true}\n\
      loaded vec[4,u32] = masked_load[u32](&values, mask, fallback)\n\
-     return loaded[0] == 1 && loaded[3] == 4 ? 0 : 1 }"
+     return if loaded[0] == 1 && loaded[3] == 4 { 0 } else { 1 } }"
 
 let () =
   semantic_accept "value-fact-not-equal-if-edge"
@@ -13424,7 +13480,7 @@ let () =
      return value }";
   semantic_accept "value-fact-not-equal-ternary-edge"
     "fn f() i32 { divisor i32 = 0\n\
-     value i32 = divisor != 0 ? 7 / divisor : 7\n\
+     value i32 = if divisor != 0 { 7 / divisor } else { 7 }\n\
      return value }";
   semantic_accept "value-fact-not-equal-while-edge"
     "fn f() i32 { divisor i32 = 0\n\

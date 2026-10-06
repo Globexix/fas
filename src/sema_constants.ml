@@ -789,7 +789,7 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
           ~globals ?resolve consts None ~check_only ~validate_dead c
       in
-      if ct <> Hir.Bool then Error [ Sema_types.condition_error "?:" c ct ]
+      if ct <> Hir.Bool then Error [ Sema_types.condition_error "if" c ct ]
       else if cv <> 0L then
         let* at, av =
           const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
@@ -1619,7 +1619,7 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
           ~globals ?resolve consts None ~check_only condition
       in
       if condition_ty <> Hir.Bool then
-        Error [ Sema_types.condition_error "?:" condition condition_ty ]
+        Error [ Sema_types.condition_error "if" condition condition_ty ]
       else if condition_value <> 0L then
         let* yes_ty, yes_values = evaluate expected yes in
         let* no_ty, _ =

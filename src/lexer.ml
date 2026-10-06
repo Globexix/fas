@@ -269,7 +269,8 @@ let lex ?(limits = Limits.default) source =
         | ',' -> one Comma
         | ';' -> one Semi
         | '@' -> one At
-        | '?' -> one Question
+        | '?' ->
+            Error [ diagnostic offset "Fas has no `?:`; write `if c { a } else { b }`" ]
         | ':' -> one Colon
         | '~' -> one Tilde
         | '.' when offset + 2 < n && text.[offset + 1] = '.' && text.[offset + 2] = '.'

@@ -32,7 +32,6 @@ type kind =
   | Ellipsis
   | Semi
   | At
-  | Question
   | Colon
   | Assign
   | Plus
@@ -104,7 +103,6 @@ let show = function
   | Ellipsis -> "`...`"
   | Semi -> "`;`"
   | At -> "`@`"
-  | Question -> "`?`"
   | Colon -> "`:`"
   | Assign -> "`=`"
   | Plus -> "`+`"

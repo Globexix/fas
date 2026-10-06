@@ -19,7 +19,7 @@ fn add[N const usize](x i64, y i64) i64 {
   }
   switch z {
     case 0: return 0
-    default: return z ? z : 1
+    default: return if z != 0 { z } else { 1 }
   }
 }
 fn literals() i32 {

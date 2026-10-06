@@ -1376,15 +1376,44 @@ module P = struct
       p.depth <- p.depth - 1;
       r
 
-  and ternary p =
-    let* c = or_ p in
-    if eat p Token.Question then
-      let s = span p in
-      let* a = expr p in
-      let* () = expected p Token.Colon in
-      let* b = ternary p in
-      Ok (Ast.Ternary (c, a, b, s))
-    else Ok c
+  and ternary p = if at p Token.Kw_if then if_expression p else or_ p
+
+  and if_expression p =
+    let s = span p in
+    let* () = expected p Token.Kw_if in
+    let* condition = expr_before_block p in
+    let* yes = if_expression_branch p in
+    skip_newlines p;
+    if not (eat p Token.Kw_else) then
+      let close = p.tokens.(p.pos - 1).Token.span in
+      Error [ Diag.error close "if-expression requires an `else` branch" ]
+    else (
+      skip_newlines p;
+      let* no = if at p Token.Kw_if then if_expression p else if_expression_branch p in
+      let operator =
+        match (peek p).Token.kind with
+        | Token.Plus | Token.Minus | Token.Star | Token.Slash | Token.Percent
+        | Token.Amp | Token.Pipe | Token.Caret | Token.Eqeq | Token.Neq | Token.Lt
+        | Token.Le | Token.Gt | Token.Ge | Token.Ltlt | Token.Gtgt | Token.Andand
+        | Token.Oror ->
+            true
+        | _ -> false
+      in
+      if operator then
+        Error
+          [
+            Diag.error ~help:"parenthesize the if-expression before this operator"
+              (span p) "an if-expression cannot be followed by a binary operator";
+          ]
+      else Ok (Ast.Ternary (condition, yes, no, s)))
+
+  and if_expression_branch p =
+    let* () = expected p Token.Lbrace in
+    skip_newlines p;
+    let* expression = expr p in
+    skip_newlines p;
+    let* () = expected p Token.Rbrace in
+    Ok expression
 
   and binary p next ops =
     let* first = next p in

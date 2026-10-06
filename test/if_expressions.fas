@@ -1,0 +1,22 @@
+extern "C" {
+  fn reset_counts() void
+  fn yes_count() i32
+  fn no_count() i32
+  fn yes_value() i32
+  fn no_value() i32
+  fn oracle_value(condition i32) i32
+}
+
+fn choose(condition bool) i32 {
+  return if condition { yes_value() } else { no_value() }
+}
+
+fn main() i32 {
+  reset_counts()
+  yes i32 = choose(true)
+  if yes != oracle_value(1) || yes_count() != 1 || no_count() != 0 { return 1 }
+  reset_counts()
+  no i32 = choose(false)
+  if no != oracle_value(0) || yes_count() != 0 || no_count() != 1 { return 2 }
+  return 0
+}

@@ -17,11 +17,11 @@ fn return_read_only(value addr) addr {
 }
 
 fn choose_read_only(choice bool, mutable addr, read_only addr) addr {
-  return choice ? mutable : read_only
+  return if choice { mutable } else { read_only }
 }
 
 fn choose_read_only_reversed(choice bool, mutable addr, read_only addr) addr {
-  return choice ? read_only : mutable
+  return if choice { read_only } else { mutable }
 }
 
 fn main() i32 {

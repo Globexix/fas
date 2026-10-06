@@ -12,8 +12,8 @@ const M vec[4,bool] = {true, false, true, false}
 const A vec[4,u32] = add_sat(V, splat(37))
 const B vec[4,u32] = sub_sat(splat(37), V)
 const C vec[4,u32] = select(M, splat(0), V)
-const D vec[4,u32] = false ? splat(0) : V
-fn branch(ok bool, v vec[4,u32]) vec[4,u32] { return ok ? splat(0) : v }
+const D vec[4,u32] = if false { splat(0) } else { V }
+fn branch(ok bool, v vec[4,u32]) vec[4,u32] { return if ok { splat(0) } else { v } }
 fn main() i32 {
   v vec[4,u32] = {1, 2, 3, 4}
   m vec[4,bool] = {true, false, true, false}
