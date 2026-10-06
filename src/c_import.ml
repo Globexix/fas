@@ -691,6 +691,10 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declar
         && field "isImplicit" node <> Some (C_import_json.Bool true))
       all_nodes
   in
+  let is_builtin_function node =
+    kind node = Some "FunctionDecl"
+    && List.exists (fun child -> kind child = Some "BuiltinAttr") (children node)
+  in
   let alias_names_by_record = Hashtbl.create 32 in
   List.iter
     (fun node ->
@@ -708,6 +712,30 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declar
   let add_probe target expression =
     Option.iter (fun target -> Hashtbl.replace probes target expression) target
   in
+  let strip_nullability value =
+    let output = Buffer.create (String.length value) in
+    let identifier_char = function
+      | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' -> true
+      | _ -> false
+    in
+    let rec scan offset =
+      if offset < String.length value then
+        if identifier_char value.[offset] then (
+          let finish = ref (offset + 1) in
+          while !finish < String.length value && identifier_char value.[!finish] do
+            incr finish
+          done;
+          let token = String.sub value offset (!finish - offset) in
+          if not (List.mem token [ "_Nonnull"; "_Nullable"; "_Null_unspecified" ]) then
+            Buffer.add_substring output value offset (!finish - offset);
+          scan !finish)
+        else (
+          Buffer.add_char output value.[offset];
+          scan (offset + 1))
+    in
+    scan 0;
+    Buffer.contents output
+  in
   let has_restrict_qualifier value =
     String.map
       (function ('a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_') as c -> c | _ -> ' ')
@@ -719,7 +747,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declar
   List.iter
     (fun node ->
       let c_name = Option.value ~default:"" (name node) in
-      add_probe (Some ("decl:" ^ c_name)) c_name)
+      if not (is_builtin_function node) then add_probe (Some ("decl:" ^ c_name)) c_name)
     top_declarations;
   List.iter
     (fun node ->
@@ -733,7 +761,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declar
                   if has_restrict_qualifier parameter_type then
                     add_probe
                       (Some (Printf.sprintf "parameter:%s:%d" function_name index))
-                      parameter_type)
+                      (strip_nullability parameter_type))
                 (Option.bind (field "type" parameter) (string "qualType")))
       | _ -> ())
     top_declarations;
@@ -821,7 +849,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declar
   let common =
     [ "-x"; "c"; "--target=x86_64-unknown-linux-gnu" ]
     @ c_flags
-    @ [ "-iquote"; Filename.dirname source ]
+    @ [ "-fno-builtin"; "-iquote"; Filename.dirname source ]
   in
   append_type_probes ();
   let ast_path = Filename.temp_file "fas-c-type-probe-" ".json" in
@@ -1109,7 +1137,7 @@ let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) ?(macro_names = []
              "-H";
              "--target=x86_64-unknown-linux-gnu";
            ]
-          @ c_flags
+          @ c_flags @ [ "-fno-builtin" ]
           @ [ "-iquote"; Filename.dirname source; unit_path ])
       in
       if debug || keep then
@@ -3567,7 +3595,12 @@ let map_declarations ?(container = false) ~span declarations =
             | Error reason -> "unsupported: " ^ reason
           in
           let reason =
-            match signature with Ok _ -> None | Error reason -> Some reason
+            if
+              List.exists
+                (fun child -> string "kind" child = Some "BuiltinAttr")
+                (children node)
+            then Some "Clang builtin function"
+            else match signature with Ok _ -> None | Error reason -> Some reason
           in
           (match (is_static, signature, c_type_name node, type_tree node) with
           | true, Ok (_, ret), Some c_signature, Some function_tree -> (

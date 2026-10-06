@@ -64,6 +64,15 @@ let c_import_fixture file =
   in
   (source, C_import.map_declarations ~span:Span.synthetic declarations)
 
+let c_import_system_fixture header =
+  let source = Filename.concat (Sys.getcwd ()) "test/ir_simple.fas" in
+  let declarations, _, _ =
+    expect_ok
+      (C_import.import ~cc:"clang-22" ~debug:false ~keep:false source
+         [ C_import.{ spelling = Ast.C_system header; span = Span.synthetic } ])
+  in
+  (source, C_import.map_declarations ~span:Span.synthetic declarations)
+
 let c_import_container ?(macro_names = []) name fragment_text =
   let source = Filename.temp_file ("fas-" ^ name ^ "-") ".fas" in
   let span = Span.make ~file:source ~start_offset:0 ~end_offset:0 ~line:1 ~column:1 in
@@ -9915,6 +9924,12 @@ let () =
     "fn run() void { var Value i32\nreturn }\n";
 
   let c_matrix = c_import_fixture "matrix.h" in
+  let c_xmmintrin = c_import_system_fixture "xmmintrin.h" in
+  ignore (c_import_system_fixture "emmintrin.h");
+  c_semantic_message "c-builtin-function-unsupported"
+    "C declaration `_mm_getcsr` is not supported: Clang builtin function" c_xmmintrin
+    "fn probe() u32 { return _mm_getcsr() }\n";
+  ignore (c_import_system_fixture "immintrin.h");
   let c_nonnull_source, _ = c_import_fixture "nonnull.h" in
   let c_nonnull_declarations, _, _ =
     expect_ok
