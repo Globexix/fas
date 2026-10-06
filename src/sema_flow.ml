@@ -391,7 +391,9 @@ let forget_value flow binding =
 let address_of flow binding = State_map.find_opt binding.id flow.addresses
 
 let set_address flow binding = function
-  | Some address when binding.ty = Hir.Addr ->
+  | Some address
+    when binding.ty = Hir.Addr
+         || match binding.ty with Hir.Handle _ -> true | _ -> false ->
       flow.addresses <- State_map.add binding.id address flow.addresses
   | Some _ | None -> flow.addresses <- State_map.remove binding.id flow.addresses
 

@@ -372,6 +372,13 @@ let rec address_fact c = function
         Option.bind (Sema_flow.view_origin c.flow binding) (fun (root, _) ->
             Sema_flow.address_of c.flow root)
       else Sema_flow.address_of c.flow binding
+  | Hir.Local (binding, _)
+    when match binding.ty with Hir.Handle _ -> true | _ -> false ->
+      Sema_flow.address_of c.flow binding
+  | Hir.Call (Hir.Builtin Hir.Handle_addr, [ handle ], Hir.Addr, _) ->
+      address_fact c handle
+  | Hir.Call (Hir.Builtin (Hir.Handle_from_addr _), [ pointer ], Hir.Handle _, _) ->
+      address_fact c pointer
   | Hir.Address (place, _, _) -> object_address c place
   | Hir.Call (Hir.User _, _, Hir.Addr, span) ->
       Option.map
@@ -544,7 +551,7 @@ let address_equal c left right =
 let condition_truth c expression =
   match expression with
   | Hir.Binary (((Ast.Eq | Ast.Ne) as op), left, right, _, _)
-    when Hir.expr_ty left = Hir.Addr ->
+    when match Hir.expr_ty left with Hir.Addr | Hir.Handle _ -> true | _ -> false ->
       Option.map
         (fun equal -> if op = Ast.Eq then equal else not equal)
         (address_equal c left right)
@@ -786,11 +793,11 @@ let refine_condition (c : context) expression truth =
         apply left false;
         apply right false
     | Hir.Binary (((Ast.Eq | Ast.Ne) as op), Hir.Local (binding, _), right, _, _)
-      when binding.ty = Hir.Addr ->
+      when match binding.ty with Hir.Addr | Hir.Handle _ -> true | _ -> false ->
         let equal = op = Ast.Eq = truth in
         if equal then Sema_flow.set_address c.flow binding (address_fact c right)
     | Hir.Binary (((Ast.Eq | Ast.Ne) as op), left, Hir.Local (binding, _), _, _)
-      when binding.ty = Hir.Addr ->
+      when match binding.ty with Hir.Addr | Hir.Handle _ -> true | _ -> false ->
         let equal = op = Ast.Eq = truth in
         if equal then Sema_flow.set_address c.flow binding (address_fact c left)
     | Hir.Binary
@@ -4060,58 +4067,82 @@ and check_stmt (c : context) = function
             Sema_flow.set_address c.flow binding address;
             Sema_flow.bind_raw_view c.flow binding element access readonly_name;
             Ok (Hir.Let (binding, Some pointer, span))
-      | _ ->
-          let* place_info = check_place c place in
-          let rec addressable = function
-            | Hir.Local _ | Hir.Global _ | Hir.Const_array _ | Hir.Raw_select _ -> true
-            | Hir.Index (base, _, _, _) -> (
-                match Hir.expr_ty base with
-                | Hir.Array _ -> addressable base
-                | Hir.Vec _ -> false
-                | _ -> false)
-            | Hir.Field (base, _, _, _, _) -> addressable base
-            | _ -> false
-          in
-          let* () =
-            if
-              match place_info.expr with
+      | _ -> (
+          let check_regular_view place =
+            let* place_info = check_place c place in
+            let rec addressable = function
+              | Hir.Local _ | Hir.Global _ | Hir.Const_array _ | Hir.Raw_select _ ->
+                  true
               | Hir.Index (base, _, _, _) -> (
-                  match Hir.expr_ty base with Hir.Vec _ -> true | _ -> false)
+                  match Hir.expr_ty base with
+                  | Hir.Array _ -> addressable base
+                  | Hir.Vec _ -> false
+                  | _ -> false)
+              | Hir.Field (base, _, _, _, _) -> addressable base
               | _ -> false
-            then error (Ast.expr_span place) "cannot create a view of a SIMD lane"
-            else if addressable place_info.expr then Ok ()
-            else
-              let source_kind =
-                match place with
-                | Ast.Call _ -> "a function call"
-                | Ast.Binary _ | Ast.Ternary _ | Ast.Unary _ -> "a computed value"
-                | Ast.Int_lit _ -> "an integer literal"
-                | Ast.Bool_lit _ -> "a bool literal"
-                | Ast.Null _ -> "a null literal"
-                | Ast.String_lit _ -> "a string literal"
-                | Ast.Array_lit _ | Ast.Struct_lit _ -> "an aggregate literal"
-                | Ast.Splat _ -> "a splat"
-                | Ast.Cast _ -> "a cast"
-                | Ast.Addr_of _ -> "an address value"
-                | _ -> "an expression"
-              in
-              error (view_source_span place)
-                (Printf.sprintf
-                   "view needs a local, field, element or raw access, not %s"
-                   source_kind)
+            in
+            let* () =
+              if
+                match place_info.expr with
+                | Hir.Index (base, _, _, _) -> (
+                    match Hir.expr_ty base with Hir.Vec _ -> true | _ -> false)
+                | _ -> false
+              then error (Ast.expr_span place) "cannot create a view of a SIMD lane"
+              else if addressable place_info.expr then Ok ()
+              else
+                let source_kind =
+                  match place with
+                  | Ast.Call _ -> "a function call"
+                  | Ast.Binary _ | Ast.Ternary _ | Ast.Unary _ -> "a computed value"
+                  | Ast.Int_lit _ -> "an integer literal"
+                  | Ast.Bool_lit _ -> "a bool literal"
+                  | Ast.Null _ -> "a null literal"
+                  | Ast.String_lit _ -> "a string literal"
+                  | Ast.Array_lit _ | Ast.Struct_lit _ -> "an aggregate literal"
+                  | Ast.Splat _ -> "a splat"
+                  | Ast.Cast _ -> "a cast"
+                  | Ast.Addr_of _ -> "an address value"
+                  | _ -> "an expression"
+                in
+                error (view_source_span place)
+                  (Printf.sprintf
+                     "view needs a local, field, element or raw access, not %s"
+                     source_kind)
+            in
+            let* () = check_place_access c span ~write:false place_info.expr in
+            let* binding = add_local name (Hir.expr_ty place_info.expr) c span in
+            let readonly_name = readonly_storage_name c place_info.expr in
+            let root, path =
+              match place_info.expr with
+              | Hir.Raw_select _ -> (None, None)
+              | _ -> (place_info.root, place_info.path)
+            in
+            bind_view c.flow binding root path
+              (view_access_of_expr c place_info.expr)
+              readonly_name;
+            Ok (Hir.View (binding, place_info.expr, span))
           in
-          let* () = check_place_access c span ~write:false place_info.expr in
-          let* binding = add_local name (Hir.expr_ty place_info.expr) c span in
-          let readonly_name = readonly_storage_name c place_info.expr in
-          let root, path =
-            match place_info.expr with
-            | Hir.Raw_select _ -> (None, None)
-            | _ -> (place_info.root, place_info.path)
-          in
-          bind_view c.flow binding root path
-            (view_access_of_expr c place_info.expr)
-            readonly_name;
-          Ok (Hir.View (binding, place_info.expr, span)))
+          match place with
+          | Ast.Ident (handle_name, handle_span) -> (
+              match lookup_local handle_name c with
+              | Some { ty = Hir.Handle record; _ } ->
+                  if imported_record_type c record then
+                    let handle_call =
+                      Ast.Call
+                        ( Ast.Ident ("handle_addr", handle_span),
+                          [ Ast.Ident (handle_name, handle_span) ],
+                          span )
+                    in
+                    check_regular_view
+                      (Ast.Select
+                         (handle_call, [ Ast.Name_arg (record, handle_span) ], span))
+                  else
+                    error handle_span
+                      (Printf.sprintf
+                         "cannot view `%s` through a handle: its layout is unknown"
+                         record)
+              | _ -> check_regular_view place)
+          | _ -> check_regular_view place))
   | Ast.Assign (t, e, span) ->
       let* checked_target = check_target c t in
       let target = checked_target.target in

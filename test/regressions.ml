@@ -11522,6 +11522,49 @@ let () =
      return handle_addr(value)[FasSelfRecord].value }\n\
      fn cast(pointer addr) handle[FasTagRecord] {\n\
      return handle_from_addr[FasTagRecord](pointer) }\n";
+  c_semantic_accept "c-import-view-through-complete-handle" record_import_cases
+    "fn fields(value handle[FasNestedRecord]) i32 {\n\
+     view r = value\n\
+     r.inner.right = 17\n\
+     r.values[1] = 9\n\
+     return r.inner.right + r.values[1] }\n";
+  let handle_view_ir text =
+    match c_semantic_result record_import_cases text with
+    | Ok program -> Ir.render (Lower.lower program |> expect_ok)
+    | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+  in
+  let handle_view_shorthand =
+    handle_view_ir
+      "fn pinned(value handle[FasNestedRecord]) i32 {\n\
+       view r = value\n\
+       r.inner.right = 17\n\
+       return r.inner.right }\n"
+  and handle_view_explicit =
+    handle_view_ir
+      "fn pinned(value handle[FasNestedRecord]) i32 {\n\
+       view r = handle_addr(value)[FasNestedRecord]\n\
+       r.inner.right = 17\n\
+       return r.inner.right }\n"
+  in
+  if handle_view_shorthand <> handle_view_explicit then
+    failwith "c-import-view-through-handle: LLVM differs from explicit handle_addr view";
+  c_semantic_message "c-import-view-through-opaque-handle"
+    "cannot view `Token` through a handle: its layout is unknown" record_import_cases
+    "opaque Token\nfn probe(value handle[Token]) void { view r = value\n return }\n";
+  c_semantic_message "c-import-view-through-null-handle" "access through null address"
+    record_import_cases
+    "fn probe() i32 { value handle[FasNestedRecord] = null\n\
+     view r = value\n\
+     return r.inner.right }\n";
+  c_semantic_message "c-import-raw-record-through-null-address"
+    "access through null address" record_import_cases
+    "fn probe() i32 { value addr = null\nreturn value[FasNestedRecord].inner.right }\n";
+  c_semantic_accept "c-import-view-through-nonnull-handle" record_import_cases
+    "fn probe() i32 { record FasNestedRecord\n\
+     record.inner.right = 29\n\
+     value handle[FasNestedRecord] = &record\n\
+     view r = value\n\
+     return r.inner.right }\n";
   c_semantic_accept "c-import-record-fas-field-names" record_import_cases
     "fn fields(value handle[FasFieldNamesRecord]) i32 {\n\
      raw addr = handle_addr(value)\n\
