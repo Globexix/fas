@@ -210,6 +210,25 @@ grep -E '^cc [^ ]*fas-module-[^ ]*\.s .* -fsanitize=address -o ' "$TOOL_LOG" >/d
   -o "$WORK/address-c-link" >"$WORK/stdout" 2>"$WORK/stderr"
 grep -F -- "-fsanitize=address $WORK/helper.c -lm -o " "$TOOL_LOG" >/dev/null \
   || fail "C input link omitted ASan runtime"
+"$OCAML_FAS" --emit-llvm "$WORK/good.fas" >"$WORK/no-sanitizer.ll" 2>"$WORK/stderr"
+"$OCAML_FAS" --sanitize=undefined --emit-llvm "$WORK/good.fas" \
+  >"$WORK/undefined.ll" 2>"$WORK/stderr"
+cmp "$WORK/no-sanitizer.ll" "$WORK/undefined.ll" >/dev/null \
+  || fail "undefined sanitizer changed Fas LLVM"
+: >"$TOOL_LOG"
+"$OCAML_FAS" --sanitize=undefined "$WORK/c-sanitize.fas" -o "$WORK/undefined-c-link" \
+  >"$WORK/stdout" 2>"$WORK/stderr"
+grep -E '^cc --target=x86_64-unknown-linux-gnu -fPIC -O2 -fsanitize=undefined -c .*\.c -o ' \
+  "$TOOL_LOG" >/dev/null || fail "generated C input was not compiled with UBSan"
+grep -E '^cc [^ ]*fas-module-[^ ]*\.s .* -fsanitize=undefined -o ' "$TOOL_LOG" >/dev/null \
+  || fail "C program link omitted UBSan runtime"
+: >"$TOOL_LOG"
+"$OCAML_FAS" --sanitize=address,undefined "$WORK/c-sanitize.fas" \
+  -o "$WORK/combined-c-link" >"$WORK/stdout" 2>"$WORK/stderr"
+grep -E '^cc --target=x86_64-unknown-linux-gnu -fPIC -O2 -fsanitize=address,undefined -c .*\.c -o ' \
+  "$TOOL_LOG" >/dev/null || fail "generated C input omitted a combined sanitizer"
+grep -E '^cc [^ ]*fas-module-[^ ]*\.s .* -fsanitize=address,undefined -o ' \
+  "$TOOL_LOG" >/dev/null || fail "C program link omitted a combined sanitizer"
 
 "$OCAML_FAS" --emit-llvm -O2 "$WORK/good.fas" >"$WORK/raw.ll" 2>"$WORK/stderr"
 [ ! -s "$WORK/stderr" ] || fail "LLVM emission wrote diagnostics"

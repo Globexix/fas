@@ -431,7 +431,14 @@ let opt_pass config =
 let llc_opt level = Printf.sprintf "-O%d" (optimization_level level)
 
 let c_sanitizer_flags config =
-  if List.mem "address" config.Cli.sanitizers then [ "-fsanitize=address" ] else []
+  let sanitizers =
+    List.filter
+      (fun name -> List.mem name config.Cli.sanitizers)
+      [ "address"; "undefined" ]
+  in
+  match sanitizers with
+  | [] -> []
+  | _ -> [ "-fsanitize=" ^ String.concat "," sanitizers ]
 
 let verify_llvm opt file =
   run_tool
