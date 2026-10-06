@@ -174,6 +174,29 @@ let error_span (headers : header list) line =
   | None -> (List.hd headers).span
   | Some header -> header.span
 
+let replace_all text needle replacement =
+  let output = Buffer.create (String.length text) in
+  let rec copy offset =
+    match find_text text needle offset with
+    | Some index ->
+        Buffer.add_substring output text offset (index - offset);
+        Buffer.add_string output replacement;
+        copy (index + String.length needle)
+    | None -> Buffer.add_substring output text offset (String.length text - offset)
+  in
+  if needle = "" then text
+  else (
+    copy 0;
+    Buffer.contents output)
+
+let normalize_import_failure ~unit_path paths output =
+  let digest = Digest.to_hex (Digest.string unit_path) in
+  let output = replace_all output digest "<hash>" in
+  unit_path :: paths
+  |> List.sort (fun left right ->
+      Int.compare (String.length right) (String.length left))
+  |> List.fold_left (fun output path -> replace_all output path "<C import>") output
+
 let macro_definitions text names =
   let wanted = Hashtbl.create 16 and definitions = Hashtbl.create 16 in
   List.iter (fun name -> Hashtbl.replace wanted name ()) names;
@@ -1187,7 +1210,8 @@ let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) ?(macro_names = []
                 Error
                   [
                     Diag.error (List.hd headers).span
-                      ("internal error: C structured type import failed: " ^ message);
+                      ("internal error: C structured type import failed: "
+                      ^ normalize_import_failure ~unit_path !macro_paths message);
                   ]
             | Ok structured_declarations -> (
                 let declarations = annotate_declarations structured_declarations in

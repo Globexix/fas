@@ -9924,6 +9924,16 @@ let () =
     "fn run() void { var Value i32\nreturn }\n";
 
   let c_matrix = c_import_fixture "matrix.h" in
+  incr checks_run;
+  let unit_path = "/tmp/fas-c-import-test.c" in
+  let probe_path = "/tmp/fas-c-type-probe-test.json" in
+  let digest = Digest.to_hex (Digest.string unit_path) in
+  let normalized =
+    C_import.normalize_import_failure ~unit_path [ probe_path ]
+      (Printf.sprintf "%s:8:3: error: %s __fas_type_probe_%s_1" unit_path digest digest)
+  in
+  if normalized <> "<C import>:8:3: error: <hash> __fas_type_probe_<hash>_1" then
+    failwith "c-import-failure-path-normalization: random importer data remained";
   let c_xmmintrin = c_import_system_fixture "xmmintrin.h" in
   ignore (c_import_system_fixture "emmintrin.h");
   c_semantic_message "c-builtin-function-unsupported"

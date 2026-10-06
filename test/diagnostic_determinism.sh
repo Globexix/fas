@@ -37,4 +37,27 @@ while IFS= read -r relative; do
   count=$((count + 1))
 done <"$WORK/sources"
 
+cat >"$WORK/failure.h" <<'EOF'
+#error fas diagnostic determinism
+EOF
+cat >"$WORK/forced_import.fas" <<EOF
+use "C" "$WORK/failure.h"
+fn main() void {}
+EOF
+set +e
+"$BIN" --emit-llvm "$WORK/forced_import.fas" >"$WORK/forced_first.out" 2>"$WORK/forced_first.err"
+first_status=$?
+"$BIN" --emit-llvm "$WORK/forced_import.fas" >"$WORK/forced_second.out" 2>"$WORK/forced_second.err"
+second_status=$?
+set -e
+[ "$first_status" -ne 0 ] && [ "$first_status" -eq "$second_status" ] || {
+  echo "diagnostic determinism: forced import failure status changed" >&2
+  exit 1
+}
+cmp -s "$WORK/forced_first.err" "$WORK/forced_second.err" || {
+  echo "diagnostic determinism: forced import failure changed" >&2
+  diff -u "$WORK/forced_first.err" "$WORK/forced_second.err" >&2 || true
+  exit 1
+}
+
 echo "diagnostic determinism: $count rejected inputs matched"
