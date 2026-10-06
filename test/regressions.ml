@@ -127,7 +127,7 @@ let c_semantic_result ((source, imported) : string * C_import.mapped) text =
     let program = { Ast.items = program.items @ imported.items } in
     Sema.check ~c_aliases:imported.aliases ~c_unsupported:imported.unsupported
       ~c_nonnull_parameters:imported.nonnull_parameters ~c_records:imported.record_types
-      program
+      ~c_alloc_size_parameters:imported.alloc_size_parameters program
   in
   match run () with
   | Ok _ as result -> result
@@ -9924,6 +9924,71 @@ let () =
     "fn run() void { var Value i32\nreturn }\n";
 
   let c_matrix = c_import_fixture "matrix.h" in
+  let c_stdlib = c_import_system_fixture "stdlib.h" in
+  let _, c_stdlib_alloc_size = c_stdlib in
+  let alloc_size_positions name =
+    List.assoc_opt name c_stdlib_alloc_size.alloc_size_parameters
+  in
+  let show_alloc_size_positions = function
+    | None -> "missing"
+    | Some groups ->
+        groups
+        |> List.map (fun indices -> String.concat "," (List.map string_of_int indices))
+        |> String.concat ";"
+  in
+  if
+    alloc_size_positions "malloc" <> Some [ [ 1 ] ]
+    || alloc_size_positions "calloc" <> Some [ [ 1; 2 ] ]
+    || alloc_size_positions "realloc" <> Some [ [ 2 ] ]
+    || alloc_size_positions "aligned_alloc" <> Some [ [ 2 ] ]
+  then
+    failwith
+      ("c-alloc-size-import-metadata: malloc="
+      ^ show_alloc_size_positions (alloc_size_positions "malloc")
+      ^ " calloc="
+      ^ show_alloc_size_positions (alloc_size_positions "calloc")
+      ^ " realloc="
+      ^ show_alloc_size_positions (alloc_size_positions "realloc")
+      ^ " aligned_alloc="
+      ^ show_alloc_size_positions (alloc_size_positions "aligned_alloc"));
+  c_semantic_message "alloc-size-malloc-past-end"
+    "access outside object `malloc(16)` (offset 16, size 4 bytes, object size 16)"
+    c_stdlib "fn probe() void { p addr = malloc(16)\np[u32, 4] = 1\nreturn }\n";
+  c_semantic_accept "alloc-size-malloc-last-element" c_stdlib
+    "fn probe() void { p addr = malloc(16)\np[u32, 3] = 1\nreturn }\n";
+  c_semantic_message "alloc-size-calloc-past-end"
+    "access outside object `calloc(4, 4)` (offset 16, size 4 bytes, object size 16)"
+    c_stdlib "fn probe() void { p addr = calloc(4, 4)\np[u32, 4] = 1\nreturn }\n";
+  c_semantic_accept "alloc-size-calloc-last-element" c_stdlib
+    "fn probe() void { p addr = calloc(4, 4)\np[u32, 3] = 1\nreturn }\n";
+  c_semantic_accept "alloc-size-runtime-unknown" c_stdlib
+    "fn probe(n usize) void { p addr = malloc(n)\np[u32, 400] = 1\nreturn }\n";
+  c_semantic_accept "alloc-size-realloc-last-element" c_stdlib
+    ("fn probe() void { p addr = malloc(16)\n"
+   ^ "p = realloc(p, 32)\np[u32, 7] = 1\nreturn }\n");
+  c_semantic_message "alloc-size-realloc-past-end"
+    "access outside object `realloc(p, 32)` (offset 32, size 4 bytes, object size 32)"
+    c_stdlib
+    ("fn probe() void { p addr = malloc(16)\n"
+   ^ "p = realloc(p, 32)\np[u32, 8] = 1\nreturn }\n");
+  c_semantic_accept "alloc-size-aligned-last-element" c_stdlib
+    ("fn probe() void { p addr = aligned_alloc(16, 64)\n" ^ "p[u32, 15] = 1\nreturn }\n");
+  c_semantic_message "alloc-size-aligned-past-end"
+    "access outside object `aligned_alloc(16, 64)` (offset 64, size 4 bytes, object \
+     size 64)"
+    c_stdlib
+    "fn probe() void { p addr = aligned_alloc(16, 64)\np[u32, 16] = 1\nreturn }\n";
+  c_semantic_message "alloc-size-null-check"
+    "access outside object `malloc(16)` (offset 16, size 4 bytes, object size 16)"
+    c_stdlib
+    ("fn probe() void { p addr = malloc(16)\n"
+   ^ "if p != null { p[u32, 4] = 1 }\nreturn }\n");
+  c_semantic_message "alloc-size-may-return-null" "access through null address" c_stdlib
+    ("fn probe() void { p addr = malloc(16)\n"
+   ^ "if p == null { p[u32, 0] = 1 }\nreturn }\n");
+  c_semantic_accept "alloc-size-product-overflow" c_stdlib
+    ("fn probe() void { p addr = calloc(18446744073709551615, 2)\n"
+   ^ "p[u8, 100] = 1\nreturn }\n");
   incr checks_run;
   let unit_path = "/tmp/fas-c-import-test.c" in
   let probe_path = "/tmp/fas-c-type-probe-test.json" in

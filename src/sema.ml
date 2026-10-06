@@ -184,7 +184,8 @@ let validate_extern_c_signature ~named_types ~ret_source ~bodyless span params c
          (Hir.ty_name ret))
 
 let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
-    ?(c_nonnull_parameters = []) ?(c_records = []) program =
+    ?(c_nonnull_parameters = []) ?(c_alloc_size_parameters = []) ?(c_records = [])
+    program =
   let global_names =
     List.filter_map
       (function Ast.Global { name; _ } -> Some name | _ -> None)
@@ -403,8 +404,8 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       ~generic_const_argument:Sema_check.generic_const_argument
       ~array_lengths:(Sema_static_env.source_array_lengths program.Ast.items)
       ~eval_context:(base_structs, named_types, early_consts, [])
-      ~c_aliases ~c_unsupported ~c_nonnull_parameters ~top_level_bindings ~limits
-      ~type_node_account specializations program
+      ~c_aliases ~c_unsupported ~c_nonnull_parameters ~c_alloc_size_parameters
+      ~top_level_bindings ~limits ~type_node_account specializations program
   in
   let* named_types = collect_named_types String_set.empty [] program.Ast.items in
   let named_types = add_c_records (add_c_types named_types) in
@@ -581,8 +582,8 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       ~array_lengths:(Sema_static_env.source_array_lengths program.Ast.items)
       ~eval_context:(structs, named_types, consts_ordered, arrays_ordered)
       ~eval_globals ~c_aliases ~c_unsupported ~c_nonnull_parameters
-      ~eager_functions:true ~top_level_bindings ~limits ~type_node_account
-      specializations program
+      ~c_alloc_size_parameters ~eager_functions:true ~top_level_bindings ~limits
+      ~type_node_account specializations program
   in
   let* named_types = collect_named_types String_set.empty [] program.Ast.items in
   let named_types = add_c_records (add_c_types named_types) in
@@ -611,6 +612,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       globals = storage_declarations;
       c_unsupported;
       c_nonnull_parameters;
+      c_alloc_size_parameters;
       signatures = [];
       external_c_functions =
         List.filter_map
@@ -758,6 +760,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
           globals;
       c_unsupported;
       c_nonnull_parameters;
+      c_alloc_size_parameters;
       signatures = sigs_ordered;
       external_c_functions =
         List.filter_map

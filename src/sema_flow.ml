@@ -13,8 +13,9 @@ type address_fact =
       name : string;
       owner_name : string option;
       writable : bool;
+      nullable : bool;
       owner : int option;
-      extent : int;
+      extent : int64;
       offset : int64;
     }
   | Dead_local_address of string
@@ -67,6 +68,7 @@ type t = {
   mutable initialized : init_state State_map.t;
   mutable values : value_state;
   mutable addresses : address_state;
+  mutable call_objects : (Span.t * string * int64) list;
   mutable masks : mask_state;
   mutable value_reachable : bool;
   mutable next_binding_id : int;
@@ -96,6 +98,7 @@ let create ~initial_scope structs =
     initialized = State_map.empty;
     values = State_map.empty;
     addresses = State_map.empty;
+    call_objects = [];
     masks = State_map.empty;
     value_reachable = true;
     next_binding_id = 0;
@@ -380,6 +383,18 @@ let set_address flow binding = function
   | Some address when binding.ty = Hir.Addr ->
       flow.addresses <- State_map.add binding.id address flow.addresses
   | Some _ | None -> flow.addresses <- State_map.remove binding.id flow.addresses
+
+let set_call_object flow span name extent =
+  flow.call_objects <-
+    (span, name, extent)
+    :: List.filter
+         (fun (call_span, _, _) -> Span.compare call_span span <> 0)
+         flow.call_objects
+
+let call_object flow span =
+  List.find_opt
+    (fun (call_span, _, _) -> Span.compare call_span span = 0)
+    flow.call_objects
 
 let forget_address flow binding =
   flow.addresses <- State_map.remove binding.id flow.addresses

@@ -17,8 +17,8 @@ let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     ~generic_const_argument ?eval_context ?(eval_globals = []) ?(array_lengths = [])
     ?(c_aliases = []) ?(c_unsupported = []) ?(c_nonnull_parameters = [])
-    ?(eager_functions = false) ~top_level_bindings ~limits ~type_node_account
-    specializations program =
+    ?(c_alloc_size_parameters = []) ?(eager_functions = false) ~top_level_bindings
+    ~limits ~type_node_account specializations program =
   let eval_structs, eval_named_types, eval_consts, eval_arrays =
     match eval_context with
     | None -> ([], [], [], [])
@@ -633,6 +633,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       globals = eval_globals;
       c_unsupported;
       c_nonnull_parameters;
+      c_alloc_size_parameters;
       signatures = validation_signatures;
       external_c_functions =
         List.filter_map

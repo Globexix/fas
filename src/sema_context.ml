@@ -56,6 +56,7 @@ type context = {
   globals : (string * Hir.ty * Ast.global_linkage) list;
   external_c_functions : string list;
   c_nonnull_parameters : (string * int list) list;
+  c_alloc_size_parameters : (string * int list list) list;
   c_unsupported : (string * string) list;
   signatures : (string * signature) list;
   templates : (string * Ast.item) list;

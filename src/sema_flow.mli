@@ -10,8 +10,9 @@ type address_fact =
       name : string;
       owner_name : string option;
       writable : bool;
+      nullable : bool;
       owner : int option;
-      extent : int;
+      extent : int64;
       offset : int64;
     }
   | Dead_local_address of string
@@ -51,6 +52,8 @@ val forget_value : t -> binding -> unit
 val forget_all_values : t -> unit
 val address_of : t -> binding -> address_fact option
 val set_address : t -> binding -> address_fact option -> unit
+val set_call_object : t -> Span.t -> string -> int64 -> unit
+val call_object : t -> Span.t -> (Span.t * string * int64) option
 val forget_address : t -> binding -> unit
 val forget_all_addresses : t -> unit
 val forget_addresses_on_write : t -> unit

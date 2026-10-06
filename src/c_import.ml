@@ -1109,6 +1109,39 @@ let has_c_name name node =
   C_import_json.field "kind" node = Some (C_import_json.Str "FunctionDecl")
   && C_import_json.field "name" node = Some (C_import_json.Str name)
 
+let alloc_size_attributes text =
+  let found = Hashtbl.create 32 and function_name = ref None in
+  let add name indices =
+    if indices <> [] && List.length indices <= 2 then
+      let previous = Option.value ~default:[] (Hashtbl.find_opt found name) in
+      Hashtbl.replace found name (indices :: previous)
+  in
+  String.split_on_char '\n' text
+  |> List.iter (fun line ->
+      match find_text line "FunctionDecl " 0 with
+      | Some start -> (
+          match find_text line "'" start with
+          | None -> function_name := None
+          | Some finish ->
+              function_name :=
+                Some
+                  (String.sub line start (finish - start)
+                  |> String.trim |> String.split_on_char ' ' |> List.rev |> List.hd))
+      | None -> (
+          match (!function_name, find_text line "AllocSizeAttr " 0) with
+          | Some name, Some start -> (
+              match String.index_from_opt line start '>' with
+              | None -> ()
+              | Some finish ->
+                  let indices =
+                    String.sub line (finish + 1) (String.length line - finish - 1)
+                    |> String.split_on_char ' '
+                    |> List.filter_map int_of_string_opt
+                  in
+                  add name indices)
+          | _ -> ()));
+  found
+
 let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) ?(macro_names = []) source
     headers =
   let unit_path = Filename.temp_file "fas-c-import-" ".c" in
@@ -1283,21 +1316,86 @@ let import ~cc ~debug ~keep ?(retain = false) ?(c_flags = []) ?(macro_names = []
                                       ("internal error: C macro import failed: "
                                      ^ message);
                                   ]
-                            | Ok macros ->
-                                completed := true;
-                                Ok
-                                  ( declarations @ enum_types @ typedef_layouts
-                                    @ C_import_json.Obj
-                                        [
-                                          ("kind", C_import_json.Str "FasLayoutDump");
-                                          ("value", C_import_json.Str layouts);
-                                        ]
-                                      :: macros,
-                                    (if keep then
-                                       Some (unit_path :: List.rev !fragment_paths)
-                                     else None),
-                                    if retain then unit_path :: List.rev !fragment_paths
-                                    else [] )))))
+                            | Ok macros -> (
+                                let all_declarations =
+                                  declarations @ enum_types @ typedef_layouts
+                                  @ C_import_json.Obj
+                                      [
+                                        ("kind", C_import_json.Str "FasLayoutDump");
+                                        ("value", C_import_json.Str layouts);
+                                      ]
+                                    :: macros
+                                in
+                                let ast_argv =
+                                  Array.to_list argv
+                                  |> List.filter (fun argument ->
+                                      argument <> "-fno-builtin")
+                                  |> List.map (fun argument ->
+                                      if argument = "-ast-dump=json" then "-ast-dump"
+                                      else argument)
+                                  |> Array.of_list
+                                in
+                                let alloc_size_nodes =
+                                  match Process.run ast_argv with
+                                  | Ok (text, _) -> Ok (alloc_size_attributes text)
+                                  | Error failure -> Error failure.stderr
+                                in
+                                match alloc_size_nodes with
+                                | Error message ->
+                                    Error
+                                      [
+                                        Diag.error (List.hd headers).span
+                                          ("internal error: C alloc_size AST import \
+                                            failed: "
+                                          ^ normalize_import_failure ~unit_path
+                                              !macro_paths message);
+                                      ]
+                                | Ok alloc_size_nodes ->
+                                    let all_declarations =
+                                      List.map
+                                        (function
+                                          | C_import_json.Obj fields as node
+                                            when List.mem
+                                                   ( "kind",
+                                                     C_import_json.Str "FunctionDecl" )
+                                                   fields -> (
+                                              let name =
+                                                Option.value ~default:""
+                                                  (Option.bind
+                                                     (List.assoc_opt "name" fields)
+                                                     C_import_json.string)
+                                              in
+                                              match
+                                                Hashtbl.find_opt alloc_size_nodes name
+                                              with
+                                              | None -> node
+                                              | Some attributes ->
+                                                  C_import_json.Obj
+                                                    (( "fasAllocSize",
+                                                       C_import_json.Arr
+                                                         (List.map
+                                                            (fun indices ->
+                                                              C_import_json.Arr
+                                                                (List.map
+                                                                   (fun index ->
+                                                                     C_import_json.Num
+                                                                       (string_of_int
+                                                                          index))
+                                                                   indices))
+                                                            attributes) )
+                                                    :: fields))
+                                          | node -> node)
+                                        all_declarations
+                                    in
+                                    completed := true;
+                                    Ok
+                                      ( all_declarations,
+                                        (if keep then
+                                           Some (unit_path :: List.rev !fragment_paths)
+                                         else None),
+                                        if retain then
+                                          unit_path :: List.rev !fragment_paths
+                                        else [] ))))))
           with Failure message ->
             Error
               [
@@ -1622,6 +1720,7 @@ type mapped = {
   identities : (string * string) list;
   manifest : string list;
   nonnull_parameters : (string * int list) list;
+  alloc_size_parameters : (string * int list list) list;
   static_functions : static_function list;
   records : (string * string * string option) list;
   record_types : (string * string * string option) list;
@@ -2545,6 +2644,7 @@ let map_declarations ?(container = false) ~span declarations =
   and unsupported = Hashtbl.create 128
   and manifest = Hashtbl.create 256
   and nonnull_parameters = Hashtbl.create 32
+  and alloc_size_parameters = Hashtbl.create 32
   and incomplete_arrays = Hashtbl.create 16
   and static_functions = Hashtbl.create 32
   and items = ref [] in
@@ -3576,6 +3676,25 @@ let map_declarations ?(container = false) ~span declarations =
              in
              Hashtbl.replace nonnull_parameters name
                (List.sort_uniq compare (previous @ nonnull_positions)));
+          let allocation_sizes =
+            Option.fold ~none:[] ~some:C_import_json.array (get "fasAllocSize" node)
+            |> List.filter_map (function
+              | C_import_json.Arr indices ->
+                  Some
+                    (List.filter_map
+                       (function
+                         | C_import_json.Num index -> int_of_string_opt index
+                         | _ -> None)
+                       indices)
+              | _ -> None)
+            |> List.filter (fun indices -> indices <> [] && List.length indices <= 2)
+          in
+          (if allocation_sizes <> [] then
+             let previous =
+               Option.value ~default:[] (Hashtbl.find_opt alloc_size_parameters name)
+             in
+             Hashtbl.replace alloc_size_parameters name
+               (List.sort_uniq compare (previous @ allocation_sizes)));
           let function_info = function_type node in
           let variadic =
             match function_info with
@@ -3843,6 +3962,11 @@ let map_declarations ?(container = false) ~span declarations =
         (fun name positions acc -> (name, positions) :: acc)
         nonnull_parameters []
       |> List.sort compare;
+    alloc_size_parameters =
+      Hashtbl.fold
+        (fun name indices acc -> (name, indices) :: acc)
+        alloc_size_parameters []
+      |> List.sort compare;
     static_functions =
       Hashtbl.fold (fun _ static acc -> static :: acc) static_functions []
       |> List.sort (fun a b -> String.compare a.name b.name);
@@ -3909,6 +4033,16 @@ let merge_imports mappings =
            (fun merged (name, positions) ->
              let previous = Option.value ~default:[] (List.assoc_opt name merged) in
              (name, List.sort_uniq compare (positions @ previous))
+             :: List.remove_assoc name merged)
+           []
+      |> List.sort compare;
+    alloc_size_parameters =
+      List.concat_map (fun mapping -> mapping.alloc_size_parameters) mappings
+      |> List.filter (fun (name, _) -> not (bad name))
+      |> List.fold_left
+           (fun merged (name, indices) ->
+             let previous = Option.value ~default:[] (List.assoc_opt name merged) in
+             (name, List.sort_uniq compare (indices @ previous))
              :: List.remove_assoc name merged)
            []
       |> List.sort compare;

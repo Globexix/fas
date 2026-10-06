@@ -373,6 +373,21 @@ let rec address_fact c = function
             Sema_flow.address_of c.flow root)
       else Sema_flow.address_of c.flow binding
   | Hir.Address (place, _, _) -> object_address c place
+  | Hir.Call (Hir.User _, _, Hir.Addr, span) ->
+      Option.map
+        (fun (_, name, extent) ->
+          Sema_flow.Object_address
+            {
+              identity = "allocation:" ^ Span.to_string span;
+              name;
+              owner_name = None;
+              writable = true;
+              nullable = true;
+              owner = None;
+              extent;
+              offset = 0L;
+            })
+        (Sema_flow.call_object c.flow span)
   | Hir.Binary (((Ast.Add | Ast.Sub) as op), left, right, Hir.Addr, _) -> (
       match (address_fact c left, exact_address_offset c right) with
       | Some address, Some offset -> shift_address op address offset
@@ -403,8 +418,9 @@ and object_address c expression =
             name = binding.name;
             owner_name = Some binding.name;
             writable = true;
+            nullable = false;
             owner = Some binding.id;
-            extent;
+            extent = Int64.of_int extent;
             offset = 0L;
           })
       (object_size ty)
@@ -468,8 +484,9 @@ and object_address c expression =
                 name;
                 owner_name = None;
                 writable;
+                nullable = false;
                 owner = None;
-                extent;
+                extent = Int64.of_int extent;
                 offset = 0L;
               })
           (object_size ty)
@@ -482,8 +499,9 @@ and object_address c expression =
                 name;
                 owner_name = None;
                 writable = false;
+                nullable = false;
                 owner = None;
-                extent;
+                extent = Int64.of_int extent;
                 offset = 0L;
               })
           (object_size ty)
@@ -515,6 +533,11 @@ and object_address c expression =
 
 let address_equal c left right =
   match (address_fact c left, address_fact c right) with
+  | ( Some (Sema_flow.Object_address { nullable = true; _ }),
+      Some (Sema_flow.Null_address _) )
+  | ( Some (Sema_flow.Null_address _),
+      Some (Sema_flow.Object_address { nullable = true; _ }) ) ->
+      None
   | Some left, Some right -> Some (left = right)
   | _ -> None
 
@@ -542,16 +565,58 @@ let check_address_access c span ~write fact size =
         if
           address.offset < 0L
           || Int64.compare past address.offset < 0
-          || Int64.compare past (Int64.of_int address.extent) > 0
+          || Int64.unsigned_compare past address.extent > 0
         then
           error span
             (Printf.sprintf
-               "access outside object `%s` (offset %Ld, size %d bytes, object size %d)"
+               "access outside object `%s` (offset %Ld, size %d bytes, object size %Ld)"
                address.name address.offset size address.extent)
         else Ok ()
     | Some (Sema_flow.Dead_local_address name) ->
         error span (Printf.sprintf "access to local `%s` after its block ended" name)
     | _ -> Ok ()
+
+let remember_alloc_size_object c name arguments parameters span =
+  let constant_size index =
+    match (List.nth_opt arguments (index - 1), List.nth_opt parameters (index - 1)) with
+    | Some expression, Some (_, expected) -> (
+        let visible name = Option.is_none (lookup_local name c) in
+        let consts = List.filter (fun (name, _, _) -> visible name) c.consts
+        and arrays = List.filter (fun (name, _, _) -> visible name) c.arrays in
+        match
+          const_expr ~structs:c.structs ~named_types:c.named_types
+            ~generic_structs:c.generic_structs ~arrays
+            ~array_lengths:(static_array_lengths c.top_level_bindings c.globals)
+            ~globals:(List.map (fun (global, _, _) -> global) c.globals)
+            consts (Some expected) ~validate_dead:false expression
+        with
+        | Ok (actual, value)
+          when Hir.ty_equal actual expected && is_int actual
+               && (is_unsigned actual || value >= 0L) ->
+            Some value
+        | _ -> None)
+    | _ -> None
+  in
+  let product indices =
+    match List.map constant_size indices with
+    | [ Some size ] -> Some size
+    | [ Some left; Some right ]
+      when right = 0L
+           || Int64.unsigned_compare left (Int64.unsigned_div Int64.minus_one right)
+              <= 0 ->
+        Some (Int64.mul left right)
+    | _ -> None
+  in
+  match List.assoc_opt name c.c_alloc_size_parameters with
+  | None -> ()
+  | Some attributes -> (
+      match List.find_map product attributes with
+      | None -> ()
+      | Some extent ->
+          let name =
+            name ^ "(" ^ String.concat ", " (List.map Ast.expr_name arguments) ^ ")"
+          in
+          Sema_flow.set_call_object c.flow span name extent)
 
 let access_footprint c ty =
   match ty with
@@ -3286,6 +3351,7 @@ and check_call c _expected fn args s =
                               | _ -> Ok ())
                             indices
                     in
+                    remember_alloc_size_object c name args sig_.params s;
                     Ok (Hir.Call (Hir.User name, xs, sig_.ret, s)))))
   | _ -> error s "call target must be a function name"
 
