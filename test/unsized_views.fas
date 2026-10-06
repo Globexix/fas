@@ -1,0 +1,52 @@
+extern "C" {
+  fn buffer() addr
+  fn pair_buffer() addr
+  fn pointer_calls() u32
+  fn set_pair(p addr, value u32) void
+}
+
+struct Inner {
+  value u32
+}
+
+struct Pair {
+  id u32,
+  inner Inner
+}
+
+fn read_at[T](p addr, i usize) T {
+  view xs = p[T, ..]
+  return xs[i]
+}
+
+fn main(argc i32, argv addr) i32 {
+  view xs = buffer()[u32, ..]
+  if pointer_calls() != 1 {
+    return 1
+  }
+  if xs[0] != 10 {
+    return 2
+  }
+  xs[2] = 30
+  xs[2] += 5
+  if xs[2] != 35 {
+    return 3
+  }
+  if read_at[u32](buffer(), 1) != 20 {
+    return 4
+  }
+  if pointer_calls() != 2 {
+    return 5
+  }
+
+  view pairs = pair_buffer()[Pair, ..]
+  pairs[1].inner.value = 71
+  set_pair(&pairs[0], 42)
+  if pairs[0].id != 42 {
+    return 6
+  }
+  if pairs[1].inner.value != 71 {
+    return 7
+  }
+  return 0
+}

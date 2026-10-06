@@ -309,6 +309,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         then Ok ()
         else error span (Printf.sprintf "unknown name `%s`" name)
   and validate_selection_argument_names value_names type_names span = function
+    | Ast.Name_arg ("..", _) -> Ok ()
     | Ast.Type_arg (Ast.Named_type ("void", _)) -> Ok ()
     | Ast.Type_or_index ty -> (
         match ambiguous_name ty with
@@ -1745,6 +1746,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           Result_list.map
             (fun arg ->
               match arg with
+              | Ast.Name_arg ("..", _) -> Ok arg
               | Ast.Type_arg (Ast.Named_type ("void", _) as ty) -> Ok (Ast.Type_arg ty)
               | (Ast.Type_or_index _ | Ast.Name_arg _) when is_shadowed_argument arg ->
                   Ok arg

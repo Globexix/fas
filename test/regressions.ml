@@ -1258,6 +1258,61 @@ let () =
     "fn f() void { view v = c\"read only\"[u8]\n v = 2\n return }\n";
   ignore
     (lower_of
+       "struct Inner { value u32 }\n\
+        struct Pair { id u32, inner Inner }\n\
+        fn take(p addr) void { return }\n\
+        fn read_at[T](p addr, i usize) T { view xs = p[T, ..]\n\
+       \ return xs[i] }\n\
+        fn f(p addr, i usize) u32 {\n\
+       \ view xs = p[u32, ..]\n\
+       \ xs[i] = 4\n\
+       \ xs[i] += 1\n\
+       \ take(&xs[i])\n\
+       \ return xs[i] + read_at[u32](p, i) }\n\
+        fn fields(p addr, i usize) u32 {\n\
+       \ view xs = p[Pair, ..]\n\
+       \ xs[i].inner.value = 7\n\
+       \ return xs[i].inner.value }\n");
+  let raw_view_message = "view `xs` must be indexed" in
+  List.iter
+    (fun (name, body) -> semantic_message name raw_view_message body)
+    [
+      ( "raw-view-reject-assignment",
+        "fn f(p addr) void { view xs = p[u32, ..]\n xs = null\n return }\n" );
+      ( "raw-view-reject-len",
+        "fn f(p addr) usize { view xs = p[u32, ..]\n return len(xs) }\n" );
+      ( "raw-view-reject-address",
+        "fn f(p addr) addr { view xs = p[u32, ..]\n return &xs }\n" );
+      ( "raw-view-reject-passing",
+        "fn take(p addr) void { return }\n\
+         fn f(p addr) void { view xs = p[u32, ..]\n\
+        \ take(xs)\n\
+        \ return }\n" );
+      ( "raw-view-reject-return",
+        "fn f(p addr) addr { view xs = p[u32, ..]\n return xs }\n" );
+      ( "raw-view-reject-field",
+        "fn f(p addr) u32 { view xs = p[u32, ..]\n return xs.field }\n" );
+      ( "raw-view-reject-typed-index",
+        "fn f(p addr, i usize) u32 { view xs = p[u32, ..]\n return xs[u32, i] }\n" );
+      ( "raw-view-reject-nested-view",
+        "fn f(p addr) void { view xs = p[u32, ..]\n view ys = xs\n return }\n" );
+    ];
+  semantic_message "raw-view-constant-storage-write" "write to constant storage `K`"
+    "const K arr[2,u32] = {1, 2}\n\
+     fn f() void { p addr = &K[0]\n\
+    \ view xs = p[u32, ..]\n\
+    \ xs[0] = 3\n\
+    \ return }\n";
+  semantic_message "raw-selection-null-plus-offset" "access through null address"
+    "fn f() void { p addr = null\n q addr = p + 4\n q[u32, 0] = 1\n return }\n";
+  semantic_message "raw-view-null-plus-offset" "access through null address"
+    "fn f() void { p addr = null\n\
+    \ q addr = p + 4\n\
+     view xs = q[u32, ..]\n\
+    \ xs[0] = 1\n\
+    \ return }\n";
+  ignore
+    (lower_of
        "fn take(p addr) void { return }\n\
         fn f() i64 { v vec[2,i64] = splat(1)\n\
        \ take(&v)\n\
@@ -10112,6 +10167,12 @@ let () =
     c_stdlib "fn probe() void { p addr = malloc(16)\np[u32, 4] = 1\nreturn }\n";
   c_semantic_accept "alloc-size-malloc-last-element" c_stdlib
     "fn probe() void { p addr = malloc(16)\np[u32, 3] = 1\nreturn }\n";
+  c_semantic_accept "alloc-size-malloc-view-last-element" c_stdlib
+    "fn probe() void { p addr = malloc(16)\nview xs = p[u32, ..]\nxs[3] = 1\nreturn }\n";
+  c_semantic_message "alloc-size-malloc-view-past-end"
+    "access outside object `malloc(16)` (offset 16, size 4 bytes, object size 16)"
+    c_stdlib
+    "fn probe() void { p addr = malloc(16)\nview xs = p[u32, ..]\nxs[4] = 1\nreturn }\n";
   c_semantic_message "alloc-size-calloc-past-end"
     "access outside object `calloc(4, 4)` (offset 16, size 4 bytes, object size 16)"
     c_stdlib "fn probe() void { p addr = calloc(4, 4)\np[u32, 4] = 1\nreturn }\n";

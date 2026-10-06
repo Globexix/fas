@@ -633,6 +633,9 @@ let check_place_access c span ~write expression =
   | None -> Ok ()
   | Some size -> check_address_access c span ~write (object_address c expression) size
 
+let raw_view_index_error span (binding : Sema_flow.binding) =
+  error span (Printf.sprintf "view `%s` must be indexed" binding.name)
+
 let static_vector_lanes c = function
   | Hir.EBool (value, _) -> Some [ value ]
   | Hir.Local (binding, _) when binding.ty = Hir.Bool ->
@@ -990,7 +993,9 @@ let rec readonly_imported_constant_name c = function
   | Hir.Index (base, _, _, _) when aggregate_value_type (Hir.expr_ty base) ->
       readonly_imported_constant_name c base
   | Hir.Field (base, _, _, _, _) -> readonly_imported_constant_name c base
-  | Hir.Local (binding, _) when Sema_flow.is_view c.flow binding ->
+  | Hir.Local (binding, _)
+    when Sema_flow.is_view c.flow binding
+         || Option.is_some (Sema_flow.raw_view_type c.flow binding) ->
       Sema_flow.view_readonly_name c.flow binding
   | Hir.Ternary (_, yes, no, _, _) -> (
       match
@@ -1011,7 +1016,10 @@ let readonly_string_source = function
   | _ -> None
 
 let rec readonly_view_name c = function
-  | Hir.Local (binding, _) when is_view c.flow binding -> Some binding.name
+  | Hir.Local (binding, _)
+    when is_view c.flow binding
+         || Option.is_some (Sema_flow.raw_view_type c.flow binding) ->
+      Some binding.name
   | Hir.Index (base, _, _, _) | Hir.Address (base, _, _) -> readonly_view_name c base
   | _ -> None
 
@@ -1050,7 +1058,8 @@ let view_access_of_expr c expression =
   else inherited_view_access c expression
 
 let rec expression_uses_view c = function
-  | Hir.Local (binding, _) -> is_view c.flow binding
+  | Hir.Local (binding, _) ->
+      is_view c.flow binding || Option.is_some (Sema_flow.raw_view_type c.flow binding)
   | Hir.Index (base, _, _, _)
   | Hir.Field (base, _, _, _, _)
   | Hir.Raw_select (base, _, _, _)
@@ -1349,6 +1358,8 @@ let rec check_place (c : context) expr =
       Option.get (c_unsupported c s n)
   | Ast.Ident (n, s) -> (
       match lookup_local n c with
+      | Some b when Option.is_some (Sema_flow.raw_view_type c.flow b) ->
+          raw_view_index_error s b
       | Some b ->
           let root, path =
             match view_origin c.flow b with
@@ -1387,6 +1398,23 @@ let rec check_place (c : context) expr =
               | None -> unknown_name_error (visible_value_names c) "name" s n)))
   | Ast.Select (a, args, s) -> (
       match a with
+      | Ast.Ident (name, name_span)
+        when Option.is_some (lookup_local name c)
+             && Option.is_some
+                  (Sema_flow.raw_view_type c.flow (Option.get (lookup_local name c)))
+        -> (
+          let binding = Option.get (lookup_local name c) in
+          match (Sema_flow.raw_view_type c.flow binding, args) with
+          | Some element, [ payload ] ->
+              let* offset = raw_offset_expr c s element (Some payload) in
+              Ok
+                {
+                  expr =
+                    Hir.Raw_select (Hir.Local (binding, name_span), offset, element, s);
+                  root = None;
+                  path = None;
+                }
+          | _ -> raw_view_index_error s binding)
       | Ast.Ident (name, _)
         when match List.assoc_opt name c.templates with
              | Some (Ast.Func _) -> true
@@ -1742,6 +1770,8 @@ and check_expr_inner ?destination (c : context) expected expression =
       Option.get (c_unsupported c s n)
   | Ast.Ident (n, s) -> (
       match lookup_local n c with
+      | Some b when Option.is_some (Sema_flow.raw_view_type c.flow b) ->
+          raw_view_index_error s b
       | Some b ->
           let* () =
             match view_origin c.flow b with
@@ -3437,6 +3467,8 @@ and check_actuals ?callee c policy span formals actuals =
 let check_target (c : context) = function
   | Ast.Target_ident (n, span) -> (
       match lookup_local n c with
+      | Some b when Option.is_some (Sema_flow.raw_view_type c.flow b) ->
+          raw_view_index_error span b
       | Some b -> (
           match view_access c.flow b with
           | Readonly_access | Constant_access ->
@@ -4004,58 +4036,82 @@ and check_stmt (c : context) = function
           Ok
             (Hir.Let_construct
                (binding, aggregate_construction ty entries construction_span, span)))
-  | Ast.View { name; place; span } ->
+  | Ast.View { name; place; span } -> (
       let* () = ensure_new_local name c span in
-      let* place_info = check_place c place in
-      let rec addressable = function
-        | Hir.Local _ | Hir.Global _ | Hir.Const_array _ | Hir.Raw_select _ -> true
-        | Hir.Index (base, _, _, _) -> (
-            match Hir.expr_ty base with
-            | Hir.Array _ -> addressable base
-            | Hir.Vec _ -> false
-            | _ -> false)
-        | Hir.Field (base, _, _, _, _) -> addressable base
-        | _ -> false
-      in
-      let* () =
-        if
-          match place_info.expr with
-          | Hir.Index (base, _, _, _) -> (
-              match Hir.expr_ty base with Hir.Vec _ -> true | _ -> false)
-          | _ -> false
-        then error (Ast.expr_span place) "cannot create a view of a SIMD lane"
-        else if addressable place_info.expr then Ok ()
-        else
-          let source_kind =
-            match place with
-            | Ast.Call _ -> "a function call"
-            | Ast.Binary _ | Ast.Ternary _ | Ast.Unary _ -> "a computed value"
-            | Ast.Int_lit _ -> "an integer literal"
-            | Ast.Bool_lit _ -> "a bool literal"
-            | Ast.Null _ -> "a null literal"
-            | Ast.String_lit _ -> "a string literal"
-            | Ast.Array_lit _ | Ast.Struct_lit _ -> "an aggregate literal"
-            | Ast.Splat _ -> "a splat"
-            | Ast.Cast _ -> "a cast"
-            | Ast.Addr_of _ -> "an address value"
-            | _ -> "an expression"
+      match place with
+      | Ast.Select (base, [ type_payload; Ast.Name_arg ("..", _) ], select_span) ->
+          let* element = select_type_arg c.named_types select_span type_payload in
+          let* () =
+            if element = Hir.Void then
+              error
+                (select_type_payload_span select_span type_payload)
+                "raw access on `void` needs an element type"
+            else Ok ()
           in
-          error (view_source_span place)
-            (Printf.sprintf "view needs a local, field, element or raw access, not %s"
-               source_kind)
-      in
-      let* () = check_place_access c span ~write:false place_info.expr in
-      let* binding = add_local name (Hir.expr_ty place_info.expr) c span in
-      let readonly_name = readonly_storage_name c place_info.expr in
-      let root, path =
-        match place_info.expr with
-        | Hir.Raw_select _ -> (None, None)
-        | _ -> (place_info.root, place_info.path)
-      in
-      bind_view c.flow binding root path
-        (view_access_of_expr c place_info.expr)
-        readonly_name;
-      Ok (Hir.View (binding, place_info.expr, span))
+          let* pointer = check_expr c (Some Hir.Addr) base in
+          if Hir.expr_ty pointer <> Hir.Addr then
+            error (Ast.expr_span base) "unknown-length view base must have type `addr`"
+          else
+            let address = address_fact c pointer in
+            let access = view_access_of_expr c pointer in
+            let readonly_name = readonly_storage_name c pointer in
+            let* binding = add_local name Hir.Addr c span in
+            mark_init binding c;
+            Sema_flow.set_address c.flow binding address;
+            Sema_flow.bind_raw_view c.flow binding element access readonly_name;
+            Ok (Hir.Let (binding, Some pointer, span))
+      | _ ->
+          let* place_info = check_place c place in
+          let rec addressable = function
+            | Hir.Local _ | Hir.Global _ | Hir.Const_array _ | Hir.Raw_select _ -> true
+            | Hir.Index (base, _, _, _) -> (
+                match Hir.expr_ty base with
+                | Hir.Array _ -> addressable base
+                | Hir.Vec _ -> false
+                | _ -> false)
+            | Hir.Field (base, _, _, _, _) -> addressable base
+            | _ -> false
+          in
+          let* () =
+            if
+              match place_info.expr with
+              | Hir.Index (base, _, _, _) -> (
+                  match Hir.expr_ty base with Hir.Vec _ -> true | _ -> false)
+              | _ -> false
+            then error (Ast.expr_span place) "cannot create a view of a SIMD lane"
+            else if addressable place_info.expr then Ok ()
+            else
+              let source_kind =
+                match place with
+                | Ast.Call _ -> "a function call"
+                | Ast.Binary _ | Ast.Ternary _ | Ast.Unary _ -> "a computed value"
+                | Ast.Int_lit _ -> "an integer literal"
+                | Ast.Bool_lit _ -> "a bool literal"
+                | Ast.Null _ -> "a null literal"
+                | Ast.String_lit _ -> "a string literal"
+                | Ast.Array_lit _ | Ast.Struct_lit _ -> "an aggregate literal"
+                | Ast.Splat _ -> "a splat"
+                | Ast.Cast _ -> "a cast"
+                | Ast.Addr_of _ -> "an address value"
+                | _ -> "an expression"
+              in
+              error (view_source_span place)
+                (Printf.sprintf
+                   "view needs a local, field, element or raw access, not %s"
+                   source_kind)
+          in
+          let* () = check_place_access c span ~write:false place_info.expr in
+          let* binding = add_local name (Hir.expr_ty place_info.expr) c span in
+          let readonly_name = readonly_storage_name c place_info.expr in
+          let root, path =
+            match place_info.expr with
+            | Hir.Raw_select _ -> (None, None)
+            | _ -> (place_info.root, place_info.path)
+          in
+          bind_view c.flow binding root path
+            (view_access_of_expr c place_info.expr)
+            readonly_name;
+          Ok (Hir.View (binding, place_info.expr, span)))
   | Ast.Assign (t, e, span) ->
       let* checked_target = check_target c t in
       let target = checked_target.target in

@@ -431,6 +431,16 @@ module P = struct
         let type_span = span p in
         ignore (bump p);
         Ok (Ast.Type_arg (Ast.Named_type ("void", type_span)))
+    | Token.Dot when (peek_n p 1).kind = Token.Dot ->
+        let first = bump p in
+        let last = bump p in
+        let sp =
+          Span.make ~file:first.span.Span.file
+            ~start_offset:first.span.Span.start_offset
+            ~end_offset:last.span.Span.end_offset ~line:first.span.Span.line
+            ~column:first.span.Span.column
+        in
+        Ok (Ast.Name_arg ("..", sp))
     | _ -> generic_arg p
 
   and generic_args p =

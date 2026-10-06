@@ -65,6 +65,7 @@ type t = {
   view_origins : (int, (binding * place_path) option) Hashtbl.t;
   view_accesses : (int, view_access) Hashtbl.t;
   view_readonly_names : (int, string) Hashtbl.t;
+  raw_view_types : (int, Hir.ty) Hashtbl.t;
   mutable initialized : init_state State_map.t;
   mutable values : value_state;
   mutable addresses : address_state;
@@ -95,6 +96,7 @@ let create ~initial_scope structs =
     view_origins = Hashtbl.create 16;
     view_accesses = Hashtbl.create 16;
     view_readonly_names = Hashtbl.create 16;
+    raw_view_types = Hashtbl.create 16;
     initialized = State_map.empty;
     values = State_map.empty;
     addresses = State_map.empty;
@@ -162,6 +164,14 @@ let view_readonly_name flow binding =
   Hashtbl.find_opt flow.view_readonly_names binding.id
 
 let is_view flow binding = Hashtbl.mem flow.view_origins binding.id
+let raw_view_type flow binding = Hashtbl.find_opt flow.raw_view_types binding.id
+
+let bind_raw_view flow binding element access readonly_name =
+  Hashtbl.replace flow.raw_view_types binding.id element;
+  Hashtbl.replace flow.view_accesses binding.id access;
+  Option.iter
+    (fun name -> Hashtbl.replace flow.view_readonly_names binding.id name)
+    readonly_name
 
 let invalidate_induction_for_binding flow id =
   if not flow.checking_dead then
@@ -209,7 +219,8 @@ let pop flow =
         (fun _ binding ->
           flow.values <- State_map.remove binding.id flow.values;
           flow.addresses <- State_map.remove binding.id flow.addresses;
-          flow.masks <- State_map.remove binding.id flow.masks)
+          flow.masks <- State_map.remove binding.id flow.masks;
+          Hashtbl.remove flow.raw_view_types binding.id)
         scope
   | [] -> ());
   match flow.defer_scopes with _ :: rest -> flow.defer_scopes <- rest | [] -> ()

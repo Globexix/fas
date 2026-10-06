@@ -33,6 +33,8 @@ val view_origin : t -> binding -> (binding * place_path) option
 val view_access : t -> binding -> view_access
 val view_readonly_name : t -> binding -> string option
 val is_view : t -> binding -> bool
+val raw_view_type : t -> binding -> Hir.ty option
+val bind_raw_view : t -> binding -> Hir.ty -> view_access -> string option -> unit
 
 val bind_view :
   t ->
