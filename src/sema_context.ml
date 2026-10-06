@@ -65,6 +65,7 @@ type context = {
   spec_depth : int;
   spec_trace : instantiation_frame list;
   flow : Sema_flow.t;
+  mutable handle_view_expansion : bool;
   mutable expression_depth : int;
   mutable unresolved_shapes : unresolved_shape_cache;
   mutable unresolved_shapes_unique : bool;

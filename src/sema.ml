@@ -640,6 +640,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       spec_depth = 0;
       spec_trace = [];
       flow = Sema_flow.create ~initial_scope:false structs;
+      handle_view_expansion = false;
       expression_depth = 0;
       unresolved_shapes = Hashtbl.create 0;
       unresolved_shapes_unique = false;
@@ -788,6 +789,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       spec_depth;
       spec_trace;
       flow = Sema_flow.create ~initial_scope:false structs;
+      handle_view_expansion = false;
       expression_depth = 0;
       unresolved_shapes = Hashtbl.create 0;
       unresolved_shapes_unique = false;

@@ -373,7 +373,8 @@ let rec address_fact c = function
             Sema_flow.address_of c.flow root)
       else Sema_flow.address_of c.flow binding
   | Hir.Local (binding, _)
-    when match binding.ty with Hir.Handle _ -> true | _ -> false ->
+    when c.handle_view_expansion
+         && match binding.ty with Hir.Handle _ -> true | _ -> false ->
       Sema_flow.address_of c.flow binding
   | Hir.Call (Hir.Builtin Hir.Handle_addr, [ handle ], Hir.Addr, _) ->
       address_fact c handle
@@ -4095,6 +4096,13 @@ and check_stmt (c : context) = function
               readonly_name;
             Ok (Hir.View (binding, place_info.expr, span))
           in
+          let check_handle_view place =
+            let previous = c.handle_view_expansion in
+            c.handle_view_expansion <- true;
+            let result = check_regular_view place in
+            c.handle_view_expansion <- previous;
+            result
+          in
           match place with
           | Ast.Ident (handle_name, handle_span) -> (
               match lookup_local handle_name c with
@@ -4106,7 +4114,7 @@ and check_stmt (c : context) = function
                           [ Ast.Ident (handle_name, handle_span) ],
                           span )
                     in
-                    check_regular_view
+                    check_handle_view
                       (Ast.Select
                          (handle_call, [ Ast.Name_arg (record, handle_span) ], span))
                   else

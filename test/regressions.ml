@@ -2198,6 +2198,12 @@ let () =
     "fn f(n u32) addr { return addr_from_bits(n) }\n";
   semantic_error "handle-addr-wrong-arg" "handle_addr argument must be a handle"
     "fn f(p addr) addr { return handle_addr(p) }\n";
+  semantic_accept "handle-roundtrip-local-address-return"
+    "opaque Token\n\
+     fn leak() addr {\n\
+     x u32 = 58\n\
+     h handle[Token] = handle_from_addr[Token](&x)\n\
+     return handle_addr(h) }\n";
   semantic_error "handle-from-addr-bare"
     "builtin `handle_from_addr` expects a type argument"
     "fn f(p addr) addr { return handle_from_addr(p) }\n";
