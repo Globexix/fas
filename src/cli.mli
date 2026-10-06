@@ -9,6 +9,7 @@ type t = {
   optimization : int;
   debug : bool;
   no_inline_function : string option;
+  sanitizers : string list;
   link_inputs : string list;
   c_flags : string list;
 }

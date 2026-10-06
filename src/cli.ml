@@ -9,6 +9,7 @@ type t = {
   optimization : int;
   debug : bool;
   no_inline_function : string option;
+  sanitizers : string list;
   link_inputs : string list;
   c_flags : string list;
 }
@@ -27,6 +28,7 @@ let usage =
   \  -O0..-O3      set opt and llc optimization levels (default -O2)\n\
   \  -debug        default to -O0; enables -no-inline; emits no DWARF info\n\
   \  -no-inline NAME  add LLVM noinline to NAME (debug only)\n\
+  \  --sanitize=LIST instrument with address and/or undefined behavior sanitizers\n\
   \  -I DIR, -isystem DIR, -D NAME[=VALUE] (attached or separate)\n\
   \  LLVM_OPT, LLVM_LLC, CC select tools (defaults: opt-22, llc-22, clang-22)\n\
   \  FAS_OPT, FAS_LLC, FAS_CC are fallback tool aliases\n\
@@ -44,6 +46,7 @@ let parse argv =
   let header_selected = ref false and other_output = ref false in
   let link_inputs_rev = ref [] in
   let c_flags_rev = ref [] in
+  let sanitizers = ref None in
   let add_link_inputs values =
     link_inputs_rev := List.rev_append values !link_inputs_rev
   in
@@ -78,6 +81,7 @@ let parse argv =
                optimization;
                debug;
                no_inline_function;
+               sanitizers = Option.value ~default:[] !sanitizers;
                link_inputs = List.rev !link_inputs_rev;
                c_flags = List.rev !c_flags_rev;
              })
@@ -114,6 +118,25 @@ let parse argv =
       | "--keep" ->
           loop (i + 1) input output emit true optimization optimization_explicit debug
             no_inline_function
+      | flag when String.starts_with ~prefix:"--sanitize=" flag -> (
+          let value = String.sub flag 11 (String.length flag - 11) in
+          let names = String.split_on_char ',' value in
+          if value = "" then Error "--sanitize requires a non-empty list"
+          else
+            let unknown =
+              List.find_opt (fun name -> name <> "address" && name <> "undefined") names
+            in
+            match unknown with
+            | Some name -> Error ("unknown sanitizer `" ^ name ^ "`")
+            | None -> (
+                let names = List.sort_uniq String.compare names in
+                match !sanitizers with
+                | Some previous when previous <> names ->
+                    Error "conflicting --sanitize options"
+                | _ ->
+                    sanitizers := Some names;
+                    loop (i + 1) input output emit keep optimization
+                      optimization_explicit debug no_inline_function))
       | "-debug" ->
           loop (i + 1) input output emit keep
             (if optimization_explicit then optimization else 0)

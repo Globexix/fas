@@ -118,13 +118,24 @@ temps_empty() {
 "$OCAML_FAS" -h >"$WORK/short-help" 2>"$WORK/stderr"
 cmp "$WORK/help" "$WORK/short-help" >/dev/null || fail "-h differs from --help"
 for flag in -o --emit-header --emit-ir --emit-llvm --emit-asm -S --emit-obj -c --keep \
-  -O0..-O3 -debug -no-inline -I -isystem -D -h --help; do
+  -O0..-O3 -debug -no-inline --sanitize=LIST -I -isystem -D -h --help; do
   grep -F -- "$flag" "$WORK/help" >/dev/null || fail "help omitted $flag"
 done
 if grep -F -- "--emit-ast" "$WORK/help" >/dev/null; then fail "help advertises removed --emit-ast"; fi
 grep -F -- "LLVM_OPT, LLVM_LLC, CC" "$WORK/help" >/dev/null || fail "help omitted tool overrides"
 grep -F -- "fallback tool aliases" "$WORK/help" >/dev/null || fail "help omitted legacy tool aliases"
 grep -F -- "FAS_OPT_PASSES" "$WORK/help" >/dev/null || fail "help omitted pass override"
+expect_failure "$OCAML_FAS" --sanitize= "$WORK/good.fas"
+grep -Fx -- "--sanitize requires a non-empty list" "$WORK/stderr" >/dev/null || fail "empty sanitizer list diagnostic changed"
+for name in memory thread foo; do
+  expect_failure "$OCAML_FAS" "--sanitize=$name" "$WORK/good.fas"
+  grep -Fx -- "unknown sanitizer \`$name\`" "$WORK/stderr" >/dev/null || fail "unknown sanitizer diagnostic changed"
+done
+expect_failure "$OCAML_FAS" --sanitize=address --sanitize=undefined "$WORK/good.fas"
+grep -Fx -- "conflicting --sanitize options" "$WORK/stderr" >/dev/null || fail "conflicting sanitizer diagnostic changed"
+"$OCAML_FAS" --sanitize=address,address --sanitize=address --emit-ir "$WORK/good.fas" \
+  >"$WORK/sanitized-custom.ir" 2>"$WORK/stderr"
+[ ! -s "$WORK/stderr" ] || fail "repeated sanitizer names were rejected"
 
 for level in 0 1 2 3; do
   "$OCAML_FAS" "-O$level" "$WORK/good.fas" -o "$WORK/opt-$level" >"$WORK/stdout" 2>"$WORK/stderr"

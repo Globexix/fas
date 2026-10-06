@@ -1280,6 +1280,42 @@ let () =
   assert (
     cli_links.Cli.input = "prog.fas"
     && cli_links.link_inputs = [ "-L"; "lib"; "helper.c"; "-lm"; "obj.o" ]);
+  let cli_sanitizers =
+    expect_cli
+      (Cli.parse
+         [|
+           "fas";
+           "--sanitize=address,undefined,address";
+           "--sanitize=undefined,address";
+           "prog.fas";
+         |])
+  in
+  assert (cli_sanitizers.Cli.sanitizers = [ "address"; "undefined" ]);
+  List.iter
+    (fun mode ->
+      let cli =
+        expect_cli
+          (Cli.parse
+             (Array.of_list [ "fas"; "--sanitize=undefined"; mode; "prog.fas" ]))
+      in
+      assert (cli.Cli.sanitizers = [ "undefined" ]))
+    [ "--emit-header"; "--emit-ir"; "--emit-llvm"; "-S"; "-c" ];
+  List.iter
+    (fun (option, message) ->
+      match Cli.parse [| "fas"; option; "prog.fas" |] with
+      | Error actual -> assert (actual = message)
+      | Ok _ -> assert false)
+    [
+      ("--sanitize=", "--sanitize requires a non-empty list");
+      ("--sanitize=memory", "unknown sanitizer `memory`");
+      ("--sanitize=thread", "unknown sanitizer `thread`");
+      ("--sanitize=foo", "unknown sanitizer `foo`");
+    ];
+  (match
+     Cli.parse [| "fas"; "--sanitize=address"; "--sanitize=undefined"; "prog.fas" |]
+   with
+  | Error message -> assert (message = "conflicting --sanitize options")
+  | Ok _ -> assert false);
   let cli_c_flags =
     expect_cli
       (Cli.parse
@@ -1356,7 +1392,9 @@ let () =
     && cli_named_obj.output = "artifact"
     && cli_named_obj.output_explicit);
   (match Cli.parse [| "fas"; "--help" |] with
-  | Ok Cli.Help -> assert (contains Cli.usage "-I DIR, -isystem DIR, -D NAME[=VALUE]")
+  | Ok Cli.Help ->
+      assert (contains Cli.usage "-I DIR, -isystem DIR, -D NAME[=VALUE]");
+      assert (contains Cli.usage "--sanitize=LIST")
   | Ok (Cli.Run _) | Error _ -> assert false);
   let input_path = Filename.temp_file "fas-driver-" ".fas" in
   Fun.protect

@@ -2555,6 +2555,15 @@ let () =
     ];
   let cli_profile = cli_run [ "-debug"; "-no-inline"; "helper"; "profile.fas" ] in
   assert (cli_profile.Cli.no_inline_function = Some "helper");
+  let cli_sanitizers =
+    cli_run
+      [
+        "--sanitize=undefined,address,address";
+        "--sanitize=address,undefined";
+        "profile.fas";
+      ]
+  in
+  assert (cli_sanitizers.Cli.sanitizers = [ "address"; "undefined" ]);
   let cli_profile_ordered =
     cli_run [ "-O3"; "-debug"; "-no-inline"; "helper"; "profile.fas" ]
   in
@@ -2567,6 +2576,12 @@ let () =
     [ "-no-inline"; "helper"; "profile.fas" ];
   cli_error "no-inline-duplicate" "duplicate -no-inline"
     [ "-debug"; "-no-inline"; "helper"; "-no-inline"; "other"; "profile.fas" ];
+  cli_error "sanitize-empty-list" "--sanitize requires a non-empty list"
+    [ "--sanitize="; "profile.fas" ];
+  cli_error "sanitize-unknown-name" "unknown sanitizer `memory`"
+    [ "--sanitize=memory"; "profile.fas" ];
+  cli_error "sanitize-conflicting-repeat" "conflicting --sanitize options"
+    [ "--sanitize=address"; "--sanitize=undefined"; "profile.fas" ];
   cli_error "removed-ast-output" "unknown option: --emit-ast"
     [ "--emit-ast"; "profile.fas" ];
   cli_error "removed-release-option" "unknown option: -release"
