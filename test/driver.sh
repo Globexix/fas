@@ -70,6 +70,17 @@ SANITIZE_C
 extern "C" { fn fas_sanitize_c() i32 }
 fn main() i32 { return fas_sanitize_c() - 5 }
 FAS
+cat >"$WORK/lifetime-defer.fas" <<'FAS'
+extern "C" { fn observe(p addr) void }
+fn main() i32 {
+  {
+    value i32 = 5
+    defer { observe(&value) }
+    observe(&value)
+  }
+  return 0
+}
+FAS
 cat >"$WORK/use-main.fas" <<'FAS'
 use "part-a.fas"
 use "part-b.fas"
@@ -210,6 +221,19 @@ grep -F "declare i32 @c_link_probe(i32)" "$WORK/address.ll" >/dev/null || fail "
 if grep -F "declare i32 @c_link_probe(i32) sanitize_address" "$WORK/address.ll" >/dev/null; then
   fail "address sanitizer marked external declaration"
 fi
+"$OCAML_FAS" --emit-llvm "$WORK/lifetime-defer.fas" >"$WORK/lifetime-plain.ll" 2>"$WORK/stderr"
+if grep -F "llvm.lifetime." "$WORK/lifetime-plain.ll" >/dev/null; then
+  fail "lifetime markers appeared without address sanitizer"
+fi
+"$OCAML_FAS" --sanitize=address --emit-llvm "$WORK/lifetime-defer.fas" \
+  >"$WORK/lifetime-address.ll" 2>"$WORK/stderr"
+start_line=$(grep -n -F "call void @llvm.lifetime.start.p0" "$WORK/lifetime-address.ll" | cut -d: -f1)
+end_line=$(grep -n -F "call void @llvm.lifetime.end.p0" "$WORK/lifetime-address.ll" | cut -d: -f1)
+defer_line=$(grep -n -F "call void @observe" "$WORK/lifetime-address.ll" | tail -n 1 | cut -d: -f1)
+[ -n "$start_line" ] && [ -n "$end_line" ] && [ -n "$defer_line" ] \
+  || fail "address sanitizer omitted a local lifetime marker or deferred call"
+[ "$start_line" -lt "$defer_line" ] && [ "$defer_line" -lt "$end_line" ] \
+  || fail "local lifetime did not start before use and end after defer"
 "$OCAML_FAS" --emit-ir "$WORK/good.fas" >"$WORK/custom.ir" 2>"$WORK/stderr"
 [ ! -s "$WORK/stderr" ] || fail "custom IR emission wrote diagnostics"
 grep -F "Module {" "$WORK/custom.ir" >/dev/null || fail "custom IR emission omitted module"
@@ -270,6 +294,7 @@ for level in 0 1 2 3; do
   "$OCAML_FAS" --sanitize=address "-O$level" --keep -S "$WORK/good.fas" \
     -o "$WORK/address-$level.s" >"$WORK/stdout" 2>"$WORK/stderr"
   grep -F -- "-passes=asan,default<O$level>" "$TOOL_LOG" >/dev/null || fail "address pass order missing at -O$level"
+  grep -F -- "-asan-use-after-scope" "$TOOL_LOG" >/dev/null || fail "address pass omitted scope instrumentation"
 done
 FAS_OPT_PASSES='default<O1>' "$OCAML_FAS" --sanitize=address --keep -S "$WORK/good.fas" \
   -o "$WORK/address-custom.s" >"$WORK/stdout" 2>"$WORK/stderr"

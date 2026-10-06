@@ -499,8 +499,15 @@ let emit_tools_unprotected config program ir c_objects redirect =
       report_kept config [ ll_path; opt_path; asm_path ] opt llc cc;
       let* () = verify_llvm opt ll_path in
       let* () =
+        let address_scope_option =
+          if List.mem "address" config.Cli.sanitizers then [ "-asan-use-after-scope" ]
+          else []
+        in
         run_tool opt
-          [| opt; "-passes=" ^ opt_pass config; ll_path; "-S"; "-o"; opt_path |]
+          (Array.of_list
+             ([ opt; "-passes=" ^ opt_pass config ]
+             @ address_scope_option
+             @ [ ll_path; "-S"; "-o"; opt_path ]))
       in
       let* () = verify_llvm opt opt_path in
       match config.emit with
@@ -998,7 +1005,9 @@ let run_unprotected ?header_output config =
             | Cli.Header, message :: _ -> Error [ c_export_diagnostic program message ]
             | _ -> Ok ()
           in
-          let* ir = Lower.lower hir in
+          let* ir =
+            Lower.lower ~sanitize_address:(List.mem "address" config.Cli.sanitizers) hir
+          in
           let* ir = apply_no_inline config ir in
           let* ir, adapters, redirect =
             add_static_adapters (List.rev !c_units) referenced_names ir

@@ -5,6 +5,7 @@ type block_state = {
 }
 
 type loop = { break_to : int; continue_to : int; keep_scopes : int }
+type local_slot = { pointer : Ir.value; size : int }
 
 type state = {
   literal_globals : Hir.global list ref;
@@ -20,6 +21,9 @@ type state = {
   strings : string list;
   functions : Hir.func list;
   mutable defer_scopes : Hir.stmt list list list;
+  mutable scope_slots : local_slot list list;
+  address_taken : (int, unit) Hashtbl.t;
+  sanitize_address : bool;
   mutable loops : loop list;
 }
 
@@ -465,11 +469,12 @@ let bind_local s binding value alignment =
 
 let push_scope s =
   s.env_scopes <- [] :: s.env_scopes;
-  s.defer_scopes <- [] :: s.defer_scopes
+  s.defer_scopes <- [] :: s.defer_scopes;
+  s.scope_slots <- [] :: s.scope_slots
 
 let pop_scope s =
-  match (s.env_scopes, s.defer_scopes) with
-  | scope :: er, _ :: dr ->
+  match (s.env_scopes, s.defer_scopes, s.scope_slots) with
+  | scope :: er, _ :: dr, _ :: lr ->
       List.iter
         (fun (n, old) ->
           match old with
@@ -477,7 +482,8 @@ let pop_scope s =
           | Some v -> Hashtbl.replace s.env n v)
         scope;
       s.env_scopes <- er;
-      s.defer_scopes <- dr
+      s.defer_scopes <- dr;
+      s.scope_slots <- lr
   | _ -> ()
 
 let find_struct s n = List.find_opt (fun (d : Hir.struct_def) -> d.name = n) s.structs
@@ -1817,6 +1823,52 @@ and emit_scope_defers s idx =
           emit_defer_body s body)
         (Ok ()) ds
 
+and emit_lifetime s operation slot =
+  emit s
+    (Ir.Call
+       ( None,
+         Ir.No_extension,
+         Ir.Void,
+         "llvm.lifetime." ^ operation ^ ".p0",
+         [
+           (Ir.I64, Ir.No_extension, Ir.Const (Ir.I64, Int64.of_int slot.size));
+           (Ir.value_ty slot.pointer, Ir.No_extension, slot.pointer);
+         ] ));
+  Ok ()
+
+and emit_scope_lifetimes s slots =
+  let rec emit_all = function
+    | [] -> Ok ()
+    | slot :: rest ->
+        let* () = emit_lifetime s "end" slot in
+        emit_all rest
+  in
+  emit_all slots
+
+and emit_current_scope_lifetimes s =
+  match s.scope_slots with
+  | slots :: _ -> emit_scope_lifetimes s slots
+  | [] -> error Span.synthetic "internal error: lifetime scope stack is empty"
+
+and register_local_lifetime s local pointer =
+  if (not s.sanitize_address) || not (Hashtbl.mem s.address_taken local.Hir.id) then
+    Ok ()
+  else
+    match Hir.layout s.structs local.ty with
+    | Error message ->
+        error Span.synthetic
+          (Printf.sprintf "internal error: local `%s` has no layout: %s" local.name
+             message)
+    | Ok (size, _) when size = 0 -> Ok ()
+    | Ok (size, _) -> (
+        match s.scope_slots with
+        | slots :: rest ->
+            let slot = { pointer; size } in
+            let* () = emit_lifetime s "start" slot in
+            s.scope_slots <- (slot :: slots) :: rest;
+            Ok ()
+        | [] -> error Span.synthetic "internal error: lifetime scope stack is empty")
+
 and unwind s keep =
   let count = List.length s.defer_scopes - keep in
   let scopes =
@@ -1825,20 +1877,36 @@ and unwind s keep =
     in
     take count s.defer_scopes
   in
-  List.fold_left
-    (fun r ds ->
-      let* () = r in
-      List.fold_left
-        (fun rr body ->
-          let* () = rr in
-          emit_defer_body s body)
-        (Ok ()) ds)
-    (Ok ()) scopes
+  let lifetimes =
+    let rec take n = function
+      | _ when n <= 0 -> []
+      | [] -> []
+      | scope :: rest -> scope :: take (n - 1) rest
+    in
+    take count s.scope_slots
+  in
+  let rec unwind_scopes scopes lifetimes =
+    match (scopes, lifetimes) with
+    | [], [] -> Ok ()
+    | ds :: scope_rest, slots :: lifetime_rest ->
+        let* () =
+          List.fold_left
+            (fun r body ->
+              let* () = r in
+              emit_defer_body s body)
+            (Ok ()) ds
+        in
+        let* () = emit_scope_lifetimes s slots in
+        unwind_scopes scope_rest lifetime_rest
+    | _ -> error Span.synthetic "internal error: lifetime and defer scope mismatch"
+  in
+  unwind_scopes scopes lifetimes
 
 and scoped s xs =
   push_scope s;
   let* () = stmt_list s xs in
   let* () = if open_block s then emit_scope_defers s 0 else Ok () in
+  let* () = if open_block s then emit_current_scope_lifetimes s else Ok () in
   pop_scope s;
   Ok ()
 
@@ -1848,6 +1916,7 @@ and stmt s = function
       let id = fresh s in
       emit_entry s (Ir.Alloca (id, storage_ty local.ty, alignment));
       let p = Ir.Local (id, Ir.Pointer (storage_ty local.ty)) in
+      let* () = register_local_lifetime s local p in
       bind_local s local p alignment;
       match init with
       | None -> Ok ()
@@ -1859,6 +1928,7 @@ and stmt s = function
       let id = fresh s in
       emit_entry s (Ir.Alloca (id, storage_ty local.ty, alignment));
       let pointer = Ir.Local (id, Ir.Pointer (storage_ty local.ty)) in
+      let* () = register_local_lifetime s local pointer in
       bind_local s local pointer alignment;
       construct_into s pointer construction
   | Hir.View (local, place, span) ->
@@ -2249,6 +2319,7 @@ and lower_for s init cond step body =
     if open_block s then s.current.term := Some (Ir.Br head.id);
     s.current <- exit;
     let* () = if open_block s then emit_scope_defers s 0 else Ok () in
+    let* () = if open_block s then emit_current_scope_lifetimes s else Ok () in
     let unconditional =
       match cond with None -> true | Some condition -> Hir.condition_is_true condition
     in
@@ -2307,7 +2378,152 @@ and lower_switch s e arms default span =
   if not falls_through then s.current.term := Some Ir.Unreachable;
   Ok ()
 
-let lower_func literal_globals structs strings functions f =
+let address_taken_locals body =
+  let views = Hashtbl.create 16 in
+  let addressed = Hashtbl.create 16 in
+  let rec resolve_view id =
+    match Hashtbl.find_opt views id with
+    | Some owner when owner <> id -> resolve_view owner
+    | _ -> id
+  in
+  let rec root_local = function
+    | Hir.Local (local, _) -> Some (resolve_view local.id)
+    | Hir.Field (base, _, _, _, _)
+    | Hir.Index (base, _, _, _)
+    | Hir.Raw_select (base, _, _, _) ->
+        root_local base
+    | _ -> None
+  in
+  let rec collect_views = function
+    | Hir.View (local, place, _) ->
+        Option.iter (Hashtbl.replace views local.id) (root_local place);
+        collect_views_expr place
+    | Hir.If (_, yes, no, _) ->
+        collect_views_list yes;
+        Option.iter collect_views_list no
+    | Hir.While (_, body, _) | Hir.Block (body, _) | Hir.Defer (body, _) ->
+        collect_views_list body
+    | Hir.For (init, _, step, body, _) ->
+        Option.iter collect_views init;
+        collect_views_list body;
+        Option.iter collect_views step
+    | Hir.Switch (_, arms, default, _) ->
+        List.iter (fun (_, body) -> collect_views_list body) arms;
+        Option.iter collect_views_list default
+    | Hir.Let (_, _, _)
+    | Hir.Let_construct (_, _, _)
+    | Hir.Copy (_, _, _, _, _)
+    | Hir.Volatile_store (_, _, _, _)
+    | Hir.Simd_store (_, _, _, _)
+    | Hir.Assign (_, _, _)
+    | Hir.Compound_assign (_, _, _, _, _)
+    | Hir.Return (_, _)
+    | Hir.Break _ | Hir.Continue _
+    | Hir.Expr (_, _) ->
+        ()
+  and collect_views_list statements = List.iter collect_views statements
+  and collect_views_expr = function
+    | Hir.Vector_lit (items, _, _) -> List.iter collect_views_expr items
+    | Hir.Unary (_, value, _, _)
+    | Hir.Cast (_, value, _, _)
+    | Hir.Splat (value, _, _)
+    | Hir.Address (value, _, _) ->
+        collect_views_expr value
+    | Hir.Binary (_, left, right, _, _)
+    | Hir.Index (left, right, _, _)
+    | Hir.Raw_select (left, right, _, _) ->
+        collect_views_expr left;
+        collect_views_expr right
+    | Hir.Call (_, args, _, _) -> List.iter collect_views_expr args
+    | Hir.Field (base, _, _, _, _) -> collect_views_expr base
+    | Hir.Ternary (condition, yes, no, _, _) ->
+        collect_views_expr condition;
+        collect_views_expr yes;
+        collect_views_expr no
+    | Hir.EInt _ | Hir.EBool _ | Hir.EVector _ | Hir.Null _ | Hir.EString _
+    | Hir.Local _ | Hir.Global _ | Hir.Function_address _ | Hir.Sizeof _ | Hir.Alignof _
+    | Hir.Offsetof _ | Hir.Const_array _ ->
+        ()
+  in
+  let rec collect_expr = function
+    | Hir.Address (place, _, _) ->
+        Option.iter (fun id -> Hashtbl.replace addressed id ()) (root_local place);
+        collect_expr place
+    | Hir.Vector_lit (items, _, _) -> List.iter collect_expr items
+    | Hir.Unary (_, value, _, _) | Hir.Cast (_, value, _, _) | Hir.Splat (value, _, _)
+      ->
+        collect_expr value
+    | Hir.Binary (_, left, right, _, _)
+    | Hir.Index (left, right, _, _)
+    | Hir.Raw_select (left, right, _, _) ->
+        collect_expr left;
+        collect_expr right
+    | Hir.Call (_, args, _, _) -> List.iter collect_expr args
+    | Hir.Field (base, _, _, _, _) -> collect_expr base
+    | Hir.Ternary (condition, yes, no, _, _) ->
+        collect_expr condition;
+        collect_expr yes;
+        collect_expr no
+    | Hir.EInt _ | Hir.EBool _ | Hir.EVector _ | Hir.Null _ | Hir.EString _
+    | Hir.Local _ | Hir.Global _ | Hir.Function_address _ | Hir.Sizeof _ | Hir.Alignof _
+    | Hir.Offsetof _ | Hir.Const_array _ ->
+        ()
+  in
+  let rec collect_construction = function
+    | Hir.Init_value value -> collect_expr value
+    | Hir.Init_zero _ -> ()
+    | Hir.Init_aggregate (_, entries, _) -> List.iter collect_construction entries
+  and collect_target = function
+    | Hir.ARaw (base, offset, _) | Hir.AIndex (base, offset) ->
+        collect_expr base;
+        collect_expr offset
+    | Hir.AField (base, _, _) -> collect_expr base
+    | Hir.ALocal _ | Hir.AGlobal _ -> ()
+  and collect_stmt = function
+    | Hir.Let (_, value, _) -> Option.iter collect_expr value
+    | Hir.Let_construct (_, construction, _) -> collect_construction construction
+    | Hir.View (_, place, _) -> collect_expr place
+    | Hir.Copy (destination, source, _, _, _) ->
+        collect_expr destination;
+        collect_expr source
+    | Hir.Volatile_store (_, pointer, value, _) ->
+        collect_expr pointer;
+        collect_expr value
+    | Hir.Simd_store (_, _, args, _) -> List.iter collect_expr args
+    | Hir.Assign (target, value, _) | Hir.Compound_assign (target, _, value, _, _) ->
+        collect_target target;
+        collect_expr value
+    | Hir.Return (value, _) -> Option.iter collect_expr value
+    | Hir.If (condition, yes, no, _) ->
+        collect_expr condition;
+        collect_list yes;
+        Option.iter collect_list no
+    | Hir.While (condition, body, _) ->
+        collect_expr condition;
+        collect_list body
+    | Hir.For (init, condition, step, body, _) ->
+        Option.iter collect_stmt init;
+        Option.iter collect_expr condition;
+        Option.iter collect_stmt step;
+        collect_list body
+    | Hir.Switch (value, arms, default, _) ->
+        collect_expr value;
+        List.iter
+          (fun (case, body) ->
+            collect_expr case;
+            collect_list body)
+          arms;
+        Option.iter collect_list default
+    | Hir.Defer (body, _) | Hir.Block (body, _) -> collect_list body
+    | Hir.Break _ | Hir.Continue _ -> ()
+    | Hir.Expr (value, _) -> collect_expr value
+  and collect_list statements = List.iter collect_stmt statements in
+  collect_views_list body;
+  collect_list body;
+  addressed
+
+let lower_func ~sanitize_address ~address_taken literal_globals structs strings
+    functions f =
   let c_abi = has_c_abi f in
   let* () =
     Result_list.iter
@@ -2367,6 +2583,9 @@ let lower_func literal_globals structs strings functions f =
           strings;
           functions;
           defer_scopes = [];
+          scope_slots = [];
+          address_taken;
+          sanitize_address;
           loops = [];
         }
       in
@@ -2379,6 +2598,7 @@ let lower_func literal_globals structs strings functions f =
             let id = fresh s in
             emit s (Ir.Alloca (id, storage_ty local.ty, alignment));
             let p = Ir.Local (id, Ir.Pointer (storage_ty local.ty)) in
+            let* () = register_local_lifetime s local p in
             bind_local s local p alignment;
             let* () =
               store_value s local.ty
@@ -2394,6 +2614,7 @@ let lower_func literal_globals structs strings functions f =
       let* () = bind_parameters f.params params in
       let* () = scoped s body in
       let* () = if open_block s then emit_scope_defers s 0 else Ok () in
+      let* () = if open_block s then emit_current_scope_lifetimes s else Ok () in
       let* () =
         if not (open_block s) then Ok ()
         else if s.ret = Ir.Void then (
@@ -2585,7 +2806,7 @@ let global_storage structs (global : Hir.global) =
         error Span.synthetic
           (Printf.sprintf "internal error: global %s: %s" global.name message))
 
-let lower (p : Hir.program) =
+let lower ?(sanitize_address = false) (p : Hir.program) =
   let* () =
     match Target_layout.pointer_integer_bits Target_layout.current with
     | Ok 32 | Ok 64 -> Ok ()
@@ -2621,7 +2842,13 @@ let lower (p : Hir.program) =
   let* funcs =
     Result_list.map
       (fun (f : Hir.func) ->
-        lower_func literal_globals p.Hir.structs p.strings p.funcs f)
+        let address_taken =
+          match (sanitize_address, f.Hir.body) with
+          | true, Hir.Statements body -> address_taken_locals body
+          | _ -> Hashtbl.create 0
+        in
+        lower_func ~sanitize_address ~address_taken literal_globals p.Hir.structs
+          p.strings p.funcs f)
       p.funcs
   in
   let* structs =

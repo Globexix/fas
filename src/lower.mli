@@ -1,1 +1,1 @@
-val lower : Hir.program -> (Ir.module_, Diag.t list) result
+val lower : ?sanitize_address:bool -> Hir.program -> (Ir.module_, Diag.t list) result
