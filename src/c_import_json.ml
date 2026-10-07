@@ -59,7 +59,7 @@ let hex i =
   done;
   !n
 
-let read_string i =
+let read_string_slow i =
   let b = Buffer.create 32 in
   let rec loop () =
     match take i with
@@ -95,6 +95,32 @@ let read_string i =
   in
   loop ()
 
+let read_string i =
+  let start = i.pos in
+  let rec scan pos =
+    if pos >= i.size then (
+      i.pos <- start;
+      read_string_slow i)
+    else
+      match Bytes.get i.data pos with
+      | '"' ->
+          i.pos <- pos + 1;
+          Bytes.sub_string i.data start (pos - start)
+      | '\\' ->
+          i.pos <- start;
+          read_string_slow i
+      | _ -> scan (pos + 1)
+  in
+  scan start
+
+let rec skip_string i =
+  match take i with
+  | '"' -> ()
+  | '\\' ->
+      ignore (take i);
+      skip_string i
+  | _ -> skip_string i
+
 let record_location_value i field value =
   if field = "file" then (
     i.last_file <- Some value;
@@ -110,9 +136,12 @@ let rec skip_value ?(location = false) ?(range = false) ?(field = "") i =
   space i;
   match take i with
   | '"' ->
-      let value = read_string i in
-      if location && List.mem field [ "file"; "line"; "presumedFile"; "presumedLine" ]
-      then record_location_value i field value
+      if
+        location
+        && (field = "file" || field = "line" || field = "presumedFile"
+          || field = "presumedLine")
+      then record_location_value i field (read_string i)
+      else skip_string i
   | '{' ->
       let rec fields () =
         space i;
@@ -149,17 +178,26 @@ let rec skip_value ?(location = false) ?(range = false) ?(field = "") i =
       in
       values ()
   | _ ->
-      let b = Buffer.create 12 in
-      while
-        match peek i with
-        | ',' | ']' | '}' | ' ' | '\n' | '\r' | '\t' -> false
-        | _ -> true
-      do
-        Buffer.add_char b (take i)
-      done;
-      let value = Buffer.contents b in
-      if location && List.mem field [ "file"; "line"; "presumedFile"; "presumedLine" ]
-      then record_location_value i field value
+      if location && (field = "line" || field = "presumedLine") then (
+        let b = Buffer.create 12 in
+        while
+          match peek i with
+          | ',' | ']' | '}' | ' ' | '\n' | '\r' | '\t' -> false
+          | _ -> true
+        do
+          Buffer.add_char b (take i)
+        done;
+        record_location_value i field (Buffer.contents b))
+      else
+        while
+          match peek i with
+          | ',' | ']' | '}' | ' ' | '\n' | '\r' | '\t' -> false
+          | _ ->
+              ignore (take i);
+              true
+        do
+          ()
+        done
 
 let supported = function
   | "FunctionDecl" | "VarDecl" | "TypedefDecl" | "EnumDecl" | "RecordDecl" -> true
@@ -176,6 +214,44 @@ let keep_field = function
   | "end" | "tokLen" | "isMacroArgExpansion" | "args" ->
       true
   | _ -> false
+
+let field_keys =
+  String.split_on_char ' '
+    ("kind id decl name type loc value storageClass inline tagUsed completeDefinition "
+   ^ "fixedUnderlyingType isBitfield isImplicit inner qualType desugaredQualType file \
+      line col "
+   ^ "typeAliasDeclId qualifiers size cc variadic offset expansionLoc spellingLoc "
+   ^ "presumedFile presumedLine range begin end tokLen isMacroArgExpansion args")
+
+let read_key i =
+  let start = i.pos in
+  let matches key finish =
+    let length = finish - start in
+    String.length key = length
+    &&
+    let rec equal offset =
+      offset = length
+      || (Bytes.get i.data (start + offset) = key.[offset] && equal (offset + 1))
+    in
+    equal 0
+  in
+  let rec scan pos =
+    if pos >= i.size then (
+      i.pos <- start;
+      let key = read_string_slow i in
+      List.find_opt (String.equal key) field_keys)
+    else
+      match Bytes.get i.data pos with
+      | '"' ->
+          i.pos <- pos + 1;
+          List.find_opt (fun key -> matches key pos) field_keys
+      | '\\' ->
+          i.pos <- start;
+          let key = read_string_slow i in
+          List.find_opt (String.equal key) field_keys
+      | _ -> scan (pos + 1)
+  in
+  scan start
 
 let rec json ?(location = false) ?(range = false) i =
   space i;
@@ -226,37 +302,31 @@ and object_value ?(location = false) ?(range = false) i =
   let inherited_file = i.last_file and inherited_line = i.last_line in
   let inherited_presumed_file = i.presumed_file
   and inherited_presumed_line = i.presumed_line in
-  let location_fields fields =
-    if not location then fields
-    else
-      let add_if_missing key value fields =
-        if List.mem_assoc key fields then fields
-        else Option.fold ~none:fields ~some:(fun v -> (key, v) :: fields) value
-      in
-      let inherited_presumed_file =
-        if List.mem_assoc "file" fields then None else inherited_presumed_file
-      in
-      let inherited_presumed_line =
-        if List.mem_assoc "file" fields || List.mem_assoc "line" fields then None
-        else inherited_presumed_line
-      in
-      fields
-      |> add_if_missing "file" (Option.map (fun v -> Str v) inherited_file)
-      |> add_if_missing "line" (Option.map (fun v -> Num v) inherited_line)
-      |> add_if_missing "presumedFile"
-           (Option.map (fun v -> Str v) inherited_presumed_file)
-      |> add_if_missing "presumedLine"
-           (Option.map (fun v -> Num v) inherited_presumed_line)
+  let index = Hashtbl.create 16 in
+  let add key value = if not (Hashtbl.mem index key) then Hashtbl.add index key value in
+  let location_fields () =
+    if location then (
+      let has_file = Hashtbl.mem index "file" in
+      let has_line = Hashtbl.mem index "line" in
+      Option.iter (fun value -> add "file" (Str value)) inherited_file;
+      Option.iter (fun value -> add "line" (Num value)) inherited_line;
+      Option.iter
+        (fun value -> add "presumedFile" (Str value))
+        (if has_file then None else inherited_presumed_file);
+      Option.iter
+        (fun value -> add "presumedLine" (Str value))
+        (if has_file || has_line then None else inherited_presumed_line))
   in
   expect i '{';
   space i;
   if peek i = '}' then (
     ignore (take i);
-    make_obj (location_fields []))
+    location_fields ();
+    Obj ([], index))
   else
-    let rec loop kind acc =
+    let rec loop kind =
       expect i '"';
-      let key = read_string i in
+      let key = Option.value ~default:"" (read_key i) in
       expect i ':';
       let keep = keep_field key && (key <> "range" || kind = "NonNullAttr") in
       let skip_inner =
@@ -282,27 +352,23 @@ and object_value ?(location = false) ?(range = false) i =
         if key = "kind" then Option.value ~default:kind (Option.bind value string)
         else kind
       in
+      Option.iter (fun value -> add key value) value;
       match
         space i;
         take i
       with
       | '}' ->
-          let fields =
-            match value with
-            | None -> List.rev acc
-            | Some value -> List.rev ((key, value) :: acc)
-          in
-          make_obj (location_fields fields)
-      | ',' ->
-          loop kind (match value with None -> acc | Some value -> (key, value) :: acc)
+          location_fields ();
+          Obj ([], index)
+      | ',' -> loop kind
       | _ -> failwith "invalid Clang JSON object"
     in
-    loop "" []
+    loop ""
 
 let declaration i =
   expect i '{';
   expect i '"';
-  let first_field = read_string i in
+  let first_field = Option.value ~default:"" (read_key i) in
   expect i ':';
   let first_value =
     if first_field = "id" then Some (json i)
@@ -312,7 +378,7 @@ let declaration i =
   in
   expect i ',';
   expect i '"';
-  if read_string i <> "kind" then failwith "Clang declaration kind order changed";
+  if read_key i <> Some "kind" then failwith "Clang declaration kind order changed";
   expect i ':';
   expect i '"';
   let kind = read_string i in
@@ -331,7 +397,7 @@ let declaration i =
         if keep then Some (make_obj (List.rev (("kind", Str kind) :: acc))) else None
     | ',' ->
         expect i '"';
-        let key = read_string i in
+        let key = Option.value ~default:"" (read_key i) in
         expect i ':';
         if keep && keep_field key && key <> "range" then
           rest
@@ -369,7 +435,7 @@ let declarations ?(root_consumed = false) channel =
       List.rev acc)
     else (
       expect i '"';
-      let key = read_string i in
+      let key = Option.value ~default:"" (read_key i) in
       expect i ':';
       let acc =
         if key <> "inner" then (
