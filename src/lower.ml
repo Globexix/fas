@@ -20,6 +20,7 @@ type state = {
   structs : Hir.struct_def list;
   strings : string list;
   functions : Hir.func list;
+  addressed_functions : (string, unit) Hashtbl.t;
   mutable defer_scopes : Hir.stmt list list list;
   mutable scope_slots : local_slot list list;
   address_taken : (int, unit) Hashtbl.t;
@@ -661,7 +662,10 @@ let rec expr s = function
         | None -> error sp ("unknown function `" ^ n ^ "` reached lowering")
       in
       let* vs = exprs s args in
-      let c_function = if has_c_abi target then Some target else None in
+      let c_function =
+        if has_c_abi target || Hashtbl.mem s.addressed_functions n then Some target
+        else None
+      in
       let av =
         List.mapi
           (fun index v ->
@@ -687,6 +691,23 @@ let rec expr s = function
         emit s (Ir.Call (Some id, ret_extension, ty t, n, av));
         Ok (Ir.Local (id, ty t))
   | Hir.Call (Hir.Builtin b, args, t, span) -> lower_builtin s b args t span
+  | Hir.Indirect_call (callee, args, result_ty, _) ->
+      let* target = expr s callee in
+      let* values = exprs s args in
+      let arguments =
+        List.map2
+          (fun arg value -> (value_ty value, c_extension (Hir.expr_ty arg), value))
+          args values
+      in
+      let result_extension = c_extension result_ty in
+      if result_ty = Hir.Void then (
+        emit s (Ir.Call_indirect (None, Ir.No_extension, Ir.Void, target, arguments));
+        Ok (Ir.Const (Ir.I1, 0L)))
+      else
+        let id = fresh s in
+        emit s
+          (Ir.Call_indirect (Some id, result_extension, ty result_ty, target, arguments));
+        Ok (Ir.Local (id, ty result_ty))
   | Hir.Cast (kind, e, t, _) ->
       let* v = expr s e in
       let st = value_ty v and dt = ty t in
@@ -2378,7 +2399,7 @@ and lower_switch s e arms default span =
   if not falls_through then s.current.term := Some Ir.Unreachable;
   Ok ()
 
-let address_taken_locals body =
+let address_taken_locals ?function_addresses body =
   let views = Hashtbl.create 16 in
   let addressed = Hashtbl.create 16 in
   let rec resolve_view id =
@@ -2408,14 +2429,19 @@ let address_taken_locals body =
         collect_expr left;
         collect_expr right
     | Hir.Call (_, args, _, _) -> List.iter collect_expr args
+    | Hir.Indirect_call (callee, args, _, _) ->
+        collect_expr callee;
+        List.iter collect_expr args
     | Hir.Field (base, _, _, _, _) -> collect_expr base
     | Hir.Ternary (condition, yes, no, _, _) ->
         collect_expr condition;
         collect_expr yes;
         collect_expr no
+    | Hir.Function_address (name, _) ->
+        Option.iter (fun table -> Hashtbl.replace table name ()) function_addresses
     | Hir.EInt _ | Hir.EBool _ | Hir.EVector _ | Hir.Null _ | Hir.EString _
-    | Hir.Local _ | Hir.Global _ | Hir.Function_address _ | Hir.Sizeof _ | Hir.Alignof _
-    | Hir.Offsetof _ | Hir.Const_array _ ->
+    | Hir.Local _ | Hir.Global _ | Hir.Sizeof _ | Hir.Alignof _ | Hir.Offsetof _
+    | Hir.Const_array _ ->
         ()
   in
   let rec collect_construction = function
@@ -2472,9 +2498,9 @@ let address_taken_locals body =
   collect_list body;
   addressed
 
-let lower_func ~sanitize_address ~address_taken literal_globals structs strings
-    functions f =
-  let c_abi = has_c_abi f in
+let lower_func ~sanitize_address ~address_taken ~addressed_functions literal_globals
+    structs strings functions f =
+  let c_abi = has_c_abi f || Hashtbl.mem addressed_functions f.name in
   let* () =
     Result_list.iter
       (fun (local : Hir.local) -> layout_ok structs local.ty)
@@ -2532,6 +2558,7 @@ let lower_func ~sanitize_address ~address_taken literal_globals structs strings
           structs;
           strings;
           functions;
+          addressed_functions;
           defer_scopes = [];
           scope_slots = [];
           address_taken;
@@ -2788,6 +2815,29 @@ let lower ?(sanitize_address = false) (p : Hir.program) =
       (Printf.sprintf "internal error: struct `%s` has malformed layout: %s" d.name
          message)
   in
+  let addressed_functions = Hashtbl.create 16 in
+  let function_names = Hashtbl.create (List.length p.funcs) in
+  List.iter (fun (f : Hir.func) -> Hashtbl.replace function_names f.name ()) p.funcs;
+  List.iter
+    (fun (f : Hir.func) ->
+      match f.body with
+      | Hir.Declaration -> ()
+      | Hir.Statements body ->
+          ignore (address_taken_locals ~function_addresses:addressed_functions body))
+    p.funcs;
+  let rec collect_global_addresses = function
+    | Hir.Global_address (name, _) when Hashtbl.mem function_names name ->
+        Hashtbl.replace addressed_functions name ()
+    | Hir.Global_array entries | Hir.Global_struct entries ->
+        List.iter collect_global_addresses entries
+    | Hir.Global_zero _ | Hir.Global_int _ | Hir.Global_bool _ | Hir.Global_null
+    | Hir.Global_address _ | Hir.Global_vector _ ->
+        ()
+  in
+  List.iter
+    (fun (global : Hir.global) ->
+      Option.iter collect_global_addresses global.init_value)
+    p.globals;
   let literal_globals = ref [] in
   let* funcs =
     Result_list.map
@@ -2797,8 +2847,8 @@ let lower ?(sanitize_address = false) (p : Hir.program) =
           | true, Hir.Statements body -> address_taken_locals body
           | _ -> Hashtbl.create 0
         in
-        lower_func ~sanitize_address ~address_taken literal_globals p.Hir.structs
-          p.strings p.funcs f)
+        lower_func ~sanitize_address ~address_taken ~addressed_functions literal_globals
+          p.Hir.structs p.strings p.funcs f)
       p.funcs
   in
   let* structs =

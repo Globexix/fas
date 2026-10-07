@@ -132,6 +132,7 @@ let operations =
     ("scatter", Reserved);
     ("scatter_bytes", Reserved);
     ("copy", Reserved);
+    ("call_addr", Reserved);
     ("volatile_load", Reserved);
     ("volatile_store", Reserved);
     ("addr_bits", Value Addr_bits);

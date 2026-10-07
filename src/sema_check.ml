@@ -1360,6 +1360,7 @@ let rec check_place (c : context) expr =
     all_outside || induction_outside
   in
   match expr with
+  | Ast.Ident ("call_addr", s) -> error s "call_addr is a builtin and has no address"
   | Ast.Ident (n, s)
     when Option.is_none (lookup_local n c)
          && Option.is_some (List.assoc_opt n c.c_unsupported) ->
@@ -1750,6 +1751,7 @@ and check_expr_inner ?destination (c : context) expected expression =
   in
   match expression with
   | Ast.Parenthesized (value, _) -> check_expr c expected value
+  | Ast.Ident ("call_addr", s) -> error s "call_addr is a builtin and has no address"
   | (Ast.C_dereference _ | Ast.C_dot_star _) as expression ->
       Error [ Sema_types.c_pointer_selection_diagnostic expected expression ]
   | Ast.Int_lit (raw, s) ->
@@ -2107,6 +2109,8 @@ and check_expr_inner ?destination (c : context) expected expression =
                    (Option.get (value_fact c a)).low (Option.get divisor_fact).low)
             else Ok (Hir.Binary (op, a, b, result_ty, s)))
   | Ast.Call (fn, args, s) -> check_call c None fn args s
+  | Ast.Generic_args (Ast.Ident ("call_addr", _), _, s) ->
+      error s "call_addr is a builtin and has no address"
   | Ast.Handle_from_addr (t, e, s) -> (
       let* opaque_name =
         handle_target c.named_types t
@@ -2695,6 +2699,33 @@ and check_handle_from_addr c name opaque_name args s =
 
 and check_call c _expected fn args s =
   match fn with
+  | Ast.Generic_args (Ast.Ident ("call_addr", _), generic_args, application_span) -> (
+      let* result_ty =
+        match generic_args with
+        | [ Ast.Type_arg source ] -> source_ty_in_context c application_span source
+        | [ Ast.Name_arg (name, name_span) ] ->
+            source_ty_in_context c name_span (Ast.Named_type (name, name_span))
+        | _ -> error application_span "call_addr needs a result type: call_addr[R](...)"
+      in
+      if aggregate_value_type result_ty then
+        error application_span
+          (Printf.sprintf "aggregate result `%s` cannot be returned by value"
+             (Sema_types.diagnostic_ty_name result_ty))
+      else
+        match args with
+        | [] -> error s "call_addr expects a callee address"
+        | callee :: actuals ->
+            let* checked_callee = check_expr c (Some Hir.Addr) callee in
+            if Hir.expr_ty checked_callee <> Hir.Addr then
+              error (Ast.expr_span callee)
+                (Printf.sprintf "call_addr callee must be `addr`, got `%s`"
+                   (Sema_types.diagnostic_ty_name (Hir.expr_ty checked_callee)))
+            else
+              let* checked_args = check_indirect_actuals c actuals in
+              Sema_flow.forget_all_addresses c.flow;
+              Sema_flow.forget_all_values c.flow;
+              Sema_flow.forget_all_masks c.flow;
+              Ok (Hir.Indirect_call (checked_callee, checked_args, result_ty, s)))
   | Ast.Ident (name, span)
     when Option.is_none (lookup_local name c)
          && Option.is_some (List.assoc_opt name c.c_unsupported) ->
@@ -2725,6 +2756,8 @@ and check_call c _expected fn args s =
       | _ -> error s (Printf.sprintf "builtin `%s` expects a type argument" name))
   | Ast.Generic_args (Ast.Ident ("copy", _), _, _) ->
       error s "copy is statement-only and takes no type arguments"
+  | Ast.Ident ("call_addr", _) ->
+      error s "call_addr needs a result type: call_addr[R](...)"
   | Ast.Generic_args (Ast.Ident (name, _), _, _)
     when name = "masked_store" || name = "scatter" || name = "scatter_bytes" ->
       error s (name ^ " is statement-only")
@@ -2884,6 +2917,9 @@ and check_call c _expected fn args s =
                 in
                 let* rt = source_ty_with_values c.named_types values s ret in
                 let* checked = check_actuals ~callee:name c Reject s ps args in
+                Sema_flow.forget_all_addresses c.flow;
+                Sema_flow.forget_all_values c.flow;
+                Sema_flow.forget_all_masks c.flow;
                 Ok (Hir.Call (Hir.User specialization.name, checked, rt, s))
           | Some _ -> error s "const-generic symbol is not a function"))
   | Ast.Ident ("volatile_load", _) ->
@@ -3374,8 +3410,32 @@ and check_call c _expected fn args s =
                             indices
                     in
                     remember_alloc_size_object c name args sig_.params s;
+                    Sema_flow.forget_all_addresses c.flow;
+                    Sema_flow.forget_all_values c.flow;
+                    Sema_flow.forget_all_masks c.flow;
                     Ok (Hir.Call (Hir.User name, xs, sig_.ret, s)))))
   | _ -> error s "call target must be a function name"
+
+and check_indirect_actuals c actuals =
+  let rec check index acc = function
+    | [] -> Ok (List.rev acc)
+    | expression :: rest ->
+        let* value = check_expr c None expression in
+        let* () =
+          match Hir.expr_ty value with
+          | Hir.Void ->
+              error (Ast.expr_span expression)
+                (Printf.sprintf "argument %d of `call_addr` has type `void`" index)
+          | ty when aggregate_value_type ty ->
+              error (Ast.expr_span expression)
+                (Printf.sprintf
+                   "aggregate argument %d of `call_addr` cannot be passed by value"
+                   index)
+          | _ -> Ok ()
+        in
+        check (index + 1) (value :: acc) rest
+  in
+  check 1 [] actuals
 
 and check_actuals ?callee c policy span formals actuals =
   let expected_count = List.length formals and actual_count = List.length actuals in

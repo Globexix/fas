@@ -87,6 +87,7 @@ type expr =
   | Unary of Ast.unop * expr * ty * Span.t
   | Binary of Ast.binop * expr * expr * ty * Span.t
   | Call of call_target * expr list * ty * Span.t
+  | Indirect_call of expr * expr list * ty * Span.t
   | Cast of Ast.cast_kind * expr * ty * Span.t
   | Index of expr * expr * ty * Span.t
   | Field of expr * string * ty * int * Span.t
@@ -206,6 +207,7 @@ let expr_ty = function
   | Unary (_, _, t, _)
   | Binary (_, _, _, t, _)
   | Call (_, _, t, _)
+  | Indirect_call (_, _, t, _)
   | Cast (_, _, t, _)
   | Index (_, _, t, _)
   | Field (_, _, t, _, _)
@@ -235,6 +237,7 @@ let expr_span = function
   | Unary (_, _, _, s)
   | Binary (_, _, _, _, s)
   | Call (_, _, _, s)
+  | Indirect_call (_, _, _, s)
   | Cast (_, _, _, s)
   | Index (_, _, _, s)
   | Field (_, _, _, _, s)

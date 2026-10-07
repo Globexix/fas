@@ -2256,7 +2256,7 @@ let () =
        fn local_nulls() bool { p addr = null\n\
       \ h handle[O] = null\n\
       \ return p == null && h == null }\n\
-       fn call_addr() bool { return addr_equal(null) }\n\
+       fn call_address() bool { return addr_equal(null) }\n\
        fn addr_equal(a addr) bool { return null == a }\n\
        fn handle_null_left(a handle[O]) bool { return null != a }\n\
        fn handle_equal(a handle[O], b handle[O]) bool { return a == b }\n\
@@ -10099,6 +10099,17 @@ let () =
   semantic_message "address-constants-generic-function-local-target"
     "generic function `f` has no single address"
     "fn f[T]() void { return }\nfn run() void { p addr = &f\nreturn }\n";
+  semantic_accept "call-addr-unknown-callee"
+    "fn invoke(p addr) i32 { return call_addr[i32](p, 1) }\n";
+  semantic_accept "call-addr-generic-result"
+    "fn step(value i32) i32 { return value }\n\
+    \     fn invoke[T](p addr, value T) T { return call_addr[T](p, value) }\n\
+    \     fn main() i32 { return invoke[i32](&step, 7) }\n";
+  semantic_message "call-addr-const-rejection"
+    "call_addr cannot be used in constant evaluation"
+    "const value i32 = call_addr[i32](null)\n";
+  semantic_message "call-addr-no-address" "call_addr is a builtin and has no address"
+    "fn invalid() addr { return &call_addr }\n";
   semantic_accept "address-constants-c-function-target"
     "extern \"C\" { fn f() void }\nvar P addr = &f\n";
   semantic_message "address-constants-scalar-constant-target"

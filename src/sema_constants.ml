@@ -473,6 +473,8 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
   | Ast.Parenthesized (value, _) ->
       const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths ~globals
         ?resolve consts expected ~check_only ~validate_dead value
+  | Ast.Call (Ast.Generic_args (Ast.Ident ("call_addr", _), _, span), _, _) ->
+      error span "call_addr cannot be used in constant evaluation"
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in

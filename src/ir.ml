@@ -51,6 +51,7 @@ type instr =
   | Gep of int * ty * value * gep_index list
   | Cast of int * string * ty * value * ty
   | Call of int option * extension * ty * string * (ty * extension * value) list
+  | Call_indirect of int option * extension * ty * value * (ty * extension * value) list
   | Phi of int * ty * (value * int) list
   | Select of int * value * value * value
   | Extract of int * ty * value * value
@@ -228,9 +229,14 @@ let instruction_result = function
       Some (id, match ty with Vector (lanes, _) -> Vector (lanes, I1) | _ -> I1)
   | Select (id, _, yes, _) -> Some (id, value_ty yes)
   | Call (Some id, _, ty, _, _) -> Some (id, ty)
+  | Call_indirect (Some id, _, ty, _, _) -> Some (id, ty)
   | String_ptr (id, _, _) -> Some (id, Pointer I8)
   | Global_ptr (id, _, ty) -> Some (id, Pointer ty)
-  | Store _ | Store_volatile _ | Call (None, _, _, _, _) | Trap -> None
+  | Store _ | Store_volatile _
+  | Call (None, _, _, _, _)
+  | Call_indirect (None, _, _, _, _)
+  | Trap ->
+      None
 
 let terminator_successors = function
   | Ret _ | Unreachable -> []
@@ -509,6 +515,32 @@ let validate_function struct_names globals functions (func : func) =
               validate_arguments rest
         in
         validate_arguments arguments
+    | Call_indirect (result, ret_extension, ty, callee, arguments) ->
+        let* () =
+          match (result, ty) with
+          | None, Void
+          | ( Some _,
+              ( I1 | I8 | I16 | I32 | I64 | I128 | Pointer _ | Vector _ | Struct _
+              | Array _ ) ) ->
+              Ok ()
+          | None, _ -> fail "block %d discards a non-void call result" block_id
+          | Some _, Void -> fail "block %d assigns a void call result" block_id
+        in
+        let* () = pointer_operand block_id callee in
+        if not (valid_extension ty ret_extension) then
+          fail "block %d has an invalid indirect call result extension" block_id
+        else
+          let rec validate_arguments = function
+            | [] -> Ok ()
+            | (argument_ty, extension, value) :: rest ->
+                if not (valid_extension argument_ty extension) then
+                  fail "block %d has an invalid indirect call argument extension"
+                    block_id
+                else
+                  let* () = operand block_id argument_ty value in
+                  validate_arguments rest
+          in
+          validate_arguments arguments
     | Phi (_, ty, incoming) -> validate_phi block_id ty incoming
     | Select (_, condition, yes, no) ->
         let selected = value_ty yes in
@@ -771,6 +803,8 @@ let validate_function struct_names globals functions (func : func) =
                indices
       | Cast (_, _, _, value, _) -> [ value ]
       | Call (_, _, _, _, arguments) -> List.map (fun (_, _, value) -> value) arguments
+      | Call_indirect (_, _, _, callee, arguments) ->
+          callee :: List.map (fun (_, _, value) -> value) arguments
       | Select (_, condition, yes, no) -> [ condition; yes; no ]
       | Extract (_, _, vector, index) -> [ vector; index ]
       | Insert (_, _, vector, index, value) -> [ vector; index; value ]
@@ -1309,6 +1343,27 @@ let emit_instr sink = function
           sink.text " ";
           sink.text (extension_name extension);
           emit_value sink v)
+        args;
+      sink.text ")"
+  | Call_indirect (result, extension, t, callee, args) ->
+      (match result with
+      | Some i ->
+          sink.text "  %v";
+          sink.text (string_of_int i);
+          sink.text " = call "
+      | None -> sink.text "  call ");
+      sink.text (extension_name extension);
+      emit_ty sink t;
+      sink.text " ";
+      emit_value sink callee;
+      sink.text "(";
+      List.iteri
+        (fun i (argument_ty, argument_extension, value) ->
+          if i > 0 then sink.text ", ";
+          emit_ty sink argument_ty;
+          sink.text " ";
+          sink.text (extension_name argument_extension);
+          emit_value sink value)
         args;
       sink.text ")"
   | Phi (i, t, xs) ->
