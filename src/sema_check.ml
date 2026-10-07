@@ -363,6 +363,7 @@ let shift_address op address delta =
       Option.map
         (fun offset -> Sema_flow.Object_address { address with offset })
         (shift offset)
+  | Sema_flow.Function_address _ -> None
   | Sema_flow.Dead_local_address _ -> Some address
 
 let rec address_fact c = function
@@ -380,7 +381,9 @@ let rec address_fact c = function
       address_fact c handle
   | Hir.Call (Hir.Builtin (Hir.Handle_from_addr _), [ pointer ], Hir.Handle _, _) ->
       address_fact c pointer
+  | Hir.EString _ as expression -> object_address c expression
   | Hir.Address (place, _, _) -> object_address c place
+  | Hir.Function_address (name, _) -> Some (Sema_flow.Function_address name)
   | Hir.Call (Hir.User _, _, Hir.Addr, span) ->
       Option.map
         (fun (_, name, extent) ->
@@ -513,6 +516,29 @@ and object_address c expression =
                 offset = 0L;
               })
           (object_size ty)
+    | Hir.EString (id, _) ->
+        let strings = List.rev c.string_pool.reversed in
+        Option.map
+          (fun value ->
+            let is_c =
+              String.length value > 0 && value.[String.length value - 1] = '\000'
+            in
+            let value =
+              if is_c then String.sub value 0 (String.length value - 1) else value
+            in
+            let name = (if is_c then "c" else "") ^ Printf.sprintf "%S" value in
+            Sema_flow.Object_address
+              {
+                identity = "string:" ^ string_of_int id;
+                name;
+                owner_name = None;
+                writable = false;
+                nullable = false;
+                owner = None;
+                extent = Int64.of_int (String.length value);
+                offset = 0L;
+              })
+          (List.nth_opt strings id)
     | Hir.Field (base_expr, _, _, field_offset, _) -> (
         match locate base_expr with
         | Some (Sema_flow.Object_address base) ->
@@ -567,7 +593,9 @@ let check_address_access c span ~write fact size =
     | Some (Sema_flow.Null_address offset) when Int64.compare offset 4096L < 0 ->
         error span "access through null address"
     | Some (Sema_flow.Object_address address) when write && not address.writable ->
-        error span (Printf.sprintf "write to constant storage `%s`" address.name)
+        if String.starts_with ~prefix:"string:" address.identity then
+          error span (Printf.sprintf "cannot modify string literal `%s`" address.name)
+        else error span (Printf.sprintf "write to constant storage `%s`" address.name)
     | Some (Sema_flow.Object_address address) ->
         let past = Int64.add address.offset (Int64.of_int size) in
         if
@@ -2716,12 +2744,14 @@ and check_call c _expected fn args s =
         | [] -> error s "call_addr expects a callee address"
         | callee :: actuals ->
             let* checked_callee = check_expr c (Some Hir.Addr) callee in
+            let target_fact = address_fact c checked_callee in
             if Hir.expr_ty checked_callee <> Hir.Addr then
               error (Ast.expr_span callee)
                 (Printf.sprintf "call_addr callee must be `addr`, got `%s`"
                    (Sema_types.diagnostic_ty_name (Hir.expr_ty checked_callee)))
             else
               let* checked_args = check_indirect_actuals c actuals in
+              let* () = check_indirect_target c target_fact checked_args result_ty s in
               Sema_flow.forget_all_addresses c.flow;
               Sema_flow.forget_all_values c.flow;
               Sema_flow.forget_all_masks c.flow;
@@ -3436,6 +3466,57 @@ and check_indirect_actuals c actuals =
         check (index + 1) (value :: acc) rest
   in
   check 1 [] actuals
+
+and check_indirect_target c fact arguments result_ty span =
+  let signature name (sig_ : Sema_context.signature) =
+    Printf.sprintf "%s(%s) %s" name
+      (String.concat ", "
+         (List.map (fun (_, ty) -> Sema_types.diagnostic_ty_name ty) sig_.params))
+      (Sema_types.diagnostic_ty_name sig_.ret)
+  in
+  let bad message = error span message in
+  match fact with
+  | Some (Sema_flow.Null_address 0L) -> bad "call_addr callee is proven null"
+  | Some (Sema_flow.Object_address _ | Sema_flow.Dead_local_address _) ->
+      bad "call_addr callee is proven not to be a function"
+  | Some (Sema_flow.Function_address name) -> (
+      match List.assoc_opt name c.signatures with
+      | None -> bad (Printf.sprintf "internal error: missing signature for `%s`" name)
+      | Some sig_ ->
+          let named_signature = signature name sig_ in
+          if sig_.variadic then
+            bad
+              (Printf.sprintf "call_addr cannot call variadic C function `%s`"
+                 named_signature)
+          else if List.length arguments <> List.length sig_.params then
+            bad
+              (Printf.sprintf "call_addr calls `%s` with %d arguments" named_signature
+                 (List.length arguments))
+          else
+            let rec compare index actuals formals =
+              match (actuals, formals) with
+              | [], [] ->
+                  if Hir.ty_equal result_ty sig_.ret then Ok ()
+                  else
+                    bad
+                      (Printf.sprintf "call_addr result `%s` does not match `%s`"
+                         (Sema_types.diagnostic_ty_name result_ty)
+                         named_signature)
+              | actual :: actuals, (_, expected) :: formals ->
+                  let actual_ty = Hir.expr_ty actual in
+                  if Hir.ty_equal actual_ty expected then
+                    compare (index + 1) actuals formals
+                  else
+                    bad
+                      (Printf.sprintf
+                         "call_addr argument %d of `%s` has type `%s`, expected `%s`"
+                         index named_signature
+                         (Sema_types.diagnostic_ty_name actual_ty)
+                         (Sema_types.diagnostic_ty_name expected))
+              | _ -> Ok ()
+            in
+            compare 1 arguments sig_.params)
+  | Some (Sema_flow.Null_address _) | None -> Ok ()
 
 and check_actuals ?callee c policy span formals actuals =
   let expected_count = List.length formals and actual_count = List.length actuals in

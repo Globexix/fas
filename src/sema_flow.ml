@@ -8,6 +8,7 @@ type value_state = value_fact option State_map.t
 
 type address_fact =
   | Null_address of int64
+  | Function_address of string
   | Object_address of {
       identity : string;
       name : string;

@@ -10105,6 +10105,40 @@ let () =
     "fn step(value i32) i32 { return value }\n\
     \     fn invoke[T](p addr, value T) T { return call_addr[T](p, value) }\n\
     \     fn main() i32 { return invoke[i32](&step, 7) }\n";
+  semantic_message "call-addr-null-target" "call_addr callee is proven null"
+    "fn invalid() i32 { target addr = null\n\
+     return call_addr[i32](target) }\n\
+    \     fn valid(p addr) i32 { return call_addr[i32](p) }\n";
+  semantic_message "call-addr-object-target"
+    "call_addr callee is proven not to be a function"
+    "var data i32\n\
+     fn invalid() i32 { target addr = &data\n\
+     return call_addr[i32](target) }\n\
+    \     fn valid(p addr) i32 { return call_addr[i32](p) }\n";
+  semantic_message "call-addr-argument-count"
+    "call_addr calls `step(i32) i32` with 0 arguments"
+    "fn step(value i32) i32 { return value }\n\
+    \     fn invalid() i32 { target addr = &step\n\
+     return call_addr[i32](target) }\n\
+    \     fn valid(p addr) i32 { return call_addr[i32](p) }\n";
+  semantic_message "call-addr-argument-type"
+    "call_addr argument 1 of `step(i32) i32` has type `u32`, expected `i32`"
+    "fn step(value i32) i32 { return value }\n\
+    \     fn invalid(value u32) i32 { target addr = &step\n\
+     return call_addr[i32](target, value) }\n\
+    \     fn valid(p addr, value u32) i32 { return call_addr[i32](p, value) }\n";
+  semantic_message "call-addr-result-type"
+    "call_addr result `u32` does not match `step(i32) i32`"
+    "fn step(value i32) i32 { return value }\n\
+    \     fn invalid() u32 { target addr = &step\n\
+     return call_addr[u32](target, 1) }\n\
+    \     fn valid(p addr) u32 { return call_addr[u32](p, 1) }\n";
+  semantic_message "call-addr-variadic-target"
+    "call_addr cannot call variadic C function `printf(addr) i32`"
+    "extern \"C\" { fn printf(format addr, ...) i32 }\n\
+    \     fn invalid(format addr) i32 { target addr = &printf\n\
+     return call_addr[i32](target, format) }\n\
+    \     fn valid(p addr, format addr) i32 { return call_addr[i32](p, format) }\n";
   semantic_message "call-addr-const-rejection"
     "call_addr cannot be used in constant evaluation"
     "const value i32 = call_addr[i32](null)\n";

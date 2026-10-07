@@ -5,6 +5,7 @@ type value_fact = { low : int64; high : int64; induction : int option }
 
 type address_fact =
   | Null_address of int64
+  | Function_address of string
   | Object_address of {
       identity : string;
       name : string;
