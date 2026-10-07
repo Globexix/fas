@@ -1,19 +1,164 @@
-use "C" <<CALLBACK
+use "C" <<C
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-typedef int32_t (*fas_callback_fn)(int32_t);
-void fas_invoke(fas_callback_fn callback) {
-  printf("%d\n", callback(41));
+typedef struct FasCallbackBox { int32_t (*callback)(int32_t); } FasCallbackBox;
+static int32_t fas_box_target(int32_t value) { return value * 4; }
+FasCallbackBox fas_callback_box = {fas_box_target};
+static inline int32_t fas_inline_adapter(int32_t value) { return value + 9; }
+int32_t fas_c_invoke_i32(int32_t (*callback)(int32_t), int32_t value) { return callback(value); }
+int32_t fas_c_invoke_i8(int8_t (*callback)(int8_t), int8_t value) { return callback(value); }
+bool fas_c_invoke_bool(bool (*callback)(bool), bool value) { return callback(value); }
+void fas_print_result(int32_t first, int32_t second, int32_t third, int32_t calls, int32_t score) {
+  printf("%d %d %d %d %d\n", first, second, third, calls, score);
 }
-CALLBACK
+C
 
-extern "C" { fn fas_invoke(callback addr) void }
+struct State { think addr
+action addr
+next addr }
+struct Object { state addr
+id i32
+ticks i32
+total i32 }
+opaque Token
 
-fn fas_callback(value i32) i32 {
-  return value + 1
+fn think0(object addr) void {
+  object[Object].ticks += 1
+  if object[Object].ticks % 3 == 0 { object[Object].state = object[Object].state[State].next }
+}
+fn think1(object addr) void {
+  object[Object].ticks += 1
+  if object[Object].ticks % 4 == 0 { object[Object].state = object[Object].state[State].next }
+}
+fn think2(object addr) void {
+  object[Object].ticks += 1
+  if object[Object].ticks % 5 == 0 { object[Object].state = object[Object].state[State].next }
+}
+fn think3(object addr) void {
+  object[Object].ticks += 1
+  if object[Object].ticks % 6 == 0 { object[Object].state = object[Object].state[State].next }
+}
+fn action0(object addr) void { object[Object].total += object[Object].id + 1 }
+fn action1(object addr) void { object[Object].total += (object[Object].id + 1) * 2 }
+fn action2(object addr) void { object[Object].total += (object[Object].id + 1) * 3 }
+fn action3(object addr) void { object[Object].total += (object[Object].id + 1) * 4 }
+
+const States arr[4,State] = {
+  {&think0, &action0, &States[1]},
+  {&think1, &action1, &States[2]},
+  {&think2, &action2, &States[3]},
+  {&think3, &action3, &States[0]}
+}
+const Callback_table arr[2,addr] = {&address_only, &three_args}
+var evaluation_order i32 = 0
+
+fn zero_args() i32 { return 17 }
+fn one_arg(value i32) i32 { return value * 3 + 2 }
+fn three_args(first i32, second i32, third i32) i32 { return first + second * 2 + third * 3 }
+fn address_only(value i32) i32 { return value * 5 - 1 }
+fn bump(object addr) void { object[Object].total += 100 }
+fn relay(callback addr) addr { return callback }
+fn get_callback() addr { return &one_arg }
+fn fas_callback_i32(value i32) i32 { return value + 7 }
+fn fas_callback_i8(value i8) i8 { return value + 1 }
+fn fas_callback_bool(value bool) bool { return !value }
+fn order_target(first i32, second i32) i32 { return first + second }
+fn order_callee() addr { evaluation_order = 1; return &order_target }
+fn order_first() i32 { evaluation_order = evaluation_order * 10 + 2; return 2 }
+fn order_second() i32 { evaluation_order = evaluation_order * 10 + 3; return 3 }
+fn recursive(value i32) i32 {
+  if value <= 0 { return 1 }
+  return value * call_addr[i32](&recursive, value - 1)
+}
+fn echo_bool(value bool) bool { return value }
+fn untouched_bool(value bool) bool { return value }
+fn echo_u8(value u8) u8 { return value }
+fn echo_i8(value i8) i8 { return value }
+fn untouched_i8(value i8) i8 { return value }
+fn echo_u16(value u16) u16 { return value }
+fn echo_i16(value i16) i16 { return value }
+fn echo_u32(value u32) u32 { return value }
+fn echo_i32(value i32) i32 { return value }
+fn echo_u64(value u64) u64 { return value }
+fn echo_i64(value i64) i64 { return value }
+fn echo_usize(value usize) usize { return value }
+fn echo_isize(value isize) isize { return value }
+fn echo_addr(value addr) addr { return value }
+fn echo_handle(value handle[Token]) handle[Token] { return value }
+fn echo_vec(value vec[4,u32]) vec[4,u32] { return value }
+fn mutate(value addr, amount i32) void { value[i32] += amount }
+
+extern "C" {
+  fn fas_export_i8(value i8) i8 { return value + 2 }
+}
+
+fn step(object addr) void {
+  state addr = object[Object].state
+  call_addr[void](state[State].think, object)
+  state = object[Object].state
+  call_addr[void](state[State].action, object)
 }
 
 fn main() i32 {
-  fas_invoke(&fas_callback)
+  objects arr[3,Object] = {{&States[0], 0, 0, 0}, {&States[1], 1, 0, 0}, {&States[3], 2, 0, 0}}
+  for i i32 = 0; i < 20; i += 1 {
+    step(&objects[0])
+    step(&objects[1])
+    step(&objects[2])
+  }
+  call_addr[void](&bump, &objects[0])
+
+  calls i32 = call_addr[i32](&zero_args)
+  calls += call_addr[i32](&one_arg, 7)
+  calls += call_addr[i32](&three_args, 2, 3, 5)
+  calls += call_addr[i32](Callback_table[0], 8)
+  calls += call_addr[i32](relay(&one_arg), 9)
+  calls += call_addr[i32](get_callback(), 11)
+  calls += call_addr[i32](&fas_c_invoke_i32, &fas_callback_i32, 6)
+  calls += call_addr[i32](fas_callback_box.callback, 5)
+  calls += call_addr[i32](&fas_inline_adapter, 8)
+  calls += call_addr[i32](Callback_table[1], 1, 2, 3)
+  calls += call_addr[i32](&recursive, 5)
+  calls += call_addr[i32](&fas_c_invoke_i8, &fas_callback_i8, trunc[i8](249))
+  calls += zext[i32](call_addr[bool](&fas_c_invoke_bool, &fas_callback_bool, false))
+  calls += sext[i32](call_addr[i8](&fas_export_i8, trunc[i8](40)))
+  ordered i32 = call_addr[i32](order_callee(), order_first(), order_second())
+  if evaluation_order != 123 || ordered != 5 { return 10 }
+
+  score i32 = 0
+  if call_addr[bool](&echo_bool, true) != true { return 1 }
+  score += zext[i32](call_addr[bool](&echo_bool, true))
+  score += zext[i32](call_addr[u8](&echo_u8, trunc[u8](250)))
+  score += sext[i32](call_addr[i8](&echo_i8, trunc[i8](249)))
+  score += zext[i32](call_addr[u16](&echo_u16, trunc[u16](60000)))
+  score += sext[i32](call_addr[i16](&echo_i16, trunc[i16](64302)))
+  score += bitcast[i32](call_addr[u32](&echo_u32, bitcast[u32](70000)))
+  score += call_addr[i32](&echo_i32, -70000)
+  score += trunc[i32](call_addr[u64](&echo_u64, zext[u64](123456)))
+  score += trunc[i32](call_addr[i64](&echo_i64, sext[i64](-123456)))
+  score += trunc[i32](call_addr[usize](&echo_usize, zext[usize](65432)))
+  score += trunc[i32](call_addr[isize](&echo_isize, sext[isize](-65432)))
+  storage i32 = 77
+  if call_addr[addr](&echo_addr, &storage) != &storage { return 2 }
+  score += 1
+  token_storage i32 = 19
+  token handle[Token] = handle_from_addr[Token](&token_storage)
+  returned handle[Token] = call_addr[handle[Token]](&echo_handle, token)
+  if handle_addr(returned) != &token_storage { return 3 }
+  score += 2
+  input vec[4,u32] = {1, 2, 3, 4}
+  output vec[4,u32] = call_addr[vec[4,u32]](&echo_vec, input)
+  if !all(output == input) { return 4 }
+  score += bitcast[i32](reduce_sum(output))
+  call_addr[void](&mutate, &storage, 14)
+  if storage != 91 { return 5 }
+  score += storage - 90
+  score += ordered
+  if call_addr[i8](&echo_i8, trunc[i8](249)) != trunc[i8](249) { return 6 }
+  if call_addr[bool](&echo_bool, false) != false { return 7 }
+  if echo_i8(trunc[i8](249)) != trunc[i8](249) { return 8 }
+  if echo_bool(true) != true { return 9 }
+  fas_print_result(objects[0].total, objects[1].total, objects[2].total, calls, score)
   return 0
 }
