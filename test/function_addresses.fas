@@ -1,0 +1,19 @@
+use "C" <<CALLBACK
+#include <stdint.h>
+#include <stdio.h>
+typedef int32_t (*fas_callback_fn)(int32_t);
+void fas_invoke(fas_callback_fn callback) {
+  printf("%d\n", callback(41));
+}
+CALLBACK
+
+extern "C" { fn fas_invoke(callback addr) void }
+
+fn fas_callback(value i32) i32 {
+  return value + 1
+}
+
+fn main() i32 {
+  fas_invoke(&fas_callback)
+  return 0
+}

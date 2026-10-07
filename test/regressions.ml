@@ -10075,9 +10075,30 @@ let () =
     "`P[0]` is not an address constant; write `&G`, `&G.field`, `&G[k]`, `c\"...\"` or \
      `null`"
     None;
-  semantic_pin "address-constants-function-target"
-    "fn f() void { return }\nvar P addr = &f\n" 2 14 1
-    "only `extern \"C\"` functions have an address" None;
+  semantic_accept "address-constants-function-target"
+    "fn f() void { return }\nvar P addr = &f\n";
+  semantic_accept "address-constants-native-function-local-address"
+    "fn f() void { return }\nfn run() void { p addr = &f\nreturn }\n";
+  let native_function_table =
+    llvm_of
+      "struct State { think addr\n\
+      \ action addr\n\
+      \ next addr }\n\
+       fn think() void { return }\n\
+       fn action() void { return }\n\
+       const states arr[1,State] = {{&think, &action, null}}\n"
+  in
+  if
+    (not (contains native_function_table "@states"))
+    || (not (contains native_function_table "ptr @think"))
+    || not (contains native_function_table "ptr @action")
+  then failwith "native function address table did not emit function relocations";
+  semantic_message "address-constants-generic-function-target"
+    "generic function `f` has no single address"
+    "fn f[T]() void { return }\nvar P addr = &f\n";
+  semantic_message "address-constants-generic-function-local-target"
+    "generic function `f` has no single address"
+    "fn f[T]() void { return }\nfn run() void { p addr = &f\nreturn }\n";
   semantic_accept "address-constants-c-function-target"
     "extern \"C\" { fn f() void }\nvar P addr = &f\n";
   semantic_message "address-constants-scalar-constant-target"

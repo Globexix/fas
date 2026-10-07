@@ -2186,7 +2186,15 @@ and check_expr_inner ?destination (c : context) expected expression =
                  (fun binding -> binding.declaration_kind = Top_function)
                  (lookup_top_level name c.top_level_bindings))
          && not (List.mem name c.external_c_functions) ->
-      error s "only `extern \"C\"` functions have an address"
+      if
+        List.exists
+          (function
+            | Ast.Func { name = generic_name; generic_params = _ :: _; _ } ->
+                generic_name = name
+            | _ -> false)
+          c.generic_structs
+      then error s (Printf.sprintf "generic function `%s` has no single address" name)
+      else Ok (Hir.Function_address (name, s))
   | Ast.Addr_of (e, s) -> (
       let* place = check_place c e in
       (match (place.root, place.path) with
