@@ -2948,9 +2948,6 @@ and check_call c _expected fn args s =
                 in
                 let* rt = source_ty_with_values c.named_types values s ret in
                 let* checked = check_actuals ~callee:name c Reject s ps args in
-                Sema_flow.forget_all_addresses c.flow;
-                Sema_flow.forget_all_values c.flow;
-                Sema_flow.forget_all_masks c.flow;
                 Ok (Hir.Call (Hir.User specialization.name, checked, rt, s))
           | Some _ -> error s "const-generic symbol is not a function"))
   | Ast.Ident ("volatile_load", _) ->
@@ -3441,9 +3438,6 @@ and check_call c _expected fn args s =
                             indices
                     in
                     remember_alloc_size_object c name args sig_.params s;
-                    Sema_flow.forget_all_addresses c.flow;
-                    Sema_flow.forget_all_values c.flow;
-                    Sema_flow.forget_all_masks c.flow;
                     Ok (Hir.Call (Hir.User name, xs, sig_.ret, s)))))
   | _ -> error s "call target must be a function name"
 
