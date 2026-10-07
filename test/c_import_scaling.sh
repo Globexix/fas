@@ -55,3 +55,56 @@ PY
     exit 1
   fi
 done
+
+SDL_HEADER=/usr/include/SDL/SDL.h
+WOLF3D_ROOT=${HOME:-}/wolf3d
+if [ ! -f "$SDL_HEADER" ]; then
+  printf 'C import real-header timing: skipped (SDL 1.2 headers absent)\n'
+else
+  if [ -f "$WOLF3D_ROOT/src/id_pm.fas" ]; then
+    cp "$WOLF3D_ROOT/src/id_pm.fas" "$TMP/id_pm.fas"
+    /usr/bin/time -f '%U' -o "$TMP/id-pm.cpu" \
+      env CC="$CC" LLVM_OPT="$LLVM_OPT" LLVM_LLC="$LLVM_LLC" OCAML_FAS="$OCAML_FAS" \
+      "$OCAML_FAS" -O2 -I "$WOLF3D_ROOT/reference/wolf4sdl" \
+      -isystem /usr/include/SDL -D_GNU_SOURCE=1 -D_REENTRANT \
+      -c "$TMP/id_pm.fas" -o "$TMP/id_pm.o"
+    id_pm_cpu=$(cat "$TMP/id-pm.cpu")
+    printf 'C import id_pm CPU: %ss (limit 2.50s)\n' "$id_pm_cpu"
+    if awk -v cpu="$id_pm_cpu" 'BEGIN { exit !(cpu > 2.5) }'; then
+      printf 'C import id_pm exceeded 2.50 CPU seconds\n' >&2
+      exit 1
+    fi
+  else
+    printf 'C import id_pm timing: skipped (Wolf3D source absent)\n'
+  fi
+
+  cat >"$TMP/sdl_main.fas" <<'FAS'
+use "C" <SDL.h>
+fn main() i32 { return 0 }
+FAS
+  printf '#include <SDL.h>\n' >"$TMP/sdl_syntax.c"
+  printf 'fn main() i32 { return 0 }\n' >"$TMP/empty.fas"
+  "$OCAML_FAS" --emit-llvm "$TMP/empty.fas" >"$TMP/empty.ll"
+  /usr/bin/time -f '%U' -o "$TMP/clang.cpu" \
+    "$CC" -fsyntax-only -isystem /usr/include/SDL "$TMP/sdl_syntax.c"
+  /usr/bin/time -f '%U' -o "$TMP/opt.cpu" \
+    "$LLVM_OPT" -passes='default<O2>' -S "$TMP/empty.ll" -o "$TMP/empty.opt.ll"
+  /usr/bin/time -f '%U' -o "$TMP/llc.cpu" \
+    "$LLVM_LLC" -O2 "$TMP/empty.opt.ll" -o "$TMP/empty.s"
+  /usr/bin/time -f '%U' -o "$TMP/sdl.cpu" \
+    env CC="$CC" LLVM_OPT="$LLVM_OPT" LLVM_LLC="$LLVM_LLC" OCAML_FAS="$OCAML_FAS" \
+    "$OCAML_FAS" -O2 -isystem /usr/include/SDL -c "$TMP/sdl_main.fas" \
+    -o "$TMP/sdl.o"
+  sdl_cpu=$(cat "$TMP/sdl.cpu")
+  baseline=$(awk -v clang="$(cat "$TMP/clang.cpu")" \
+    -v opt="$(cat "$TMP/opt.cpu")" -v llc="$(cat "$TMP/llc.cpu")" \
+    'BEGIN { printf "%.2f", clang + opt + llc }')
+  sdl_limit=$(awk -v baseline="$baseline" \
+    'BEGIN { limit = baseline * 6; if (limit < 0.8) limit = 0.8; if (limit > 1.5) limit = 1.5; printf "%.2f", limit }')
+  printf 'C import SDL CPU: %ss (Clang + opt + llc %ss; limit %ss)\n' \
+    "$sdl_cpu" "$baseline" "$sdl_limit"
+  if awk -v cpu="$sdl_cpu" -v limit="$sdl_limit" 'BEGIN { exit !(cpu > limit) }'; then
+    printf 'C import SDL timing exceeded %s CPU seconds\n' "$sdl_limit" >&2
+    exit 1
+  fi
+fi
