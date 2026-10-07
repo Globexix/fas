@@ -108,19 +108,6 @@ let error_location line =
                     (fun column -> (file, line, column))
                     (int_of_string_opt column))))
 
-let source_line path requested =
-  try
-    let input = open_in_bin path in
-    Fun.protect
-      ~finally:(fun () -> close_in_noerr input)
-      (fun () ->
-        let rec find line =
-          let text = input_line input in
-          if line = requested then Some text else find (line + 1)
-        in
-        find 1)
-  with End_of_file | Sys_error _ -> None
-
 let compilation_error ?source ?(headers = []) ?(prefix = "C compilation failed")
     fallback output =
   let line = Option.value ~default:(String.trim output) (first_error output) in
@@ -480,7 +467,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
         | _ -> None)
     | Some
         ( "ElaboratedType" | "AttributedType" | "ParenType" | "QualType"
-        | "MacroQualifiedType" ) ->
+        | "MacroQualifiedType" | "ConstantArrayType" | "IncompleteArrayType" ) ->
         children node |> List.find_map (direct_record_id seen)
     | _ -> None
   in
@@ -625,14 +612,25 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
               Option.bind (field "type" node) (string "qualType")
               |> Option.fold ~none:false ~some:(fun ty -> find_text ty name 0 <> None)
             in
-            let type_referenced name =
-              referenced name || List.exists (has_type name) top_declarations
+            let record_names record =
+              Option.to_list (name record)
+              @ Option.value ~default:[]
+                  (Option.bind (id record) (Hashtbl.find_opt alias_names_by_record))
+            in
+            let rec type_referenced seen name =
+              (not (List.mem name seen))
+              && (referenced name
+                 || List.exists (has_type name) top_declarations
+                 || List.exists
+                      (fun parent ->
+                        List.exists (has_type name) (children parent)
+                        && List.exists
+                             (type_referenced (name :: seen))
+                             (record_names parent))
+                      roots)
             in
             let root_referenced =
-              List.exists type_referenced
-                (root_name
-                :: Option.value ~default:[]
-                     (Option.bind root_id (Hashtbl.find_opt alias_names_by_record)))
+              List.exists (type_referenced []) (record_names root)
             in
             let fields = ref [] in
             let rec collect record =
