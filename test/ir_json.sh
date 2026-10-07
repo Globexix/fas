@@ -334,6 +334,62 @@ def assert_legacy_values(expected, actual, function_names, path=()):
         assert set(actual) == set(expected) | added, (path, set(expected), set(actual))
         for key, value in expected.items():
             assert_legacy_values(value, actual[key], function_names, path + (key,))
+    elif isinstance(expected, list) and len(path) == 2 and path[-1] in {
+            "funcs", "globals", "structs"}:
+        actual_index = 0
+        for expected_item in expected:
+            if (actual_index < len(actual)
+                    and expected_item.get("name") == actual[actual_index].get("name")):
+                assert_legacy_values(
+                    expected_item, actual[actual_index], function_names,
+                    path + (actual_index,)
+                )
+                actual_index += 1
+                continue
+            name = expected_item.get("name")
+            assert name, (path, expected_item)
+            if path[-1] == "funcs":
+                assert expected_item.get("blocks") == [], (path, expected_item)
+            elif path[-1] == "globals":
+                assert expected_item.get("kind") == "storage", (path, expected_item)
+            else:
+                assert "fields" in expected_item, (path, expected_item)
+            pattern = re.compile(
+                r"(?<![A-Za-z0-9_$])" + re.escape(name) + r"(?![A-Za-z0-9_$])"
+            )
+            opcodes = {
+                "alloca", "bin", "br", "call", "call_indirect", "cast", "cmp",
+                "condbr", "extract", "gep", "insert", "load", "phi", "ret",
+                "select", "shuffle_zero", "shufflevector", "store", "switch",
+            }
+
+            def referenced(value, key=None):
+                if isinstance(value, dict):
+                    adapters = value.get("c_adapters") if key is None else None
+                    if isinstance(adapters, list) and any(
+                            isinstance(adapter, dict)
+                            and name in (adapter.get("name"), adapter.get("symbol"))
+                            for adapter in adapters):
+                        return True
+                    return any(
+                        (field in {"func", "global", "target", "symbol"}
+                         and item == name)
+                        or (field != "name" and referenced(item, field))
+                        for field, item in value.items()
+                    )
+                if isinstance(value, list):
+                    if len(value) > 4 and value[0] == "call" and value[4] == name:
+                        return True
+                    if len(value) > 1 and value[0] == "global" and value[1] == name:
+                        return True
+                    return any(referenced(item) for item in value)
+                return (
+                    isinstance(value, str) and value not in opcodes
+                    and pattern.search(value) is not None
+                )
+
+            assert not referenced(actual), (path, name)
+        assert actual_index == len(actual), (path, actual[actual_index:])
     elif isinstance(expected, list):
         assert isinstance(actual, list) and len(expected) == len(actual), path
         for index, (expected_item, actual_item) in enumerate(zip(expected, actual)):
