@@ -807,7 +807,8 @@ let run_unprotected ?header_output config =
                   in
                   c_artifacts := artifacts @ !c_artifacts;
                   let mapped =
-                    C_import.map_declarations ~span:(List.hd headers).C_import.span
+                    C_import.map_declarations ~referenced_names
+                      ~span:(List.hd headers).C_import.span
                       ~alloc_size_parameters:!alloc_size_parameters
                       ~container:
                         (List.exists

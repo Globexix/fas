@@ -116,12 +116,10 @@ let read_string i =
   scan start
 
 let rec skip_string i =
-  match take i with
-  | '"' -> ()
-  | '\\' ->
-      ignore (take i);
-      skip_string i
-  | _ -> skip_string i
+  let char = take i in
+  if char <> '"' then (
+    if char = '\\' then ignore (take i);
+    skip_string i)
 
 let record_location_value i field value =
   if String.equal field "file" then (
@@ -210,16 +208,6 @@ let supported = function
 
 let string = function Str s -> Some s | _ -> None
 
-let keep_field = function
-  | "kind" | "id" | "decl" | "name" | "type" | "loc" | "value" | "storageClass"
-  | "inline" | "tagUsed" | "completeDefinition" | "fixedUnderlyingType" | "isBitfield"
-  | "isImplicit" | "inner" | "qualType" | "desugaredQualType" | "file" | "line" | "col"
-  | "typeAliasDeclId" | "qualifiers" | "size" | "cc" | "variadic" | "offset"
-  | "expansionLoc" | "spellingLoc" | "presumedFile" | "presumedLine" | "range" | "begin"
-  | "end" | "tokLen" | "isMacroArgExpansion" | "args" ->
-      true
-  | _ -> false
-
 let field_keys =
   String.split_on_char ' '
     ("kind id decl name type loc value storageClass inline tagUsed completeDefinition "
@@ -227,6 +215,11 @@ let field_keys =
       line col typeAliasDeclId qualifiers size cc variadic offset expansionLoc "
    ^ "spellingLoc presumedFile presumedLine range begin end tokLen isMacroArgExpansion \
       args")
+
+let keep_fields =
+  Hashtbl.of_seq (List.to_seq (List.map (fun key -> (key, ())) field_keys))
+
+let keep_field key = Hashtbl.mem keep_fields key
 
 let read_key i =
   let start = i.pos in

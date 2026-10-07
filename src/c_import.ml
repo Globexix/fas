@@ -396,7 +396,7 @@ let builtin_info_of_name = function
   | _ -> None
 
 let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
-    ?referenced_names ~macro_candidates declarations =
+    ?referenced_names ~probe_all_declarations ~macro_candidates declarations =
   let field key node = C_import_json.field key node in
   let string key node = Option.bind (field key node) C_import_json.string in
   let children node =
@@ -513,7 +513,8 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
       (fun node ->
         List.mem (kind node)
           [ Some "FunctionDecl"; Some "VarDecl"; Some "EnumConstantDecl" ]
-        && (kind node = Some "EnumConstantDecl"
+        && (probe_all_declarations
+           || kind node = Some "EnumConstantDecl"
            || Option.fold ~none:false ~some:referenced (name node))
         && field "isImplicit" node <> Some (C_import_json.Bool true))
       all_nodes
@@ -524,17 +525,14 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
   in
   let alias_names_by_record = Hashtbl.create 32
   and record_base_names_by_id = Hashtbl.create 32 in
-  let rec array_alias_type seen node =
+  let rec array_alias_type node =
     match kind node with
     | Some ("ConstantArrayType" | "IncompleteArrayType") -> true
-    | Some "TypedefType" -> (
-        match Option.bind (field "decl" node) (string "id") with
-        | Some id when not (List.mem id seen) ->
-            Option.fold ~none:false
-              ~some:(array_alias_type (id :: seen))
-              (Hashtbl.find_opt alias_types_by_id id)
-        | _ -> false)
-    | _ -> List.exists (array_alias_type seen) (children node)
+    | Some "TypedefType" ->
+        Option.bind (field "decl" node) (fun declaration ->
+            Option.bind (string "id" declaration) (Hashtbl.find_opt alias_types_by_id))
+        |> Option.fold ~none:false ~some:array_alias_type
+    | _ -> List.exists array_alias_type (children node)
   in
   let add_alias table record_id alias =
     Hashtbl.replace table record_id
@@ -548,24 +546,22 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
             Option.iter
               (fun record_id ->
                 add_alias alias_names_by_record record_id alias;
-                if not (array_alias_type [] alias_type) then
+                if not (array_alias_type alias_type) then
                   Hashtbl.replace record_base_names_by_id record_id alias)
               (direct_record_id [] alias_type)
         | _ -> ())
     declarations;
   let roots = List.filter (fun node -> kind node = Some "RecordDecl") all_nodes in
+  let field_types =
+    List.filter_map
+      (fun node -> Option.bind (field "type" node) (string "qualType"))
+      (List.filter (fun node -> kind node = Some "FieldDecl") all_nodes)
+    |> List.sort_uniq String.compare
+  in
   let record_names record =
     Option.to_list (name record)
     @ Option.value ~default:[]
         (Option.bind (id record) (Hashtbl.find_opt alias_names_by_record))
-  in
-  let field_types =
-    all_nodes
-    |> List.filter_map (fun node ->
-        if kind node = Some "FieldDecl" then
-          Option.bind (field "type" node) (string "qualType")
-        else None)
-    |> List.sort_uniq String.compare
   in
   let probes = Hashtbl.create (List.length top_declarations + 64) in
   let add_probe target expression =
@@ -644,16 +640,22 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
               Option.bind (field "type" node) (string "qualType")
               |> Option.fold ~none:false ~some:(fun ty -> find_text ty name 0 <> None)
             in
-            let rec type_referenced seen name =
-              (not (List.exists (String.equal name) seen))
-              && (referenced name
-                 || List.exists (has_type name) top_declarations
-                 || List.exists (fun ty -> find_text ty name 0 <> None) field_types
+            let rec type_referenced seen type_name =
+              (not (List.exists (String.equal type_name) seen))
+              && (referenced type_name
+                 || List.exists (has_type type_name)
+                      (List.filter
+                         (fun node ->
+                           Option.fold ~none:false ~some:referenced (name node))
+                         top_declarations)
+                 || List.exists
+                      (fun field_type -> find_text field_type type_name 0 <> None)
+                      field_types
                     && List.exists
                          (fun parent ->
-                           List.exists (has_type name) (children parent)
+                           List.exists (has_type type_name) (children parent)
                            && List.exists
-                                (type_referenced (name :: seen))
+                                (type_referenced (type_name :: seen))
                                 (record_names parent))
                          roots)
             in
@@ -1421,7 +1423,8 @@ let import ~cc ~debug ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
               let* structured_ast, macro_infos =
                 map_error "internal error: C structured type import failed: "
                   (imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path
-                     ~paths:macro_paths ?referenced_names ~macro_candidates declarations)
+                     ~paths:macro_paths ?referenced_names ~probe_all_declarations:keep
+                     ~macro_candidates declarations)
               in
               let declarations =
                 List.map
@@ -2025,8 +2028,8 @@ let clang_layouts text =
   in
   groups [] [] lines
 
-let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
-    declarations =
+let map_declarations ?(container = false) ?(alloc_size_parameters = [])
+    ?referenced_names ~span declarations =
   let layout_dump =
     List.find_map
       (function
@@ -4002,11 +4005,15 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
       | _ -> ())
     (nodes @ nested_enum_nodes);
   let items =
-    List.sort
-      (fun left right -> String.compare (item_name left) (item_name right))
-      (List.filter
-         (fun item -> Hashtbl.find_opt entities (item_name item) <> Some "\000conflict")
-         !items)
+    !items
+    |> List.filter (fun item ->
+        Hashtbl.find_opt entities (item_name item) <> Some "\000conflict"
+        &&
+        match item with
+        | Ast.Func { name; _ } | Ast.Global { name; _ } ->
+            Option.fold ~none:true ~some:(List.mem name) referenced_names
+        | _ -> true)
+    |> List.sort (fun left right -> String.compare (item_name left) (item_name right))
   in
   let identities =
     Hashtbl.fold (fun name identity acc -> (name, identity) :: acc) entities []
