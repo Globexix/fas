@@ -1,0 +1,10 @@
+use "C" <<C
+static inline int fas_json_indirect_adapter(int value) { return value + 2; }
+C
+
+fn step(value i32) i32 { return value + 1 }
+
+fn main() i32 {
+  first i32 = call_addr[i32](&step, 41)
+  return call_addr[i32](&fas_json_indirect_adapter, first)
+}

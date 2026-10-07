@@ -185,7 +185,7 @@ def ir_tag(line):
     if rhs.startswith("alloca "):
         return "alloca"
     if rhs.startswith("call "):
-        return "call"
+        return "call_indirect" if re.search(r"\s%[A-Za-z0-9_.]+\(", rhs) else "call"
     if rhs.startswith("phi "):
         return "phi"
     if rhs.startswith("select "):
@@ -264,6 +264,18 @@ def target_names(module):
                     assert instruction[4] in functions or instruction[4] in globals_, (
                         function["name"], instruction[4]
                     )
+    def function_values(value, path=()):
+        if isinstance(value, dict):
+            if set(value) == {"func"}:
+                assert value["func"] in functions, (path, value["func"])
+            else:
+                for key, item in value.items():
+                    function_values(item, path + (key,))
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                function_values(item, path + (index,))
+
+    function_values(module)
 
 def validate_adapter_metadata(module, source_name):
     adapters = module["c_adapters"]
@@ -295,16 +307,37 @@ def validate_adapter_metadata(module, source_name):
 
     check_symbols(module)
 
-def assert_legacy_values(expected, actual, path=()):
+def assert_legacy_values(expected, actual, function_names, path=()):
+    if (isinstance(expected, list) and len(expected) == 3 and expected[0] == "global"
+            and expected[1] == "ptr" and expected[2] in function_names
+            and actual == {"func": expected[2]}):
+        return
+    if (isinstance(expected, list) and len(expected) == 3 and len(actual) == 3
+            and len(path) >= 2 and path[-2] == "pointers"
+            and expected[1] in function_names and actual[1] == {"func": expected[1]}):
+        assert expected[0] == actual[0] and expected[2] == actual[2], (path, expected, actual)
+        return
     if isinstance(expected, dict):
         assert isinstance(actual, dict), path
+        added = set()
+        if len(path) == 1:
+            added = {"format", "version", "target_triple", "data_layout", "no_inline", "c_adapters"}
+            assert actual.get("format") == "fas-ir-json" and actual.get("version") == 2, path
+        elif len(path) == 3 and path[1] == "funcs" and isinstance(path[2], int):
+            added = {"ret_extension"}
+        elif (len(path) == 5 and path[1] == "funcs" and isinstance(path[2], int)
+              and path[3] == "params" and isinstance(path[4], int)):
+            added = {"extension"}
+        elif (len(path) == 3 and path[1] == "globals" and isinstance(path[2], int)
+              and expected.get("kind") == "storage"):
+            added = {"linkage"}
+        assert set(actual) == set(expected) | added, (path, set(expected), set(actual))
         for key, value in expected.items():
-            assert key in actual, (path, key)
-            assert_legacy_values(value, actual[key], path + (key,))
+            assert_legacy_values(value, actual[key], function_names, path + (key,))
     elif isinstance(expected, list):
         assert isinstance(actual, list) and len(expected) == len(actual), path
         for index, (expected_item, actual_item) in enumerate(zip(expected, actual)):
-            assert_legacy_values(expected_item, actual_item, path + (index,))
+            assert_legacy_values(expected_item, actual_item, function_names, path + (index,))
     else:
         assert expected == actual, (path, expected, actual)
 
@@ -318,10 +351,10 @@ def llvm_adapter_symbols(text):
     return result
 
 expected = {
-    "value": {"const", "vconst", "null", "undef", "zero", "local", "param", "global"},
+    "value": {"const", "vconst", "null", "undef", "zero", "local", "param", "func"},
     "instr": {"bin", "cmp", "alloca", "load", "load_volatile", "store",
               "store_volatile", "gep", "cast", "call", "phi", "select", "extract",
-              "insert", "shuffle_zero", "shufflevector", "string_ptr", "global_ptr", "trap"},
+              "insert", "shuffle_zero", "shufflevector", "string_ptr", "global_ptr", "call_indirect", "trap"},
     "terminator": {"ret", "br", "condbr", "switch", "unreachable"},
     "global": {"string", "array", "storage"},
     "ty": {"i1", "i8", "i16", "i32", "i64", "i128", "ptr", "vector", "struct", "array", "void"},
@@ -342,6 +375,8 @@ def visit(value):
         for item in value:
             visit(item)
     elif isinstance(value, dict):
+        if set(value) == {"func"}:
+            observed["value"].add("func")
         if value.get("kind") in expected["global"]:
             observed["global"].add(value["kind"])
         for item in value.values():
@@ -374,10 +409,14 @@ for index in range(count):
         ], json_function["name"]
         assert len(json_function["blocks"]) == len(ir_function["blocks"]), json_function["name"]
         for json_block, ir_block in zip(json_function["blocks"], ir_function["blocks"]):
-            assert [instruction[0] for instruction in json_block["instrs"]] == ir_block["instrs"], (
+            assert len(json_block["instrs"]) == len(ir_block["instrs"]), (
                 source_name, json_function["name"], json_block["id"],
-                [instruction[0] for instruction in json_block["instrs"]], ir_block["instrs"]
+                len(json_block["instrs"]), len(ir_block["instrs"])
             )
+            for instruction, ir_instruction in zip(json_block["instrs"], ir_block["instrs"]):
+                assert instruction[0] == ir_instruction or (
+                    instruction[0] == "call_indirect" and ir_instruction == "call"
+                ), (source_name, json_function["name"], json_block["id"], instruction[0], ir_instruction)
             assert json_block["term"][0] == ir_block["term"], (
                 source_name, json_function["name"], json_block["id"],
                 json_block["term"][0], ir_block["term"]
@@ -394,7 +433,7 @@ fixture = read_json(os.path.join(root, "out.json"))
 assert list(fixture) == ["structs", "globals", "funcs", "format", "version",
                          "target_triple", "data_layout", "no_inline", "c_adapters"]
 assert fixture["c_adapters"] == []
-assert fixture["format"] == "fas-ir-json" and fixture["version"] == 1
+assert fixture["format"] == "fas-ir-json" and fixture["version"] == 2
 assert fixture["target_triple"] == "x86_64-unknown-linux-gnu"
 assert fixture["data_layout"] == "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
 assert fixture["no_inline"] is None
@@ -474,6 +513,31 @@ assert adapter_calls, "C adapter call was not serialized by its C name"
 assert adapter_calls <= set(adapter_functions), adapter_calls - set(adapter_functions)
 assert all(name in adapter_names for name in adapter_calls), adapter_calls
 
+static_address = read_json(os.path.join(
+    root, "pairs", str(source_indexes["ir_json_static_address"]) + ".json"
+))
+static_pointers = [
+    pointer
+    for global_ in static_address["globals"] if global_["kind"] == "storage"
+    for pointer in global_["pointers"]
+]
+assert [0, {"func": "fas_json_address_target"}, 0] in static_pointers, static_pointers
+
+indirect_module = read_json(os.path.join(
+    root, "pairs", str(source_indexes["ir_json_function_address"]) + ".json"
+))
+indirect_calls = [
+    instruction
+    for function in indirect_module["funcs"]
+    for block in function["blocks"]
+    for instruction in block["instrs"]
+    if instruction[0] == "call_indirect"
+]
+assert len(indirect_calls) == 2, indirect_calls
+assert sorted(instruction[4]["func"] for instruction in indirect_calls) == [
+    "fas_json_indirect_adapter", "step"
+], indirect_calls
+
 for source_name in ("c_interop", "sdl_headers", "ir_json_static_address"):
     module = read_json(os.path.join(root, "pairs", str(source_indexes[source_name]) + ".json"))
     symbols = [adapter["symbol"] for adapter in module["c_adapters"]]
@@ -483,7 +547,8 @@ for source_name in ("c_interop", "sdl_headers", "ir_json_static_address"):
 for source_name in ("c_interop", "sdl_headers", "ir_json_static_address"):
     expected = read_json(os.path.join(expected_root, source_name + ".json.gz"))
     actual = read_json(os.path.join(root, "pairs", str(source_indexes[source_name]) + ".json"))
-    assert_legacy_values(expected, actual, (source_name,))
+    functions = {function["name"] for function in actual["funcs"]}
+    assert_legacy_values(expected, actual, functions, (source_name,))
 
 print(f"IR JSON: {count} compilable source files matched --emit-ir; {skipped} were rejected")
 print("IR JSON: dda55cb compatibility, adapter metadata and collision rejection passed")
