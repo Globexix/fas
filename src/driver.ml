@@ -1111,10 +1111,16 @@ let run_unstaged ?header_output config =
 let same_as_input config =
   canonical_path config.Cli.input = canonical_path config.Cli.output
 
+let is_non_regular_output path =
+  try (Unix.stat path).Unix.st_kind <> Unix.S_REG with
+  | Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR), _, _) -> false
+  | Unix.Unix_error _ -> true
+
 let run config =
   if not config.Cli.output_explicit then run_unstaged config
   else if same_as_input config then
     Error [ Diag.error Span.synthetic "output path must differ from the input file" ]
+  else if is_non_regular_output config.Cli.output then run_unstaged config
   else
     let directory = Filename.dirname config.Cli.output in
     let staged =

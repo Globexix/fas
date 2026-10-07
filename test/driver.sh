@@ -173,6 +173,16 @@ for mode in -c -S --emit-ir --emit-llvm; do
   grep -Fx 'C inputs and link flags require an executable output' \
     "$WORK/stderr" >/dev/null || fail "$mode accepted C link inputs"
 done
+for mode in -c -S --emit-ir --emit-llvm --emit-header; do
+  "$OCAML_FAS" "$mode" "$WORK/good.fas" -o /dev/null >"$WORK/stdout" 2>"$WORK/stderr" \
+    || fail "$mode could not write to a non-regular output"
+  [ ! -s "$WORK/stdout" ] || fail "$mode wrote stdout with an explicit output"
+  [ ! -s "$WORK/stderr" ] || fail "$mode wrote stderr with a valid input"
+done
+"$OCAML_FAS" "$WORK/good.fas" -o /dev/null >"$WORK/stdout" 2>"$WORK/stderr" \
+  || fail "executable could not write to a non-regular output"
+[ ! -s "$WORK/stdout" ] || fail "executable wrote stdout with an explicit output"
+[ ! -s "$WORK/stderr" ] || fail "executable wrote stderr with a valid input"
 for level in 0 1 2 3; do
   grep -F -- "default<O$level>" "$TOOL_LOG" >/dev/null || fail "-O$level opt pipeline missing"
   grep -F -- "llc -O$level -relocation-model=pic" "$TOOL_LOG" >/dev/null || fail "-O$level llc PIC model missing"
@@ -351,6 +361,20 @@ grep -F -- "unknown option: --emit-ast" "$WORK/stderr" >/dev/null || fail "remov
 printf 'stale artifact\n' >"$WORK/compile-fail"
 expect_failure "$OCAML_FAS" "$WORK/bad.fas" -o "$WORK/compile-fail"
 [ ! -e "$WORK/compile-fail" ] || fail "compile failure left stale output"
+temps_empty
+
+regular_status=0
+"$OCAML_FAS" "$WORK/bad.fas" -o "$WORK/compile-fail-regular" \
+  >"$WORK/regular-stdout" 2>"$WORK/regular-stderr" || regular_status=$?
+device_status=0
+"$OCAML_FAS" "$WORK/bad.fas" -o /dev/null \
+  >"$WORK/device-stdout" 2>"$WORK/device-stderr" || device_status=$?
+[ "$regular_status" -eq "$device_status" ] || fail "non-regular output changed compile-failure status"
+cmp "$WORK/regular-stdout" "$WORK/device-stdout" >/dev/null \
+  || fail "non-regular output changed compile-failure stdout"
+cmp "$WORK/regular-stderr" "$WORK/device-stderr" >/dev/null \
+  || fail "non-regular output changed compile diagnostics"
+[ ! -e "$WORK/compile-fail-regular" ] || fail "regular output remained after compile failure"
 temps_empty
 
 cat >"$WORK/fail-cc" <<'SH'
