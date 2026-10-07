@@ -422,8 +422,9 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
           ~some:(String.ends_with ~suffix:"Type")
           (string "kind" child))
   in
-  let name_in name names = List.exists (String.equal name) names in
-  let referenced name = Option.fold ~none:true ~some:(name_in name) referenced_names in
+  let referenced name =
+    Option.fold ~none:true ~some:(List.exists (String.equal name)) referenced_names
+  in
   let rec flatten acc node = List.fold_left flatten (node :: acc) (children node) in
   let id node = string "id" node in
   let name node = string "name" node in
@@ -525,7 +526,6 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
       (fun node ->
         List.mem (kind node)
           [ Some "FunctionDecl"; Some "VarDecl"; Some "EnumConstantDecl" ]
-        && Option.is_some (name node)
         && (kind node = Some "EnumConstantDecl"
            || Option.fold ~none:false ~some:referenced (name node))
         && field "isImplicit" node <> Some (C_import_json.Bool true))
@@ -621,11 +621,18 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
         in
         Option.iter
           (fun (base_type, root_name) ->
+            let has_type name node =
+              Option.bind (field "type" node) (string "qualType")
+              |> Option.fold ~none:false ~some:(fun ty -> find_text ty name 0 <> None)
+            in
+            let type_referenced name =
+              referenced name || List.exists (has_type name) top_declarations
+            in
             let root_referenced =
-              referenced root_name
-              || List.exists referenced
-                   (Option.value ~default:[]
-                      (Option.bind root_id (Hashtbl.find_opt alias_names_by_record)))
+              List.exists type_referenced
+                (root_name
+                :: Option.value ~default:[]
+                     (Option.bind root_id (Hashtbl.find_opt alias_names_by_record)))
             in
             let fields = ref [] in
             let rec collect record =
@@ -766,7 +773,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
           let ast_channel = open_in_bin ast_path in
           Fun.protect
             ~finally:(fun () -> close_in_noerr ast_channel)
-            (fun () -> C_import_json.declarations_filtered ast_channel)
+            (fun () -> C_import_json.declarations ~filtered:true ast_channel)
       in
       let secondary_aliases = Hashtbl.create 32 in
       let rec collect_secondary_aliases node =

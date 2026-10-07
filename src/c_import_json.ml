@@ -37,16 +37,12 @@ let take i =
   i.pos <- i.pos + 1;
   c
 
-let space i =
-  let rec loop () =
-    if i.pos = i.size then refill i;
-    match Bytes.get i.data i.pos with
-    | ' ' | '\n' | '\r' | '\t' ->
-        i.pos <- i.pos + 1;
-        loop ()
-    | _ -> ()
-  in
-  loop ()
+let rec space i =
+  match peek i with
+  | ' ' | '\n' | '\r' | '\t' ->
+      ignore (take i);
+      space i
+  | _ -> ()
 
 let expect i c =
   space i;
@@ -497,19 +493,14 @@ let declarations ?(root_consumed = false) ?(filtered = false) channel =
     if not root_consumed then expect i '{';
     root [])
 
-let declarations_filtered channel = declarations ~filtered:true channel
-
 let declarations_with_layout channel =
   let layout = Buffer.create 4096 in
-  let rec prelude () =
-    let line = input_line channel in
-    if String.equal line "{" then ()
-    else (
-      Buffer.add_string layout line;
-      Buffer.add_char layout '\n';
-      prelude ())
-  in
-  prelude ();
+  let line = ref (input_line channel) in
+  while not (String.equal !line "{") do
+    Buffer.add_string layout !line;
+    Buffer.add_char layout '\n';
+    line := input_line channel
+  done;
   (Buffer.contents layout, declarations ~root_consumed:true channel)
 
 let field name = function
