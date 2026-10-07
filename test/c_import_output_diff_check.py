@@ -50,14 +50,37 @@ def check_llvm(old_text, new_text):
     return len(removed)
 
 
-def contains_name(value, name):
+def ir_references(value, collection, name):
     if isinstance(value, dict):
-        return any(contains_name(item, name) for item in value.values())
+        if collection == "funcs" and value.get("func") == name:
+            return True
+        return any(
+            key not in {"name", "symbol"}
+            and ir_references(item, collection, name)
+            for key, item in value.items()
+        )
     if isinstance(value, list):
-        return any(contains_name(item, name) for item in value)
-    if isinstance(value, str):
-        return re.search(r"(?<![A-Za-z0-9_$])" + re.escape(name) + r"(?![A-Za-z0-9_$])", value) is not None
+        if collection == "funcs" and len(value) > 4 and value[0] == "call":
+            if value[4] == name:
+                return True
+        if collection == "globals":
+            if len(value) > 2 and value[0] == "global" and value[2] == name:
+                return True
+            if len(value) > 2 and value[0] == "global_ptr" and value[2] == name:
+                return True
+            if len(value) == 3 and isinstance(value[0], int) and value[1] == name:
+                return True
+        return any(ir_references(item, collection, name) for item in value)
     return False
+
+
+def type_references(value, name):
+    pattern = re.compile(r"%struct\." + re.escape(name) + r"(?![-A-Za-z$._0-9])")
+    if isinstance(value, dict):
+        return any(key != "name" and type_references(item, name) for key, item in value.items())
+    if isinstance(value, list):
+        return any(type_references(item, name) for item in value)
+    return isinstance(value, str) and pattern.search(value) is not None
 
 
 def check_removed_entry(document, collection, entry):
@@ -65,15 +88,32 @@ def check_removed_entry(document, collection, entry):
     if not name:
         raise ValueError("removed imported entry has no name")
     if collection == "funcs":
-        if entry.get("blocks") != []:
+        if entry.get("blocks") != [] or entry.get("linkage") != "external":
             raise ValueError("removed function is a definition")
+        if any(adapter.get("name") == name for adapter in document.get("c_adapters", [])):
+            raise ValueError("removed function is still named by a C adapter")
     elif collection == "globals":
-        if entry.get("linkage") != "external":
+        if entry.get("kind") != "storage" or entry.get("linkage") not in {
+            "import",
+            "import_const",
+        }:
             raise ValueError("removed global is not an imported declaration")
     elif collection != "structs":
         raise ValueError("removed entry is not an imported declaration or type")
-    if contains_name(document, name):
-        raise ValueError("removed imported entry is still referenced")
+    if collection in {"funcs", "globals"}:
+        if any(ir_references(item, collection, name) for key, item in document.items() if key != collection):
+            raise ValueError("removed imported entry is still referenced")
+        declarations = document.get(collection, [])
+        if any(
+            ir_references({key: value for key, value in declaration.items() if key != "name"}, collection, name)
+            for declaration in declarations
+        ):
+            raise ValueError("removed imported entry is still referenced")
+    else:
+        declarations = [item for item in document.get("structs", []) if item.get("name") != name]
+        others = {key: value for key, value in document.items() if key != "structs"}
+        if type_references(declarations, name) or type_references(others, name):
+            raise ValueError("removed imported type is still referenced")
 
 
 def compare_json(old, new, document, path=()):

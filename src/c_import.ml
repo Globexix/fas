@@ -410,7 +410,8 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
           (string "kind" child))
   in
   let referenced name =
-    Option.fold ~none:true ~some:(List.exists (String.equal name)) referenced_names
+    probe_all_declarations
+    || Option.fold ~none:true ~some:(List.exists (String.equal name)) referenced_names
   in
   let rec flatten acc node = List.fold_left flatten (node :: acc) (children node) in
   let id node = string "id" node in
@@ -513,8 +514,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
       (fun node ->
         List.mem (kind node)
           [ Some "FunctionDecl"; Some "VarDecl"; Some "EnumConstantDecl" ]
-        && (probe_all_declarations
-           || kind node = Some "EnumConstantDecl"
+        && (kind node = Some "EnumConstantDecl"
            || Option.fold ~none:false ~some:referenced (name node))
         && field "isImplicit" node <> Some (C_import_json.Bool true))
       all_nodes
