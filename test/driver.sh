@@ -196,6 +196,38 @@ fi
 grep -F -- "cc " "$TOOL_LOG" >/dev/null || fail "CC override was ignored"
 temps_empty
 
+cat >"$WORK/c-import.fas" <<FAS
+use "C" "$ROOT/test/c_import/macros.h"
+fn main() i32 { return FAS_MACRO_ALIAS - 41 }
+FAS
+cat >"$WORK/import-cc" <<'SH'
+#!/bin/sh
+case " $* " in
+  *" -ast-dump=json "*|*" -dD "*|*" -emit-llvm "*) printf '%s\n' "$*" >>"$IMPORT_LOG" ;;
+esac
+exec "$REAL_CC" "$@"
+SH
+chmod +x "$WORK/import-cc"
+CC="$WORK/import-cc" IMPORT_LOG="$WORK/import-clang.log" \
+  "$OCAML_FAS" --keep --emit-ir "$WORK/c-import.fas" \
+  >"$WORK/c-import.ir" 2>"$WORK/c-import.stderr"
+[ "$(wc -l <"$WORK/import-clang.log")" -eq 4 ] \
+  || fail "C import used more than four Clang commands"
+[ "$(grep -c -- '-ast-dump=json' "$WORK/import-clang.log")" -eq 2 ] \
+  || fail "C import did not share its AST dumps"
+[ "$(grep -c -- '-dD' "$WORK/import-clang.log")" -eq 1 ] \
+  || fail "C import macro scan count changed"
+[ "$(grep -c -- '-emit-llvm' "$WORK/import-clang.log")" -eq 1 ] \
+  || fail "C import probe translation unit was not shared"
+[ "$(grep -c '^fas: kept ' "$WORK/c-import.stderr")" -eq 2 ] \
+  || fail "C import --keep listing changed"
+grep -E "^fas: kept C import unit: $TMPDIR/fas-c-import-[^ ]+\\.c$" \
+  "$WORK/c-import.stderr" >/dev/null || fail "--keep omitted the C import unit"
+grep -E "^fas: kept C bindings: $TMPDIR/c-import.bindings-[^ ]+\\.txt$" \
+  "$WORK/c-import.stderr" >/dev/null || fail "--keep C import listing changed"
+find "$TMPDIR" -mindepth 1 -delete
+temps_empty
+
 : >"$TOOL_LOG"
 "$OCAML_FAS" -g --keep "$WORK/link.fas" "$WORK/helper.c" -lm -o "$WORK/link" \
   >"$WORK/stdout" 2>"$WORK/stderr"

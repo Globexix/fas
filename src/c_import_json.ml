@@ -348,7 +348,7 @@ let declaration i =
   in
   rest acc
 
-let declarations channel =
+let declarations ?(root_consumed = false) channel =
   let i =
     {
       channel;
@@ -361,7 +361,7 @@ let declarations channel =
       presumed_line = None;
     }
   in
-  expect i '{';
+  if not root_consumed then expect i '{';
   let rec root acc =
     space i;
     if peek i = '}' then (
@@ -404,6 +404,19 @@ let declarations channel =
       | _ -> failwith "invalid Clang translation unit")
   in
   root []
+
+let declarations_with_layout channel =
+  let layout = Buffer.create 4096 in
+  let rec prelude () =
+    let line = input_line channel in
+    if line = "{" then ()
+    else (
+      Buffer.add_string layout line;
+      Buffer.add_char layout '\n';
+      prelude ())
+  in
+  prelude ();
+  (Buffer.contents layout, declarations ~root_consumed:true channel)
 
 let field name = function Obj (_, index) -> Hashtbl.find_opt index name | _ -> None
 let array = function Arr values -> values | _ -> []

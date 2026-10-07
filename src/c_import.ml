@@ -218,7 +218,8 @@ let macro_definitions text names =
       else
         Some
           ( String.sub line start (!stop - start),
-            !stop < String.length line && line.[!stop] = '(' )
+            !stop < String.length line && line.[!stop] = '(',
+            String.trim (String.sub line !stop (String.length line - !stop)) <> "" )
   in
   String.split_on_char '\n' text
   |> List.iter (fun line ->
@@ -235,15 +236,17 @@ let macro_definitions text names =
               | None -> false)
       else if !real_file then
         match take "#define " line with
-        | Some (name, function_like) when Hashtbl.mem wanted name ->
-            Hashtbl.replace definitions name function_like
+        | Some (name, function_like, has_value) when Hashtbl.mem wanted name ->
+            Hashtbl.replace definitions name (function_like, has_value)
         | _ -> (
             match take "#undef " line with
-            | Some (name, _) -> Hashtbl.remove definitions name
+            | Some (name, _, _) -> Hashtbl.remove definitions name
             | None -> ()));
   List.filter_map
     (fun name ->
-      Option.map (fun kind -> (name, kind)) (Hashtbl.find_opt definitions name))
+      Option.map
+        (fun (function_like, has_value) -> (name, function_like, has_value))
+        (Hashtbl.find_opt definitions name))
     names
 
 let macro_type = function
@@ -295,6 +298,66 @@ let llvm_integer_index ir =
       | _ -> ());
   integers
 
+let alloc_size_parameters ir =
+  let number line start =
+    let stop = ref start in
+    while !stop < String.length line && line.[!stop] >= '0' && line.[!stop] <= '9' do
+      incr stop
+    done;
+    if !stop = start then None
+    else int_of_string_opt (String.sub line start (!stop - start))
+  in
+  let lines = String.split_on_char '\n' ir
+  and groups = Hashtbl.create 16
+  and found = Hashtbl.create 16 in
+  let indices line =
+    match find_text line "allocsize(" 0 with
+    | None -> []
+    | Some at ->
+        Option.fold ~none:[]
+          ~some:(fun stop ->
+            String.sub line (at + 10) (stop - at - 10)
+            |> String.split_on_char ','
+            |> List.filter_map (fun value ->
+                Option.map succ (int_of_string_opt (String.trim value))))
+          (String.index_from_opt line (at + 10) ')')
+  in
+  List.iter
+    (fun line ->
+      Option.bind (find_text line "attributes #" 0) (fun at -> number line (at + 12))
+      |> Option.iter (fun group -> Hashtbl.replace groups group (indices line)))
+    lines;
+  List.iter
+    (fun line ->
+      if String.starts_with ~prefix:"declare " (String.trim line) then
+        Option.iter
+          (fun at ->
+            Option.iter
+              (fun stop ->
+                let quoted = line.[at + 1] = '"' in
+                let name =
+                  String.sub line
+                    (at + 1 + if quoted then 1 else 0)
+                    (stop - at - 1 - if quoted then 1 else 0)
+                in
+                let group =
+                  Option.bind (find_text line "#" stop) (fun hash ->
+                      number line (hash + 1))
+                in
+                Option.bind group (Hashtbl.find_opt groups)
+                |> Option.iter (fun values ->
+                    if values <> [] then
+                      Hashtbl.replace found name
+                        (values
+                        :: Option.value ~default:[] (Hashtbl.find_opt found name))))
+              (String.index_from_opt line at '('))
+          (find_text line "@" 0))
+    lines;
+  Hashtbl.fold
+    (fun name values acc -> (name, List.sort_uniq compare values) :: acc)
+    found []
+  |> List.sort compare
+
 let fas_macro_value width unsigned literal =
   let value = Int64.of_string literal in
   if unsigned && width < 64 then
@@ -302,22 +365,7 @@ let fas_macro_value width unsigned literal =
   else if unsigned && value < 0L then Printf.sprintf "0x%Lx" value
   else Int64.to_string value
 
-let macro_probe_source path stem candidates =
-  let out = open_out_bin path in
-  Fun.protect
-    ~finally:(fun () -> close_out_noerr out)
-    (fun () ->
-      Printf.fprintf out "#include %S\n" stem;
-      List.iteri
-        (fun i (name, _) ->
-          let prefix = "__fas_mv_" ^ Digest.to_hex (Digest.string stem) ^ "_" in
-          Printf.fprintf out
-            "static const __typeof__((%s)) %s%d __attribute__((used)) = (%s);\n\
-             static const int %st_%d __attribute__((used)) = _Generic((%s), %s);\n"
-            name prefix i name prefix i name macro_probe_types)
-        candidates)
-
-let imported_macro_nodes ~cc ~c_flags ~source ~unit_path ~paths ~macro_names =
+let imported_macro_definitions ~cc ~c_flags ~source ~unit_path ~macro_names =
   if macro_names = [] then Ok []
   else
     let common =
@@ -325,303 +373,10 @@ let imported_macro_nodes ~cc ~c_flags ~source ~unit_path ~paths ~macro_names =
       @ c_flags
       @ [ "-iquote"; Filename.dirname source ]
     in
-    let pp = Array.of_list ([ cc; "-E"; "-dD" ] @ common @ [ unit_path ]) in
-    match Process.run pp with
-    | Error e -> Error e.stderr
-    | Ok (text, _) ->
-        let definitions = macro_definitions text macro_names in
-        let candidates = List.filter (fun (_, fn) -> not fn) definitions in
-        let probe = Filename.temp_file "fas-c-macro-probe-" ".c" in
-        paths := probe :: !paths;
-        let prefix = "__fas_mv_" ^ Digest.to_hex (Digest.string unit_path) ^ "_" in
-        let run xs =
-          macro_probe_source probe unit_path xs;
-          let argv =
-            Array.of_list
-              ([ cc; "-S"; "-emit-llvm"; "-o"; "-" ]
-              @ common
-              @ [ "-Xclang=-skip-function-bodies"; probe ])
-          in
-          match Process.run argv with
-          | Ok (ir, _) -> Ok (ir, xs)
-          | Error e ->
-              let bad =
-                String.split_on_char '\n' e.stderr
-                |> List.filter_map (fun line ->
-                    Option.bind (error_location line) (fun (file, n, _) ->
-                        if file = probe && n >= 2 then
-                          Option.map fst (List.nth_opt xs ((n - 2) / 2))
-                        else None))
-                |> List.sort_uniq compare
-              in
-              if bad = [] then Error e.stderr
-              else Error ("bad macros: " ^ String.concat "\n" bad)
-        in
-        let probed =
-          match run candidates with
-          | Error message when String.starts_with ~prefix:"bad macros: " message ->
-              let bad =
-                String.sub message 12 (String.length message - 12)
-                |> String.split_on_char '\n'
-              in
-              run (List.filter (fun (name, _) -> not (List.mem name bad)) candidates)
-          | result -> result
-        in
-        Result.map
-          (fun (ir, candidates) ->
-            let integers = llvm_integer_index ir in
-            let ast_path = Filename.temp_file "fas-c-macro-ast-" ".json" in
-            paths := ast_path :: !paths;
-            let ast_argv =
-              Array.of_list
-                ([
-                   cc;
-                   "-fsyntax-only";
-                   "-Xclang";
-                   "-ast-dump=json";
-                   "-Xclang";
-                   "-skip-function-bodies";
-                 ]
-                @ common @ [ probe ])
-            in
-            let macro_type_aliases =
-              match Process.run_to_file ast_argv ast_path with
-              | Error _ -> []
-              | Ok _ ->
-                  let channel = open_in_bin ast_path in
-                  let ast_nodes =
-                    Fun.protect
-                      ~finally:(fun () -> close_in_noerr channel)
-                      (fun () -> C_import_json.declarations channel)
-                  in
-                  let rec flatten node =
-                    node
-                    :: List.concat_map flatten
-                         (Option.fold ~none:[] ~some:C_import_json.array
-                            (C_import_json.field "inner" node))
-                  in
-                  let nodes = List.concat_map flatten ast_nodes in
-                  let aliases = Hashtbl.create 32 in
-                  List.iter
-                    (fun node ->
-                      if
-                        C_import_json.field "kind" node
-                        = Some (C_import_json.Str "TypedefDecl")
-                      then
-                        match
-                          ( C_import_json.field "id" node,
-                            C_import_json.field "name" node )
-                        with
-                        | Some (C_import_json.Str id), Some (C_import_json.Str name) ->
-                            Hashtbl.replace aliases id name
-                        | _ -> ())
-                    nodes;
-                  List.mapi
-                    (fun i _ ->
-                      let variable = prefix ^ string_of_int i in
-                      List.find_map
-                        (fun node ->
-                          if
-                            C_import_json.field "kind" node
-                            = Some (C_import_json.Str "VarDecl")
-                            && C_import_json.field "name" node
-                               = Some (C_import_json.Str variable)
-                          then
-                            Option.bind (C_import_json.field "type" node) (fun ty ->
-                                Option.bind (C_import_json.field "typeAliasDeclId" ty)
-                                  (function
-                                  | C_import_json.Str id -> Hashtbl.find_opt aliases id
-                                  | _ -> None))
-                          else None)
-                        nodes)
-                    candidates
-            in
-            let integer (i, (name, _)) =
-              match
-                ( Hashtbl.find_opt integers (prefix ^ string_of_int i),
-                  Hashtbl.find_opt integers (prefix ^ "t_" ^ string_of_int i) )
-              with
-              | Some (ty, literal), Some (_, id) when String.starts_with ~prefix:"i" ty
-                ->
-                  let width =
-                    int_of_string_opt (String.sub ty 1 (String.length ty - 1))
-                  in
-                  Option.bind width (fun width ->
-                      Option.bind (int_of_string_opt id) (fun id ->
-                          Option.bind (macro_type id) (fun (c_ty, bits, unsigned) ->
-                              if width <> bits then None
-                              else
-                                Some
-                                  (name, c_ty, id, fas_macro_value bits unsigned literal))))
-              | _ -> None
-            in
-            let imported =
-              List.mapi (fun i item -> (i, item)) candidates
-              |> List.filter_map (fun (i, item) ->
-                  Option.map (fun value -> (i, value)) (integer (i, item)))
-            in
-            let node kind name extra =
-              C_import_json.make_obj
-                (("kind", C_import_json.Str kind)
-                :: ("name", C_import_json.Str name)
-                :: extra)
-            in
-            let imported_nodes =
-              List.map
-                (fun (index, (name, ty, code, value)) ->
-                  let extra =
-                    [
-                      ("macroType", C_import_json.Str ty);
-                      ("macroTypeCode", C_import_json.Str (string_of_int code));
-                      ("value", C_import_json.Str value);
-                    ]
-                    @ Option.to_list
-                        (Option.map
-                           (fun alias ->
-                             ("macroTypeAliasName", C_import_json.Str alias))
-                           (List.nth_opt macro_type_aliases index |> Option.join))
-                  in
-                  node "FasIntegerMacro" name extra)
-                imported
-            in
-            let invisible_nodes =
-              List.filter_map
-                (fun (name, _) ->
-                  if List.exists (fun (_, (n, _, _, _)) -> n = name) imported then None
-                  else Some (node "FasInvisibleMacro" name []))
-                definitions
-            in
-            imported_nodes @ invisible_nodes)
-          probed
-
-let imported_enum_nodes ~cc ~c_flags ~source ~unit_path ~paths declarations =
-  let field name node = C_import_json.field name node in
-  let text name node = Option.bind (field name node) C_import_json.string in
-  let children node =
-    Option.fold ~none:[] ~some:C_import_json.array (field "inner" node)
-  in
-  let rec flatten node = node :: List.concat_map flatten (children node) in
-  let all_nodes = List.concat_map flatten declarations in
-  let rec enum_decl_id node =
-    match text "kind" node with
-    | Some "EnumType" -> Option.bind (field "decl" node) (text "id")
-    | _ -> List.find_map enum_decl_id (children node)
-  in
-  let name node =
-    match text "name" node with Some name when name <> "" -> Some name | _ -> None
-  in
-  let enums = List.filter (fun node -> text "kind" node = Some "EnumDecl") all_nodes in
-  let aliases =
-    List.filter (fun node -> text "kind" node = Some "TypedefDecl") all_nodes
-  in
-  let candidates =
-    List.filter_map
-      (fun node ->
-        match text "id" node with
-        | None -> None
-        | Some id ->
-            let c_type =
-              match name node with
-              | Some name -> Some ("enum " ^ name)
-              | None -> (
-                  match
-                    List.find_map
-                      (fun alias ->
-                        if enum_decl_id alias = Some id then name alias else None)
-                      aliases
-                  with
-                  | Some _ as name -> name
-                  | None ->
-                      List.find_map
-                        (fun probe ->
-                          match (text "kind" probe, field "tree" probe) with
-                          | Some "FasTypeProbe", Some tree
-                            when enum_decl_id tree = Some id ->
-                              Option.map
-                                (fun expression -> "__typeof__(" ^ expression ^ ")")
-                                (text "expression" probe)
-                          | _ -> None)
-                        all_nodes)
-            in
-            Option.map (fun c_type -> (id, c_type)) c_type)
-      enums
-    |> List.sort_uniq compare
-  in
-  if candidates = [] then Ok []
-  else
-    let common =
-      [ "-x"; "c"; "--target=x86_64-unknown-linux-gnu" ]
-      @ c_flags
-      @ [ "-iquote"; Filename.dirname source ]
-    in
-    let probe = Filename.temp_file "fas-c-enum-probe-" ".c" in
-    paths := probe :: !paths;
-    let prefix = "__fas_enumty_" ^ Digest.to_hex (Digest.string unit_path) ^ "_" in
-    let write_probe candidates =
-      let out = open_out_bin probe in
-      Fun.protect
-        ~finally:(fun () -> close_out_noerr out)
-        (fun () ->
-          Printf.fprintf out "#include %S\n" unit_path;
-          List.iteri
-            (fun i (_, c_type) ->
-              Printf.fprintf out
-                "static const int %s%d __attribute__((used)) = _Generic((%s)0, %s); \
-                 static const unsigned long long %sa_%d __attribute__((used)) = \
-                 _Alignof(%s);\n"
-                prefix i c_type macro_probe_types prefix i c_type)
-            candidates)
-    in
-    let rec run candidates =
-      write_probe candidates;
-      let argv =
-        Array.of_list
-          ([ cc; "-S"; "-emit-llvm"; "-o"; "-" ]
-          @ common
-          @ [ "-Xclang=-skip-function-bodies"; probe ])
-      in
-      match Process.run argv with
-      | Ok (ir, _) -> Ok (ir, candidates)
-      | Error failure ->
-          let bad =
-            String.split_on_char '\n' failure.stderr
-            |> List.filter_map (fun line ->
-                Option.bind (error_location line) (fun (file, line, _) ->
-                    if file = probe && line >= 2 then
-                      Option.map fst (List.nth_opt candidates (line - 2))
-                    else None))
-            |> List.sort_uniq compare
-          in
-          if bad = [] then Error failure.stderr
-          else
-            let remaining =
-              List.filter (fun (id, _) -> not (List.mem id bad)) candidates
-            in
-            if remaining = [] then Ok ("", []) else run remaining
-    in
-    Result.map
-      (fun (ir, candidates) ->
-        let integers = llvm_integer_index ir in
-        List.filter_map
-          (fun (i, (id, _)) ->
-            Option.bind
-              (Hashtbl.find_opt integers (prefix ^ string_of_int i))
-              (fun (_, code) ->
-                Option.bind (int_of_string_opt code) (fun code ->
-                    Option.bind (macro_type code) (fun _ ->
-                        Option.map
-                          (fun (_, align) ->
-                            C_import_json.make_obj
-                              [
-                                ("kind", C_import_json.Str "FasEnumType");
-                                ("enumId", C_import_json.Str id);
-                                ( "underlyingCode",
-                                  C_import_json.Str (string_of_int code) );
-                                ("align", C_import_json.Str align);
-                              ])
-                          (Hashtbl.find_opt integers (prefix ^ "a_" ^ string_of_int i))))))
-          (List.mapi (fun i candidate -> (i, candidate)) candidates))
-      (run candidates)
+    let argv = Array.of_list ([ cc; "-E"; "-dD" ] @ common @ [ unit_path ]) in
+    match Process.run argv with
+    | Error failure -> Error failure.stderr
+    | Ok (text, _) -> Ok (macro_definitions text macro_names)
 
 type builtin_info = Integer of Ast.ty | Unsupported_integer | Floating of int
 
@@ -642,7 +397,8 @@ let builtin_info_of_name = function
       Some (Floating 0)
   | _ -> None
 
-let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declarations =
+let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
+    ~macro_candidates declarations =
   let field key node = C_import_json.field key node in
   let string key node = Option.bind (field key node) C_import_json.string in
   let children node =
@@ -869,23 +625,35 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declar
     Hashtbl.fold (fun target expression acc -> (target, expression) :: acc) probes []
   in
   let prefix = "__fas_type_probe_" ^ Digest.to_hex (Digest.string unit_path) ^ "_" in
+  let macro_prefix =
+    "__fas_macro_type_" ^ Digest.to_hex (Digest.string unit_path) ^ "_"
+  in
   let indexed =
     List.mapi (fun index (target, expression) -> (index, target, expression)) candidates
   in
+  let probe = Filename.temp_file "fas-c-type-probe-" ".c" in
+  paths := probe :: !paths;
+  let macro_start_line = 2 + List.length indexed in
   let append_type_probes () =
-    let out = open_out_gen [ Open_append; Open_binary ] 0o600 unit_path in
+    let out = open_out_bin probe in
     Fun.protect
       ~finally:(fun () -> close_out_noerr out)
       (fun () ->
+        Printf.fprintf out "#include %S\n" unit_path;
         List.iter
           (fun (index, _, expression) ->
             Printf.fprintf out "typedef __typeof__(%s) %s%d;\n" expression prefix index)
-          indexed)
+          indexed;
+        List.iteri
+          (fun index (name, _, _) ->
+            Printf.fprintf out "typedef __typeof__((%s)) %s%d;\n" name macro_prefix
+              index)
+          macro_candidates)
   in
   let common =
     [ "-x"; "c"; "--target=x86_64-unknown-linux-gnu" ]
     @ c_flags
-    @ [ "-fno-builtin"; "-iquote"; Filename.dirname source ]
+    @ [ "-iquote"; Filename.dirname source ]
   in
   append_type_probes ();
   let ast_path = Filename.temp_file "fas-c-type-probe-" ".json" in
@@ -900,11 +668,40 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declar
          "-Xclang";
          "-skip-function-bodies";
        ]
-      @ common @ [ unit_path ])
+      @ common @ [ probe ])
   in
-  match Process.run_to_file ast_argv ast_path with
-  | Error failure -> Error failure.stderr
-  | Ok _ ->
+  let failure =
+    match Process.run_to_file ast_argv ast_path with
+    | Ok _ -> None
+    | Error failure -> Some failure
+  in
+  let errors =
+    Option.fold ~none:[]
+      ~some:(fun (failure : Process.failure) ->
+        String.split_on_char '\n' failure.stderr |> List.map error_location)
+      failure
+  in
+  let macro_error = function
+    | Some (file, line, _) ->
+        file = probe && line >= macro_start_line
+        && line < macro_start_line + List.length macro_candidates
+    | None -> false
+  in
+  let bad_macros = Hashtbl.create 8 in
+  List.iter
+    (function
+      | Some (file, line, _) when macro_error (Some (file, line, 0)) ->
+          Hashtbl.replace bad_macros (line - macro_start_line) ()
+      | _ -> ())
+    errors;
+  let structured_failure =
+    Option.bind failure (fun (failure : Process.failure) ->
+        if errors <> [] && List.for_all macro_error errors then None
+        else Some failure.stderr)
+  in
+  match structured_failure with
+  | Some message -> Error message
+  | None ->
       let ast_channel = open_in_bin ast_path in
       let ast_nodes =
         Fun.protect
@@ -916,8 +713,11 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declar
           (fun node ->
             not
               (kind node = Some "TypedefDecl"
-              && Option.fold ~none:false ~some:(String.starts_with ~prefix) (name node)
-              ))
+              && List.exists
+                   (fun prefix ->
+                     Option.fold ~none:false ~some:(String.starts_with ~prefix)
+                       (name node))
+                   [ prefix; macro_prefix ]))
           ast_nodes
       in
       let is_type_node node =
@@ -954,224 +754,351 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths declar
             | _ -> None)
           ast_nodes
       in
+      let aliases = Hashtbl.create 32 in
+      List.iter
+        (fun node ->
+          if kind node = Some "TypedefDecl" then
+            match (string "id" node, name node) with
+            | Some id, Some alias -> Hashtbl.replace aliases id alias
+            | _ -> ())
+        ast_nodes;
+      let macro_infos =
+        List.mapi
+          (fun index _ ->
+            let probe_name = macro_prefix ^ string_of_int index in
+            let declaration =
+              List.find_opt
+                (fun node ->
+                  kind node = Some "TypedefDecl" && name node = Some probe_name)
+                ast_nodes
+            in
+            let ty = Option.bind declaration (field "type") in
+            let type_name =
+              Option.bind ty (fun ty ->
+                  match string "desugaredQualType" ty with
+                  | Some _ as name -> name
+                  | None -> string "qualType" ty)
+            in
+            let alias =
+              Option.bind ty (fun ty ->
+                  Option.bind (string "typeAliasDeclId" ty) (Hashtbl.find_opt aliases))
+            in
+            (type_name, alias, not (Hashtbl.mem bad_macros index)))
+          macro_candidates
+      in
       Ok
-        (declarations @ probe_types
-        @ List.map
-            (fun record_name ->
-              C_import_json.make_obj
-                [
-                  ("kind", C_import_json.Str "FasTypeCollision");
-                  ("name", C_import_json.Str record_name);
-                ])
-            (Hashtbl.fold
-               (fun record_name () acc -> record_name :: acc)
-               collision_names []))
+        ( declarations @ probe_types
+          @ List.map
+              (fun record_name ->
+                C_import_json.make_obj
+                  [
+                    ("kind", C_import_json.Str "FasTypeCollision");
+                    ("name", C_import_json.Str record_name);
+                  ])
+              (Hashtbl.fold
+                 (fun record_name () acc -> record_name :: acc)
+                 collision_names []),
+          macro_infos )
 
-let imported_typedef_layout_nodes ~cc ~c_flags ~source ~unit_path ~paths declarations =
+let imported_probe_nodes ~cc ~c_flags ~source ~unit_path ~paths ~definitions
+    ~macro_candidates ~macro_infos ~alloc_size_declarations declarations =
   let field name node = C_import_json.field name node in
   let text name node = Option.bind (field name node) C_import_json.string in
   let children node =
     Option.fold ~none:[] ~some:C_import_json.array (field "inner" node)
   in
-  let candidates =
+  let kind node = text "kind" node in
+  let name node = text "name" node in
+  let object_of_kind kind fields =
+    C_import_json.make_obj (("kind", C_import_json.Str kind) :: fields)
+  in
+  let rec flatten node = node :: List.concat_map flatten (children node) in
+  let all_nodes = List.concat_map flatten declarations in
+  let rec enum_decl_id node =
+    if kind node = Some "EnumType" then Option.bind (field "decl" node) (text "id")
+    else List.find_map enum_decl_id (children node)
+  in
+  let enum_aliases =
+    List.filter (fun node -> kind node = Some "TypedefDecl") all_nodes
+  in
+  let enum_candidates =
+    all_nodes
+    |> List.filter_map (fun node ->
+        if kind node <> Some "EnumDecl" then None
+        else
+          Option.bind (text "id" node) (fun id ->
+              let c_type =
+                match name node with
+                | Some name -> Some ("enum " ^ name)
+                | None -> (
+                    match
+                      List.find_map
+                        (fun alias ->
+                          if enum_decl_id alias = Some id then name alias else None)
+                        enum_aliases
+                    with
+                    | Some _ as alias -> alias
+                    | None ->
+                        List.find_map
+                          (fun probe ->
+                            if kind probe <> Some "FasTypeProbe" then None
+                            else
+                              match (field "tree" probe, text "expression" probe) with
+                              | Some tree, Some expression
+                                when enum_decl_id tree = Some id ->
+                                  Some ("__typeof__(" ^ expression ^ ")")
+                              | _ -> None)
+                          all_nodes)
+              in
+              Option.map (fun c_type -> (id, c_type)) c_type))
+    |> List.sort_uniq compare
+  in
+  let layout_candidates =
     List.concat_map
       (fun node ->
-        match (text "kind" node, text "name" node) with
+        match (kind node, name node) with
         | Some "TypedefDecl", Some name
           when List.exists
-                 (fun child -> text "kind" child = Some "AlignedAttr")
+                 (fun child -> kind child = Some "AlignedAttr")
                  (children node) ->
             [ ("typedef", name, name, []) ]
-        | Some "RecordDecl", Some name
+        | Some "RecordDecl", Some record_name
           when field "completeDefinition" node = Some (C_import_json.Bool true)
                && List.exists
                     (fun child ->
-                      List.mem (text "kind" child)
-                        [ Some "PackedAttr"; Some "AlignedAttr" ])
+                      List.mem (kind child) [ Some "PackedAttr"; Some "AlignedAttr" ])
                     (children node) ->
             let tag = Option.value ~default:"struct" (text "tagUsed" node) in
             let fields =
               children node
               |> List.filter (fun child ->
-                  text "kind" child = Some "FieldDecl"
+                  kind child = Some "FieldDecl"
                   && field "isBitfield" child <> Some (C_import_json.Bool true))
-              |> List.filter_map (text "name")
+              |> List.filter_map name
             in
-            [ ("record", name, tag ^ " " ^ name, fields) ]
+            [ ("record", record_name, tag ^ " " ^ record_name, fields) ]
         | _ -> [])
       declarations
     |> List.sort_uniq compare
   in
-  if candidates = [] then Ok []
+  let alloc_size_functions =
+    List.concat_map flatten alloc_size_declarations
+    |> List.filter (fun node ->
+        kind node = Some "FunctionDecl"
+        && List.exists (fun child -> kind child = Some "AllocSizeAttr") (children node))
+    |> List.filter_map name |> List.sort_uniq compare
+  in
+  let indexed_macros =
+    List.mapi
+      (fun index ((name, _, _), (type_name, alias, valid)) ->
+        (index, name, type_name, alias, valid))
+      (List.combine macro_candidates macro_infos)
+    |> List.filter_map (fun (index, name, type_name, alias, valid) ->
+        match (type_name, valid) with
+        | Some type_name, true -> (
+            match builtin_info_of_name type_name with
+            | Some (Integer (Ast.Bool | Ast.Int _)) -> Some (index, name, alias)
+            | _ -> None)
+        | _ -> None)
+  in
+  let has_probes =
+    enum_candidates <> [] || layout_candidates <> [] || indexed_macros <> []
+    || alloc_size_functions <> []
+  in
+  if not has_probes then Ok ([], [], [], [])
   else
-    let probe = Filename.temp_file "fas-c-typedef-layout-" ".c" in
+    let probe = Filename.temp_file "fas-c-import-probes-" ".c" in
     paths := probe :: !paths;
-    let prefix = "__fas_tdlay_" ^ Digest.to_hex (Digest.string unit_path) ^ "_" in
-    let write_probe candidates =
-      let out = open_out_bin probe in
+    let digest = Digest.to_hex (Digest.string unit_path) in
+    let enum_prefix = "__fas_enumty_" ^ digest ^ "_" in
+    let layout_prefix = "__fas_tdlay_" ^ digest ^ "_" in
+    let macro_prefix = "__fas_mv_" ^ digest ^ "_" in
+    let write_probe () =
+      let output = open_out_bin probe in
       Fun.protect
-        ~finally:(fun () -> close_out_noerr out)
+        ~finally:(fun () -> close_out_noerr output)
         (fun () ->
-          Printf.fprintf out "#include %S\n" unit_path;
+          Printf.fprintf output "#include %S\n" unit_path;
           List.iteri
-            (fun i (_, _, c_type, fields) ->
-              Printf.fprintf out
+            (fun index (_, c_type) ->
+              Printf.fprintf output
+                "static const int %s%d __attribute__((used)) = _Generic((%s)0, %s); \
+                 static const unsigned long long %sa_%d __attribute__((used)) = \
+                 _Alignof(%s);\n"
+                enum_prefix index c_type macro_probe_types enum_prefix index c_type)
+            enum_candidates;
+          List.iteri
+            (fun index (_, _, c_type, fields) ->
+              Printf.fprintf output
                 "static const unsigned long long %ss_%d __attribute__((used)) = \
                  sizeof(%s); static const unsigned long long %sa_%d \
                  __attribute__((used)) = _Alignof(%s);"
-                prefix i c_type prefix i c_type;
+                layout_prefix index c_type layout_prefix index c_type;
               List.iteri
-                (fun j field ->
-                  Printf.fprintf out
+                (fun field_index field ->
+                  Printf.fprintf output
                     " static const unsigned long long %so_%d_%d __attribute__((used)) \
                      = __builtin_offsetof(%s, %s);"
-                    prefix i j c_type field)
+                    layout_prefix index field_index c_type field)
                 fields;
-              output_char out '\n')
-            candidates)
+              output_char output '\n')
+            layout_candidates;
+          List.iter
+            (fun (index, macro_name, _) ->
+              Printf.fprintf output
+                "static const int %st_%d __attribute__((used)) = \
+                 __builtin_constant_p(%s) ? _Generic((%s), %s) : 0; static const \
+                 __typeof__((%s)) %sv_%d __attribute__((used)) = \
+                 __builtin_constant_p(%s) ? (%s) : 0;\n"
+                macro_prefix index macro_name macro_name macro_probe_types macro_name
+                macro_prefix index macro_name macro_name)
+            indexed_macros;
+          List.iteri
+            (fun index function_name ->
+              Printf.fprintf output
+                "static __typeof__(&%s) __fas_allocsize_ref_%d __attribute__((used)) = \
+                 &%s;\n"
+                function_name index function_name)
+            alloc_size_functions)
     in
-    let rec run candidates =
-      write_probe candidates;
-      let argv =
-        Array.of_list
-          ([
-             cc;
-             "-S";
-             "-emit-llvm";
-             "-o";
-             "-";
-             "-x";
-             "c";
-             "--target=x86_64-unknown-linux-gnu";
-           ]
-          @ c_flags
-          @ [
-              "-iquote"; Filename.dirname source; "-Xclang=-skip-function-bodies"; probe;
-            ])
-      in
-      match Process.run argv with
-      | Ok (ir, _) -> Ok (ir, candidates)
-      | Error failure ->
-          let bad =
-            String.split_on_char '\n' failure.stderr
-            |> List.filter_map (fun line ->
-                Option.bind (error_location line) (fun (file, line, _) ->
-                    if file = probe && line >= 2 then
-                      Option.map
-                        (fun (_, name, _, _) -> name)
-                        (List.nth_opt candidates (line - 2))
-                    else None))
-            |> List.sort_uniq compare
-          in
-          if bad = [] then Error failure.stderr
-          else
-            let remaining =
-              List.filter (fun (_, name, _, _) -> not (List.mem name bad)) candidates
-            in
-            if remaining = [] then Ok ("", []) else run remaining
+    write_probe ();
+    let common =
+      [ "-x"; "c"; "--target=x86_64-unknown-linux-gnu" ]
+      @ c_flags
+      @ [ "-iquote"; Filename.dirname source ]
     in
-    Result.map
-      (fun (ir, candidates) ->
+    let argv =
+      Array.of_list
+        ([ cc; "-S"; "-emit-llvm"; "-o"; "-" ]
+        @ common
+        @ [ "-Xclang=-skip-function-bodies"; probe ])
+    in
+    match Process.run argv with
+    | Error failure -> Error failure.stderr
+    | Ok (ir, _) ->
         let integers = llvm_integer_index ir in
-        List.filter_map
-          (fun (i, (kind, name, _, fields)) ->
-            match
-              ( Hashtbl.find_opt integers (prefix ^ "s_" ^ string_of_int i),
-                Hashtbl.find_opt integers (prefix ^ "a_" ^ string_of_int i) )
-            with
-            | Some (_, size), Some (_, align) -> (
-                match (int_of_string_opt size, int_of_string_opt align) with
-                | Some size, Some align ->
-                    let extra =
-                      if kind = "typedef" then []
-                      else
-                        let offsets =
-                          List.mapi
-                            (fun j field ->
-                              Option.map
-                                (fun (_, value) -> field ^ ":" ^ value)
-                                (Hashtbl.find_opt integers
-                                   (prefix ^ "o_" ^ string_of_int i ^ "_"
-                                  ^ string_of_int j)))
-                            fields
-                          |> List.filter_map Fun.id |> String.concat ","
-                        in
-                        [
-                          ("recordName", C_import_json.Str name);
-                          ("offsets", C_import_json.Str offsets);
-                        ]
-                    in
-                    Some
-                      (C_import_json.make_obj
-                         ([
-                            ( "kind",
-                              C_import_json.Str
-                                (if kind = "typedef" then "FasTypedefLayout"
-                                 else "FasRecordLayout") );
-                            ("size", C_import_json.Str (string_of_int size));
-                            ("align", C_import_json.Str (string_of_int align));
+        let enum_types =
+          enum_candidates
+          |> List.mapi (fun index (id, _) -> (index, id))
+          |> List.filter_map (fun (index, id) ->
+              Option.bind
+                (Hashtbl.find_opt integers (enum_prefix ^ string_of_int index))
+                (fun (_, code) ->
+                  Option.bind (int_of_string_opt code) (fun code ->
+                      Option.bind (macro_type code) (fun _ ->
+                          Option.map
+                            (fun (_, align) ->
+                              object_of_kind "FasEnumType"
+                                [
+                                  ("enumId", C_import_json.Str id);
+                                  ( "underlyingCode",
+                                    C_import_json.Str (string_of_int code) );
+                                  ("align", C_import_json.Str align);
+                                ])
+                            (Hashtbl.find_opt integers
+                               (enum_prefix ^ "a_" ^ string_of_int index))))))
+        in
+        let typedef_layouts =
+          layout_candidates
+          |> List.mapi (fun index candidate -> (index, candidate))
+          |> List.filter_map (fun (index, (candidate_kind, name, _, fields)) ->
+              match
+                ( Hashtbl.find_opt integers (layout_prefix ^ "s_" ^ string_of_int index),
+                  Hashtbl.find_opt integers (layout_prefix ^ "a_" ^ string_of_int index)
+                )
+              with
+              | Some (_, size), Some (_, align) -> (
+                  match (int_of_string_opt size, int_of_string_opt align) with
+                  | Some size, Some align ->
+                      let extra =
+                        if candidate_kind = "typedef" then
+                          [ ("name", C_import_json.Str name) ]
+                        else
+                          let offsets =
+                            List.mapi
+                              (fun field_index field ->
+                                Option.map
+                                  (fun (_, value) -> field ^ ":" ^ value)
+                                  (Hashtbl.find_opt integers
+                                     (layout_prefix ^ "o_" ^ string_of_int index ^ "_"
+                                    ^ string_of_int field_index)))
+                              fields
+                            |> List.filter_map Fun.id |> String.concat ","
+                          in
+                          [
+                            ("recordName", C_import_json.Str name);
+                            ("offsets", C_import_json.Str offsets);
                           ]
-                         @
-                         if kind = "typedef" then [ ("name", C_import_json.Str name) ]
-                         else extra))
-                | _ -> None)
-            | _ -> None)
-          (List.mapi (fun i candidate -> (i, candidate)) candidates))
-      (run candidates)
-
-let has_c_name name node =
-  C_import_json.field "kind" node = Some (C_import_json.Str "FunctionDecl")
-  && C_import_json.field "name" node = Some (C_import_json.Str name)
-
-let alloc_size_attributes text =
-  let found = Hashtbl.create 32 and function_name = ref None in
-  let function_indent = ref None in
-  let add name indices =
-    if indices <> [] && List.length indices <= 2 then
-      let previous = Option.value ~default:[] (Hashtbl.find_opt found name) in
-      Hashtbl.replace found name (indices :: previous)
-  in
-  String.split_on_char '\n' text
-  |> List.iter (fun line ->
-      let rec node_indent index =
-        if index = String.length line then None
-        else if line.[index] >= 'A' && line.[index] <= 'Z' then Some index
-        else node_indent (index + 1)
-      in
-      match node_indent 0 with
-      | Some indent when find_text line "FunctionDecl " indent = Some indent -> (
-          function_name := None;
-          function_indent := Some indent;
-          match find_text line "'" indent with
-          | None -> ()
-          | Some finish ->
-              function_name :=
-                Some
-                  (String.sub line indent (finish - indent)
-                  |> String.trim |> String.split_on_char ' ' |> List.rev |> List.hd))
-      | Some indent -> (
-          (match !function_indent with
-          | Some active_indent when indent <= active_indent ->
-              function_name := None;
-              function_indent := None
-          | _ -> ());
-          match
-            (!function_name, !function_indent, find_text line "AllocSizeAttr " indent)
-          with
-          | Some name, Some active_indent, Some start when indent = active_indent + 2
-            -> (
-              match String.index_from_opt line start '>' with
-              | None -> ()
-              | Some finish ->
-                  let indices =
-                    String.sub line (finish + 1) (String.length line - finish - 1)
-                    |> String.split_on_char ' '
-                    |> List.filter_map int_of_string_opt
-                  in
-                  add name indices)
-          | _ -> ())
-      | None -> ());
-  found
+                      in
+                      Some
+                        (object_of_kind
+                           (if candidate_kind = "typedef" then "FasTypedefLayout"
+                            else "FasRecordLayout")
+                           ([
+                              ("size", C_import_json.Str (string_of_int size));
+                              ("align", C_import_json.Str (string_of_int align));
+                            ]
+                           @ extra))
+                  | _ -> None)
+              | _ -> None)
+        in
+        let imported_macros =
+          indexed_macros
+          |> List.filter_map (fun (index, name, alias) ->
+              match
+                ( Hashtbl.find_opt integers (macro_prefix ^ "v_" ^ string_of_int index),
+                  Hashtbl.find_opt integers (macro_prefix ^ "t_" ^ string_of_int index)
+                )
+              with
+              | Some (value_type, value), Some (_, code)
+                when String.starts_with ~prefix:"i" value_type ->
+                  Option.bind
+                    (int_of_string_opt
+                       (String.sub value_type 1 (String.length value_type - 1)))
+                    (fun width ->
+                      Option.bind (int_of_string_opt code) (fun code ->
+                          Option.bind (macro_type code) (fun (c_type, bits, unsigned) ->
+                              if width <> bits then None
+                              else
+                                let extras =
+                                  [
+                                    ("macroType", C_import_json.Str c_type);
+                                    ( "macroTypeCode",
+                                      C_import_json.Str (string_of_int code) );
+                                    ( "value",
+                                      C_import_json.Str
+                                        (fas_macro_value bits unsigned value) );
+                                  ]
+                                  @ Option.to_list
+                                      (Option.map
+                                         (fun alias ->
+                                           ( "macroTypeAliasName",
+                                             C_import_json.Str alias ))
+                                         alias)
+                                in
+                                let node =
+                                  object_of_kind "FasIntegerMacro"
+                                    (("name", C_import_json.Str name) :: extras)
+                                in
+                                Some node)))
+              | _ -> None)
+        in
+        let imported_names =
+          List.filter_map (fun node -> text "name" node) imported_macros
+        in
+        let macros =
+          imported_macros
+          @ List.filter_map
+              (fun (name, _, _) ->
+                if List.mem name imported_names then None
+                else
+                  Some
+                    (object_of_kind "FasInvisibleMacro"
+                       [ ("name", C_import_json.Str name) ]))
+              definitions
+        in
+        let alloc_size_parameters = alloc_size_parameters ir in
+        Ok (enum_types, typedef_layouts, macros, alloc_size_parameters)
 
 let import ~cc ~debug ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
     ?(macro_names = []) source headers =
@@ -1221,23 +1148,32 @@ let import ~cc ~debug ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
              "-ast-dump=json";
              "-Xclang";
              "-skip-function-bodies";
+             "-Xclang";
+             "-fdump-record-layouts-complete";
              "-H";
              "--target=x86_64-unknown-linux-gnu";
            ]
-          @ c_flags @ [ "-fno-builtin" ]
-          @ [ "-iquote"; Filename.dirname source; unit_path ])
+          @ c_flags
+          @ [ "-fno-builtin"; "-iquote"; Filename.dirname source; unit_path ])
       in
       if debug || keep then
         prerr_endline
           ("fas: Clang import command: " ^ String.concat " " (Array.to_list argv));
       match Process.run_to_file argv json_path with
+      | Error failure ->
+          Error
+            [
+              compilation_error ~source ~headers
+                (error_span headers (unit_line unit_path failure.stderr))
+                failure.stderr;
+            ]
       | Ok trace -> (
           try
             let channel = open_in_bin json_path in
-            let declarations =
+            let layouts, raw_declarations =
               Fun.protect
                 ~finally:(fun () -> close_in_noerr channel)
-                (fun () -> C_import_json.declarations channel)
+                (fun () -> C_import_json.declarations_with_layout channel)
             in
             let origins = Hashtbl.create 32 and root = ref "" in
             String.split_on_char '\n' trace
@@ -1266,155 +1202,111 @@ let import ~cc ~debug ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
                   | _ -> node)
                 declarations
             in
-            let declarations = annotate_declarations declarations in
-            match
-              imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path
-                ~paths:macro_paths declarations
-            with
-            | Error message ->
+            let declarations = annotate_declarations raw_declarations in
+            let original_functions = Hashtbl.create 128 in
+            List.iter
+              (fun node ->
+                if
+                  C_import_json.field "kind" node
+                  = Some (C_import_json.Str "FunctionDecl")
+                then
+                  Option.iter
+                    (fun name -> Hashtbl.replace original_functions name node)
+                    (Option.bind (C_import_json.field "name" node) C_import_json.string))
+              raw_declarations;
+            let macro_names =
+              List.filter
+                (fun name ->
+                  not
+                    (List.exists
+                       (fun node ->
+                         C_import_json.field "kind" node
+                         = Some (C_import_json.Str "FunctionDecl")
+                         && C_import_json.field "name" node
+                            = Some (C_import_json.Str name))
+                       declarations))
+                macro_names
+            in
+            let map_error stage = function
+              | Ok value -> Ok value
+              | Error message -> Error (stage, message)
+            in
+            let ( let* ) result next =
+              match result with Ok value -> next value | Error error -> Error error
+            in
+            let pipeline =
+              let* definitions =
+                map_error "internal error: C macro import failed: "
+                  (imported_macro_definitions ~cc ~c_flags ~source ~unit_path
+                     ~macro_names)
+              in
+              let macro_candidates =
+                List.filter
+                  (fun (_, function_like, has_value) ->
+                    (not function_like) && has_value)
+                  definitions
+              in
+              let* structured_ast, macro_infos =
+                map_error "internal error: C structured type import failed: "
+                  (imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path
+                     ~paths:macro_paths ~macro_candidates declarations)
+              in
+              let declarations =
+                List.map
+                  (fun node ->
+                    if
+                      C_import_json.field "kind" node
+                      = Some (C_import_json.Str "FunctionDecl")
+                    then
+                      let name =
+                        Option.bind
+                          (C_import_json.field "name" node)
+                          C_import_json.string
+                      in
+                      Option.bind name (Hashtbl.find_opt original_functions)
+                      |> Option.value ~default:node
+                    else node)
+                  structured_ast
+                |> annotate_declarations
+              in
+              let* enum_types, typedef_layouts, macros, alloc_size_parameters =
+                map_error "internal error: C import probe failed: "
+                  (imported_probe_nodes ~cc ~c_flags ~source ~unit_path
+                     ~paths:macro_paths ~definitions ~macro_candidates ~macro_infos
+                     ~alloc_size_declarations:structured_ast declarations)
+              in
+              Ok
+                ( declarations @ enum_types @ typedef_layouts
+                  @ C_import_json.make_obj
+                      [
+                        ("kind", C_import_json.Str "FasLayoutDump");
+                        ("value", C_import_json.Str layouts);
+                      ]
+                    :: macros,
+                  alloc_size_parameters )
+            in
+            match pipeline with
+            | Error (stage, message) ->
                 Error
                   [
                     Diag.error (List.hd headers).span
-                      ("internal error: C structured type import failed: "
-                      ^ normalize_import_failure ~unit_path !macro_paths message);
+                      (stage ^ normalize_import_failure ~unit_path !macro_paths message);
                   ]
-            | Ok structured_declarations -> (
-                let declarations = annotate_declarations structured_declarations in
-                let layout_argv =
-                  Array.of_list
-                    ([
-                       cc;
-                       "-x";
-                       "c";
-                       "-fsyntax-only";
-                       "-Xclang";
-                       "-skip-function-bodies";
-                       "-Xclang";
-                       "-fdump-record-layouts-complete";
-                       "--target=x86_64-unknown-linux-gnu";
-                     ]
-                    @ c_flags
-                    @ [ "-iquote"; Filename.dirname source; unit_path ])
-                in
-                if debug || keep then
-                  prerr_endline
-                    ("fas: Clang layout command: "
-                    ^ String.concat " " (Array.to_list layout_argv));
-                match Process.run layout_argv with
-                | Error failure ->
-                    Error
-                      [
-                        compilation_error ~source ~headers (List.hd headers).span
-                          failure.stderr;
-                      ]
-                | Ok (layouts, _) -> (
-                    match
-                      imported_enum_nodes ~cc ~c_flags ~source ~unit_path
-                        ~paths:macro_paths declarations
-                    with
-                    | Error message ->
-                        Error
-                          [
-                            Diag.error (List.hd headers).span
-                              ("internal error: C enum type import failed: " ^ message);
-                          ]
-                    | Ok enum_types -> (
-                        match
-                          imported_typedef_layout_nodes ~cc ~c_flags ~source ~unit_path
-                            ~paths:macro_paths declarations
-                        with
-                        | Error message ->
-                            Error
-                              [
-                                Diag.error (List.hd headers).span
-                                  ("internal error: C typedef layout import failed: "
-                                 ^ message);
-                              ]
-                        | Ok typedef_layouts -> (
-                            let macro_names =
-                              List.filter
-                                (fun name ->
-                                  not (List.exists (has_c_name name) declarations))
-                                macro_names
-                            in
-                            match
-                              imported_macro_nodes ~cc ~c_flags ~source ~unit_path
-                                ~paths:macro_paths ~macro_names
-                            with
-                            | Error message ->
-                                Error
-                                  [
-                                    Diag.error (List.hd headers).span
-                                      ("internal error: C macro import failed: "
-                                     ^ message);
-                                  ]
-                            | Ok macros -> (
-                                let all_declarations =
-                                  declarations @ enum_types @ typedef_layouts
-                                  @ C_import_json.make_obj
-                                      [
-                                        ("kind", C_import_json.Str "FasLayoutDump");
-                                        ("value", C_import_json.Str layouts);
-                                      ]
-                                    :: macros
-                                in
-                                let ast_argv =
-                                  Array.to_list argv
-                                  |> List.filter (fun argument ->
-                                      argument <> "-fno-builtin")
-                                  |> List.map (fun argument ->
-                                      if argument = "-ast-dump=json" then "-ast-dump"
-                                      else argument)
-                                  |> Array.of_list
-                                in
-                                let alloc_size_nodes =
-                                  match Process.run ast_argv with
-                                  | Ok (text, _) -> Ok (alloc_size_attributes text)
-                                  | Error failure -> Error failure.stderr
-                                in
-                                match alloc_size_nodes with
-                                | Error message ->
-                                    Error
-                                      [
-                                        Diag.error (List.hd headers).span
-                                          ("internal error: C alloc_size AST import \
-                                            failed: "
-                                          ^ normalize_import_failure ~unit_path
-                                              !macro_paths message);
-                                      ]
-                                | Ok alloc_size_nodes ->
-                                    let alloc_size_parameters =
-                                      Hashtbl.fold
-                                        (fun name indices acc ->
-                                          (name, List.sort_uniq compare indices) :: acc)
-                                        alloc_size_nodes []
-                                      |> List.sort compare
-                                    in
-                                    Option.iter
-                                      (fun output -> output := alloc_size_parameters)
-                                      alloc_size_out;
-                                    completed := true;
-                                    Ok
-                                      ( all_declarations,
-                                        (if keep then
-                                           Some (unit_path :: List.rev !fragment_paths)
-                                         else None),
-                                        if retain then
-                                          unit_path :: List.rev !fragment_paths
-                                        else [] ))))))
+            | Ok (all_declarations, alloc_size_parameters) ->
+                Option.iter
+                  (fun output -> output := alloc_size_parameters)
+                  alloc_size_out;
+                completed := true;
+                Ok
+                  ( all_declarations,
+                    (if keep then Some (unit_path :: List.rev !fragment_paths) else None),
+                    if retain then unit_path :: List.rev !fragment_paths else [] )
           with Failure message ->
             Error
               [
                 Diag.error (List.hd headers).span
                   ("internal error: C import JSON reader: " ^ message);
-              ])
-      | Error failure ->
-          Error
-            [
-              compilation_error ~source ~headers
-                (error_span headers (unit_line unit_path failure.stderr))
-                failure.stderr;
-            ])
+              ]))
 
 let get name = C_import_json.field name
 let text = function C_import_json.Str value -> Some value | _ -> None
