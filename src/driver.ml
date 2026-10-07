@@ -1071,7 +1071,15 @@ let run_unprotected ?header_output config =
                   declaration_headers
               in
               emit_text config (C_exports.header ~name ~headers declarations)
-          | Cli.Ir_json -> emit_text config (Ir_json.render ~redirect ir)
+          | Cli.Ir_json ->
+              emit_text config
+                (Ir_json.render ~redirect:Fun.id
+                   ~c_adapters:
+                     (List.map
+                        (fun (adapter : C_import.adapter) ->
+                          (adapter.c_name, adapter.symbol))
+                        adapters)
+                   ir)
           | Cli.Ir -> (
               match Ir.render_debug_bounded ~limits ir with
               | Ok text -> emit_text config text

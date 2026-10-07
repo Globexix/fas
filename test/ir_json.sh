@@ -35,6 +35,85 @@ cmp "$IR_JSON_TMP/out.json" "$IR_JSON_TMP/file.json"
 "$OCAML_FAS" -g --no-inline pick --emit-ir-json "$ROOT/test/ir_json.fas" \
   >"$IR_JSON_TMP/noinline.json"
 
+for source_name in c_interop sdl_headers ir_json_static_address; do
+  emit_one --emit-llvm "$ROOT/test/$source_name.fas" "$IR_JSON_TMP/$source_name.ll" \
+    "$IR_JSON_TMP/stderr"
+done
+
+mkdir "$IR_JSON_TMP/collisions"
+cat >"$IR_JSON_TMP/collisions/duplicate_adapters.fas" <<'EOF'
+use "C" <<A
+static inline int oracle(int x) { return x + 1; }
+A
+use "C" <<B
+static inline int oracle(int x) { return x + 2; }
+B
+fn main() i32 { return oracle(1) }
+EOF
+cat >"$IR_JSON_TMP/collisions/function_name.fas" <<'EOF'
+use "C" <<C
+static inline int oracle(int x) { return x + 1; }
+C
+fn oracle(x i32) i32 { return x }
+fn main() i32 { return oracle(1) }
+EOF
+cat >"$IR_JSON_TMP/collisions/global_name.fas" <<'EOF'
+use "C" <<C
+static inline int oracle(int x) { return x + 1; }
+C
+var oracle i32 = 3
+fn main() i32 { return oracle }
+EOF
+cat >"$IR_JSON_TMP/collisions/extern_name.fas" <<'EOF'
+use "C" <<C
+static inline int oracle(int x) { return x + 1; }
+C
+extern "C" { fn oracle(x i32) i32 { return x } }
+fn main() i32 { return oracle(1) }
+EOF
+mkdir "$IR_JSON_TMP/collisions/dependencies"
+cat >"$IR_JSON_TMP/collisions/dependencies/a.fas" <<'EOF'
+use "C" <<C
+static inline int oracle(int x) { return x + 1; }
+C
+EOF
+cat >"$IR_JSON_TMP/collisions/dependencies/b.fas" <<'EOF'
+use "C" <<C
+static inline int oracle(int x) { return x + 2; }
+C
+EOF
+cat >"$IR_JSON_TMP/collisions/dependencies/root.fas" <<'EOF'
+use "a.fas"
+use "b.fas"
+fn main() i32 { return oracle(1) }
+EOF
+
+expect_rejection() {
+  source=$1
+  expected=$2
+  if "$OCAML_FAS" --emit-ir-json "$source" >"$IR_JSON_TMP/rejected.json" \
+    2>"$IR_JSON_TMP/stderr"; then
+    echo "IR JSON: collision unexpectedly compiled: $source" >&2
+    exit 1
+  fi
+  grep -F "$expected" "$IR_JSON_TMP/stderr" >/dev/null || {
+    cat "$IR_JSON_TMP/stderr" >&2
+    echo "IR JSON: collision diagnostic did not contain: $expected" >&2
+    exit 1
+  }
+}
+
+expect_rejection "$IR_JSON_TMP/collisions/duplicate_adapters.fas" \
+  "C compilation failed: redefinition of 'oracle'"
+expect_rejection "$IR_JSON_TMP/collisions/function_name.fas" \
+  'duplicate declaration `oracle`'
+expect_rejection "$IR_JSON_TMP/collisions/global_name.fas" \
+  'duplicate declaration `oracle`'
+expect_rejection "$IR_JSON_TMP/collisions/extern_name.fas" \
+  "C compilation failed: static declaration of 'oracle' follows non-static declaration"
+expect_rejection "$IR_JSON_TMP/collisions/dependencies/root.fas" \
+  'C declaration `oracle` is not supported: conflicting C declarations'
+
 index=0
 skipped=0
 for source in "$ROOT"/test/*.fas; do
@@ -55,16 +134,18 @@ for source in "$ROOT"/test/*.fas; do
   fi
 done
 
-python3 - "$IR_JSON_TMP" "$index" "$skipped" <<'PY'
+python3 - "$IR_JSON_TMP" "$index" "$skipped" "$ROOT/test/ir_json_expected" <<'PY'
+import gzip
 import json
 import os
 import re
 import sys
 
-root, count, skipped = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+root, count, skipped, expected_root = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
 
 def read_json(path):
-    with open(path, encoding="utf-8") as stream:
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8") as stream:
         return json.load(stream)
 
 source_indexes = {}
@@ -184,6 +265,58 @@ def target_names(module):
                         function["name"], instruction[4]
                     )
 
+def validate_adapter_metadata(module, source_name):
+    adapters = module["c_adapters"]
+    assert all(list(adapter) == ["name", "symbol"] for adapter in adapters), source_name
+    names = [adapter["name"] for adapter in adapters]
+    symbols = [adapter["symbol"] for adapter in adapters]
+    assert len(names) == len(set(names)), (source_name, names)
+    assert len(symbols) == len(set(symbols)), (source_name, symbols)
+    assert all(symbol.startswith("__fas_c_adapter_") for symbol in symbols), (source_name, symbols)
+    functions = {function["name"]: function for function in module["funcs"]}
+    for adapter in adapters:
+        function = functions[adapter["name"]]
+        assert function["linkage"] == "external", (source_name, adapter)
+        assert function["blocks"] == [], (source_name, adapter)
+    assert [function["name"] for function in module["funcs"]
+            if function["name"] in set(names)] == names, (source_name, names)
+
+    def check_symbols(value, path=()):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                check_symbols(item, path + (key,))
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                check_symbols(item, path + (index,))
+        elif isinstance(value, str) and value.startswith("__fas_c_adapter_"):
+            assert len(path) == 3 and path[0] == "c_adapters" and path[2] == "symbol", (
+                source_name, path, value
+            )
+
+    check_symbols(module)
+
+def assert_legacy_values(expected, actual, path=()):
+    if isinstance(expected, dict):
+        assert isinstance(actual, dict), path
+        for key, value in expected.items():
+            assert key in actual, (path, key)
+            assert_legacy_values(value, actual[key], path + (key,))
+    elif isinstance(expected, list):
+        assert isinstance(actual, list) and len(expected) == len(actual), path
+        for index, (expected_item, actual_item) in enumerate(zip(expected, actual)):
+            assert_legacy_values(expected_item, actual_item, path + (index,))
+    else:
+        assert expected == actual, (path, expected, actual)
+
+def llvm_adapter_symbols(text):
+    result = []
+    for line in text.splitlines():
+        if line.startswith(("define ", "declare ")):
+            match = re.search(r'@(__fas_c_adapter_[^\s(]+)\(', line)
+            if match:
+                result.append(match.group(1))
+    return result
+
 expected = {
     "value": {"const", "vconst", "null", "undef", "zero", "local", "param", "global"},
     "instr": {"bin", "cmp", "alloca", "load", "load_volatile", "store",
@@ -233,9 +366,9 @@ for index in range(count):
     assert len(module["funcs"]) == len(dump_names), source_name
     assert len(module["funcs"]) == len(parsed), source_name
     for json_function, ir_function in zip(module["funcs"], parsed):
-        assert json_function["name"] == ir_function["name"] or json_function["name"].startswith(
-            "__fas_c_adapter_"
-        ), (source_name, json_function["name"], ir_function["name"])
+        assert json_function["name"] == ir_function["name"], (
+            source_name, json_function["name"], ir_function["name"]
+        )
         assert [block["id"] for block in json_function["blocks"]] == [
             block["id"] for block in ir_function["blocks"]
         ], json_function["name"]
@@ -250,6 +383,7 @@ for index in range(count):
                 json_block["term"][0], ir_block["term"]
             )
     target_names(module)
+    validate_adapter_metadata(module, source_name)
     visit(module)
 
 for key, tags in expected.items():
@@ -258,7 +392,8 @@ for key, tags in expected.items():
 
 fixture = read_json(os.path.join(root, "out.json"))
 assert list(fixture) == ["structs", "globals", "funcs", "format", "version",
-                         "target_triple", "data_layout", "no_inline"]
+                         "target_triple", "data_layout", "no_inline", "c_adapters"]
+assert fixture["c_adapters"] == []
 assert fixture["format"] == "fas-ir-json" and fixture["version"] == 1
 assert fixture["target_triple"] == "x86_64-unknown-linux-gnu"
 assert fixture["data_layout"] == "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
@@ -324,24 +459,34 @@ assert globals_by_name["Imported"]["linkage"] == "import"
 adapter_module = read_json(os.path.join(
     root, "pairs", str(source_indexes["c_interop"]) + ".json"
 ))
-adapter_functions = {
-    function["name"]: function for function in adapter_module["funcs"]
-    if function["name"].startswith("__fas_c_adapter_")
-}
+adapter_names = [adapter["name"] for adapter in adapter_module["c_adapters"]]
+adapter_symbols = [adapter["symbol"] for adapter in adapter_module["c_adapters"]]
+adapter_functions = {function["name"]: function for function in adapter_module["funcs"]
+                     if function["name"] in set(adapter_names)}
 adapter_calls = {
     instruction[4]
     for function in adapter_module["funcs"]
     for block in function["blocks"]
     for instruction in block["instrs"]
-    if instruction[0] == "call" and instruction[4].startswith("__fas_c_adapter_")
+    if instruction[0] == "call" and instruction[4] in set(adapter_names)
 }
-assert adapter_calls, "C adapter call was not serialized by adapter symbol"
+assert adapter_calls, "C adapter call was not serialized by its C name"
 assert adapter_calls <= set(adapter_functions), adapter_calls - set(adapter_functions)
-for name in adapter_calls:
-    assert adapter_functions[name]["linkage"] == "external"
-    assert adapter_functions[name]["blocks"] == []
+assert all(name in adapter_names for name in adapter_calls), adapter_calls
+
+for source_name in ("c_interop", "sdl_headers", "ir_json_static_address"):
+    module = read_json(os.path.join(root, "pairs", str(source_indexes[source_name]) + ".json"))
+    symbols = [adapter["symbol"] for adapter in module["c_adapters"]]
+    llvm = open(os.path.join(root, source_name + ".ll"), encoding="utf-8").read()
+    assert llvm_adapter_symbols(llvm) == symbols, (source_name, symbols, llvm_adapter_symbols(llvm))
+
+for source_name in ("c_interop", "sdl_headers", "ir_json_static_address"):
+    expected = read_json(os.path.join(expected_root, source_name + ".json.gz"))
+    actual = read_json(os.path.join(root, "pairs", str(source_indexes[source_name]) + ".json"))
+    assert_legacy_values(expected, actual, (source_name,))
 
 print(f"IR JSON: {count} compilable source files matched --emit-ir; {skipped} were rejected")
+print("IR JSON: dda55cb compatibility, adapter metadata and collision rejection passed")
 PY
 
 echo "IR JSON: format, constructors, determinism and symbol closure passed"

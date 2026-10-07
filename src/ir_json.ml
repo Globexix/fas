@@ -201,7 +201,7 @@ let func ?(redirect = Fun.id) (f : func) =
       ("ret_extension", extension f.ret_extension);
     ]
 
-let render ?(redirect = Fun.id) m =
+let render ?(redirect = Fun.id) ?(c_adapters = []) m =
   obj
     [
       ( "structs",
@@ -223,5 +223,10 @@ let render ?(redirect = Fun.id) m =
       ("data_layout", str m.data_layout);
       ( "no_inline",
         match m.no_inline_function with Some name -> str name | None -> "null" );
+      ( "c_adapters",
+        arr
+          (List.map
+             (fun (name, symbol) -> obj [ ("name", str name); ("symbol", str symbol) ])
+             c_adapters) );
     ]
   ^ "\n"
