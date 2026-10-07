@@ -69,9 +69,9 @@ else
       -isystem /usr/include/SDL -D_GNU_SOURCE=1 -D_REENTRANT \
       -c "$TMP/id_pm.fas" -o "$TMP/id_pm.o"
     id_pm_cpu=$(cat "$TMP/id-pm.cpu")
-    printf 'C import id_pm CPU: %ss (limit 2.50s)\n' "$id_pm_cpu"
-    if awk -v cpu="$id_pm_cpu" 'BEGIN { exit !(cpu > 2.5) }'; then
-      printf 'C import id_pm exceeded 2.50 CPU seconds\n' >&2
+    printf 'C import id_pm CPU: %ss (limit 1.50s)\n' "$id_pm_cpu"
+    if awk -v cpu="$id_pm_cpu" 'BEGIN { exit !(cpu > 1.5) }'; then
+      printf 'C import id_pm exceeded 1.50 CPU seconds\n' >&2
       exit 1
     fi
   else
@@ -100,7 +100,7 @@ FAS
     -v opt="$(cat "$TMP/opt.cpu")" -v llc="$(cat "$TMP/llc.cpu")" \
     'BEGIN { printf "%.2f", clang + opt + llc }')
   sdl_limit=$(awk -v baseline="$baseline" \
-    'BEGIN { limit = baseline * 6; if (limit < 0.8) limit = 0.8; if (limit > 1.5) limit = 1.5; printf "%.2f", limit }')
+    'BEGIN { limit = baseline * 8; if (limit < 0.6) limit = 0.6; if (limit > 1.0) limit = 1.0; printf "%.2f", limit }')
   printf 'C import SDL CPU: %ss (Clang + opt + llc %ss; limit %ss)\n' \
     "$sdl_cpu" "$baseline" "$sdl_limit"
   if awk -v cpu="$sdl_cpu" -v limit="$sdl_limit" 'BEGIN { exit !(cpu > limit) }'; then

@@ -802,7 +802,8 @@ let run_unprotected ?header_output config =
                   let* declarations, kept, artifacts =
                     C_import.import ~alloc_size_out:alloc_size_parameters ~cc
                       ~debug:config.Cli.debug ~keep:config.Cli.keep ~retain:true
-                      ~c_flags:config.Cli.c_flags ~macro_names source headers
+                      ~c_flags:config.Cli.c_flags ~macro_names ~referenced_names source
+                      headers
                   in
                   c_artifacts := artifacts @ !c_artifacts;
                   let mapped =

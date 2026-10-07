@@ -1,5 +1,12 @@
 module Hashtbl = C_import_json.Hashtbl
 
+module PairHashtbl = Stdlib.Hashtbl.Make (struct
+  type t = string * string
+
+  let equal (a, b) (c, d) = String.equal a c && String.equal b d
+  let hash = Stdlib.Hashtbl.hash
+end)
+
 let string_index entries = Hashtbl.of_seq (List.to_seq (List.rev entries))
 
 type header = { spelling : Ast.c_header; span : Span.t }
@@ -402,7 +409,7 @@ let builtin_info_of_name = function
   | _ -> None
 
 let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
-    ~macro_candidates declarations =
+    ?referenced_names ~macro_candidates declarations =
   let field key node = C_import_json.field key node in
   let string key node = Option.bind (field key node) C_import_json.string in
   let children node =
@@ -415,6 +422,8 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
           ~some:(String.ends_with ~suffix:"Type")
           (string "kind" child))
   in
+  let name_in name names = List.exists (String.equal name) names in
+  let referenced name = Option.fold ~none:true ~some:(name_in name) referenced_names in
   let rec flatten acc node = List.fold_left flatten (node :: acc) (children node) in
   let id node = string "id" node in
   let name node = string "name" node in
@@ -474,8 +483,8 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
         children node |> List.find_map (direct_record_id seen)
     | _ -> None
   in
-  let primary_decl_ids = Hashtbl.create (List.length all_nodes)
-  and primary_type_ids = Hashtbl.create 64 in
+  let primary_decl_ids = PairHashtbl.create (List.length all_nodes)
+  and primary_type_ids = PairHashtbl.create 64 in
   let anonymous_enum_type_name node =
     Option.bind (field "loc" node) (fun loc ->
         Option.bind (string "file" loc) (fun file ->
@@ -495,11 +504,11 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
       (match (kind node, id node, name node) with
       | Some (("TypedefDecl" | "RecordDecl" | "EnumDecl") as kind), Some id, Some name
         ->
-          Hashtbl.replace primary_decl_ids (kind ^ "\000" ^ name) id
+          PairHashtbl.replace primary_decl_ids (kind, name) id
       | Some "EnumDecl", Some id, None ->
           Option.iter
             (fun type_name ->
-              Hashtbl.replace primary_type_ids ("EnumType\000" ^ type_name) id)
+              PairHashtbl.replace primary_type_ids ("EnumType", type_name) id)
             (anonymous_enum_type_name node)
       | _ -> ());
       match
@@ -508,7 +517,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
           Option.bind (field "type" node) (string "qualType") )
       with
       | Some (("RecordType" | "EnumType") as kind), Some id, Some name ->
-          Hashtbl.replace primary_type_ids (kind ^ "\000" ^ name) id
+          PairHashtbl.replace primary_type_ids (kind, name) id
       | _ -> ())
     all_nodes;
   let top_declarations =
@@ -517,6 +526,8 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
         List.mem (kind node)
           [ Some "FunctionDecl"; Some "VarDecl"; Some "EnumConstantDecl" ]
         && Option.is_some (name node)
+        && (kind node = Some "EnumConstantDecl"
+           || Option.fold ~none:false ~some:referenced (name node))
         && field "isImplicit" node <> Some (C_import_json.Bool true))
       all_nodes
   in
@@ -610,6 +621,12 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
         in
         Option.iter
           (fun (base_type, root_name) ->
+            let root_referenced =
+              referenced root_name
+              || List.exists referenced
+                   (Option.value ~default:[]
+                      (Option.bind root_id (Hashtbl.find_opt alias_names_by_record)))
+            in
             let fields = ref [] in
             let rec collect record =
               let nested_records =
@@ -653,7 +670,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
             if duplicates <> [] then Hashtbl.replace collision_names root_name ();
             List.iter
               (fun (field_name, target, expression) ->
-                if not (List.mem field_name duplicates) then
+                if root_referenced && not (List.mem field_name duplicates) then
                   add_probe (Some target) expression)
               !fields)
           base)
@@ -667,6 +684,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
   let indexed =
     List.mapi (fun index (target, expression) -> (index, target, expression)) candidates
   in
+  let should_run = indexed <> [] || macro_candidates <> [] in
   let probe = Filename.temp_file "fas-c-type-probe-" ".c" in
   paths := probe :: !paths;
   let macro_start_line = 2 + List.length indexed in
@@ -691,7 +709,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
     @ c_flags
     @ [ "-iquote"; Filename.dirname source ]
   in
-  append_type_probes ();
+  if should_run then append_type_probes ();
   let ast_path = Filename.temp_file "fas-c-type-probe-" ".json" in
   paths := ast_path :: !paths;
   let ast_argv =
@@ -709,9 +727,11 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
       @ common @ [ probe ])
   in
   let failure =
-    match Process.run_to_file ast_argv ast_path with
-    | Ok _ -> None
-    | Error failure -> Some failure
+    if not should_run then None
+    else
+      match Process.run_to_file ast_argv ast_path with
+      | Ok _ -> None
+      | Error failure -> Some failure
   in
   let errors =
     Option.fold ~none:[]
@@ -740,11 +760,13 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
   match structured_failure with
   | Some message -> Error message
   | None ->
-      let ast_channel = open_in_bin ast_path in
       let ast_nodes =
-        Fun.protect
-          ~finally:(fun () -> close_in_noerr ast_channel)
-          (fun () -> C_import_json.declarations_filtered ast_channel)
+        if not should_run then []
+        else
+          let ast_channel = open_in_bin ast_path in
+          Fun.protect
+            ~finally:(fun () -> close_in_noerr ast_channel)
+            (fun () -> C_import_json.declarations_filtered ast_channel)
       in
       let secondary_aliases = Hashtbl.create 32 in
       let rec collect_secondary_aliases node =
@@ -762,10 +784,17 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
       in
       List.iter collect_secondary_aliases ast_nodes;
       let replace_field key value = function
-        | C_import_json.Obj (_, index) ->
-            let index = Hashtbl.copy index in
-            Hashtbl.replace index key value;
-            C_import_json.Obj ([], index)
+        | C_import_json.Obj fields ->
+            let replace index =
+              let fields = Array.copy fields in
+              Array.unsafe_set fields index (key, value);
+              fields
+            in
+            C_import_json.Obj
+              (Option.fold
+                 ~none:(Array.append fields [| (key, value) |])
+                 ~some:replace
+                 (Array.find_index (fun (name, _) -> String.equal name key) fields))
         | node -> node
       in
       let remap_type_reference node =
@@ -779,15 +808,15 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
                         if name = "" then None
                         else
                           Option.bind decl_kind (fun kind ->
-                              Hashtbl.find_opt primary_decl_ids (kind ^ "\000" ^ name)))
+                              PairHashtbl.find_opt primary_decl_ids (kind, name)))
                   in
                   let type_id =
                     match (decl_kind, string "kind" node) with
                     | Some ("RecordDecl" | "EnumDecl"), Some type_kind ->
                         Option.bind (field "type" node) (fun ty ->
                             Option.bind (string "qualType" ty) (fun type_name ->
-                                Hashtbl.find_opt primary_type_ids
-                                  (type_kind ^ "\000" ^ type_name)))
+                                PairHashtbl.find_opt primary_type_ids
+                                  (type_kind, type_name)))
                     | _ -> None
                   in
                   Option.map
@@ -802,7 +831,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
           Option.bind (field "typeAliasDeclId" node) (function
             | C_import_json.Str id ->
                 Option.bind (Hashtbl.find_opt secondary_aliases id) (fun alias ->
-                    Hashtbl.find_opt primary_decl_ids ("TypedefDecl\000" ^ alias))
+                    PairHashtbl.find_opt primary_decl_ids ("TypedefDecl", alias))
             | _ -> None)
         in
         let node = Option.value ~default:node remapped_decl in
@@ -813,15 +842,10 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
       let rec remap_probe_node = function
         | C_import_json.Arr values ->
             C_import_json.Arr (List.map remap_probe_node values)
-        | C_import_json.Obj (fields, index) ->
-            let index' = Hashtbl.create (Hashtbl.length index) in
-            Hashtbl.iter
-              (fun key value -> Hashtbl.add index' key (remap_probe_node value))
-              index;
+        | C_import_json.Obj fields ->
             remap_type_reference
               (C_import_json.Obj
-                 ( List.map (fun (key, value) -> (key, remap_probe_node value)) fields,
-                   index' ))
+                 (Array.map (fun (key, value) -> (key, remap_probe_node value)) fields))
         | value -> value
       in
       let ast_nodes = List.map remap_probe_node ast_nodes in
@@ -896,19 +920,16 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
             (type_name, alias, not (Stdlib.Hashtbl.mem bad_macros index)))
           macro_candidates
       in
-      Ok
-        ( declarations @ probe_types
-          @ List.map
-              (fun record_name ->
-                C_import_json.make_obj
-                  [
-                    ("kind", C_import_json.Str "FasTypeCollision");
-                    ("name", C_import_json.Str record_name);
-                  ])
-              (Hashtbl.fold
-                 (fun record_name () acc -> record_name :: acc)
-                 collision_names []),
-          macro_infos )
+      let collision_nodes =
+        Hashtbl.fold (fun name () acc -> name :: acc) collision_names []
+        |> List.map (fun name ->
+            C_import_json.make_obj
+              [
+                ("kind", C_import_json.Str "FasTypeCollision");
+                ("name", C_import_json.Str name);
+              ])
+      in
+      Ok (declarations @ probe_types @ collision_nodes, macro_infos)
 
 let imported_probe_nodes ~cc ~c_flags ~source ~unit_path ~paths ~definitions
     ~macro_candidates ~macro_infos ~alloc_size_declarations declarations =
@@ -1219,7 +1240,7 @@ let imported_probe_nodes ~cc ~c_flags ~source ~unit_path ~paths ~definitions
         Ok (enum_types, typedef_layouts, macros, alloc_size_parameters)
 
 let import ~cc ~debug ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
-    ?(macro_names = []) source headers =
+    ?(macro_names = []) ?referenced_names source headers =
   let unit_path = Filename.temp_file "fas-c-import-" ".c" in
   let json_path = Filename.temp_file "fas-c-import-" ".json" in
   let fragment_paths = ref [] in
@@ -1367,7 +1388,7 @@ let import ~cc ~debug ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
               let* structured_ast, macro_infos =
                 map_error "internal error: C structured type import failed: "
                   (imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path
-                     ~paths:macro_paths ~macro_candidates declarations)
+                     ~paths:macro_paths ?referenced_names ~macro_candidates declarations)
               in
               let declarations =
                 List.map

@@ -11335,21 +11335,17 @@ let () =
   let rec duplicate_flattened_field_name active = function
     | C_import_json.Arr values ->
         C_import_json.Arr (List.map (duplicate_flattened_field_name active) values)
-    | C_import_json.Obj (_, index) ->
-        let kind =
-          match C_import_json.Hashtbl.find_opt index "kind" with
-          | Some (C_import_json.Str kind) -> Some kind
-          | _ -> None
-        in
+    | C_import_json.Obj fields as node ->
+        let kind = Option.bind (C_import_json.field "kind" node) C_import_json.string in
         let target_record =
           kind = Some "RecordDecl"
-          && C_import_json.Hashtbl.find_opt index "name"
+          && C_import_json.field "name" node
              = Some (C_import_json.Str "FasAnonymousCollisionRecord")
         in
         let active = active || target_record in
         let fields =
-          C_import_json.Hashtbl.fold
-            (fun key value fields ->
+          Array.map
+            (fun (key, value) ->
               let value =
                 if
                   key = "name" && active && kind = Some "FieldDecl"
@@ -11357,10 +11353,10 @@ let () =
                 then C_import_json.Str "first"
                 else duplicate_flattened_field_name active value
               in
-              (key, value) :: fields)
-            index []
+              (key, value))
+            fields
         in
-        C_import_json.make_obj fields
+        C_import_json.Obj fields
     | value -> value
   in
   let collision_declarations =

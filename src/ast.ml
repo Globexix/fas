@@ -745,7 +745,10 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
   let rec go_ty at ty =
     if !failed = None then
       match ty with
-      | Bool | Int _ | Void | Named_type _ | Addr -> count at
+      | Bool | Int _ | Void | Addr -> count at
+      | Named_type (name, _) ->
+          identifiers := name :: !identifiers;
+          count at
       | Handle inner ->
           count at;
           go_ty at inner
@@ -873,14 +876,16 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
       | Const { ty; value; span; _ } ->
           go_ty span ty;
           go_expr value
-      | Global { ty; init; span; _ } ->
+      | Global { name; linkage; ty; init; span; _ } ->
+          if linkage <> Internal_global then identifiers := name :: !identifiers;
           go_ty span ty;
           Option.iter go_expr init
       | Struct { generic_params; fields; _ } ->
           List.iter go_generic_param generic_params;
           List.iter go_field fields
       | Opaque _ -> ()
-      | Func { params; ret; body; generic_params; span; _ } -> (
+      | Func { name; linkage; params; ret; body; generic_params; span; _ } -> (
+          if linkage <> Internal then identifiers := name :: !identifiers;
           List.iter go_generic_param generic_params;
           List.iter go_param params;
           go_ty span ret;
@@ -897,12 +902,12 @@ let unresolved_names program =
     List.exists
       (function
         | Const { name = declared; _ }
-        | Global { name = declared; _ }
         | Struct { name = declared; _ }
         | Opaque { name = declared; _ }
-        | Func { name = declared; _ } ->
+        | Global { name = declared; linkage = Internal_global; _ }
+        | Func { name = declared; linkage = Internal; _ } ->
             declared = name
-        | Use _ -> false)
+        | _ -> false)
       program.items
   in
   ignore (fold_expanded_nodes ~identifiers ~limit:max_int program);

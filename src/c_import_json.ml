@@ -1,12 +1,7 @@
-module Hashtbl = Stdlib.Hashtbl.Make (struct
-  type t = string
-
-  let equal = String.equal
-  let hash = String.hash
-end)
+module Hashtbl = Stdlib.Hashtbl.Make (String)
 
 type value =
-  | Obj of (string * value) list * value Hashtbl.t
+  | Obj of (string * value) array
   | Arr of value list
   | Str of string
   | Num of string
@@ -24,8 +19,8 @@ type input = {
   mutable presumed_line : string option;
 }
 
-let make_obj fields = Obj (fields, Hashtbl.of_seq (List.to_seq (List.rev fields)))
-let obj_fields = function Obj (fields, _) -> fields | _ -> []
+let make_obj fields = Obj (Array.of_list fields)
+let obj_fields = function Obj fields -> Array.to_list fields | _ -> []
 
 let refill i =
   if i.pos = i.size then (
@@ -133,15 +128,15 @@ let rec skip_string i =
   | _ -> skip_string i
 
 let record_location_value i field value =
-  if field = "file" then (
+  if String.equal field "file" then (
     i.last_file <- Some value;
     i.presumed_file <- None;
     i.presumed_line <- None)
-  else if field = "line" then (
+  else if String.equal field "line" then (
     i.last_line <- Some value;
     i.presumed_line <- None)
-  else if field = "presumedFile" then i.presumed_file <- Some value
-  else if field = "presumedLine" then i.presumed_line <- Some value
+  else if String.equal field "presumedFile" then i.presumed_file <- Some value
+  else if String.equal field "presumedLine" then i.presumed_line <- Some value
 
 let rec skip_value ?(location = false) ?(range = false) ?(field = "") i =
   space i;
@@ -149,8 +144,9 @@ let rec skip_value ?(location = false) ?(range = false) ?(field = "") i =
   | '"' ->
       if
         location
-        && (field = "file" || field = "line" || field = "presumedFile"
-          || field = "presumedLine")
+        && (String.equal field "file" || String.equal field "line"
+           || String.equal field "presumedFile"
+           || String.equal field "presumedLine")
       then record_location_value i field (read_string i)
       else skip_string i
   | '{' ->
@@ -167,7 +163,8 @@ let rec skip_value ?(location = false) ?(range = false) ?(field = "") i =
             || location
                && List.mem key [ "file"; "line"; "presumedFile"; "presumedLine" ]
           in
-          skip_value ~location:child_location ~range:(key = "range") ~field:key i;
+          skip_value ~location:child_location ~range:(String.equal key "range")
+            ~field:key i;
           space i;
           match take i with
           | '}' -> ()
@@ -189,7 +186,8 @@ let rec skip_value ?(location = false) ?(range = false) ?(field = "") i =
       in
       values ()
   | _ ->
-      if location && (field = "line" || field = "presumedLine") then (
+      if location && (String.equal field "line" || String.equal field "presumedLine")
+      then (
         let b = Buffer.create 12 in
         while
           match peek i with
@@ -230,9 +228,9 @@ let field_keys =
   String.split_on_char ' '
     ("kind id decl name type loc value storageClass inline tagUsed completeDefinition "
    ^ "fixedUnderlyingType isBitfield isImplicit inner qualType desugaredQualType file \
-      line col "
-   ^ "typeAliasDeclId qualifiers size cc variadic offset expansionLoc spellingLoc "
-   ^ "presumedFile presumedLine range begin end tokLen isMacroArgExpansion args")
+      line col typeAliasDeclId qualifiers size cc variadic offset expansionLoc "
+   ^ "spellingLoc presumedFile presumedLine range begin end tokLen isMacroArgExpansion \
+      args")
 
 let read_key i =
   let start = i.pos in
@@ -313,12 +311,14 @@ and object_value ?(location = false) ?(range = false) i =
   let inherited_file = i.last_file and inherited_line = i.last_line in
   let inherited_presumed_file = i.presumed_file
   and inherited_presumed_line = i.presumed_line in
-  let index = Hashtbl.create 16 in
-  let add key value = if not (Hashtbl.mem index key) then Hashtbl.add index key value in
+  let fields = ref [] in
+  let contains key = List.exists (fun (field, _) -> String.equal field key) !fields in
+  let add key value = if not (contains key) then fields := (key, value) :: !fields in
+  let object_value () = Obj (Array.of_list (List.rev !fields)) in
   let location_fields () =
     if location then (
-      let has_file = Hashtbl.mem index "file" in
-      let has_line = Hashtbl.mem index "line" in
+      let has_file = contains "file" in
+      let has_line = contains "line" in
       Option.iter (fun value -> add "file" (Str value)) inherited_file;
       Option.iter (fun value -> add "line" (Num value)) inherited_line;
       Option.iter
@@ -333,15 +333,19 @@ and object_value ?(location = false) ?(range = false) i =
   if peek i = '}' then (
     ignore (take i);
     location_fields ();
-    Obj ([], index))
+    object_value ())
   else
     let rec loop kind =
       expect i '"';
       let key = Option.value ~default:"" (read_key i) in
       expect i ':';
-      let keep = keep_field key && (key <> "range" || kind = "NonNullAttr") in
+      let keep =
+        keep_field key
+        && ((not (String.equal key "range")) || String.equal kind "NonNullAttr")
+      in
       let skip_inner =
-        key = "inner" && (kind = "VarDecl" || String.ends_with ~suffix:"Stmt" kind)
+        String.equal key "inner"
+        && (String.equal kind "VarDecl" || String.ends_with ~suffix:"Stmt" kind)
       in
       let child_location =
         List.mem key [ "loc"; "expansionLoc"; "spellingLoc" ]
@@ -349,9 +353,10 @@ and object_value ?(location = false) ?(range = false) i =
       in
       let value =
         if (not keep) || skip_inner then (
-          skip_value ~location:child_location ~range:(key = "range") ~field:key i;
+          skip_value ~location:child_location ~range:(String.equal key "range")
+            ~field:key i;
           None)
-        else Some (json ~location:child_location ~range:(key = "range") i)
+        else Some (json ~location:child_location ~range:(String.equal key "range") i)
       in
       (match (location, key, value) with
       | true, ("file" | "line" | "presumedFile" | "presumedLine"), Some (Str value) ->
@@ -360,7 +365,8 @@ and object_value ?(location = false) ?(range = false) i =
           record_location_value i key value
       | _ -> ());
       let kind =
-        if key = "kind" then Option.value ~default:kind (Option.bind value string)
+        if String.equal key "kind" then
+          Option.value ~default:kind (Option.bind value string)
         else kind
       in
       Option.iter (fun value -> add key value) value;
@@ -370,7 +376,7 @@ and object_value ?(location = false) ?(range = false) i =
       with
       | '}' ->
           location_fields ();
-          Obj ([], index)
+          object_value ()
       | ',' -> loop kind
       | _ -> failwith "invalid Clang JSON object"
     in
@@ -382,14 +388,15 @@ let declaration i =
   let first_field = Option.value ~default:"" (read_key i) in
   expect i ':';
   let first_value =
-    if first_field = "id" then Some (json i)
+    if String.equal first_field "id" then Some (json i)
     else (
       skip_value i;
       None)
   in
   expect i ',';
   expect i '"';
-  if read_key i <> Some "kind" then failwith "Clang declaration kind order changed";
+  if not (Option.fold ~none:false ~some:(String.equal "kind") (read_key i)) then
+    failwith "Clang declaration kind order changed";
   expect i ':';
   expect i '"';
   let kind = read_string i in
@@ -410,7 +417,7 @@ let declaration i =
         expect i '"';
         let key = Option.value ~default:"" (read_key i) in
         expect i ':';
-        if keep && keep_field key && key <> "range" then
+        if keep && keep_field key && not (String.equal key "range") then
           rest
             (( key,
                json ~location:(List.mem key [ "loc"; "expansionLoc"; "spellingLoc" ]) i
@@ -419,7 +426,7 @@ let declaration i =
         else (
           skip_value
             ~location:(List.mem key [ "loc"; "expansionLoc"; "spellingLoc" ])
-            ~range:(key = "range") ~field:key i;
+            ~range:(String.equal key "range") ~field:key i;
           rest acc)
     | _ -> failwith "invalid Clang declaration"
   in
@@ -448,7 +455,7 @@ let declarations ?(root_consumed = false) ?(filtered = false) channel =
       let key = Option.value ~default:"" (read_key i) in
       expect i ':';
       let acc =
-        if key <> "inner" then (
+        if not (String.equal key "inner") then (
           skip_value i;
           acc)
         else (
@@ -496,7 +503,7 @@ let declarations_with_layout channel =
   let layout = Buffer.create 4096 in
   let rec prelude () =
     let line = input_line channel in
-    if line = "{" then ()
+    if String.equal line "{" then ()
     else (
       Buffer.add_string layout line;
       Buffer.add_char layout '\n';
@@ -505,5 +512,9 @@ let declarations_with_layout channel =
   prelude ();
   (Buffer.contents layout, declarations ~root_consumed:true channel)
 
-let field name = function Obj (_, index) -> Hashtbl.find_opt index name | _ -> None
+let field name = function
+  | Obj fields ->
+      Option.map snd (Array.find_opt (fun (key, _) -> String.equal key name) fields)
+  | _ -> None
+
 let array = function Arr values -> values | _ -> []
