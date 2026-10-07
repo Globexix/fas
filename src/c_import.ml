@@ -522,19 +522,51 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
     kind node = Some "FunctionDecl"
     && List.exists (fun child -> kind child = Some "BuiltinAttr") (children node)
   in
-  let alias_names_by_record = Hashtbl.create 32 in
+  let alias_names_by_record = Hashtbl.create 32
+  and record_base_names_by_id = Hashtbl.create 32 in
+  let rec array_alias_type seen node =
+    match kind node with
+    | Some ("ConstantArrayType" | "IncompleteArrayType") -> true
+    | Some "TypedefType" -> (
+        match Option.bind (field "decl" node) (string "id") with
+        | Some id when not (List.mem id seen) ->
+            Option.fold ~none:false
+              ~some:(array_alias_type (id :: seen))
+              (Hashtbl.find_opt alias_types_by_id id)
+        | _ -> false)
+    | _ -> List.exists (array_alias_type seen) (children node)
+  in
+  let add_alias table record_id alias =
+    Hashtbl.replace table record_id
+      (alias :: Option.value ~default:[] (Hashtbl.find_opt table record_id))
+  in
   List.iter
     (fun node ->
       if kind node = Some "TypedefDecl" then
-        match (name node, Option.bind (type_node node) (direct_record_id [])) with
-        | Some alias, Some record_id ->
-            Hashtbl.replace alias_names_by_record record_id
-              (alias
-              :: Option.value ~default:[]
-                   (Hashtbl.find_opt alias_names_by_record record_id))
+        match (name node, type_node node) with
+        | Some alias, Some alias_type ->
+            Option.iter
+              (fun record_id ->
+                add_alias alias_names_by_record record_id alias;
+                if not (array_alias_type [] alias_type) then
+                  Hashtbl.replace record_base_names_by_id record_id alias)
+              (direct_record_id [] alias_type)
         | _ -> ())
     declarations;
   let roots = List.filter (fun node -> kind node = Some "RecordDecl") all_nodes in
+  let record_names record =
+    Option.to_list (name record)
+    @ Option.value ~default:[]
+        (Option.bind (id record) (Hashtbl.find_opt alias_names_by_record))
+  in
+  let field_types =
+    all_nodes
+    |> List.filter_map (fun node ->
+        if kind node = Some "FieldDecl" then
+          Option.bind (field "type" node) (string "qualType")
+        else None)
+    |> List.sort_uniq String.compare
+  in
   let probes = Hashtbl.create (List.length top_declarations + 64) in
   let add_probe target expression =
     Option.iter (fun target -> Hashtbl.replace probes target expression) target
@@ -600,10 +632,10 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
         let base =
           match (string "tagUsed" root, name root, root_id) with
           | Some tag, Some record_name, _ -> Some (tag ^ " " ^ record_name, record_name)
-          | _, None, Some id -> (
-              match Hashtbl.find_opt alias_names_by_record id with
-              | Some (alias :: _) -> Some (alias, alias)
-              | _ -> None)
+          | _, None, Some id ->
+              Option.map
+                (fun alias -> (alias, alias))
+                (Hashtbl.find_opt record_base_names_by_id id)
           | _ -> None
         in
         Option.iter
@@ -612,22 +644,18 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
               Option.bind (field "type" node) (string "qualType")
               |> Option.fold ~none:false ~some:(fun ty -> find_text ty name 0 <> None)
             in
-            let record_names record =
-              Option.to_list (name record)
-              @ Option.value ~default:[]
-                  (Option.bind (id record) (Hashtbl.find_opt alias_names_by_record))
-            in
             let rec type_referenced seen name =
-              (not (List.mem name seen))
+              (not (List.exists (String.equal name) seen))
               && (referenced name
                  || List.exists (has_type name) top_declarations
-                 || List.exists
-                      (fun parent ->
-                        List.exists (has_type name) (children parent)
-                        && List.exists
-                             (type_referenced (name :: seen))
-                             (record_names parent))
-                      roots)
+                 || List.exists (fun ty -> find_text ty name 0 <> None) field_types
+                    && List.exists
+                         (fun parent ->
+                           List.exists (has_type name) (children parent)
+                           && List.exists
+                                (type_referenced (name :: seen))
+                                (record_names parent))
+                         roots)
             in
             let root_referenced =
               List.exists (type_referenced []) (record_names root)
