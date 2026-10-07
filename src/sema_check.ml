@@ -520,6 +520,7 @@ and object_address c expression =
         let strings = List.rev c.string_pool.reversed in
         Option.map
           (fun value ->
+            let extent = String.length value in
             let is_c =
               String.length value > 0 && value.[String.length value - 1] = '\000'
             in
@@ -535,7 +536,7 @@ and object_address c expression =
                 writable = false;
                 nullable = false;
                 owner = None;
-                extent = Int64.of_int (String.length value);
+                extent = Int64.of_int extent;
                 offset = 0L;
               })
           (List.nth_opt strings id)

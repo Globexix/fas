@@ -10115,6 +10115,10 @@ let () =
      fn invalid() i32 { target addr = &data\n\
      return call_addr[i32](target) }\n\
     \     fn valid(p addr) i32 { return call_addr[i32](p) }\n";
+  semantic_message "call-addr-string-target"
+    "call_addr callee is proven not to be a function"
+    "fn invalid() i32 { return call_addr[i32](c\"x\") }\n\
+    \     fn valid(p addr) i32 { return call_addr[i32](p) }\n";
   semantic_message "call-addr-argument-count"
     "call_addr calls `step(i32) i32` with 0 arguments"
     "fn step(value i32) i32 { return value }\n\
