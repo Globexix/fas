@@ -1,3 +1,5 @@
+module Hashtbl = C_import_json.Hashtbl
+
 type int_kind = U8 | U16 | U32 | I8 | I16 | I32 | I64 | U64 | Usize | Isize
 
 type ty =
@@ -387,18 +389,18 @@ let layout ?(target = Target_layout.current) structs ty =
 type struct_layout_cache = {
   target : Target_layout.t;
   decls : (string * (string * ty) list * int option) list;
-  decl_index : (string, (string * ty) list * int option) Hashtbl.t;
+  decl_index : ((string * ty) list * int option) Hashtbl.t;
   unions : string list;
-  union_index : (string, unit) Hashtbl.t;
+  union_index : unit Hashtbl.t;
   field_offsets : (string * (string * int) list) list;
-  field_offsets_index : (string, (string, int) Hashtbl.t) Hashtbl.t;
+  field_offsets_index : int Hashtbl.t Hashtbl.t;
   field_reasons : (string * (string * string) list) list;
-  field_reasons_index : (string, (string, string) Hashtbl.t) Hashtbl.t;
+  field_reasons_index : string Hashtbl.t Hashtbl.t;
   byte_storage : string list;
-  byte_storage_index : (string, unit) Hashtbl.t;
+  byte_storage_index : unit Hashtbl.t;
   struct_sizes : (string * int) list;
-  struct_sizes_index : (string, int) Hashtbl.t;
-  definitions : (string, struct_def) Hashtbl.t;
+  struct_sizes_index : int Hashtbl.t;
+  definitions : struct_def Hashtbl.t;
 }
 
 let first_index entries = Hashtbl.of_seq (List.to_seq (List.rev entries))

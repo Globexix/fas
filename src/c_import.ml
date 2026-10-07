@@ -1,3 +1,7 @@
+module Hashtbl = C_import_json.Hashtbl
+
+let string_index entries = Hashtbl.of_seq (List.to_seq (List.rev entries))
+
 type header = { spelling : Ast.c_header; span : Span.t }
 
 type static_function = {
@@ -308,7 +312,7 @@ let alloc_size_parameters ir =
     else int_of_string_opt (String.sub line start (!stop - start))
   in
   let lines = String.split_on_char '\n' ir
-  and groups = Hashtbl.create 16
+  and groups = Stdlib.Hashtbl.create 16
   and found = Hashtbl.create 16 in
   let indices line =
     match find_text line "allocsize(" 0 with
@@ -325,7 +329,7 @@ let alloc_size_parameters ir =
   List.iter
     (fun line ->
       Option.bind (find_text line "attributes #" 0) (fun at -> number line (at + 12))
-      |> Option.iter (fun group -> Hashtbl.replace groups group (indices line)))
+      |> Option.iter (fun group -> Stdlib.Hashtbl.replace groups group (indices line)))
     lines;
   List.iter
     (fun line ->
@@ -344,7 +348,7 @@ let alloc_size_parameters ir =
                   Option.bind (find_text line "#" stop) (fun hash ->
                       number line (hash + 1))
                 in
-                Option.bind group (Hashtbl.find_opt groups)
+                Option.bind group (Stdlib.Hashtbl.find_opt groups)
                 |> Option.iter (fun values ->
                     if values <> [] then
                       Hashtbl.replace found name
@@ -411,7 +415,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
           ~some:(String.ends_with ~suffix:"Type")
           (string "kind" child))
   in
-  let rec flatten node = node :: List.concat_map flatten (children node) in
+  let rec flatten acc node = List.fold_left flatten (node :: acc) (children node) in
   let id node = string "id" node in
   let name node = string "name" node in
   let kind node = string "kind" node in
@@ -444,6 +448,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
           (fun offset -> "field:" ^ file ^ ":" ^ string_of_int offset)
           (source_offset node))
   in
+  let all_nodes = List.rev (List.fold_left flatten [] declarations) in
   let alias_types_by_id = Hashtbl.create 32 in
   List.iter
     (fun node ->
@@ -452,7 +457,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
           (fun id ->
             Option.iter (Hashtbl.replace alias_types_by_id id) (type_node node))
           (id node))
-    (List.concat_map flatten declarations);
+    all_nodes;
   let rec direct_record_id seen node =
     match kind node with
     | Some "RecordType" -> Option.bind (field "decl" node) (string "id")
@@ -469,11 +474,43 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
         children node |> List.find_map (direct_record_id seen)
     | _ -> None
   in
-  let rec collect_records node =
-    (if kind node = Some "RecordDecl" then [ node ] else [])
-    @ List.concat_map collect_records (children node)
+  let primary_decl_ids = Hashtbl.create (List.length all_nodes)
+  and primary_type_ids = Hashtbl.create 64 in
+  let anonymous_enum_type_name node =
+    Option.bind (field "loc" node) (fun loc ->
+        Option.bind (string "file" loc) (fun file ->
+            let number key =
+              Option.bind (field key loc) (function
+                | C_import_json.Num value -> int_of_string_opt value
+                | C_import_json.Str value -> int_of_string_opt value
+                | _ -> None)
+            in
+            Option.bind (number "line") (fun line ->
+                Option.map
+                  (Printf.sprintf "enum (unnamed at %s:%d:%d)" file line)
+                  (number "col"))))
   in
-  let all_nodes = List.concat_map flatten declarations in
+  List.iter
+    (fun node ->
+      (match (kind node, id node, name node) with
+      | Some (("TypedefDecl" | "RecordDecl" | "EnumDecl") as kind), Some id, Some name
+        ->
+          Hashtbl.replace primary_decl_ids (kind ^ "\000" ^ name) id
+      | Some "EnumDecl", Some id, None ->
+          Option.iter
+            (fun type_name ->
+              Hashtbl.replace primary_type_ids ("EnumType\000" ^ type_name) id)
+            (anonymous_enum_type_name node)
+      | _ -> ());
+      match
+        ( kind node,
+          Option.bind (field "decl" node) (string "id"),
+          Option.bind (field "type" node) (string "qualType") )
+      with
+      | Some (("RecordType" | "EnumType") as kind), Some id, Some name ->
+          Hashtbl.replace primary_type_ids (kind ^ "\000" ^ name) id
+      | _ -> ())
+    all_nodes;
   let top_declarations =
     List.filter
       (fun node ->
@@ -499,7 +536,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
                    (Hashtbl.find_opt alias_names_by_record record_id))
         | _ -> ())
     declarations;
-  let roots = List.concat_map collect_records declarations in
+  let roots = List.filter (fun node -> kind node = Some "RecordDecl") all_nodes in
   let probes = Hashtbl.create (List.length top_declarations + 64) in
   let add_probe target expression =
     Option.iter (fun target -> Hashtbl.replace probes target expression) target
@@ -624,10 +661,9 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
   let candidates =
     Hashtbl.fold (fun target expression acc -> (target, expression) :: acc) probes []
   in
-  let prefix = "__fas_type_probe_" ^ Digest.to_hex (Digest.string unit_path) ^ "_" in
-  let macro_prefix =
-    "__fas_macro_type_" ^ Digest.to_hex (Digest.string unit_path) ^ "_"
-  in
+  let probe_prefix = "__fas_probe_" ^ Digest.to_hex (Digest.string unit_path) ^ "_" in
+  let prefix = probe_prefix ^ "type_" in
+  let macro_prefix = probe_prefix ^ "macro_" in
   let indexed =
     List.mapi (fun index (target, expression) -> (index, target, expression)) candidates
   in
@@ -667,6 +703,8 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
          "-ast-dump=json";
          "-Xclang";
          "-skip-function-bodies";
+         "-Xclang";
+         "-ast-dump-filter=" ^ probe_prefix;
        ]
       @ common @ [ probe ])
   in
@@ -687,11 +725,11 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
         && line < macro_start_line + List.length macro_candidates
     | None -> false
   in
-  let bad_macros = Hashtbl.create 8 in
+  let bad_macros = Stdlib.Hashtbl.create 8 in
   List.iter
     (function
       | Some (file, line, _) when macro_error (Some (file, line, 0)) ->
-          Hashtbl.replace bad_macros (line - macro_start_line) ()
+          Stdlib.Hashtbl.replace bad_macros (line - macro_start_line) ()
       | _ -> ())
     errors;
   let structured_failure =
@@ -706,20 +744,87 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
       let ast_nodes =
         Fun.protect
           ~finally:(fun () -> close_in_noerr ast_channel)
-          (fun () -> C_import_json.declarations ast_channel)
+          (fun () -> C_import_json.declarations_filtered ast_channel)
       in
-      let declarations =
-        List.filter
-          (fun node ->
-            not
-              (kind node = Some "TypedefDecl"
-              && List.exists
-                   (fun prefix ->
-                     Option.fold ~none:false ~some:(String.starts_with ~prefix)
-                       (name node))
-                   [ prefix; macro_prefix ]))
-          ast_nodes
+      let secondary_aliases = Hashtbl.create 32 in
+      let rec collect_secondary_aliases node =
+        Option.iter
+          (fun declaration ->
+            match (kind declaration, string "id" declaration, name declaration) with
+            | Some "TypedefDecl", Some id, Some alias ->
+                Hashtbl.replace secondary_aliases id alias
+            | _ -> ())
+          (if kind node = Some "TypedefType" then field "decl" node else None);
+        List.iter collect_secondary_aliases
+          (children node
+          @ Option.to_list (field "decl" node)
+          @ Option.to_list (field "type" node))
       in
+      List.iter collect_secondary_aliases ast_nodes;
+      let replace_field key value = function
+        | C_import_json.Obj (_, index) ->
+            let index = Hashtbl.copy index in
+            Hashtbl.replace index key value;
+            C_import_json.Obj ([], index)
+        | node -> node
+      in
+      let remap_type_reference node =
+        let remapped_decl =
+          match kind node with
+          | Some ("TypedefType" | "RecordType" | "EnumType") ->
+              Option.bind (field "decl" node) (fun declaration ->
+                  let decl_kind = string "kind" declaration in
+                  let named_id =
+                    Option.bind (name declaration) (fun name ->
+                        if name = "" then None
+                        else
+                          Option.bind decl_kind (fun kind ->
+                              Hashtbl.find_opt primary_decl_ids (kind ^ "\000" ^ name)))
+                  in
+                  let type_id =
+                    match (decl_kind, string "kind" node) with
+                    | Some ("RecordDecl" | "EnumDecl"), Some type_kind ->
+                        Option.bind (field "type" node) (fun ty ->
+                            Option.bind (string "qualType" ty) (fun type_name ->
+                                Hashtbl.find_opt primary_type_ids
+                                  (type_kind ^ "\000" ^ type_name)))
+                    | _ -> None
+                  in
+                  Option.map
+                    (fun id ->
+                      replace_field "decl"
+                        (replace_field "id" (C_import_json.Str id) declaration)
+                        node)
+                    (match named_id with Some _ -> named_id | None -> type_id))
+          | _ -> None
+        in
+        let remapped_alias =
+          Option.bind (field "typeAliasDeclId" node) (function
+            | C_import_json.Str id ->
+                Option.bind (Hashtbl.find_opt secondary_aliases id) (fun alias ->
+                    Hashtbl.find_opt primary_decl_ids ("TypedefDecl\000" ^ alias))
+            | _ -> None)
+        in
+        let node = Option.value ~default:node remapped_decl in
+        Option.fold ~none:node
+          ~some:(fun id -> replace_field "typeAliasDeclId" (C_import_json.Str id) node)
+          remapped_alias
+      in
+      let rec remap_probe_node = function
+        | C_import_json.Arr values ->
+            C_import_json.Arr (List.map remap_probe_node values)
+        | C_import_json.Obj (fields, index) ->
+            let index' = Hashtbl.create (Hashtbl.length index) in
+            Hashtbl.iter
+              (fun key value -> Hashtbl.add index' key (remap_probe_node value))
+              index;
+            remap_type_reference
+              (C_import_json.Obj
+                 ( List.map (fun (key, value) -> (key, remap_probe_node value)) fields,
+                   index' ))
+        | value -> value
+      in
+      let ast_nodes = List.map remap_probe_node ast_nodes in
       let is_type_node node =
         Option.fold ~none:false ~some:(String.ends_with ~suffix:"Type") (kind node)
       in
@@ -755,13 +860,18 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
           ast_nodes
       in
       let aliases = Hashtbl.create 32 in
-      List.iter
-        (fun node ->
-          if kind node = Some "TypedefDecl" then
-            match (string "id" node, name node) with
-            | Some id, Some alias -> Hashtbl.replace aliases id alias
-            | _ -> ())
-        ast_nodes;
+      let rec collect_aliases node =
+        if kind node = Some "TypedefType" then
+          Option.iter
+            (fun declaration ->
+              if kind declaration = Some "TypedefDecl" then
+                match (string "id" declaration, name declaration) with
+                | Some id, Some alias -> Hashtbl.replace aliases id alias
+                | _ -> ())
+            (field "decl" node);
+        List.iter collect_aliases (children node)
+      in
+      List.iter collect_aliases ast_nodes;
       let macro_infos =
         List.mapi
           (fun index _ ->
@@ -783,7 +893,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
               Option.bind ty (fun ty ->
                   Option.bind (string "typeAliasDeclId" ty) (Hashtbl.find_opt aliases))
             in
-            (type_name, alias, not (Hashtbl.mem bad_macros index)))
+            (type_name, alias, not (Stdlib.Hashtbl.mem bad_macros index)))
           macro_candidates
       in
       Ok
@@ -885,7 +995,15 @@ let imported_probe_nodes ~cc ~c_flags ~source ~unit_path ~paths ~definitions
     List.concat_map flatten alloc_size_declarations
     |> List.filter (fun node ->
         kind node = Some "FunctionDecl"
-        && List.exists (fun child -> kind child = Some "AllocSizeAttr") (children node))
+        && (List.exists (fun child -> kind child = Some "AllocSizeAttr") (children node)
+           || List.mem (name node)
+                [
+                  Some "malloc";
+                  Some "calloc";
+                  Some "realloc";
+                  Some "aligned_alloc";
+                  Some "_mm_malloc";
+                ]))
     |> List.filter_map name |> List.sort_uniq compare
   in
   let indexed_macros =
@@ -2424,7 +2542,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
                  (children declaration) ->
             Some (name, ())
         | _ -> None)
-    |> Hir.first_index
+    |> string_index
   in
   let function_spells_restrict node =
     Option.fold ~none:false
@@ -3135,7 +3253,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
       records_by_name
   in
   let raw_records_index =
-    Hir.first_index
+    string_index
       (List.map (fun ((name, _, _, _, _, _) as record) -> (name, record)) raw_records)
   in
   let rec contains_const_fields = function
@@ -3237,7 +3355,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
         else Option.map (fun layout -> (name, Some layout.align)) layout)
       raw_records
   in
-  let alignments_index = Hir.first_index alignments in
+  let alignments_index = string_index alignments in
   let struct_sizes =
     List.filter_map
       (fun (name, _, _, layout, reason, blocked) ->
@@ -3270,7 +3388,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
                    &&
                    let offsets =
                      Option.value
-                       ~default:(Hir.first_index clang.direct_offsets)
+                       ~default:(string_index clang.direct_offsets)
                        (Hashtbl.find_opt layouts_cache.field_offsets_index name)
                    in
                    List.for_all
@@ -3284,7 +3402,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
       raw_records
   in
   let record_results_index =
-    Hir.first_index
+    string_index
       (List.map
          (fun ((name, _, _, _, _, _, _) as result) -> (name, result))
          record_results)
@@ -3494,7 +3612,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = []) ~span
         if string "kind" node = Some "EnumDecl" then
           Option.map (fun id -> (id, ())) (string "id" node)
         else None)
-    |> Hir.first_index
+    |> string_index
   in
   let nested_enum_nodes =
     all_nodes

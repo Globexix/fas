@@ -54,12 +54,12 @@ let () =
     | Error message -> failwith message
   in
   assert (root_layout.size = 2);
-  assert (Hashtbl.length layout_cache.definitions = 4);
+  assert (Hir.Hashtbl.length layout_cache.definitions = 4);
   ignore
     (match Hir.compute_struct_cached layout_cache "Root" with
     | Ok definition -> definition
     | Error message -> failwith message);
-  assert (Hashtbl.length layout_cache.definitions = 4);
+  assert (Hir.Hashtbl.length layout_cache.definitions = 4);
   let pointer_declarations = [ ("Address", [ ("value", Hir.Addr) ], None) ] in
   let target32 = { Target_layout.current with pointer_size = 4; pointer_align = 4 } in
   let pointer64 =
@@ -90,7 +90,7 @@ let () =
   (match Hir.compute_struct_cached recursive_cache "First" with
   | Error message -> assert (message = "recursive by-value struct `First`")
   | Ok _ -> assert false);
-  assert (Hashtbl.length recursive_cache.definitions = 0);
+  assert (Hir.Hashtbl.length recursive_cache.definitions = 0);
   let overflowing_declarations =
     [
       ( "Overflowing",
@@ -102,7 +102,7 @@ let () =
   (match Hir.compute_struct_cached overflowing_cache "Overflowing" with
   | Error message -> assert (message = "aggregate size overflows")
   | Ok _ -> assert false);
-  assert (Hashtbl.length overflowing_cache.definitions = 0);
+  assert (Hir.Hashtbl.length overflowing_cache.definitions = 0);
   let overflowing_program =
     expect_ok
       (Parser.parse
@@ -137,7 +137,7 @@ let () =
   (match Hir.compute_struct_cached padding_overflow_cache "PaddingOverflow" with
   | Error message -> assert (message = "aggregate size overflows")
   | Ok _ -> assert false);
-  assert (Hashtbl.length padding_overflow_cache.definitions = 0);
+  assert (Hir.Hashtbl.length padding_overflow_cache.definitions = 0);
   let object_size_program =
     expect_ok (Parser.parse (source "fn f() void { value arr[16,u8]\n return }\n"))
   in

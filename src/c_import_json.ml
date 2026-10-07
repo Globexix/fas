@@ -1,5 +1,12 @@
+module Hashtbl = Stdlib.Hashtbl.Make (struct
+  type t = string
+
+  let equal = String.equal
+  let hash = String.hash
+end)
+
 type value =
-  | Obj of (string * value) list * (string, value) Hashtbl.t
+  | Obj of (string * value) list * value Hashtbl.t
   | Arr of value list
   | Str of string
   | Num of string
@@ -35,12 +42,16 @@ let take i =
   i.pos <- i.pos + 1;
   c
 
-let rec space i =
-  match peek i with
-  | ' ' | '\n' | '\r' | '\t' ->
-      ignore (take i);
-      space i
-  | _ -> ()
+let space i =
+  let rec loop () =
+    if i.pos = i.size then refill i;
+    match Bytes.get i.data i.pos with
+    | ' ' | '\n' | '\r' | '\t' ->
+        i.pos <- i.pos + 1;
+        loop ()
+    | _ -> ()
+  in
+  loop ()
 
 let expect i c =
   space i;
@@ -414,7 +425,7 @@ let declaration i =
   in
   rest acc
 
-let declarations ?(root_consumed = false) channel =
+let declarations ?(root_consumed = false) ?(filtered = false) channel =
   let i =
     {
       channel;
@@ -427,7 +438,6 @@ let declarations ?(root_consumed = false) channel =
       presumed_line = None;
     }
   in
-  if not root_consumed then expect i '{';
   let rec root acc =
     space i;
     if peek i = '}' then (
@@ -469,7 +479,18 @@ let declarations ?(root_consumed = false) channel =
       | ',' -> root acc
       | _ -> failwith "invalid Clang translation unit")
   in
-  root []
+  let rec loop acc =
+    try
+      space i;
+      loop (Option.fold ~none:acc ~some:(fun value -> value :: acc) (declaration i))
+    with End_of_file -> List.rev acc
+  in
+  if filtered then loop []
+  else (
+    if not root_consumed then expect i '{';
+    root [])
+
+let declarations_filtered channel = declarations ~filtered:true channel
 
 let declarations_with_layout channel =
   let layout = Buffer.create 4096 in

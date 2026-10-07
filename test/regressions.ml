@@ -453,7 +453,8 @@ let () =
          [ ("name", C_import_json.Str "first"); ("name", C_import_json.Str "last") ])
     <> Some (C_import_json.Str "first")
   then failwith "C import JSON field lookup no longer keeps the first key";
-  if Hashtbl.find_opt (Hir.first_index [ ("name", 1); ("name", 2) ]) "name" <> Some 1
+  if
+    Hir.Hashtbl.find_opt (Hir.first_index [ ("name", 1); ("name", 2) ]) "name" <> Some 1
   then failwith "C import metadata lookup no longer keeps the first key";
   let long_sum = String.concat " + " (List.init 100_000 (fun _ -> "1")) in
   semantic_accept "long-arithmetic-expression"
@@ -11336,18 +11337,18 @@ let () =
         C_import_json.Arr (List.map (duplicate_flattened_field_name active) values)
     | C_import_json.Obj (_, index) ->
         let kind =
-          match Hashtbl.find_opt index "kind" with
+          match C_import_json.Hashtbl.find_opt index "kind" with
           | Some (C_import_json.Str kind) -> Some kind
           | _ -> None
         in
         let target_record =
           kind = Some "RecordDecl"
-          && Hashtbl.find_opt index "name"
+          && C_import_json.Hashtbl.find_opt index "name"
              = Some (C_import_json.Str "FasAnonymousCollisionRecord")
         in
         let active = active || target_record in
         let fields =
-          Hashtbl.fold
+          C_import_json.Hashtbl.fold
             (fun key value fields ->
               let value =
                 if
