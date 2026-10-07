@@ -127,10 +127,12 @@ fn main() i32 {
   if evaluation_order != 123 || ordered != 5 { return 10 }
 
   score i32 = 0
-  if call_addr[bool](&echo_bool, true) != true { return 1 }
-  score += zext[i32](call_addr[bool](&echo_bool, true))
+  echo_bool_pointer addr = &echo_bool
+  echo_i8_pointer addr = &echo_i8
+  if call_addr[bool](echo_bool_pointer, true) != true { return 1 }
+  score += zext[i32](call_addr[bool](echo_bool_pointer, true))
   score += zext[i32](call_addr[u8](&echo_u8, trunc[u8](250)))
-  score += sext[i32](call_addr[i8](&echo_i8, trunc[i8](249)))
+  score += sext[i32](call_addr[i8](echo_i8_pointer, trunc[i8](249)))
   score += zext[i32](call_addr[u16](&echo_u16, trunc[u16](60000)))
   score += sext[i32](call_addr[i16](&echo_i16, trunc[i16](64302)))
   score += bitcast[i32](call_addr[u32](&echo_u32, bitcast[u32](70000)))
@@ -155,8 +157,8 @@ fn main() i32 {
   if storage != 91 { return 5 }
   score += storage - 90
   score += ordered
-  if call_addr[i8](&echo_i8, trunc[i8](249)) != trunc[i8](249) { return 6 }
-  if call_addr[bool](&echo_bool, false) != false { return 7 }
+  if call_addr[i8](echo_i8_pointer, trunc[i8](249)) != trunc[i8](249) { return 6 }
+  if call_addr[bool](echo_bool_pointer, false) != false { return 7 }
   if echo_i8(trunc[i8](249)) != trunc[i8](249) { return 8 }
   if echo_bool(true) != true { return 9 }
   fas_print_result(objects[0].total, objects[1].total, objects[2].total, calls, score)

@@ -23,6 +23,8 @@ grep -Eq 'define internal i8 @untouched_i8\(i8 %a0\)' "$TMP/program.ll" || fail 
 grep -Eq 'define internal i1 @untouched_bool\(i1 %a0\)' "$TMP/program.ll" || fail "unaddressed native bool function changed ABI"
 grep -Eq 'call signext i8 @echo_i8\(i8 signext ' "$TMP/program.ll" || fail "direct call to addressed native i8 function lacks C ABI extensions"
 grep -Eq 'call zeroext i1 @echo_bool\(i1 zeroext ' "$TMP/program.ll" || fail "direct call to addressed native bool function lacks C ABI extensions"
+grep -Eq 'call signext i8 %v[0-9]+\(i8 signext ' "$TMP/program.ll" || fail "indirect call lacks narrow C ABI argument extensions"
+grep -Eq 'call zeroext i1 %v[0-9]+\(i1 zeroext ' "$TMP/program.ll" || fail "indirect call lacks bool C ABI argument extensions"
 grep -F 'ptr @fas_callback_i8' "$TMP/program.ll" >/dev/null || fail "native narrow callback address was not passed to C"
 grep -F 'ptr @States' "$TMP/program.ll" >/dev/null || fail "state table function addresses were omitted"
 grep -F '__fas_c_adapter_' "$TMP/program.ll" >/dev/null || fail "static inline C adapter was not emitted"
