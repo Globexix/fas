@@ -74,7 +74,7 @@ let extension = function
 
 let gep_index = function Ir.Zero -> arr [ str "zero" ] | Index v -> value v
 
-let instr = function
+let instr ?(redirect = Fun.id) = function
   | Bin (d, op, t, a, b) ->
       arr [ str "bin"; int d; str (binop op); ty t; value a; value b ]
   | Cmp (d, c, t, a, b) -> arr [ str "cmp"; int d; str (cmp c); ty t; value a; value b ]
@@ -96,7 +96,7 @@ let instr = function
           (match d with Some d -> int d | None -> "null");
           extension ext;
           ty t;
-          str name;
+          str (redirect name);
           arr (List.map (fun (t, e, v) -> arr [ ty t; extension e; value v ]) args);
         ]
   | Phi (d, t, incoming) ->
@@ -146,7 +146,8 @@ let global = function
           ("elems", arr (List.map i64 elems));
           ("align", int align);
         ]
-  | Storage_global { name; storage_ty; size; bytes; pointers; readonly; align; _ } ->
+  | Storage_global { name; storage_ty; size; bytes; pointers; readonly; align; linkage }
+    ->
       obj
         [
           ("kind", str "storage");
@@ -158,16 +159,29 @@ let global = function
             arr (List.map (fun (o, n, a) -> arr [ int o; str n; int a ]) pointers) );
           ("readonly", string_of_bool readonly);
           ("align", int align);
+          ( "linkage",
+            str
+              (match linkage with
+              | Ast.Internal_global -> "internal"
+              | Ast.Export_c -> "export"
+              | Ast.Import_c -> "import"
+              | Ast.Import_const_c -> "import_const") );
         ]
 
-let func (f : func) =
+let func ?(redirect = Fun.id) (f : func) =
   obj
     [
-      ("name", str f.name);
+      ("name", str (redirect f.name));
       ( "params",
         arr
           (List.map
-             (fun (p : param) -> obj [ ("name", str p.name); ("ty", ty p.ty) ])
+             (fun (p : param) ->
+               obj
+                 [
+                   ("name", str p.name);
+                   ("ty", ty p.ty);
+                   ("extension", extension p.extension);
+                 ])
              f.params) );
       ("ret", ty f.ret);
       ( "linkage",
@@ -180,13 +194,14 @@ let func (f : func) =
                obj
                  [
                    ("id", int b.id);
-                   ("instrs", arr (List.map instr b.instrs));
+                   ("instrs", arr (List.map (instr ~redirect) b.instrs));
                    ("term", terminator b.terminator);
                  ])
              f.blocks) );
+      ("ret_extension", extension f.ret_extension);
     ]
 
-let render m =
+let render ?(redirect = Fun.id) m =
   obj
     [
       ( "structs",
@@ -201,6 +216,12 @@ let render m =
                  ])
              m.structs) );
       ("globals", arr (List.map global m.globals));
-      ("funcs", arr (List.map func m.funcs));
+      ("funcs", arr (List.map (func ~redirect) m.funcs));
+      ("format", str "fas-ir-json");
+      ("version", int 1);
+      ("target_triple", str m.target_triple);
+      ("data_layout", str m.data_layout);
+      ( "no_inline",
+        match m.no_inline_function with Some name -> str name | None -> "null" );
     ]
   ^ "\n"

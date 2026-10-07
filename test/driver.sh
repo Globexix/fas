@@ -173,7 +173,7 @@ for mode in -c -S --emit-ir --emit-ir-json --emit-llvm; do
   grep -Fx 'C inputs and link flags require an executable output' \
     "$WORK/stderr" >/dev/null || fail "$mode accepted C link inputs"
 done
-for mode in -c -S --emit-ir --emit-llvm --emit-header; do
+for mode in -c -S --emit-ir --emit-ir-json --emit-llvm --emit-header; do
   "$OCAML_FAS" "$mode" "$WORK/good.fas" -o /dev/null >"$WORK/stdout" 2>"$WORK/stderr" \
     || fail "$mode could not write to a non-regular output"
   [ ! -s "$WORK/stdout" ] || fail "$mode wrote stdout with an explicit output"
@@ -361,6 +361,19 @@ grep -F -- "unknown option: --emit-ast" "$WORK/stderr" >/dev/null || fail "remov
 printf 'stale artifact\n' >"$WORK/compile-fail"
 expect_failure "$OCAML_FAS" "$WORK/bad.fas" -o "$WORK/compile-fail"
 [ ! -e "$WORK/compile-fail" ] || fail "compile failure left stale output"
+temps_empty
+
+ir_status=0
+"$OCAML_FAS" --emit-ir "$WORK/bad.fas" >"$WORK/ir-failure-stdout" \
+  2>"$WORK/ir-failure-stderr" || ir_status=$?
+json_status=0
+"$OCAML_FAS" --emit-ir-json "$WORK/bad.fas" -o /dev/null \
+  >"$WORK/json-failure-stdout" 2>"$WORK/json-failure-stderr" || json_status=$?
+[ "$ir_status" -eq "$json_status" ] || fail "JSON emission changed rejected-program status"
+cmp "$WORK/ir-failure-stdout" "$WORK/json-failure-stdout" >/dev/null \
+  || fail "rejected JSON emission wrote output"
+cmp "$WORK/ir-failure-stderr" "$WORK/json-failure-stderr" >/dev/null \
+  || fail "JSON emission changed rejected-program diagnostics"
 temps_empty
 
 regular_status=0
