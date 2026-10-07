@@ -77,49 +77,27 @@ let gep_index is_function = function
   | Ir.Zero -> arr [ str "zero" ]
   | Index v -> value is_function v
 
-let instr ?(redirect = Fun.id) ~is_function = function
+let instr ?(redirect = Fun.id) ~is_function instr =
+  let value = value is_function in
+  let gep_index = gep_index is_function in
+  let json_args args =
+    arr (List.map (fun (t, e, v) -> arr [ ty t; extension e; value v ]) args)
+  in
+  match instr with
   | Bin (d, op, t, a, b) ->
-      arr
-        [
-          str "bin";
-          int d;
-          str (binop op);
-          ty t;
-          value is_function a;
-          value is_function b;
-        ]
-  | Cmp (d, c, t, a, b) ->
-      arr
-        [
-          str "cmp"; int d; str (cmp c); ty t; value is_function a; value is_function b;
-        ]
+      arr [ str "bin"; int d; str (binop op); ty t; value a; value b ]
+  | Cmp (d, c, t, a, b) -> arr [ str "cmp"; int d; str (cmp c); ty t; value a; value b ]
   | Alloca (d, t, align) -> arr [ str "alloca"; int d; ty t; int align ]
-  | Load (d, t, p, align) ->
-      arr [ str "load"; int d; ty t; value is_function p; int align ]
+  | Load (d, t, p, align) -> arr [ str "load"; int d; ty t; value p; int align ]
   | Load_volatile (d, t, p, align) ->
-      arr [ str "load_volatile"; int d; ty t; value is_function p; int align ]
-  | Store (t, v, p, align) ->
-      arr [ str "store"; ty t; value is_function v; value is_function p; int align ]
+      arr [ str "load_volatile"; int d; ty t; value p; int align ]
+  | Store (t, v, p, align) -> arr [ str "store"; ty t; value v; value p; int align ]
   | Store_volatile (t, v, p, align) ->
-      arr
-        [
-          str "store_volatile";
-          ty t;
-          value is_function v;
-          value is_function p;
-          int align;
-        ]
+      arr [ str "store_volatile"; ty t; value v; value p; int align ]
   | Gep (d, t, p, idx) ->
-      arr
-        [
-          str "gep";
-          int d;
-          ty t;
-          value is_function p;
-          arr (List.map (gep_index is_function) idx);
-        ]
+      arr [ str "gep"; int d; ty t; value p; arr (List.map gep_index idx) ]
   | Cast (d, k, from, v, target) ->
-      arr [ str "cast"; int d; str k; ty from; value is_function v; ty target ]
+      arr [ str "cast"; int d; str k; ty from; value v; ty target ]
   | Call (d, ext, t, name, args) ->
       arr
         [
@@ -128,10 +106,7 @@ let instr ?(redirect = Fun.id) ~is_function = function
           extension ext;
           ty t;
           str (redirect name);
-          arr
-            (List.map
-               (fun (t, e, v) -> arr [ ty t; extension e; value is_function v ])
-               args);
+          json_args args;
         ]
   | Call_indirect (d, ext, t, callee, args) ->
       arr
@@ -140,11 +115,8 @@ let instr ?(redirect = Fun.id) ~is_function = function
           (match d with Some d -> int d | None -> "null");
           extension ext;
           ty t;
-          value is_function callee;
-          arr
-            (List.map
-               (fun (t, e, v) -> arr [ ty t; extension e; value is_function v ])
-               args);
+          value callee;
+          json_args args;
         ]
   | Phi (d, t, incoming) ->
       arr
@@ -152,41 +124,15 @@ let instr ?(redirect = Fun.id) ~is_function = function
           str "phi";
           int d;
           ty t;
-          arr (List.map (fun (v, b) -> arr [ value is_function v; int b ]) incoming);
+          arr (List.map (fun (v, b) -> arr [ value v; int b ]) incoming);
         ]
-  | Select (d, c, a, b) ->
-      arr
-        [
-          str "select";
-          int d;
-          value is_function c;
-          value is_function a;
-          value is_function b;
-        ]
-  | Extract (d, t, v, i) ->
-      arr [ str "extract"; int d; ty t; value is_function v; value is_function i ]
+  | Select (d, c, a, b) -> arr [ str "select"; int d; value c; value a; value b ]
+  | Extract (d, t, v, i) -> arr [ str "extract"; int d; ty t; value v; value i ]
   | Insert (d, t, v, x, i) ->
-      arr
-        [
-          str "insert";
-          int d;
-          ty t;
-          value is_function v;
-          value is_function x;
-          value is_function i;
-        ]
-  | Shuffle_zero (d, t, v) ->
-      arr [ str "shuffle_zero"; int d; ty t; value is_function v ]
+      arr [ str "insert"; int d; ty t; value v; value x; value i ]
+  | Shuffle_zero (d, t, v) -> arr [ str "shuffle_zero"; int d; ty t; value v ]
   | Shufflevector (d, t, a, b, m) ->
-      arr
-        [
-          str "shufflevector";
-          int d;
-          ty t;
-          value is_function a;
-          value is_function b;
-          value is_function m;
-        ]
+      arr [ str "shufflevector"; int d; ty t; value a; value b; value m ]
   | String_ptr (d, s, n) -> arr [ str "string_ptr"; int d; int s; int n ]
   | Global_ptr (d, n, t) -> arr [ str "global_ptr"; int d; str n; ty t ]
   | Trap -> arr [ str "trap" ]
