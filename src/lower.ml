@@ -2359,15 +2359,23 @@ and lower_switch s e arms default span =
   let rec lower_cases arms blocks =
     match (arms, blocks) with
     | [], [] -> Ok []
-    | (case, _) :: arm_rest, block :: block_rest ->
-        let* value =
-          match case with
-          | Hir.EInt (value, _, _) -> Ok value
-          | Hir.EBool (value, _) -> Ok (if value then 1L else 0L)
-          | _ -> error (Hir.expr_span case) "internal error: non-constant switch case"
+    | (cases, _) :: arm_rest, block :: block_rest ->
+        let rec values acc = function
+          | [] -> Ok (List.rev acc)
+          | case :: rest ->
+              let* value =
+                match case with
+                | Hir.EInt (value, _, _) -> Ok value
+                | Hir.EBool (value, _) -> Ok (if value then 1L else 0L)
+                | _ ->
+                    error (Hir.expr_span case)
+                      "internal error: non-constant switch case"
+              in
+              values ((value, block.id) :: acc) rest
         in
+        let* case_values = values [] cases in
         let* rest = lower_cases arm_rest block_rest in
-        Ok ((value, block.id) :: rest)
+        Ok (case_values @ rest)
     | _ -> error span "internal error: switch arm/block mismatch"
   in
   let* cases = lower_cases arms blocks in
@@ -2486,8 +2494,8 @@ let address_taken_locals ?function_addresses body =
     | Hir.Switch (value, arms, default, _) ->
         collect_expr value;
         List.iter
-          (fun (case, body) ->
-            collect_expr case;
+          (fun (cases, body) ->
+            List.iter collect_expr cases;
             collect_list body)
           arms;
         Option.iter collect_list default

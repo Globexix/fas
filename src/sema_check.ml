@@ -3875,8 +3875,8 @@ let rec statement_changes_name name = function
   | Ast.Switch (value, arms, default, _) ->
       expression_takes_name_address name value
       || List.exists
-           (fun (case, body) ->
-             expression_takes_name_address name case
+           (fun (cases, body) ->
+             List.exists (expression_takes_name_address name) cases
              || List.exists (statement_changes_name name) body)
            arms
       || Option.fold ~none:false
@@ -4707,9 +4707,9 @@ and check_stmt (c : context) = function
         in
         let before_falls = Sema_flow.falls_through c.flow in
         let branch_falls = ref [] in
-        let rec ar acc = function
-          | [] -> Ok (List.rev acc)
-          | (k, b) :: xs ->
+        let rec case_values acc selected = function
+          | [] -> Ok (List.rev acc, selected)
+          | k :: rest -> (
               let* kt, kv =
                 const_expr
                   ~array_lengths:(static_array_lengths c.top_level_bindings c.globals)
@@ -4757,25 +4757,37 @@ and check_stmt (c : context) = function
                 ensure_expected ~context:"case value" ~expression:k kt et
                   (Ast.expr_span k)
               in
-              if List.mem kv !seen then
-                error (Ast.expr_span k) (Printf.sprintf "duplicate case label `%Ld`" kv)
-              else (
-                seen := kv :: !seen;
-                let tk =
-                  match et with
-                  | Hir.Bool -> Hir.EBool (kv <> 0L, Ast.expr_span k)
-                  | _ -> Hir.EInt (mask_value et kv, et, Ast.expr_span k)
-                in
-                Sema_flow.restore c.flow before;
-                Sema_flow.set_falls_through c.flow before_falls;
-                let* tb = check_block c b in
-                let state = Sema_flow.snapshot c.flow
-                and falls_through = Sema_flow.falls_through c.flow in
-                if falls_through then branch_states := state :: !branch_states;
-                branch_falls := falls_through :: !branch_falls;
-                if switch_value = Some kv then
-                  selected_case := Some (state, falls_through);
-                ar ((tk, tb) :: acc) xs)
+              match List.assoc_opt kv !seen with
+              | Some first_span ->
+                  Error
+                    [
+                      Diag.error
+                        ~notes:[ "first case value is at " ^ Span.to_string first_span ]
+                        (Ast.expr_span k)
+                        (Printf.sprintf "duplicate case label `%Ld`" kv);
+                    ]
+              | None ->
+                  seen := (kv, Ast.expr_span k) :: !seen;
+                  let tk =
+                    match et with
+                    | Hir.Bool -> Hir.EBool (kv <> 0L, Ast.expr_span k)
+                    | _ -> Hir.EInt (mask_value et kv, et, Ast.expr_span k)
+                  in
+                  case_values (tk :: acc) (selected || switch_value = Some kv) rest)
+        in
+        let rec ar acc = function
+          | [] -> Ok (List.rev acc)
+          | (ks, b) :: xs ->
+              let* tks, selected = case_values [] false ks in
+              Sema_flow.restore c.flow before;
+              Sema_flow.set_falls_through c.flow before_falls;
+              let* tb = check_block c b in
+              let state = Sema_flow.snapshot c.flow
+              and falls_through = Sema_flow.falls_through c.flow in
+              if falls_through then branch_states := state :: !branch_states;
+              branch_falls := falls_through :: !branch_falls;
+              if selected then selected_case := Some (state, falls_through);
+              ar ((tks, tb) :: acc) xs
         in
         let result = ar [] arms in
         let* ta = result in

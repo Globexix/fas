@@ -2156,6 +2156,47 @@ let () =
      } } }\n";
   semantic_error "switch-duplicate-case" "duplicate case label `1`"
     "fn f(x i32) i32 { switch x { case 1: return 1; case 1: return 2 } }\n";
+  semantic_accept "switch-multiple-case-values"
+    "fn f(x i32) i32 { switch x { case 1, 2: return 3; default: return 0 } }\n";
+  semantic_accept "switch-multiple-case-values-twin"
+    "fn f(x i32) i32 { switch x { case 1, 2: return 3; case 4, 5: return 0 } return 0 }\n";
+  semantic_accept "switch-const-generic-case-values"
+    ("fn choose[N const i32](x i32) i32 { switch x { case N, N + 1: return 1; "
+   ^ "default: return 0 } }\nfn run() i32 { return choose[3](4) }\n");
+  let switch_duplicate_values =
+    "fn f(x i32) i32 { switch x { case 1, 2: return 1; case 3, 2: return 2 } }\n"
+  in
+  let duplicate_diagnostics = semantic_diagnostics switch_duplicate_values in
+  let first_value_column =
+    List.hd (positions switch_duplicate_values "case 1, 2:")
+    + String.length "case 1, " + 1
+  and duplicate_value_column =
+    List.hd (positions switch_duplicate_values "case 3, 2:")
+    + String.length "case 3, " + 1
+  in
+  (match duplicate_diagnostics with
+  | [ diagnostic ]
+    when diagnostic.Diag.message = "duplicate case label `2`"
+         && diagnostic.primary.Span.column = duplicate_value_column
+         && diagnostic.notes
+            = [
+                Printf.sprintf "first case value is at regression.fas:1:%d"
+                  first_value_column;
+              ] ->
+      ()
+  | diagnostics ->
+      failwith
+        ("switch-multiple-case-values-duplicate: "
+        ^ Diag.render_all ~source:(Some (source switch_duplicate_values)) diagnostics));
+  let multi_switch_llvm =
+    llvm_of "fn f(x i32) i32 { switch x { case 1, 2: return 3; default: return 0 } }\n"
+  in
+  if
+    List.length (positions multi_switch_llvm "switch i32") <> 1
+    || not
+         (contains multi_switch_llvm
+            "switch i32 %v1, label %b3 [ i32 1, label %b2 i32 2, label %b2 ]")
+  then failwith "switch-multiple-case-values: expected one switch to a shared arm";
   semantic_error "switch-nonconst-case" "case label must be a compile-time constant"
     "fn f(x i32, y i32) i32 { switch x { case y: return 1 } return 0 }\n";
   semantic_error "switch-vec-scrutinee" "switch value must be an integer or bool"
@@ -6828,7 +6869,7 @@ let () =
                    [
                      Hir.Switch
                        ( Hir.EInt (0L, Hir.Int Hir.I32, Span.synthetic),
-                         [ (Hir.EString (0, Span.synthetic), []) ],
+                         [ ([ Hir.EString (0, Span.synthetic) ], []) ],
                          None,
                          Span.synthetic );
                    ];

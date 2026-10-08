@@ -128,7 +128,7 @@ type stmt =
   | If of expr * stmt list * stmt list option * Span.t
   | While of expr * stmt list * Span.t
   | For of stmt option * expr option * stmt option * stmt list * Span.t
-  | Switch of expr * (expr * stmt list) list * stmt list option * Span.t
+  | Switch of expr * (expr list * stmt list) list * stmt list option * Span.t
   | Break of Span.t
   | Continue of Span.t
   | Defer of stmt list * Span.t

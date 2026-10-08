@@ -1304,10 +1304,17 @@ module P = struct
           match (peek p).kind with
           | Token.Kw_case ->
               ignore (bump p);
-              let* e = expr p in
+              let rec values acc =
+                let* e = expr p in
+                if at p Token.Comma then (
+                  ignore (bump p);
+                  values (e :: acc))
+                else Ok (List.rev (e :: acc))
+              in
+              let* es = values [] in
               let* () = expected p Token.Colon in
               let* b = case_body p in
-              cases ((e, b) :: arms) default
+              cases ((es, b) :: arms) default
           | Token.Kw_default -> (
               let default_span = span p in
               ignore (bump p);

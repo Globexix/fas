@@ -544,8 +544,12 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let* () = validate_expression_names value_names type_names expression in
         let* () =
           Result_list.iter
-            (fun (value, body) ->
-              let* () = validate_expression_names value_names type_names value in
+            (fun (values, body) ->
+              let* () =
+                Result_list.iter
+                  (validate_expression_names value_names type_names)
+                  values
+              in
               validate_statement_block_names value_names type_names body)
             cases
         in
@@ -1121,8 +1125,12 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let* () = validate_non_dependent_expression c dependent None expression in
         let* () =
           Result_list.iter
-            (fun (value, body) ->
-              let* () = validate_non_dependent_expression c dependent None value in
+            (fun (values, body) ->
+              let* () =
+                Result_list.iter
+                  (validate_non_dependent_expression c dependent None)
+                  values
+              in
               validate_non_dependent_block c dependent expected_return body)
             cases
         in
@@ -2062,13 +2070,13 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           let* expression = resolve_expr expression in
           let* cases =
             Result_list.map
-              (fun (value, body) ->
-                let* value = resolve_expr value in
+              (fun (values, body) ->
+                let* values = Result_list.map resolve_expr values in
                 let* body =
                   with_local_values !local_values (fun () ->
                       Result_list.map resolve_stmt body)
                 in
-                Ok (value, body))
+                Ok (values, body))
               cases
           in
           let* default =

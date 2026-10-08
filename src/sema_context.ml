@@ -220,7 +220,10 @@ and count_expanded_stmt_type_nodes stmt cap total =
           List.fold_left
             (fun total (case, body) ->
               count_expanded_stmts_type_nodes body cap
-                (count_expanded_expr_type_nodes case cap total))
+                (List.fold_left
+                   (fun total expression ->
+                     count_expanded_expr_type_nodes expression cap total)
+                   total case))
             total cases
         in
         match default with

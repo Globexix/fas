@@ -90,7 +90,7 @@ and stmt =
   | Expr_stmt of expr * Span.t
   | Block of stmt list * Span.t
   | For of stmt option * expr option * stmt option * stmt list * Span.t
-  | Switch of expr * (expr * stmt list) list * stmt list option * Span.t
+  | Switch of expr * (expr list * stmt list) list * stmt list option * Span.t
 
 and assign_target =
   | Target_ident of string * Span.t
@@ -849,8 +849,8 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
       | Switch (scr, arms, default, _) ->
           go_expr scr;
           List.iter
-            (fun (e, xs) ->
-              go_expr e;
+            (fun (es, xs) ->
+              List.iter go_expr es;
               go_stmts xs)
             arms;
           Option.iter go_stmts default)
