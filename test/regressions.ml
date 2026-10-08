@@ -7389,6 +7389,67 @@ let () =
     "const A u32 = 1\n\
      const B i64 = 2\n\
      fn f() void { data arr[A + B,u8] = {}; return }\n";
+  semantic_accept "widening-u32-i64-comparison"
+    "fn f(left u32, right i64) bool { return left < right }\n";
+  let widening_u64_i64_source =
+    "fn f(left u64, right i64) bool { return left < right }\n"
+  in
+  semantic_pin "widening-u64-i64-no-common-type" widening_u64_i64_source 1
+    (String.length "fn f(left u64, right i64) bool { return left < " + 1)
+    (String.length "right") "cannot compare `u64` with `i64`: no type holds both" None;
+  let widening_integer_bool_source = "fn f(value u32) bool { return value }\n" in
+  semantic_pin "widening-integer-to-bool" widening_integer_bool_source 1
+    (String.length "fn f(value u32) bool { return " + 1)
+    5
+    "cannot return `u32` as `bool`: bool and integer values use different \
+     representations"
+    (Some "write `value != 0`");
+  let widening_vector_source = "fn f(value vec[4,u8]) vec[4,u16] { return value }\n" in
+  semantic_pin "widening-vector-is-explicit" widening_vector_source 1
+    (String.length "fn f(value vec[4,u8]) vec[4,u16] { return " + 1)
+    5 "return value is `vec[4, u8]`, expected `vec[4, u16]`" None;
+  semantic_accept "widening-vector-explicit-twin"
+    "fn f(value vec[4,u8]) vec[4,u16] { return zext[vec[4,u16]](value) }\n";
+  let widening_addr_to_int_source = "fn f(value addr) usize { return value }\n" in
+  semantic_pin "widening-address-to-integer-is-explicit" widening_addr_to_int_source 1
+    (String.length "fn f(value addr) usize { return " + 1)
+    5 "cannot return `addr` as `usize`: addresses convert to integers with `addr_bits`"
+    (Some "write `addr_bits(value)`");
+  semantic_accept "widening-address-explicit-twin"
+    "fn f(value addr) usize { return addr_bits(value) }\n";
+  let widening_handle_source =
+    "opaque Left\n\
+     opaque Right\n\
+     fn f(value handle[Left]) handle[Right] { return value }\n"
+  in
+  semantic_pin "widening-handle-identity-is-explicit" widening_handle_source 3
+    (String.length "fn f(value handle[Left]) handle[Right] { return " + 1)
+    5 "return value is `handle[Left]`, expected `handle[Right]`" None;
+  semantic_accept "widening-handle-identity-twin"
+    "opaque Left\nfn f(value handle[Left]) handle[Left] { return value }\n";
+  semantic_accept "widening-usize-compound-u32"
+    "fn f(pos usize, size u32) usize { pos += size; return pos }\n";
+  semantic_accept "widening-plain-value-not-arithmetic"
+    "fn f(a u16) u32 { value u32 = a; return value }\n";
+  semantic_error "widening-if-narrow-arithmetic" "computed in `u16` and may wrap"
+    "fn f(flag bool, a u16, b u16) u32 { return if flag { a * b } else { a } }\n";
+  semantic_accept "widening-constant-runtime-positions"
+    "const Byte u8 = 255\n\
+     const Wide u32 = Byte\n\
+     struct Box { value u32 }\n\
+     var GlobalBox Box = {Byte}\n\
+     const Items arr[1,u32] = {Byte}\n\
+     var Global u32 = Byte\n\
+     fn take(value u32) u32 { return value }\n\
+     fn const_sum() u32 { return Wide + Items[0] }\n\
+     fn runtime_sum(flag bool, value u8) u32 {\n\
+     local u32 = value\n\
+     local = value\n\
+     Boxed Box = {value}\n\
+     ItemsLocal arr[1,u32] = {value}\n\
+     branch u32 = if flag { value } else { value }\n\
+     return take(local) + Boxed.value + ItemsLocal[0] + branch\n\
+     }\n";
   let widening_c_import_source =
     "extern \"C\" { fn imported(value u32) void }\n\
      fn f(value i64) void { imported(value); return }\n"

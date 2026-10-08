@@ -1,0 +1,88 @@
+const Byte u8 = 255
+const Wide u32 = Byte
+const Values arr[1,u32] = {Byte}
+var Global u32 = Byte
+
+struct Box { value u32 }
+
+var GlobalBox Box = {Byte}
+
+extern "C" {
+  fn widening_c_take_u32(value u32) u32
+  fn widening_report(to_u32 u32, to_i16 i16, to_i64 i64, c_result u32, position usize, aggregate u32, fas_call u32, case_value u32, branch_sum u32, comparisons u32, wide u32, array_value u32, global_value u32, global_field u32) void
+}
+
+fn widen_unsigned_u32() u32 {
+  value u8 = Byte
+  return value
+}
+
+fn widen_unsigned_i16() i16 {
+  value u8 = Byte
+  return value
+}
+
+fn widen_signed_i64() i64 {
+  value i8 = -1
+  return value
+}
+
+fn fas_take_u32(value u32) u32 { return value }
+
+fn c_call(value u8) u32 { return widening_c_take_u32(value) }
+
+fn current_position() usize {
+  position usize = 0
+  size u32 = Byte
+  position += size
+  return position
+}
+
+fn aggregate_value(value u8) u32 {
+  local u32 = value
+  local = value
+  box Box = {value}
+  values arr[1,u32] = {value}
+  values[0] = value
+  return local + box.value + values[0]
+}
+
+fn choose(flag bool, value u8) u32 { return if flag { value } else { value } }
+
+fn case_value(value u32) u32 {
+  switch value {
+    case Byte: return 7
+    default: return 0
+  }
+}
+
+fn mixed_positive() bool {
+  unsigned_value u32 = 0x7fffffff
+  signed_value i64 = 0x80000000
+  return unsigned_value < signed_value
+}
+
+fn mixed_high() bool {
+  unsigned_value u32 = 0x80000000
+  signed_value i64 = 0x7fffffff
+  return unsigned_value < signed_value
+}
+
+fn mixed_negative() bool {
+  unsigned_value u32 = 1
+  signed_value i64 = -1
+  return unsigned_value < signed_value
+}
+
+fn comparison_bits() u32 {
+  positive u32 = if mixed_positive() { 1 } else { 0 }
+  high u32 = if mixed_high() { 1 } else { 0 }
+  negative u32 = if mixed_negative() { 1 } else { 0 }
+  return positive + high * 2 + negative * 4
+}
+
+fn main() i32 {
+  branch_sum u32 = choose(true, Byte) + choose(false, Byte)
+  widening_report(widen_unsigned_u32(), widen_unsigned_i16(), widen_signed_i64(), c_call(Byte), current_position(), aggregate_value(Byte), fas_take_u32(Byte), case_value(Wide), branch_sum, comparison_bits(), Wide, Values[0], Global, GlobalBox.value)
+  return 0
+}
