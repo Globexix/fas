@@ -13276,6 +13276,23 @@ let () =
     "struct Bytes[T] { data arr[sizeof[T] * 4, u8] }\n\
      const SIZE usize = sizeof[Bytes[u16]]\n\
      fn main() i32 { return trunc[i32](SIZE) }\n";
+  semantic_accept "generic-const-argument-sizeof-type"
+    "struct ByteBlock[N const usize] { data arr[N, u8] }\n\
+     struct TypeBox[T] { value T }\n\
+     struct TypeMatrix[T] { direct ByteBlock[sizeof[T]]\n\
+     doubled ByteBlock[sizeof[T] * 2]\n\
+     wrapped ByteBlock[sizeof[TypeBox[T]]]\n\
+     nested arr[sizeof[ByteBlock[sizeof[TypeBox[T]]]], u8] }\n\
+     fn type_probe[T]() usize { direct ByteBlock[sizeof[T]] = {}\n\
+     doubled ByteBlock[sizeof[T] * 2] = {}\n\
+     wrapped ByteBlock[sizeof[TypeBox[T]]] = {}\n\
+     return len(direct.data) + len(doubled.data) * 10 + len(wrapped.data) * 100 \
+     +sizeof[ByteBlock[sizeof[TypeBox[T]]]] * 1000 + sizeof[TypeMatrix[T]] * 10000 }\n\
+     fn main() i32 { if type_probe[u16]() != 102242 { return 1 }\n\
+     if type_probe[u32]() != 204484 { return 2 }\n\
+     if sizeof[TypeMatrix[u16]] != 10 { return 3 }\n\
+     if sizeof[TypeMatrix[u32]] != 20 { return 4 }\n\
+     return 0 }\n";
   semantic_accept "size-expression-const-generic-arguments"
     "const N usize = 3\n\
      struct Ring[M const usize] { data arr[M, u8] }\n\
@@ -13599,6 +13616,49 @@ let () =
             = "export `bad` has no C declaration: arr[0, u8] contains a zero-length \
                array")
       | _ -> failwith "c-export-zero-header: expected exact rejection");
+      List.iter
+        (fun (source, expected) ->
+          write root source;
+          match Driver.run (cli_run [ "--emit-header"; root ]) with
+          | Error [ d ] -> assert (d.Diag.message = expected)
+          | _ -> failwith "c-export-generic-header: expected exact rejection")
+        [
+          ( "struct B[N const usize] { value arr[N,u8] }\n\
+             extern \"C\" { var item B[2 * 2] = {{1,2,3,4}} }\n",
+            "export `item` has no C declaration: generic struct instance `B[4]`" );
+          ( "struct G[T] { value T }\nextern \"C\" { var item G[u16] = {3} }\n",
+            "export `item` has no C declaration: generic struct instance `G[u16]`" );
+          ( "struct G[T] { value T }\n\
+             struct Outer { items arr[2,G[u16]] }\n\
+             extern \"C\" { var item Outer = {{{3},{4}}} }\n",
+            "export `item` has no C declaration: generic struct instance `G[u16]`" );
+          ( "struct B[N const usize] { value arr[N,u8] }\n\
+             extern \"C\" { fn take(x B[4]) i32 { return 0 } }\n",
+            "aggregate parameter `x` of type `B[4]` cannot be passed by value; declare \
+             `x` as `addr`" );
+          ( "struct B[N const usize] { value arr[N,u8] }\n\
+             extern \"C\" { fn make() B[4] { return {1,2,3,4} } }\n",
+            "aggregate result `B[4]` cannot be returned by value; return `void` and \
+             take the destination as an `addr` parameter" );
+        ];
+      write root
+        "use \"C\" <<C\n\
+         int access_item(void) { return item.value[0]; }\n\
+         C\n\
+         struct B[N const usize] { value arr[N,u8] }\n\
+         extern \"C\" { var item B[4] = {{1,2,3,4}} }\n";
+      (match Driver.run (cli_run [ "--emit-llvm"; root ]) with
+      | Error [ d ] ->
+          assert (
+            d.Diag.message = "C compilation failed: use of undeclared identifier 'item'"
+            && d.primary.line = 2)
+      | _ -> failwith "c-export-generic-container: expected omitted export");
+      write root
+        "struct B4 { value arr[4,u8] }\nextern \"C\" { var item B4 = {{1,2,3,4}} }\n";
+      let non_generic_header =
+        expect_ok (Driver.run (cli_run [ "--emit-header"; root ]))
+      in
+      assert (contains non_generic_header "extern struct B4 item;\n");
       write root
         "use \"C\" <<C\n\
          int exported(int x);\n\

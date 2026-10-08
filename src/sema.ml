@@ -185,7 +185,7 @@ let validate_extern_c_signature ~named_types ~ret_source ~bodyless span params c
 
 let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
     ?(c_nonnull_parameters = []) ?(c_string_parameters = [])
-    ?(c_alloc_size_parameters = []) ?(c_records = []) program =
+    ?(c_alloc_size_parameters = []) ?(c_records = []) ?specializations program =
   let global_names =
     List.filter_map
       (function Ast.Global { name; _ } -> Some name | _ -> None)
@@ -199,7 +199,9 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
            (Limits.budget_profile_name limits))
   in
   let type_node_account = create_type_node_account limits in
-  let specializations = Sema_specialization.create () in
+  let specializations =
+    Option.value specializations ~default:(Sema_specialization.create ())
+  in
   let declaration = function
     | Ast.Use _ -> None
     | Ast.Opaque { name; span } -> Some (name, Top_type, span)

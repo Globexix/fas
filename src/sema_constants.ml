@@ -369,9 +369,13 @@ and query_layout_in_state state ~named_types ~generic_structs ~globals ~evaluate
                   | Ast.Type_arg _ ->
                       Error [ Diag.error at "expected a const argument" ]
                 in
-                let* actual_ty, value =
+                let previous = !active_layout_type_bindings in
+                active_layout_type_bindings := type_bindings @ outer_type_bindings;
+                let evaluated =
                   evaluate (outer_const_bindings @ consts) expression (Some const_ty)
                 in
+                active_layout_type_bindings := previous;
+                let* actual_ty, value = evaluated in
                 if not (Hir.ty_equal actual_ty const_ty) then
                   Error
                     [

@@ -282,6 +282,13 @@ let specialization_source_name specializations kind name =
   | Some frame -> frame.template_name
   | None -> name
 
+let specialization_application_name specializations kind name =
+  match find_by_name specializations kind name with
+  | Some specialization ->
+      Option.map render_instantiation_application
+        (current_instantiation_frame specialization.trace)
+  | None -> None
+
 let error span message = Error [ Diag.error span message ]
 
 let ( let* ) result continuation =

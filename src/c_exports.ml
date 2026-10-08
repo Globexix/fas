@@ -63,39 +63,51 @@ let reserved_identifier name =
            INT_LEAST64_MIN INT_LEAST64_MAX UINT_LEAST64_MAX INT_FAST64_MIN \
            INT_FAST64_MAX UINT_FAST64_MAX")
 
-let declarations ?(reserved = []) records (program : program) =
+let declarations ?(reserved = []) ?specializations records (program : program) =
   let find name = List.find (fun (s : struct_def) -> s.name = name) program.structs in
   let identifier name =
     if reserved_identifier name then
       Some (Printf.sprintf "`%s` is a reserved C or C++ identifier" name)
     else None
   in
+  let generic_instance name =
+    Option.bind specializations (fun specializations ->
+        Sema_specialization.specialization_application_name specializations
+          Sema_specialization.Struct_specialization name)
+  in
   let rec invalid = function
     | Array (0, _) -> Some "contains a zero-length array"
     | Array (_, ty) -> invalid ty
+    | Vec (_, ty) -> invalid ty
     | Struct name -> (
-        match List.find_opt (fun r -> r.name = name) records with
-        | Some r when r.header = None ->
-            Some (Printf.sprintf "`%s` is declared only in a C container" name)
-        | Some _ -> None
-        | None ->
-            let s = find name in
-            if s.fields = [] then Some "contains an empty struct"
-            else
-              List.find_map Fun.id
-                (identifier name
-                :: List.map
-                     (fun (f : field) ->
-                       match identifier f.name with
-                       | Some _ as e -> e
-                       | None -> invalid f.ty)
-                     s.fields))
+        match generic_instance name with
+        | Some instance -> Some (Printf.sprintf "generic struct instance `%s`" instance)
+        | None -> (
+            match List.find_opt (fun r -> r.name = name) records with
+            | Some r when r.header = None ->
+                Some (Printf.sprintf "`%s` is declared only in a C container" name)
+            | Some _ -> None
+            | None ->
+                let s = find name in
+                if s.fields = [] then Some "contains an empty struct"
+                else
+                  List.find_map Fun.id
+                    (identifier name
+                    :: List.map
+                         (fun (f : field) ->
+                           match identifier f.name with
+                           | Some _ as e -> e
+                           | None -> invalid f.ty)
+                         s.fields)))
     | Handle name -> (
-        match List.find_opt (fun r -> r.name = name) records with
-        | Some r when r.header = None && not (String.contains r.spelling ' ') ->
-            Some (Printf.sprintf "`%s` is declared only in a C container" name)
-        | Some _ -> None
-        | None -> identifier name)
+        match generic_instance name with
+        | Some instance -> Some (Printf.sprintf "generic struct instance `%s`" instance)
+        | None -> (
+            match List.find_opt (fun r -> r.name = name) records with
+            | Some r when r.header = None && not (String.contains r.spelling ' ') ->
+                Some (Printf.sprintf "`%s` is declared only in a C container" name)
+            | Some _ -> None
+            | None -> identifier name))
     | _ -> None
   in
   let exports =

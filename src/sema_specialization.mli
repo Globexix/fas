@@ -89,6 +89,7 @@ val trace_result :
 
 val specialization_trace : t -> kind -> string -> instantiation_frame list
 val specialization_source_name : t -> kind -> string -> string
+val specialization_application_name : t -> kind -> string -> string option
 val mangle_specialization : string -> (string * Hir.ty * int64) list -> string
 val function_specialization_key : int -> (string * Hir.ty * int64) list -> key
 

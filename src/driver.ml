@@ -933,6 +933,7 @@ let run_unprotected ?header_output config =
           in
           let program = { Ast.items = program.items @ imported.items } in
           let* () = ast_budget (Ast.check_expanded_nodes ~limits program) in
+          let specializations = Sema_specialization.create () in
           let* hir =
             match
               Sema.check ~limits ~c_aliases:imported.aliases
@@ -940,7 +941,7 @@ let run_unprotected ?header_output config =
                 ~c_nonnull_parameters:imported.nonnull_parameters
                 ~c_string_parameters:imported.c_string_parameters
                 ~c_alloc_size_parameters:imported.alloc_size_parameters
-                ~c_records:imported.record_types program
+                ~c_records:imported.record_types ~specializations program
             with
             | Ok hir -> Ok hir
             | Error diagnostics -> Error (add_include_chains chains diagnostics)
@@ -980,7 +981,7 @@ let run_unprotected ?header_output config =
           let declarations, declaration_headers, declaration_errors =
             C_exports.declarations
               ~reserved:(List.concat_map (fun unit -> unit.c_names) !c_units)
-              records hir
+              ~specializations records hir
           in
           let declaration_headers =
             let candidates =

@@ -1331,6 +1331,12 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                       params arguments
                 | Ast.Const_param parameter :: params, argument :: arguments ->
                     let* expression = generic_const_argument span argument in
+                    let* expression =
+                      if substitutions = [] then Ok expression
+                      else
+                        resolve_expr ~values ~defer_const_structs substitutions depth
+                          expression
+                    in
                     let* () = shadowed_constant_error expression in
                     let* const_ty = source_ty_diag [] parameter.span parameter.ty in
                     let* actual_ty, value =
@@ -1443,14 +1449,53 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         Ok (Ast.aggregate_length expression length_info.span)
   and resolve_expr ?(values = []) ?(defer_const_structs = false) substitutions depth
       expression =
+    let rec resolve_layout_parts span = function
+      | Ast.Named_type (name, _) as ty ->
+          Ok (Option.value ~default:ty (List.assoc_opt name substitutions))
+      | Ast.Handle ty ->
+          let* ty = resolve_layout_parts span ty in
+          Ok (Ast.Handle ty)
+      | (Ast.Array (length, ty) | Ast.Vec (length, ty)) as aggregate ->
+          let* expression =
+            resolve_expr ~values ~defer_const_structs substitutions depth
+              length.Ast.expression
+          in
+          let* ty = resolve_layout_parts span ty in
+          let length = { length with Ast.expression } in
+          Ok
+            (match aggregate with
+            | Ast.Array _ -> Ast.Array (length, ty)
+            | _ -> Ast.Vec (length, ty))
+      | Ast.Applied_type (name, arguments, application_span) ->
+          let resolve_argument = function
+            | Ast.Type_arg ty | Ast.Type_or_index ty ->
+                let* ty = resolve_layout_parts span ty in
+                Ok (Ast.Type_arg ty)
+            | Ast.Const_arg expression ->
+                if substitutions = [] then Ok (Ast.Const_arg expression)
+                else
+                  let* expression =
+                    resolve_expr ~values ~defer_const_structs substitutions depth
+                      expression
+                  in
+                  Ok (Ast.Const_arg expression)
+            | Ast.Name_arg (name, name_span) as argument -> (
+                match List.assoc_opt name substitutions with
+                | None -> Ok argument
+                | Some ty ->
+                    let* ty = resolve_layout_parts name_span ty in
+                    Ok (Ast.Type_arg ty))
+          in
+          let* arguments = Result_list.map resolve_argument arguments in
+          Ok (Ast.Applied_type (name, arguments, application_span))
+      | ty -> Ok ty
+    in
     let resolve_layout_type span ty =
-      let ty = substitute_validation_type substitutions ty in
-      let* _ =
-        if substitutions = [] then
-          resolve_ty ~values ~defer_const_structs substitutions depth span ty
-        else Ok ty
-      in
-      Ok ty
+      let* ty = resolve_layout_parts span ty in
+      if substitutions = [] then
+        let* _ = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
+        Ok ty
+      else Ok ty
     in
     match expression with
     | (Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Ident _) as

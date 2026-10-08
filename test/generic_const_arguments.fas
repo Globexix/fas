@@ -1,0 +1,25 @@
+use "C" "generic_const_arguments_oracle.h"
+
+struct ByteBlock[N const usize] { data arr[N, u8] }
+struct TypeBox[T] { value T }
+struct TypeMatrix[T] {
+  direct ByteBlock[sizeof[T]]
+  doubled ByteBlock[sizeof[T] * 2]
+  wrapped ByteBlock[sizeof[TypeBox[T]]]
+  nested arr[sizeof[ByteBlock[sizeof[TypeBox[T]]]], u8]
+}
+
+fn type_probe[T]() usize {
+  direct ByteBlock[sizeof[T]] = {}
+  doubled ByteBlock[sizeof[T] * 2] = {}
+  wrapped ByteBlock[sizeof[TypeBox[T]]] = {}
+  return len(direct.data) + len(doubled.data) * 10 + len(wrapped.data) * 100 + sizeof[ByteBlock[sizeof[TypeBox[T]]]] * 1000 + sizeof[TypeMatrix[T]] * 10000
+}
+
+fn main() i32 {
+  if type_probe[u16]() != oracle_probe_u16() { return 1 }
+  if type_probe[u32]() != oracle_probe_u32() { return 2 }
+  if sizeof[TypeMatrix[u16]] != oracle_matrix_u16() { return 3 }
+  if sizeof[TypeMatrix[u32]] != oracle_matrix_u32() { return 4 }
+  return 0
+}
