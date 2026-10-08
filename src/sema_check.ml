@@ -2416,7 +2416,7 @@ and check_expr_inner ?destination (c : context) expected expression =
           error s
             "`splat` needs a vector destination or vector operand to determine its \
              lane count")
-  | Ast.Ternary (q, a, b, s) -> (
+  | Ast.Ternary (q, a, b, s) ->
       let* tq = check_expr c None q in
       if Hir.expr_ty tq <> Hir.Bool then
         Error [ Sema_types.condition_error "if" q (Hir.expr_ty tq) ]
@@ -2462,33 +2462,46 @@ and check_expr_inner ?destination (c : context) expected expression =
         Sema_flow.restore c.flow
           (Sema_flow.merge_values_into c.flow initialized value_paths);
         let at = Hir.expr_ty ta and bt = Hir.expr_ty tb in
-        let* () =
-          match expected with
-          | Some target when scalar_conversion_pair at target ->
-              let* () =
-                ensure_expected ~context:"if-expression branch" ~expression:a at target
-                  (Ast.expr_span a)
-              in
-              ensure_expected ~context:"if-expression branch" ~expression:b bt target
-                (Ast.expr_span b)
-          | _ -> Ok ()
+        let* result_type, left_widen, right_widen =
+          if Option.is_none expected then
+            unify_if_branches a at b bt
+            |> Result.map_error (fun diagnostic -> [ diagnostic ])
+          else
+            let* () =
+              match expected with
+              | Some target when scalar_conversion_pair at target ->
+                  let* () =
+                    ensure_expected ~context:"if-expression branch" ~expression:a at
+                      target (Ast.expr_span a)
+                  in
+                  ensure_expected ~context:"if-expression branch" ~expression:b bt
+                    target (Ast.expr_span b)
+              | _ -> Ok ()
+            in
+            let result_ty =
+              if equal at bt then Some at
+              else if compatible at bt then Some bt
+              else if compatible bt at then Some at
+              else None
+            in
+            match result_ty with
+            | None ->
+                error (Ast.expr_span b)
+                  (Printf.sprintf
+                     "if-expression branches have different types: `%s` and `%s`"
+                     (Sema_types.diagnostic_ty_name at)
+                     (Sema_types.diagnostic_ty_name bt))
+            | Some _ when at = Hir.Void || bt = Hir.Void ->
+                error s "if-expression branches cannot have void type"
+            | Some ty -> Ok (ty, None, None)
         in
-        let result_ty =
-          if equal at bt then Some at
-          else if compatible at bt then Some bt
-          else if compatible bt at then Some at
-          else None
+        let widen expression value = function
+          | Some kind -> Hir.Cast (kind, value, result_type, Ast.expr_span expression)
+          | None -> value
         in
-        match result_ty with
-        | None ->
-            error (Ast.expr_span b)
-              (Printf.sprintf
-                 "if-expression branches have different types: `%s` and `%s`"
-                 (Sema_types.diagnostic_ty_name at)
-                 (Sema_types.diagnostic_ty_name bt))
-        | Some _ when at = Hir.Void || bt = Hir.Void ->
-            error s "if-expression branches cannot have void type"
-        | Some ty -> Ok (Hir.Ternary (tq, ta, tb, ty, s)))
+        Ok
+          (Hir.Ternary
+             (tq, widen a ta left_widen, widen b tb right_widen, result_type, s))
   | Ast.Array_lit (entries, s) -> (
       match expected with
       | Some (Hir.Vec (lanes, element) as literal_type) ->

@@ -7340,6 +7340,51 @@ let () =
      fn choose(a u8, b u16) u32 { value u32 = if true { a } else { b }; return value }\n\
      fn dispatch(value u64) u8 { switch value { case SMALL: return 1; default: return \
      0 } }\n";
+  let unified_if_source =
+    "fn size(c bool, l u16, o u32, off u32) usize { return zext[usize](if c { l } else \
+     { o - off }) }\n"
+  in
+  semantic_accept "if-branch-lossless-widening" unified_if_source;
+  let explicit_if_source =
+    "fn size(c bool, l u16, o u32, off u32) usize { return zext[usize](if c { \
+     zext[u32](l) } else { o - off }) }\n"
+  in
+  if llvm_of unified_if_source <> llvm_of explicit_if_source then
+    failwith "if-branch-widening-llvm: implicit and explicit forms differ";
+  semantic_accept "if-branch-cast-operands"
+    "fn casts(c bool, u u16, U u32, x i16, X i32) void {\n\
+     zero u64 = zext[u64](if c { u } else { U })\n\
+     sign i64 = sext[i64](if c { x } else { X })\n\
+     low u8 = trunc[u8](if c { u } else { U })\n\
+     bits i32 = bitcast[i32](if c { u } else { U })\n\
+     return\n\
+     }\n";
+  semantic_accept "if-branch-comparison-operand"
+    "fn less(c bool, a u16, w u32) bool { return (if c { a } else { w }) < w }\n";
+  semantic_accept "if-branch-nested-unification"
+    "fn nested(c bool, d bool, a u8, b u16, w u32) u32 { return if c { if d { a } else \
+     { b } } else { w } }\n";
+  semantic_error "if-branch-no-common-type" "different types"
+    "fn bad(c bool, u u32, s i32) i64 { return sext[i64](if c { u } else { s }) }\n";
+  semantic_accept "if-branch-no-common-type-explicit-twin"
+    "fn good(c bool, u u32, s i32) i64 { return if c { zext[i64](u) } else { \
+     sext[i64](s) } }\n";
+  semantic_error "if-branch-narrow-arithmetic" "computed in `u16` and may wrap"
+    "fn bad(c bool, a u16, b u16, w u32) u64 { return zext[u64](if c { a + b } else { \
+     w }) }\n";
+  semantic_accept "if-branch-narrow-arithmetic-explicit-twin"
+    "fn good(c bool, a u16, b u16, w u32) u64 { return zext[u64](if c { zext[u32](a) + \
+     b } else { w }) }\n";
+  semantic_error "if-branch-bool-integer" "different types"
+    "fn bad(c bool, w u32) u64 { return zext[u64](if c { true } else { w }) }\n";
+  semantic_accept "if-branch-bool-integer-explicit-twin"
+    "fn good(c bool, w u32) u64 { return zext[u64](if c { zext[u32](c) } else { w }) }\n";
+  semantic_accept "if-branch-constant-unification"
+    "const F bool = true\n\
+     const A u8 = 0x80\n\
+     const B u16 = 0x100\n\
+     const K u64 = zext[u64](if F { A } else { B })\n\
+     fn value() u64 { return zext[u64](if F { A } else { B }) }\n";
   semantic_accept "widening-size-slot"
     "const BUFFERSIZE u16 = 0x1000\n\
      fn buffer() void { data arr[BUFFERSIZE / sizeof[i32], u8] = {}\n\

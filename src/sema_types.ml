@@ -909,6 +909,39 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression actual 
          (diagnostic_ty_name expected))
     |> fun diagnostic -> Error [ diagnostic ]
 
+let unify_if_branches left_expression left_type right_expression right_type =
+  let narrow_error expression actual target =
+    match
+      ensure_expected ~context:"if-expression branch" ~expression actual target
+        (Ast.expr_span expression)
+    with
+    | Error [ diagnostic ] -> diagnostic
+    | _ ->
+        Diag.error (Ast.expr_span expression) "if-expression branch cannot be widened"
+  in
+  let int_branches = Sema_numeric.is_int left_type && Sema_numeric.is_int right_type in
+  let common =
+    if int_branches then common_integer_type left_type right_type
+    else if compatible left_type right_type then Some left_type
+    else None
+  in
+  match common with
+  | None ->
+      Error
+        (Diag.error
+           (Ast.expr_span right_expression)
+           (Printf.sprintf "if-expression branches have different types: `%s` and `%s`"
+              (diagnostic_ty_name left_type)
+              (diagnostic_ty_name right_type)))
+  | Some result_type ->
+      let left_widen = implicit_integer_widen left_type result_type
+      and right_widen = implicit_integer_widen right_type result_type in
+      if Option.is_some left_widen && narrow_arithmetic_result left_expression then
+        Error (narrow_error left_expression left_type result_type)
+      else if Option.is_some right_widen && narrow_arithmetic_result right_expression
+      then Error (narrow_error right_expression right_type result_type)
+      else Ok (result_type, left_widen, right_widen)
+
 let binary_operator_name = function
   | Ast.Add -> "+"
   | Ast.Sub -> "-"

@@ -808,6 +808,29 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
           ~globals ?resolve consts None ~check_only ~validate_dead c
       in
       if ct <> Hir.Bool then Error [ Sema_types.condition_error "if" c ct ]
+      else if Option.is_none expected && validate_dead then
+        let branch expression selected =
+          const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
+            ~globals ?resolve consts None ~check_only:(check_only || not selected)
+            ~validate_dead expression
+        in
+        let* left_type, left_value = branch a (cv <> 0L) in
+        let* right_type, right_value = branch b (cv = 0L) in
+        let* result_type, left_widen, right_widen =
+          unify_if_branches a left_type b right_type
+          |> Result.map_error (fun diagnostic -> [ diagnostic ])
+        in
+        let selected_type, selected_value, selected_widen =
+          if cv <> 0L then (left_type, left_value, left_widen)
+          else (right_type, right_value, right_widen)
+        in
+        let value =
+          Option.fold ~none:selected_value
+            ~some:(fun kind ->
+              widen_integer_value kind selected_type result_type selected_value)
+            selected_widen
+        in
+        Ok (result_type, value)
       else if cv <> 0L then
         let* at, av =
           const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths

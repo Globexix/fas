@@ -74,6 +74,13 @@ val implicit_integer_widen : Hir.ty -> Hir.ty -> Ast.cast_kind option
 val common_integer_type : Hir.ty -> Hir.ty -> Hir.ty option
 val narrow_arithmetic_result : Ast.expr -> bool
 
+val unify_if_branches :
+  Ast.expr ->
+  Hir.ty ->
+  Ast.expr ->
+  Hir.ty ->
+  (Hir.ty * Ast.cast_kind option * Ast.cast_kind option, Diag.t) result
+
 val convert_expected_kind :
   ?expression:Ast.expr -> Hir.ty -> Hir.ty -> Ast.cast_kind option
 
