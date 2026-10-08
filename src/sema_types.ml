@@ -628,6 +628,9 @@ let integer_literal_vector_argument_error name expression expected =
               name (diagnostic_ty_name expected)))
   | _ -> None
 
+let integer_maximum ty =
+  Sema_numeric.literal_limit ~negative:false ty |> Sema_numeric.unsigned_int64_to_string
+
 let cast_error ?expression kind source destination span =
   let name = cast_name kind in
   let source_name, destination_name =
@@ -782,8 +785,16 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression actual 
         when (not (Sema_numeric.is_unsigned actual))
              && Sema_numeric.is_unsigned expected ->
           "negative values change meaning"
-      | Hir.Int Hir.U64, Hir.Int Hir.U32 -> "values above 4294967295 would be lost"
-      | Hir.Int _, Hir.Int _ -> "values may be lost or change meaning"
+      | Hir.Int _, Hir.Int _ when Sema_numeric.is_unsigned actual ->
+          Printf.sprintf "values above %s %s" (integer_maximum expected)
+            (if
+               source_bits = destination_bits && not (Sema_numeric.is_unsigned expected)
+             then "change meaning"
+             else "would be lost")
+      | Hir.Int _, Hir.Int _ ->
+          Printf.sprintf "values outside %Ld..%s would be lost"
+            (Int64.neg (Sema_numeric.literal_limit ~negative:true expected))
+            (integer_maximum expected)
       | Hir.Bool, Hir.Int _ | Hir.Int _, Hir.Bool ->
           "bool and integer values use different representations"
       | Hir.Addr, Hir.Int _ -> "addresses convert to integers with `addr_bits`"

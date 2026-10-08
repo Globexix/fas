@@ -1114,7 +1114,7 @@ let () =
     "const Size u64 = sizeof[u8]\nfn size() u64 { return Size }\n"
   in
   semantic_pin "const-sizeof-returns-usize" const_sizeof_mismatch 1 18 6
-    "cannot use `usize` as `u64`: values may be lost or change meaning"
+    "cannot use `usize` as `u64`: values above 18446744073709551615 would be lost"
     (Some "write `bitcast[u64](sizeof[u8])`");
   let usize_specialization =
     llvm_of
@@ -5719,7 +5719,7 @@ let () =
         fn value[N const u8]() u8 { return N }\n\
         fn test() u8 { return value[NARROW]() }\n");
   semantic_error "forward-constant-type-preservation"
-    "cannot use `u16` as `u8`: values may be lost or change meaning"
+    "cannot use `u16` as `u8`: values above 255 would be lost"
     "const NARROW u8 = WIDE\nconst WIDE u16 = 7\n";
   semantic_error "forward-constant-cycle" "cyclic constant dependency"
     "const LEFT usize = RIGHT\nconst RIGHT usize = LEFT\n";
@@ -6169,7 +6169,7 @@ let () =
     "struct Buffer[T, N const usize] { data arr[N, T] }\n\
      fn test(value Buffer[u8, u16]) i64 { return 0 }\n";
   semantic_error "const-generic-struct-argument-type"
-    "cannot use `usize` as `u8`: values may be lost or change meaning"
+    "cannot use `usize` as `u8`: values above 255 would be lost"
     "struct Buffer[T, N const u8] { data arr[N, T] }\n\
      fn test(value Buffer[u8, sizeof[u8]]) i64 { return 0 }\n";
   semantic_message "const-generic-struct-negative-length"
@@ -7289,7 +7289,7 @@ let () =
   let argument_mismatch_column = String.length "fn f(x u16) void { put(" + 1 in
   let argument_mismatch_expected =
     expected_diagnostic ~line_number:2 argument_mismatch_line argument_mismatch_column 1
-      "cannot pass `u16` as `u8`: values may be lost or change meaning"
+      "cannot pass `u16` as `u8`: values above 255 would be lost"
       "keep the low bits with `trunc[u8](x)`"
   in
   if semantic_render argument_mismatch_source <> argument_mismatch_expected then
@@ -7299,7 +7299,7 @@ let () =
   let initializer_mismatch_column = String.length "fn f(x u16) u8 { value u8 = " + 1 in
   let initializer_mismatch_expected =
     expected_diagnostic initializer_mismatch_line initializer_mismatch_column 1
-      "cannot assign `u16` to `u8`: values may be lost or change meaning"
+      "cannot assign `u16` to `u8`: values above 255 would be lost"
       "keep the low bits with `trunc[u8](x)`"
   in
   if semantic_render initializer_mismatch_source <> initializer_mismatch_expected then
@@ -7345,6 +7345,27 @@ let () =
     (Some "keep the low bits with `trunc[u32](x)`");
   semantic_accept "widening-narrowing-explicit-twin"
     "fn f(x u64) u32 { value u32 = trunc[u32](x); return value }\n";
+  semantic_pin "widening-signed-narrowing-diagnostic"
+    "fn f(x i64) i32 { value i32 = x; return value }\n" 1
+    (String.length "fn f(x i64) i32 { value i32 = " + 1)
+    1
+    "cannot assign `i64` to `i32`: values outside -2147483648..2147483647 would be lost"
+    (Some "keep the low bits with `trunc[i32](x)`");
+  conversion_help_twin "signed-narrowing-help-compiles"
+    "fn f(x i64) i32 { value i32 = x; return value }\n" "x" "trunc[i32](x)"
+    "keep the low bits with `trunc[i32](x)`";
+  semantic_pin "widening-unsigned-to-signed-narrowing-diagnostic"
+    "fn f(x u16) i8 { return x }\n" 1
+    (String.length "fn f(x u16) i8 { return " + 1)
+    1 "cannot return `u16` as `i8`: values above 127 would be lost"
+    (Some "keep the low bits with `trunc[i8](x)`");
+  semantic_pin "widening-unsigned-to-signed-same-width-diagnostic"
+    "fn f(x u32) i32 { return x }\n" 1
+    (String.length "fn f(x u32) i32 { return " + 1)
+    1 "cannot return `u32` as `i32`: values above 2147483647 change meaning"
+    (Some "write `bitcast[i32](x)`");
+  conversion_help_twin "unsigned-to-signed-help-compiles"
+    "fn f(x u32) i32 { return x }\n" "x" "bitcast[i32](x)" "write `bitcast[i32](x)`";
   let widening_sign_source =
     "fn put(x u32) void { return }\nfn f(n i32) void { put(n); return }\n"
   in
