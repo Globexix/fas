@@ -1,0 +1,24 @@
+struct SlotBox[N const usize] { items arr[N, u8] }
+
+fn generic_count[N const usize]() usize { return N }
+
+extern "C" {
+  fn array_slot_count() usize {
+    values arr[100000 * 100000 / 1000000000, u8] = {}
+    return len(values)
+  }
+
+  fn generic_argument_count() usize {
+    return generic_count[100000 * 100000 / 1000000000]()
+  }
+
+  fn generic_struct_count() usize {
+    return sizeof[SlotBox[100000 * 100000 / 1000000000]]
+  }
+
+  fn large_literal_size() usize { return sizeof[arr[3000000000 + 0, u8]] }
+  fn shifted_literal_size() usize { return sizeof[arr[1 << 33, u8]] }
+  fn if_expression_size() usize {
+    return sizeof[arr[if true { 7 } else { 300 }, u8]]
+  }
+}

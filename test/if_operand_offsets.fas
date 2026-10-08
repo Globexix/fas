@@ -1,0 +1,13 @@
+extern "C" {
+  fn offset_if(p addr, c bool, x i8, y i8) addr { return p + (if c { x } else { y }) }
+  fn offset_plain(p addr, x i8) addr { return p + x }
+  fn offset_scaled_if(p addr, c bool, x u8) addr {
+    return p + (if c { x } else { x }) * 200
+  }
+  fn offset_scaled_plain(p addr, x u8) addr { return p + x * 200 }
+  fn offset_compound_if(p addr, c bool, x i8, y i8) addr {
+    q addr = p
+    q += if c { x } else { y }
+    return q
+  }
+}

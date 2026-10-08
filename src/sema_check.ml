@@ -1302,26 +1302,36 @@ let rec unresolved_vector_elements c expression =
   | Ast.Binary ((Ast.Shl | Ast.Shr), _, _, _) -> false
   | _ -> false
 
+let rec is_if_operand = function
+  | Ast.Ternary _ -> true
+  | Ast.Parenthesized (expression, _) -> is_if_operand expression
+  | _ -> false
+
 let operand_type_hint c operation expected left right =
-  match operation with
-  | Ast.Add | Ast.Sub -> (
-      match expected with Some Hir.Addr -> Some (Hir.Int Hir.Usize) | e -> e)
-  | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or | Ast.Bit_xor -> expected
-  | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
-      match expected with
-      | Some (Hir.Vec (lanes, _))
-        when unresolved_vector_elements c left && unresolved_vector_elements c right ->
-          Some (Hir.Vec (lanes, Hir.Int Hir.I32))
-      | _ -> None)
-  | Ast.And | Ast.Or -> None
-  | Ast.Shl | Ast.Shr -> None
+  if is_if_operand left || is_if_operand right then None
+  else
+    match operation with
+    | Ast.Add | Ast.Sub -> (
+        match expected with Some Hir.Addr -> Some (Hir.Int Hir.Usize) | e -> e)
+    | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or | Ast.Bit_xor -> expected
+    | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
+        match expected with
+        | Some (Hir.Vec (lanes, _))
+          when unresolved_vector_elements c left && unresolved_vector_elements c right
+          ->
+            Some (Hir.Vec (lanes, Hir.Int Hir.I32))
+        | _ -> None)
+    | Ast.And | Ast.Or -> None
+    | Ast.Shl | Ast.Shr -> None
 
 let contextual_peer_type c operation peer operand =
-  match (peer, unresolved_shape_of c operand, operation) with
-  | Hir.Addr, Some Unresolved_null, (Ast.Eq | Ast.Ne) -> Some Hir.Addr
-  | Hir.Addr, _, _ -> Some (Hir.Int Hir.Usize)
-  | Hir.Handle _, Some Unresolved_int, _ -> None
-  | peer, _, _ -> Some peer
+  if is_if_operand operand then None
+  else
+    match (peer, unresolved_shape_of c operand, operation) with
+    | Hir.Addr, Some Unresolved_null, (Ast.Eq | Ast.Ne) -> Some Hir.Addr
+    | Hir.Addr, _, _ -> Some (Hir.Int Hir.Usize)
+    | Hir.Handle _, Some Unresolved_int, _ -> None
+    | peer, _, _ -> Some peer
 
 let select_value_arg span payload =
   match payload with
@@ -1944,7 +1954,7 @@ and check_expr_inner ?destination (c : context) expected expression =
       let* te =
         check_expr ~allow_widen:false c
           (match (op, expected) with
-          | (Ast.Neg | Ast.Bit_not), _ -> expected
+          | (Ast.Neg | Ast.Bit_not), _ -> if is_if_operand e then None else expected
           | Ast.Not, Some (Hir.Vec (_, Hir.Bool)) -> expected
           | Ast.Not, _ -> None)
           e
@@ -2038,7 +2048,8 @@ and check_expr_inner ?destination (c : context) expected expression =
       else if op = Ast.Shl || op = Ast.Shr then
         let* a =
           check_expr ~allow_widen:false c
-            (match expected with Some (Hir.Int _) -> expected | _ -> None)
+            (if is_if_operand l then None
+             else match expected with Some (Hir.Int _) -> expected | _ -> None)
             l
         in
         let at = Hir.expr_ty a in
@@ -4501,7 +4512,11 @@ and check_stmt (c : context) = function
                (Sema_types.diagnostic_ty_name et))
         else Ok ()
       in
-      let* v = check_expr c (if is_shift || is_addr_step then None else Some et) e in
+      let* v =
+        check_expr c
+          (if is_shift || is_addr_step || is_if_operand e then None else Some et)
+          e
+      in
       let* () =
         if is_shift then
           let* () =

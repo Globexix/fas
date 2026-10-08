@@ -65,26 +65,35 @@ let rec unresolved_vector_elements expression =
       unresolved_vector_elements left && unresolved_vector_elements right
   | _ -> false
 
+let rec is_if_operand = function
+  | Ast.Ternary _ -> true
+  | Ast.Parenthesized (expression, _) -> is_if_operand expression
+  | _ -> false
+
 let operand_type_hint operation expected left right =
-  match operation with
-  | Ast.Add | Ast.Sub -> (
-      match expected with Some Hir.Addr -> Some (Hir.Int Hir.Usize) | e -> e)
-  | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or | Ast.Bit_xor -> expected
-  | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
-      match expected with
-      | Some (Hir.Vec (lanes, _))
-        when unresolved_vector_elements left && unresolved_vector_elements right ->
-          Some (Hir.Vec (lanes, Hir.Int Hir.I32))
-      | _ -> None)
-  | Ast.And | Ast.Or -> None
-  | Ast.Shl | Ast.Shr -> None
+  if is_if_operand left || is_if_operand right then None
+  else
+    match operation with
+    | Ast.Add | Ast.Sub -> (
+        match expected with Some Hir.Addr -> Some (Hir.Int Hir.Usize) | e -> e)
+    | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or | Ast.Bit_xor -> expected
+    | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
+        match expected with
+        | Some (Hir.Vec (lanes, _))
+          when unresolved_vector_elements left && unresolved_vector_elements right ->
+            Some (Hir.Vec (lanes, Hir.Int Hir.I32))
+        | _ -> None)
+    | Ast.And | Ast.Or -> None
+    | Ast.Shl | Ast.Shr -> None
 
 let contextual_peer_type operation peer operand =
-  match (peer, unresolved_shape_of operand, operation) with
-  | Hir.Addr, Some Unresolved_null, (Ast.Eq | Ast.Ne) -> Some Hir.Addr
-  | Hir.Addr, _, _ -> Some (Hir.Int Hir.Usize)
-  | Hir.Handle _, Some Unresolved_int, _ -> None
-  | peer, _, _ -> Some peer
+  if is_if_operand operand then None
+  else
+    match (peer, unresolved_shape_of operand, operation) with
+    | Hir.Addr, Some Unresolved_null, (Ast.Eq | Ast.Ne) -> Some Hir.Addr
+    | Hir.Addr, _, _ -> Some (Hir.Int Hir.Usize)
+    | Hir.Handle _, Some Unresolved_int, _ -> None
+    | peer, _, _ -> Some peer
 
 let sat_apply name kind x y =
   let bits = int_bits kind in
@@ -171,8 +180,38 @@ let sat_or_mulhi name kind x y =
 let active_layout_type_bindings = ref []
 and active_array_length_queries = ref []
 
-let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate consts span
-    ty =
+type layout_query_state = {
+  definitions : Hir.struct_def list ref;
+  instances : (string, string) Hashtbl.t;
+  next_instance : int ref;
+  active : (string * string) list ref;
+}
+
+let active_layout_query_state = ref None
+
+let rec query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate consts
+    span ty =
+  let owns_state, state =
+    match !active_layout_query_state with
+    | Some state -> (false, state)
+    | None ->
+        ( true,
+          {
+            definitions = ref structs;
+            instances = Hashtbl.create 16;
+            next_instance = ref 0;
+            active = ref [];
+          } )
+  in
+  if owns_state then active_layout_query_state := Some state;
+  Fun.protect
+    ~finally:(fun () -> if owns_state then active_layout_query_state := None)
+    (fun () ->
+      query_layout_in_state state ~named_types ~generic_structs ~globals ~evaluate
+        consts span ty)
+
+and query_layout_in_state state ~named_types ~generic_structs ~globals ~evaluate consts
+    span ty =
   let source_int = function
     | Ast.U8 -> Hir.U8
     | U16 -> U16
@@ -193,11 +232,14 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
         | _ -> None)
       generic_structs
   in
-  let definitions = ref structs in
-  let instances = Hashtbl.create 16 in
-  let next_instance = ref 0 in
-  let active = ref [] in
+  let definitions = state.definitions in
+  let instances = state.instances in
+  let next_instance = state.next_instance in
+  let active = state.active in
   let add_error message = Error [ Diag.error span message ] in
+  let cyclic_dependency name =
+    add_error (Printf.sprintf "cyclic constant dependency involving `%s`" name)
+  in
   let rec resolve_type type_bindings const_bindings at = function
     | Ast.Bool -> Ok Hir.Bool
     | Ast.Void -> Ok Hir.Void
@@ -363,7 +405,15 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
                    params)
           in
           match Hashtbl.find_opt instances key with
+          | Some instance
+            when List.exists
+                   (fun (active_instance, _) -> active_instance = instance)
+                   !active ->
+              cyclic_dependency name
           | Some instance -> Ok instance
+          | None when List.exists (fun (_, active_name) -> active_name = name) !active
+            ->
+              cyclic_dependency name
           | None ->
               let instance = Printf.sprintf "__const_layout_%d" !next_instance in
               incr next_instance;
@@ -542,16 +592,18 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
   | Ast.Unary (Ast.Neg, e, s) ->
       let* t, v =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
-          ~globals ?resolve consts expected ~check_only ~validate_dead
-          ~allow_widen:false e
+          ~globals ?resolve consts
+          (if is_if_operand e then None else expected)
+          ~check_only ~validate_dead ~allow_widen:false e
       in
       if not (is_int t) then error s "unary minus requires an integer"
       else Ok (t, mask_value t (Int64.neg v))
   | Ast.Unary (Ast.Bit_not, e, s) ->
       let* t, v =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
-          ~globals ?resolve consts expected ~check_only ~validate_dead
-          ~allow_widen:false e
+          ~globals ?resolve consts
+          (if is_if_operand e then None else expected)
+          ~check_only ~validate_dead ~allow_widen:false e
       in
       if not (is_int t) then error s "bitwise not requires an integer"
       else Ok (t, mask_value t (Int64.lognot v))
@@ -599,8 +651,9 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
       let* lt, lv =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
           ~globals ?resolve consts
-          (match expected with Some (Hir.Int _) -> expected | _ -> None)
-          ~check_only ~validate_dead l
+          (if is_if_operand l then None
+           else match expected with Some (Hir.Int _) -> expected | _ -> None)
+          ~check_only ~validate_dead ~allow_widen:false l
       in
       let* rt, rv =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
@@ -674,6 +727,7 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
             in
             Ok ((lt, lv), (rt, rv))
       in
+      let original_lt = lt and original_rt = rt in
       let lt, lv, rt, rv =
         match
           if is_int lt && is_int rt then Sema_types.common_integer_type lt rt else None
@@ -739,7 +793,8 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
       in
       let* result_ty =
         binary_result_type ~left_expression:l ~right_expression:r
-          ~comparison_chain_rewrite_valid s op lt rt
+          ?result_expected:expected ~comparison_chain_rewrite_valid s op original_lt
+          original_rt
       in
       if (not check_only) && (op = Ast.Div || op = Ast.Rem) && rv = 0L then
         error s "division by zero in constant expression"
@@ -1029,6 +1084,11 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
       let* vals =
         Result_list.map
           (fun a ->
+            let expected =
+              match a with
+              | Ast.Ternary _ | Ast.Parenthesized (Ast.Ternary _, _) -> None
+              | _ -> expected
+            in
             const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
               ~globals ?resolve consts expected ~check_only ~validate_dead
               ~allow_widen:false a)

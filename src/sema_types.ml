@@ -389,10 +389,7 @@ let aggregate_length_value kind span ty value =
       error span (Printf.sprintf "%s length `%Ld` is too large" kind value)
     else Ok (Int64.to_int value)
 
-let rec aggregate_length_expected = function
-  | Ast.Int_lit _ -> Some (Hir.Int Hir.Usize)
-  | Ast.Parenthesized (expression, _) -> aggregate_length_expected expression
-  | _ -> None
+let aggregate_length_expected _ = Some (Hir.Int Hir.Usize)
 
 let remap_length_cycle span = function
   | Error [ diagnostic ]
@@ -1132,6 +1129,17 @@ let binary_result_type ?left_expression ?right_expression ?result_expected
               left_expr right_expr
         | _ -> None
       in
+      let help =
+        match (result_expected, help) with
+        | Some expected, Some _ when not (is_comparison operation) ->
+            let common = Hir.Int Hir.I64 in
+            if
+              Hir.ty_equal expected common
+              || Option.is_some (implicit_integer_widen common expected)
+            then help
+            else None
+        | _ -> help
+      in
       let message =
         if is_comparison operation then
           Printf.sprintf "cannot compare `%s` with `%s`: no type holds both"
@@ -1148,6 +1156,20 @@ let binary_result_type ?left_expression ?right_expression ?result_expected
          && Sema_numeric.is_int left && Sema_numeric.is_int right
          && Option.is_some (common_integer_type left right) -> (
       let common = Option.get (common_integer_type left right) in
+      let check_narrow expression actual =
+        match expression with
+        | Some expression
+          when Option.is_some (implicit_integer_widen actual common)
+               && narrow_arithmetic_result expression ->
+            ensure_expected ~expression actual common (Ast.expr_span expression)
+        | _ -> Ok ()
+      in
+      let* () =
+        if is_comparison operation then
+          let* () = check_narrow left_expression left in
+          check_narrow right_expression right
+        else Ok ()
+      in
       match operation with
       | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> Ok Hir.Bool
       | _ -> Ok common)

@@ -1,0 +1,18 @@
+const A u8 = 1
+const CLZ u32 = clz(if true { A } else { A })
+const ROTR u32 = rotr(if true { A } else { A }, 1)
+const SAT u32 = add_sat(if true { A } else { A }, A)
+extern "C" {
+  fn oracle_clz() u32
+  fn oracle_rotr() u32
+  fn oracle_sat() u32
+}
+fn main() i32 {
+  runtime_clz u32 = clz(if true { A } else { A })
+  runtime_rotr u32 = rotr(if true { A } else { A }, 1)
+  runtime_sat u32 = add_sat(if true { A } else { A }, A)
+  if CLZ != oracle_clz() || runtime_clz != oracle_clz() { return 1 }
+  if ROTR != oracle_rotr() || runtime_rotr != oracle_rotr() { return 2 }
+  if SAT != oracle_sat() || runtime_sat != oracle_sat() { return 3 }
+  return 0
+}

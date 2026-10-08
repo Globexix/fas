@@ -327,6 +327,28 @@ let semantic_render text =
   let diagnostics = semantic_diagnostics text in
   Diag.render_all ~source:(Some src) diagnostics
 
+let semantic_same_error name left right =
+  let diagnostic text =
+    match semantic_diagnostics text with
+    | [ diagnostic ] ->
+        let message = diagnostic.Diag.message in
+        let message =
+          match positions message " is computed in " with
+          | position :: _ ->
+              String.sub message position (String.length message - position)
+          | [] -> message
+        in
+        (message, Option.is_some diagnostic.help)
+    | diagnostics ->
+        failwith
+          (name ^ ": expected one diagnostic, got "
+          ^ Diag.render_all ~source:(Some (source text)) diagnostics)
+  in
+  if diagnostic left <> diagnostic right then
+    failwith
+      (name ^ ": if-expression diagnostic differed from plain-operand diagnostic\n"
+     ^ semantic_render left ^ semantic_render right)
+
 let semantic_pin name text line column width message help =
   match semantic_diagnostics text with
   | [ diagnostic ]
@@ -376,6 +398,19 @@ let semantic_accept name text =
   | Error diagnostics ->
       failwith
         (name ^ ": unexpected rejection: " ^ Diag.render_all ~source:None diagnostics)
+
+let semantic_constant name expected text =
+  incr checks_run;
+  let program = expect_ok (Parser.parse (source text)) |> Sema.check |> expect_ok in
+  match
+    List.find_opt
+      (fun (constant : Hir.const_def) -> constant.name = name)
+      program.consts
+  with
+  | Some { bits; _ } when bits = expected -> ()
+  | Some { bits; _ } ->
+      failwith (Printf.sprintf "%s: expected %Ld, got %Ld" name expected bits)
+  | None -> failwith ("missing constant " ^ name)
 
 let conversion_help_twin name text original replacement help =
   match semantic_diagnostics text with
@@ -809,6 +844,52 @@ let () =
   semantic_error "constant-dead-ternary-type" "cannot use `bool` as `i32`"
     "const Invalid i32 = if true { 1 } else { false }\n\
      fn main() i32 { return Invalid }\n";
+  let const_builtin_if_source =
+    "const A u8 = 1\n\
+     const CLZ u32 = clz(if true { A } else { A })\n\
+     const ROTR u32 = rotr(if true { A } else { A }, 1)\n\
+     const SAT u32 = add_sat(if true { A } else { A }, A)\n"
+  in
+  semantic_constant "CLZ" 7L const_builtin_if_source;
+  semantic_constant "ROTR" 128L const_builtin_if_source;
+  semantic_constant "SAT" 2L const_builtin_if_source;
+  semantic_accept "builtin-if-const-runtime-parity"
+    (const_builtin_if_source
+   ^ "fn run() u32 {\n\
+      x u32 = clz(if true { A } else { A })\n\
+      y u32 = rotr(if true { A } else { A }, 1)\n\
+      z u32 = add_sat(if true { A } else { A }, A)\n\
+      return x + y + z\n\
+      }\n");
+  let runtime_shift_source =
+    "const A u8 = 3\nconst N u8 = 9\nfn run() u32 { return A << N }\n"
+  in
+  let runtime_shift_messages = semantic_messages runtime_shift_source in
+  let constant_shift_sources =
+    [
+      "const A u8 = 3\nconst N u8 = 9\nconst K u32 = A << N\n";
+      "const A u8 = 3\nconst N u8 = 9\nconst K arr[1, u32] = {A << N}\n";
+      "const A u8 = 3\n\
+       const N u8 = 9\n\
+       fn run(x u32) i32 { switch x { case A << N: return 1 } return 0 }\n";
+      "const A u8 = 3\n\
+       const N u8 = 9\n\
+       fn pick[K const usize]() usize { return K }\n\
+       fn run() usize { return pick[A << N]() }\n";
+    ]
+  in
+  List.iteri
+    (fun index text ->
+      let messages = semantic_messages text in
+      if
+        messages = []
+        || (index <> 2 && not (contains (String.concat "\n" messages) "may wrap"))
+      then
+        failwith
+          (Printf.sprintf "const-shift-narrow-%d: missing narrow-arithmetic error" index);
+      if index = 0 && messages <> runtime_shift_messages then
+        failwith "const-shift-narrow-runtime-parity: diagnostics differ")
+    constant_shift_sources;
   ignore
     (llvm_of
        "const Safe i32 = if true { 7 } else { 1 / 0 }\nfn main() i32 { return Safe }\n");
@@ -6185,7 +6266,7 @@ let () =
     "struct Buffer[T, N const u8] { data arr[N, T] }\n\
      fn test(value Buffer[u8, sizeof[u8]]) i64 { return 0 }\n";
   semantic_message "const-generic-struct-negative-length"
-    "array length cannot be negative: `-1`"
+    "cannot use `isize` as `usize`: negative values change meaning"
     "struct Buffer[T, N const isize] { data arr[N, T] }\n\
      fn test(value Buffer[u8, -1]) i64 { return 0 }\n";
 
@@ -6392,11 +6473,11 @@ let () =
      declare `value` as `addr`; callers pass its address with `&`"
     "fn identity[N const usize](value arr[N, u8]) arr[N, u8] { return value }\n";
   semantic_message "const-generic-function-negative-length"
-    "array length cannot be negative: `-2`"
+    "cannot use `isize` as `usize`: negative values change meaning"
     "fn size[N const isize]() usize { return sizeof[arr[N,u8]] }\n\
      fn test() usize { return size[-2]() }\n";
   semantic_message "const-generic-function-machine-length"
-    "array length `9223372036854775808` is too large"
+    "cannot use `u64` as `usize`: values above 18446744073709551615 would be lost"
     "fn size[N const u64]() usize { return sizeof[arr[N,u8]] }\n\
      fn test() usize { return size[9223372036854775808]() }\n";
   let sizeof_large_array_source =
@@ -6413,7 +6494,10 @@ let () =
        (String.index sizeof_negative_array_source '\n' + 1)
        'N'
     - String.index sizeof_negative_array_source '\n')
-    1 "array length cannot be negative: `-2`" None;
+    1 "cannot use `isize` as `usize`: negative values change meaning"
+    (Some
+       "reinterpret the bits with `bitcast[usize](N)`, or widen with `sext`/`zext` \
+        first if that is what you mean");
   let const_array_len_generic_llvm =
     llvm_of
       "const DATA arr[3, u8] = { 10, 20, 30 }\n\
@@ -7361,6 +7445,78 @@ let () =
      }\n";
   semantic_accept "if-branch-comparison-operand"
     "fn less(c bool, a u16, w u32) bool { return (if c { a } else { w }) < w }\n";
+  let binary_if_operand =
+    "fn bad(c bool, a u8, b u8) u32 { return (if c { a } else { b }) * a }\n"
+  and binary_plain_operand = "fn bad(a u8, b u8) u32 { return b * a }\n" in
+  semantic_same_error "if-binary-left-operand" binary_if_operand binary_plain_operand;
+  semantic_same_error "if-binary-right-operand"
+    "fn bad(c bool, a u8, b u8) u32 { return a * (if c { a } else { b }) }\n"
+    binary_plain_operand;
+  semantic_accept "if-binary-left-explicit-twin"
+    "fn good(c bool, a u8, b u8) u32 { return zext[u32](if c { a } else { b }) * a }\n";
+  semantic_accept "if-binary-right-explicit-twin"
+    "fn good(c bool, a u8, b u8) u32 { return a * zext[u32](if c { a } else { b }) }\n";
+  semantic_same_error "if-binary-call-argument"
+    ("fn take(value u32) u32 { return value }\n"
+   ^ "fn bad(c bool, a u8) u32 { return take((if c { a } else { a }) * a) }\n")
+    ("fn take(value u32) u32 { return value }\n"
+   ^ "fn bad(a u8) u32 { return take(a * a) }\n");
+  semantic_same_error "if-binary-array-element"
+    "fn bad(c bool, a u8) u32 { values arr[2,u32] = {(if c { a } else { a }) * a, 0}; \
+     return values[0] }\n"
+    "fn bad(a u8) u32 { values arr[2,u32] = {a * a, 0}; return values[0] }\n";
+  semantic_accept "if-binary-call-explicit-twin"
+    ("fn take(value u32) u32 { return value }\n"
+   ^ "fn good(c bool, a u8) u32 { return take(zext[u32](if c { a } else { a }) * a) }\n"
+    );
+  semantic_accept "if-binary-array-explicit-twin"
+    "fn good(c bool, a u8) u32 { values arr[2,u32] = {zext[u32](if c { a } else { a }) \
+     * a, 0}; return values[0] }\n";
+  semantic_same_error "if-unary-minus-operand"
+    "fn bad(c bool, a u8) u32 { return -(if c { a } else { a }) }\n"
+    "fn bad(a u8) u32 { return -a }\n";
+  semantic_same_error "if-unary-bit-not-operand"
+    "fn bad(c bool, a u8) u32 { return ~(if c { a } else { a }) }\n"
+    "fn bad(a u8) u32 { return ~a }\n";
+  semantic_accept "if-unary-minus-explicit-twin"
+    "fn good(c bool, a u8) u32 { return -zext[u32](if c { a } else { a }) }\n";
+  semantic_accept "if-unary-bit-not-explicit-twin"
+    "fn good(c bool, a u8) u32 { return ~zext[u32](if c { a } else { a }) }\n";
+  semantic_same_error "if-shift-left-operand"
+    "fn bad(c bool, a u8, n u32) u32 { return (if c { a } else { a }) << n }\n"
+    "fn bad(a u8, n u32) u32 { return a << n }\n";
+  semantic_accept "if-shift-explicit-twin"
+    "fn good(c bool, a u8, n u32) u32 { return zext[u32](if c { a } else { a }) << n }\n";
+  semantic_same_error "if-mixed-literal-operand"
+    "fn bad(c bool, a i8, b i8) i64 { return (if c { a } else { b }) - 100 }\n"
+    "fn bad(a i8, b i8) i64 { return a - 100 }\n";
+  semantic_accept "if-mixed-literal-explicit-twin"
+    "fn good(c bool, a i8, b i8) i64 { return sext[i64](if c { a } else { b }) - 100 }\n";
+  semantic_accept "if-addr-signed-offset"
+    "fn selected(p addr, c bool, x i8) addr { return p + (if c { x } else { x }) }\n";
+  semantic_accept "if-addr-signed-offset-plain-twin"
+    "fn selected(p addr, x i8) addr { return p + x }\n";
+  semantic_accept "if-addr-scaled-offset"
+    "fn selected(p addr, c bool, x u8) addr { return p + (if c { x } else { x }) * 200 }\n";
+  semantic_accept "if-addr-scaled-offset-plain-twin"
+    "fn selected(p addr, x u8) addr { return p + x * 200 }\n";
+  semantic_accept "if-addr-compound-no-destination"
+    "fn selected(p addr, c bool, x i8) addr { q addr = p; q += if c { x } else { x }; \
+     return q }\n";
+  semantic_message "if-compound-binary-narrow-arithmetic"
+    "`(if c { a } else { a }) * a` is computed in `u8` and may wrap before it reaches \
+     `u32`"
+    "fn bad(c bool, a u8) u32 { value u32 = 0; value += (if c { a } else { a }) * a; \
+     return value }\n";
+  semantic_accept "if-compound-binary-explicit-twin"
+    "fn good(c bool, a u8) u32 { value u32 = 0; value += zext[u32](if c { a } else { a \
+     }) * a; return value }\n";
+  semantic_message "if-constant-binary-narrow-arithmetic"
+    "`(if true { A } else { A }) + 0` is computed in `u8` and may wrap before it \
+     reaches `u32`"
+    "const A u8 = 200\nconst K u32 = (if true { A } else { A }) + 0\n";
+  semantic_accept "if-constant-binary-explicit-widening"
+    "const A u8 = 200\nconst K u32 = zext[u32](if true { A } else { A }) + 0\n";
   semantic_accept "if-branch-nested-unification"
     "fn nested(c bool, d bool, a u8, b u16, w u32) u32 { return if c { if d { a } else \
      { b } } else { w } }\n";
@@ -7527,6 +7683,32 @@ let () =
     "const BUFFERSIZE u16 = 0x1000\n\
      fn buffer() void { data arr[BUFFERSIZE / sizeof[i32], u8] = {}\n\
     \ return }\n";
+  semantic_constant "SLOT_LITERAL_FORM" 10L
+    "const SLOT_LITERAL_FORM usize = 100000 * 100000 / 1000000000\n";
+  semantic_constant "SLOT_ARRAY_FORM" 10L
+    "const SLOT_ARRAY_FORM usize = sizeof[arr[100000 * 100000 / 1000000000, u8]]\n";
+  semantic_constant "SLOT_GENERIC_FORM" 10L
+    "struct SizeBox[N const usize] { items arr[N, u8] }\n\
+     const SLOT_GENERIC_FORM usize = sizeof[SizeBox[100000 * 100000 / 1000000000]]\n";
+  semantic_constant "SLOT_LARGE_LITERAL" 3000000000L
+    "const SLOT_LARGE_LITERAL usize = sizeof[arr[3000000000 + 0, u8]]\n";
+  semantic_constant "SLOT_SHIFTED_LITERAL" 8589934592L
+    "const SLOT_SHIFTED_LITERAL usize = sizeof[arr[1 << 33, u8]]\n";
+  semantic_constant "SLOT_IF_FORM" 7L
+    "const S u8 = 7\n\
+     const SLOT_IF_FORM usize = sizeof[arr[if S > 3 { S } else { 300 }, u8]]\n";
+  semantic_message "array-size-slot-narrow-arithmetic"
+    "`K + 1` is computed in `u8` and may wrap before it reaches `usize`"
+    "const K u8 = 255\nfn bad() void { values arr[K + 1, u8] = {}; return }\n";
+  semantic_message "vector-size-slot-narrow-arithmetic"
+    "`K + 1` is computed in `u8` and may wrap before it reaches `usize`"
+    "const K u8 = 255\nfn bad() void { values vec[K + 1, u8] = splat(0); return }\n";
+  semantic_accept "array-size-slot-explicit-widening-twin"
+    "const K u8 = 255\n\
+     fn good() void { values arr[zext[usize](K) + 1, u8] = {}; return }\n";
+  semantic_accept "vector-size-slot-explicit-widening-twin"
+    "const K u8 = 255\n\
+     fn good() void { values vec[zext[usize](K) + 1, u8] = splat(0); return }\n";
   semantic_error "narrow-arithmetic-does-not-widen" "computed in `u16` and may wrap"
     "fn f(a u16, b u16) u32 { value u32 = a * b; return value }\n";
   semantic_accept "narrow-arithmetic-explicit-widening"
@@ -7583,6 +7765,27 @@ let () =
     (Some "widen both to `i64`: `zext[i64](a) < sext[i64](b)`");
   conversion_help_twin "mixed-widening-help-compiles" widening_mixed_source "a < b"
     "zext[i64](a) < sext[i64](b)" "widen both to `i64`: `zext[i64](a) < sext[i64](b)`";
+  let comparison_narrow_message =
+    "`a + 1` is computed in `u32` and may wrap before it reaches `u64`"
+  in
+  List.iter
+    (fun (name, operator) ->
+      semantic_message
+        ("comparison-narrow-right-" ^ name)
+        comparison_narrow_message
+        (Printf.sprintf "fn bad(x u64, a u32) bool { return x %s a + 1 }\n" operator);
+      semantic_message
+        ("comparison-narrow-left-" ^ name)
+        comparison_narrow_message
+        (Printf.sprintf "fn bad(x u64, a u32) bool { return a + 1 %s x }\n" operator))
+    [ ("eq", "=="); ("ne", "!="); ("lt", "<"); ("le", "<="); ("gt", ">"); ("ge", ">=") ];
+  semantic_accept "comparison-narrow-peer-simple"
+    "fn good(x u64, a u32) bool { return x == a }\n";
+  semantic_accept "comparison-narrow-peer-explicit"
+    "fn good(x u64, a u32) bool { return x == zext[u64](a) + 1 }\n";
+  semantic_message "comparison-narrow-constant"
+    "`A + 1` is computed in `u32` and may wrap before it reaches `u64`"
+    "const A u32 = 1\nconst X u64 = 2\nconst R bool = X == A + 1\n";
   let narrow_arithmetic_source =
     "fn f(a u16, b u16) u32 { value u32 = a * b; return value }\n"
   in
@@ -7698,14 +7901,15 @@ let () =
   in
   semantic_pin "widening-size-slot-diagnostic" widening_size_slot_source 3
     (String.length "fn f() void { data arr[A + " + 1)
-    1 "cannot apply `+` to `u32` and `i32`: no type holds both"
-    (Some "widen both to `i64`: `zext[i64](A) + sext[i64](B)`");
-  conversion_help_twin "size-slot-help-compiles" widening_size_slot_source "A + B"
-    "zext[i64](A) + sext[i64](B)" "widen both to `i64`: `zext[i64](A) + sext[i64](B)`";
-  semantic_accept "widening-size-slot-twin"
+    1 "cannot apply `+` to `u32` and `i32`: no type holds both" None;
+  semantic_accept "size-slot-explicit-usize-twin"
+    "const A u32 = 1\n\
+     const B i32 = 2\n\
+     fn f() void { data arr[zext[usize](A) + zext[usize](B),u8] = {}; return }\n";
+  semantic_accept "widening-size-slot-explicit-usize-twin"
     "const A u32 = 1\n\
      const B i64 = 2\n\
-     fn f() void { data arr[A + B,u8] = {}; return }\n";
+     fn f() void { data arr[zext[usize](A) + bitcast[usize](B),u8] = {}; return }\n";
   semantic_accept "widening-u32-i64-comparison"
     "fn f(left u32, right i64) bool { return left < right }\n";
   let widening_u64_i64_source =
@@ -12929,6 +13133,25 @@ let () =
     "const WIDTH usize = sizeof[Bytes[WIDTH]]\n\
      struct Bytes[N const usize] { data arr[N, u8] }\n\
      fn test() usize { return WIDTH }\n";
+  semantic_message "layout-sizeof-cycle" "cyclic constant dependency involving `S`"
+    "struct S { d arr[sizeof[S], u8] }\nvar X arr[1, S]\n";
+  semantic_message "layout-alignof-cycle" "cyclic constant dependency involving `S`"
+    "struct S { d arr[alignof[S], u8] }\nvar X arr[1, S]\n";
+  semantic_message "layout-offsetof-cycle" "cyclic constant dependency involving `S`"
+    "struct S { a u8, d arr[offsetof[S, a] + 1, u8] }\nvar X arr[1, S]\n";
+  semantic_message "layout-mutual-query-cycle"
+    "cyclic constant dependency involving `T2`"
+    "struct S { d arr[sizeof[T2], u8] }\nstruct T2 { s arr[1, S] }\nvar X arr[1, S]\n";
+  semantic_message "layout-generic-query-cycle"
+    "cyclic constant dependency involving `S`"
+    "struct S[T] { d arr[sizeof[S[T]], u8] }\nvar X S[u8]\n";
+  semantic_message "layout-growing-generic-query-cycle"
+    "cyclic constant dependency involving `S`"
+    "struct S[N const usize] { d arr[sizeof[S[N + 1]], u8] }\nvar X S[1]\n";
+  semantic_accept "layout-query-other-struct"
+    "struct Leaf { value u32 }\n\
+     struct S { data arr[sizeof[Leaf], u8] }\n\
+     var X arr[1, S]\n";
   let generic_layout_constant name expected text =
     incr checks_run;
     let hir = expect_ok (Parser.parse (source text)) |> Sema.check |> expect_ok in
@@ -13001,15 +13224,16 @@ let () =
      b arr[2 * 2, u8]\n\
      copy(b, a)\n\
      return zext[i32](b[3]) }\n";
-  semantic_accept "size-expression-negative-twin"
-    "const POS isize = 1\nvar A arr[POS + 1, u8]\n";
-  semantic_message "size-expression-negative" "array length cannot be negative: `-1`"
+  semantic_accept "size-expression-negative-explicit-twin"
+    "const POS isize = 1\nvar A arr[bitcast[usize](POS) + 1, u8]\n";
+  semantic_message "size-expression-negative"
+    "cannot use `isize` as `usize`: negative values change meaning"
     "const NEG isize = -1\nvar A arr[NEG + 0, u8]\n";
   semantic_accept "size-expression-too-large-twin"
-    "const SMALL u64 = 3\nvar A arr[SMALL + 1, u8]\n";
+    "const SMALL usize = 3\nvar A arr[SMALL + 1, u8]\n";
   semantic_message "size-expression-too-large"
     "array length `9223372036854775808` is too large"
-    "const BIG u64 = 9223372036854775808\nvar A arr[BIG + 0, u8]\n";
+    "const BIG usize = 9223372036854775808\nvar A arr[BIG + 0, u8]\n";
   semantic_accept "size-expression-address-twin" "var G i32\nvar A arr[2, u8]\n";
   semantic_message "size-expression-address" "expression is not compile-time constant"
     "var G i32\nvar A arr[&G, u8]\n";
