@@ -7364,6 +7364,94 @@ let () =
   semantic_accept "if-branch-nested-unification"
     "fn nested(c bool, d bool, a u8, b u16, w u32) u32 { return if c { if d { a } else \
      { b } } else { w } }\n";
+  semantic_accept "if-branch-order-three-arm-forward"
+    "fn f(c bool, k bool, a u8, b u16, w u32) u64 { return zext[u64](if c { a } else \
+     if k { b } else { w }) }\n";
+  semantic_accept "if-branch-order-three-arm-reverse"
+    "fn f(c bool, k bool, a u8, b u16, w u32) u64 { return zext[u64](if !c { if !k { w \
+     } else { b } } else { a }) }\n";
+  semantic_accept "if-branch-order-nested-else-forward"
+    "fn f(c bool, k bool, a u8, b i16, w i32) i64 { return sext[i64](if c { a } else { \
+     if k { w } else { b } }) }\n";
+  semantic_accept "if-branch-order-nested-else-reverse"
+    "fn f(c bool, k bool, a u8, b i16, w i32) i64 { return sext[i64](if !c { if !k { b \
+     } else { w } } else { a }) }\n";
+  semantic_accept "if-branch-order-literal-last"
+    "fn f(c bool, w u32) u64 { return zext[u64](if c { w } else { 1 }) }\n";
+  semantic_accept "if-branch-order-literal-first"
+    "fn f(c bool, w u32) u64 { return zext[u64](if !c { 1 } else { w }) }\n";
+  semantic_accept "if-branch-order-nested-then-forward"
+    "fn f(c bool, k bool, a u8, b u16, w u32) u32 { return if c { if k { a } else { b \
+     } } else { w } }\n";
+  semantic_accept "if-branch-order-nested-then-reverse"
+    "fn f(c bool, k bool, a u8, b u16, w u32) u32 { return if !c { w } else { if !k { \
+     b } else { a } } }\n";
+  semantic_accept "if-branch-order-signed-chain-forward"
+    "fn f(c bool, k bool, a i8, b i16, w i32) i64 { return sext[i64](if c { a } else \
+     if k { b } else { w }) }\n";
+  semantic_accept "if-branch-order-signed-chain-reverse"
+    "fn f(c bool, k bool, a i8, b i16, w i32) i64 { return sext[i64](if !c { if !k { w \
+     } else { b } } else { a }) }\n";
+  semantic_accept "if-branch-order-four-arm-unsigned"
+    "fn f(c bool, k bool, m bool, a u8, b u16, w u32, x u16) u64 { return zext[u64](if \
+     c { a } else if k { b } else if m { w } else { x }) }\n";
+  semantic_accept "if-branch-order-four-arm-unsigned-reverse"
+    "fn f(c bool, k bool, m bool, a u8, b u16, w u32, x u16) u64 { return zext[u64](if \
+     !c { if !k { if !m { x } else { w } } else { b } } else { a }) }\n";
+  semantic_accept "if-branch-order-four-arm-signed"
+    "fn f(c bool, k bool, m bool, a i8, b i16, w i32, x i16) i64 { return sext[i64](if \
+     c { a } else if k { b } else if m { w } else { x }) }\n";
+  semantic_accept "if-branch-order-four-arm-signed-reverse"
+    "fn f(c bool, k bool, m bool, a i8, b i16, w i32, x i16) i64 { return sext[i64](if \
+     !c { if !k { if !m { x } else { w } } else { b } } else { a }) }\n";
+  semantic_accept "if-branch-order-literal-first-chain"
+    "fn f(c bool, k bool, b u8, w u32) u64 { return zext[u64](if c { 1 } else if k { b \
+     } else { w }) }\n";
+  semantic_accept "if-branch-order-literal-first-chain-reverse"
+    "fn f(c bool, k bool, b u8, w u32) u64 { return zext[u64](if !c { if !k { w } else \
+     { b } } else { 1 }) }\n";
+  semantic_accept "if-branch-order-literal-middle-chain"
+    "fn f(c bool, k bool, a u8, w u32) u64 { return zext[u64](if c { a } else if k { 1 \
+     } else { w }) }\n";
+  semantic_accept "if-branch-order-literal-middle-chain-reverse"
+    "fn f(c bool, k bool, a u8, w u32) u64 { return zext[u64](if !c { if !k { w } else \
+     { 1 } } else { a }) }\n";
+  semantic_accept "if-branch-order-literal-last-chain"
+    "fn f(c bool, k bool, a u8, b u16) u64 { return zext[u64](if c { a } else if k { b \
+     } else { 1 }) }\n";
+  semantic_accept "if-branch-order-literal-last-chain-reverse"
+    "fn f(c bool, k bool, a u8, b u16) u64 { return zext[u64](if !c { if !k { 1 } else \
+     { b } } else { a }) }\n";
+  semantic_error "if-branch-order-literal-out-of-range-first"
+    "integer literal is out of range for u8"
+    "fn f(c bool, x u8) u16 { return zext[u16](if c { 256 } else { x }) }\n";
+  semantic_error "if-branch-order-literal-out-of-range-last"
+    "integer literal is out of range for u8"
+    "fn f(c bool, x u8) u16 { return zext[u16](if !c { x } else { 256 }) }\n";
+  semantic_error "if-branch-order-no-common-chain-forward" "no type holds both"
+    "fn f(c bool, k bool, u u32, s i32, w u64) u64 { return zext[u64](if c { w } else \
+     if k { u } else { s }) }\n";
+  semantic_error "if-branch-order-no-common-chain-reverse" "no type holds both"
+    "fn f(c bool, k bool, u u32, s i32, w u64) u64 { return zext[u64](if !c { if !k { \
+     s } else { u } } else { w }) }\n";
+  semantic_error "if-branch-order-narrow-first" "narrow arithmetic"
+    "fn f(c bool, k bool, a u16, b u16, w u32, x u16) u64 { return zext[u64](if c { a \
+     + b } else if k { w } else { x }) }\n";
+  semantic_error "if-branch-order-narrow-first-reverse" "narrow arithmetic"
+    "fn f(c bool, k bool, a u16, b u16, w u32, x u16) u64 { return zext[u64](if !c { \
+     if !k { x } else { w } } else { a + b }) }\n";
+  semantic_error "if-branch-order-narrow-middle" "narrow arithmetic"
+    "fn f(c bool, k bool, a u16, b u16, w u32, x u8) u64 { return zext[u64](if c { x } \
+     else if k { a + b } else { w }) }\n";
+  semantic_error "if-branch-order-narrow-middle-reverse" "narrow arithmetic"
+    "fn f(c bool, k bool, a u16, b u16, w u32, x u8) u64 { return zext[u64](if !c { if \
+     !k { w } else { a + b } } else { x }) }\n";
+  semantic_error "if-branch-order-narrow-last" "narrow arithmetic"
+    "fn f(c bool, k bool, a u16, b u16, w u32, x u8) u64 { return zext[u64](if c { x } \
+     else if k { w } else { a + b }) }\n";
+  semantic_error "if-branch-order-narrow-last-reverse" "narrow arithmetic"
+    "fn f(c bool, k bool, a u16, b u16, w u32, x u8) u64 { return zext[u64](if !c { if \
+     !k { a + b } else { w } } else { x }) }\n";
   semantic_error "if-branch-no-common-type" "no type holds both"
     "fn bad(c bool, u u32, s i32) i64 { return sext[i64](if c { u } else { s }) }\n";
   semantic_accept "if-branch-no-common-type-explicit-twin"
@@ -7385,6 +7473,28 @@ let () =
      const B u16 = 0x100\n\
      const K u64 = zext[u64](if F { A } else { B })\n\
      fn value() u64 { return zext[u64](if F { A } else { B }) }\n";
+  semantic_accept "if-branch-constant-order-forward"
+    "const F bool = true\n\
+     const A u8 = 0x80\n\
+     const B u16 = 0x100\n\
+     const W u32 = 0x10000\n\
+     const K u64 = zext[u64](if F { 1 } else if !F { B } else { W })\n";
+  semantic_accept "if-branch-constant-order-reverse"
+    "const F bool = true\n\
+     const A u8 = 0x80\n\
+     const B u16 = 0x100\n\
+     const W u32 = 0x10000\n\
+     const K u64 = zext[u64](if !F { if F { W } else { B } } else { 1 })\n";
+  semantic_error "if-branch-constant-literal-out-of-range-first"
+    "integer literal is out of range for u8"
+    "const F bool = true\n\
+     const X u8 = 1\n\
+     const K u64 = zext[u64](if F { 256 } else { X })\n";
+  semantic_error "if-branch-constant-literal-out-of-range-last"
+    "integer literal is out of range for u8"
+    "const F bool = true\n\
+     const X u8 = 1\n\
+     const K u64 = zext[u64](if !F { X } else { 256 })\n";
   let if_branch_types_source =
     "fn bad(c bool, u u32, s i32) i64 { return sext[i64](if c { u } else { s }) }\n"
   in

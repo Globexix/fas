@@ -41,6 +41,12 @@ cmp -s "$TMP/implicit.ll" "$TMP/explicit.ll" || {
 cat >"$TMP/branches.fas" <<'EOF'
 extern "C" {
   fn widening_branch_report(zero_low u64, zero_high u64, sign_low i64, sign_high i64) void
+  fn widening_chain_report(u8_a u64, u16_b u64, u32_c u64, u16_d u64,
+                           reverse_u8_a u64, reverse_u16_b u64,
+                           reverse_u32_c u64, reverse_u16_d u64,
+                           i8_a i64, i16_b i64, i32_c i64, i16_d i64,
+                           reverse_i8_a i64, reverse_i16_b i64,
+                           reverse_i32_c i64, reverse_i16_d i64) void
 }
 fn choose_unsigned(flag bool, narrow u16, wide u32) u64 {
   return zext[u64](if flag { narrow } else { wide })
@@ -48,9 +54,38 @@ fn choose_unsigned(flag bool, narrow u16, wide u32) u64 {
 fn choose_signed(flag bool, narrow i16, wide i32) i64 {
   return sext[i64](if flag { narrow } else { wide })
 }
+fn choose_unsigned_chain(c bool, k bool, m bool, a u8, b u16, w u32, x u16) u64 {
+  return zext[u64](if c { a } else if k { b } else if m { w } else { x })
+}
+fn choose_unsigned_chain_reversed(c bool, k bool, m bool, a u8, b u16, w u32, x u16) u64 {
+  return zext[u64](if !c { if !k { if !m { x } else { w } } else { b } } else { a })
+}
+fn choose_signed_chain(c bool, k bool, m bool, a i8, b i16, w i32, x i16) i64 {
+  return sext[i64](if c { a } else if k { b } else if m { w } else { x })
+}
+fn choose_signed_chain_reversed(c bool, k bool, m bool, a i8, b i16, w i32, x i16) i64 {
+  return sext[i64](if !c { if !k { if !m { x } else { w } } else { b } } else { a })
+}
 fn main() i32 {
   widening_branch_report(choose_unsigned(true, 0, 0), choose_unsigned(true, 65535, 0),
                          choose_signed(true, -32768, 0), choose_signed(true, 32767, 0))
+  widening_chain_report(
+    choose_unsigned_chain(true, false, false, 255, 65535, 4294967295, 32768),
+    choose_unsigned_chain(false, true, false, 255, 65535, 4294967295, 32768),
+    choose_unsigned_chain(false, false, true, 255, 65535, 4294967295, 32768),
+    choose_unsigned_chain(false, false, false, 255, 65535, 4294967295, 32768),
+    choose_unsigned_chain_reversed(true, false, false, 255, 65535, 4294967295, 32768),
+    choose_unsigned_chain_reversed(false, true, false, 255, 65535, 4294967295, 32768),
+    choose_unsigned_chain_reversed(false, false, true, 255, 65535, 4294967295, 32768),
+    choose_unsigned_chain_reversed(false, false, false, 255, 65535, 4294967295, 32768),
+    choose_signed_chain(true, false, false, -128, -32768, -2147483648, 32767),
+    choose_signed_chain(false, true, false, -128, -32768, -2147483648, 32767),
+    choose_signed_chain(false, false, true, -128, -32768, -2147483648, 32767),
+    choose_signed_chain(false, false, false, -128, -32768, -2147483648, 32767),
+    choose_signed_chain_reversed(true, false, false, -128, -32768, -2147483648, 32767),
+    choose_signed_chain_reversed(false, true, false, -128, -32768, -2147483648, 32767),
+    choose_signed_chain_reversed(false, false, true, -128, -32768, -2147483648, 32767),
+    choose_signed_chain_reversed(false, false, false, -128, -32768, -2147483648, 32767))
   return 0
 }
 EOF

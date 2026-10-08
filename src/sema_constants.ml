@@ -809,13 +809,35 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
       in
       if ct <> Hir.Bool then Error [ Sema_types.condition_error "if" c ct ]
       else if Option.is_none expected && validate_dead then
-        let branch expression selected =
+        let branch expression branch_expected selected =
           const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
-            ~globals ?resolve consts None ~check_only:(check_only || not selected)
-            ~validate_dead expression
+            ~globals ?resolve consts branch_expected
+            ~check_only:(check_only || not selected) ~validate_dead expression
         in
-        let* left_type, left_value = branch a (cv <> 0L) in
-        let* right_type, right_value = branch b (cv = 0L) in
+        let left_shape = unresolved_shape_of a
+        and right_shape = unresolved_shape_of b in
+        let branch_hint shape peer_type =
+          match (shape, peer_type) with
+          | Some Unresolved_int, (Hir.Int _ as ty)
+          | Some Unresolved_vector, (Hir.Vec _ as ty) ->
+              Some ty
+          | _ -> None
+        in
+        let* (left_type, left_value), (right_type, right_value) =
+          if
+            right_shape = None
+            && (left_shape = Some Unresolved_int || left_shape = Some Unresolved_vector)
+          then
+            let* right_type, right_value = branch b None (cv = 0L) in
+            let left_expected = branch_hint left_shape right_type in
+            let* left_type, left_value = branch a left_expected (cv <> 0L) in
+            Ok ((left_type, left_value), (right_type, right_value))
+          else
+            let* left_type, left_value = branch a None (cv <> 0L) in
+            let right_expected = branch_hint right_shape left_type in
+            let* right_type, right_value = branch b right_expected (cv = 0L) in
+            Ok ((left_type, left_value), (right_type, right_value))
+        in
         let* result_type, left_widen, right_widen =
           unify_if_branches a left_type b right_type
           |> Result.map_error (fun diagnostic -> [ diagnostic ])

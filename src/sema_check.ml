@@ -2436,15 +2436,42 @@ and check_expr_inner ?destination (c : context) expected expression =
           else Ok expected
         in
         refine_condition c tq true;
+        let left_shape = unresolved_shape_of c a
+        and right_shape = unresolved_shape_of c b in
+        let* a_expected =
+          if
+            Option.is_none expected
+            && left_shape = Some Unresolved_int
+            && Option.is_none right_shape
+          then (
+            Sema_flow.restore c.flow before_arms;
+            refine_condition c tq false;
+            let* peer =
+              with_dead_check c (condition = Some true) (fun () -> check_expr c None b)
+            in
+            Sema_flow.restore c.flow before_arms;
+            refine_condition c tq true;
+            Ok (match Hir.expr_ty peer with Hir.Int _ as ty -> Some ty | _ -> None))
+          else Ok expected
+        in
         let* ta =
-          with_dead_check c (condition = Some false) (fun () -> check_expr c expected a)
+          with_dead_check c (condition = Some false) (fun () ->
+              check_expr c a_expected a)
         in
         let after_a = Sema_flow.snapshot c.flow in
         Sema_flow.restore c.flow before_arms;
         refine_condition c tq false;
+        let b_expected =
+          match (expected, right_shape, Hir.expr_ty ta) with
+          | Some _, _, _ -> expected
+          | None, Some Unresolved_int, (Hir.Int _ as ty)
+          | None, Some Unresolved_vector, (Hir.Vec _ as ty) ->
+              Some ty
+          | _ -> None
+        in
         let* tb =
           with_dead_check c (condition = Some true) (fun () ->
-              check_expr c (Some (Hir.expr_ty ta)) b)
+              check_expr c b_expected b)
         in
         let after_b = Sema_flow.snapshot c.flow in
         let initialized =
