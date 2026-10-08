@@ -2888,17 +2888,32 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
     parameter_type_texts parameter
     |> List.exists (fun ty -> Option.is_some (String.index_opt ty '*'))
   in
-  let parameter_is_plain_char_pointer parameter =
-    match List.rev (parameter_type_texts parameter) with
-    | ty :: _ -> (
-        match String.split_on_char '*' ty with
-        | [ pointee; _ ] ->
-            String.split_on_char ' ' pointee
-            |> List.filter (fun word ->
-                word <> "" && not (List.mem word [ "const"; "volatile"; "restrict" ]))
-            = [ "char" ]
-        | _ -> false)
-    | [] -> false
+  let rec plain_char_ptr pointer n =
+    match string "kind" n with
+    | Some "BuiltinType" when not pointer ->
+        Option.bind (get "type" n) (string "qualType") = Some "char"
+    | Some "PointerType" when pointer ->
+        Option.fold ~none:false ~some:(plain_char_ptr false) (type_node n)
+    | Some "DecayedType" when pointer ->
+        children n |> List.rev
+        |> List.find_opt (fun child ->
+            Option.fold ~none:false
+              ~some:(String.ends_with ~suffix:"Type")
+              (string "kind" child))
+        |> Option.fold ~none:false ~some:(plain_char_ptr pointer)
+    | Some kind when kind <> "PointerType" && String.ends_with ~suffix:"Type" kind ->
+        Option.fold ~none:false ~some:(plain_char_ptr pointer) (type_node n)
+    | _ -> false
+  in
+  let parameter_is_plain_char_pointer name i =
+    match
+      Option.bind
+        (Hashtbl.find_opt structured_types ("decl:" ^ name))
+        function_type_nodes
+    with
+    | Some ns ->
+        Option.fold ~none:false ~some:(plain_char_ptr true) (List.nth_opt ns (i + 1))
+    | None -> false
   in
   let parameter_is_nonnull parameter =
     let spelled = Option.bind (get "type" parameter) (string "qualType") in
@@ -3831,7 +3846,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
                 List.mapi
                   (fun index (parameter, (_, _)) ->
                     if
-                      parameter_is_plain_char_pointer parameter
+                      parameter_is_plain_char_pointer name index
                       && not
                            (List.exists
                               (fun (later_ty, _) ->

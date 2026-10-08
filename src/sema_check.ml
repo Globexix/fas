@@ -516,18 +516,15 @@ and object_address c expression =
                 offset = 0L;
               })
           (object_size ty)
-    | Hir.EString (id, _) ->
+    | Hir.EString (id, is_c, _) ->
         let strings = List.rev c.string_pool.reversed in
         Option.map
           (fun value ->
             let extent = String.length value in
-            let is_c =
-              String.length value > 0 && value.[String.length value - 1] = '\000'
-            in
             let value =
               if is_c then String.sub value 0 (String.length value - 1) else value
             in
-            let name = (if is_c then "c" else "") ^ Printf.sprintf "%S" value in
+            let name = Ast.string_literal_name is_c value in
             Sema_flow.Object_address
               {
                 identity = "string:" ^ string_of_int id;
@@ -610,7 +607,7 @@ let rec unterminated_string_literal c = function
                          && Option.is_none
                               (String.index_from_opt bytes (Int64.to_int offset) '\000')
                     ->
-                      Some (Printf.sprintf "%S" bytes)
+                      Some bytes
                   | _ -> None)
           | _ -> None)
       | _ -> None)
@@ -624,13 +621,18 @@ let check_c_string_arguments c name parameters values arguments =
         | Some value, Some argument -> (
             match unterminated_string_literal c value with
             | None -> Ok ()
-            | Some literal ->
+            | Some bytes ->
+                let literal = Ast.string_literal_name false bytes in
                 let parameter =
                   match parameter_name with
                   | Some name when name <> "" -> "parameter `" ^ name ^ "`"
                   | _ -> "parameter " ^ string_of_int index
                 in
-                error ~help:("write c" ^ literal) (Ast.expr_span argument)
+                let help =
+                  if String.contains bytes '\000' then None
+                  else Some ("write " ^ Ast.string_literal_name true bytes)
+                in
+                error ?help (Ast.expr_span argument)
                   (Printf.sprintf
                      "%s has no NUL terminator, but `%s` reads %s as a C string" literal
                      name parameter))
@@ -1886,7 +1888,7 @@ and check_expr_inner ?destination (c : context) expected expression =
       else
         let value = if cstr then v ^ "\000" else v in
         let* id = intern_string c s value in
-        Ok (Hir.EString (id, s))
+        Ok (Hir.EString (id, cstr, s))
   | Ast.Ident (n, s)
     when Option.is_none (lookup_local n c)
          && Option.is_some (List.assoc_opt n c.c_unsupported) ->

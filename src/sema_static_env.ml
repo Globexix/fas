@@ -174,7 +174,7 @@ let address_value c ty expression =
   in
   let rec address = function
     | Hir.Null _ -> Ok Hir.Global_null
-    | Hir.EString (id, span) ->
+    | Hir.EString (id, _, span) ->
         let rec c_literal = function
           | Ast.String_lit (true, _, _) -> true
           | Ast.Handle_from_addr (_, value, _) | Ast.Call (_, [ value ], _) ->

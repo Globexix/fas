@@ -83,7 +83,7 @@ type expr =
   | EVector of int64 list * ty * Span.t
   | Vector_lit of expr list * ty * Span.t
   | Null of ty * Span.t
-  | EString of int * Span.t
+  | EString of int * bool * Span.t
   | Local of local * Span.t
   | Global of string * ty * Span.t
   | Unary of Ast.unop * expr * ty * Span.t
@@ -233,7 +233,7 @@ let expr_span = function
   | Vector_lit (_, _, s)
   | EBool (_, s)
   | Null (_, s)
-  | EString (_, s)
+  | EString (_, _, s)
   | Local (_, s)
   | Global (_, _, s)
   | Unary (_, _, _, s)

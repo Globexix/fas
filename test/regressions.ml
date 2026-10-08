@@ -3232,6 +3232,9 @@ let () =
     "const K u32 = 4\nfn test() addr { return &K }\n";
   semantic_error "fas-029-string-literal-index" "cannot modify string literal `\"x\"`"
     "fn main() i32 { \"x\"[u8] = 9\n return 0 }\n";
+  semantic_error "plain-string-nul-write-name"
+    "cannot modify string literal `\"ab\\0\"`"
+    "fn main() i32 { \"ab\\0\"[u8] = 9\n return 0 }\n";
   let string_literals =
     llvm_of
       "extern \"C\" { fn take(p addr) void }\n\
@@ -7114,7 +7117,7 @@ let () =
                    [
                      Hir.Switch
                        ( Hir.EInt (0L, Hir.Int Hir.I32, Span.synthetic),
-                         [ ([ Hir.EString (0, Span.synthetic) ], []) ],
+                         [ ([ Hir.EString (0, false, Span.synthetic) ], []) ],
                          None,
                          Span.synthetic );
                    ];
@@ -11117,6 +11120,34 @@ let () =
     c_strings "fn probe() void { puts(\"x\")\nreturn }\n";
   c_semantic_accept "c-string-puts-terminated" c_strings
     "fn probe() void { puts(c\"x\")\nreturn }\n";
+  let c_string_utf8_source = "fn probe() void { puts(\"\\xc3\\xa9\")\nreturn }\n" in
+  (match c_semantic_result c_strings c_string_utf8_source with
+  | Error [ diagnostic ]
+    when diagnostic.Diag.message
+         = "\"\\xc3\\xa9\" has no NUL terminator, but `puts` reads parameter `__s` as \
+            a C string"
+         && diagnostic.help = Some "write c\"\\xc3\\xa9\"" ->
+      ()
+  | Error diagnostics ->
+      failwith
+        ("c-string-utf8-diagnostic: unexpected diagnostic: "
+        ^ Diag.render_all ~source:None diagnostics)
+  | Ok _ -> failwith "c-string-utf8-diagnostic: expected rejection");
+  let c_string_embedded_nul_source =
+    "fn probe() void { puts(\"ab\\0cd\" + 3)\nreturn }\n"
+  in
+  (match c_semantic_result c_strings c_string_embedded_nul_source with
+  | Error [ diagnostic ]
+    when diagnostic.Diag.message
+         = "\"ab\\0cd\" has no NUL terminator, but `puts` reads parameter `__s` as a C \
+            string"
+         && diagnostic.help = None ->
+      ()
+  | Error diagnostics ->
+      failwith
+        ("c-string-embedded-nul-help: unexpected diagnostic: "
+        ^ Diag.render_all ~source:None diagnostics)
+  | Ok _ -> failwith "c-string-embedded-nul-help: expected rejection");
   c_semantic_accept "c-string-unreachable-call" c_strings
     "fn probe() void { if false { puts(\"x\") }\nreturn }\n";
   c_semantic_message "c-string-strlen"
@@ -11185,6 +11216,16 @@ let () =
     c_string_types "fn probe() void { fas_take_char(\"x\")\nreturn }\n";
   c_semantic_accept "c-string-plain-char-pointer-terminated" c_string_types
     "fn probe() void { fas_take_char(c\"x\")\nreturn }\n";
+  c_semantic_message "c-string-array-parameter"
+    (c_string_message "\"x\"" "fas_take_array" "value")
+    c_string_types "fn probe() void { fas_take_array(\"x\")\nreturn }\n";
+  c_semantic_accept "c-string-array-parameter-terminated" c_string_types
+    "fn probe() void { fas_take_array(c\"x\")\nreturn }\n";
+  c_semantic_message "c-string-sized-array-parameter"
+    (c_string_message "\"x\"" "fas_take_sized_array" "value")
+    c_string_types "fn probe() void { fas_take_sized_array(\"x\")\nreturn }\n";
+  c_semantic_accept "c-string-sized-array-parameter-terminated" c_string_types
+    "fn probe() void { fas_take_sized_array(c\"x\")\nreturn }\n";
   c_semantic_message "c-string-unnamed-parameter"
     "\"x\" has no NUL terminator, but `fas_take_unnamed` reads parameter 1 as a C \
      string"
@@ -11196,10 +11237,26 @@ let () =
     c_string_types "fn probe() void { fas_take_alias(\"x\")\nreturn }\n";
   c_semantic_accept "c-string-char-pointer-typedef-terminated" c_string_types
     "fn probe() void { fas_take_alias(c\"x\")\nreturn }\n";
+  c_semantic_message "c-string-plain-char-alias-pointer"
+    (c_string_message "\"x\"" "fas_take_plain_char" "value")
+    c_string_types "fn probe() void { fas_take_plain_char(\"x\")\nreturn }\n";
+  c_semantic_accept "c-string-plain-char-alias-pointer-terminated" c_string_types
+    "fn probe() void { fas_take_plain_char(c\"x\")\nreturn }\n";
+  c_semantic_message "c-string-plain-char-pointer-alias"
+    (c_string_message "\"x\"" "fas_take_plain_string" "value")
+    c_string_types "fn probe() void { fas_take_plain_string(\"x\")\nreturn }\n";
+  c_semantic_accept "c-string-plain-char-pointer-alias-terminated" c_string_types
+    "fn probe() void { fas_take_plain_string(c\"x\")\nreturn }\n";
+  c_semantic_accept "c-string-char-pointer-pointer" c_string_types
+    "fn probe() void { fas_take_char_pointer_pointer(\"x\")\nreturn }\n";
   c_semantic_accept "c-string-signed-char-pointer" c_string_types
     "fn probe() void { fas_take_signed(\"x\")\nreturn }\n";
   c_semantic_accept "c-string-unsigned-char-pointer" c_string_types
     "fn probe() void { fas_take_unsigned(\"x\")\nreturn }\n";
+  c_semantic_accept "c-string-signed-char-alias-pointer" c_string_types
+    "fn probe() void { fas_take_signed_alias(\"x\")\nreturn }\n";
+  c_semantic_accept "c-string-unsigned-char-alias-pointer" c_string_types
+    "fn probe() void { fas_take_unsigned_alias(\"x\")\nreturn }\n";
   c_semantic_accept "c-string-uint8-pointer" c_string_types
     "fn probe() void { fas_take_u8(\"x\")\nreturn }\n";
   c_semantic_accept "c-string-unknown-address" c_strings

@@ -536,7 +536,7 @@ let rec constant_construction structs = function
   | Hir.Init_value (Hir.EInt (value, _, _)) -> Some (Hir.Global_int value)
   | Hir.Init_value (Hir.EBool (value, _)) -> Some (Hir.Global_bool value)
   | Hir.Init_value (Hir.Null _) -> Some Hir.Global_null
-  | Hir.Init_value (Hir.EString (id, _)) ->
+  | Hir.Init_value (Hir.EString (id, _, _)) ->
       Some (Hir.Global_address (".str." ^ string_of_int id, 0))
   | Hir.Init_value (Hir.Function_address (name, _)) ->
       Some (Hir.Global_address (name, 0))
@@ -583,7 +583,7 @@ let rec expr s = function
         lanes_to_value (Ir.Zero vector_ir_ty) 0 elements
   | Hir.Vector_lit (_, _, span) -> error span "malformed vector literal type"
   | Hir.Null (t, _) -> Ok (Ir.Null (ty t))
-  | Hir.EString (i, sp) ->
+  | Hir.EString (i, _, sp) ->
       if i < 0 || i >= List.length s.strings then error sp "missing interned string"
       else
         let id = fresh s in

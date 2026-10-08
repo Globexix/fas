@@ -251,6 +251,22 @@ let stmt_span = function
   | Switch (_, _, _, span) ->
       span
 
+let string_literal_name c value =
+  let buffer = Buffer.create (String.length value) in
+  let escape = function
+    | '\000' -> "\\0"
+    | '\n' -> "\\n"
+    | '\r' -> "\\r"
+    | '\t' -> "\\t"
+    | '\\' -> "\\\\"
+    | '"' -> "\\\""
+    | character when Char.code character < 32 || Char.code character > 126 ->
+        Printf.sprintf "\\x%02x" (Char.code character)
+    | character -> String.make 1 character
+  in
+  String.iter (fun character -> Buffer.add_string buffer (escape character)) value;
+  (if c then "c" else "") ^ "\"" ^ Buffer.contents buffer ^ "\""
+
 let rec type_name = function
   | Bool -> "bool"
   | Int U8 -> "u8"
@@ -309,7 +325,7 @@ and expr_name = function
   | Bool_lit (true, _) -> "true"
   | Bool_lit (false, _) -> "false"
   | Null _ -> "null"
-  | String_lit (c, s, _) -> Printf.sprintf "%s%S" (if c then "c" else "") s
+  | String_lit (c, s, _) -> string_literal_name c s
   | Ident (s, _) -> s
   | Unary (op, e, _) ->
       let operator = match op with Neg -> "-" | Not -> "!" | Bit_not -> "~" in

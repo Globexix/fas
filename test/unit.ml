@@ -1038,7 +1038,7 @@ let () =
   in
   assert (Ast.render_program ast_program = ast_expected);
   let func_string_ids (func : Hir.func) =
-    let from_expr = function Hir.EString (id, _) -> [ id ] | _ -> [] in
+    let from_expr = function Hir.EString (id, _, _) -> [ id ] | _ -> [] in
     match func.Hir.body with
     | Hir.Statements statements ->
         List.concat_map
