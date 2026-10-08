@@ -83,14 +83,17 @@ and stmt =
   | Compound_assign of assign_target * binop * expr * Span.t * Span.t
   | Return of expr option * Span.t
   | If of expr * stmt list * stmt list option * Span.t
-  | While of expr * stmt list * Span.t
-  | Break of Span.t
-  | Continue of Span.t
+  | While of loop_label option * expr * stmt list * Span.t
+  | Break of (string * Span.t) option * Span.t
+  | Continue of (string * Span.t) option * Span.t
   | Defer of stmt list * Span.t
   | Expr_stmt of expr * Span.t
   | Block of stmt list * Span.t
-  | For of stmt option * expr option * stmt option * stmt list * Span.t
+  | For of
+      loop_label option * stmt option * expr option * stmt option * stmt list * Span.t
   | Switch of expr * (expr list * stmt list) list * stmt list option * Span.t
+
+and loop_label = { name : string; span : Span.t }
 
 and assign_target =
   | Target_ident of string * Span.t
@@ -220,13 +223,13 @@ let stmt_span = function
   | Compound_assign (_, _, _, span, _)
   | Return (_, span)
   | If (_, _, _, span)
-  | While (_, _, span)
-  | Break span
-  | Continue span
+  | While (_, _, _, span)
+  | Break (_, span)
+  | Continue (_, span)
   | Defer (_, span)
   | Expr_stmt (_, span)
   | Block (_, span)
-  | For (_, _, _, _, span)
+  | For (_, _, _, _, _, span)
   | Switch (_, _, _, span) ->
       span
 
@@ -571,12 +574,20 @@ let render_program program =
     | Expr_stmt (e, _) ->
         text indent;
         emit_expr e
-    | Break _ ->
+    | Break (None, _) ->
         text indent;
         text "break"
-    | Continue _ ->
+    | Break (Some (name, _), _) ->
+        text indent;
+        text "break ";
+        add_name name
+    | Continue (None, _) ->
         text indent;
         text "continue"
+    | Continue (Some (name, _), _) ->
+        text indent;
+        text "continue ";
+        add_name name
     | Defer (xs, _) ->
         text indent;
         text "defer {";
@@ -610,8 +621,13 @@ let render_program program =
             text "\n";
             text indent;
             text "}")
-    | While (c, xs, _) ->
+    | While (label, c, xs, _) ->
         text indent;
+        Option.iter
+          (fun label ->
+            add_name label.name;
+            text ": ")
+          label;
         text "while ";
         emit_expr c;
         text " {";
@@ -619,8 +635,13 @@ let render_program program =
         text "\n";
         text indent;
         text "}"
-    | For (_, _, _, xs, _) ->
+    | For (label, _, _, _, xs, _) ->
         text indent;
+        Option.iter
+          (fun label ->
+            add_name label.name;
+            text ": ")
+          label;
         text "for ... {";
         emit_lines (indent ^ "  ") xs;
         text "\n";
@@ -700,7 +721,7 @@ let render_program program =
             text ")");
         text " {\n";
         List.iteri
-          (fun i f ->
+          (fun i (f : field) ->
             if i > 0 then text "\n";
             text "  ";
             add_name f.name;
@@ -835,13 +856,13 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
           go_expr c;
           go_stmts yes;
           Option.iter go_stmts no
-      | While (c, xs, _) ->
+      | While (_, c, xs, _) ->
           go_expr c;
           go_stmts xs
       | Break _ | Continue _ -> ()
       | Defer (xs, _) | Block (xs, _) -> go_stmts xs
       | Expr_stmt (e, _) -> go_expr e
-      | For (i, c, st, body, _) ->
+      | For (_, i, c, st, body, _) ->
           Option.iter go_stmt i;
           Option.iter go_expr c;
           Option.iter go_stmt st;

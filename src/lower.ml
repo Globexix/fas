@@ -4,7 +4,13 @@ type block_state = {
   term : Ir.terminator option ref;
 }
 
-type loop = { break_to : int; continue_to : int; keep_scopes : int }
+type loop = {
+  label : string option;
+  break_to : int;
+  continue_to : int;
+  keep_scopes : int;
+}
+
 type local_slot = { pointer : Ir.value; size : int }
 
 type state = {
@@ -2074,23 +2080,23 @@ and stmt s = function
           s.defer_scopes <- (xs :: ds) :: rest;
           Ok ()
       | [] -> error Span.synthetic "defer outside scope")
-  | Hir.While (c, b, _) -> lower_while s c b
-  | Hir.For (i, c, st, b, _) -> lower_for s i c st b
+  | Hir.While (label, c, b, _) -> lower_while s label c b
+  | Hir.For (label, i, c, st, b, _) -> lower_for s label i c st b
   | Hir.Switch (e, arms, d, span) -> lower_switch s e arms d span
-  | Hir.Break sp -> (
-      match s.loops with
-      | l :: _ ->
+  | Hir.Break (label, sp) -> (
+      match target_loop s label with
+      | Some l ->
           let* () = unwind s l.keep_scopes in
           s.current.term := Some (Ir.Br l.break_to);
           Ok ()
-      | [] -> error sp "break outside loop or switch")
-  | Hir.Continue sp -> (
-      match s.loops with
-      | l :: _ ->
+      | None -> error sp "break outside loop or switch")
+  | Hir.Continue (label, sp) -> (
+      match target_loop s label with
+      | Some l ->
           let* () = unwind s l.keep_scopes in
           s.current.term := Some (Ir.Br l.continue_to);
           Ok ()
-      | [] -> error sp "continue outside loop")
+      | None -> error sp "continue outside loop")
 
 and construct_into s destination construction =
   let literal_ty =
@@ -2280,7 +2286,12 @@ and lower_if s c a b =
   if not falls_through then s.current.term := Some Ir.Unreachable;
   Ok ()
 
-and lower_while s c body =
+and target_loop s label =
+  match label with
+  | None -> List.nth_opt s.loops 0
+  | Some name -> List.find_opt (fun loop -> loop.label = Some name) s.loops
+
+and lower_while s label c body =
   let head = fresh_block s and bb = fresh_block s and exit = fresh_block s in
   s.current.term := Some (Ir.Br head.id);
   s.current <- head;
@@ -2290,6 +2301,7 @@ and lower_while s c body =
   s.current <- bb;
   s.loops <-
     {
+      label;
       break_to = exit.id;
       continue_to = head.id;
       keep_scopes = List.length s.defer_scopes;
@@ -2303,7 +2315,7 @@ and lower_while s c body =
     s.current.term := Some Ir.Unreachable;
   Ok ()
 
-and lower_for s init cond step body =
+and lower_for s label init cond step body =
   push_scope s;
   let lowered =
     let* () = match init with None -> Ok () | Some x -> stmt s x in
@@ -2327,6 +2339,7 @@ and lower_for s init cond step body =
     s.current <- bb;
     s.loops <-
       {
+        label;
         break_to = exit.id;
         continue_to = sb.id;
         keep_scopes = List.length s.defer_scopes;
@@ -2483,10 +2496,10 @@ let address_taken_locals ?function_addresses body =
         collect_expr condition;
         collect_list yes;
         Option.iter collect_list no
-    | Hir.While (condition, body, _) ->
+    | Hir.While (_, condition, body, _) ->
         collect_expr condition;
         collect_list body
-    | Hir.For (init, condition, step, body, _) ->
+    | Hir.For (_, init, condition, step, body, _) ->
         Option.iter collect_stmt init;
         Option.iter collect_expr condition;
         Option.iter collect_stmt step;

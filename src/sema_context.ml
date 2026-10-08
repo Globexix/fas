@@ -189,7 +189,7 @@ and count_expanded_stmt_type_nodes stmt cap total =
         match else_branch with
         | Some statements -> count_expanded_stmts_type_nodes statements cap total
         | None -> total)
-    | Ast.While (condition, body, _) ->
+    | Ast.While (_, condition, body, _) ->
         count_expanded_stmts_type_nodes body cap
           (count_expanded_expr_type_nodes condition cap total)
     | Ast.Break _ | Ast.Continue _ -> total
@@ -197,7 +197,7 @@ and count_expanded_stmt_type_nodes stmt cap total =
         count_expanded_stmts_type_nodes body cap total
     | Ast.Expr_stmt (expression, _) ->
         count_expanded_expr_type_nodes expression cap total
-    | Ast.For (init, condition, step, body, _) ->
+    | Ast.For (_, init, condition, step, body, _) ->
         let total =
           match init with
           | Some statement -> count_expanded_stmt_type_nodes statement cap total

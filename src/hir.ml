@@ -126,11 +126,11 @@ type stmt =
   | Compound_assign of assign_target * Ast.binop * expr * ty * Span.t
   | Return of expr option * Span.t
   | If of expr * stmt list * stmt list option * Span.t
-  | While of expr * stmt list * Span.t
-  | For of stmt option * expr option * stmt option * stmt list * Span.t
+  | While of string option * expr * stmt list * Span.t
+  | For of string option * stmt option * expr option * stmt option * stmt list * Span.t
   | Switch of expr * (expr list * stmt list) list * stmt list option * Span.t
-  | Break of Span.t
-  | Continue of Span.t
+  | Break of string option * Span.t
+  | Continue of string option * Span.t
   | Defer of stmt list * Span.t
   | Expr of expr * Span.t
   | Block of stmt list * Span.t
@@ -258,18 +258,32 @@ type flow_summary = {
   falls_through : bool;
   returns : bool;
   breaks : bool;
+  labeled_breaks : string list;
   continues : bool;
+  labeled_continues : string list;
 }
 
 let flowing =
-  { falls_through = true; returns = false; breaks = false; continues = false }
+  {
+    falls_through = true;
+    returns = false;
+    breaks = false;
+    labeled_breaks = [];
+    continues = false;
+    labeled_continues = [];
+  }
+
+let union left right = List.sort_uniq String.compare (left @ right)
+let remove name names = List.filter (fun current -> current <> name) names
 
 let choose_flow left right =
   {
     falls_through = left.falls_through || right.falls_through;
     returns = left.returns || right.returns;
     breaks = left.breaks || right.breaks;
+    labeled_breaks = union left.labeled_breaks right.labeled_breaks;
     continues = left.continues || right.continues;
+    labeled_continues = union left.labeled_continues right.labeled_continues;
   }
 
 let sequence_flow left right =
@@ -277,7 +291,13 @@ let sequence_flow left right =
     falls_through = left.falls_through && right.falls_through;
     returns = left.returns || (left.falls_through && right.returns);
     breaks = left.breaks || (left.falls_through && right.breaks);
+    labeled_breaks =
+      union left.labeled_breaks
+        (if left.falls_through then right.labeled_breaks else []);
     continues = left.continues || (left.falls_through && right.continues);
+    labeled_continues =
+      union left.labeled_continues
+        (if left.falls_through then right.labeled_continues else []);
   }
 
 let cleanup_flow cleanup exits =
@@ -285,15 +305,21 @@ let cleanup_flow cleanup exits =
     falls_through = cleanup.falls_through && exits.falls_through;
     returns = cleanup.falls_through && exits.returns;
     breaks = cleanup.falls_through && exits.breaks;
+    labeled_breaks = (if cleanup.falls_through then exits.labeled_breaks else []);
     continues = cleanup.falls_through && exits.continues;
+    labeled_continues = (if cleanup.falls_through then exits.labeled_continues else []);
   }
 
 let condition_is_true = function EBool (true, _) -> true | _ -> false
 
 let rec stmt_flow = function
   | Return _ -> { flowing with falls_through = false; returns = true }
-  | Break _ -> { flowing with falls_through = false; breaks = true }
-  | Continue _ -> { flowing with falls_through = false; continues = true }
+  | Break (None, _) -> { flowing with falls_through = false; breaks = true }
+  | Break (Some label, _) ->
+      { flowing with falls_through = false; labeled_breaks = [ label ] }
+  | Continue (None, _) -> { flowing with falls_through = false; continues = true }
+  | Continue (Some label, _) ->
+      { flowing with falls_through = false; labeled_continues = [ label ] }
   | Block (body, _) -> block_flow body
   | If (_, then_body, else_body, _) ->
       choose_flow (block_flow then_body)
@@ -306,9 +332,9 @@ let rec stmt_flow = function
         | Some body -> block_flow body :: branches
       in
       List.fold_left choose_flow { flowing with falls_through = false } branches
-  | While (condition, body, _) ->
-      loop_flow (condition_is_true condition) (block_flow body)
-  | For (init, condition, step, body, _) ->
+  | While (label, condition, body, _) ->
+      loop_flow label (condition_is_true condition) (block_flow body)
+  | For (label, init, condition, step, body, _) ->
       let prefix =
         match init with None -> flowing | Some statement -> stmt_flow statement
       in
@@ -321,7 +347,7 @@ let rec stmt_flow = function
         | None -> true
         | Some expression -> condition_is_true expression
       in
-      sequence_flow prefix (loop_flow unconditional iteration)
+      sequence_flow prefix (loop_flow label unconditional iteration)
   | Defer (body, _) -> cleanup_flow (block_flow body) flowing
   | Let _ | Let_construct _ | View _ | Copy _ | Volatile_store _ | Simd_store _
   | Assign _ | Compound_assign _ | Expr _ ->
@@ -332,12 +358,23 @@ and block_flow = function
   | Defer (body, _) :: rest -> cleanup_flow (block_flow body) (block_flow rest)
   | statement :: rest -> sequence_flow (stmt_flow statement) (block_flow rest)
 
-and loop_flow unconditional body =
+and loop_flow label unconditional body =
+  let breaks =
+    body.breaks
+    || Option.fold ~none:false
+         ~some:(fun name -> List.mem name body.labeled_breaks)
+         label
+  in
+  let own name labels =
+    Option.fold ~none:[] ~some:(fun label -> remove label labels) name
+  in
   {
-    falls_through = (not unconditional) || body.breaks;
+    falls_through = (not unconditional) || breaks;
     returns = body.returns;
     breaks = false;
+    labeled_breaks = own label body.labeled_breaks;
     continues = false;
+    labeled_continues = own label body.labeled_continues;
   }
 
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x

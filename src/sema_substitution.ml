@@ -509,7 +509,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               validate_statement_block_names value_names type_names statements
         in
         Ok (value_names, scope_names)
-    | Ast.While (condition, body, _) ->
+    | Ast.While (_, condition, body, _) ->
         let* () = validate_expression_names value_names type_names condition in
         let* () = validate_statement_block_names value_names type_names body in
         Ok (value_names, scope_names)
@@ -519,7 +519,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Expr_stmt (expression, _) ->
         let* () = validate_expression_names value_names type_names expression in
         Ok (value_names, scope_names)
-    | Ast.For (init, condition, step, body, _) ->
+    | Ast.For (_, init, condition, step, body, _) ->
         let* loop_names, loop_scope_names =
           match init with
           | None -> Ok (value_names, String_set.empty)
@@ -586,10 +586,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           | Some statements -> validate_statement_block_duplicates statements
         in
         Ok scope_names
-    | Ast.While (_, body, _) | Ast.Defer (body, _) | Ast.Block (body, _) ->
+    | Ast.While (_, _, body, _) | Ast.Defer (body, _) | Ast.Block (body, _) ->
         let* () = validate_statement_block_duplicates body in
         Ok scope_names
-    | Ast.For (init, _, step, body, _) ->
+    | Ast.For (_, init, _, step, body, _) ->
         let* loop_scope_names =
           match init with
           | None -> Ok String_set.empty
@@ -1085,7 +1085,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           | Some no -> validate_non_dependent_block c dependent expected_return no
         in
         Ok dependent
-    | Ast.While (condition, body, _) ->
+    | Ast.While (_, condition, body, _) ->
         let* () = validate_non_dependent_condition c dependent "while" condition in
         let* () = validate_non_dependent_block c dependent expected_return body in
         Ok dependent
@@ -1095,7 +1095,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Expr_stmt (expression, _) ->
         let* () = validate_non_dependent_expression c dependent None expression in
         Ok dependent
-    | Ast.For (init, condition, step, body, _) ->
+    | Ast.For (_, init, condition, step, body, _) ->
         push c;
         let result =
           let* loop_dependent =
@@ -2009,7 +2009,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                     Ok (Some statements)
               in
               Ok (Ast.If (condition, yes, no, span)))
-      | Ast.While (condition, body, span) ->
+      | Ast.While (label, condition, body, span) ->
           let* condition =
             resolve_expr ~values ~defer_const_structs substitutions depth condition
           in
@@ -2018,7 +2018,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               (resolve_stmt ~values ~defer_const_structs substitutions depth)
               body
           in
-          Ok (Ast.While (condition, body, span))
+          Ok (Ast.While (label, condition, body, span))
       | (Ast.Break _ | Ast.Continue _) as statement -> Ok statement
       | Ast.Defer (body, span) ->
           let* body =
@@ -2039,7 +2039,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               body
           in
           Ok (Ast.Block (body, span))
-      | Ast.For (init, condition, step, body, span) ->
+      | Ast.For (label, init, condition, step, body, span) ->
           let resolve_optional resolve = function
             | None -> Ok None
             | Some value ->
@@ -2059,7 +2059,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             with_local_values !local_values (fun () ->
                 Result_list.map resolve_stmt body)
           in
-          Ok (Ast.For (init, condition, step, body, span))
+          Ok (Ast.For (label, init, condition, step, body, span))
       | Ast.Switch (expression, cases, default, span) ->
           let resolve_expr =
             resolve_expr ~values ~defer_const_structs substitutions depth

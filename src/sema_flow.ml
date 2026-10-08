@@ -35,6 +35,7 @@ type checked_defer = {
 
 type loop_init_flow = {
   keep_defer_depth : int;
+  label : string option;
   entry_state : snapshot;
   entry_falls_through : bool;
   mutable break_states : snapshot list;
@@ -815,10 +816,16 @@ let finish_statement flow ~before ~terminates =
 let validate_return flow span =
   if flow.in_defer then error span "return is not allowed inside defer" else Ok ()
 
-let begin_loop ?induction_binding flow =
+let check_loop_label flow (name, span) =
+  if List.exists (fun loop -> loop.label = Some name) flow.loop_init_flows then
+    error span (Printf.sprintf "loop label `%s` shadows an enclosing loop label" name)
+  else Ok ()
+
+let begin_loop ?label ?induction_binding flow =
   let loop =
     {
       keep_defer_depth = List.length flow.defer_scopes;
+      label;
       entry_state = snapshot flow;
       entry_falls_through = flow.falls_through;
       break_states = [];
@@ -875,13 +882,21 @@ let finish_for flow loop ~unconditional ~condition_is_false =
   restore flow (widen_loop loop.entry_state result);
   flow.falls_through <- loop.entry_falls_through && exit_states <> []
 
-let record_loop_exit flow span kind =
+let record_loop_exit flow target span kind =
   if flow.in_defer then error span (kind ^ " is not allowed inside defer")
-  else if flow.loop_depth = 0 then error span (kind ^ " outside loop")
-  else if not flow.falls_through then Ok ()
   else
-    match flow.loop_init_flows with
-    | loop :: _ ->
+    let target_loop =
+      match target with
+      | None -> List.nth_opt flow.loop_init_flows 0
+      | Some (name, _) ->
+          List.find_opt (fun loop -> loop.label = Some name) flow.loop_init_flows
+    in
+    match (target, target_loop) with
+    | Some (name, span), None ->
+        error span (Printf.sprintf "unknown loop label `%s`" name)
+    | None, None -> error span (kind ^ " outside loop")
+    | _, Some _ when not flow.falls_through -> Ok ()
+    | _, Some loop ->
         if not flow.checking_dead then loop.induction_valid <- false;
         let* state = exit_defer_state flow loop.keep_defer_depth in
         Option.iter
@@ -890,10 +905,9 @@ let record_loop_exit flow span kind =
             else loop.continue_states <- state :: loop.continue_states)
           state;
         Ok ()
-    | [] -> error span "internal error: missing loop initialization flow"
 
-let record_break flow span = record_loop_exit flow span "break"
-let record_continue flow span = record_loop_exit flow span "continue"
+let record_break flow target span = record_loop_exit flow target span "break"
+let record_continue flow target span = record_loop_exit flow target span "continue"
 
 let invalidate_induction_on_return flow =
   if not flow.checking_dead then

@@ -88,7 +88,8 @@ val set_falls_through : t -> bool -> unit
 val finish_block_scope : t -> (unit, Diag.t list) result
 val finish_statement : t -> before:snapshot -> terminates:bool -> unit
 val validate_return : t -> Span.t -> (unit, Diag.t list) result
-val begin_loop : ?induction_binding:int -> t -> loop
+val check_loop_label : t -> string * Span.t -> (unit, Diag.t list) result
+val begin_loop : ?label:string -> ?induction_binding:int -> t -> loop
 val end_loop : t -> unit
 
 val finish_while :
@@ -96,8 +97,11 @@ val finish_while :
 
 val prepare_for_step : t -> loop -> body_falls_through:bool -> unit
 val finish_for : t -> loop -> unconditional:bool -> condition_is_false:bool -> unit
-val record_break : t -> Span.t -> (unit, Diag.t list) result
-val record_continue : t -> Span.t -> (unit, Diag.t list) result
+val record_break : t -> (string * Span.t) option -> Span.t -> (unit, Diag.t list) result
+
+val record_continue :
+  t -> (string * Span.t) option -> Span.t -> (unit, Diag.t list) result
+
 val invalidate_induction_on_return : t -> unit
 val induction_valid : t -> int -> bool
 val begin_defer : t -> Span.t -> (defer_capture, Diag.t list) result

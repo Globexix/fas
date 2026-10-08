@@ -3861,13 +3861,13 @@ let rec statement_changes_name name = function
       expression_takes_name_address name condition
       || List.exists (statement_changes_name name) yes
       || Option.fold ~none:false ~some:(List.exists (statement_changes_name name)) no
-  | Ast.While (condition, body, _) ->
+  | Ast.While (_, condition, body, _) ->
       expression_takes_name_address name condition
       || List.exists (statement_changes_name name) body
   | Ast.Defer (body, _) | Ast.Block (body, _) ->
       List.exists (statement_changes_name name) body
   | Ast.Expr_stmt (expression, _) -> expression_takes_name_address name expression
-  | Ast.For (init, condition, step, body, _) ->
+  | Ast.For (_, init, condition, step, body, _) ->
       Option.fold ~none:false ~some:(statement_changes_name name) init
       || Option.fold ~none:false ~some:(expression_takes_name_address name) condition
       || Option.fold ~none:false ~some:(statement_changes_name name) step
@@ -4603,14 +4603,23 @@ and check_stmt (c : context) = function
           (Sema_flow.merge_values_into c.flow initialized value_paths);
         Sema_flow.set_falls_through c.flow initialization_falls_through;
         Ok (Hir.If (tq, ta, tb, s))
-  | Ast.While (q, b, s) ->
+  | Ast.While (label, q, b, s) ->
+      let* () =
+        match label with
+        | None -> Ok ()
+        | Some label -> Sema_flow.check_loop_label c.flow (label.name, label.span)
+      in
       let* tq = check_expr c None q in
       if Hir.expr_ty tq <> Hir.Bool then
         Error [ Sema_types.condition_error "while" q (Hir.expr_ty tq) ]
       else
         let condition = condition_truth c tq in
         let init_condition = literal_condition_truth tq in
-        let loop = Sema_flow.begin_loop c.flow in
+        let loop =
+          Sema_flow.begin_loop
+            ?label:(Option.map (fun (label : Ast.loop_label) -> label.name) label)
+            c.flow
+        in
         Sema_flow.forget_all_values c.flow;
         if condition <> Some false then refine_condition c tq true;
         let checked =
@@ -4621,8 +4630,15 @@ and check_stmt (c : context) = function
         Sema_flow.finish_while c.flow loop
           ~condition_is_true:(init_condition = Some true)
           ~condition_is_false:(init_condition = Some false);
-        Ok (Hir.While (tq, tb, s))
-  | Ast.For (i, q, step, b, s) ->
+        Ok
+          (Hir.While
+             (Option.map (fun (label : Ast.loop_label) -> label.name) label, tq, tb, s))
+  | Ast.For (label, i, q, step, b, s) ->
+      let* () =
+        match label with
+        | None -> Ok ()
+        | Some label -> Sema_flow.check_loop_label c.flow (label.name, label.span)
+      in
       push c;
       let checked =
         let* ti =
@@ -4648,6 +4664,7 @@ and check_stmt (c : context) = function
         in
         let loop =
           Sema_flow.begin_loop
+            ?label:(Option.map (fun (label : Ast.loop_label) -> label.name) label)
             ?induction_binding:(Option.map (fun (binding, _) -> binding.id) induction)
             c.flow
         in
@@ -4682,7 +4699,14 @@ and check_stmt (c : context) = function
         Sema_flow.finish_for c.flow loop ~unconditional:(init_condition = Some true)
           ~condition_is_false:(init_condition = Some false);
         Sema_flow.end_loop c.flow;
-        Ok (Hir.For (ti, tq, ts, tb, s))
+        Ok
+          (Hir.For
+             ( Option.map (fun (label : Ast.loop_label) -> label.name) label,
+               ti,
+               tq,
+               ts,
+               tb,
+               s ))
       in
       pop c;
       checked
@@ -4828,12 +4852,12 @@ and check_stmt (c : context) = function
             Sema_flow.set_falls_through c.flow
               (before_falls && List.exists (fun value -> value) !branch_falls));
         Ok (Hir.Switch (te, ta, td, s))
-  | Ast.Break s ->
-      let* () = Sema_flow.record_break c.flow s in
-      Ok (Hir.Break s)
-  | Ast.Continue s ->
-      let* () = Sema_flow.record_continue c.flow s in
-      Ok (Hir.Continue s)
+  | Ast.Break (target, s) ->
+      let* () = Sema_flow.record_break c.flow target s in
+      Ok (Hir.Break (Option.map fst target, s))
+  | Ast.Continue (target, s) ->
+      let* () = Sema_flow.record_continue c.flow target s in
+      Ok (Hir.Continue (Option.map fst target, s))
   | Ast.Defer (xs, s) ->
       let* capture = Sema_flow.begin_defer c.flow s in
       let checked = check_block c xs in

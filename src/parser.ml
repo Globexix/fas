@@ -1059,7 +1059,9 @@ module P = struct
              name name record)
     | Token.Ident "goto"
       when match (peek_n p 1).kind with Token.Ident _ -> true | _ -> false ->
-        error (span p) "Fas has no `goto` labels; use `break` or `continue` in a loop"
+        error (span p)
+          "Fas has no `goto` labels; use `break` or `continue`, optionally with a loop \
+           label"
     | Token.Ident "do" when (peek_n p 1).kind = Token.Lbrace ->
         error (peek_n p 1).span "C `do`/`while` loops are not Fas syntax; use `while`"
     | (Token.Plus | Token.Minus) as op
@@ -1111,6 +1113,9 @@ module P = struct
                  operator name assignment);
           ]
     | Token.Ident "view" -> view_statement p true
+    | Token.Ident _
+      when (peek_n p 1).kind = Token.Colon && (peek_n p 2).kind <> Token.Assign ->
+        labeled_loop p
     | Token.Ident _ -> (
         match c_array_declaration p with
         | Some result -> result
@@ -1145,24 +1150,35 @@ module P = struct
           else Ok None
         in
         Ok (Ast.If (c, a, b, s))
-    | Token.Kw_while ->
-        let s = span p in
-        ignore (bump p);
-        let* c = expr_before_block p in
-        let* b = block p in
-        Ok (Ast.While (c, b, s))
-    | Token.Kw_for -> for_stmt p
+    | Token.Kw_while -> while_stmt p None
+    | Token.Kw_for -> for_stmt p None
     | Token.Kw_switch -> switch_stmt p
     | Token.Kw_break ->
         let s = span p in
         ignore (bump p);
+        let target =
+          match (peek p).kind with
+          | Token.Ident name ->
+              let label_span = span p in
+              ignore (bump p);
+              Some (name, label_span)
+          | _ -> None
+        in
         let* () = end_stmt p in
-        Ok (Ast.Break s)
+        Ok (Ast.Break (target, s))
     | Token.Kw_continue ->
         let s = span p in
         ignore (bump p);
+        let target =
+          match (peek p).kind with
+          | Token.Ident name ->
+              let label_span = span p in
+              ignore (bump p);
+              Some (name, label_span)
+          | _ -> None
+        in
         let* () = end_stmt p in
-        Ok (Ast.Continue s)
+        Ok (Ast.Continue (target, s))
     | Token.Kw_defer ->
         let s = span p in
         ignore (bump p);
@@ -1173,6 +1189,27 @@ module P = struct
         let* b = block p in
         Ok (Ast.Block (b, s))
     | _ -> assignment_or_expr p
+
+  and labeled_loop p =
+    let name =
+      match (bump p).kind with Token.Ident name -> name | _ -> assert false
+    in
+    let label = { Ast.name; span = p.tokens.(p.pos - 1).Token.span } in
+    ignore (bump p);
+    match (peek p).kind with
+    | Token.Kw_while -> while_stmt p (Some label)
+    | Token.Kw_for -> for_stmt p (Some label)
+    | _ ->
+        error label.span
+          (Printf.sprintf "loop label `%s` must precede a `while` or `for` statement"
+             name)
+
+  and while_stmt p label =
+    let s = span p in
+    ignore (bump p);
+    let* c = expr_before_block p in
+    let* b = block p in
+    Ok (Ast.While (label, c, b, s))
 
   and view_statement p consume_end =
     let s = span p in
@@ -1259,7 +1296,7 @@ module P = struct
     else if starts_type p then declaration_with_end p false
     else assignment_or_expr_with_end p false
 
-  and for_stmt p =
+  and for_stmt p label =
     let s = span p in
     if (peek_n p 1).kind = Token.Lparen then
       error (peek_n p 2).span
@@ -1290,7 +1327,7 @@ module P = struct
           Ok (Some x)
       in
       let* body = block p in
-      Ok (Ast.For (init, cond, step, body, s))
+      Ok (Ast.For (label, init, cond, step, body, s))
 
   and switch_stmt p =
     let s = span p in

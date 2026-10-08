@@ -3778,7 +3778,36 @@ let () =
   parse_error_message "floating-literal-unavailable"
     "float literals are not Fas syntax; use an integer literal"
     "fn main() i32 { return 1.5 }\n";
-  parse_error "labeled-break-rejected" "fn f() void { while true { break outer } }\n";
+  semantic_accept "labeled-break-accept"
+    "fn f() i32 { value i32\n\
+     outer: while true { while true { value = 9\n\
+    \ break outer } }\n\
+     return value }\n";
+  semantic_accept "labeled-continue-accept"
+    "fn f() void { outer: for i i32 = 0; i < 2; i += 1 {\n\
+     while true { continue outer }\n\
+     } }\n";
+  semantic_accept "labeled-break-across-switch"
+    "fn f() i32 { value i32\n\
+     outer: while true { switch 0 { default: { value = 7\n\
+    \ break outer } } }\n\
+     return value }\n";
+  semantic_accept "labeled-loop-shadow-twin"
+    "fn f() void { outer: while true { inner: for ; ; { break inner } } }\n";
+  semantic_message "labeled-break-unknown" "unknown loop label `missing`"
+    "fn f() void { break missing }\n";
+  semantic_message "labeled-continue-unknown" "unknown loop label `missing`"
+    "fn f() void { continue missing }\n";
+  semantic_message "labeled-break-not-enclosing" "unknown loop label `outer`"
+    "fn f() void { outer: while false { }\n while true { break outer } }\n";
+  semantic_message "labeled-continue-not-enclosing" "unknown loop label `outer`"
+    "fn f() void { outer: while false { }\n while true { continue outer } }\n";
+  semantic_message "labeled-loop-shadow"
+    "loop label `outer` shadows an enclosing loop label"
+    "fn f() void { outer: while true { outer: for ; ; { break } } }\n";
+  parse_message "labeled-non-loop-statement"
+    "loop label `block` must precede a `while` or `for` statement"
+    "fn f() void { block: { } }\n";
 
   let hygienic_parameter_names =
     llvm_of
@@ -14036,7 +14065,7 @@ let () =
   pin "c-do-while" "fn f() void { do { break } while (true)\n return }\n" 1
     "fn f() void { do " 1 "C `do`/`while` loops are not Fas syntax; use `while`";
   pin "c-goto" "fn f() void { goto finish\n return }\n" 1 "fn f() void { " 4
-    "Fas has no `goto` labels; use `break` or `continue` in a loop";
+    "Fas has no `goto` labels; use `break` or `continue`, optionally with a loop label";
   let arrow = "fn read(p addr) i32 { return p->value }\n" in
   semantic_pin "c-arrow-field" arrow 1
     (String.index arrow '-' + 1)
