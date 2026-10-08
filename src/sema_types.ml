@@ -805,7 +805,7 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression actual 
       | Some (Ast.Binary (operator, left, right, _)), Hir.Int _, Hir.Int _
         when narrow_result ->
           let extension = if Sema_numeric.is_unsigned actual then "zext" else "sext" in
-          let operator =
+          let operator_text =
             match operator with
             | Ast.Add -> "+"
             | Ast.Sub -> "-"
@@ -821,7 +821,8 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression actual 
           in
           Some
             (Printf.sprintf "widen an operand first: `%s[%s](%s) %s %s`" extension
-               destination (Ast.expr_name left) operator (Ast.expr_name right))
+               destination (Ast.expr_name left) operator_text
+               (Ast.expr_name_child (Ast.binop_precedence operator) true right))
       | Some (Ast.Unary (Ast.Neg, value, _)), Hir.Int _, Hir.Int _ when narrow_result ->
           let extension = if Sema_numeric.is_unsigned actual then "zext" else "sext" in
           Some

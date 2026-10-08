@@ -9,7 +9,7 @@ var GlobalBox Box = {Byte}
 
 extern "C" {
   fn widening_c_take_u32(value u32) u32
-  fn widening_report(to_u32 u32, to_i16 i16, to_i64 i64, c_result u32, position usize, aggregate u32, fas_call u32, case_value u32, branch_sum u32, comparisons u32, wide u32, array_value u32, global_value u32, global_field u32) void
+  fn widening_report(to_u32 u32, to_i16 i16, to_i64 i64, c_result u32, position usize, aggregate u32, fas_call u32, case_value u32, branch_sum u32, comparisons u32, wide u32, array_value u32, global_value u32, global_field u32, narrow_product u32) void
 }
 
 fn widen_unsigned_u32() u32 {
@@ -28,6 +28,8 @@ fn widen_signed_i64() i64 {
 }
 
 fn fas_take_u32(value u32) u32 { return value }
+
+fn narrow_product(a u16, b u16) u32 { return zext[u32](a) * b }
 
 fn c_call(value u8) u32 { return widening_c_take_u32(value) }
 
@@ -83,6 +85,6 @@ fn comparison_bits() u32 {
 
 fn main() i32 {
   branch_sum u32 = choose(true, Byte) + choose(false, Byte)
-  widening_report(widen_unsigned_u32(), widen_unsigned_i16(), widen_signed_i64(), c_call(Byte), current_position(), aggregate_value(Byte), fas_take_u32(Byte), case_value(Wide), branch_sum, comparison_bits(), Wide, Values[0], Global, GlobalBox.value)
+  widening_report(widen_unsigned_u32(), widen_unsigned_i16(), widen_signed_i64(), c_call(Byte), current_position(), aggregate_value(Byte), fas_take_u32(Byte), case_value(Wide), branch_sum, comparison_bits(), Wide, Values[0], Global, GlobalBox.value, narrow_product(500, 1000))
   return 0
 }

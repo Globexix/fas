@@ -377,6 +377,38 @@ let semantic_accept name text =
       failwith
         (name ^ ": unexpected rejection: " ^ Diag.render_all ~source:None diagnostics)
 
+let conversion_help_twin name text original replacement help =
+  match semantic_diagnostics text with
+  | [ diagnostic ] when diagnostic.Diag.help = Some help ->
+      if not (contains help ("`" ^ replacement ^ "`")) then
+        failwith (name ^ ": expected help to contain `" ^ replacement ^ "`");
+      let span_start = diagnostic.Diag.primary.Span.start_offset in
+      let span_end = diagnostic.Diag.primary.Span.end_offset in
+      let score start =
+        if start <= span_end && start + String.length original >= span_start then 0
+        else min (abs (start - span_start)) (abs (start - span_end))
+      in
+      let candidates = positions text original in
+      let start =
+        match candidates with
+        | [] -> failwith (name ^ ": source expression was not found")
+        | first :: rest ->
+            List.fold_left
+              (fun best candidate ->
+                if score candidate < score best then candidate else best)
+              first rest
+      in
+      let length = String.length original in
+      let updated =
+        String.sub text 0 start ^ replacement
+        ^ String.sub text (start + length) (String.length text - start - length)
+      in
+      semantic_accept name updated
+  | diagnostics ->
+      failwith
+        (name ^ ": unexpected conversion help: "
+        ^ Diag.render_all ~source:(Some (source text)) diagnostics)
+
 let parse_diagnostics name text =
   incr checks_run;
   let src = source text in
@@ -7329,12 +7361,60 @@ let () =
     (String.length "fn f(a u32, b i32) bool { return a < " + 1)
     1 "cannot compare `u32` with `i32`: no type holds both"
     (Some "widen both to `i64`: `zext[i64](a) < sext[i64](b)`");
+  conversion_help_twin "mixed-widening-help-compiles" widening_mixed_source "a < b"
+    "zext[i64](a) < sext[i64](b)" "widen both to `i64`: `zext[i64](a) < sext[i64](b)`";
   let narrow_arithmetic_source =
     "fn f(a u16, b u16) u32 { value u32 = a * b; return value }\n"
   in
   semantic_pin "widening-narrow-arithmetic-diagnostic" narrow_arithmetic_source 1 40 1
     "`a * b` is computed in `u16` and may wrap before it reaches `u32`"
     (Some "widen an operand first: `zext[u32](a) * b`");
+  conversion_help_twin "narrow-arithmetic-help-compiles" narrow_arithmetic_source
+    "a * b" "zext[u32](a) * b" "widen an operand first: `zext[u32](a) * b`";
+  let nested_arithmetic_source =
+    "fn f(a u16, b u16) u32 { value u32 = (a + 1) * (b - 2); return value }\n"
+  in
+  semantic_pin "narrow-arithmetic-parentheses" nested_arithmetic_source 1
+    (String.index nested_arithmetic_source '*' + 1)
+    1 "`(a + 1) * (b - 2)` is computed in `u16` and may wrap before it reaches `u32`"
+    (Some "widen an operand first: `zext[u32](a + 1) * (b - 2)`");
+  conversion_help_twin "nested-arithmetic-help-compiles" nested_arithmetic_source
+    "(a + 1) * (b - 2)" "zext[u32](a + 1) * (b - 2)"
+    "widen an operand first: `zext[u32](a + 1) * (b - 2)`";
+  let unary_arithmetic_source = "fn f(a u16, b u16) u32 { return -(a + b) }\n" in
+  semantic_pin "narrow-unary-parentheses" unary_arithmetic_source 1
+    (String.index unary_arithmetic_source '-' + 1)
+    1 "`-(a + b)` is computed in `u16` and may wrap before it reaches `u32`"
+    (Some "widen an operand first: `-zext[u32](a + b)`");
+  conversion_help_twin "unary-arithmetic-help-compiles" unary_arithmetic_source
+    "-(a + b)" "-zext[u32](a + b)" "widen an operand first: `-zext[u32](a + b)`";
+  let call_field_arithmetic_source =
+    "struct Pair { value u16 }\n\
+     fn get(value u16) u16 { return value }\n\
+     fn f(a u16) u32 { pair Pair = {a}\n\
+     return get(a) * pair.value }\n"
+  in
+  semantic_pin "narrow-arithmetic-call-field" call_field_arithmetic_source 4
+    (String.length "return get(a) " + 1)
+    1 "`get(a) * pair.value` is computed in `u16` and may wrap before it reaches `u32`"
+    (Some "widen an operand first: `zext[u32](get(a)) * pair.value`");
+  conversion_help_twin "call-field-arithmetic-help-compiles"
+    call_field_arithmetic_source "get(a) * pair.value" "zext[u32](get(a)) * pair.value"
+    "widen an operand first: `zext[u32](get(a)) * pair.value`";
+  let size_expression_printer_source =
+    "fn f() void { values arr[(A + 1) * (B - 2),u8] = {}; return }\n"
+  in
+  (match parse_file "size-expression.fas" size_expression_printer_source with
+  | {
+   Ast.items =
+     [
+       Ast.Func
+         { body = Ast.Statements [ Ast.Let { ty = Ast.Array (length, _); _ }; _ ]; _ };
+     ];
+  }
+    when length.text = "(A + 1) * (B - 2)" ->
+      ()
+  | _ -> failwith "size-expression-printer: grouping was lost");
   semantic_accept "widening-narrow-arithmetic-explicit-twin"
     "fn f(a u16, b u16) u32 { value u32 = zext[u32](a) * b; return value }\n";
   let widening_compound_source =

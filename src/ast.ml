@@ -257,6 +257,33 @@ and generic_arg_name = function
   | Const_arg e -> expr_name e
   | Name_arg (name, _) -> name
 
+and binop_precedence = function
+  | Or -> 1
+  | And -> 2
+  | Bit_or -> 3
+  | Bit_xor -> 4
+  | Bit_and -> 5
+  | Eq | Ne -> 6
+  | Lt | Le | Gt | Ge -> 7
+  | Shl | Shr -> 8
+  | Add | Sub -> 9
+  | Mul | Div | Rem -> 10
+
+and expr_precedence = function
+  | Ternary _ -> 0
+  | Binary (op, _, _, _) -> binop_precedence op
+  | Unary _ | C_dereference _ | Addr_of _ | Sizeof_value _ -> 11
+  | Call _ | Generic_args _ | Cast _ | Select _ | C_dot_star _ | Field _ | Arrow_field _
+    ->
+      12
+  | _ -> 13
+
+and expr_name_child parent_precedence right_child expression =
+  let text = expr_name expression and precedence = expr_precedence expression in
+  if precedence < parent_precedence || (precedence = parent_precedence && right_child)
+  then "(" ^ text ^ ")"
+  else text
+
 and expr_name = function
   | Int_lit (s, _) -> s
   | Bool_lit (true, _) -> "true"
@@ -265,12 +292,22 @@ and expr_name = function
   | String_lit (c, s, _) -> Printf.sprintf "%s%S" (if c then "c" else "") s
   | Ident (s, _) -> s
   | Unary (op, e, _) ->
-      (match op with Neg -> "-" | Not -> "!" | Bit_not -> "~") ^ expr_name e
-  | C_dereference (e, _, _) -> "*" ^ expr_name e
-  | C_dot_star (e, _) -> expr_name e ^ ".*"
+      let operator = match op with Neg -> "-" | Not -> "!" | Bit_not -> "~" in
+      let operand =
+        match (op, e) with
+        | Neg, Unary (Neg, _, _)
+        | Not, Unary (Not, _, _)
+        | Bit_not, Unary (Bit_not, _, _) ->
+            " "
+        | _ -> ""
+      in
+      operator ^ operand ^ expr_name_child 11 false e
+  | C_dereference (e, _, _) -> "*" ^ expr_name_child 11 false e
+  | C_dot_star (e, _) -> expr_name_child 12 false e ^ ".*"
   | Parenthesized (e, _) -> "(" ^ expr_name e ^ ")"
   | Binary (op, l, r, _) ->
-      expr_name l ^ " "
+      expr_name_child (binop_precedence op) false l
+      ^ " "
       ^ (match op with
         | Add -> "+"
         | Sub -> "-"
@@ -290,11 +327,16 @@ and expr_name = function
         | Or -> "||"
         | Shl -> "<<"
         | Shr -> ">>")
-      ^ " " ^ expr_name r
+      ^ " "
+      ^ expr_name_child (binop_precedence op) true r
   | Call (f, xs, _) ->
-      expr_name f ^ "(" ^ String.concat ", " (List.map expr_name xs) ^ ")"
+      expr_name_child 12 false f ^ "("
+      ^ String.concat ", " (List.map expr_name xs)
+      ^ ")"
   | Generic_args (f, xs, _) ->
-      expr_name f ^ "[" ^ String.concat ", " (List.map generic_arg_name xs) ^ "]"
+      expr_name_child 12 false f ^ "["
+      ^ String.concat ", " (List.map generic_arg_name xs)
+      ^ "]"
   | Cast (k, t, e, _) ->
       (match k with
         | Zext -> "zext"
@@ -303,18 +345,22 @@ and expr_name = function
         | Bitcast -> "bitcast")
       ^ "[" ^ type_name t ^ "](" ^ expr_name e ^ ")"
   | Select (a, args, _) ->
-      expr_name a ^ "[" ^ String.concat ", " (List.map generic_arg_name args) ^ "]"
-  | Field (a, n, _) -> expr_name a ^ "." ^ n
-  | Arrow_field (a, n, _, _) -> expr_name a ^ "->" ^ n
-  | Addr_of (e, _) -> "&" ^ expr_name e
+      expr_name_child 12 false a ^ "["
+      ^ String.concat ", " (List.map generic_arg_name args)
+      ^ "]"
+  | Field (a, n, _) -> expr_name_child 12 false a ^ "." ^ n
+  | Arrow_field (a, n, _, _) -> expr_name_child 12 false a ^ "->" ^ n
+  | Addr_of ((Addr_of _ as e), _) -> "&(" ^ expr_name e ^ ")"
+  | Addr_of (e, _) -> "&" ^ expr_name_child 11 false e
   | Handle_from_addr (t, e, _) ->
       "handle_from_addr[" ^ type_name t ^ "](" ^ expr_name e ^ ")"
   | Sizeof (t, _) -> "sizeof[" ^ type_name t ^ "]"
-  | Sizeof_value (e, _) -> "sizeof " ^ expr_name e
+  | Sizeof_value (e, _) -> "sizeof " ^ expr_name_child 11 false e
   | Alignof (t, _) -> "alignof[" ^ type_name t ^ "]"
   | Offsetof (t, f, _) -> "offsetof[" ^ type_name t ^ ", " ^ f ^ "]"
   | Splat (e, _) -> "splat(" ^ expr_name e ^ ")"
-  | Ternary (c, a, b, _) -> expr_name c ^ " ? " ^ expr_name a ^ " : " ^ expr_name b
+  | Ternary (c, a, b, _) ->
+      "if " ^ expr_name c ^ " { " ^ expr_name a ^ " } else { " ^ expr_name b ^ " }"
   | Array_lit (xs, _) -> "{" ^ String.concat ", " (List.map expr_name xs) ^ "}"
 
 let aggregate_length expression span = { expression; text = expr_name expression; span }
