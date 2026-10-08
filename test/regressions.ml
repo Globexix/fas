@@ -11555,7 +11555,10 @@ let () =
     List.map (fun (field : Ast.field) -> (field.name, field.ty)) nested_fields
     <> [
          ("inner", Ast.Named_type ("FasInnerRecord", Span.synthetic));
-         ("values", Ast.Array (Ast.aggregate_length "2" Span.synthetic, Ast.Int Ast.I32));
+         ( "values",
+           Ast.Array
+             ( Ast.aggregate_length (Ast.Int_lit ("2", Span.synthetic)) Span.synthetic,
+               Ast.Int Ast.I32 ) );
        ]
   then failwith "nested record or array field type was not imported";
   let self_fields, _ = require_struct "FasSelfRecord" in
@@ -12311,8 +12314,58 @@ let () =
     "const N usize = 3\n\
      fn main() i32 { N usize = 2\n\
      return trunc[i32](sizeof[arr[N, u8]]) }\n";
-  parse_message "static-size-direct-len-cycle" "expected `,`, found `(`"
-    "const A arr[len(B),u8] = {1}\nconst B arr[len(A),u8] = {2}\n";
+  semantic_accept "size-expression-forms"
+    "const N usize = 12\n\
+     const K usize = 3\n\
+     const TABLE arr[5, u8] = {1,2,3,4,5}\n\
+     const BUFFERSIZE u32 = 64\n\
+     var bufferseg arr[zext[usize](BUFFERSIZE) / sizeof[i32], i32]\n\
+     var divided arr[N / 4, u8]\n\
+     var parenthesized arr[(N / 4), u8]\n\
+     var arithmetic arr[N * 2 + 1, u8]\n\
+     var shifted arr[1 << K, u8]\n\
+     var from_table arr[len(TABLE) - 1, u8]\n\
+     var selected arr[if true { 3 } else { 5 }, u8]\n\
+     var nested arr[N / 4, arr[2 * 2, u8]]\n\
+     var lanes vec[1 << K, u8]\n";
+  semantic_accept "size-expression-generic-layout"
+    "struct Bytes[T] { data arr[sizeof[T] * 4, u8] }\n\
+     const SIZE usize = sizeof[Bytes[u16]]\n\
+     fn main() i32 { return trunc[i32](SIZE) }\n";
+  semantic_accept "size-expression-const-generic-arguments"
+    "const N usize = 3\n\
+     struct Ring[M const usize] { data arr[M, u8] }\n\
+     var R Ring[N * 2]\n\
+     fn main() i32 { return 0 }\n";
+  semantic_accept "size-expression-type-identity"
+    "fn main() i32 { a arr[4, u8] = {1,2,3,4}\n\
+     b arr[2 * 2, u8]\n\
+     copy(b, a)\n\
+     return zext[i32](b[3]) }\n";
+  semantic_accept "size-expression-negative-twin"
+    "const POS isize = 1\nvar A arr[POS + 1, u8]\n";
+  semantic_message "size-expression-negative" "array length cannot be negative: `-1`"
+    "const NEG isize = -1\nvar A arr[NEG + 0, u8]\n";
+  semantic_accept "size-expression-too-large-twin"
+    "const SMALL u64 = 3\nvar A arr[SMALL + 1, u8]\n";
+  semantic_message "size-expression-too-large"
+    "array length `9223372036854775808` is too large"
+    "const BIG u64 = 9223372036854775808\nvar A arr[BIG + 0, u8]\n";
+  semantic_accept "size-expression-address-twin" "var G i32\nvar A arr[2, u8]\n";
+  semantic_message "size-expression-address" "expression is not compile-time constant"
+    "var G i32\nvar A arr[&G, u8]\n";
+  semantic_accept "size-expression-runtime-twin"
+    "const N usize = 3\nfn probe() void { A arr[N, u8] = {} }\n";
+  semantic_message "size-expression-runtime" "`n` is not a compile-time constant"
+    "fn probe(n usize) void { A arr[n, u8] = {} }\n";
+  semantic_pin "size-expression-cycle"
+    "const N usize = len(A)\nconst A arr[N + 1, u8] = {1}\n" 2 13 5
+    "cyclic constant dependency involving `N`" None;
+  semantic_accept "size-expression-cycle-twin"
+    "const N usize = 3\nconst A arr[N + 1, u8] = {1,2,3,4}\n";
+  semantic_pin "static-size-direct-len-cycle"
+    "const A arr[len(B),u8] = {1}\nconst B arr[len(A),u8] = {2}\n" 1 13 6
+    "cyclic constant dependency involving `B`" None;
   Printf.printf "regression checks: %d passed\n" !checks_run
 
 let () =

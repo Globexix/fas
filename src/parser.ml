@@ -268,17 +268,6 @@ module P = struct
     | t ->
         Error [ Diag.error (peek p).span ("expected integer, found " ^ Token.show t) ]
 
-  let aggregate_length p =
-    let token = bump p in
-    match token.kind with
-    | Token.Int s | Token.Ident s -> Ok (s, token.span)
-    | t ->
-        Error
-          [
-            Diag.error (peek p).span
-              ("expected integer or const parameter, found " ^ Token.show t);
-          ]
-
   let int_value p =
     match integer p with
     | Error e -> Error e
@@ -358,7 +347,7 @@ module P = struct
         ignore (bump p);
         let* () = expected p Token.Lbracket in
         delimited p (fun () ->
-            let* n, length_span = aggregate_length p in
+            let* length = aggregate_length p in
             let* () =
               if at p Token.Rbracket then
                 error (span p) "array type `arr` needs an element type after its length"
@@ -366,12 +355,12 @@ module P = struct
             in
             let* t = ty p in
             let* () = expected p Token.Rbracket in
-            Ok (Ast.Array (Ast.aggregate_length n length_span, t)))
+            Ok (Ast.Array (length, t)))
     | Token.Ident name when Names.type_constructor name = Some Names.Vector ->
         ignore (bump p);
         let* () = expected p Token.Lbracket in
         delimited p (fun () ->
-            let* n, length_span = aggregate_length p in
+            let* length = aggregate_length p in
             let* () = expected p Token.Comma in
             let element_span = span p in
             let* t = ty p in
@@ -380,7 +369,7 @@ module P = struct
             | Ast.Addr ->
                 error element_span
                   "vector element type must be `bool` or an integer type"
-            | _ -> Ok (Ast.Vec (Ast.aggregate_length n length_span, t)))
+            | _ -> Ok (Ast.Vec (length, t)))
     | Token.Ident s when List.mem s Names.scalar_type_names -> (
         ignore (bump p);
         match s with
@@ -442,6 +431,17 @@ module P = struct
         in
         Ok (Ast.Name_arg ("..", sp))
     | _ -> generic_arg p
+
+  and aggregate_length p =
+    let start = span p in
+    let nesting = p.nesting in
+    p.nesting <- max 0 (nesting - 1);
+    let parsed = expr p in
+    p.nesting <- nesting;
+    let* expression = parsed in
+    let finish = p.tokens.(p.pos - 1).Token.span in
+    let length_span = { start with Span.end_offset = finish.Span.end_offset } in
+    Ok (Ast.aggregate_length expression length_span)
 
   and generic_args p =
     let* () = expected p Token.Lbracket in

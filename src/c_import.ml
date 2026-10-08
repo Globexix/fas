@@ -1764,9 +1764,7 @@ let type_result ?(allow_arrays = false) ~alias_name ~alias_type_node ~resolve_al
           match (size, child_type node) with
           | Some size, Some element when size >= 0 ->
               Result.map
-                (fun ty ->
-                  Ast.Array
-                    (Ast.aggregate_length (string_of_int size) Span.synthetic, ty))
+                (fun ty -> Ast.Array (Ast.int_aggregate_length size Span.synthetic, ty))
                 (resolve seen element)
           | _ -> Error "array types are not supported by value")
       | Some "IncompleteArrayType" -> Error "arrays of unknown size are not supported"
@@ -3141,9 +3139,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
               else
                 Some
                   (Ast.Array
-                     ( Ast.aggregate_length
-                         (string_of_int (count * bytes))
-                         Span.synthetic,
+                     ( Ast.int_aggregate_length (count * bytes) Span.synthetic,
                        Ast.Int Ast.U8 ))
           | _ -> None)
       | _ -> None
@@ -4258,7 +4254,11 @@ let reconcile_source ?(container_mismatch_to_clang = false) source_items importe
                       "C declaration `%s` has type `arr[?, %s]`, but Fas declares `%s`"
                       name (Ast.type_name element)
                       (Ast.type_name
-                         (Ast.Array (Ast.aggregate_length "?" Span.synthetic, actual)))))
+                         (Ast.Array
+                            ( Ast.aggregate_length
+                                (Ast.Ident ("?", Span.synthetic))
+                                Span.synthetic,
+                              actual )))))
           | _ -> Some (duplicate ()))
       | _ -> Some (duplicate ())
   in

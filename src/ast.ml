@@ -1,6 +1,6 @@
-type aggregate_length = { text : string; span : Span.t }
+type aggregate_length = { expression : expr; text : string; span : Span.t }
 
-type ty =
+and ty =
   | Bool
   | Int of int_kind
   | Addr
@@ -169,8 +169,6 @@ type program = { items : item list }
 let const_item name name_span ty value span =
   Const { name; name_span; ty_span = name_span; ty; value; span }
 
-let aggregate_length text span = { text; span }
-
 let rec expr_span = function
   | Int_lit (_, s)
   | Bool_lit (_, s)
@@ -318,6 +316,11 @@ and expr_name = function
   | Splat (e, _) -> "splat(" ^ expr_name e ^ ")"
   | Ternary (c, a, b, _) -> expr_name c ^ " ? " ^ expr_name a ^ " : " ^ expr_name b
   | Array_lit (xs, _) -> "{" ^ String.concat ", " (List.map expr_name xs) ^ "}"
+
+let aggregate_length expression span = { expression; text = expr_name expression; span }
+
+let int_aggregate_length length span =
+  aggregate_length (Int_lit (string_of_int length, span)) span
 
 let item_span = function
   | Use { span; _ }
@@ -773,8 +776,9 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
       | Handle inner ->
           count at;
           go_ty at inner
-      | Array (_, inner) | Vec (_, inner) ->
+      | Array (length, inner) | Vec (length, inner) ->
           count at;
+          go_expr length.expression;
           go_ty at inner
       | Applied_type (_, args, span) ->
           count span;

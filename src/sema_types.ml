@@ -372,6 +372,35 @@ let source_ty_diag named_types span ty =
 
 let lookup name table = List.find_opt (fun (entry, _, _) -> entry = name) table
 
+let aggregate_length_value kind span ty value =
+  if not (Sema_numeric.is_int ty) then
+    error span (Printf.sprintf "%s length must be an integer" kind)
+  else if Sema_numeric.is_unsigned ty then
+    if Int64.unsigned_compare value (Int64.of_int max_int) > 0 then
+      error span
+        (Printf.sprintf "%s length `%s` is too large" kind
+           (Sema_numeric.unsigned_int64_to_string value))
+    else Ok (Int64.to_int value)
+  else
+    let value = Sema_numeric.sign_extend_value ty value in
+    if value < 0L then
+      error span (Printf.sprintf "%s length cannot be negative: `%Ld`" kind value)
+    else if value > Int64.of_int max_int then
+      error span (Printf.sprintf "%s length `%Ld` is too large" kind value)
+    else Ok (Int64.to_int value)
+
+let rec aggregate_length_expected = function
+  | Ast.Int_lit _ -> Some (Hir.Int Hir.Usize)
+  | Ast.Parenthesized (expression, _) -> aggregate_length_expected expression
+  | _ -> None
+
+let remap_length_cycle span = function
+  | Error [ diagnostic ]
+    when String.starts_with ~prefix:"cyclic constant dependency" diagnostic.Diag.message
+    ->
+      Error [ { diagnostic with primary = span } ]
+  | result -> result
+
 let resolve_aggregate_length ?(globals = []) ?(kind = "array") values span length =
   match lookup length values with
   | None when List.mem length globals ->
@@ -380,19 +409,7 @@ let resolve_aggregate_length ?(globals = []) ?(kind = "array") values span lengt
       error span (Printf.sprintf "%s length `%s` is too large" kind length)
   | None -> Ok length
   | Some (_, ty, value) ->
-      if Sema_numeric.is_unsigned ty then
-        if Int64.unsigned_compare value (Int64.of_int max_int) > 0 then
-          error span
-            (Printf.sprintf "%s length `%s` is too large" kind
-               (Sema_numeric.unsigned_int64_to_string value))
-        else Ok (Int64.to_string value)
-      else
-        let value = Sema_numeric.sign_extend_value ty value in
-        if value < 0L then
-          error span (Printf.sprintf "%s length cannot be negative: `%Ld`" kind value)
-        else if value > Int64.of_int max_int then
-          error span (Printf.sprintf "%s length `%Ld` is too large" kind value)
-        else Ok (Int64.to_string value)
+      Result.map string_of_int (aggregate_length_value kind span ty value)
 
 let rec source_ty_with_values ?(globals = []) named_types values span = function
   | Ast.Array (length_info, ty) -> (

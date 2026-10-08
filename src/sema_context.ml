@@ -387,6 +387,10 @@ let static_array_lengths bindings declarations =
         when match lookup_top_level name bindings with
              | Some { declaration_kind = Top_const; _ } -> true
              | _ -> false ->
-          Some (name, string_of_int length)
+          Some
+            ( name,
+              Ast.aggregate_length
+                (Ast.Int_lit (string_of_int length, Span.synthetic))
+                Span.synthetic )
       | _ -> None)
     declarations

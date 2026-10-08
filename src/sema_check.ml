@@ -870,6 +870,9 @@ let c_unsupported c span name =
       error span (Printf.sprintf "C declaration `%s` is not supported: %s" name reason))
     (List.assoc_opt name c.c_unsupported)
 
+let expression_mentions_name_ref : (string -> Ast.expr -> bool) ref =
+  ref (fun _ _ -> false)
+
 let rec source_ty_in_context c span = function
   | Ast.Named_type (name, type_span) when Option.is_some (lookup_local name c) ->
       error type_span (Printf.sprintf "`%s` is a value, not a type" name)
@@ -884,14 +887,12 @@ let rec source_ty_in_context c span = function
       | Some { declaration_kind = Top_type; _ } | None ->
           source_ty_diag c.named_types type_span (Ast.Named_type (name, type_span)))
   | Ast.Array (length, ty) ->
-      source_aggregate_in_context c "array" length.span
-        (fun n t -> Hir.Array (n, t))
-        length.text ty
+      source_aggregate_in_context c "array" length (fun n t -> Hir.Array (n, t)) ty
   | Ast.Vec (length, element_ty) -> (
       let* result =
-        source_aggregate_in_context c "vector" length.span
+        source_aggregate_in_context c "vector" length
           (fun n t -> Hir.Vec (n, t))
-          length.text element_ty
+          element_ty
       in
       match result with
       | Hir.Vec (n, element) -> (
@@ -901,23 +902,34 @@ let rec source_ty_in_context c span = function
       | _ -> Ok result)
   | ty -> source_ty_diag c.named_types span ty
 
-and source_aggregate_in_context c kind span make length element =
-  let* length =
-    match int_of_string_opt length with
-    | Some _ -> Ok length
-    | None when Option.is_some (lookup_local length c) ->
-        error span (Printf.sprintf "`%s` is not a compile-time constant" length)
-    | None ->
-        resolve_aggregate_length ~kind
-          ~globals:(List.map (fun (name, _, _) -> name) c.globals)
-          c.consts span length
+and source_aggregate_in_context c kind length_info make element =
+  let shadowed =
+    List.find_opt
+      (fun name -> !expression_mentions_name_ref name length_info.Ast.expression)
+      (Sema_flow.local_names c.flow)
   in
-  let* element = source_ty_in_context c span element in
-  match int_of_string_opt length with
-  | Some length when length < 0 ->
-      error span (Printf.sprintf "%s length cannot be negative: `%d`" kind length)
-  | Some length -> Ok (make length element)
-  | None -> error span (Printf.sprintf "%s length must be an integer constant" kind)
+  let* length =
+    match shadowed with
+    | Some name ->
+        error length_info.span
+          (Printf.sprintf "`%s` is not a compile-time constant" name)
+    | None ->
+        let evaluated =
+          const_expr ~structs:c.structs ~named_types:c.named_types
+            ~generic_structs:c.generic_structs ~arrays:c.arrays
+            ~array_lengths:
+              (Sema_context.static_array_lengths c.top_level_bindings c.globals)
+            ~globals:(List.map (fun (name, _, _) -> name) c.globals)
+            c.consts
+            (aggregate_length_expected length_info.expression)
+            length_info.expression
+        in
+        let evaluated = remap_length_cycle length_info.span evaluated in
+        let* ty, value = evaluated in
+        aggregate_length_value kind length_info.span ty value
+  in
+  let* element = source_ty_in_context c length_info.span element in
+  Ok (make length element)
 
 let intern_string c span s =
   let pool = c.string_pool in
@@ -3798,6 +3810,8 @@ let rec expression_mentions_name name = function
   | Ast.Alignof _ | Ast.Offsetof _ ->
       false
   | Ast.Sizeof_value (value, _) -> expression_mentions_name name value
+
+let () = expression_mentions_name_ref := expression_mentions_name
 
 let rec expression_takes_name_address name = function
   | Ast.Addr_of (value, _) ->

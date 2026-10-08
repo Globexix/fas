@@ -50,6 +50,12 @@ val resolve_aggregate_length :
   string ->
   (string, Diag.t list) result
 
+val aggregate_length_value :
+  string -> Span.t -> Hir.ty -> int64 -> (int, Diag.t list) result
+
+val aggregate_length_expected : Ast.expr -> Hir.ty option
+val remap_length_cycle : Span.t -> ('a, Diag.t list) result -> ('a, Diag.t list) result
+
 val source_ty_with_values :
   ?globals:string list ->
   named_types ->

@@ -168,6 +168,9 @@ let mulhi_apply kind x y =
 let sat_or_mulhi name kind x y =
   if name = "mul_hi" then mulhi_apply kind x y else sat_apply name kind x y
 
+let active_layout_type_bindings = ref []
+and active_array_length_queries = ref []
+
 let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate consts span
     ty =
   let source_int = function
@@ -206,11 +209,11 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
         | Hir.Opaque name -> Ok (Hir.Handle name)
         | _ -> add_error "handle type argument must be an opaque type")
     | Ast.Array (length, ty) ->
-        let* length = resolve_length "array" const_bindings length.span length.text in
+        let* length = resolve_length "array" type_bindings const_bindings length in
         let* ty = resolve_type type_bindings const_bindings at ty in
         Ok (Hir.Array (length, ty))
     | Ast.Vec (length, ty) -> (
-        let* length = resolve_length "vector" const_bindings length.span length.text in
+        let* length = resolve_length "vector" type_bindings const_bindings length in
         let* ty = resolve_type type_bindings const_bindings at ty in
         match vec_cap_error length ty with
         | Some message -> add_error message
@@ -234,25 +237,16 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
           instantiate type_bindings const_bindings name application_span arguments
         in
         Ok (Hir.Struct structure)
-  and resolve_length kind const_bindings at raw =
-    match int_of_string_opt raw with
-    | Some length when length >= 0 -> Ok length
-    | Some length ->
-        add_error (Printf.sprintf "%s length cannot be negative: `%d`" kind length)
-    | None when integer_exceeds_max_int raw ->
-        Error [ Diag.error at (Printf.sprintf "%s length `%s` is too large" kind raw) ]
-    | None -> (
-        let values = const_bindings @ consts in
-        match resolve_aggregate_length ~kind ~globals values at raw with
-        | Ok resolved -> (
-            match int_of_string_opt resolved with
-            | Some length when length >= 0 -> Ok length
-            | Some length ->
-                add_error
-                  (Printf.sprintf "%s length cannot be negative: `%d`" kind length)
-            | None -> evaluate values (Ast.Ident (raw, at)) None |> length_value kind at
-            )
-        | Error diagnostics -> Error diagnostics)
+  and resolve_length kind type_bindings const_bindings length =
+    let previous = !active_layout_type_bindings in
+    active_layout_type_bindings := type_bindings;
+    let result =
+      evaluate (const_bindings @ consts) length.expression
+        (aggregate_length_expected length.expression)
+    in
+    active_layout_type_bindings := previous;
+    let result = remap_length_cycle length.span result in
+    length_value kind length.span result
   and length_value kind at = function
     | Error diagnostics -> Error diagnostics
     | Ok (ty, value) ->
@@ -447,7 +441,7 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
     in
     place 0 1 fields []
   in
-  let* ty = resolve_type [] [] span ty in
+  let* ty = resolve_type !active_layout_type_bindings [] span ty in
   Ok (ty, !definitions)
 
 let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
@@ -863,17 +857,23 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
       | _ -> (
           match List.assoc_opt name array_lengths with
           | None -> error s "len requires a fixed array or string literal"
-          | Some length ->
-              let expression =
-                if Option.is_some (int_of_string_opt length) then Ast.Int_lit (length, s)
-                else Ast.Ident (length, s)
-              in
-              let* ty, bits =
-                const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
-                  ~globals ?resolve consts None ~check_only ~validate_dead expression
-              in
-              if is_int ty then Ok (Hir.Int Hir.Usize, bits)
-              else error s "len requires a fixed array or string literal"))
+          | Some (length : Ast.aggregate_length) ->
+              if List.mem name !active_array_length_queries then
+                error length.span
+                  (Printf.sprintf "cyclic constant dependency involving `%s`" name)
+              else
+                let previous = !active_array_length_queries in
+                active_array_length_queries := name :: previous;
+                let result =
+                  const_expr ~structs ~named_types ~generic_structs ~arrays
+                    ~array_lengths ~globals ?resolve consts None ~check_only
+                    ~validate_dead length.expression
+                in
+                active_array_length_queries := previous;
+                let result = remap_length_cycle length.span result in
+                let* ty, bits = result in
+                if is_int ty then Ok (Hir.Int Hir.Usize, bits)
+                else error s "len requires a fixed array or string literal"))
   | Ast.Call (Ast.Ident (name, _), [ arg ], _s) when name = "any" || name = "all" -> (
       match
         vector_const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths

@@ -1,5 +1,4 @@
 open Sema_constants
-open Sema_numeric
 open Sema_specialization
 open Sema_types
 
@@ -181,7 +180,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   in
   let rec type_mentions names = function
     | Ast.Array (length, ty) | Ast.Vec (length, ty) ->
-        List.mem length.Ast.text names || type_mentions names ty
+        expression_mentions names length.Ast.expression || type_mentions names ty
     | Ast.Handle ty -> type_mentions names ty
     | Ast.Applied_type (_, arguments, _) ->
         List.exists (generic_argument_mentions names) arguments
@@ -272,21 +271,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             (validate_generic_argument_names value_names type_names application_span)
             arguments
     | Ast.Bool | Ast.Void | Ast.Int _ -> Ok ()
-  and validate_aggregate_length_names value_names type_names span kind length ty =
-    let too_large = integer_exceeds_max_int length.Ast.text in
-    let* () =
-      match parse_integer length.text with
-      | Ok _ when too_large ->
-          error length.span
-            (Printf.sprintf "%s length `%s` is too large" kind length.text)
-      | Ok _ -> Ok ()
-      | Error _ when too_large ->
-          error length.span
-            (Printf.sprintf "%s length `%s` is too large" kind length.text)
-      | Error _ ->
-          if String_set.mem length.text value_names then Ok ()
-          else error length.span (Printf.sprintf "unknown name `%s`" length.text)
-    in
+  and validate_aggregate_length_names value_names type_names span _kind length ty =
+    let* () = validate_expression_names value_names type_names length.Ast.expression in
     validate_type_names value_names type_names span ty
   and validate_generic_argument_names value_names type_names fallback_span = function
     | Ast.Type_or_index (Ast.Applied_type (name, _, _) as ty) -> (
@@ -1215,26 +1201,18 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         Ok (Ast.Handle ty)
     | Ast.Array (length_info, ty) ->
         let* length =
-          if String_set.mem length_info.text !shadowed_constants then
-            error length_info.span
-              (Printf.sprintf "`%s` is not a compile-time constant" length_info.text)
-          else
-            resolve_aggregate_length ~kind:"array" ~globals:global_names
-              (values @ eval_consts) length_info.span length_info.text
+          resolve_length "array" length_info ~values ~defer_const_structs substitutions
+            depth
         in
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
-        Ok (Ast.Array ({ length_info with text = length }, ty))
+        Ok (Ast.Array (length, ty))
     | Ast.Vec (length_info, ty) ->
         let* length =
-          if String_set.mem length_info.text !shadowed_constants then
-            error length_info.span
-              (Printf.sprintf "`%s` is not a compile-time constant" length_info.text)
-          else
-            resolve_aggregate_length ~kind:"vector" ~globals:global_names
-              (values @ eval_consts) length_info.span length_info.text
+          resolve_length "vector" length_info ~values ~defer_const_structs substitutions
+            depth
         in
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
-        Ok (Ast.Vec ({ length_info with text = length }, ty))
+        Ok (Ast.Vec (length, ty))
     | Ast.Named_type ("void", type_span) -> Ok (Ast.Named_type ("void", type_span))
     | Ast.Named_type (name, type_span) when Names.reserved_float_name name ->
         error type_span (Names.reserved_float_message name)
@@ -1414,6 +1392,49 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 in
                 Ok (Ast.Named_type (specialization.name, span))
         | Some _ -> error span "internal error: generic struct template is malformed")
+  and resolve_length kind length_info ~values ~defer_const_structs substitutions depth =
+    let shadowed =
+      String_set.elements !shadowed_constants
+      |> List.find_opt (fun name ->
+          expression_mentions [ name ] length_info.Ast.expression)
+    in
+    let* () =
+      match shadowed with
+      | Some name ->
+          error length_info.span
+            (Printf.sprintf "`%s` is not a compile-time constant" name)
+      | None -> Ok ()
+    in
+    let* expression =
+      resolve_expr ~values ~defer_const_structs substitutions depth
+        length_info.Ast.expression
+    in
+    let evaluated =
+      const_expr ~structs:eval_structs ~named_types:eval_named_types ~generic_structs
+        ~arrays:eval_arrays
+        ~array_lengths:
+          (array_lengths @ static_array_lengths top_level_bindings eval_globals)
+        ~globals:global_names (values @ eval_consts)
+        (aggregate_length_expected expression)
+        expression
+    in
+    let deferred_constants = String_set.diff !local_values !shadowed_constants in
+    match evaluated with
+    | Error [ diagnostic ]
+      when String.starts_with ~prefix:"unknown name `" diagnostic.Diag.message
+           && (String_set.exists
+                 (fun name -> expression_mentions [ name ] expression)
+                 global_value_names
+              || String_set.exists
+                   (fun name -> expression_mentions [ name ] expression)
+                   deferred_constants) ->
+        Ok length_info
+    | Error [ _ ] as result -> remap_length_cycle length_info.span result
+    | Error diagnostics -> Error diagnostics
+    | Ok (ty, value) ->
+        let* length = aggregate_length_value kind length_info.span ty value in
+        let expression = Ast.Int_lit (string_of_int length, length_info.span) in
+        Ok (Ast.aggregate_length expression length_info.span)
   and resolve_expr ?(values = []) ?(defer_const_structs = false) substitutions depth =
     function
     | (Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Ident _) as
@@ -1798,7 +1819,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         if has_generic_type ty && !preserve_layout_queries then
           Ok (Ast.Sizeof (ty, span))
         else if has_generic_type ty then
-          let* _ =
+          let* ty =
             resolve_ty ~values ~defer_const_structs substitutions depth span ty
           in
           Ok (Ast.Sizeof (ty, span))
@@ -1811,7 +1832,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         if has_generic_type ty && !preserve_layout_queries then
           Ok (Ast.Alignof (ty, span))
         else if has_generic_type ty then
-          let* _ =
+          let* ty =
             resolve_ty ~values ~defer_const_structs substitutions depth span ty
           in
           Ok (Ast.Alignof (ty, span))
@@ -1824,7 +1845,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         if has_generic_type ty && !preserve_layout_queries then
           Ok (Ast.Offsetof (ty, field, span))
         else if has_generic_type ty then
-          let* _ =
+          let* ty =
             resolve_ty ~values ~defer_const_structs substitutions depth span ty
           in
           Ok (Ast.Offsetof (ty, field, span))

@@ -3,7 +3,7 @@ val const_expr :
   ?named_types:Sema_types.named_types ->
   ?generic_structs:Ast.item list ->
   ?arrays:(string * Hir.ty * int64 list) list ->
-  ?array_lengths:(string * string) list ->
+  ?array_lengths:(string * Ast.aggregate_length) list ->
   ?globals:string list ->
   ?resolve:(check_only:bool -> string -> Span.t -> (Hir.ty * int64, Diag.t list) result) ->
   Sema_types.const_values ->
@@ -20,7 +20,7 @@ val vector_const_expr :
   ?named_types:Sema_types.named_types ->
   ?generic_structs:Ast.item list ->
   ?arrays:(string * Hir.ty * int64 list) list ->
-  ?array_lengths:(string * string) list ->
+  ?array_lengths:(string * Ast.aggregate_length) list ->
   ?globals:string list ->
   ?resolve:(check_only:bool -> string -> Span.t -> (Hir.ty * int64, Diag.t list) result) ->
   Sema_types.const_values ->
@@ -31,7 +31,7 @@ val vector_const_expr :
 
 val resolve_scalar_declarations :
   ?globals:string list ->
-  ?array_lengths:(string * string) list ->
+  ?array_lengths:(string * Ast.aggregate_length) list ->
   ?generic_structs:Ast.item list ->
   structs:Hir.struct_def list ->
   named_types:Sema_types.named_types ->

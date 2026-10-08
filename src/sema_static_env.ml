@@ -265,6 +265,6 @@ let address_value c ty expression =
 let source_array_lengths items =
   List.filter_map
     (function
-      | Ast.Const { name; ty = Ast.Array (length, _); _ } -> Some (name, length.text)
+      | Ast.Const { name; ty = Ast.Array (length, _); _ } -> Some (name, length)
       | _ -> None)
     items
