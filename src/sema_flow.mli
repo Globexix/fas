@@ -79,6 +79,7 @@ val validate_exit_defers : t -> int -> (unit, Diag.t list) result
 val mark_init : binding -> t -> unit
 val with_dead_check : t -> bool -> (unit -> 'a) -> 'a
 val checking_dead : t -> bool
+val set_loop_labels : t -> (string * Span.t) list -> unit
 val snapshot : t -> snapshot
 val restore : t -> snapshot -> unit
 val merge : t -> snapshot -> snapshot -> snapshot

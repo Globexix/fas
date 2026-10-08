@@ -77,6 +77,7 @@ type t = {
   mutable next_binding_id : int;
   mutable loop_depth : int;
   mutable loop_init_flows : loop_init_flow list;
+  mutable loop_labels : (string * Span.t) list;
   mutable in_defer : bool;
   mutable collecting_defer : deferred_requirement list option;
   mutable defer_scopes : checked_defer list list;
@@ -108,6 +109,7 @@ let create ~initial_scope structs =
     next_binding_id = 0;
     loop_depth = 0;
     loop_init_flows = [];
+    loop_labels = [];
     in_defer = false;
     collecting_defer = None;
     defer_scopes = [];
@@ -792,6 +794,7 @@ let with_dead_check flow dead check =
   result
 
 let checking_dead flow = flow.checking_dead
+let set_loop_labels flow labels = flow.loop_labels <- labels
 let merge = merge_maps
 let falls_through flow = flow.falls_through
 let set_falls_through flow value = flow.falls_through <- value
@@ -892,8 +895,22 @@ let record_loop_exit flow target span kind =
           List.find_opt (fun loop -> loop.label = Some name) flow.loop_init_flows
     in
     match (target, target_loop) with
-    | Some (name, span), None ->
-        error span (Printf.sprintf "unknown loop label `%s`" name)
+    | Some (name, span), None -> (
+        match List.assoc_opt name flow.loop_labels with
+        | None -> error span (Printf.sprintf "unknown loop label `%s`" name)
+        | Some label_span ->
+            Error
+              [
+                Diag.error
+                  ~notes:
+                    [
+                      Printf.sprintf "loop label `%s` is declared here at %s" name
+                        (Span.to_string label_span);
+                    ]
+                  span
+                  (Printf.sprintf "`%s %s` is not inside the loop labeled `%s`" kind
+                     name name);
+              ])
     | None, None -> error span (kind ^ " outside loop")
     | _, Some _ when not flow.falls_through -> Ok ()
     | _, Some loop ->

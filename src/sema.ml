@@ -804,10 +804,31 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
   let hir_params params =
     List.mapi (fun id (name, ty) -> ({ Hir.name; ty; id } : Hir.local)) params
   in
+  let own_loop_label = function
+    | None -> []
+    | Some (label : Ast.loop_label) -> [ (label.name, label.span) ]
+  in
+  let rec loop_labels_in_block statements =
+    List.concat_map loop_labels_in_statement statements
+  and loop_labels_in_statement = function
+    | Ast.While (label, _, body, _) -> own_loop_label label @ loop_labels_in_block body
+    | Ast.For (label, _, _, _, body, _) ->
+        own_loop_label label @ loop_labels_in_block body
+    | Ast.If (_, yes, no, _) ->
+        loop_labels_in_block yes @ Option.fold ~none:[] ~some:loop_labels_in_block no
+    | Ast.Defer (body, _) | Ast.Block (body, _) -> loop_labels_in_block body
+    | Ast.Switch (_, cases, default, _) ->
+        List.concat_map (fun (_, body) -> loop_labels_in_block body) cases
+        @ Option.fold ~none:[] ~some:loop_labels_in_block default
+    | Ast.Let _ | Ast.View _ | Ast.Assign _ | Ast.Compound_assign _ | Ast.Return _
+    | Ast.Break _ | Ast.Continue _ | Ast.Expr_stmt _ ->
+        []
+  in
   let check_function_body ~name ~diagnostic_name ~description ~span ~diagnostic_span
       ~params ~ret ~stmts ~linkage ~variadic ~extra_consts ~spec_depth ~spec_trace
       ~require_return =
     let context = make_context ~extra_consts ~spec_depth ~spec_trace ~ret_ty:ret in
+    Sema_flow.set_loop_labels context.flow (loop_labels_in_block stmts);
     let* params =
       Result_list.map
         (fun (param_name, param_ty) ->

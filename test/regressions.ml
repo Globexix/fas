@@ -268,6 +268,16 @@ let semantic_message name expected text =
             (name ^ ": expected [" ^ expected ^ "], got [" ^ String.concat "; " actual
            ^ "]"))
 
+let semantic_note name expected text =
+  match semantic_diagnostics text with
+  | [ diagnostic ]
+    when List.exists (fun note -> contains note expected) diagnostic.Diag.notes ->
+      ()
+  | diagnostics ->
+      failwith
+        (name ^ ": expected note [" ^ expected ^ "], got "
+        ^ Diag.render_all ~source:(Some (source text)) diagnostics)
+
 let semantic_error name fragment text =
   let diagnostics = semantic_diagnostics text in
   let rendered = Diag.render_all ~source:None diagnostics in
@@ -3827,9 +3837,14 @@ let () =
     "fn f() void { break missing }\n";
   semantic_message "labeled-continue-unknown" "unknown loop label `missing`"
     "fn f() void { continue missing }\n";
-  semantic_message "labeled-break-not-enclosing" "unknown loop label `outer`"
+  semantic_message "labeled-break-not-enclosing"
+    "`break outer` is not inside the loop labeled `outer`"
     "fn f() void { outer: while false { }\n while true { break outer } }\n";
-  semantic_message "labeled-continue-not-enclosing" "unknown loop label `outer`"
+  semantic_note "labeled-break-not-enclosing-note"
+    "loop label `outer` is declared here at regression.fas:1:15"
+    "fn f() void { outer: while false { }\n while true { break outer } }\n";
+  semantic_message "labeled-continue-not-enclosing"
+    "`continue outer` is not inside the loop labeled `outer`"
     "fn f() void { outer: while false { }\n while true { continue outer } }\n";
   semantic_message "labeled-loop-shadow"
     "loop label `outer` shadows an enclosing loop label"
