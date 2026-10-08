@@ -3466,7 +3466,8 @@ and check_indirect_target c fact arguments result_ty span =
   let signature name (sig_ : Sema_context.signature) =
     Printf.sprintf "%s(%s) %s" name
       (String.concat ", "
-         (List.map (fun (_, ty) -> Sema_types.diagnostic_ty_name ty) sig_.params))
+         (List.map (fun (_, ty) -> Sema_types.diagnostic_ty_name ty) sig_.params)
+      ^ if sig_.variadic then if sig_.params = [] then "..." else ", ..." else "")
       (Sema_types.diagnostic_ty_name sig_.ret)
   in
   let bad message = error span message in

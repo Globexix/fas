@@ -10139,7 +10139,7 @@ let () =
      return call_addr[u32](target, 1) }\n\
     \     fn valid(p addr) u32 { return call_addr[u32](p, 1) }\n";
   semantic_message "call-addr-variadic-target"
-    "call_addr cannot call variadic C function `printf(addr) i32`"
+    "call_addr cannot call variadic C function `printf(addr, ...) i32`"
     "extern \"C\" { fn printf(format addr, ...) i32 }\n\
     \     fn invalid(format addr) i32 { target addr = &printf\n\
      return call_addr[i32](target, format) }\n\
