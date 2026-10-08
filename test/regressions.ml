@@ -7286,6 +7286,24 @@ let () =
     "fn f(a u16, b u16) u32 { value u32 = zext[u32](a) * b; return value }\n";
   semantic_error "mixed-widths-without-common-type" "different types"
     "fn f(a u32, b i32) bool { return a < b }\n";
+  let implicit_widening_llvm =
+    llvm_of
+      "fn unsigned_value(x u8) i16 { return x }\n\
+       fn signed_value(x i8) i64 { return x }\n\
+       fn mixed_value(a u32, b i64) i64 { return a + b }\n\
+       fn call_value(x i32) i64 { return consume(x) }\n\
+       fn consume(x i64) i64 { return x }\n"
+  in
+  let explicit_widening_llvm =
+    llvm_of
+      "fn unsigned_value(x u8) i16 { return zext[i16](x) }\n\
+       fn signed_value(x i8) i64 { return sext[i64](x) }\n\
+       fn mixed_value(a u32, b i64) i64 { return zext[i64](a) + b }\n\
+       fn call_value(x i32) i64 { return consume(sext[i64](x)) }\n\
+       fn consume(x i64) i64 { return x }\n"
+  in
+  if implicit_widening_llvm <> explicit_widening_llvm then
+    failwith "implicit widening emitted different LLVM than explicit casts";
   let addr_bitwise_source = "fn f(p addr, n u32) addr { return p & n }\n" in
   let addr_bitwise_line = String.trim addr_bitwise_source in
   let addr_bitwise_column = String.length "fn f(p addr, n u32) addr { return " + 1 in
