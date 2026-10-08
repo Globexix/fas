@@ -20,10 +20,23 @@ void widening_report(uint32_t to_u32, int16_t to_i16, int64_t to_i64,
          global_field, narrow_product);
 }
 
+void widening_branch_report(uint64_t zero_low, uint64_t zero_high, int64_t sign_low,
+                            int64_t sign_high) {
+  printf("%" PRIu64 " %" PRIu64 " %" PRId64 " %" PRId64 "\n", zero_low,
+         zero_high, sign_low, sign_high);
+}
+
 #ifdef WIDENING_ORACLE
 int main(void) {
   widening_report(255, 255, -1, 256, 255, 765, 255, 7, 510, 1, 255, 255, 255, 255,
                   500000);
+  return 0;
+}
+#endif
+
+#ifdef WIDENING_BRANCH_ORACLE
+int main(void) {
+  widening_branch_report(0, 65535, -32768, 32767);
   return 0;
 }
 #endif
