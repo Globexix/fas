@@ -2280,6 +2280,18 @@ let () =
   then failwith "switch-multiple-case-values: expected one switch to a shared arm";
   semantic_error "switch-nonconst-case" "case label must be a compile-time constant"
     "fn f(x i32, y i32) i32 { switch x { case y: return 1 } return 0 }\n";
+  semantic_message "switch-literal-case-out-of-range"
+    "integer literal is out of range for u8: `300`"
+    "fn f(x u8) i32 { switch x { case 300: return 1 } return 0 }\n";
+  semantic_accept "switch-literal-case-range-twin"
+    "fn f(x u8) i32 { switch x { case 255: return 1 } return 0 }\n";
+  semantic_message "switch-constant-case-out-of-range"
+    "integer literal is out of range for u8: `300`"
+    "const VALUE u16 = 200 + 100\n\
+     fn f(x u8) i32 { switch x { case VALUE: return 1 } return 0 }\n";
+  semantic_accept "switch-constant-case-range-twin"
+    "const VALUE u8 = 200 + 55\n\
+     fn f(x u8) i32 { switch x { case VALUE: return 1 } return 0 }\n";
   semantic_error "switch-vec-scrutinee" "switch value must be an integer or bool"
     "fn f(v vec[2,i32]) i32 { switch v { case 1: return 1 } return 0 }\n";
   semantic_error "switch-bool-exhaustive-still-needs-return"

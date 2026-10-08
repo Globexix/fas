@@ -4847,16 +4847,35 @@ and check_stmt (c : context) = function
         in
         let before_falls = Sema_flow.falls_through c.flow in
         let branch_falls = ref [] in
+        let evaluate_case =
+          const_expr
+            ~array_lengths:(static_array_lengths c.top_level_bindings c.globals)
+            ~structs:c.structs ~named_types:c.named_types
+            ~generic_structs:c.generic_structs
+            ~globals:(List.map (fun (name, _, _) -> name) c.globals)
+            ~arrays:c.arrays c.consts
+        in
+        let case_value_fits source value =
+          let value = Sema_numeric.sign_extend_value source value in
+          match et with
+          | Hir.Int _ ->
+              Sema_numeric.fits_literal et value
+              || (not (Sema_numeric.is_unsigned et))
+                 && value < 0L
+                 && (not (Sema_numeric.is_unsigned source))
+                 && Sema_numeric.sign_extend_bits et value = value
+          | _ -> true
+        in
+        let case_value_text source value =
+          if Sema_numeric.is_unsigned source then
+            Sema_numeric.unsigned_int64_to_string value
+          else Int64.to_string (Sema_numeric.sign_extend_value source value)
+        in
         let rec case_values acc selected = function
           | [] -> Ok (List.rev acc, selected)
           | k :: rest -> (
               let* kt, kv =
-                const_expr
-                  ~array_lengths:(static_array_lengths c.top_level_bindings c.globals)
-                  ~structs:c.structs ~named_types:c.named_types
-                  ~generic_structs:c.generic_structs
-                  ~globals:(List.map (fun (name, _, _) -> name) c.globals)
-                  ~arrays:c.arrays c.consts (Some et) k
+                evaluate_case (Some et) k
                 |> Result.map_error (function
                   | [ diagnostic ]
                     when String.starts_with ~prefix:"global `" diagnostic.Diag.message
@@ -4889,6 +4908,21 @@ and check_stmt (c : context) = function
                       | None -> [ diagnostic ])
                   | [ diagnostic ]
                     when String.starts_with ~prefix:"cannot use `"
+                           diagnostic.Diag.message -> (
+                      match evaluate_case None k with
+                      | Ok ((Hir.Int _ as source), value)
+                        when not (case_value_fits source value) ->
+                          [
+                            Diag.error (Ast.expr_span k)
+                              (Printf.sprintf
+                                 "integer literal is out of range for %s: `%s`"
+                                 (Sema_types.diagnostic_ty_name et)
+                                 (case_value_text source value));
+                          ]
+                      | _ -> [ diagnostic ])
+                  | [ diagnostic ]
+                    when String.starts_with
+                           ~prefix:"integer literal is out of range for "
                            diagnostic.Diag.message ->
                       [ diagnostic ]
                   | _ ->
