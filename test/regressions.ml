@@ -10377,6 +10377,10 @@ let () =
     "fn probe() i32 { return strncmp(\"abcd\", c\"x\", 3) }\n";
   c_semantic_accept "c-string-strndup-length" c_strings
     "fn probe() addr { return strndup(\"abc\", 2) }\n";
+  c_semantic_message "c-string-plain-literal-const"
+    "expression is not compile-time constant" c_strings "const S addr = \"x\"\n";
+  c_semantic_accept "c-string-c-literal-const" c_strings
+    "const S addr = c\"x\"\nfn probe() void { puts(S)\nreturn }\n";
   c_semantic_accept "c-string-memcpy-void-pointer" c_strings
     "fn probe() void { dst addr = addr_from_bits(4096)\n\
      memcpy(dst, \"abc\", 3)\n\
