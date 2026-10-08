@@ -469,6 +469,19 @@ let () =
       ]
   in
   expect_ir_error "block 0 has unknown successor 1" missing_switch_successor;
+  let duplicate_switch_cases =
+    ir_module
+      [
+        ir_function
+          [
+            ir_block 0
+              (Ir.Switch (Ir.I8, Ir.Const (Ir.I8, 0L), [ (1L, 1); (1L, 1) ], 2));
+            ir_block 1 (Ir.Ret None);
+            ir_block 2 (Ir.Ret None);
+          ];
+      ]
+  in
+  expect_ir_error "block 0 has duplicate switch case 1" duplicate_switch_cases;
   let mistyped_operand =
     ir_module
       [

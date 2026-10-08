@@ -36,6 +36,7 @@ let rec unresolved_shape_of expression =
     | _ -> None
   in
   match expression with
+  | Ast.Parenthesized (expression, _) -> unresolved_shape_of expression
   | Ast.Int_lit _ -> Some Unresolved_int
   | Ast.Null _ -> Some Unresolved_null
   | Ast.Unary ((Ast.Neg | Ast.Bit_not), operand, _) -> (
@@ -1929,6 +1930,9 @@ let resolve_scalar_declarations ?(globals = []) ?(array_lengths = [])
             match resolve ~check_only:false name span with
             | Ok _ -> collect rest
             | Error diagnostics when requires_non_scalar diagnostics -> collect rest
+            | Error ([ { Diag.message; _ } ] as diagnostics)
+              when String.starts_with ~prefix:"cyclic constant dependency" message ->
+                Error diagnostics
             | Error _ when not strict -> collect rest
             | Error _ as failure -> failure))
   in

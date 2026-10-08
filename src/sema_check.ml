@@ -4,6 +4,7 @@ open Sema_numeric
 open Sema_specialization
 open Sema_types
 open Sema_context
+module Int64_map = Map.Make (Int64)
 
 let error ?help span message = Error [ Diag.error ?help span message ]
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
@@ -612,6 +613,10 @@ let rec unterminated_string_literal c = function
           | _ -> None)
       | _ -> None)
 
+let c_string_help bytes =
+  if String.contains bytes '\000' then None
+  else Some ("write " ^ Ast.string_literal_name true bytes)
+
 let check_c_string_arguments c name parameters values arguments =
   if not (Sema_flow.proof_checks_enabled c.flow) then Ok ()
   else
@@ -628,11 +633,7 @@ let check_c_string_arguments c name parameters values arguments =
                   | Some name when name <> "" -> "parameter `" ^ name ^ "`"
                   | _ -> "parameter " ^ string_of_int index
                 in
-                let help =
-                  if String.contains bytes '\000' then None
-                  else Some ("write " ^ Ast.string_literal_name true bytes)
-                in
-                error ?help (Ast.expr_span argument)
+                error ?help:(c_string_help bytes) (Ast.expr_span argument)
                   (Printf.sprintf
                      "%s has no NUL terminator, but `%s` reads %s as a C string" literal
                      name parameter))
@@ -1178,6 +1179,7 @@ let unresolved_shape_key expression =
   (span.Span.file, span.Span.start_offset, span.Span.end_offset)
 
 let shape_children = function
+  | Ast.Parenthesized (operand, _) -> [ operand ]
   | Ast.Unary ((Ast.Neg | Ast.Bit_not), operand, _) -> [ operand ]
   | Ast.Binary
       ( ( Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
@@ -1196,6 +1198,7 @@ let unresolved_shape_cache_worthwhile expression =
     | current :: rest -> (
         pending := rest;
         match current with
+        | Ast.Parenthesized (operand, _) -> pending := operand :: !pending
         | Ast.Unary ((Ast.Neg | Ast.Bit_not), operand, _) ->
             incr operators;
             pending := operand :: !pending
@@ -1227,6 +1230,7 @@ let build_unresolved_shapes expression =
         stack := rest;
         let shape =
           match current with
+          | Ast.Parenthesized (operand, _) -> cached_shape operand
           | Ast.Int_lit _ -> Some Unresolved_int
           | Ast.Null _ -> Some Unresolved_null
           | Ast.Unary ((Ast.Neg | Ast.Bit_not), operand, _) -> (
@@ -1265,6 +1269,7 @@ let rec unresolved_shape_uncached expression =
     | _ -> None
   in
   match expression with
+  | Ast.Parenthesized (operand, _) -> unresolved_shape_uncached operand
   | Ast.Int_lit _ -> Some Unresolved_int
   | Ast.Null _ -> Some Unresolved_null
   | Ast.Unary ((Ast.Neg | Ast.Bit_not), operand, _) -> (
@@ -1310,21 +1315,19 @@ let rec is_if_operand = function
   | _ -> false
 
 let operand_type_hint c operation expected left right =
-  if is_if_operand left || is_if_operand right then None
-  else
-    match operation with
-    | Ast.Add | Ast.Sub -> (
-        match expected with Some Hir.Addr -> Some (Hir.Int Hir.Usize) | e -> e)
-    | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or | Ast.Bit_xor -> expected
-    | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
-        match expected with
-        | Some (Hir.Vec (lanes, _))
-          when unresolved_vector_elements c left && unresolved_vector_elements c right
-          ->
-            Some (Hir.Vec (lanes, Hir.Int Hir.I32))
-        | _ -> None)
-    | Ast.And | Ast.Or -> None
-    | Ast.Shl | Ast.Shr -> None
+  let expected = if is_if_operand left || is_if_operand right then None else expected in
+  match operation with
+  | Ast.Add | Ast.Sub -> (
+      match expected with Some Hir.Addr -> Some (Hir.Int Hir.Usize) | e -> e)
+  | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or | Ast.Bit_xor -> expected
+  | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
+      match expected with
+      | Some (Hir.Vec (lanes, _))
+        when unresolved_vector_elements c left && unresolved_vector_elements c right ->
+          Some (Hir.Vec (lanes, Hir.Int Hir.I32))
+      | _ -> None)
+  | Ast.And | Ast.Or -> None
+  | Ast.Shl | Ast.Shr -> None
 
 let contextual_peer_type c operation peer operand =
   if is_if_operand operand then None
@@ -1865,7 +1868,7 @@ and check_expr_inner ?destination (c : context) expected expression =
       Ok (Hir.Vector_lit (entries, literal_type, span))
   in
   match expression with
-  | Ast.Parenthesized (value, _) -> check_expr c expected value
+  | Ast.Parenthesized (value, _) -> check_expr_inner ?destination c expected value
   | Ast.Ident ("call_addr", s) -> error s "call_addr is a builtin and has no address"
   | (Ast.C_dereference _ | Ast.C_dot_star _) as expression ->
       Error [ Sema_types.c_pointer_selection_diagnostic expected expression ]
@@ -2502,6 +2505,15 @@ and check_expr_inner ?destination (c : context) expected expression =
         Sema_flow.restore c.flow
           (Sema_flow.merge_values_into c.flow initialized value_paths);
         let at = Hir.expr_ty ta and bt = Hir.expr_ty tb in
+        let widening_help =
+          not
+            (List.exists
+               (fun frame ->
+                 List.exists
+                   (function Diagnostic_type_argument _ -> true | _ -> false)
+                   frame.arguments)
+               c.spec_trace)
+        in
         let* result_type, left_widen, right_widen =
           if Option.is_none expected then
             unify_if_branches a at b bt
@@ -2511,11 +2523,11 @@ and check_expr_inner ?destination (c : context) expected expression =
               match expected with
               | Some target when scalar_conversion_pair at target ->
                   let* () =
-                    ensure_expected ~context:"if-expression branch" ~expression:a at
-                      target (Ast.expr_span a)
+                    ensure_expected ~widening_help ~context:"if-expression branch"
+                      ~expression:a at target (Ast.expr_span a)
                   in
-                  ensure_expected ~context:"if-expression branch" ~expression:b bt
-                    target (Ast.expr_span b)
+                  ensure_expected ~widening_help ~context:"if-expression branch"
+                    ~expression:b bt target (Ast.expr_span b)
               | _ -> Ok ()
             in
             let result_ty =
@@ -4895,7 +4907,7 @@ and check_stmt (c : context) = function
              (Sema_types.diagnostic_ty_name et))
       else
         let before = Sema_flow.snapshot c.flow
-        and seen = ref []
+        and seen = ref Int64_map.empty
         and branch_states = ref []
         and selected_case = ref None
         and selected_default = ref None in
@@ -4983,7 +4995,8 @@ and check_stmt (c : context) = function
                   | [ diagnostic ]
                     when String.starts_with
                            ~prefix:"integer literal is out of range for "
-                           diagnostic.Diag.message ->
+                           diagnostic.Diag.message
+                         || String.starts_with ~prefix:"`" diagnostic.Diag.message ->
                       [ diagnostic ]
                   | _ ->
                       [
@@ -4995,17 +5008,17 @@ and check_stmt (c : context) = function
                 ensure_expected ~context:"case value" ~expression:k kt et
                   (Ast.expr_span k)
               in
-              match List.assoc_opt kv !seen with
+              match Int64_map.find_opt kv !seen with
               | Some first_span ->
                   Error
                     [
                       Diag.error
                         ~notes:[ "first case value is at " ^ Span.to_string first_span ]
                         (Ast.expr_span k)
-                        (Printf.sprintf "duplicate case label `%Ld`" kv);
+                        ("duplicate case label `" ^ case_value_text et kv ^ "`");
                     ]
               | None ->
-                  seen := (kv, Ast.expr_span k) :: !seen;
+                  seen := Int64_map.add kv (Ast.expr_span k) !seen;
                   let tk =
                     match et with
                     | Hir.Bool -> Hir.EBool (kv <> 0L, Ast.expr_span k)

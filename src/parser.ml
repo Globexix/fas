@@ -642,9 +642,10 @@ module P = struct
         in
         Error
           [
-            Diag.error attribute_span
-              (if name = "align" then "attribute `@align` applies to structs"
-               else "unknown attribute `@" ^ name ^ "`");
+            (if name = "align" then
+               Diag.error ~help:"write `struct P @align(16) {`" attribute_span
+                 "attribute `@align` applies to structs"
+             else Diag.error attribute_span ("unknown attribute `@" ^ name ^ "`"));
           ]
     | t ->
         Error
@@ -1785,18 +1786,14 @@ module P = struct
              "Fas struct initializers are positional; designated initializer `.%s` is \
               not supported"
              field)
-    | Token.Lparen -> (
+    | Token.Lparen ->
         let s = span p in
         if starts_struct_literal p then
           error s "Fas has no compound literals; declare a typed local or `const`"
         else
           let* e = expression_argument p in
-          match e with
-          | Ast.Parenthesized _
-          | Ast.Binary ((Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge), _, _, _)
-            ->
-              Ok (Ast.Parenthesized (e, s))
-          | _ -> Ok e)
+          let s = { s with end_offset = p.tokens.(p.pos - 1).Token.span.end_offset } in
+          Ok (Ast.Parenthesized (e, s))
     | Token.Ident n -> (
         let sp = span p in
         ignore (bump p);

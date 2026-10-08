@@ -481,7 +481,19 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       | Ast.Handle ty | Ast.Array (_, ty) | Ast.Vec (_, ty) -> contains_void ty
       | _ -> false
     in
-    let layout_error_field message =
+    let layout_error_field ?overflow_field message =
+      let overflow_field =
+        match (message, overflow_field) with
+        | "aggregate size overflows", Some (struct_name, field_name) ->
+            program.items
+            |> List.find_map (function
+              | Ast.Struct { name; fields; _ } when name = struct_name ->
+                  List.find_opt
+                    (fun (field : Ast.field) -> field.name = field_name)
+                    fields
+              | _ -> None)
+        | _ -> None
+      in
       let target =
         let extract prefix =
           if not (String.starts_with ~prefix message) then None
@@ -500,20 +512,25 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
         else
           Option.fold ~none:false ~some:(fun name -> mentions_type name field.ty) target
       in
-      program.items
-      |> List.find_map (function
-        | Ast.Struct { fields; _ } ->
-            List.find_map
-              (fun (field : Ast.field) ->
-                if field_matches field then Some field else None)
-              fields
-        | _ -> None)
+      match overflow_field with
+      | Some _ as field -> field
+      | None ->
+          program.items
+          |> List.find_map (function
+            | Ast.Struct { fields; _ } ->
+                List.find_map
+                  (fun (field : Ast.field) ->
+                    if field_matches field then Some field else None)
+                  fields
+            | _ -> None)
     in
-    let layout_error_diagnostic message =
-      match layout_error_field message with
+    let layout_error_diagnostic ?overflow_field message =
+      match layout_error_field ?overflow_field message with
       | Some field when message = "void has no object layout" ->
           Diag.error field.ty_span
             (Printf.sprintf "field `%s` cannot have type `void`" field.name)
+      | Some field when message = "aggregate size overflows" ->
+          Diag.error field.span message
       | Some field ->
           let opaque_name =
             if String.starts_with ~prefix:"opaque type `" message then
@@ -539,9 +556,11 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
     let rec go acc = function
       | [] -> Ok (List.rev acc)
       | (name, _, _) :: xs ->
+          let overflow_field = ref None in
           let* s =
-            Hir.compute_struct_cached cache name
-            |> Result.map_error (fun m -> [ layout_error_diagnostic m ])
+            Hir.compute_struct_cached ~overflow_field cache name
+            |> Result.map_error (fun m ->
+                [ layout_error_diagnostic ?overflow_field:!overflow_field m ])
             |> trace_result specializations
                  (specialization_trace specializations Struct_specialization name)
           in

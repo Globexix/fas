@@ -1,3 +1,5 @@
+module Int64_set = Set.Make (Int64)
+
 type ty =
   | I1
   | I8
@@ -634,12 +636,13 @@ let validate_function struct_names globals functions (func : func) =
           let rec unique seen = function
             | [] -> Ok ()
             | (case, _) :: rest ->
-                if List.mem case seen then
+                if Int64_set.mem case seen then
                   fail "block %d has duplicate switch case %Ld" block_id case
-                else if integer_constant_fits ty case then unique (case :: seen) rest
+                else if integer_constant_fits ty case then
+                  unique (Int64_set.add case seen) rest
                 else fail "block %d has a switch case outside its type" block_id
           in
-          unique [] cases
+          unique Int64_set.empty cases
   in
   let rec validate_blocks = function
     | [] -> Ok ()

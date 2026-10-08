@@ -2350,6 +2350,10 @@ let () =
      } } }\n";
   semantic_error "switch-duplicate-case" "duplicate case label `1`"
     "fn f(x i32) i32 { switch x { case 1: return 1; case 1: return 2 } }\n";
+  semantic_error "switch-duplicate-u64-case"
+    "duplicate case label `18446744073709551615`"
+    "fn f(x u64) i32 { switch x { case 18446744073709551615: return 1; case \
+     18446744073709551615: return 2 } }\n";
   semantic_accept "switch-multiple-case-values"
     "fn f(x i32) i32 { switch x { case 1, 2: return 3; default: return 0 } }\n";
   semantic_accept "switch-multiple-case-values-twin"
@@ -2393,6 +2397,12 @@ let () =
   then failwith "switch-multiple-case-values: expected one switch to a shared arm";
   semantic_error "switch-nonconst-case" "case label must be a compile-time constant"
     "fn f(x i32, y i32) i32 { switch x { case y: return 1 } return 0 }\n";
+  semantic_message "switch-case-narrow-arithmetic"
+    "`A + 1` is computed in `u32` and may wrap before it reaches `u64`"
+    "const A u32 = 1\nfn f(x u64) i32 { switch x { case A + 1: return 1 } return 0 }\n";
+  semantic_accept "switch-case-narrow-arithmetic-twin"
+    "const A u32 = 1\n\
+     fn f(x u64) i32 { switch x { case zext[u64](A) + 1: return 1 } return 0 }\n";
   semantic_message "switch-literal-case-out-of-range"
     "integer literal is out of range for u8: `300`"
     "fn f(x u8) i32 { switch x { case 300: return 1 } return 0 }\n";
@@ -2963,6 +2973,21 @@ let () =
     "@align(16)\nfn f() i64 { return 7 }\n";
   syntax_pin "align-attribute-span" "@align(16)\nfn f() i64 { return 7 }\n" 1 1 6
     "attribute `@align` applies to structs";
+  let misplaced_align_source = "@align(16)\nstruct P { x u8 }\n" in
+  (match parse_diagnostics "align-attribute-placement" misplaced_align_source with
+  | [ diagnostic ]
+    when diagnostic.Diag.primary.Span.line = 1
+         && diagnostic.primary.Span.column = 1
+         && diagnostic.primary.Span.end_offset - diagnostic.primary.Span.start_offset
+            = 6
+         && diagnostic.message = "attribute `@align` applies to structs"
+         && diagnostic.help = Some "write `struct P @align(16) {`" ->
+      ()
+  | diagnostics ->
+      failwith
+        ("align-attribute-placement: unexpected diagnostic: "
+        ^ Diag.render_all ~source:(Some (source misplaced_align_source)) diagnostics));
+  semantic_accept "align-attribute-after-struct-name" "struct P @align(16) { x u8 }\n";
   parse_error_message "struct-rejects-function-attribute" "unknown attribute `@inline`"
     "struct S @inline { x i64 }\n";
   let attribute_free_ir =
@@ -7835,21 +7860,62 @@ let () =
     "fn f(a u16, b u16) u32 { value u32 = (a + 1) * (b - 2); return value }\n"
   in
   semantic_pin "narrow-arithmetic-parentheses" nested_arithmetic_source 1
-    (String.length "fn f(a u16, b u16) u32 { value u32 = (" + 1)
-    (String.length "(a + 1) * (b - 2)" - 2)
+    (String.length "fn f(a u16, b u16) u32 { value u32 = " + 1)
+    (String.length "(a + 1) * (b - 2)")
     "`(a + 1) * (b - 2)` is computed in `u16` and may wrap before it reaches `u32`"
-    (Some "widen an operand first: `zext[u32](a + 1) * (b - 2)`");
+    (Some "widen an operand first: `zext[u32]((a + 1)) * (b - 2)`");
   conversion_help_twin "nested-arithmetic-help-compiles" nested_arithmetic_source
-    "(a + 1) * (b - 2)" "zext[u32](a + 1) * (b - 2)"
-    "widen an operand first: `zext[u32](a + 1) * (b - 2)`";
+    "(a + 1) * (b - 2)" "zext[u32]((a + 1)) * (b - 2)"
+    "widen an operand first: `zext[u32]((a + 1)) * (b - 2)`";
+  let expression_span name text expression =
+    let start = List.hd (positions text "return ") + String.length "return " in
+    match semantic_diagnostics text with
+    | [ diagnostic ]
+      when diagnostic.primary.Span.start_offset = start
+           && diagnostic.primary.Span.end_offset = start + String.length expression
+           && contains diagnostic.message "is computed in" ->
+        ()
+    | diagnostics ->
+        failwith
+          (name ^ ": unexpected expression diagnostic: "
+          ^ Diag.render_all ~source:(Some (source text)) diagnostics)
+  in
+  let parenthesized_operands_source = "fn f(a u8, b u8) u32 { return (a) * (b) }\n" in
+  expression_span "narrow-arithmetic-parenthesized-operands"
+    parenthesized_operands_source "(a) * (b)";
+  let if_operand_source =
+    "fn f(c bool, a u8, b u8) u32 { return a * (if c { a } else { b }) }\n"
+  in
+  expression_span "narrow-arithmetic-if-operand" if_operand_source
+    "a * (if c { a } else { b })";
+  let generic_widening_source =
+    "fn n[T](c bool, a T, b T) u32 { return if c { a + b } else { a } }\n\
+     fn f(x u8) u32 { return n[u8](true, x, x) }\n"
+  in
+  semantic_pin "generic-widening-help-omitted" generic_widening_source 1
+    (String.length "fn n[T](c bool, a T, b T) u32 { return if c { " + 1)
+    (String.length "a + b")
+    "`a + b` is computed in `u8` and may wrap before it reaches `u32`" None;
+  semantic_accept "generic-widening-help-type-parameter-twin"
+    "fn n[T](c bool, a T, b T) u32 { return if c { a + b } else { a } }\n\
+     fn f(x u32) u32 { return n[u32](true, x, x) }\n";
+  let generic_const_widening_source =
+    "fn n[N const usize](c bool, a u8, b u8) u32 { return if c { a + b } else { a } }\n\
+     fn f(x u8) u32 { return n[1](true, x, x) }\n"
+  in
+  semantic_pin "generic-const-widening-help-kept" generic_const_widening_source 1
+    (String.length "fn n[N const usize](c bool, a u8, b u8) u32 { return if c { " + 1)
+    (String.length "a + b")
+    "`a + b` is computed in `u8` and may wrap before it reaches `u32`"
+    (Some "widen an operand first: `zext[u32](a) + b`");
   let unary_arithmetic_source = "fn f(a u16, b u16) u32 { return -(a + b) }\n" in
   semantic_pin "narrow-unary-parentheses" unary_arithmetic_source 1
     (String.index unary_arithmetic_source '-' + 1)
-    (String.length "-(a + b)" - 1)
+    (String.length "-(a + b)")
     "`-(a + b)` is computed in `u16` and may wrap before it reaches `u32`"
-    (Some "widen an operand first: `-zext[u32](a + b)`");
+    (Some "widen an operand first: `-zext[u32]((a + b))`");
   conversion_help_twin "unary-arithmetic-help-compiles" unary_arithmetic_source
-    "-(a + b)" "-zext[u32](a + b)" "widen an operand first: `-zext[u32](a + b)`";
+    "-(a + b)" "-zext[u32]((a + b))" "widen an operand first: `-zext[u32]((a + b))`";
   let call_field_arithmetic_source =
     "struct Pair { value u16 }\n\
      fn get(value u16) u16 { return value }\n\
@@ -8232,8 +8298,8 @@ let () =
     1 "operands of `==` have different types: `bool` and `i32`" None;
   semantic_pin "comparison-parenthesized-ordering-bool"
     "fn compare(x i64, y i64) bool { return (x >= y) >= true }\n" 1
-    (String.length "fn compare(x i64, y i64) bool { return (" + 1)
-    (String.length "x >= y")
+    (String.length "fn compare(x i64, y i64) bool { return (")
+    (String.length "(x >= y)")
     "ordered comparison `>=` needs an integer or integer vector, got `bool`" None;
   semantic_pin "comparison-equality-chain-bool-right"
     "fn compare(x bool, y bool, flag bool) bool { return x == y == flag }\n" 1
@@ -13267,6 +13333,23 @@ let () =
   semantic_message "layout-growing-generic-query-cycle"
     "cyclic constant dependency involving `S`"
     "struct S[N const usize] { d arr[sizeof[S[N + 1]], u8] }\nvar X S[1]\n";
+  semantic_message "const-sizeof-struct-layout-cycle"
+    "cyclic constant dependency involving `N`"
+    "const N usize = sizeof[P]\nstruct P { x arr[N, u8] }\n";
+  semantic_message "const-offsetof-struct-layout-cycle"
+    "cyclic constant dependency involving `N`"
+    "const N usize = offsetof[P, x]\nstruct P { x arr[N, u8] }\n";
+  semantic_accept "const-layout-query-cycle-twin"
+    "struct Leaf { value u8 }\n\
+     const N usize = sizeof[Leaf]\n\
+     struct P { x arr[N, u8] }\n";
+  semantic_pin "struct-layout-addition-overflow-field"
+    "const N usize = 4611686018427387904\n\
+     struct P { a arr[N - 1, u8] b u8 c arr[N - 1, u8] d u16 }\n"
+    2 29 1 "aggregate size overflows" None;
+  semantic_pin "struct-layout-padding-overflow-field"
+    "struct P { a arr[4611686018427387903, u8] b u16 }\n" 1 43 1
+    "aggregate size overflows" None;
   semantic_accept "layout-query-other-struct"
     "struct Leaf { value u32 }\n\
      struct S { data arr[sizeof[Leaf], u8] }\n\

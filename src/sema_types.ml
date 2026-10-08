@@ -732,8 +732,8 @@ let array_element_count_message expected actual =
 let aggregate_count_error_span span n xs =
   Option.fold ~none:span ~some:Ast.expr_span (List.nth_opt xs n)
 
-let ensure_expected ?(context = "value") ?expression ?checked_expression actual expected
-    span =
+let ensure_expected ?(context = "value") ?expression ?checked_expression
+    ?(widening_help = true) actual expected span =
   if
     compatible actual expected
     || Option.is_some (convert_expected_kind ?expression actual expected)
@@ -811,7 +811,7 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression actual 
     let help =
       match (expression, actual, expected) with
       | Some (Ast.Binary (operator, left, right, _)), Hir.Int _, Hir.Int _
-        when narrow_result ->
+        when narrow_result && widening_help ->
           let extension = if Sema_numeric.is_unsigned actual then "zext" else "sext" in
           let operator_text =
             match operator with
@@ -831,7 +831,8 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression actual 
             (Printf.sprintf "widen an operand first: `%s[%s](%s) %s %s`" extension
                destination (Ast.expr_name left) operator_text
                (Ast.expr_name_child (Ast.binop_precedence operator) true right))
-      | Some (Ast.Unary (Ast.Neg, value, _)), Hir.Int _, Hir.Int _ when narrow_result ->
+      | Some (Ast.Unary (Ast.Neg, value, _)), Hir.Int _, Hir.Int _
+        when narrow_result && widening_help ->
           let extension = if Sema_numeric.is_unsigned actual then "zext" else "sext" in
           Some
             (Printf.sprintf "widen an operand first: `-%s[%s](%s)`" extension

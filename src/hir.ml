@@ -485,8 +485,18 @@ let field_reason cache structure field =
   Option.bind (Hashtbl.find_opt cache.field_reasons_index structure) (fun fields ->
       Hashtbl.find_opt fields field)
 
-let compute_struct_cached cache name =
+let compute_struct_cached ?overflow_field cache name =
   let target = cache.target in
+  let mark_overflow struct_name field_name = function
+    | Error "aggregate size overflows" as failure ->
+        Option.iter
+          (fun overflow_field ->
+            if Option.is_none !overflow_field then
+              overflow_field := Some (struct_name, field_name))
+          overflow_field;
+        failure
+    | result -> result
+  in
   let rec calc visiting n =
     match Hashtbl.find_opt cache.definitions n with
     | Some definition -> Ok (definition.fields, definition.size, definition.align)
@@ -504,10 +514,14 @@ let compute_struct_cached cache name =
                       if byte_storage then Option.value ~default:1 explicit
                       else max maxa (Option.value ~default:1 explicit)
                     in
+                    let last_field =
+                      match out with (field : field) :: _ -> field.name | [] -> n
+                    in
                     let* size =
-                      match Hashtbl.find_opt cache.struct_sizes_index n with
-                      | Some size -> Ok size
-                      | None -> Target_layout.round_up_size off align
+                      (match Hashtbl.find_opt cache.struct_sizes_index n with
+                        | Some size -> Ok size
+                        | None -> Target_layout.round_up_size off align)
+                      |> mark_overflow n last_field
                     in
                     let definition =
                       {
@@ -527,13 +541,15 @@ let compute_struct_cached cache name =
                       | Struct sn ->
                           let* _, sz, al = calc (n :: visiting) sn in
                           Ok (sz, al)
-                      | _ -> field_layout (n :: visiting) fty
+                      | _ -> field_layout (n :: visiting) fty |> mark_overflow n fname
                     in
-                    let* natural_next = Target_layout.round_up_size off align in
+                    let* natural_next =
+                      Target_layout.round_up_size off align |> mark_overflow n fname
+                    in
                     let next =
                       Option.value ~default:natural_next (field_offset cache n fname)
                     in
-                    let* field_end = add_size next size in
+                    let* field_end = add_size next size |> mark_overflow n fname in
                     each (max off field_end) (max maxa align)
                       ({
                          name = fname;
@@ -552,10 +568,14 @@ let compute_struct_cached cache name =
                         if byte_storage then Option.value ~default:1 explicit
                         else max max_align (Option.value ~default:1 explicit)
                       in
+                      let last_field =
+                        match out with (field : field) :: _ -> field.name | [] -> n
+                      in
                       let* size =
-                        match Hashtbl.find_opt cache.struct_sizes_index n with
-                        | Some size -> Ok size
-                        | None -> Target_layout.round_up_size max_size align
+                        (match Hashtbl.find_opt cache.struct_sizes_index n with
+                          | Some size -> Ok size
+                          | None -> Target_layout.round_up_size max_size align)
+                        |> mark_overflow n last_field
                       in
                       let definition =
                         {
@@ -575,12 +595,12 @@ let compute_struct_cached cache name =
                         | Struct sn ->
                             let* _, size, align = calc (n :: visiting) sn in
                             Ok (size, align)
-                        | _ -> field_layout (n :: visiting) fty
+                        | _ -> field_layout (n :: visiting) fty |> mark_overflow n fname
                       in
                       let offset =
                         Option.value ~default:0 (field_offset cache n fname)
                       in
-                      let* end_offset = add_size offset size in
+                      let* end_offset = add_size offset size |> mark_overflow n fname in
                       go (max max_size end_offset) (max max_align align)
                         ({
                            name = fname;

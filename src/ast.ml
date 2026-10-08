@@ -204,7 +204,7 @@ let rec expr_span = function
         ~start_offset:operator_span.Span.start_offset
         ~end_offset:end_span.Span.end_offset ~line:operator_span.Span.line
         ~column:operator_span.Span.column
-  | Parenthesized (expression, _) -> expr_span expression
+  | Parenthesized (_, span) -> span
   | Arrow_field (base, _, _, field_span) | Field (base, _, field_span) ->
       let base_span = expr_start_span base in
       Span.make ~file:base_span.Span.file ~start_offset:base_span.Span.start_offset

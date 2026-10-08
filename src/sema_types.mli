@@ -107,6 +107,7 @@ val ensure_expected :
   ?context:string ->
   ?expression:Ast.expr ->
   ?checked_expression:Hir.expr ->
+  ?widening_help:bool ->
   Hir.ty ->
   Hir.ty ->
   Span.t ->
