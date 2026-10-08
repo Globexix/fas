@@ -37,4 +37,5 @@
   c_import/alloc_size_variable.h
   c_import/alloc_size_typedef.h
   c_import/alloc_size_field.h
-  c_import/alloc_size_parameter.h))
+  c_import/alloc_size_parameter.h
+  c_import/c_string_parameters.h))

@@ -3,6 +3,7 @@ val check :
   ?c_aliases:(string * Ast.ty) list ->
   ?c_unsupported:(string * string) list ->
   ?c_nonnull_parameters:(string * int list) list ->
+  ?c_string_parameters:(string * (int * string option) list) list ->
   ?c_alloc_size_parameters:(string * int list list) list ->
   ?c_records:(string * string * string option) list ->
   Ast.program ->

@@ -585,6 +585,58 @@ let condition_truth c expression =
         (address_equal c left right)
   | _ -> condition_truth c expression
 
+let rec unterminated_string_literal c = function
+  | Hir.Ternary (condition, yes, no, _, _) -> (
+      match condition_truth c condition with
+      | Some true -> unterminated_string_literal c yes
+      | Some false -> unterminated_string_literal c no
+      | None -> (
+          match
+            (unterminated_string_literal c yes, unterminated_string_literal c no)
+          with
+          | Some literal, Some _ -> Some literal
+          | _ -> None))
+  | value -> (
+      match address_fact c value with
+      | Some (Sema_flow.Object_address { identity; offset; _ }) -> (
+          match String.split_on_char ':' identity with
+          | [ "string"; id ] ->
+              Option.bind (int_of_string_opt id) (fun id ->
+                  match List.nth_opt (List.rev c.string_pool.reversed) id with
+                  | Some bytes
+                    when offset >= 0L
+                         && offset < Int64.of_int (String.length bytes)
+                         && (not (String.ends_with ~suffix:"\000" bytes))
+                         && Option.is_none
+                              (String.index_from_opt bytes (Int64.to_int offset) '\000')
+                    ->
+                      Some (Printf.sprintf "%S" bytes)
+                  | _ -> None)
+          | _ -> None)
+      | _ -> None)
+
+let check_c_string_arguments c name parameters values arguments =
+  if not (Sema_flow.proof_checks_enabled c.flow) then Ok ()
+  else
+    Result_list.iter
+      (fun (index, parameter_name) ->
+        match (List.nth_opt values (index - 1), List.nth_opt arguments (index - 1)) with
+        | Some value, Some argument -> (
+            match unterminated_string_literal c value with
+            | None -> Ok ()
+            | Some literal ->
+                let parameter =
+                  match parameter_name with
+                  | Some name when name <> "" -> "parameter `" ^ name ^ "`"
+                  | _ -> "parameter " ^ string_of_int index
+                in
+                error ~help:("write c" ^ literal) (Ast.expr_span argument)
+                  (Printf.sprintf
+                     "%s has no NUL terminator, but `%s` reads %s as a C string" literal
+                     name parameter))
+        | _ -> Ok ())
+      parameters
+
 let address_checks_enabled c = Sema_flow.proof_checks_enabled c.flow
 
 let check_address_access c span ~write fact size =
@@ -3425,6 +3477,12 @@ and check_call c _expected fn args s =
                   else
                     let policy = if sig_.variadic then Promote_variadic else Reject in
                     let* xs = check_actuals ~callee:name c policy s sig_.params args in
+                    let* () =
+                      match List.assoc_opt name c.c_string_parameters with
+                      | None -> Ok ()
+                      | Some parameters ->
+                          check_c_string_arguments c name parameters xs args
+                    in
                     let* () =
                       match
                         ( Sema_flow.proof_checks_enabled c.flow,

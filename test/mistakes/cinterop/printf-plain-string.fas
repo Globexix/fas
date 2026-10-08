@@ -1,0 +1,10 @@
+// mistake: pass a plain string to an imported C string parameter
+// at: 8:9
+// names: `printf` `no NUL terminator` `C string`
+// help: write c"%d"
+// kind: semantic
+use "C" <stdio.h>
+fn main() i32 {
+ printf("%d", 1)
+ return 0
+}

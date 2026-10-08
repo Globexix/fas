@@ -77,6 +77,18 @@ let c_import_system_fixture header =
     C_import.map_declarations ~alloc_size_parameters:!alloc_size_parameters
       ~span:Span.synthetic declarations )
 
+let c_import_system_fixtures headers =
+  let source = Filename.concat (Sys.getcwd ()) "test/ir_simple.fas" in
+  let declarations, _, _ =
+    expect_ok
+      (C_import.import ~cc:"clang-22" ~debug:false ~keep:false source
+         (List.map
+            (fun header ->
+              C_import.{ spelling = Ast.C_system header; span = Span.synthetic })
+            headers))
+  in
+  (source, C_import.map_declarations ~span:Span.synthetic declarations)
+
 let c_import_alloc_size_fixture file =
   let cwd = Sys.getcwd () in
   let header =
@@ -159,6 +171,7 @@ let c_semantic_result ((source, imported) : string * C_import.mapped) text =
     let program = { Ast.items = program.items @ imported.items } in
     Sema.check ~c_aliases:imported.aliases ~c_unsupported:imported.unsupported
       ~c_nonnull_parameters:imported.nonnull_parameters ~c_records:imported.record_types
+      ~c_string_parameters:imported.c_string_parameters
       ~c_alloc_size_parameters:imported.alloc_size_parameters program
   in
   match run () with
@@ -189,6 +202,22 @@ let c_semantic_message name expected imported text =
           failwith
             (name ^ ": expected [" ^ expected ^ "], got [" ^ String.concat "; " actual
            ^ "]"))
+
+let c_semantic_pin name expected_help imported text line column width message =
+  match c_semantic_result imported text with
+  | Error [ diagnostic ]
+    when diagnostic.Diag.primary.Span.line = line
+         && diagnostic.primary.Span.column = column
+         && diagnostic.primary.Span.end_offset - diagnostic.primary.Span.start_offset
+            = width
+         && diagnostic.message = message
+         && diagnostic.help = Some expected_help ->
+      ()
+  | Error diagnostics ->
+      failwith
+        (name ^ ": unexpected diagnostic: "
+        ^ Diag.render_all ~source:(Some (source text)) diagnostics)
+  | Ok _ -> failwith (name ^ ": expected rejection")
 
 let c_semantic_error name fragment imported text =
   match c_semantic_result imported text with
@@ -10281,6 +10310,110 @@ let () =
 
   let c_matrix = c_import_fixture "matrix.h" in
   let c_stdlib = c_import_system_fixture "stdlib.h" in
+  let c_strings = c_import_system_fixtures [ "stdio.h"; "string.h"; "stdlib.h" ] in
+  let c_string_types = c_import_fixture "c_string_parameters.h" in
+  let c_string_message literal function_name parameter_name =
+    Printf.sprintf
+      "%s has no NUL terminator, but `%s` reads parameter `%s` as a C string" literal
+      function_name parameter_name
+  in
+  c_semantic_pin "c-string-printf" "write c\"x\"" c_strings
+    "fn probe() void {\n  printf(\"x\")\n  return\n}\n" 2 10 3
+    (c_string_message "\"x\"" "printf" "__format");
+  c_semantic_accept "c-string-printf-terminated" c_strings
+    "fn probe() void { printf(c\"x\")\nreturn }\n";
+  c_semantic_accept "c-string-printf-varargs" c_strings
+    "fn probe() void { printf(c\"%s\", \"x\")\nreturn }\n";
+  c_semantic_message "c-string-puts"
+    (c_string_message "\"x\"" "puts" "__s")
+    c_strings "fn probe() void { puts(\"x\")\nreturn }\n";
+  c_semantic_accept "c-string-puts-terminated" c_strings
+    "fn probe() void { puts(c\"x\")\nreturn }\n";
+  c_semantic_accept "c-string-unreachable-call" c_strings
+    "fn probe() void { if false { puts(\"x\") }\nreturn }\n";
+  c_semantic_message "c-string-strlen"
+    (c_string_message "\"x\"" "strlen" "__s")
+    c_strings "fn probe() usize { return strlen(\"x\") }\n";
+  c_semantic_accept "c-string-strlen-terminated" c_strings
+    "fn probe() usize { return strlen(c\"x\") }\n";
+  c_semantic_message "c-string-strcmp-first"
+    (c_string_message "\"x\"" "strcmp" "__s1")
+    c_strings "fn probe() i32 { return strcmp(\"x\", c\"x\") }\n";
+  c_semantic_message "c-string-strcmp-second"
+    (c_string_message "\"x\"" "strcmp" "__s2")
+    c_strings "fn probe() i32 { return strcmp(c\"x\", \"x\") }\n";
+  c_semantic_accept "c-string-strcmp-terminated" c_strings
+    "fn probe() i32 { return strcmp(c\"x\", c\"x\") }\n";
+  c_semantic_message "c-string-fopen-first"
+    (c_string_message "\"x\"" "fopen" "__filename")
+    c_strings "fn probe() void { fopen(\"x\", c\"r\")\nreturn }\n";
+  c_semantic_message "c-string-fopen-second"
+    (c_string_message "\"r\"" "fopen" "__modes")
+    c_strings "fn probe() void { fopen(c\"x\", \"r\")\nreturn }\n";
+  c_semantic_accept "c-string-fopen-terminated" c_strings
+    "fn probe() void { fopen(c\"x\", c\"r\")\nreturn }\n";
+  c_semantic_message "c-string-getenv"
+    (c_string_message "\"x\"" "getenv" "__name")
+    c_strings "fn probe() addr { return getenv(\"x\") }\n";
+  c_semantic_accept "c-string-getenv-terminated" c_strings
+    "fn probe() addr { return getenv(c\"x\") }\n";
+  c_semantic_message "c-string-atoi"
+    (c_string_message "\"1\"" "atoi" "__nptr")
+    c_strings "fn probe() i32 { return atoi(\"1\") }\n";
+  c_semantic_accept "c-string-atoi-terminated" c_strings
+    "fn probe() i32 { return atoi(c\"1\") }\n";
+  c_semantic_accept "c-string-embedded-nul" c_strings
+    "fn probe() usize { return strlen(\"ab\\0\") }\n";
+  c_semantic_accept "c-string-strncmp-length" c_strings
+    "fn probe() i32 { return strncmp(\"abcd\", c\"x\", 3) }\n";
+  c_semantic_accept "c-string-strndup-length" c_strings
+    "fn probe() addr { return strndup(\"abc\", 2) }\n";
+  c_semantic_accept "c-string-memcpy-void-pointer" c_strings
+    "fn probe() void { dst addr = addr_from_bits(4096)\n\
+     memcpy(dst, \"abc\", 3)\n\
+     return }\n";
+  c_semantic_message "c-string-named-binding"
+    (c_string_message "\"x\"" "puts" "__s")
+    c_strings "fn probe() void { S addr = \"x\"\nputs(S)\nreturn }\n";
+  c_semantic_accept "c-string-named-binding-terminated" c_strings
+    "fn probe() void { S addr = c\"x\"\nputs(S)\nreturn }\n";
+  c_semantic_message "c-string-if-expression"
+    (c_string_message "\"x\"" "puts" "__s")
+    c_strings
+    "fn probe(flag bool) void { puts(if flag { \"x\" } else { \"y\" })\nreturn }\n";
+  c_semantic_accept "c-string-if-expression-terminated" c_strings
+    "fn probe(flag bool) void { puts(if flag { c\"x\" } else { c\"y\" })\nreturn }\n";
+  c_semantic_message "c-string-offset"
+    (c_string_message "\"abc\"" "puts" "__s")
+    c_strings "fn probe() void { puts(\"abc\" + 1)\nreturn }\n";
+  c_semantic_accept "c-string-offset-terminated" c_strings
+    "fn probe() void { puts(c\"abc\" + 1)\nreturn }\n";
+  c_semantic_message "c-string-plain-char-pointer"
+    (c_string_message "\"x\"" "fas_take_char" "value")
+    c_string_types "fn probe() void { fas_take_char(\"x\")\nreturn }\n";
+  c_semantic_accept "c-string-plain-char-pointer-terminated" c_string_types
+    "fn probe() void { fas_take_char(c\"x\")\nreturn }\n";
+  c_semantic_message "c-string-unnamed-parameter"
+    "\"x\" has no NUL terminator, but `fas_take_unnamed` reads parameter 1 as a C \
+     string"
+    c_string_types "fn probe() void { fas_take_unnamed(\"x\")\nreturn }\n";
+  c_semantic_accept "c-string-unnamed-parameter-terminated" c_string_types
+    "fn probe() void { fas_take_unnamed(c\"x\")\nreturn }\n";
+  c_semantic_message "c-string-char-pointer-typedef"
+    (c_string_message "\"x\"" "fas_take_alias" "value")
+    c_string_types "fn probe() void { fas_take_alias(\"x\")\nreturn }\n";
+  c_semantic_accept "c-string-char-pointer-typedef-terminated" c_string_types
+    "fn probe() void { fas_take_alias(c\"x\")\nreturn }\n";
+  c_semantic_accept "c-string-signed-char-pointer" c_string_types
+    "fn probe() void { fas_take_signed(\"x\")\nreturn }\n";
+  c_semantic_accept "c-string-unsigned-char-pointer" c_string_types
+    "fn probe() void { fas_take_unsigned(\"x\")\nreturn }\n";
+  c_semantic_accept "c-string-uint8-pointer" c_string_types
+    "fn probe() void { fas_take_u8(\"x\")\nreturn }\n";
+  c_semantic_accept "c-string-unknown-address" c_strings
+    "fn probe(p addr) void { puts(p)\nreturn }\n";
+  c_semantic_accept "c-string-hand-declaration" c_strings
+    "extern \"C\" { fn hand(value addr) i32 }\nfn probe() i32 { return hand(\"x\") }\n";
   let c_alloc_size_variable = c_import_alloc_size_fixture "alloc_size_variable.h" in
   c_semantic_accept "alloc-size-variable-attribute-not-function" c_alloc_size_variable
     "fn probe() void { p addr = plain_alloc(4)\np[u32, 1] = 1\nreturn }\n";

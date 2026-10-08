@@ -1791,6 +1791,7 @@ type mapped = {
   identities : (string * string) list;
   manifest : string list;
   nonnull_parameters : (string * int list) list;
+  c_string_parameters : (string * (int * string option) list) list;
   alloc_size_parameters : (string * int list list) list;
   static_functions : static_function list;
   records : (string * string * string option) list;
@@ -2776,6 +2777,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
   and unsupported = Hashtbl.create 128
   and manifest = Hashtbl.create 256
   and nonnull_parameters = Hashtbl.create 32
+  and c_string_parameters = Hashtbl.create 32
   and incomplete_arrays = Hashtbl.create 16
   and static_functions = Hashtbl.create 32
   and items = ref [] in
@@ -2885,6 +2887,18 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
   let parameter_is_pointer parameter =
     parameter_type_texts parameter
     |> List.exists (fun ty -> Option.is_some (String.index_opt ty '*'))
+  in
+  let parameter_is_plain_char_pointer parameter =
+    match List.rev (parameter_type_texts parameter) with
+    | ty :: _ -> (
+        match String.split_on_char '*' ty with
+        | [ pointee; _ ] ->
+            String.split_on_char ' ' pointee
+            |> List.filter (fun word ->
+                word <> "" && not (List.mem word [ "const"; "volatile"; "restrict" ]))
+            = [ "char" ]
+        | _ -> false)
+    | [] -> false
   in
   let parameter_is_nonnull parameter =
     let spelled = Option.bind (get "type" parameter) (string "qualType") in
@@ -3810,6 +3824,28 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
              Hashtbl.replace nonnull_parameters name
                (List.sort_uniq compare (previous @ nonnull_positions)));
           let function_info = function_type node in
+          (match function_info with
+          | Ok (_, parameter_types, _)
+            when List.length parameter_nodes = List.length parameter_types ->
+              let positions =
+                List.mapi
+                  (fun index (parameter, (_, _)) ->
+                    if
+                      parameter_is_plain_char_pointer parameter
+                      && not
+                           (List.exists
+                              (fun (later_ty, _) ->
+                                match later_ty with Ast.Int _ -> true | _ -> false)
+                              (List.filteri
+                                 (fun later _ -> later > index)
+                                 parameter_types))
+                    then Some (index + 1, string "name" parameter)
+                    else None)
+                  (List.combine parameter_nodes parameter_types)
+                |> List.filter_map Fun.id
+              in
+              if positions <> [] then Hashtbl.replace c_string_parameters name positions
+          | _ -> ());
           let variadic =
             match function_info with
             | Ok (_, _, variadic) -> variadic
@@ -4080,6 +4116,11 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
         (fun name positions acc -> (name, positions) :: acc)
         nonnull_parameters []
       |> List.sort compare;
+    c_string_parameters =
+      Hashtbl.fold
+        (fun name positions acc -> (name, positions) :: acc)
+        c_string_parameters []
+      |> List.sort compare;
     alloc_size_parameters;
     static_functions =
       Hashtbl.fold (fun _ static acc -> static :: acc) static_functions []
@@ -4150,6 +4191,10 @@ let merge_imports mappings =
              :: List.remove_assoc name merged)
            []
       |> List.sort compare;
+    c_string_parameters =
+      List.concat_map (fun mapping -> mapping.c_string_parameters) mappings
+      |> List.filter (fun (name, _) -> not (bad name))
+      |> List.sort_uniq compare;
     alloc_size_parameters =
       List.concat_map (fun mapping -> mapping.alloc_size_parameters) mappings
       |> List.filter (fun (name, _) -> not (bad name))

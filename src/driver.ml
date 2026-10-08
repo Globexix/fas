@@ -938,6 +938,7 @@ let run_unprotected ?header_output config =
               Sema.check ~limits ~c_aliases:imported.aliases
                 ~c_unsupported:imported.unsupported
                 ~c_nonnull_parameters:imported.nonnull_parameters
+                ~c_string_parameters:imported.c_string_parameters
                 ~c_alloc_size_parameters:imported.alloc_size_parameters
                 ~c_records:imported.record_types program
             with
