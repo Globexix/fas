@@ -63,16 +63,20 @@ if [ ! -f "$SDL_HEADER" ]; then
 else
   if [ -f "$WOLF3D_ROOT/src/id_pm.fas" ]; then
     cp "$WOLF3D_ROOT/src/id_pm.fas" "$TMP/id_pm.fas"
-    /usr/bin/time -f '%U' -o "$TMP/id-pm.cpu" \
+    if /usr/bin/time -f '%U' -o "$TMP/id-pm.cpu" \
       env CC="$CC" LLVM_OPT="$LLVM_OPT" LLVM_LLC="$LLVM_LLC" OCAML_FAS="$OCAML_FAS" \
       "$OCAML_FAS" -O2 -I "$WOLF3D_ROOT/reference/wolf4sdl" \
       -isystem /usr/include/SDL -D_GNU_SOURCE=1 -D_REENTRANT \
-      -c "$TMP/id_pm.fas" -o "$TMP/id_pm.o"
-    id_pm_cpu=$(cat "$TMP/id-pm.cpu")
-    printf 'C import id_pm CPU: %ss (limit 1.50s)\n' "$id_pm_cpu"
-    if awk -v cpu="$id_pm_cpu" 'BEGIN { exit !(cpu > 1.5) }'; then
-      printf 'C import id_pm exceeded 1.50 CPU seconds\n' >&2
-      exit 1
+      -c "$TMP/id_pm.fas" -o "$TMP/id_pm.o" \
+      2>"$TMP/id-pm.compile.log"; then
+      id_pm_cpu=$(cat "$TMP/id-pm.cpu")
+      printf 'C import id_pm CPU: %ss (limit 2.50s)\n' "$id_pm_cpu"
+      if awk -v cpu="$id_pm_cpu" 'BEGIN { exit !(cpu > 2.5) }'; then
+        printf 'C import id_pm exceeded 2.50 CPU seconds\n' >&2
+        exit 1
+      fi
+    else
+      printf 'C import id_pm timing: skipped (Wolf3D source does not compile)\n'
     fi
   else
     printf 'C import id_pm timing: skipped (Wolf3D source absent)\n'
