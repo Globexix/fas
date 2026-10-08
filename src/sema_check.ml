@@ -2462,6 +2462,17 @@ and check_expr_inner ?destination (c : context) expected expression =
         Sema_flow.restore c.flow
           (Sema_flow.merge_values_into c.flow initialized value_paths);
         let at = Hir.expr_ty ta and bt = Hir.expr_ty tb in
+        let* () =
+          match expected with
+          | Some target when scalar_conversion_pair at target ->
+              let* () =
+                ensure_expected ~context:"if-expression branch" ~expression:a at target
+                  (Ast.expr_span a)
+              in
+              ensure_expected ~context:"if-expression branch" ~expression:b bt target
+                (Ast.expr_span b)
+          | _ -> Ok ()
+        in
         let result_ty =
           if equal at bt then Some at
           else if compatible at bt then Some bt
@@ -4876,6 +4887,10 @@ and check_stmt (c : context) = function
                               ]
                           | _ -> [ diagnostic ])
                       | None -> [ diagnostic ])
+                  | [ diagnostic ]
+                    when String.starts_with ~prefix:"cannot use `"
+                           diagnostic.Diag.message ->
+                      [ diagnostic ]
                   | _ ->
                       [
                         Diag.error (Ast.expr_span k)

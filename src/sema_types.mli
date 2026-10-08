@@ -69,6 +69,7 @@ val layout_diag :
 
 val field_info : Hir.struct_def list -> string -> string -> Hir.field option
 val compatible : Hir.ty -> Hir.ty -> bool
+val scalar_conversion_pair : Hir.ty -> Hir.ty -> bool
 val implicit_integer_widen : Hir.ty -> Hir.ty -> Ast.cast_kind option
 val common_integer_type : Hir.ty -> Hir.ty -> Hir.ty option
 val narrow_arithmetic_result : Ast.expr -> bool

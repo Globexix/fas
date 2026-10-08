@@ -457,6 +457,12 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
         match Sema_types.convert_expected_kind ~expression actual target with
         | Some kind ->
             Ok (target, Sema_types.widen_integer_value kind actual target value)
+        | None when scalar_conversion_pair actual target -> (
+            match
+              ensure_expected ~expression actual target (Ast.expr_span expression)
+            with
+            | Error diagnostics -> Error diagnostics
+            | Ok () -> Ok (actual, value))
         | None -> Ok (actual, value))
     | _ -> result
   in
@@ -1639,6 +1645,19 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
           Ok (match peer with Hir.Vec _ -> Some peer | _ -> None)
         else Ok expected
       in
+      let ensure_branch expression actual expected =
+        let context =
+          if scalar_conversion_pair actual expected then "if-expression branch"
+          else "value"
+        in
+        ensure_expected ~context ~expression actual expected (Ast.expr_span expression)
+      in
+      let ensure_target expression actual =
+        match expected with
+        | Some target when scalar_conversion_pair actual target ->
+            ensure_branch expression actual target
+        | _ -> Ok ()
+      in
       let* condition_ty, condition_value =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
           ~globals ?resolve consts None ~check_only condition
@@ -1647,19 +1666,21 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
         Error [ Sema_types.condition_error "if" condition condition_ty ]
       else if condition_value <> 0L then
         let* yes_ty, yes_values = evaluate expected yes in
+        let* () = ensure_target yes yes_ty in
         let* no_ty, _ =
           vector_const_expr ~structs ~named_types ~generic_structs ~arrays
             ~array_lengths ~globals ?resolve consts (Some yes_ty) ~check_only:true no
         in
-        let* () = ensure_expected ~expression:no no_ty yes_ty (Ast.expr_span no) in
+        let* () = ensure_branch no no_ty yes_ty in
         Ok (yes_ty, yes_values)
       else
         let* no_ty, no_values = evaluate expected no in
+        let* () = ensure_target no no_ty in
         let* yes_ty, _ =
           vector_const_expr ~structs ~named_types ~generic_structs ~arrays
             ~array_lengths ~globals ?resolve consts (Some no_ty) ~check_only:true yes
         in
-        let* () = ensure_expected ~expression:yes yes_ty no_ty (Ast.expr_span yes) in
+        let* () = ensure_branch yes yes_ty no_ty in
         Ok (no_ty, no_values)
   | Ast.Cast (kind, destination, value, span) ->
       let* destination = source_ty_with_values named_types consts span destination in

@@ -337,8 +337,16 @@ let semantic_pin name text line column width message help =
          && diagnostic.message = message && diagnostic.help = help ->
       ()
   | diagnostics ->
+      let actual_span =
+        match diagnostics with
+        | [ diagnostic ] ->
+            Printf.sprintf " actual=(%d,%d,%d)" diagnostic.Diag.primary.Span.line
+              diagnostic.primary.Span.column
+              (diagnostic.primary.Span.end_offset - diagnostic.primary.Span.start_offset)
+        | _ -> ""
+      in
       failwith
-        (name ^ ": unexpected diagnostic: "
+        (name ^ ": unexpected diagnostic: " ^ actual_span
         ^ Diag.render_all ~source:(Some (source text)) diagnostics)
 
 let expected_diagnostic ?(line_number = 1) line column width message help =
@@ -529,22 +537,23 @@ let () =
   | Ok (size, align) ->
       failwith (Printf.sprintf "isize-layout: expected (4, 4), got (%d, %d)" size align)
   | Error message -> failwith ("isize-layout: " ^ message));
-  semantic_error "usize-distinct-from-u64" "is `u64`, expected `usize`"
+  semantic_error "usize-distinct-from-u64" "cannot return `u64` as `usize`"
     "fn convert(value u64) usize { return value }\n";
-  semantic_error "u64-distinct-from-usize" "is `usize`, expected `u64`"
+  semantic_error "u64-distinct-from-usize" "cannot return `usize` as `u64`"
     "fn convert(value usize) u64 { return value }\n";
-  semantic_error "isize-distinct-from-i64" "is `i64`, expected `isize`"
+  semantic_error "isize-distinct-from-i64" "cannot return `i64` as `isize`"
     "fn convert(value i64) isize { return value }\n";
-  semantic_error "i64-distinct-from-isize" "is `isize`, expected `i64`"
+  semantic_error "i64-distinct-from-isize" "cannot return `isize` as `i64`"
     "fn convert(value isize) i64 { return value }\n";
-  semantic_error "usize-call-distinct-from-u64" "is `u64`, expected `usize`"
+  semantic_error "usize-call-distinct-from-u64" "cannot pass `u64` as `usize`"
     "fn take(value usize) void { return }\n\
      fn check_case(value u64) void { take(value) }\n";
-  semantic_error "named-bool-constant-keeps-type" "is `bool`, expected `i32`"
+  semantic_error "named-bool-constant-keeps-type" "cannot assign `bool` to `i32`"
     "const Flag bool = true\nfn main() i32 { value i32 = Flag\n return value }\n";
   semantic_accept "named-i8-constant-local-widens"
     "const Small i8 = 7\nfn main() i32 { value i32 = Small\n return value }\n";
-  semantic_error "named-negative-i8-constant-keeps-type" "is `i8`, expected `u16`"
+  semantic_error "named-negative-i8-constant-keeps-type"
+    "negative values change meaning"
     "const Negative i8 = -1\nfn main() i32 { value u16 = Negative\n return 0 }\n";
   semantic_accept "named-i8-constant-return-widens"
     "const Small i8 = 7\nfn value() i32 { return Small }\n";
@@ -765,7 +774,7 @@ let () =
   semantic_error "constant-bool-shift"
     "left operand of `<<` has type `bool`, expected an integer or integer vector"
     "const Invalid bool = true << false\nfn main() i32 { return 0 }\n";
-  semantic_error "constant-dead-ternary-type" "is `bool`, expected `i32`"
+  semantic_error "constant-dead-ternary-type" "cannot use `bool` as `i32`"
     "const Invalid i32 = if true { 1 } else { false }\n\
      fn main() i32 { return Invalid }\n";
   ignore
@@ -849,7 +858,7 @@ let () =
     (llvm_of
        "const Safe vec[4,u8] = if true { splat(7) } else { splat(1) / splat(0) }\n\
         fn test() u8 { return Safe[0] }\n");
-  semantic_error "constant-vector-dead-ternary-type" "is `bool`, expected `u8`"
+  semantic_error "constant-vector-dead-ternary-type" "cannot use `bool` as `u8`"
     "const Invalid vec[4,u8] = if true { splat(7) } else { splat(true) }\n\
      fn main() i32 { return 0 }\n";
   semantic_error "runtime-logical-integer-left"
@@ -1058,9 +1067,9 @@ let () =
   semantic_accept "constant-shift-left-type-twin" "const FLAG u32 = 7 << 1\n";
   semantic_error "shift-no-splat-lift" "is `i32`, expected `vec[4,u32]`"
     "fn f(n u32) vec[4,u32] { return 1 << n }\n";
-  semantic_error "len-returns-usize" "is `usize`, expected `u64`"
+  semantic_error "len-returns-usize" "cannot return `usize` as `u64`"
     "const Values arr[3,u8] = {1, 2, 3}\nfn size() u64 { return len(Values) }\n";
-  semantic_error "sizeof-returns-usize" "is `usize`, expected `u64`"
+  semantic_error "sizeof-returns-usize" "cannot return `usize` as `u64`"
     "fn size() u64 { return sizeof[u8] }\n";
   ignore
     (lower_of
@@ -1069,9 +1078,12 @@ let () =
         const Alignment usize = alignof[Measure]\n\
         const Offset usize = offsetof[Measure,right]\n\
         fn size() usize { return Size + Alignment + Offset }\n");
-  semantic_error "const-sizeof-returns-usize"
-    "constant initializer has type `usize`, expected `u64`"
-    "const Size u64 = sizeof[u8]\nfn size() u64 { return Size }\n";
+  let const_sizeof_mismatch =
+    "const Size u64 = sizeof[u8]\nfn size() u64 { return Size }\n"
+  in
+  semantic_pin "const-sizeof-returns-usize" const_sizeof_mismatch 1 18 6
+    "cannot use `usize` as `u64`: values may be lost or change meaning"
+    (Some "write `bitcast[u64](sizeof[u8])`");
   let usize_specialization =
     llvm_of
       "fn id[N const usize](value usize) usize { return value + N }\n\
@@ -2703,9 +2715,11 @@ let () =
        \ read_only = value\n\
        \ return value == read_only\n\
         }\n");
-  semantic_error "pointer-implicit-to-integer" "is `addr`, expected `usize`"
+  semantic_error "pointer-implicit-to-integer"
+    "addresses convert to integers with `addr_bits`"
     "fn check_case(value addr) void { bits usize = value }\n";
-  semantic_error "integer-implicit-to-pointer" "is `usize`, expected `addr`"
+  semantic_error "integer-implicit-to-pointer"
+    "integers convert to addresses with `addr_from_bits`"
     "fn check_case(value usize) void { pointer addr = value }\n";
   semantic_error "pointer-bitcast-discards-const"
     "illegal cast for source and destination widths"
@@ -3319,7 +3333,7 @@ let () =
   semantic_error "const-env-array-length-mismatch" "array of 2 elements, got 3"
     "const A arr[2, i64] = {1, 2, 3}\n";
   semantic_error "const-env-array-element-type-mismatch"
-    "constant array element has type `bool`, expected `i64`"
+    "cannot use `bool` as `i64`: bool and integer values use different representations"
     "const A arr[2, i64] = {1, true}\n";
   semantic_error "const-env-array-needs-brace-list"
     "const array needs a brace-list initializer" "const A arr[2, i64] = 5\n";
@@ -4042,7 +4056,8 @@ let () =
   then failwith "const-param-bool: typed specializations were not emitted";
   if contains bool_const_generic_llvm "br i1" then
     failwith "const-param-bool: specialization condition was not pruned";
-  semantic_error "const-param-bool-named-integer" "const argument type mismatch"
+  semantic_error "const-param-bool-named-integer"
+    "cannot use `u8` as `bool`: bool and integer values use different representations"
     "const One u8 = 1\n\
      fn choose[Flag const bool]() i32 { if Flag { return 1 } else { return 0 } }\n\
      fn main() i32 { return choose[One]() }\n";
@@ -4050,7 +4065,8 @@ let () =
     "integer literal is out of range for bool"
     "fn choose[Flag const bool]() i32 { if Flag { return 1 } else { return 0 } }\n\
      fn main() i32 { return choose[2]() }\n";
-  semantic_error "const-param-integer-bool-value" "const argument type mismatch"
+  semantic_error "const-param-integer-bool-value"
+    "cannot use `bool` as `u8`: bool and integer values use different representations"
     "fn byte[N const u8]() i32 { return zext[i32](N) }\n\
      fn main() i32 { return byte[true]() }\n";
 
@@ -5209,7 +5225,8 @@ let () =
     "fn r[B const bool]() u8 { if B { return 256 }\n\
     \ return 0 }\n\
      fn test() u8 { return r[false]() }\n";
-  semantic_error "dead-branch-type-error-rejected" "is `bool`, expected `u8`"
+  semantic_error "dead-branch-type-error-rejected"
+    "bool and integer values use different representations"
     "fn test() u8 { if false { return true }\n return 0 }\n";
   semantic_error "dead-branch-unknown-name-rejected" "unknown name `nope`"
     "fn test() u8 { if false { return nope }\n return 0 }\n";
@@ -5670,7 +5687,7 @@ let () =
         fn value[N const u8]() u8 { return N }\n\
         fn test() u8 { return value[NARROW]() }\n");
   semantic_error "forward-constant-type-preservation"
-    "constant initializer has type `u16`, expected `u8`"
+    "cannot use `u16` as `u8`: values may be lost or change meaning"
     "const NARROW u8 = WIDE\nconst WIDE u16 = 7\n";
   semantic_error "forward-constant-cycle" "cyclic constant dependency"
     "const LEFT usize = RIGHT\nconst RIGHT usize = LEFT\n";
@@ -6119,7 +6136,8 @@ let () =
   semantic_error "const-generic-struct-argument-kind" "expected a const argument"
     "struct Buffer[T, N const usize] { data arr[N, T] }\n\
      fn test(value Buffer[u8, u16]) i64 { return 0 }\n";
-  semantic_error "const-generic-struct-argument-type" "const argument type mismatch"
+  semantic_error "const-generic-struct-argument-type"
+    "cannot use `usize` as `u8`: values may be lost or change meaning"
     "struct Buffer[T, N const u8] { data arr[N, T] }\n\
      fn test(value Buffer[u8, sizeof[u8]]) i64 { return 0 }\n";
   semantic_message "const-generic-struct-negative-length"
@@ -6484,14 +6502,14 @@ let () =
      }\n\
      fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-local-type-mismatch"
-    "is `bool`, expected `i32`"
+    "bool and integer values use different representations"
     "fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { value i32 = true\n\
     \ return value }\n\
      }\n\
      fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-assignment-type-mismatch"
-    "is `bool`, expected `i32`"
+    "bool and integer values use different representations"
     "fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { value i32 = 0\n\
     \ value = true\n\
@@ -6499,14 +6517,14 @@ let () =
      }\n\
      fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-call-type-mismatch"
-    "is `bool`, expected `i32`"
+    "bool and integer values use different representations"
     "fn plain(value i32) i32 { return value }\n\
      fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { return plain(true) }\n\
      }\n\
      fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-dependent-call-sibling"
-    "is `bool`, expected `i32`"
+    "bool and integer values use different representations"
     "fn plain(left i32, right i32) i32 { return left + right }\n\
      fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { return plain(N, true) }\n\
@@ -6552,7 +6570,7 @@ let () =
      }\n\
      fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-generic-call-type"
-    "is `bool`, expected `i32`"
+    "bool and integer values use different representations"
     "fn plain[T](value T) T { return value }\n\
      fn choose[N const i32]() i32 {\n\
     \ if N == 1 { return 7 } else { return plain[i32](true) }\n\
@@ -6566,7 +6584,7 @@ let () =
      }\n\
      fn main() i32 { return choose[1]() }\n";
   semantic_error "unselected-specialization-named-const-argument-type"
-    "is `i32`, expected `u8`"
+    "cannot use `i32` as `u8`: negative values change meaning"
     "const Wide i32 = 7\n\
      fn plain[N const u8]() i32 { return 1 }\n\
      fn choose[N const i32]() i32 {\n\
@@ -7238,8 +7256,9 @@ let () =
   let argument_mismatch_line = "fn f(x u16) void { put(x); return }" in
   let argument_mismatch_column = String.length "fn f(x u16) void { put(" + 1 in
   let argument_mismatch_expected =
-    expected_diagnostic_without_help ~line_number:2 argument_mismatch_line
-      argument_mismatch_column 1 "argument 1 of `put` is `u16`, expected `u8`"
+    expected_diagnostic ~line_number:2 argument_mismatch_line argument_mismatch_column 1
+      "cannot pass `u16` as `u8`: values may be lost or change meaning"
+      "keep the low bits with `trunc[u8](x)`"
   in
   if semantic_render argument_mismatch_source <> argument_mismatch_expected then
     failwith ("argument-type-mismatch: " ^ semantic_render argument_mismatch_source);
@@ -7247,8 +7266,9 @@ let () =
   let initializer_mismatch_line = String.trim initializer_mismatch_source in
   let initializer_mismatch_column = String.length "fn f(x u16) u8 { value u8 = " + 1 in
   let initializer_mismatch_expected =
-    expected_diagnostic_without_help initializer_mismatch_line
-      initializer_mismatch_column 1 "value for `value` is `u16`, expected `u8`"
+    expected_diagnostic initializer_mismatch_line initializer_mismatch_column 1
+      "cannot assign `u16` to `u8`: values may be lost or change meaning"
+      "keep the low bits with `trunc[u8](x)`"
   in
   if semantic_render initializer_mismatch_source <> initializer_mismatch_expected then
     failwith
@@ -7280,12 +7300,119 @@ let () =
     "const BUFFERSIZE u16 = 0x1000\n\
      fn buffer() void { data arr[BUFFERSIZE / sizeof[i32], u8] = {}\n\
     \ return }\n";
-  semantic_error "narrow-arithmetic-does-not-widen" "expected `u32`"
+  semantic_error "narrow-arithmetic-does-not-widen" "computed in `u16` and may wrap"
     "fn f(a u16, b u16) u32 { value u32 = a * b; return value }\n";
   semantic_accept "narrow-arithmetic-explicit-widening"
     "fn f(a u16, b u16) u32 { value u32 = zext[u32](a) * b; return value }\n";
-  semantic_error "mixed-widths-without-common-type" "different types"
+  semantic_error "mixed-widths-without-common-type" "no type holds both"
     "fn f(a u32, b i32) bool { return a < b }\n";
+  let widening_narrowing_source = "fn f(x u64) u32 { value u32 = x; return value }\n" in
+  semantic_pin "widening-narrowing-diagnostic" widening_narrowing_source 1
+    (String.length "fn f(x u64) u32 { value u32 = " + 1)
+    1 "cannot assign `u64` to `u32`: values above 4294967295 would be lost"
+    (Some "keep the low bits with `trunc[u32](x)`");
+  semantic_accept "widening-narrowing-explicit-twin"
+    "fn f(x u64) u32 { value u32 = trunc[u32](x); return value }\n";
+  let widening_sign_source =
+    "fn put(x u32) void { return }\nfn f(n i32) void { put(n); return }\n"
+  in
+  semantic_pin "widening-sign-change-diagnostic" widening_sign_source 2
+    (String.length "fn f(n i32) void { put(" + 1)
+    1 "cannot pass `i32` as `u32`: negative values change meaning"
+    (Some
+       "reinterpret the bits with `bitcast[u32](n)`, or widen with `sext`/`zext` first \
+        if that is what you mean");
+  semantic_accept "widening-sign-change-explicit-twin"
+    "fn put(x u32) void { return }\nfn f(n i32) void { put(bitcast[u32](n)); return }\n";
+  let widening_mixed_source = "fn f(a u32, b i32) bool { return a < b }\n" in
+  semantic_pin "widening-mixed-types-diagnostic" widening_mixed_source 1
+    (String.length "fn f(a u32, b i32) bool { return a < " + 1)
+    1 "cannot compare `u32` with `i32`: no type holds both"
+    (Some "widen both to `i64`: `zext[i64](a) < sext[i64](b)`");
+  let narrow_arithmetic_source =
+    "fn f(a u16, b u16) u32 { value u32 = a * b; return value }\n"
+  in
+  semantic_pin "widening-narrow-arithmetic-diagnostic" narrow_arithmetic_source 1 40 1
+    "`a * b` is computed in `u16` and may wrap before it reaches `u32`"
+    (Some "widen an operand first: `zext[u32](a) * b`");
+  semantic_accept "widening-narrow-arithmetic-explicit-twin"
+    "fn f(a u16, b u16) u32 { value u32 = zext[u32](a) * b; return value }\n";
+  let widening_compound_source =
+    "fn f(pos u32, size u64) void { pos += size; return }\n"
+  in
+  semantic_pin "widening-compound-assignment-diagnostic" widening_compound_source 1
+    (String.length "fn f(pos u32, size u64) void { pos += " + 1)
+    (String.length "size")
+    "cannot use `u64` as `u32`: values above 4294967295 would be lost"
+    (Some "keep the low bits with `trunc[u32](size)`");
+  semantic_accept "widening-compound-assignment-twin"
+    "fn f(pos u32, size u16) void { pos += size; return }\n";
+  let widening_return_source = "fn f(x u64) u32 { return x }\n" in
+  semantic_pin "widening-return-diagnostic" widening_return_source 1
+    (String.length "fn f(x u64) u32 { return " + 1)
+    1 "cannot return `u64` as `u32`: values above 4294967295 would be lost"
+    (Some "keep the low bits with `trunc[u32](x)`");
+  semantic_accept "widening-return-twin" "fn f(x u32) u64 { return x }\n";
+  let widening_if_source =
+    "fn f(flag bool, value i32) u32 { return if flag { value } else { 0 } }\n"
+  in
+  semantic_pin "widening-if-branch-diagnostic" widening_if_source 1
+    (String.length "fn f(flag bool, value i32) u32 { return if flag { " + 1)
+    (String.length "value") "cannot use `i32` as `u32`: negative values change meaning"
+    (Some
+       "reinterpret the bits with `bitcast[u32](value)`, or widen with `sext`/`zext` \
+        first if that is what you mean");
+  semantic_accept "widening-if-branch-twin"
+    "fn f(flag bool, value u16) u32 { return if flag { value } else { 0 } }\n";
+  let widening_case_source =
+    "const CASE u64 = 1\n\
+     fn f(value u32) u32 { switch value { case CASE: return 1; default: return 0 } }\n"
+  in
+  semantic_pin "widening-case-value-diagnostic" widening_case_source 2
+    (String.length "fn f(value u32) u32 { switch value { case " + 1)
+    (String.length "CASE")
+    "cannot use `u64` as `u32`: values above 4294967295 would be lost"
+    (Some "keep the low bits with `trunc[u32](CASE)`");
+  semantic_accept "widening-case-value-twin"
+    "const CASE u8 = 1\n\
+     fn f(value u32) u32 { switch value { case CASE: return 1; default: return 0 } }\n";
+  let widening_size_slot_source =
+    "const A u32 = 1\n\
+     const B i32 = 2\n\
+     fn f() void { data arr[A + B,u8] = {}; return }\n"
+  in
+  semantic_pin "widening-size-slot-diagnostic" widening_size_slot_source 3
+    (String.length "fn f() void { data arr[A + " + 1)
+    1 "cannot apply `+` to `u32` and `i32`: no type holds both"
+    (Some "widen both to `i64`: `zext[i64](A) + sext[i64](B)`");
+  semantic_accept "widening-size-slot-twin"
+    "const A u32 = 1\n\
+     const B i64 = 2\n\
+     fn f() void { data arr[A + B,u8] = {}; return }\n";
+  let widening_c_import_source =
+    "extern \"C\" { fn imported(value u32) void }\n\
+     fn f(value i64) void { imported(value); return }\n"
+  in
+  semantic_pin "widening-imported-c-argument-diagnostic" widening_c_import_source 2
+    (String.length "fn f(value i64) void { imported(" + 1)
+    5 "cannot pass `i64` as `u32`: negative values change meaning"
+    (Some "write `trunc[u32](value)` if intended");
+  semantic_accept "widening-imported-c-argument-twin"
+    "extern \"C\" { fn imported(value u64) void }\n\
+     fn f(value u32) void { imported(value); return }\n";
+  let widening_bool_source = "fn f(value bool) u32 { return value }\n" in
+  semantic_pin "widening-bool-integer-diagnostic" widening_bool_source 1
+    (String.length "fn f(value bool) u32 { return " + 1)
+    5
+    "cannot return `bool` as `u32`: bool and integer values use different \
+     representations"
+    (Some "write `if value { 1 } else { 0 }`");
+  let widening_addr_source = "fn f(value u32) addr { return value }\n" in
+  semantic_pin "widening-integer-address-diagnostic" widening_addr_source 1
+    (String.length "fn f(value u32) addr { return " + 1)
+    5
+    "cannot return `u32` as `addr`: integers convert to addresses with `addr_from_bits`"
+    (Some "write `addr_from_bits(zext[usize](value))`");
   let implicit_widening_llvm =
     llvm_of
       "fn unsigned_value(x u8) i16 { return x }\n\
@@ -7485,7 +7612,8 @@ let () =
      const B vec[4,bool] = splat(false)\n\
      const C vec[4,bool] = splat(true)\n\
      const Result vec[4,bool] = A == B == C\n";
-  semantic_error "binary-widening-narrow-destination" "expected `i32`"
+  semantic_error "binary-widening-narrow-destination"
+    "cannot assign `i64` to `i32`: values may be lost or change meaning"
     "fn f(c i64, a i32) i32 { x i32 = c + a; return x }\n";
   semantic_accept "binary-widening-initializer"
     "fn f(c i64, a i32) i64 { x i64 = c + a; return x }\n";
@@ -7493,7 +7621,8 @@ let () =
     "fn put(value i64) void { return }\n\
      fn f(c i64, a i32) void { put(c + a); return }\n";
   semantic_accept "binary-widening-return" "fn f(c i64, a i32) i64 { return c + a }\n";
-  semantic_error "constant-binary-no-common-type" "different types"
+  semantic_error "constant-binary-no-common-type"
+    "cannot apply `+` to `i32` and `u32`: no type holds both"
     "const Left i32 = 1\nconst Right u32 = 2\nconst Sum i64 = Left + Right\n";
   ignore (llvm_of "fn f(x i32) i64 { return sext[i64](x) }\n");
   ignore
@@ -7614,7 +7743,8 @@ let () =
     (String.length "var ITEMS arr[" + 1)
     20 "array length `18446744073709551615` is too large" None;
   semantic_pin "constant-initializer-type-caret" "const VALUE u32 = true\n" 1 19 4
-    "constant initializer has type `bool`, expected `u32`" None;
+    "cannot use `bool` as `u32`: bool and integer values use different representations"
+    (Some "write `if true { 1 } else { 0 }`");
   let constant_address_array_write =
     "var GLOBAL u8\n\
      const PTRS arr[1,addr] = {&GLOBAL}\n\
@@ -7648,7 +7778,9 @@ let () =
     (Some "Fas has no implicit truth values; write `x << 2 != 0`");
   semantic_pin "ternary-arm-diagnostic"
     "fn f(flag bool) i64 { result i64 = if flag { 1 } else { false }\n return 0 }\n" 1
-    57 5 "if-expression branches have different types: `i64` and `bool`" None;
+    57 5
+    "cannot use `bool` as `i64`: bool and integer values use different representations"
+    (Some "write `if false { 1 } else { 0 }`");
   semantic_pin "raw-index-diagnostic" "fn f(p addr) u8 { return p[u8, false] }\n" 1 32 5
     "raw access index must be an integer, got `bool`" None;
   semantic_pin "unknown-record-diagnostic"
@@ -7904,12 +8036,13 @@ let () =
   ignore (llvm_of "fn f(x u32, y u64) u64 { return zext[u64](x) + y }\n");
   ignore (llvm_of "fn f(x i32, y i64) i64 { return sext[i64](x) + y }\n");
   ignore (llvm_of "fn f(x u64) u32 { return trunc[u32](x) }\n");
-  semantic_error "context-no-implicit-equal-width" "is `u32`, expected `u64`"
+  semantic_error "context-no-implicit-equal-width" "computed in `u32` and may wrap"
     "fn f(x u32) u64 { return x + 1 }\n";
-  semantic_error "context-no-implicit-wrong-direction" "is `u64`, expected `u32`"
+  semantic_error "context-no-implicit-wrong-direction"
+    "cannot return `u64` as `u32`: values above 4294967295 would be lost"
     "fn f(x u64) u32 { return x + 1 }\n";
-  semantic_error "context-literal-takes-peer-not-destination" "is `u32`, expected `u64`"
-    "fn f(x u32) u64 { return 1 + x }\n";
+  semantic_error "context-literal-takes-peer-not-destination"
+    "computed in `u32` and may wrap" "fn f(x u32) u64 { return 1 + x }\n";
   ignore
     (llvm_of
        "fn f(p addr) bool { return p == addr_from_bits(0) }\n\
@@ -9350,7 +9483,8 @@ let () =
     "fn f(p addr) u32 { return volatile_load(p) }\n";
   semantic_error "volatile-store-arity" "expects two arguments"
     "fn f(p addr) void {\nvolatile_store[u32](p)\nreturn\n}\n";
-  semantic_error "volatile-value-type" "is `bool`, expected `u32`"
+  semantic_error "volatile-value-type"
+    "bool and integer values use different representations"
     "fn f(p addr) void {\nvolatile_store[u32](p, true)\nreturn\n}\n";
 
   semantic_accept "place-init-ternary-escape-unknown"
@@ -9784,7 +9918,8 @@ let () =
     1 "initializer needs an array, struct, or vector type, got `u32`" (Some "write `1`");
   semantic_accept "construction-scalar-literal-destination-twin"
     "fn f() void { value u32 = 1\nreturn }\n";
-  semantic_error "construction-entry-type-mismatch" "is `bool`, expected `i32`"
+  semantic_error "construction-entry-type-mismatch"
+    "bool and integer values use different representations"
     "struct S { flag i32 }\nfn f() void { value S = {true}\nreturn }\n";
   let compound_literal_error =
     "Fas has no compound literals; declare a typed local or `const`"
@@ -9917,7 +10052,7 @@ let () =
     "fn f(p addr, m vec[2,bool], v vec[3,u32]) vec[2,u32] { return masked_load[u32](p, \
      m, v) }\n";
   semantic_error "simd-memory-base-type"
-    "argument 1 of `masked_load` is `u32`, expected `addr`"
+    "cannot pass `u32` as `addr`: integers convert to addresses with `addr_from_bits`"
     "fn f(p u32, m vec[2,bool], v vec[2,u32]) vec[2,u32] { return masked_load[u32](p, \
      m, v) }\n";
   semantic_error "simd-memory-load-arity" "builtin `masked_load` expects 3 arguments"
@@ -10256,6 +10391,15 @@ let () =
     "fn run() void { var Value i32\nreturn }\n";
 
   let c_matrix = c_import_fixture "matrix.h" in
+  let imported_c_widening =
+    "fn probe(value i64) u32 { return fas_u32_echo(value) }\n"
+  in
+  c_semantic_pin "widening-imported-c-function-argument"
+    "write `trunc[u32](value)` if intended" c_matrix imported_c_widening 1
+    (String.length "fn probe(value i64) u32 { return fas_u32_echo(" + 1)
+    (String.length "value") "cannot pass `i64` as `u32`: negative values change meaning";
+  c_semantic_accept "widening-imported-c-function-argument-twin" c_matrix
+    "fn probe(value u16) u32 { return fas_u32_echo(value) }\n";
   let c_stdlib = c_import_system_fixture "stdlib.h" in
   let c_strings = c_import_system_fixtures [ "stdio.h"; "string.h"; "stdlib.h" ] in
   let c_string_types = c_import_fixture "c_string_parameters.h" in
@@ -13127,7 +13271,8 @@ let () =
   c_semantic_accept "c-import-self-macro-preserves-global" fixture
     "fn f() i32 { return counter }\n";
   c_semantic_message "c-import-self-macro-global-type"
-    "return value is `i32`, expected `u8`" fixture "fn f() u8 { return counter }\n"
+    "cannot return `i32` as `u8`: negative values change meaning" fixture
+    "fn f() u8 { return counter }\n"
 
 let () =
   semantic_accept "brace-vector-static-contexts"

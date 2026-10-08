@@ -468,6 +468,12 @@ let field_info structs name field =
 let compatible actual expected = Hir.ty_equal actual expected
 let diagnostic_ty_name ty = Hir.ty_name ty
 
+let scalar_conversion_pair actual expected =
+  match (actual, expected) with
+  | Hir.Int _, (Hir.Int _ | Hir.Bool | Hir.Addr) | (Hir.Bool | Hir.Addr), Hir.Int _ ->
+      true
+  | _ -> false
+
 let implicit_integer_widen actual expected =
   match (actual, expected) with
   | Hir.Int _, Hir.Int _ ->
@@ -749,6 +755,123 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression actual 
       (Printf.sprintf "%s is `addr` to `%s`, expected `%s`" context source_record
          (diagnostic_ty_name expected))
     |> fun diagnostic -> Error [ diagnostic ]
+  else if scalar_conversion_pair actual expected then
+    let action, relation =
+      match context with
+      | "return value" -> ("return", "as")
+      | context when String.starts_with ~prefix:"argument " context -> ("pass", "as")
+      | context
+        when String.starts_with ~prefix:"value for " context
+             || context = "assigned value" ->
+          ("assign", "to")
+      | _ -> ("use", "as")
+    in
+    let source = diagnostic_ty_name actual
+    and destination = diagnostic_ty_name expected in
+    let source_bits = Sema_numeric.integer_value_bit_width actual
+    and destination_bits = Sema_numeric.integer_value_bit_width expected in
+    let narrow_result =
+      match (expression, source_bits, destination_bits, actual, expected) with
+      | Some source, Some from_bits, Some to_bits, Hir.Int _, Hir.Int _ ->
+          narrow_arithmetic_result source && from_bits < to_bits
+      | _ -> false
+    in
+    let reason =
+      match (actual, expected) with
+      | Hir.Int _, Hir.Int _
+        when (not (Sema_numeric.is_unsigned actual))
+             && Sema_numeric.is_unsigned expected ->
+          "negative values change meaning"
+      | Hir.Int Hir.U64, Hir.Int Hir.U32 -> "values above 4294967295 would be lost"
+      | Hir.Int _, Hir.Int _ -> "values may be lost or change meaning"
+      | Hir.Bool, Hir.Int _ | Hir.Int _, Hir.Bool ->
+          "bool and integer values use different representations"
+      | Hir.Addr, Hir.Int _ -> "addresses convert to integers with `addr_bits`"
+      | Hir.Int _, Hir.Addr -> "integers convert to addresses with `addr_from_bits`"
+      | _ -> assert false
+    in
+    let message =
+      match expression with
+      | Some expression when narrow_result ->
+          Printf.sprintf "`%s` is computed in `%s` and may wrap before it reaches `%s`"
+            (Ast.expr_name expression) source destination
+      | _ ->
+          Printf.sprintf "cannot %s `%s` %s `%s`: %s" action source relation destination
+            reason
+    in
+    let operand = Option.fold ~none:"value" ~some:Ast.expr_name expression in
+    let help =
+      match (expression, actual, expected) with
+      | Some (Ast.Binary (operator, left, right, _)), Hir.Int _, Hir.Int _
+        when narrow_result ->
+          let extension = if Sema_numeric.is_unsigned actual then "zext" else "sext" in
+          let operator =
+            match operator with
+            | Ast.Add -> "+"
+            | Ast.Sub -> "-"
+            | Ast.Mul -> "*"
+            | Ast.Div -> "/"
+            | Ast.Rem -> "%"
+            | Ast.Shl -> "<<"
+            | Ast.Shr -> ">>"
+            | Ast.Bit_and -> "&"
+            | Ast.Bit_or -> "|"
+            | Ast.Bit_xor -> "^"
+            | _ -> assert false
+          in
+          Some
+            (Printf.sprintf "widen an operand first: `%s[%s](%s) %s %s`" extension
+               destination (Ast.expr_name left) operator (Ast.expr_name right))
+      | Some (Ast.Unary (Ast.Neg, value, _)), Hir.Int _, Hir.Int _ when narrow_result ->
+          let extension = if Sema_numeric.is_unsigned actual then "zext" else "sext" in
+          Some
+            (Printf.sprintf "widen an operand first: `-%s[%s](%s)`" extension
+               destination (Ast.expr_name value))
+      | _, Hir.Int _, Hir.Int _
+        when (not (Sema_numeric.is_unsigned actual))
+             && Sema_numeric.is_unsigned expected
+             && source_bits = destination_bits ->
+          Some
+            (Printf.sprintf
+               "reinterpret the bits with `bitcast[%s](%s)`, or widen with \
+                `sext`/`zext` first if that is what you mean"
+               destination operand)
+      | _, Hir.Int _, Hir.Int _
+        when (not (Sema_numeric.is_unsigned actual))
+             && Sema_numeric.is_unsigned expected ->
+          let extension = if source_bits < destination_bits then "sext" else "trunc" in
+          Some
+            (Printf.sprintf "write `%s[%s](%s)` if intended" extension destination
+               operand)
+      | _, Hir.Int _, Hir.Int _ when source_bits = destination_bits ->
+          Some (Printf.sprintf "write `bitcast[%s](%s)`" destination operand)
+      | _, Hir.Int _, Hir.Int _ when source_bits > destination_bits ->
+          Some
+            (Printf.sprintf "keep the low bits with `trunc[%s](%s)`" destination operand)
+      | _, Hir.Bool, Hir.Int _ ->
+          Some (Printf.sprintf "write `if %s { 1 } else { 0 }`" operand)
+      | _, Hir.Int _, Hir.Bool -> Some (Printf.sprintf "write `%s != 0`" operand)
+      | _, Hir.Int _, Hir.Addr ->
+          let cast =
+            if actual = Hir.Int Hir.Usize then operand
+            else if source_bits = Some 64 then
+              Printf.sprintf "bitcast[usize](%s)" operand
+            else
+              let extension =
+                if Sema_numeric.is_unsigned actual then "zext" else "sext"
+              in
+              Printf.sprintf "%s[usize](%s)" extension operand
+          in
+          Some (Printf.sprintf "write `addr_from_bits(%s)`" cast)
+      | _, Hir.Addr, Hir.Int _ ->
+          Some
+            (if expected = Hir.Int Hir.Usize then
+               Printf.sprintf "write `addr_bits(%s)`" operand
+             else
+               Printf.sprintf "write `bitcast[%s](addr_bits(%s))`" destination operand)
+      | _ -> None
+    in
+    Diag.error ?help span message |> fun diagnostic -> Error [ diagnostic ]
   else
     let help =
       match (expression, actual, expected) with
@@ -924,6 +1047,37 @@ let binary_result_type ?left_expression ?right_expression ?result_expected
       error (result_span offending)
         (Printf.sprintf "arithmetic `%s` is not defined for `addr`"
            (binary_operator_name operation))
+  | None
+    when left <> right && operation <> Ast.Shl && operation <> Ast.Shr
+         && Sema_numeric.is_int left && Sema_numeric.is_int right
+         && Option.is_none (common_integer_type left right) ->
+      let help =
+        match (left, right, left_expression, right_expression) with
+        | Hir.Int Hir.U32, Hir.Int Hir.I32, Some left_expr, Some right_expr ->
+            Some
+              (Printf.sprintf "widen both to `i64`: `zext[i64](%s) %s sext[i64](%s)`"
+                 (Ast.expr_name left_expr)
+                 (binary_operator_name operation)
+                 (Ast.expr_name right_expr))
+        | Hir.Int Hir.I32, Hir.Int Hir.U32, Some left_expr, Some right_expr ->
+            Some
+              (Printf.sprintf "widen both to `i64`: `sext[i64](%s) %s zext[i64](%s)`"
+                 (Ast.expr_name left_expr)
+                 (binary_operator_name operation)
+                 (Ast.expr_name right_expr))
+        | _ -> None
+      in
+      let message =
+        if is_comparison operation then
+          Printf.sprintf "cannot compare `%s` with `%s`: no type holds both"
+            (diagnostic_ty_name left) (diagnostic_ty_name right)
+        else
+          Printf.sprintf "cannot apply `%s` to `%s` and `%s`: no type holds both"
+            (binary_operator_name operation)
+            (diagnostic_ty_name left) (diagnostic_ty_name right)
+      in
+      Diag.error ?help (result_span right_expression) message |> fun diagnostic ->
+      Error [ diagnostic ]
   | None
     when left <> right && operation <> Ast.Shl && operation <> Ast.Shr
          && Sema_numeric.is_int left && Sema_numeric.is_int right
