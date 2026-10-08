@@ -4848,6 +4848,9 @@ and check_stmt (c : context) = function
           | None -> Some true
           | Some condition -> literal_condition_truth condition
         in
+        let single_iteration =
+          match induction with Some (_, fact) -> fact.low = fact.high | None -> false
+        in
         (match (tq, induction) with
         | Some condition_expr, None when condition <> Some false ->
             refine_condition c condition_expr true
@@ -4868,7 +4871,7 @@ and check_stmt (c : context) = function
               Ok (Some y)
         in
         Sema_flow.finish_for c.flow loop ~unconditional:(init_condition = Some true)
-          ~condition_is_false:(init_condition = Some false);
+          ~condition_is_false:(init_condition = Some false) ~single_iteration;
         Sema_flow.end_loop c.flow;
         Ok
           (Hir.For

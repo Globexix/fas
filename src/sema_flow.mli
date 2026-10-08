@@ -97,7 +97,15 @@ val finish_while :
   t -> loop -> condition_is_true:bool -> condition_is_false:bool -> unit
 
 val prepare_for_step : t -> loop -> body_falls_through:bool -> unit
-val finish_for : t -> loop -> unconditional:bool -> condition_is_false:bool -> unit
+
+val finish_for :
+  t ->
+  loop ->
+  unconditional:bool ->
+  condition_is_false:bool ->
+  single_iteration:bool ->
+  unit
+
 val record_break : t -> (string * Span.t) option -> Span.t -> (unit, Diag.t list) result
 
 val record_continue :

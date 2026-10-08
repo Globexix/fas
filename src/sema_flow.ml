@@ -30,6 +30,8 @@ type deferred_requirement = binding * selector list * Span.t
 type checked_defer = {
   requirements : deferred_requirement list;
   effects : (binding * init_state) list;
+  value_effects : (binding * value_fact option option) list;
+  address_effects : (binding * address_fact option) list;
   falls_through : bool;
 }
 
@@ -739,12 +741,33 @@ let add_init_state flow ty left right =
   in
   normalize_state flow ty (add ty left right)
 
-let apply_defer_effect flow (binding, deferred_state) =
-  let current = state_of flow binding in
-  let state = add_init_state flow binding.ty current deferred_state in
-  if state = Uninit then
-    flow.initialized <- State_map.remove binding.id flow.initialized
-  else flow.initialized <- State_map.add binding.id state flow.initialized
+let changed_map_effects bindings before after =
+  List.filter_map
+    (fun binding ->
+      let before = State_map.find_opt binding.id before
+      and after = State_map.find_opt binding.id after in
+      if before = after then None else Some (binding, after))
+    bindings
+
+let apply_map_effect map effects =
+  List.fold_left
+    (fun map (binding, state) ->
+      match state with
+      | Some state -> State_map.add binding.id state map
+      | None -> State_map.remove binding.id map)
+    map effects
+
+let apply_defer_effect flow deferred =
+  List.iter
+    (fun (binding, deferred_state) ->
+      let current = state_of flow binding in
+      let state = add_init_state flow binding.ty current deferred_state in
+      if state = Uninit then
+        flow.initialized <- State_map.remove binding.id flow.initialized
+      else flow.initialized <- State_map.add binding.id state flow.initialized)
+    deferred.effects;
+  flow.values <- apply_map_effect flow.values deferred.value_effects;
+  flow.addresses <- apply_map_effect flow.addresses deferred.address_effects
 
 let rec validate_defer_list flow = function
   | [] -> Ok true
@@ -754,7 +777,7 @@ let rec validate_defer_list flow = function
           (fun (binding, path, span) -> require_state binding path flow span)
           deferred.requirements
       in
-      List.iter (apply_defer_effect flow) deferred.effects;
+      apply_defer_effect flow deferred;
       if deferred.falls_through then validate_defer_list flow rest else Ok false
 
 let validate_defer_scopes flow keep =
@@ -859,7 +882,9 @@ let finish_while flow loop ~condition_is_true ~condition_is_false =
   let result =
     Option.value ~default:loop.entry_state (merge_flow_states flow exit_states)
   in
-  restore flow (widen_loop loop.entry_state result);
+  restore flow
+    (if condition_is_true && iteration_states = [] then result
+     else widen_loop loop.entry_state result);
   flow.falls_through <- loop.entry_falls_through && exit_states <> []
 
 let prepare_for_step flow loop ~body_falls_through =
@@ -872,17 +897,19 @@ let prepare_for_step flow loop ~body_falls_through =
     (Option.value ~default:loop.entry_state (merge_flow_states flow step_states));
   flow.falls_through <- step_states <> []
 
-let finish_for flow loop ~unconditional ~condition_is_false =
+let finish_for flow loop ~unconditional ~condition_is_false ~single_iteration =
   loop.stepping <- false;
   let exit_states =
     if unconditional then loop.break_states
     else if condition_is_false then [ loop.entry_state ]
+    else if single_iteration then
+      (if flow.falls_through then [ snapshot flow ] else []) @ loop.break_states
     else loop.entry_state :: snapshot flow :: loop.break_states
   in
   let result =
     Option.value ~default:loop.entry_state (merge_flow_states flow exit_states)
   in
-  restore flow (widen_loop loop.entry_state result);
+  restore flow (if single_iteration then result else widen_loop loop.entry_state result);
   flow.falls_through <- loop.entry_falls_through && exit_states <> []
 
 let record_loop_exit flow target span kind =
@@ -914,7 +941,14 @@ let record_loop_exit flow target span kind =
     | None, None -> error span (kind ^ " outside loop")
     | _, Some _ when not flow.falls_through -> Ok ()
     | _, Some loop ->
-        if not flow.checking_dead then loop.induction_valid <- false;
+        (if not flow.checking_dead then
+           let rec invalidate_until_target = function
+             | [] -> ()
+             | exited :: rest ->
+                 exited.induction_valid <- false;
+                 if exited == loop then () else invalidate_until_target rest
+           in
+           invalidate_until_target flow.loop_init_flows);
         let* state = exit_defer_state flow loop.keep_defer_depth in
         Option.iter
           (fun state ->
@@ -967,7 +1001,7 @@ let begin_defer flow span =
     Ok capture
 
 let finish_defer flow capture checked ~falls_through:body_falls_through =
-  let after = flow.initialized in
+  let after = snapshot flow in
   let requirements = Option.value ~default:[] flow.collecting_defer |> List.rev in
   flow.in_defer <- false;
   flow.collecting_defer <- None;
@@ -977,14 +1011,30 @@ let finish_defer flow capture checked ~falls_through:body_falls_through =
   let effects =
     List.filter_map
       (fun binding ->
-        Option.map (fun state -> (binding, state)) (State_map.find_opt binding.id after))
+        Option.map
+          (fun state -> (binding, state))
+          (State_map.find_opt binding.id after.initialized))
       capture.defer_visible_bindings
+  in
+  let value_effects =
+    changed_map_effects capture.defer_visible_bindings capture.defer_before.values
+      after.values
+  and address_effects =
+    changed_map_effects capture.defer_visible_bindings capture.defer_before.addresses
+      after.addresses
   in
   (if capture.defer_before_falls_through then
      match flow.defer_scopes with
      | scope :: rest ->
          flow.defer_scopes <-
-           ({ requirements; effects; falls_through = body_falls_through body } :: scope)
+           ({
+              requirements;
+              effects;
+              value_effects;
+              address_effects;
+              falls_through = body_falls_through body;
+            }
+           :: scope)
            :: rest
      | [] -> ());
   Ok body

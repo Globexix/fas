@@ -1961,6 +1961,38 @@ let () =
   then failwith "place-init: aggregate declaration emitted implicit initialization";
   semantic_error "defer-does-not-initialize" "use of uninitialized local `x`"
     "fn f() i64 { x i64\n defer { x = 1 }\n return x }\n";
+  semantic_accept "defer-value-fact-index"
+    "fn p() i32 { a arr[4, i32] = {}\ni i32 = 9\n{ defer { i = 1 } }\nreturn a[i] }";
+  semantic_message "defer-value-fact-index-invalid-twin"
+    "array index is out of bounds for length 4"
+    "fn p() i32 { a arr[4, i32] = {}\ni i32 = 9\n{ defer { i = 4 } }\nreturn a[i] }";
+  semantic_accept "defer-address-fact"
+    "fn p() i32 { x i32 = 0\nq addr = null\n{ defer { q = &x } }\nreturn q[i32] }";
+  semantic_message "defer-address-fact-null-twin" "access through null address"
+    "fn p() i32 { x i32 = 0\nq addr = &x\n{ defer { q = null } }\nreturn q[i32] }";
+  semantic_accept "defer-value-fact-divisor"
+    "fn p() i32 { d i32 = 0\n{ defer { d = 2 } }\nreturn 10 / d }";
+  semantic_message "defer-value-fact-zero-divisor-twin"
+    "division by zero is not a defined runtime operation"
+    "fn p() i32 { d i32 = 2\n{ defer { d = 0 } }\nreturn 10 / d }";
+  semantic_accept "defer-value-fact-continue-step"
+    "fn f() void { d i32 = 0\nfor ; ; d += 10 / d { defer { d = 2 }\ncontinue } }";
+  semantic_message "defer-value-fact-continue-step-invalid-twin"
+    "division by zero is not a defined runtime operation"
+    "fn f() void { d i32 = 2\nfor ; ; d += 10 / d { defer { d = 0 }\ncontinue } }";
+  semantic_accept "defer-value-fact-labeled-continue-step"
+    "fn f() void { d i32 = 0\n\
+     outer: for i i32 = 0; i < 1; d += 10 / d {\n\
+     for ; ; { defer { d = 2 }\n\
+     continue outer }\n\
+     } }";
+  semantic_message "defer-value-fact-labeled-continue-step-invalid-twin"
+    "division by zero is not a defined runtime operation"
+    "fn f() void { d i32 = 2\n\
+     outer: for i i32 = 0; i < 1; d += 10 / d {\n\
+     for ; ; { defer { d = 0 }\n\
+     continue outer }\n\
+     } }";
   ignore
     (lower_of "fn f() i64 { x i64\n defer { observed i64 = x }\n x = 1\n return 0 }\n");
   ignore (lower_of "fn f() void { x i64\n defer { observed i64 = x }\n x = 1 }\n");
@@ -11043,6 +11075,36 @@ let () =
       "%s has no NUL terminator, but `%s` reads parameter `%s` as a C string" literal
       function_name parameter_name
   in
+  let deferred_string_source body value =
+    let defer = Printf.sprintf "defer { q = %s }" value in
+    let body = body defer in
+    Printf.sprintf "fn probe() void { q addr = \"abc\"\n%s\nputs(q)\nreturn }\n" body
+  in
+  let deferred_string_bodies =
+    [
+      ("defer-c-string-scope", fun defer -> Printf.sprintf "{ %s }" defer);
+      ( "defer-c-string-break",
+        fun defer -> Printf.sprintf "while true { %s\nbreak }" defer );
+      ( "defer-c-string-labeled-break",
+        fun defer ->
+          Printf.sprintf "outer: while true { %s\nwhile true { break outer } }" defer );
+      ( "defer-c-string-for-scope",
+        fun defer -> Printf.sprintf "for i i32 = 0; i < 1; i += 1 { %s }" defer );
+    ]
+  in
+  List.iter
+    (fun (name, body) ->
+      c_semantic_accept name c_strings (deferred_string_source body "c\"x\""))
+    deferred_string_bodies;
+  List.iter
+    (fun (name, body) ->
+      c_semantic_message name
+        (c_string_message "\"x\"" "puts" "__s")
+        c_strings
+        (deferred_string_source body "\"x\""))
+    (List.map
+       (fun (name, body) -> (name ^ "-invalid-twin", body))
+       deferred_string_bodies);
   c_semantic_pin "c-string-printf" "write c\"x\"" c_strings
     "fn probe() void {\n  printf(\"x\")\n  return\n}\n" 2 10 3
     (c_string_message "\"x\"" "printf" "__format");
@@ -14588,6 +14650,67 @@ let () =
      values[index]\n\
      }\n\
      return 0 }";
+  semantic_accept "value-fact-labeled-break-index"
+    "fn f() i32 { values arr[4,i32] = {}\n\
+     result i32 = 0\n\
+     outer: for i i32 = 0; i < 2; i += 1 {\n\
+     for index i32 = 0; index < 10; index += 1 {\n\
+     if index == 4 { break outer }\n\
+     result += values[index] + index\n\
+     }\n\
+     }\n\
+     return result }";
+  semantic_accept "value-fact-labeled-break-twin"
+    "fn f() i32 { values arr[4,i32] = {}\n\
+     result i32 = 0\n\
+     outer: for i i32 = 0; i < 2; i += 1 {\n\
+     for index i32 = 0; index < 10; index += 1 {\n\
+     if index == 4 { break }\n\
+     result += values[index] + index\n\
+     }\n\
+     }\n\
+     return result }";
+  semantic_accept "value-fact-labeled-continue-index"
+    "fn f() i32 { values arr[4,i32] = {}\n\
+     result i32 = 0\n\
+     outer: for i i32 = 0; i < 2; i += 1 {\n\
+     for index i32 = 0; index < 10; index += 1 {\n\
+     if index == 4 { continue outer }\n\
+     result += values[index]\n\
+     }\n\
+     }\n\
+     return result }";
+  semantic_accept "value-fact-labeled-continue-twin"
+    "fn f() i32 { values arr[4,i32] = {}\n\
+     result i32 = 0\n\
+     outer: for i i32 = 0; i < 2; i += 1 {\n\
+     for index i32 = 0; index < 5; index += 1 {\n\
+     if index == 4 { continue }\n\
+     result += values[index]\n\
+     }\n\
+     }\n\
+     return result }";
+  semantic_accept "value-fact-labeled-break-while-index"
+    "fn f() i32 { values arr[4,i32] = {}\n\
+     result i32 = 0\n\
+     outer: while true {\n\
+     for index i32 = 0; index < 10; index += 1 {\n\
+     if index == 4 { break outer }\n\
+     result += values[index]\n\
+     }\n\
+     }\n\
+     return result }";
+  semantic_accept "value-fact-labeled-break-while-twin"
+    "fn f() i32 { values arr[4,i32] = {}\n\
+     result i32 = 0\n\
+     outer: while true {\n\
+     for index i32 = 0; index < 10; index += 1 {\n\
+     if index == 4 { break }\n\
+     result += values[index]\n\
+     }\n\
+     break outer\n\
+     }\n\
+     return result }";
   semantic_accept "value-fact-loop-unknown-bound"
     "fn f(bound usize) u8 { values arr[4,u8] = {0,1,2,3}\n\
      result u8 = 0\n\
