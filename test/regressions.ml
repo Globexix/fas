@@ -7399,8 +7399,9 @@ let () =
   in
   let if_branch_narrow_help = "widen an operand first: `zext[u32](a) + b`" in
   semantic_pin "if-branch-narrow-arithmetic-diagnostic" if_branch_narrow_source 1
-    (String.index if_branch_narrow_source '+' + 1)
-    1
+    (String.length "fn bad(c bool, a u16, b u16, w u32) u64 { return zext[u64](if c { "
+    + 1)
+    (String.length "a + b")
     "if-expression branches are `u16` and `u32`: narrow arithmetic may wrap before \
      widening"
     (Some if_branch_narrow_help);
@@ -7475,7 +7476,9 @@ let () =
   let narrow_arithmetic_source =
     "fn f(a u16, b u16) u32 { value u32 = a * b; return value }\n"
   in
-  semantic_pin "widening-narrow-arithmetic-diagnostic" narrow_arithmetic_source 1 40 1
+  semantic_pin "widening-narrow-arithmetic-diagnostic" narrow_arithmetic_source 1
+    (String.length "fn f(a u16, b u16) u32 { value u32 = " + 1)
+    (String.length "a * b")
     "`a * b` is computed in `u16` and may wrap before it reaches `u32`"
     (Some "widen an operand first: `zext[u32](a) * b`");
   conversion_help_twin "narrow-arithmetic-help-compiles" narrow_arithmetic_source
@@ -7484,8 +7487,9 @@ let () =
     "fn f(a u16, b u16) u32 { value u32 = (a + 1) * (b - 2); return value }\n"
   in
   semantic_pin "narrow-arithmetic-parentheses" nested_arithmetic_source 1
-    (String.index nested_arithmetic_source '*' + 1)
-    1 "`(a + 1) * (b - 2)` is computed in `u16` and may wrap before it reaches `u32`"
+    (String.length "fn f(a u16, b u16) u32 { value u32 = (" + 1)
+    (String.length "(a + 1) * (b - 2)" - 2)
+    "`(a + 1) * (b - 2)` is computed in `u16` and may wrap before it reaches `u32`"
     (Some "widen an operand first: `zext[u32](a + 1) * (b - 2)`");
   conversion_help_twin "nested-arithmetic-help-compiles" nested_arithmetic_source
     "(a + 1) * (b - 2)" "zext[u32](a + 1) * (b - 2)"
@@ -7493,7 +7497,8 @@ let () =
   let unary_arithmetic_source = "fn f(a u16, b u16) u32 { return -(a + b) }\n" in
   semantic_pin "narrow-unary-parentheses" unary_arithmetic_source 1
     (String.index unary_arithmetic_source '-' + 1)
-    1 "`-(a + b)` is computed in `u16` and may wrap before it reaches `u32`"
+    (String.length "-(a + b)" - 1)
+    "`-(a + b)` is computed in `u16` and may wrap before it reaches `u32`"
     (Some "widen an operand first: `-zext[u32](a + b)`");
   conversion_help_twin "unary-arithmetic-help-compiles" unary_arithmetic_source
     "-(a + b)" "-zext[u32](a + b)" "widen an operand first: `-zext[u32](a + b)`";
@@ -7504,8 +7509,9 @@ let () =
      return get(a) * pair.value }\n"
   in
   semantic_pin "narrow-arithmetic-call-field" call_field_arithmetic_source 4
-    (String.length "return get(a) " + 1)
-    1 "`get(a) * pair.value` is computed in `u16` and may wrap before it reaches `u32`"
+    (String.length "return " + 1)
+    (String.length "get(a) * pair.value")
+    "`get(a) * pair.value` is computed in `u16` and may wrap before it reaches `u32`"
     (Some "widen an operand first: `zext[u32](get(a)) * pair.value`");
   conversion_help_twin "call-field-arithmetic-help-compiles"
     call_field_arithmetic_source "get(a) * pair.value" "zext[u32](get(a)) * pair.value"
@@ -7877,8 +7883,9 @@ let () =
     1 "operands of `==` have different types: `bool` and `i32`" None;
   semantic_pin "comparison-parenthesized-ordering-bool"
     "fn compare(x i64, y i64) bool { return (x >= y) >= true }\n" 1
-    (String.index "fn compare(x i64, y i64) bool { return (x >= y) >= true }" '>' + 1)
-    2 "ordered comparison `>=` needs an integer or integer vector, got `bool`" None;
+    (String.length "fn compare(x i64, y i64) bool { return (" + 1)
+    (String.length "x >= y")
+    "ordered comparison `>=` needs an integer or integer vector, got `bool`" None;
   semantic_pin "comparison-equality-chain-bool-right"
     "fn compare(x bool, y bool, flag bool) bool { return x == y == flag }\n" 1
     (String.index_from

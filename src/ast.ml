@@ -169,14 +169,12 @@ type program = { items : item list }
 let const_item name name_span ty value span =
   Const { name; name_span; ty_span = name_span; ty; value; span }
 
-let rec expr_span = function
+let stored_expr_span = function
   | Int_lit (_, s)
   | Bool_lit (_, s)
   | Null s
   | String_lit (_, _, s)
   | Ident (_, s)
-  | Unary (_, _, s)
-  | Binary (_, _, _, s)
   | Call (_, _, s)
   | Generic_args (_, _, s)
   | Cast (_, _, _, s)
@@ -192,17 +190,39 @@ let rec expr_span = function
   | Array_lit (_, s) ->
       s
   | C_dereference (_, _, s) | C_dot_star (_, s) -> s
-  | Parenthesized (e, _) -> expr_span e
-  | Arrow_field (base, _, _, field_span) ->
-      let base_span = expr_span base in
+  | Unary _ | Binary _ | Parenthesized _ | Arrow_field _ | Field _ -> assert false
+
+let rec expr_span = function
+  | Binary (_, left, right, _) ->
+      let left_span = expr_start_span left and right_span = expr_end_span right in
+      Span.make ~file:left_span.Span.file ~start_offset:left_span.Span.start_offset
+        ~end_offset:right_span.Span.end_offset ~line:left_span.Span.line
+        ~column:left_span.Span.column
+  | Unary (_, operand, operator_span) ->
+      let end_span = expr_end_span operand in
+      Span.make ~file:operator_span.Span.file
+        ~start_offset:operator_span.Span.start_offset
+        ~end_offset:end_span.Span.end_offset ~line:operator_span.Span.line
+        ~column:operator_span.Span.column
+  | Parenthesized (expression, _) -> expr_span expression
+  | Arrow_field (base, _, _, field_span) | Field (base, _, field_span) ->
+      let base_span = expr_start_span base in
       Span.make ~file:base_span.Span.file ~start_offset:base_span.Span.start_offset
         ~end_offset:field_span.Span.end_offset ~line:base_span.Span.line
         ~column:base_span.Span.column
-  | Field (base, _, field_span) ->
-      let base_span = expr_span base in
-      Span.make ~file:base_span.Span.file ~start_offset:base_span.Span.start_offset
-        ~end_offset:field_span.Span.end_offset ~line:base_span.Span.line
-        ~column:base_span.Span.column
+  | expression -> stored_expr_span expression
+
+and expr_start_span = function
+  | Binary (_, left, _, _) -> expr_start_span left
+  | Parenthesized (_, span) -> span
+  | Arrow_field (base, _, _, _) | Field (base, _, _) -> expr_start_span base
+  | expression -> expr_span expression
+
+and expr_end_span = function
+  | Binary (_, _, right, _) -> expr_end_span right
+  | Parenthesized (_, span) -> span
+  | Arrow_field (_, _, _, field_span) | Field (_, _, field_span) -> field_span
+  | expression -> expr_span expression
 
 let rec index_expression = function
   | Named_type (name, span) -> Ident (name, span)
