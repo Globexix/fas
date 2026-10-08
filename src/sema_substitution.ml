@@ -1562,8 +1562,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                     argument :: arguments ) ->
                     let* expression = generic_const_argument span argument in
                     let* expression =
-                      resolve_expr ~values ~defer_const_structs substitutions depth
-                        expression
+                      with_preserved_layout_queries (fun () ->
+                          resolve_expr ~values ~defer_const_structs substitutions depth
+                            expression)
                     in
                     let argument = Ast.Const_arg expression in
                     resolve_arguments types bindings (argument :: consts)

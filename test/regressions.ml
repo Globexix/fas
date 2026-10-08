@@ -4258,6 +4258,15 @@ let () =
   if not (contains nested_sizeof_const_argument "ret i64 8\n") then
     failwith
       "nested-sizeof-const-argument: sizeof over nested generic type was not evaluated";
+  let const_generic_layout_argument =
+    llvm_of
+      "struct Sized[T, N const usize] { data arr[N, T] }\n\
+       fn ret[N const usize]() usize { return N }\n\
+       fn test() usize { return ret[sizeof[Sized[u8, 2]]]() }\n"
+  in
+  if not (contains const_generic_layout_argument "ret i64 2\n") then
+    failwith
+      "const-generic-layout-argument: sizeof over a generic layout was not evaluated";
   let arithmetic_sizeof_const_argument =
     llvm_of
       "fn ret[N const usize]() usize { return N }\n\
