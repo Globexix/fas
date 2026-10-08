@@ -7354,6 +7354,10 @@ let () =
     (Some
        "reinterpret the bits with `bitcast[u32](n)`, or widen with `sext`/`zext` first \
         if that is what you mean");
+  conversion_help_twin "sign-change-help-compiles" widening_sign_source "n"
+    "bitcast[u32](n)"
+    "reinterpret the bits with `bitcast[u32](n)`, or widen with `sext`/`zext` first if \
+     that is what you mean";
   semantic_accept "widening-sign-change-explicit-twin"
     "fn put(x u32) void { return }\nfn f(n i32) void { put(bitcast[u32](n)); return }\n";
   let widening_mixed_source = "fn f(a u32, b i32) bool { return a < b }\n" in
@@ -7425,6 +7429,8 @@ let () =
     (String.length "size")
     "cannot use `u64` as `u32`: values above 4294967295 would be lost"
     (Some "keep the low bits with `trunc[u32](size)`");
+  conversion_help_twin "compound-narrowing-help-compiles" widening_compound_source
+    "size" "trunc[u32](size)" "keep the low bits with `trunc[u32](size)`";
   semantic_accept "widening-compound-assignment-twin"
     "fn f(pos u32, size u16) void { pos += size; return }\n";
   let widening_return_source = "fn f(x u64) u32 { return x }\n" in
@@ -7432,6 +7438,8 @@ let () =
     (String.length "fn f(x u64) u32 { return " + 1)
     1 "cannot return `u64` as `u32`: values above 4294967295 would be lost"
     (Some "keep the low bits with `trunc[u32](x)`");
+  conversion_help_twin "return-narrowing-help-compiles" widening_return_source "x"
+    "trunc[u32](x)" "keep the low bits with `trunc[u32](x)`";
   semantic_accept "widening-return-twin" "fn f(x u32) u64 { return x }\n";
   let widening_if_source =
     "fn f(flag bool, value i32) u32 { return if flag { value } else { 0 } }\n"
@@ -7442,6 +7450,10 @@ let () =
     (Some
        "reinterpret the bits with `bitcast[u32](value)`, or widen with `sext`/`zext` \
         first if that is what you mean");
+  conversion_help_twin "if-branch-help-compiles" widening_if_source "value"
+    "bitcast[u32](value)"
+    "reinterpret the bits with `bitcast[u32](value)`, or widen with `sext`/`zext` \
+     first if that is what you mean";
   semantic_accept "widening-if-branch-twin"
     "fn f(flag bool, value u16) u32 { return if flag { value } else { 0 } }\n";
   let widening_case_source =
@@ -7453,6 +7465,8 @@ let () =
     (String.length "CASE")
     "cannot use `u64` as `u32`: values above 4294967295 would be lost"
     (Some "keep the low bits with `trunc[u32](CASE)`");
+  conversion_help_twin "case-narrowing-help-compiles" widening_case_source "CASE"
+    "trunc[u32](CASE)" "keep the low bits with `trunc[u32](CASE)`";
   semantic_accept "widening-case-value-twin"
     "const CASE u8 = 1\n\
      fn f(value u32) u32 { switch value { case CASE: return 1; default: return 0 } }\n";
@@ -7465,6 +7479,8 @@ let () =
     (String.length "fn f() void { data arr[A + " + 1)
     1 "cannot apply `+` to `u32` and `i32`: no type holds both"
     (Some "widen both to `i64`: `zext[i64](A) + sext[i64](B)`");
+  conversion_help_twin "size-slot-help-compiles" widening_size_slot_source "A + B"
+    "zext[i64](A) + sext[i64](B)" "widen both to `i64`: `zext[i64](A) + sext[i64](B)`";
   semantic_accept "widening-size-slot-twin"
     "const A u32 = 1\n\
      const B i64 = 2\n\
@@ -7491,6 +7507,8 @@ let () =
     "cannot return `u32` as `bool`: bool and integer values use different \
      representations"
     (Some "write `value != 0`");
+  conversion_help_twin "integer-to-bool-help-compiles" widening_integer_bool_source
+    "value" "value != 0" "write `value != 0`";
   let widening_vector_source = "fn f(value vec[4,u8]) vec[4,u16] { return value }\n" in
   semantic_pin "widening-vector-is-explicit" widening_vector_source 1
     (String.length "fn f(value vec[4,u8]) vec[4,u16] { return " + 1)
@@ -7502,6 +7520,45 @@ let () =
     (String.length "fn f(value addr) usize { return " + 1)
     5 "cannot return `addr` as `usize`: addresses convert to integers with `addr_bits`"
     (Some "write `addr_bits(value)`");
+  conversion_help_twin "address-to-usize-help-compiles" widening_addr_to_int_source
+    "value" "addr_bits(value)" "write `addr_bits(value)`";
+  let widening_addr_i64_source = "fn f(value addr) i64 { return value }\n" in
+  semantic_pin "address-to-i64-help" widening_addr_i64_source 1
+    (String.length "fn f(value addr) i64 { return " + 1)
+    5 "cannot return `addr` as `i64`: addresses convert to integers with `addr_bits`"
+    (Some "write `bitcast[i64](addr_bits(value))`");
+  conversion_help_twin "address-to-i64-help-compiles" widening_addr_i64_source "value"
+    "bitcast[i64](addr_bits(value))" "write `bitcast[i64](addr_bits(value))`";
+  let widening_addr_u32_source = "fn f(value addr) u32 { return value }\n" in
+  semantic_pin "address-to-u32-help" widening_addr_u32_source 1
+    (String.length "fn f(value addr) u32 { return " + 1)
+    5 "cannot return `addr` as `u32`: addresses convert to integers with `addr_bits`"
+    (Some "write `trunc[u32](addr_bits(value))`");
+  conversion_help_twin "address-to-u32-help-compiles" widening_addr_u32_source "value"
+    "trunc[u32](addr_bits(value))" "write `trunc[u32](addr_bits(value))`";
+  let address_call_help_source =
+    "fn get() addr { return null }\nfn f() i32 { return get() }\n"
+  in
+  conversion_help_twin "address-call-help-compiles" address_call_help_source "get()"
+    "trunc[i32](addr_bits(get()))" "write `trunc[i32](addr_bits(get()))`";
+  let address_field_help_source =
+    "struct Holder { pointer addr }\n\
+     fn f() i32 { value Holder = {null}\n\
+     return value.pointer }\n"
+  in
+  conversion_help_twin "address-field-help-compiles" address_field_help_source
+    "value.pointer" "trunc[i32](addr_bits(value.pointer))"
+    "write `trunc[i32](addr_bits(value.pointer))`";
+  let record_field_conversion_source =
+    "struct Pair { value u8 }\nfn f(x u16) void { pair Pair = {x}\nreturn }\n"
+  in
+  conversion_help_twin "record-field-conversion-help-compiles"
+    record_field_conversion_source "x" "trunc[u8](x)"
+    "keep the low bits with `trunc[u8](x)`";
+  let vector_lane_conversion_source = "fn f(x u16) vec[2,u8] { return {x, 1} }\n" in
+  conversion_help_twin "vector-lane-conversion-help-compiles"
+    vector_lane_conversion_source "x" "trunc[u8](x)"
+    "keep the low bits with `trunc[u8](x)`";
   semantic_accept "widening-address-explicit-twin"
     "fn f(value addr) usize { return addr_bits(value) }\n";
   let widening_handle_source =
@@ -7545,6 +7602,8 @@ let () =
     (String.length "fn f(value i64) void { imported(" + 1)
     5 "cannot pass `i64` as `u32`: negative values change meaning"
     (Some "write `trunc[u32](value)` if intended");
+  conversion_help_twin "imported-call-help-compiles" widening_c_import_source "value"
+    "trunc[u32](value)" "write `trunc[u32](value)` if intended";
   semantic_accept "widening-imported-c-argument-twin"
     "extern \"C\" { fn imported(value u64) void }\n\
      fn f(value u32) void { imported(value); return }\n";

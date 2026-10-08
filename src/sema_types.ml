@@ -869,7 +869,9 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression actual 
             (if expected = Hir.Int Hir.Usize then
                Printf.sprintf "write `addr_bits(%s)`" operand
              else
-               Printf.sprintf "write `bitcast[%s](addr_bits(%s))`" destination operand)
+               Printf.sprintf "write `%s[%s](addr_bits(%s))`"
+                 (if destination_bits = Some 64 then "bitcast" else "trunc")
+                 destination operand)
       | _ -> None
     in
     Diag.error ?help span message |> fun diagnostic -> Error [ diagnostic ]
