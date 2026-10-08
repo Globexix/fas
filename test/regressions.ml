@@ -7364,12 +7364,12 @@ let () =
   semantic_accept "if-branch-nested-unification"
     "fn nested(c bool, d bool, a u8, b u16, w u32) u32 { return if c { if d { a } else \
      { b } } else { w } }\n";
-  semantic_error "if-branch-no-common-type" "different types"
+  semantic_error "if-branch-no-common-type" "no type holds both"
     "fn bad(c bool, u u32, s i32) i64 { return sext[i64](if c { u } else { s }) }\n";
   semantic_accept "if-branch-no-common-type-explicit-twin"
     "fn good(c bool, u u32, s i32) i64 { return if c { zext[i64](u) } else { \
      sext[i64](s) } }\n";
-  semantic_error "if-branch-narrow-arithmetic" "computed in `u16` and may wrap"
+  semantic_error "if-branch-narrow-arithmetic" "narrow arithmetic"
     "fn bad(c bool, a u16, b u16, w u32) u64 { return zext[u64](if c { a + b } else { \
      w }) }\n";
   semantic_accept "if-branch-narrow-arithmetic-explicit-twin"
@@ -7385,6 +7385,33 @@ let () =
      const B u16 = 0x100\n\
      const K u64 = zext[u64](if F { A } else { B })\n\
      fn value() u64 { return zext[u64](if F { A } else { B }) }\n";
+  let if_branch_types_source =
+    "fn bad(c bool, u u32, s i32) i64 { return sext[i64](if c { u } else { s }) }\n"
+  in
+  semantic_pin "if-branch-no-common-type-diagnostic" if_branch_types_source 1
+    (String.length
+       "fn bad(c bool, u u32, s i32) i64 { return sext[i64](if c { u } else { "
+    + 1)
+    1 "if-expression branches are `u32` and `i32`: no type holds both" None;
+  let if_branch_narrow_source =
+    "fn bad(c bool, a u16, b u16, w u32) u64 { return zext[u64](if c { a + b } else { \
+     w }) }\n"
+  in
+  let if_branch_narrow_help = "widen an operand first: `zext[u32](a) + b`" in
+  semantic_pin "if-branch-narrow-arithmetic-diagnostic" if_branch_narrow_source 1
+    (String.index if_branch_narrow_source '+' + 1)
+    1
+    "if-expression branches are `u16` and `u32`: narrow arithmetic may wrap before \
+     widening"
+    (Some if_branch_narrow_help);
+  conversion_help_twin "if-branch-narrow-arithmetic-help-compiles"
+    if_branch_narrow_source "a + b" "zext[u32](a) + b" if_branch_narrow_help;
+  let if_branch_bool_source =
+    "fn bad(c bool, w u32) u64 { return zext[u64](if c { true } else { w }) }\n"
+  in
+  semantic_pin "if-branch-bool-integer-diagnostic" if_branch_bool_source 1
+    (String.rindex if_branch_bool_source 'w' + 1)
+    1 "if-expression branches have different types: `bool` and `u32`" None;
   semantic_accept "widening-size-slot"
     "const BUFFERSIZE u16 = 0x1000\n\
      fn buffer() void { data arr[BUFFERSIZE / sizeof[i32], u8] = {}\n\
