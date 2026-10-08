@@ -969,6 +969,14 @@ let binary_widening_help = function
            name)
   | _ -> None
 
+let mixed_widen_help operation target left_extension right_extension left_expr
+    right_expr =
+  Some
+    (Printf.sprintf "widen both to `%s`: `%s[%s](%s) %s %s[%s](%s)`" target
+       left_extension target (Ast.expr_name left_expr)
+       (binary_operator_name operation)
+       right_extension target (Ast.expr_name right_expr))
+
 let binary_result_type ?left_expression ?right_expression ?result_expected
     ?(comparison_chain_rewrite_valid = true) span operation left right =
   let result_span expression =
@@ -1054,17 +1062,18 @@ let binary_result_type ?left_expression ?right_expression ?result_expected
       let help =
         match (left, right, left_expression, right_expression) with
         | Hir.Int Hir.U32, Hir.Int Hir.I32, Some left_expr, Some right_expr ->
-            Some
-              (Printf.sprintf "widen both to `i64`: `zext[i64](%s) %s sext[i64](%s)`"
-                 (Ast.expr_name left_expr)
-                 (binary_operator_name operation)
-                 (Ast.expr_name right_expr))
+            mixed_widen_help operation "i64" "zext" "sext" left_expr right_expr
         | Hir.Int Hir.I32, Hir.Int Hir.U32, Some left_expr, Some right_expr ->
-            Some
-              (Printf.sprintf "widen both to `i64`: `sext[i64](%s) %s zext[i64](%s)`"
-                 (Ast.expr_name left_expr)
-                 (binary_operator_name operation)
-                 (Ast.expr_name right_expr))
+            mixed_widen_help operation "i64" "sext" "zext" left_expr right_expr
+        | ( Hir.Int (Hir.U8 | Hir.I8),
+            Hir.Int (Hir.U8 | Hir.I8),
+            Some left_expr,
+            Some right_expr )
+          when left <> right ->
+            mixed_widen_help operation "i16"
+              (if Sema_numeric.is_unsigned left then "zext" else "sext")
+              (if Sema_numeric.is_unsigned right then "zext" else "sext")
+              left_expr right_expr
         | _ -> None
       in
       let message =

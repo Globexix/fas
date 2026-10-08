@@ -7397,6 +7397,13 @@ let () =
   semantic_pin "widening-u64-i64-no-common-type" widening_u64_i64_source 1
     (String.length "fn f(left u64, right i64) bool { return left < " + 1)
     (String.length "right") "cannot compare `u64` with `i64`: no type holds both" None;
+  let widening_u8_i8_source =
+    "fn f(left u8, right i8) bool { return left == right }\n"
+  in
+  semantic_pin "widening-u8-i8-no-common-type" widening_u8_i8_source 1
+    (String.length "fn f(left u8, right i8) bool { return left == " + 1)
+    (String.length "right") "cannot compare `u8` with `i8`: no type holds both"
+    (Some "widen both to `i16`: `zext[i16](left) == sext[i16](right)`");
   let widening_integer_bool_source = "fn f(value u32) bool { return value }\n" in
   semantic_pin "widening-integer-to-bool" widening_integer_bool_source 1
     (String.length "fn f(value u32) bool { return " + 1)
