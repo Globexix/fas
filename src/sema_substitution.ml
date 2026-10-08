@@ -1562,9 +1562,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                     argument :: arguments ) ->
                     let* expression = generic_const_argument span argument in
                     let* expression =
-                      with_preserved_layout_queries (fun () ->
-                          resolve_expr ~values ~defer_const_structs substitutions depth
-                            expression)
+                      resolve_expr ~values ~defer_const_structs substitutions depth
+                        expression
                     in
                     let argument = Ast.Const_arg expression in
                     resolve_arguments types bindings (argument :: consts)
@@ -1822,7 +1821,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         if has_generic_type ty && !preserve_layout_queries then
           Ok (Ast.Sizeof (ty, span))
         else if has_generic_type ty then
-          let* ty =
+          let* _ =
             resolve_ty ~values ~defer_const_structs substitutions depth span ty
           in
           Ok (Ast.Sizeof (ty, span))
@@ -1835,7 +1834,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         if has_generic_type ty && !preserve_layout_queries then
           Ok (Ast.Alignof (ty, span))
         else if has_generic_type ty then
-          let* ty =
+          let* _ =
             resolve_ty ~values ~defer_const_structs substitutions depth span ty
           in
           Ok (Ast.Alignof (ty, span))
@@ -1848,7 +1847,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         if has_generic_type ty && !preserve_layout_queries then
           Ok (Ast.Offsetof (ty, field, span))
         else if has_generic_type ty then
-          let* ty =
+          let* _ =
             resolve_ty ~values ~defer_const_structs substitutions depth span ty
           in
           Ok (Ast.Offsetof (ty, field, span))
