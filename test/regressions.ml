@@ -7841,7 +7841,7 @@ let () =
      const C vec[4,bool] = splat(true)\n\
      const Result vec[4,bool] = A == B == C\n";
   semantic_error "binary-widening-narrow-destination"
-    "cannot assign `i64` to `i32`: values may be lost or change meaning"
+    "cannot assign `i64` to `i32`: values outside -2147483648..2147483647 would be lost"
     "fn f(c i64, a i32) i32 { x i32 = c + a; return x }\n";
   semantic_accept "binary-widening-initializer"
     "fn f(c i64, a i32) i64 { x i64 = c + a; return x }\n";
