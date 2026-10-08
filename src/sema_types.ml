@@ -861,7 +861,7 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression actual 
           Some
             (Printf.sprintf "keep the low bits with `trunc[%s](%s)`" destination operand)
       | _, Hir.Bool, Hir.Int _ ->
-          Some (Printf.sprintf "write `if %s { 1 } else { 0 }`" operand)
+          Some (Printf.sprintf "write `zext[%s](%s)`" destination operand)
       | _, Hir.Int _, Hir.Bool -> Some (Printf.sprintf "write `%s != 0`" operand)
       | _, Hir.Int _, Hir.Addr ->
           let cast =

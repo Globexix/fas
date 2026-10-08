@@ -7634,7 +7634,9 @@ let () =
     5
     "cannot return `bool` as `u32`: bool and integer values use different \
      representations"
-    (Some "write `if value { 1 } else { 0 }`");
+    (Some "write `zext[u32](value)`");
+  conversion_help_twin "bool-to-integer-help-compiles" widening_bool_source "value"
+    "zext[u32](value)" "write `zext[u32](value)`";
   let widening_addr_source = "fn f(value u32) addr { return value }\n" in
   semantic_pin "widening-integer-address-diagnostic" widening_addr_source 1
     (String.length "fn f(value u32) addr { return " + 1)
@@ -7972,7 +7974,7 @@ let () =
     20 "array length `18446744073709551615` is too large" None;
   semantic_pin "constant-initializer-type-caret" "const VALUE u32 = true\n" 1 19 4
     "cannot use `bool` as `u32`: bool and integer values use different representations"
-    (Some "write `if true { 1 } else { 0 }`");
+    (Some "write `zext[u32](true)`");
   let constant_address_array_write =
     "var GLOBAL u8\n\
      const PTRS arr[1,addr] = {&GLOBAL}\n\
@@ -8008,7 +8010,7 @@ let () =
     "fn f(flag bool) i64 { result i64 = if flag { 1 } else { false }\n return 0 }\n" 1
     57 5
     "cannot use `bool` as `i64`: bool and integer values use different representations"
-    (Some "write `if false { 1 } else { 0 }`");
+    (Some "write `zext[i64](false)`");
   semantic_pin "raw-index-diagnostic" "fn f(p addr) u8 { return p[u8, false] }\n" 1 32 5
     "raw access index must be an integer, got `bool`" None;
   semantic_pin "unknown-record-diagnostic"
