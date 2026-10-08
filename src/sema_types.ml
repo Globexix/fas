@@ -468,6 +468,51 @@ let field_info structs name field =
 let compatible actual expected = Hir.ty_equal actual expected
 let diagnostic_ty_name ty = Hir.ty_name ty
 
+let implicit_integer_widen actual expected =
+  match (actual, expected) with
+  | Hir.Int _, Hir.Int _ ->
+      let actual_bits = Option.get (Sema_numeric.integer_value_bit_width actual) in
+      let expected_bits = Option.get (Sema_numeric.integer_value_bit_width expected) in
+      if expected_bits <= actual_bits then None
+      else if Sema_numeric.is_unsigned actual then Some Ast.Zext
+      else if not (Sema_numeric.is_unsigned expected) then Some Ast.Sext
+      else None
+  | _ -> None
+
+let common_integer_type left right =
+  if Hir.ty_equal left right then Some left
+  else
+    match (implicit_integer_widen left right, implicit_integer_widen right left) with
+    | Some _, _ -> Some right
+    | _, Some _ -> Some left
+    | _ -> None
+
+let rec narrow_arithmetic_result = function
+  | Ast.Parenthesized (expression, _) -> narrow_arithmetic_result expression
+  | Ast.Unary ((Ast.Neg | Ast.Bit_not), _, _) -> true
+  | Ast.Binary
+      ( ( Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Shl | Ast.Shr
+        | Ast.Bit_and | Ast.Bit_or | Ast.Bit_xor ),
+        _,
+        _,
+        _ ) ->
+      true
+  | Ast.Ternary (_, yes, no, _) ->
+      narrow_arithmetic_result yes || narrow_arithmetic_result no
+  | _ -> false
+
+let convert_expected_kind ?expression actual expected =
+  match expression with
+  | Some expression when narrow_arithmetic_result expression -> None
+  | _ -> implicit_integer_widen actual expected
+
+let widen_integer_value kind actual expected value =
+  match kind with
+  | Ast.Zext -> Sema_numeric.mask_value expected value
+  | Ast.Sext ->
+      Sema_numeric.mask_value expected (Sema_numeric.sign_extend_value actual value)
+  | Ast.Trunc | Ast.Bitcast -> value
+
 let function_arity_message name expected actual =
   Printf.sprintf "function `%s` expects %d %s, got %d" name expected
     (if expected = 1 then "argument" else "arguments")
@@ -683,7 +728,10 @@ let aggregate_count_error_span span n xs =
 
 let ensure_expected ?(context = "value") ?expression ?checked_expression actual expected
     span =
-  if compatible actual expected then Ok ()
+  if
+    compatible actual expected
+    || Option.is_some (convert_expected_kind ?expression actual expected)
+  then Ok ()
   else if
     match (checked_expression, expected) with
     | Some (Hir.Address (place, _, _)), Hir.Handle target -> (
@@ -876,6 +924,14 @@ let binary_result_type ?left_expression ?right_expression ?result_expected
       error (result_span offending)
         (Printf.sprintf "arithmetic `%s` is not defined for `addr`"
            (binary_operator_name operation))
+  | None
+    when left <> right && operation <> Ast.Shl && operation <> Ast.Shr
+         && Sema_numeric.is_int left && Sema_numeric.is_int right
+         && Option.is_some (common_integer_type left right) -> (
+      let common = Option.get (common_integer_type left right) in
+      match operation with
+      | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> Ok Hir.Bool
+      | _ -> Ok common)
   | None
     when not
            (Hir.ty_equal left right

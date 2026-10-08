@@ -1792,7 +1792,7 @@ and raw_offset_expr c s access_ty index_payload =
                Hir.Int Hir.Usize,
                s ))
 
-and check_expr ?destination (c : context) expected expression =
+and check_expr ?destination ?(allow_widen = true) (c : context) expected expression =
   let previous_depth = c.expression_depth in
   if previous_depth = 0 then c.unresolved_shapes_unique <- false;
   if previous_depth = 0 && unresolved_shape_cache_worthwhile expression then (
@@ -1802,6 +1802,16 @@ and check_expr ?destination (c : context) expected expression =
   c.expression_depth <- previous_depth + 1;
   let result = check_expr_inner ?destination c expected expression in
   c.expression_depth <- previous_depth;
+  let result =
+    match (allow_widen, expected, result) with
+    | true, Some target, Ok value -> (
+        match
+          Sema_types.convert_expected_kind ~expression (Hir.expr_ty value) target
+        with
+        | Some kind -> Ok (Hir.Cast (kind, value, target, Ast.expr_span expression))
+        | None -> Ok value)
+    | _ -> result
+  in
   match (expression, result) with
   | Ast.Binary (op, left, right, span), Error _ -> (
       match Sema_types.comparison_chain_diagnostic span op left right with
@@ -1932,7 +1942,7 @@ and check_expr_inner ?destination (c : context) expected expression =
              raw)
   | Ast.Unary (op, e, s) -> (
       let* te =
-        check_expr c
+        check_expr ~allow_widen:false c
           (match (op, expected) with
           | (Ast.Neg | Ast.Bit_not), _ -> expected
           | Ast.Not, Some (Hir.Vec (_, Hir.Bool)) -> expected
@@ -2027,7 +2037,7 @@ and check_expr_inner ?destination (c : context) expected expression =
         else Error [ logical_operand_error "right" r (Hir.expr_ty b) ])
       else if op = Ast.Shl || op = Ast.Shr then
         let* a =
-          check_expr c
+          check_expr ~allow_widen:false c
             (match expected with Some (Hir.Int _) -> expected | _ -> None)
             l
         in
@@ -2088,8 +2098,14 @@ and check_expr_inner ?destination (c : context) expected expression =
         let* a, b =
           match (unresolved_shape_of c l, unresolved_shape_of c r) with
           | Some _, None ->
-              let* b = check_expr c (operand_type_hint c op expected l r) r in
-              let* a = check_expr c (contextual_peer_type c op (Hir.expr_ty b) l) l in
+              let* b =
+                check_expr ~allow_widen:false c (operand_type_hint c op expected l r) r
+              in
+              let* a =
+                check_expr ~allow_widen:false c
+                  (contextual_peer_type c op (Hir.expr_ty b) l)
+                  l
+              in
               Ok (a, b)
           | _ ->
               let left_expected =
@@ -2097,12 +2113,12 @@ and check_expr_inner ?destination (c : context) expected expression =
                 | Some (`Left ty) -> Some ty
                 | _ -> operand_type_hint c op expected l r
               in
-              let* a = check_expr c left_expected l in
+              let* a = check_expr ~allow_widen:false c left_expected l in
               let right_expected =
                 if comparison_chain || parenthesized_comparison then None
                 else contextual_peer_type c op (Hir.expr_ty a) r
               in
-              let* b = check_expr c right_expected r in
+              let* b = check_expr ~allow_widen:false c right_expected r in
               Ok (a, b)
         in
         let at = Hir.expr_ty a in
@@ -2172,6 +2188,23 @@ and check_expr_inner ?destination (c : context) expected expression =
             let* result_ty =
               binary_result_type ~left_expression:l ~right_expression:r
                 ?result_expected:expected ~comparison_chain_rewrite_valid s op at bt
+            in
+            let a, b, at, bt =
+              match
+                if is_int at && is_int bt then Sema_types.common_integer_type at bt
+                else None
+              with
+              | Some common ->
+                  let widen value =
+                    match
+                      Sema_types.implicit_integer_widen (Hir.expr_ty value) common
+                    with
+                    | Some kind -> Hir.Cast (kind, value, common, Hir.expr_span value)
+                    | None -> value
+                  in
+                  let a = widen a and b = widen b in
+                  (a, b, Hir.expr_ty a, Hir.expr_ty b)
+              | None -> (a, b, at, bt)
             in
             let facts_enabled = Sema_flow.proof_checks_enabled c.flow in
             let divisor_fact = value_fact c b in

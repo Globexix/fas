@@ -10,6 +10,7 @@ val const_expr :
   Hir.ty option ->
   ?check_only:bool ->
   ?validate_dead:bool ->
+  ?allow_widen:bool ->
   Ast.expr ->
   (Hir.ty * int64, Diag.t list) result
 

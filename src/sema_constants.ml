@@ -446,10 +446,19 @@ let query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate const
 
 let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
     ?(arrays = []) ?(array_lengths = []) ?(globals = []) ?resolve consts expected
-    ?(check_only = false) ?(validate_dead = true) expression =
+    ?(check_only = false) ?(validate_dead = true) ?(allow_widen = true) expression =
   let result =
     const_expr_inner ~structs ~named_types ~generic_structs ~arrays ~array_lengths
       ~globals ?resolve consts expected ~check_only ~validate_dead expression
+  in
+  let result =
+    match (allow_widen, expected, result) with
+    | true, Some target, Ok (actual, value) -> (
+        match Sema_types.convert_expected_kind ~expression actual target with
+        | Some kind ->
+            Ok (target, Sema_types.widen_integer_value kind actual target value)
+        | None -> Ok (actual, value))
+    | _ -> result
   in
   match (expression, result) with
   | Ast.Binary (op, left, right, span), Error _ -> (
@@ -527,14 +536,16 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
   | Ast.Unary (Ast.Neg, e, s) ->
       let* t, v =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
-          ~globals ?resolve consts expected ~check_only ~validate_dead e
+          ~globals ?resolve consts expected ~check_only ~validate_dead
+          ~allow_widen:false e
       in
       if not (is_int t) then error s "unary minus requires an integer"
       else Ok (t, mask_value t (Int64.neg v))
   | Ast.Unary (Ast.Bit_not, e, s) ->
       let* t, v =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
-          ~globals ?resolve consts expected ~check_only ~validate_dead e
+          ~globals ?resolve consts expected ~check_only ~validate_dead
+          ~allow_widen:false e
       in
       if not (is_int t) then error s "bitwise not requires an integer"
       else Ok (t, mask_value t (Int64.lognot v))
@@ -632,28 +643,43 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
         | Some _, None ->
             let* rt, rv =
               const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
-                ~globals ?resolve consts hint ~check_only ~validate_dead r
+                ~globals ?resolve consts hint ~check_only ~validate_dead
+                ~allow_widen:false r
             in
             let* lt, lv =
               const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
                 ~globals ?resolve consts
                 (contextual_peer_type op rt l)
-                ~check_only ~validate_dead l
+                ~check_only ~validate_dead ~allow_widen:false l
             in
             Ok ((lt, lv), (rt, rv))
         | _ ->
             let* lt, lv =
               const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
-                ~globals ?resolve consts hint ~check_only ~validate_dead l
+                ~globals ?resolve consts hint ~check_only ~validate_dead
+                ~allow_widen:false l
             in
             let* rt, rv =
               const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
                 ~globals ?resolve consts
                 (if comparison_chain || parenthesized_comparison then None
                  else contextual_peer_type op lt r)
-                ~check_only ~validate_dead r
+                ~check_only ~validate_dead ~allow_widen:false r
             in
             Ok ((lt, lv), (rt, rv))
+      in
+      let lt, lv, rt, rv =
+        match
+          if is_int lt && is_int rt then Sema_types.common_integer_type lt rt else None
+        with
+        | Some common ->
+            let widen ty value =
+              match Sema_types.implicit_integer_widen ty common with
+              | Some kind -> Sema_types.widen_integer_value kind ty common value
+              | None -> value
+            in
+            (common, widen lt lv, common, widen rt rv)
+        | None -> (lt, lv, rt, rv)
       in
       let comparison_chain_rewrite_valid =
         match (op, l) with
@@ -788,7 +814,7 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
               const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
                 ~globals ?resolve consts (Some at) ~check_only:true ~validate_dead b
             in
-            ensure_expected bt at (Ast.expr_span b)
+            ensure_expected ~expression:b bt at (Ast.expr_span b)
         in
         Ok (at, av)
       else
@@ -803,7 +829,7 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
               const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
                 ~globals ?resolve consts (Some bt) ~check_only:true ~validate_dead a
             in
-            ensure_expected at bt (Ast.expr_span a)
+            ensure_expected ~expression:a at bt (Ast.expr_span a)
         in
         Ok (bt, bv)
   | Ast.Cast (k, dst, e, s) ->
@@ -953,7 +979,8 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
         Result_list.map
           (fun a ->
             const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
-              ~globals ?resolve consts expected ~check_only ~validate_dead a)
+              ~globals ?resolve consts expected ~check_only ~validate_dead
+              ~allow_widen:false a)
           args
       in
       match (name, vals) with
@@ -1162,7 +1189,8 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
                       ~check_only element
                   in
                   let* () =
-                    ensure_expected actual_ty element_ty (Ast.expr_span element)
+                    ensure_expected ~expression:element actual_ty element_ty
+                      (Ast.expr_span element)
                   in
                   values (lane_mask element_ty value :: acc) rest
             in
@@ -1176,7 +1204,9 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
             const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
               ~globals ?resolve consts (Some element) ~check_only value
           in
-          let* () = ensure_expected actual element (Ast.expr_span expression) in
+          let* () =
+            ensure_expected ~expression actual element (Ast.expr_span expression)
+          in
           Ok (ty, List.init lanes (fun _ -> lane_mask element value))
       | _ ->
           error span
@@ -1621,7 +1651,7 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
           vector_const_expr ~structs ~named_types ~generic_structs ~arrays
             ~array_lengths ~globals ?resolve consts (Some yes_ty) ~check_only:true no
         in
-        let* () = ensure_expected no_ty yes_ty (Ast.expr_span no) in
+        let* () = ensure_expected ~expression:no no_ty yes_ty (Ast.expr_span no) in
         Ok (yes_ty, yes_values)
       else
         let* no_ty, no_values = evaluate expected no in
@@ -1629,7 +1659,7 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
           vector_const_expr ~structs ~named_types ~generic_structs ~arrays
             ~array_lengths ~globals ?resolve consts (Some no_ty) ~check_only:true yes
         in
-        let* () = ensure_expected yes_ty no_ty (Ast.expr_span yes) in
+        let* () = ensure_expected ~expression:yes yes_ty no_ty (Ast.expr_span yes) in
         Ok (no_ty, no_values)
   | Ast.Cast (kind, destination, value, span) ->
       let* destination = source_ty_with_values named_types consts span destination in

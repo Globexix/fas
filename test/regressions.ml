@@ -542,21 +542,19 @@ let () =
      fn check_case(value u64) void { take(value) }\n";
   semantic_error "named-bool-constant-keeps-type" "is `bool`, expected `i32`"
     "const Flag bool = true\nfn main() i32 { value i32 = Flag\n return value }\n";
-  semantic_error "named-i8-constant-local-keeps-type" "is `i8`, expected `i32`"
+  semantic_accept "named-i8-constant-local-widens"
     "const Small i8 = 7\nfn main() i32 { value i32 = Small\n return value }\n";
   semantic_error "named-negative-i8-constant-keeps-type" "is `i8`, expected `u16`"
     "const Negative i8 = -1\nfn main() i32 { value u16 = Negative\n return 0 }\n";
-  semantic_error "named-i8-constant-return-keeps-type" "is `i8`, expected `i32`"
+  semantic_accept "named-i8-constant-return-widens"
     "const Small i8 = 7\nfn value() i32 { return Small }\n";
-  semantic_error "named-i8-constant-argument-keeps-type" "is `i8`, expected `i32`"
+  semantic_accept "named-i8-constant-argument-widens"
     "const Small i8 = 7\n\
      fn take(value i32) void { return }\n\
      fn check_case() void { take(Small) }\n";
-  semantic_error "named-i8-constant-binary-keeps-type"
-    "operands of `+` have different types: `i8` and `i32`"
+  semantic_accept "named-i8-constant-binary-widens"
     "const Small i8 = 7\nfn add(value i32) i32 { return Small + value }\n";
-  semantic_error "named-i8-constant-generic-argument-keeps-type"
-    "const argument type mismatch"
+  semantic_accept "named-i8-constant-generic-argument-widens"
     "const Small i8 = 7\n\
      fn value[N const i32]() i32 { return N }\n\
      fn check_case() i32 { return value[Small]() }\n";
@@ -2275,7 +2273,7 @@ let () =
     "opaque F\nfn f() bool { h handle[F] = null\n return h == null }\n";
   semantic_error "addr-bits-wrong-arg" "addr_bits argument must be an addr"
     "fn f(n u32) usize { return addr_bits(n) }\n";
-  semantic_error "addr-from-bits-wrong-arg" "addr_from_bits argument must be a usize"
+  semantic_accept "addr-from-bits-widening-arg"
     "fn f(n u32) addr { return addr_from_bits(n) }\n";
   semantic_error "handle-addr-wrong-arg" "handle_addr argument must be a handle"
     "fn f(p addr) addr { return handle_addr(p) }\n";
@@ -5420,22 +5418,8 @@ let () =
      fn test() i64 { value u8 = 1\n\
     \ return bad[u8](value) }\n"
   in
-  (match semantic_diagnostics specialized_type_message_failure with
-  | [ diagnostic ] ->
-      let rendered = Diag.render_all ~source:None [ diagnostic ] in
-      if diagnostic.message <> "value for `local` is `u8`, expected `i64`" then
-        failwith
-          ("generic-instantiation-specialized-type-message: unexpected message: "
-         ^ diagnostic.message);
-      if contains rendered "$spec$" then
-        failwith "generic-instantiation-specialized-type-message: internal name leaked";
-      if diagnostic.notes <> [ "while instantiating `bad[u8]` at regression.fas:7:12" ]
-      then
-        failwith
-          ("generic-instantiation-specialized-type-message: unexpected notes: "
-          ^ String.concat " | " diagnostic.notes)
-  | _ ->
-      failwith "generic-instantiation-specialized-type-message: expected one diagnostic");
+  semantic_accept "generic-instantiation-lossless-local"
+    specialized_type_message_failure;
   let repeated_generic_failure =
     "fn bad[T](value T) T { return value + value }\n\
      fn test(value addr) addr {\n\
@@ -6189,10 +6173,11 @@ let () =
   in
   if global_const_generic_struct_llvm <> llvm_of global_const_generic_struct_source then
     failwith "const-generic-struct-global-order: generated output was not deterministic";
-  semantic_error "const-generic-struct-global-type" "const argument type mismatch"
+  semantic_accept "const-generic-struct-lossless-argument"
     "const COUNT u8 = 3\n\
      struct Buffer[T, N const usize] { data arr[N, T] }\n\
-     fn test(value Buffer[u8, COUNT]) usize { return 0 }\n";
+     fn test() void { value Buffer[u8, COUNT] = {}\n\
+    \ return }\n";
 
   let const_generic_struct_type_argument_source =
     "const THREE usize = 3\n\
@@ -7268,68 +7253,39 @@ let () =
   if semantic_render initializer_mismatch_source <> initializer_mismatch_expected then
     failwith
       ("initializer-type-mismatch: " ^ semantic_render initializer_mismatch_source);
-  let signed_widen_source = "fn f(x i32) i64 { return x }\n" in
-  let signed_widen_expected =
-    expected_diagnostic
-      (String.trim signed_widen_source)
-      (String.length "fn f(x i32) i64 { return " + 1)
-      1 "return value is `i32`, expected `i64`" "write `sext[i64](x)`"
-  in
-  if semantic_render signed_widen_source <> signed_widen_expected then
-    failwith ("signed-widening-help: " ^ semantic_render signed_widen_source);
-  let unsigned_widen_source =
-    "fn put(value u64) void { return }\nfn f(x u32) void { put(x); return }\n"
-  in
-  let unsigned_widen_line = "fn f(x u32) void { put(x); return }" in
-  let unsigned_widen_column = String.length "fn f(x u32) void { put(" + 1 in
-  let unsigned_widen_expected =
-    expected_diagnostic ~line_number:2 unsigned_widen_line unsigned_widen_column 1
-      "argument 1 of `put` is `u32`, expected `u64`" "write `zext[u64](x)`"
-  in
-  if semantic_render unsigned_widen_source <> unsigned_widen_expected then
-    failwith ("unsigned-widening-help: " ^ semantic_render unsigned_widen_source);
-  let signedness_mismatch_source = "fn f(x u32) i64 { return x }\n" in
-  let signedness_mismatch_expected =
-    expected_diagnostic_without_help
-      (String.trim signedness_mismatch_source)
-      (String.length "fn f(x u32) i64 { return " + 1)
-      1 "return value is `u32`, expected `i64`"
-  in
-  if semantic_render signedness_mismatch_source <> signedness_mismatch_expected then
-    failwith
-      ("signedness-mismatch-no-help: " ^ semantic_render signedness_mismatch_source);
-  let binary_type_mismatch_source = "fn f(a i32, b u32) i32 { return a + b }\n" in
-  let binary_type_mismatch_line = String.trim binary_type_mismatch_source in
-  let binary_type_mismatch_column =
-    String.length "fn f(a i32, b u32) i32 { return a + " + 1
-  in
-  let binary_type_mismatch_expected =
-    expected_diagnostic_without_help binary_type_mismatch_line
-      binary_type_mismatch_column 1
-      "operands of `+` have different types: `i32` and `u32`"
-  in
-  if semantic_render binary_type_mismatch_source <> binary_type_mismatch_expected then
-    failwith ("binary-type-mismatch: " ^ semantic_render binary_type_mismatch_source);
-  let binary_widen_left_source = "fn f(a i32, b i64) i64 { return a + b }\n" in
-  let binary_widen_left_line = String.trim binary_widen_left_source in
-  let binary_widen_left_column = String.length "fn f(a i32, b i64) i64 { return " + 1 in
-  let binary_widen_left_expected =
-    expected_diagnostic binary_widen_left_line binary_widen_left_column 1
-      "operands of `+` have different types: `i32` and `i64`" "write `sext[i64](a)`"
-  in
-  if semantic_render binary_widen_left_source <> binary_widen_left_expected then
-    failwith ("binary-left-widening: " ^ semantic_render binary_widen_left_source);
-  let binary_widen_right_source = "fn f(a u64, b u32) u64 { return a + b }\n" in
-  let binary_widen_right_line = String.trim binary_widen_right_source in
-  let binary_widen_right_column =
-    String.length "fn f(a u64, b u32) u64 { return a + " + 1
-  in
-  let binary_widen_right_expected =
-    expected_diagnostic binary_widen_right_line binary_widen_right_column 1
-      "operands of `+` have different types: `u64` and `u32`" "write `zext[u64](b)`"
-  in
-  if semantic_render binary_widen_right_source <> binary_widen_right_expected then
-    failwith ("binary-right-widening: " ^ semantic_render binary_widen_right_source);
+  semantic_accept "signed-widening-return" "fn f(x i32) i64 { return x }\n";
+  semantic_accept "unsigned-widening-argument"
+    "fn put(value u64) void { return }\nfn f(x u32) void { put(x); return }\n";
+  semantic_accept "unsigned-to-signed-widening-return" "fn f(x u32) i64 { return x }\n";
+  semantic_accept "mixed-signed-binary-widening"
+    "fn f(a i32, b i64) i64 { return a + b }\n";
+  semantic_accept "mixed-unsigned-binary-widening"
+    "fn f(a u64, b u32) u64 { return a + b }\n";
+  semantic_accept "lossless-integer-width-pairs"
+    "fn f(a u8, b i8, c u32, d i32) isize {\n\
+     wide_u u16 = a\n\
+    \ wide_i i16 = b\n\
+    \ wide_signed i16 = a\n\
+     native_u usize = c\n\
+    \ native_signed isize = c\n\
+     native_i isize = d\n\
+    \ return c\n\
+     }\n";
+  semantic_accept "widening-if-and-switch-values"
+    "const SMALL u8 = 1\n\
+     fn choose(a u8, b u16) u32 { value u32 = if true { a } else { b }; return value }\n\
+     fn dispatch(value u64) u8 { switch value { case SMALL: return 1; default: return \
+     0 } }\n";
+  semantic_accept "widening-size-slot"
+    "const BUFFERSIZE u16 = 0x1000\n\
+     fn buffer() void { data arr[BUFFERSIZE / sizeof[i32], u8] = {}\n\
+    \ return }\n";
+  semantic_error "narrow-arithmetic-does-not-widen" "expected `u32`"
+    "fn f(a u16, b u16) u32 { value u32 = a * b; return value }\n";
+  semantic_accept "narrow-arithmetic-explicit-widening"
+    "fn f(a u16, b u16) u32 { value u32 = zext[u32](a) * b; return value }\n";
+  semantic_error "mixed-widths-without-common-type" "different types"
+    "fn f(a u32, b i32) bool { return a < b }\n";
   let addr_bitwise_source = "fn f(p addr, n u32) addr { return p & n }\n" in
   let addr_bitwise_line = String.trim addr_bitwise_source in
   let addr_bitwise_column = String.length "fn f(p addr, n u32) addr { return " + 1 in
@@ -7511,65 +7467,16 @@ let () =
      const B vec[4,bool] = splat(false)\n\
      const C vec[4,bool] = splat(true)\n\
      const Result vec[4,bool] = A == B == C\n";
-  let binary_widening_bad_context =
-    "fn f(c i64, a i32) i32 { x i32 = c + a; return x }\n"
-  in
-  let binary_widening_bad_line = String.trim binary_widening_bad_context in
-  let binary_widening_bad_expected =
-    expected_diagnostic_without_help binary_widening_bad_line
-      (String.length "fn f(c i64, a i32) i32 { x i32 = c + " + 1)
-      1 "operands of `+` have different types: `i64` and `i32`"
-  in
-  if semantic_render binary_widening_bad_context <> binary_widening_bad_expected then
-    failwith
-      ("binary-widening-bad-context: " ^ semantic_render binary_widening_bad_context);
-  let binary_widening_initializer =
-    "fn f(c i64, a i32) i64 { x i64 = c + a; return x }\n"
-  in
-  let binary_widening_initializer_line = String.trim binary_widening_initializer in
-  let binary_widening_initializer_expected =
-    expected_diagnostic binary_widening_initializer_line
-      (String.length "fn f(c i64, a i32) i64 { x i64 = c + " + 1)
-      1 "operands of `+` have different types: `i64` and `i32`" "write `sext[i64](a)`"
-  in
-  if semantic_render binary_widening_initializer <> binary_widening_initializer_expected
-  then
-    failwith
-      ("binary-widening-initializer: " ^ semantic_render binary_widening_initializer);
-  ignore (llvm_of "fn f(c i64, a i32) i64 { x i64 = c + sext[i64](a); return x }\n");
-  let binary_widening_argument =
+  semantic_error "binary-widening-narrow-destination" "expected `i32`"
+    "fn f(c i64, a i32) i32 { x i32 = c + a; return x }\n";
+  semantic_accept "binary-widening-initializer"
+    "fn f(c i64, a i32) i64 { x i64 = c + a; return x }\n";
+  semantic_accept "binary-widening-argument"
     "fn put(value i64) void { return }\n\
-     fn f(c i64, a i32) void { put(c + a); return }\n"
-  in
-  let binary_widening_argument_line =
-    "fn f(c i64, a i32) void { put(c + a); return }"
-  in
-  let binary_widening_argument_expected =
-    expected_diagnostic ~line_number:2 binary_widening_argument_line
-      (String.length "fn f(c i64, a i32) void { put(c + " + 1)
-      1 "operands of `+` have different types: `i64` and `i32`" "write `sext[i64](a)`"
-  in
-  if semantic_render binary_widening_argument <> binary_widening_argument_expected then
-    failwith ("binary-widening-argument: " ^ semantic_render binary_widening_argument);
-  ignore
-    (llvm_of
-       "fn put(value i64) void { return }\n\
-        fn f(c i64, a i32) void { put(c + sext[i64](a)); return }\n");
-  let binary_widening_return = "fn f(c i64, a i32) i64 { return c + a }\n" in
-  let binary_widening_return_line = String.trim binary_widening_return in
-  let binary_widening_return_expected =
-    expected_diagnostic binary_widening_return_line
-      (String.length "fn f(c i64, a i32) i64 { return c + " + 1)
-      1 "operands of `+` have different types: `i64` and `i32`" "write `sext[i64](a)`"
-  in
-  if semantic_render binary_widening_return <> binary_widening_return_expected then
-    failwith ("binary-widening-return: " ^ semantic_render binary_widening_return);
-  ignore (llvm_of "fn f(c i64, a i32) i64 { return c + sext[i64](a) }\n");
-  ignore (llvm_of "fn f(a i32, b i64) i64 { return sext[i64](a) + b }\n");
-  ignore (llvm_of "fn f(a u64, b u32) u64 { return a + zext[u64](b) }\n");
-  semantic_error "constant-binary-type-mismatch"
-    "operands of `+` have different types: `i32` and `u32`"
-    "const Left i32 = 1\nconst Right u32 = 2\nconst Sum i32 = Left + Right\n";
+     fn f(c i64, a i32) void { put(c + a); return }\n";
+  semantic_accept "binary-widening-return" "fn f(c i64, a i32) i64 { return c + a }\n";
+  semantic_error "constant-binary-no-common-type" "different types"
+    "const Left i32 = 1\nconst Right u32 = 2\nconst Sum i64 = Left + Right\n";
   ignore (llvm_of "fn f(x i32) i64 { return sext[i64](x) }\n");
   ignore
     (llvm_of
@@ -7962,11 +7869,9 @@ let () =
         fn g() vec[4,bool] { return E }\n");
   semantic_error "context-null-unconstrained" "null requires an addr or handle context"
     "fn f() bool { return null == null }\n";
-  semantic_error "context-conflicting-anchors-comparison"
-    "operands of `==` have different types: `u32` and `u64`"
+  semantic_accept "context-ordered-width-comparison"
     "fn f(x u32, y u64) bool { return x == y }\n";
-  semantic_error "context-conflicting-anchors-arithmetic"
-    "operands of `+` have different types: `u32` and `u64`"
+  semantic_accept "context-ordered-width-arithmetic"
     "fn f(x u32, y u64) u64 { return x + y }\n";
   semantic_error "context-splat-no-invented-lanes"
     "`splat` needs a vector destination or vector operand to determine its lane count"

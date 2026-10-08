@@ -69,6 +69,14 @@ val layout_diag :
 
 val field_info : Hir.struct_def list -> string -> string -> Hir.field option
 val compatible : Hir.ty -> Hir.ty -> bool
+val implicit_integer_widen : Hir.ty -> Hir.ty -> Ast.cast_kind option
+val common_integer_type : Hir.ty -> Hir.ty -> Hir.ty option
+val narrow_arithmetic_result : Ast.expr -> bool
+
+val convert_expected_kind :
+  ?expression:Ast.expr -> Hir.ty -> Hir.ty -> Ast.cast_kind option
+
+val widen_integer_value : Ast.cast_kind -> Hir.ty -> Hir.ty -> int64 -> int64
 val diagnostic_ty_name : Hir.ty -> string
 val function_arity_message : string -> int -> int -> string
 val generic_arity_message : string -> string -> int -> int -> string
