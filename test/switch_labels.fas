@@ -1,0 +1,104 @@
+extern "C" {
+  fn printf(format addr, ...) i32
+}
+
+const Red i32 = 3
+const Blue i32 = 8
+
+fn byte_class(value u8) i32 {
+  switch value {
+    case 0, '\n', '\r', '\t': return 1
+    case 'a', 'e', 'i', 'o', 'u': return 2
+    default: return 0
+  }
+}
+
+fn signed_class(value i32) i32 {
+  switch value {
+    case -9, -1: return 1
+    case 0, 1: return 2
+    default: return 0
+  }
+}
+
+fn wide_class(value u64) i32 {
+  switch value {
+    case 4294967296, 4294967297: return 1
+    default: return 0
+  }
+}
+
+fn enum_class(value i32) i32 {
+  switch value {
+    case Red, Blue: return 1
+    default: return 0
+  }
+}
+
+fn generic_class[N const u32](value u32) i32 {
+  switch value {
+    case N, N + 1: return 1
+    default: return 0
+  }
+}
+
+fn break_two() u64 {
+  trace u64 = 0
+  outer: for i i32 = 0; i < 1; i += 1 {
+    defer { trace = trace * 10 + 1 }
+    for j i32 = 0; j < 1; j += 1 {
+      defer { trace = trace * 10 + 2 }
+      switch 0 {
+        case 0: {
+          defer { trace = trace * 10 + 3 }
+          break outer
+        }
+        default: {}
+      }
+    }
+  }
+  return trace
+}
+
+fn break_three() u64 {
+  trace u64 = 0
+  outer: while true {
+    defer { trace = trace * 10 + 1 }
+    middle: while true {
+      defer { trace = trace * 10 + 2 }
+      while true {
+        defer { trace = trace * 10 + 3 }
+        break outer
+      }
+    }
+  }
+  return trace
+}
+
+fn continue_outer() u64 {
+  trace u64 = 0
+  outer: for i i32 = 0; i < 3; i += 1 {
+    defer { trace = trace * 10 + 1 }
+    for j i32 = 0; j < 2; j += 1 {
+      defer { trace = trace * 10 + 2 }
+      switch i {
+        case 0, 1, 2: {
+          defer { trace = trace * 10 + 3 }
+          continue outer
+        }
+        default: {}
+      }
+    }
+  }
+  return trace
+}
+
+fn main() i32 {
+  printf(c"%d %d %d\n", byte_class(10), byte_class('e'), byte_class('x'))
+  printf(c"%d %d %d\n", signed_class(-9), signed_class(1), signed_class(7))
+  printf(c"%d %d\n", wide_class(4294967296), wide_class(4294967298))
+  printf(c"%d %d %d %d\n", enum_class(Red), enum_class(Blue), enum_class(4),
+    generic_class[20](20))
+  printf(c"%llu %llu %llu\n", break_two(), break_three(), continue_outer())
+  return 0
+}

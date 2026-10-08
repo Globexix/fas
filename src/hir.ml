@@ -366,7 +366,7 @@ and loop_flow label unconditional body =
          label
   in
   let own name labels =
-    Option.fold ~none:[] ~some:(fun label -> remove label labels) name
+    Option.fold ~none:labels ~some:(fun label -> remove label labels) name
   in
   {
     falls_through = (not unconditional) || breaks;
@@ -376,6 +376,11 @@ and loop_flow label unconditional body =
     continues = false;
     labeled_continues = own label body.labeled_continues;
   }
+
+let loop_body_has_break label body =
+  let flow = block_flow body in
+  flow.breaks
+  || Option.fold ~none:false ~some:(fun name -> List.mem name flow.labeled_breaks) label
 
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 

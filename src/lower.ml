@@ -2311,7 +2311,7 @@ and lower_while s label c body =
   s.loops <- List.tl s.loops;
   if open_block s then s.current.term := Some (Ir.Br head.id);
   s.current <- exit;
-  if Hir.condition_is_true c && not (Hir.block_flow body).breaks then
+  if Hir.condition_is_true c && not (Hir.loop_body_has_break label body) then
     s.current.term := Some Ir.Unreachable;
   Ok ()
 
@@ -2357,7 +2357,7 @@ and lower_for s label init cond step body =
     let unconditional =
       match cond with None -> true | Some condition -> Hir.condition_is_true condition
     in
-    if unconditional && not (Hir.block_flow body).breaks then
+    if unconditional && not (Hir.loop_body_has_break label body) then
       s.current.term := Some Ir.Unreachable;
     Ok ()
   in
