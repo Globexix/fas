@@ -7,10 +7,24 @@ LLVM_OPT=${LLVM_OPT:-opt-22}
 OCAML_FAS=${OCAML_FAS:-$ROOT/_build/default/bin/main.exe}
 CONTAINER_TMP=$(mktemp -d)
 trap 'rm -rf "$CONTAINER_TMP"' EXIT HUP INT TERM
+TMPDIR=$CONTAINER_TMP/tmp
+mkdir "$TMPDIR"
+export TMPDIR
 
 fail() {
   echo "c_container: $*" >&2
   exit 1
+}
+
+cleanup_kept() {
+  sed -n 's/^fas: kept [^:]*: //p' "$1" | tr ', ' '\n' |
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      case "$path" in
+        "$TMPDIR"/*) rm -f "$path" ;;
+        *) fail "kept path escaped the test temporary directory: $path" ;;
+      esac
+    done
 }
 
 expect_failure() {
@@ -194,6 +208,7 @@ if grep -F "fas: CC command: $CC --target=x86_64-unknown-linux-gnu -fPIC " \
   "$CONTAINER_TMP/stderr" >/dev/null; then
   fail "header-only unit without adapters was compiled"
 fi
+cleanup_kept "$CONTAINER_TMP/stderr"
 
 mkdir "$CONTAINER_TMP/duplicate"
 cat >"$CONTAINER_TMP/duplicate/first.fas" <<'FAS'
@@ -287,5 +302,6 @@ grep -F "adapter for fas_static_value" "$bindings" >/dev/null \
   || fail "bindings manifest omitted the static adapter"
 grep -F "fas: CC command: $CC --target=x86_64-unknown-linux-gnu -fPIC -O0 -c " \
   "$CONTAINER_TMP/stderr" >/dev/null || fail "-g omitted the C compile command"
+cleanup_kept "$CONTAINER_TMP/stderr"
 
 echo "c_container: automatic C build, object merge and mapped errors: ok"

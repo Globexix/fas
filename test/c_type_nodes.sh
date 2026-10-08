@@ -6,7 +6,20 @@ LLVM_OPT=${LLVM_OPT:-opt-22}
 OCAML_FAS=${OCAML_FAS:-$ROOT/_build/default/bin/main.exe}
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
+TMPDIR=$TMP
+export TMPDIR
 fail() { echo "c_type_nodes: $*" >&2; exit 1; }
+
+cleanup_kept() {
+  sed -n 's/^fas: kept [^:]*: //p' "$1" | tr ', ' '\n' |
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      case "$path" in
+        "$TMPDIR"/*) rm -f "$path" ;;
+        *) fail "kept path escaped the test temporary directory: $path" ;;
+      esac
+    done
+}
 
 "$OCAML_FAS" --keep --emit-llvm -O0 "$ROOT/test/c_type_nodes.fas" \
   >"$TMP/kept.ll" 2>"$TMP/keep.log"
@@ -17,11 +30,7 @@ TAB=$(printf '\t')
 grep -F "node_qualified${TAB}NodeQualifiedAlias node_qualified${TAB}addr${TAB}__restrict,const,volatile${TAB}" \
   "$TMP/bindings.txt" >/dev/null \
   || fail "qualifiers from all pointer layers are missing from the manifest"
-sed -n \
-  -e 's/^fas: kept C import unit: //' \
-  -e 's/^fas: kept C bindings: //' \
-  -e 's/^fas: kept intermediate: //' "$TMP/keep.log" \
-  | while IFS= read -r path; do rm -f "$path"; done
+cleanup_kept "$TMP/keep.log"
 
 for level in 0 2; do
   "$OCAML_FAS" --emit-llvm -O"$level" "$ROOT/test/c_type_nodes.fas" \
