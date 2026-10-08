@@ -699,6 +699,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               (function
                 | Ast.Type_arg ty | Ast.Type_or_index ty ->
                     Ast.Type_arg (substitute_validation_type substitutions ty)
+                | Ast.Name_arg (name, span) -> (
+                    match List.assoc_opt name substitutions with
+                    | Some ty -> Ast.Type_arg ty
+                    | None -> Ast.Name_arg (name, span))
                 | argument -> argument)
               arguments,
             span )
@@ -1437,8 +1441,18 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let* length = aggregate_length_value kind length_info.span ty value in
         let expression = Ast.Int_lit (string_of_int length, length_info.span) in
         Ok (Ast.aggregate_length expression length_info.span)
-  and resolve_expr ?(values = []) ?(defer_const_structs = false) substitutions depth =
-    function
+  and resolve_expr ?(values = []) ?(defer_const_structs = false) substitutions depth
+      expression =
+    let resolve_layout_type span ty =
+      let ty = substitute_validation_type substitutions ty in
+      let* _ =
+        if substitutions = [] then
+          resolve_ty ~values ~defer_const_structs substitutions depth span ty
+        else Ok ty
+      in
+      Ok ty
+    in
+    match expression with
     | (Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Ident _) as
       expression ->
         Ok expression
@@ -1821,9 +1835,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         if has_generic_type ty && !preserve_layout_queries then
           Ok (Ast.Sizeof (ty, span))
         else if has_generic_type ty then
-          let* _ =
-            resolve_ty ~values ~defer_const_structs substitutions depth span ty
-          in
+          let* ty = resolve_layout_type span ty in
           Ok (Ast.Sizeof (ty, span))
         else
           let* ty =
@@ -1834,9 +1846,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         if has_generic_type ty && !preserve_layout_queries then
           Ok (Ast.Alignof (ty, span))
         else if has_generic_type ty then
-          let* _ =
-            resolve_ty ~values ~defer_const_structs substitutions depth span ty
-          in
+          let* ty = resolve_layout_type span ty in
           Ok (Ast.Alignof (ty, span))
         else
           let* ty =
@@ -1847,9 +1857,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         if has_generic_type ty && !preserve_layout_queries then
           Ok (Ast.Offsetof (ty, field, span))
         else if has_generic_type ty then
-          let* _ =
-            resolve_ty ~values ~defer_const_structs substitutions depth span ty
-          in
+          let* ty = resolve_layout_type span ty in
           Ok (Ast.Offsetof (ty, field, span))
         else
           let* ty =

@@ -7,11 +7,40 @@ struct Bytes[N const usize] { data arr[N, u8] }
 const WIDTH usize = sizeof[Box[u16]]
 struct Holder { value Bytes[WIDTH] }
 struct Box[T] { value T }
+struct BodyBox[T] { lead u8 value T }
 
 struct LayoutBox[T, N const usize] { lead u8 payload arr[N, T] }
 struct Envelope[T, N const usize] { prefix u8 box LayoutBox[T, N] tail u32 }
 
+fn body_box_size[T]() usize { return sizeof[BodyBox[T]] }
+fn body_box_align[T]() usize { return alignof[BodyBox[T]] }
+fn body_box_value_offset[T]() usize { return offsetof[BodyBox[T], value] }
+fn body_box_array_size[T]() usize { return sizeof[arr[3, BodyBox[T]]] }
+fn body_nested_box_size[T]() usize { return sizeof[BodyBox[BodyBox[T]]] }
+fn body_layout_box_size[T, N const usize]() usize { return sizeof[LayoutBox[T, N]] }
+fn body_layout_box_payload_offset[T, N const usize]() usize {
+  return offsetof[LayoutBox[T, N], payload]
+}
+
 fn main() i32 {
+  if body_box_size[u8]() != oracle_body_box_size_u8() { return 11 }
+  if body_box_size[u64]() != oracle_body_box_size_u64() { return 12 }
+  if body_box_align[u8]() != oracle_body_box_align_u8() { return 13 }
+  if body_box_align[u64]() != oracle_body_box_align_u64() { return 14 }
+  if body_box_value_offset[u8]() != oracle_body_box_value_offset_u8() { return 15 }
+  if body_box_value_offset[u64]() != oracle_body_box_value_offset_u64() { return 16 }
+  if body_box_array_size[u8]() != oracle_body_box_array_size_u8() { return 17 }
+  if body_box_array_size[u64]() != oracle_body_box_array_size_u64() { return 18 }
+  if body_nested_box_size[u8]() != oracle_body_nested_box_size_u8() { return 19 }
+  if body_nested_box_size[u64]() != oracle_body_nested_box_size_u64() { return 20 }
+  if body_layout_box_size[u8, 2]() != oracle_body_layout_box_size_u8_2() { return 21 }
+  if body_layout_box_size[u64, 2]() != oracle_body_layout_box_size_u64_2() { return 22 }
+  if body_layout_box_payload_offset[u8, 2]() != oracle_body_layout_box_payload_offset_u8_2() {
+    return 23
+  }
+  if body_layout_box_payload_offset[u64, 2]() != oracle_body_layout_box_payload_offset_u64_2() {
+    return 24
+  }
   if take[sizeof[Sized[u8, 2]]]() != oracle_size_u8_2() { return 1 }
   if sizeof[Sized[u16, 2]] != oracle_size_u16_2() { return 2 }
   if sizeof[Holder] != oracle_holder_size() { return 3 }
