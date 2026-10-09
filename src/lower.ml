@@ -208,6 +208,12 @@ let unsigned = function
   | _ -> false
 
 let cmp_for span t = function
+  | Ast.Eq when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Foeq
+  | Ne when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Fune
+  | Lt when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Folt
+  | Le when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Fole
+  | Gt when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Fogt
+  | Ge when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Foge
   | Ast.Eq -> Ok Ir.Eq
   | Ne -> Ok Ne
   | Lt -> Ok (if unsigned t then Ult else Slt)
@@ -218,6 +224,10 @@ let cmp_for span t = function
       error span "internal error: non-comparison operator reached comparison lowering"
 
 let bin_for span t = function
+  | Ast.Add when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Fadd
+  | Sub when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Fsub
+  | Mul when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Fmul
+  | Div when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Fdiv
   | Ast.Add -> Ok Ir.Add
   | Sub -> Ok Sub
   | Mul -> Ok Mul
@@ -611,7 +621,8 @@ let rec expr s = function
       match op with
       | Ast.Neg ->
           let id = fresh s in
-          emit s (Ir.Bin (id, Sub, rt, zero rt, v));
+          if rt = Ir.F32 || rt = Ir.F64 then emit s (Ir.Fneg (id, rt, v))
+          else emit s (Ir.Bin (id, Sub, rt, zero rt, v));
           Ok (Ir.Local (id, rt))
       | Bit_not ->
           let* mask = ones span rt in
@@ -740,6 +751,7 @@ let rec expr s = function
           | Ast.Zext -> "zext"
           | Ast.Sext -> "sext"
           | Ast.Trunc -> "trunc"
+          | Ast.Float_widen -> "fpext"
         in
         if k = "" then Ok v
         else

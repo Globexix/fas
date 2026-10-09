@@ -1996,7 +1996,10 @@ and check_expr_inner ?destination (c : context) expected expression =
       in
       match op with
       | Ast.Neg | Ast.Bit_not ->
-          if not (is_int (Hir.expr_ty te)) then
+          if
+            (not (is_int (Hir.expr_ty te)))
+            && not (op = Ast.Neg && is_float (Hir.expr_ty te))
+          then
             let operator = if op = Ast.Neg then "-" else "~" in
             let help =
               match (op, e, Hir.expr_ty te) with
@@ -2237,13 +2240,14 @@ and check_expr_inner ?destination (c : context) expected expression =
             in
             let a, b, at, bt =
               match
-                if is_int at && is_int bt then Sema_types.common_integer_type at bt
+                if (is_int at && is_int bt) || (is_float at && is_float bt) then
+                  Sema_types.common_numeric_type at bt
                 else None
               with
               | Some common ->
                   let widen value =
                     match
-                      Sema_types.implicit_integer_widen (Hir.expr_ty value) common
+                      Sema_types.implicit_numeric_widen (Hir.expr_ty value) common
                     with
                     | Some kind -> Hir.Cast (kind, value, common, Hir.expr_span value)
                     | None -> value
@@ -2255,7 +2259,7 @@ and check_expr_inner ?destination (c : context) expected expression =
             let facts_enabled = Sema_flow.proof_checks_enabled c.flow in
             let divisor_fact = value_fact c b in
             let division_by_zero =
-              facts_enabled
+              facts_enabled && is_int bt
               && (op = Ast.Div || op = Ast.Rem)
               &&
               match divisor_fact with
@@ -4712,11 +4716,15 @@ and check_stmt (c : context) = function
             ~expression:e (Hir.expr_ty v) et (Ast.expr_span e)
       in
       let* v = if is_addr_step then normalize_offset_expr c.structs span v else Ok v in
-      if (not (is_numeric et)) && not is_addr_step then
+      let float_arithmetic =
+        is_float et && List.mem op [ Ast.Add; Ast.Sub; Ast.Mul; Ast.Div ]
+      in
+      if (not (is_numeric et)) && (not float_arithmetic) && not is_addr_step then
         let help =
           match (et, op, t) with
           | Hir.Bool, Ast.Bit_and, Ast.Target_ident (name, _) ->
               Some (Printf.sprintf "write `%s = %s & %s`" name name (Ast.expr_name e))
+          | Hir.Float _, Ast.Rem, _ -> Some "use C `fmod(x, y)` from `<math.h>`"
           | _ -> None
         in
         error ?help operator_span

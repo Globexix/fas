@@ -10,6 +10,13 @@ OCAML_FAS=${OCAML_FAS:-$ROOT/_build/default/bin/main.exe}
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
+assert_no_fast_math() {
+  if grep -E '(^|[ ,])(nnan|ninf|nsz|arcp|contract|afn|reassoc|fast)([ ,]|$)|llvm\.fmuladd|llvm\.fma' "$1"; then
+    echo "float literal test: fast-math flag or fused intrinsic in $1" >&2
+    exit 1
+  fi
+}
+
 python3 - "$TMP" <<'PY'
 import random
 import sys
@@ -139,6 +146,7 @@ for level in 0 2; do
     "$LLVM_OPT" -S "-passes=default<O$level>" "$TMP/literals.ll" \
       -o "$TMP/literals.O$level.ll"
   fi
+  assert_no_fast_math "$TMP/literals.O$level.ll"
   "$LLVM_OPT" -passes=verify "$TMP/literals.O$level.ll" -disable-output
   "$LLVM_LLC" -relocation-model=pic -filetype=obj "$TMP/literals.O$level.ll" \
     -o "$TMP/literals.O$level.o"

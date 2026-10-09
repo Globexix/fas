@@ -1,0 +1,132 @@
+const VALUE_COUNT usize = 20
+const SLOT_COUNT usize = 15
+const MIXED_SLOT_COUNT usize = 15
+
+extern "C" {
+  fn float_fill32(values addr) void
+  fn float_fill64(values addr) void
+  fn float_check32(values addr, output addr) i32
+  fn float_check64(values addr, output addr) i32
+  fn float_check_mixed(values32 addr, values64 addr, output addr) i32
+}
+
+fn exercise32(values addr, output addr) void {
+  for i usize = 0; i < VALUE_COUNT; i += 1 {
+    a f32 = values[f32, i]
+    for j usize = 0; j < VALUE_COUNT; j += 1 {
+      b f32 = values[f32, j]
+      base usize = (i * VALUE_COUNT + j) * SLOT_COUNT
+      output[f32, base] = a + b
+      output[f32, base + 1] = a - b
+      output[f32, base + 2] = a * b
+      output[f32, base + 3] = a / b
+      output[f32, base + 4] = -a
+      output[f32, base + 5] = if a == b { 1.0 } else { 0.0 }
+      output[f32, base + 6] = if a != b { 1.0 } else { 0.0 }
+      output[f32, base + 7] = if a < b { 1.0 } else { 0.0 }
+      output[f32, base + 8] = if a <= b { 1.0 } else { 0.0 }
+      output[f32, base + 9] = if a > b { 1.0 } else { 0.0 }
+      output[f32, base + 10] = if a >= b { 1.0 } else { 0.0 }
+      added f32 = a
+      added += b
+      output[f32, base + 11] = added
+      subtracted f32 = a
+      subtracted -= b
+      output[f32, base + 12] = subtracted
+      multiplied f32 = a
+      multiplied *= b
+      output[f32, base + 13] = multiplied
+      divided f32 = a
+      divided /= b
+      output[f32, base + 14] = divided
+    }
+  }
+}
+
+fn exercise64(values addr, output addr) void {
+  for i usize = 0; i < VALUE_COUNT; i += 1 {
+    a f64 = values[f64, i]
+    for j usize = 0; j < VALUE_COUNT; j += 1 {
+      b f64 = values[f64, j]
+      base usize = (i * VALUE_COUNT + j) * SLOT_COUNT
+      output[f64, base] = a + b
+      output[f64, base + 1] = a - b
+      output[f64, base + 2] = a * b
+      output[f64, base + 3] = a / b
+      output[f64, base + 4] = -a
+      output[f64, base + 5] = if a == b { 1.0 } else { 0.0 }
+      output[f64, base + 6] = if a != b { 1.0 } else { 0.0 }
+      output[f64, base + 7] = if a < b { 1.0 } else { 0.0 }
+      output[f64, base + 8] = if a <= b { 1.0 } else { 0.0 }
+      output[f64, base + 9] = if a > b { 1.0 } else { 0.0 }
+      output[f64, base + 10] = if a >= b { 1.0 } else { 0.0 }
+      added f64 = a
+      added += b
+      output[f64, base + 11] = added
+      subtracted f64 = a
+      subtracted -= b
+      output[f64, base + 12] = subtracted
+      multiplied f64 = a
+      multiplied *= b
+      output[f64, base + 13] = multiplied
+      divided f64 = a
+      divided /= b
+      output[f64, base + 14] = divided
+    }
+  }
+}
+
+fn exercise_mixed(values32 addr, values64 addr, output addr) void {
+  for i usize = 0; i < VALUE_COUNT; i += 1 {
+    a f32 = values32[f32, i]
+    for j usize = 0; j < VALUE_COUNT; j += 1 {
+      b f64 = values64[f64, j]
+      base usize = (i * VALUE_COUNT + j) * MIXED_SLOT_COUNT
+      output[f64, base] = a + b
+      output[f64, base + 1] = a - b
+      output[f64, base + 2] = a * b
+      output[f64, base + 3] = a / b
+      output[f64, base + 4] = if a == b { 1.0 } else { 0.0 }
+      output[f64, base + 5] = if a != b { 1.0 } else { 0.0 }
+      output[f64, base + 6] = if a < b { 1.0 } else { 0.0 }
+      output[f64, base + 7] = if a <= b { 1.0 } else { 0.0 }
+      output[f64, base + 8] = if a > b { 1.0 } else { 0.0 }
+      output[f64, base + 9] = if a >= b { 1.0 } else { 0.0 }
+      output[f64, base + 10] = if a != 0.0 { a } else { b }
+      added f64 = b
+      added += a
+      output[f64, base + 11] = added
+      subtracted f64 = b
+      subtracted -= a
+      output[f64, base + 12] = subtracted
+      multiplied f64 = b
+      multiplied *= a
+      output[f64, base + 13] = multiplied
+      divided f64 = b
+      divided /= a
+      output[f64, base + 14] = divided
+    }
+  }
+}
+
+fn separate32(a f32, b f32, c f32) f32 { return a * b + c }
+fn separate64(a f64, b f64, c f64) f64 { return a * b + c }
+
+fn main() i32 {
+  values32 arr[VALUE_COUNT, f32] = {}
+  output32 arr[VALUE_COUNT * VALUE_COUNT * SLOT_COUNT + 1, f32] = {}
+  values64 arr[VALUE_COUNT, f64] = {}
+  output64 arr[VALUE_COUNT * VALUE_COUNT * SLOT_COUNT + 1, f64] = {}
+  output_mixed arr[VALUE_COUNT * VALUE_COUNT * MIXED_SLOT_COUNT, f64] = {}
+  float_fill32(&values32[0])
+  float_fill64(&values64[0])
+  exercise32(&values32[0], &output32[0])
+  exercise64(&values64[0], &output64[0])
+  exercise_mixed(&values32[0], &values64[0], &output_mixed[0])
+  output32[VALUE_COUNT * VALUE_COUNT * SLOT_COUNT] = separate32(values32[18], values32[19], -1.0)
+  output64[VALUE_COUNT * VALUE_COUNT * SLOT_COUNT] = separate64(values64[18], values64[19], -1.0)
+  result32 i32 = float_check32(&values32[0], &output32[0])
+  result64 i32 = float_check64(&values64[0], &output64[0])
+  result_mixed i32 = float_check_mixed(&values32[0], &values64[0], &output_mixed[0])
+  return result32 + result64 + result_mixed
+}

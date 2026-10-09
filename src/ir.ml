@@ -39,13 +39,35 @@ type binop =
   | Shl
   | Lshr
   | Ashr
+  | Fadd
+  | Fsub
+  | Fmul
+  | Fdiv
 
-type cmp = Eq | Ne | Slt | Sle | Sgt | Sge | Ult | Ule | Ugt | Uge
+type cmp =
+  | Eq
+  | Ne
+  | Slt
+  | Sle
+  | Sgt
+  | Sge
+  | Ult
+  | Ule
+  | Ugt
+  | Uge
+  | Foeq
+  | Fune
+  | Folt
+  | Fole
+  | Fogt
+  | Foge
+
 type gep_index = Zero | Index of value
 type extension = No_extension | Sign_extension | Zero_extension
 
 type instr =
   | Bin of int * binop * ty * value * value
+  | Fneg of int * ty * value
   | Cmp of int * cmp * ty * value * value
   | Alloca of int * ty * int
   | Load of int * ty * value * int
@@ -221,6 +243,7 @@ let validate_value_form = function
 
 let instruction_result = function
   | Bin (id, _, ty, _, _)
+  | Fneg (id, ty, _)
   | Load (id, ty, _, _)
   | Load_volatile (id, ty, _, _)
   | Cast (id, _, _, _, ty)
@@ -407,6 +430,9 @@ let validate_function struct_names globals functions (func : func) =
       | _ -> fail "block %d has invalid `%s` types" block_id opcode
     in
     match opcode with
+    | "fpext" ->
+        if source = F32 && destination = F64 then Ok ()
+        else fail "block %d has invalid `fpext` types" block_id
     | "zext" | "sext" -> integer_cast ( < )
     | "trunc" -> integer_cast ( > )
     | "ptrtoint" ->
@@ -462,17 +488,27 @@ let validate_function struct_names globals functions (func : func) =
     else fail "block %d phi inputs do not match its predecessors" block_id
   in
   let validate_instruction block_id = function
-    | Bin (_, _, ty, left, right) ->
-        if not (is_integer_like ty) then
-          fail "block %d has a non-integer binary type" block_id
+    | Bin (_, operation, ty, left, right) ->
+        let is_float_operation =
+          match operation with Fadd | Fsub | Fmul | Fdiv -> true | _ -> false
+        in
+        if
+          (is_float_operation && ty <> F32 && ty <> F64)
+          || ((not is_float_operation) && not (is_integer_like ty))
+        then fail "block %d has a non-integer binary type" block_id
         else
           let* () = operand block_id ty left in
           operand block_id ty right
+    | Fneg (_, ty, value) ->
+        if ty <> F32 && ty <> F64 then
+          fail "block %d has a non-float fneg type" block_id
+        else operand block_id ty value
     | Cmp (_, comparison, ty, left, right) ->
         let valid_type =
           match comparison with
           | Eq | Ne -> is_equality_type ty
           | Slt | Sle | Sgt | Sge | Ult | Ule | Ugt | Uge -> is_integer_like ty
+          | Foeq | Fune | Folt | Fole | Fogt | Foge -> ty = F32 || ty = F64
         in
         if not valid_type then fail "block %d has an invalid comparison type" block_id
         else
@@ -800,6 +836,7 @@ let validate_function struct_names globals functions (func : func) =
     in
     let instruction_uses = function
       | Bin (_, _, _, left, right) | Cmp (_, _, _, left, right) -> [ left; right ]
+      | Fneg (_, _, value) -> [ value ]
       | Load (_, _, pointer, _) -> [ pointer ]
       | Load_volatile (_, _, pointer, _) -> [ pointer ]
       | Store (_, value, pointer, _) -> [ value; pointer ]
@@ -1241,6 +1278,10 @@ let bin_name = function
   | Shl -> "shl"
   | Lshr -> "lshr"
   | Ashr -> "ashr"
+  | Fadd -> "fadd"
+  | Fsub -> "fsub"
+  | Fmul -> "fmul"
+  | Fdiv -> "fdiv"
 
 let cmp_name = function
   | Eq -> "eq"
@@ -1253,6 +1294,12 @@ let cmp_name = function
   | Ule -> "ule"
   | Ugt -> "ugt"
   | Uge -> "uge"
+  | Foeq -> "oeq"
+  | Fune -> "une"
+  | Folt -> "olt"
+  | Fole -> "ole"
+  | Fogt -> "ogt"
+  | Foge -> "oge"
 
 let emit_instr sink = function
   | Bin (i, op, t, a, b) ->
@@ -1266,10 +1313,20 @@ let emit_instr sink = function
       emit_value sink a;
       sink.text ", ";
       emit_value sink b
+  | Fneg (i, t, value) ->
+      sink.text "  %v";
+      sink.text (string_of_int i);
+      sink.text " = fneg ";
+      emit_ty sink t;
+      sink.text " ";
+      emit_value sink value
   | Cmp (i, c, t, a, b) ->
       sink.text "  %v";
       sink.text (string_of_int i);
-      sink.text " = icmp ";
+      sink.text
+        (if c = Foeq || c = Fune || c = Folt || c = Fole || c = Fogt || c = Foge then
+           " = fcmp "
+         else " = icmp ");
       sink.text (cmp_name c);
       sink.text " ";
       emit_ty sink t;

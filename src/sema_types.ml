@@ -557,6 +557,7 @@ let scalar_conversion_pair actual expected =
   match (actual, expected) with
   | Hir.Int _, (Hir.Int _ | Hir.Bool | Hir.Addr) | (Hir.Bool | Hir.Addr), Hir.Int _ ->
       true
+  | Hir.Float Hir.F32, Hir.Float Hir.F64 -> true
   | _ -> false
 
 let implicit_integer_widen actual expected =
@@ -570,6 +571,13 @@ let implicit_integer_widen actual expected =
       else None
   | _ -> None
 
+let implicit_numeric_widen actual expected =
+  match implicit_integer_widen actual expected with
+  | Some _ as kind -> kind
+  | None when actual = Hir.Float Hir.F32 && expected = Hir.Float Hir.F64 ->
+      Some Ast.Float_widen
+  | None -> None
+
 let common_integer_type left right =
   if Hir.ty_equal left right then Some left
   else
@@ -577,6 +585,15 @@ let common_integer_type left right =
     | Some _, _ -> Some right
     | _, Some _ -> Some left
     | _ -> None
+
+let common_numeric_type left right =
+  if Sema_numeric.is_int left && Sema_numeric.is_int right then
+    common_integer_type left right
+  else if Sema_numeric.is_float left && Sema_numeric.is_float right then
+    Some
+      (if left = Hir.Float Hir.F64 || right = Hir.Float Hir.F64 then Hir.Float Hir.F64
+       else left)
+  else None
 
 let rec narrow_arithmetic_result = function
   | Ast.Parenthesized (expression, _) -> narrow_arithmetic_result expression
@@ -592,16 +609,27 @@ let rec narrow_arithmetic_result = function
       narrow_arithmetic_result yes || narrow_arithmetic_result no
   | _ -> false
 
+let rec narrow_float_result expression =
+  match expression with
+  | Ast.Parenthesized (expression, _) -> narrow_float_result expression
+  | Ast.Unary (Ast.Neg, _, _) -> true
+  | Ast.Binary ((Ast.Add | Ast.Sub | Ast.Mul | Ast.Div), _, _, _) -> true
+  | Ast.Ternary (_, yes, no, _) -> narrow_float_result yes || narrow_float_result no
+  | _ -> false
+
 let convert_expected_kind ?expression actual expected =
   match expression with
-  | Some expression when narrow_arithmetic_result expression -> None
-  | _ -> implicit_integer_widen actual expected
+  | Some expression
+    when narrow_arithmetic_result expression || narrow_float_result expression ->
+      None
+  | _ -> implicit_numeric_widen actual expected
 
 let widen_integer_value kind actual expected value =
   match kind with
   | Ast.Zext -> Sema_numeric.mask_value expected value
   | Ast.Sext ->
       Sema_numeric.mask_value expected (Sema_numeric.sign_extend_value actual value)
+  | Ast.Float_widen -> Int64.bits_of_float (Int32.float_of_bits (Int64.to_int32 value))
   | Ast.Trunc | Ast.Bitcast -> value
 
 let function_arity_message name expected actual =
@@ -681,6 +709,7 @@ let cast_name = function
   | Ast.Sext -> "sext"
   | Ast.Trunc -> "trunc"
   | Ast.Bitcast -> "bitcast"
+  | Ast.Float_widen -> "fpext"
 
 let cast_integer_value = function
   | Hir.Int _ | Hir.Vec (_, Hir.Int _) -> true
@@ -733,6 +762,8 @@ let cast_error ?expression kind source destination span =
   in
   let reason =
     match (kind, source, destination) with
+    | Ast.Float_widen, Hir.Float Hir.F32, Hir.Float Hir.F64 ->
+        "the conversion is implicit for plain `f32` values"
     | _, Hir.Addr, Hir.Int Hir.Usize -> "address-to-integer conversion uses `addr_bits`"
     | _, Hir.Int Hir.Usize, Hir.Addr ->
         "integer-to-address conversion uses `addr_from_bits`"
@@ -760,6 +791,7 @@ let cast_error ?expression kind source destination span =
       when not (cast_integer_value source && cast_integer_value destination) ->
         "the source and destination must be integer types"
     | Ast.Trunc, _, _ -> "the destination must be a narrower integer type" ^ lane_clause
+    | Ast.Float_widen, _, _ -> "only `f32` can widen to `f64`"
   in
   let message =
     Printf.sprintf "illegal `%s` from %s to %s: %s" name source_name destination_name
@@ -798,6 +830,7 @@ let cast_target_error kind target =
     | Ast.Zext | Ast.Sext -> "an integer or integer-vector type"
     | Ast.Trunc -> "an integer or integer-vector type"
     | Ast.Bitcast -> "a bool, integer, or integer-vector type"
+    | Ast.Float_widen -> "`f64`"
   in
   Printf.sprintf "illegal `%s` target `%s`: expected %s" (cast_name kind)
     (diagnostic_ty_name target) expected
@@ -864,6 +897,10 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
           narrow_arithmetic_result source && from_bits < to_bits
       | _ -> false
     in
+    let narrow_float =
+      actual = Hir.Float Hir.F32 && expected = Hir.Float Hir.F64
+      && Option.fold ~none:false ~some:narrow_float_result expression
+    in
     let reason =
       match (actual, expected) with
       | Hir.Int _, Hir.Int _
@@ -884,10 +921,16 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
           "bool and integer values use different representations"
       | Hir.Addr, Hir.Int _ -> "addresses convert to integers with `addr_bits`"
       | Hir.Int _, Hir.Addr -> "integers convert to addresses with `addr_from_bits`"
+      | Hir.Float Hir.F32, Hir.Float Hir.F64 ->
+          "the `f32` result may round before it reaches `f64`"
       | _ -> assert false
     in
     let message =
       match expression with
+      | Some expression when narrow_float ->
+          Printf.sprintf
+            "`%s` is computed in `f32` and may round before it reaches `f64`"
+            (Ast.expr_name expression)
       | Some expression when narrow_result ->
           Printf.sprintf "`%s` is computed in `%s` and may wrap before it reaches `%s`"
             (Ast.expr_name expression) source destination
@@ -898,6 +941,26 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
     let operand = Option.fold ~none:"value" ~some:Ast.expr_name expression in
     let help =
       match (expression, actual, expected) with
+      | ( Some
+            (Ast.Binary
+               (((Ast.Add | Ast.Sub | Ast.Mul | Ast.Div) as operator), left, right, _)),
+          Hir.Float Hir.F32,
+          Hir.Float Hir.F64 )
+        when narrow_float && widening_help ->
+          let operator_text =
+            match operator with
+            | Ast.Add -> "+"
+            | Ast.Sub -> "-"
+            | Ast.Mul -> "*"
+            | Ast.Div -> "/"
+            | _ -> assert false
+          in
+          Some
+            (Printf.sprintf "write `cvt[f64](%s) %s %s`" (Ast.expr_name left)
+               operator_text (Ast.expr_name right))
+      | Some (Ast.Unary (Ast.Neg, value, _)), Hir.Float Hir.F32, Hir.Float Hir.F64
+        when narrow_float && widening_help ->
+          Some (Printf.sprintf "write `-cvt[f64](%s)`" (Ast.expr_name value))
       | Some (Ast.Binary (operator, left, right, _)), Hir.Int _, Hir.Int _
         when narrow_result && widening_help ->
           let extension = if Sema_numeric.is_unsigned actual then "zext" else "sext" in
@@ -996,7 +1059,7 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
     |> fun diagnostic -> Error [ diagnostic ]
 
 let unify_if_branches left_expression left_type right_expression right_type =
-  let narrow_error expression actual target =
+  let narrow_error expression actual target is_float =
     let help =
       match
         ensure_expected ~context:"if-expression branch" ~expression actual target
@@ -1006,15 +1069,26 @@ let unify_if_branches left_expression left_type right_expression right_type =
       | _ -> None
     in
     Diag.error ?help (Ast.expr_span expression)
-      (Printf.sprintf
-         "if-expression branches are `%s` and `%s`: narrow arithmetic may wrap before \
-          widening"
-         (diagnostic_ty_name left_type)
-         (diagnostic_ty_name right_type))
+      (if is_float then
+         Printf.sprintf
+           "if-expression branches are `%s` and `%s`: `f32` arithmetic may round \
+            before widening"
+           (diagnostic_ty_name left_type)
+           (diagnostic_ty_name right_type)
+       else
+         Printf.sprintf
+           "if-expression branches are `%s` and `%s`: narrow arithmetic may wrap \
+            before widening"
+           (diagnostic_ty_name left_type)
+           (diagnostic_ty_name right_type))
   in
   let int_branches = Sema_numeric.is_int left_type && Sema_numeric.is_int right_type in
+  let float_branches =
+    Sema_numeric.is_float left_type && Sema_numeric.is_float right_type
+  in
   let common =
     if int_branches then common_integer_type left_type right_type
+    else if float_branches then common_numeric_type left_type right_type
     else if compatible left_type right_type then Some left_type
     else None
   in
@@ -1024,17 +1098,31 @@ let unify_if_branches left_expression left_type right_expression right_type =
         (Diag.error
            (Ast.expr_span right_expression)
            (Printf.sprintf "if-expression branches %s `%s` and `%s`%s"
-              (if int_branches then "are" else "have different types:")
+              (if int_branches || float_branches then "are" else "have different types:")
               (diagnostic_ty_name left_type)
               (diagnostic_ty_name right_type)
-              (if int_branches then ": no type holds both" else "")))
+              (if int_branches then ": no type holds both"
+               else if float_branches then ": no common floating type"
+               else "")))
   | Some result_type ->
-      let left_widen = implicit_integer_widen left_type result_type
-      and right_widen = implicit_integer_widen right_type result_type in
-      if Option.is_some left_widen && narrow_arithmetic_result left_expression then
-        Error (narrow_error left_expression left_type result_type)
-      else if Option.is_some right_widen && narrow_arithmetic_result right_expression
-      then Error (narrow_error right_expression right_type result_type)
+      let left_widen = implicit_numeric_widen left_type result_type
+      and right_widen = implicit_numeric_widen right_type result_type in
+      if
+        Option.is_some left_widen
+        && (narrow_arithmetic_result left_expression
+           || narrow_float_result left_expression)
+      then
+        Error
+          (narrow_error left_expression left_type result_type
+             (left_type = Hir.Float Hir.F32))
+      else if
+        Option.is_some right_widen
+        && (narrow_arithmetic_result right_expression
+           || narrow_float_result right_expression)
+      then
+        Error
+          (narrow_error right_expression right_type result_type
+             (right_type = Hir.Float Hir.F32))
       else Ok (result_type, left_widen, right_widen)
 
 let binary_operator_name = function
@@ -1162,7 +1250,7 @@ let binary_result_type ?left_expression ?right_expression ?result_expected
            | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> true
            | _ -> false)
          && not
-              (Sema_numeric.is_int left || left = Hir.Addr
+              (Sema_numeric.is_int left || left = Hir.Addr || Sema_numeric.is_float left
               || match left with Hir.Vec (_, Hir.Int _) -> true | _ -> false) ->
       let error_span = if left = right then result_span left_expression else span in
       error error_span
@@ -1262,6 +1350,47 @@ let binary_result_type ?left_expression ?right_expression ?result_expected
       match operation with
       | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> Ok Hir.Bool
       | _ -> Ok common)
+  | None when Sema_numeric.is_float left && Sema_numeric.is_float right -> (
+      let common = Option.get (common_numeric_type left right) in
+      let check_narrow expression actual =
+        match expression with
+        | Some expression
+          when Option.is_some (implicit_numeric_widen actual common)
+               && narrow_float_result expression ->
+            ensure_expected ~expression actual common (Ast.expr_span expression)
+        | _ -> Ok ()
+      in
+      if operation = Ast.Rem then
+        let right_span = result_span right_expression in
+        let left_name = Option.fold ~none:"x" ~some:Ast.expr_name left_expression
+        and right_name = Option.fold ~none:"y" ~some:Ast.expr_name right_expression in
+        let diagnostic =
+          Diag.error
+            ~help:
+              (Printf.sprintf "use C `fmod(%s, %s)` from `<math.h>`" left_name
+                 right_name)
+            right_span "remainder `%` is not defined for floating point"
+        in
+        Error [ diagnostic ]
+      else
+        let* () =
+          if common = Hir.Float Hir.F64 then
+            let* () = check_narrow left_expression left in
+            check_narrow right_expression right
+          else Ok ()
+        in
+        match operation with
+        | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> Ok Hir.Bool
+        | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div -> Ok common
+        | Ast.Bit_and | Ast.Bit_or | Ast.Bit_xor ->
+            error (result_span left_expression)
+              (Printf.sprintf
+                 "operator `%s` needs integer or integer vector operands, got `%s`"
+                 (binary_operator_name operation)
+                 (diagnostic_ty_name left))
+        | Ast.And | Ast.Or -> assert false
+        | Ast.Rem -> assert false
+        | Ast.Shl | Ast.Shr -> Error [ shift_value_error operation span left ])
   | None
     when not
            (Hir.ty_equal left right
@@ -1308,7 +1437,8 @@ let binary_result_type ?left_expression ?right_expression ?result_expected
                    (binary_operator_name operation)
                    (diagnostic_ty_name left)))
       | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> (
-          if Sema_numeric.is_int left || left = Hir.Addr then Ok Hir.Bool
+          if Sema_numeric.is_int left || Sema_numeric.is_float left || left = Hir.Addr
+          then Ok Hir.Bool
           else
             match left with
             | Hir.Vec (lanes, Hir.Int _) -> Ok (Hir.Vec (lanes, Hir.Bool))
@@ -1333,6 +1463,23 @@ let binary_result_type ?left_expression ?right_expression ?result_expected
                      (diagnostic_ty_name left)))
       | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem ->
           if Sema_numeric.is_numeric left then Ok left
+          else if Sema_numeric.is_float left then
+            if operation = Ast.Rem then
+              let left_name = Option.fold ~none:"x" ~some:Ast.expr_name left_expression
+              and right_name =
+                Option.fold ~none:"y" ~some:Ast.expr_name right_expression
+              in
+              let help =
+                Printf.sprintf "use C `fmod(%s, %s)` from `<math.h>`" left_name
+                  right_name
+              in
+              Error
+                [
+                  Diag.error ~help
+                    (result_span right_expression)
+                    "remainder `%` is not defined for floating point";
+                ]
+            else Ok left
           else
             error (result_span left_expression)
               (Printf.sprintf

@@ -55,6 +55,10 @@ let binop = function
   | Shl -> "shl"
   | Lshr -> "lshr"
   | Ashr -> "ashr"
+  | Fadd -> "fadd"
+  | Fsub -> "fsub"
+  | Fmul -> "fmul"
+  | Fdiv -> "fdiv"
 
 let cmp = function
   | Eq -> "eq"
@@ -67,6 +71,12 @@ let cmp = function
   | Ule -> "ule"
   | Ugt -> "ugt"
   | Uge -> "uge"
+  | Foeq -> "oeq"
+  | Fune -> "une"
+  | Folt -> "olt"
+  | Fole -> "ole"
+  | Fogt -> "ogt"
+  | Foge -> "oge"
 
 let extension = function
   | No_extension -> str "none"
@@ -86,6 +96,7 @@ let instr ?(redirect = Fun.id) ~is_function instr =
   match instr with
   | Bin (d, op, t, a, b) ->
       arr [ str "bin"; int d; str (binop op); ty t; value a; value b ]
+  | Fneg (d, t, v) -> arr [ str "fneg"; int d; ty t; value v ]
   | Cmp (d, c, t, a, b) -> arr [ str "cmp"; int d; str (cmp c); ty t; value a; value b ]
   | Alloca (d, t, align) -> arr [ str "alloca"; int d; ty t; int align ]
   | Load (d, t, p, align) -> arr [ str "load"; int d; ty t; value p; int align ]

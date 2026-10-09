@@ -20,7 +20,8 @@ let is_unsigned = function
   | Hir.Int (Hir.U8 | U16 | U32 | U64 | Usize) -> true
   | _ -> false
 
-let is_scalar = function Hir.Bool | Hir.Int _ -> true | _ -> false
+let is_scalar = function Hir.Bool | Hir.Int _ | Hir.Float _ -> true | _ -> false
+let is_float = function Hir.Float _ -> true | _ -> false
 let is_numeric = function Hir.Int _ | Hir.Vec (_, Hir.Int _) -> true | _ -> false
 
 let cast_legal kind from target =
@@ -51,6 +52,7 @@ let cast_legal kind from target =
     | _ -> false
   in
   match kind with
+  | Ast.Float_widen -> from = Hir.Float Hir.F32 && target = Hir.Float Hir.F64
   | Ast.Zext | Ast.Sext ->
       ((from = Hir.Bool || is_int from) && is_int target && strictly_wider ())
       || lane_conversion ( < ) from target

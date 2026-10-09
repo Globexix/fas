@@ -3,6 +3,7 @@ val integer_value_bit_width : Hir.ty -> int option
 val is_int : Hir.ty -> bool
 val is_unsigned : Hir.ty -> bool
 val is_scalar : Hir.ty -> bool
+val is_float : Hir.ty -> bool
 val is_numeric : Hir.ty -> bool
 val cast_legal : Ast.cast_kind -> Hir.ty -> Hir.ty -> bool
 val parse_integer : string -> (int64, string) result

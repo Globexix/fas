@@ -1863,7 +1863,7 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
                 let shift = 64 - source_width in
                 Int64.shift_right (Int64.shift_left value shift) shift
             | Ast.Trunc when destination_element = Hir.Bool -> Int64.logand value 1L
-            | Ast.Zext | Ast.Sext | Ast.Trunc | Ast.Bitcast -> value
+            | Ast.Zext | Ast.Sext | Ast.Trunc | Ast.Bitcast | Ast.Float_widen -> value
           in
           lane_mask destination_element value
         in

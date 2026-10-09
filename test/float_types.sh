@@ -10,6 +10,13 @@ OCAML_FAS=${OCAML_FAS:-$ROOT/_build/default/bin/main.exe}
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
+assert_no_fast_math() {
+  if grep -E '(^|[ ,])(nnan|ninf|nsz|arcp|contract|afn|reassoc|fast)([ ,]|$)|llvm\.fmuladd|llvm\.fma' "$1"; then
+    echo "float types: fast-math flag or fused intrinsic in $1" >&2
+    exit 1
+  fi
+}
+
 "$OCAML_FAS" --emit-llvm "$ROOT/test/float_types.fas" >"$TMP/float_types.ll"
 "$LLVM_OPT" -passes=verify "$TMP/float_types.ll" -disable-output
 "$CC" -Werror -std=c17 -O0 -ffp-contract=off -fno-fast-math \
@@ -22,6 +29,7 @@ for level in 0 2; do
     "$LLVM_OPT" -S "-passes=default<O$level>" "$TMP/float_types.ll" \
       -o "$TMP/float_types.O$level.ll"
   fi
+  assert_no_fast_math "$TMP/float_types.O$level.ll"
   "$LLVM_OPT" -passes=verify "$TMP/float_types.O$level.ll" -disable-output
   "$LLVM_LLC" -relocation-model=pic -filetype=obj "$TMP/float_types.O$level.ll" \
     -o "$TMP/float_types.O$level.o"

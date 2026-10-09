@@ -73,7 +73,7 @@ and binop =
   | Shl
   | Shr
 
-and cast_kind = Zext | Sext | Trunc | Bitcast
+and cast_kind = Zext | Sext | Trunc | Bitcast | Float_widen
 
 and stmt =
   | Let of {
@@ -389,7 +389,8 @@ and expr_name = function
         | Zext -> "zext"
         | Sext -> "sext"
         | Trunc -> "trunc"
-        | Bitcast -> "bitcast")
+        | Bitcast -> "bitcast"
+        | Float_widen -> "fpext")
       ^ "[" ^ type_name t ^ "](" ^ expr_name e ^ ")"
   | Select (a, args, _) ->
       expr_name_child 12 false a ^ "["
@@ -570,7 +571,8 @@ let render_program program =
           | Zext -> "zext["
           | Sext -> "sext["
           | Trunc -> "trunc["
-          | Bitcast -> "bitcast[");
+          | Bitcast -> "bitcast["
+          | Float_widen -> "fpext[");
         emit_ty ty;
         text "](";
         emit_expr x;

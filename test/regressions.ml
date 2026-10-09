@@ -4041,6 +4041,90 @@ let () =
   semantic_accept "float-literal-destination-peer-typing"
     "fn accept(value f32) f32 { return value }\n\
      fn use_value() f32 { return accept(0.1) }\n";
+  semantic_accept "float-arithmetic-widening-and-if-expressions"
+    "fn operations(a f32, b f32, wide f64, condition bool) f64 {\n\
+     plain f64 = a\n\
+     mixed f64 = wide + a\n\
+     branch f64 = if condition { a } else { wide }\n\
+     value f32 = -(a * b)\n\
+     value += a\n\
+     value -= b\n\
+     value *= a\n\
+     value /= b\n\
+     return mixed + branch + plain + value\n\
+     }\n\
+     fn comparisons(a f32, b f32) bool {\n\
+     return a == b || a != b || a < b || a <= b || a > b || a >= b\n\
+     }\n";
+  semantic_accept "float-widening-returns-and-arguments"
+    "fn widen(value f32) f64 { return value }\n\
+     fn identity(value f64) f64 { return value }\n\
+     fn pass(value f32) f64 { return identity(value) }\n";
+  semantic_pin "float-narrow-arithmetic-widening"
+    "fn bad(a f32, b f32) f64 { return a * b }\n" 1 35 5
+    "`a * b` is computed in `f32` and may round before it reaches `f64`"
+    (Some "write `cvt[f64](a) * b`");
+  semantic_pin "float-narrow-mixed-operand-widening"
+    "fn bad(a f32, b f32, wide f64) f64 { return wide + a * b }\n" 1 52 5
+    "`a * b` is computed in `f32` and may round before it reaches `f64`"
+    (Some "write `cvt[f64](a) * b`");
+  semantic_pin "float-narrow-unary-widening" "fn bad(a f32) f64 { return -a }\n" 1 28 2
+    "`-a` is computed in `f32` and may round before it reaches `f64`"
+    (Some "write `-cvt[f64](a)`");
+  semantic_pin "float-remainder-help" "fn bad(a f32, b f32) f32 { return a % b }\n" 1 39
+    1 "remainder `%` is not defined for floating point"
+    (Some "use C `fmod(a, b)` from `<math.h>`");
+  semantic_pin "float-compound-remainder-help"
+    "fn bad(a f32, b f32) void { a %= b\nreturn }\n" 1 31 2
+    "compound assignment `%=` is not defined for `f32`"
+    (Some "use C `fmod(x, y)` from `<math.h>`");
+  semantic_message "float-integer-operands-rejected"
+    "operands of `+` have different types: `f32` and `i32`"
+    "fn bad(a f32, b i32) f32 { return a + b }\n";
+  semantic_message "float-bitwise-operands-rejected"
+    "operator `&` needs integer or integer vector operands, got `f32`"
+    "fn bad(a f32, b f32) f32 { return a & b }\n";
+  semantic_message "float-shift-operands-rejected"
+    "left operand of `<<` has type `f32`, expected an integer or integer vector"
+    "fn bad(a f32) f32 { return a << 1 }\n";
+  let float_arithmetic_llvm =
+    llvm_of
+      "fn calculate(a f32, b f32, wide f64) f64 {\n\
+       neg f32 = -a\n\
+       add f32 = a + b\n\
+       sub f32 = a - b\n\
+       mul f32 = a * b\n\
+       div f32 = a / b\n\
+       mixed f64 = wide + a\n\
+       return mixed\n\
+       }\n\
+       fn predicates(a f64, b f64) bool {\n\
+       return a == b || a != b || a < b || a <= b || a > b || a >= b\n\
+       }\n\
+       fn fused(a f32, b f32, c f32) f32 { return a * b + c }\n\
+       fn main() i32 { return 0 }\n"
+  in
+  List.iter
+    (fun instruction ->
+      if not (contains float_arithmetic_llvm instruction) then
+        failwith ("float-arithmetic-lowering: missing " ^ instruction))
+    [
+      "fneg float";
+      "fadd float";
+      "fsub float";
+      "fmul float";
+      "fdiv float";
+      "fpext float";
+      "fcmp oeq double";
+      "fcmp une double";
+      "fcmp olt double";
+      "fcmp ole double";
+      "fcmp ogt double";
+      "fcmp oge double";
+      "fmul float";
+    ];
+  if contains float_arithmetic_llvm "contract" || contains float_arithmetic_llvm "fast"
+  then failwith "float-arithmetic-lowering: emitted a fast-math flag";
   semantic_constant "FloatSize32" 4L "const FloatSize32 usize = sizeof[f32]\n";
   semantic_constant "FloatAlign32" 4L "const FloatAlign32 usize = alignof[f32]\n";
   semantic_constant "FloatSize64" 8L "const FloatSize64 usize = sizeof[f64]\n";
