@@ -1,7 +1,6 @@
 #include <stdalign.h>
 #include <stdint.h>
 
-typedef long double StorageLongDouble;
 typedef int IncompleteArray[];
 typedef int ImportedRow[3];
 typedef ImportedRow *ImportedRowPointer;
@@ -14,7 +13,7 @@ struct MemberAlignedRecord {
 
 struct ImportedFloatRecord {
   uint32_t before;
-  StorageLongDouble values[2];
+  alignas(16) double values[4];
   uint32_t after;
 };
 

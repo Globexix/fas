@@ -2453,9 +2453,7 @@ and check_expr_inner ?destination (c : context) expected expression =
       match t with
       | Hir.Struct sn -> (
           match field_info structs sn n with
-          | Some { unsupported_reason = Some reason; _ }
-            when reason <> "floating-point fields are not supported until v0.5" ->
-              error s reason
+          | Some { unsupported_reason = Some reason; _ } -> error s reason
           | Some f -> Ok (Hir.Offsetof (t, n, f.offset, s))
           | None ->
               missing_field_error ~record_name:(Ast.type_name source_ty) c s n
@@ -3984,7 +3982,15 @@ and check_actuals ?callee c policy span formals actuals =
               Result_list.map
                 (fun expression ->
                   let* value = check_expr c None expression in
-                  if
+                  if Hir.expr_ty value = Hir.Float Hir.F32 then
+                    Error
+                      [
+                        Diag.error ~help:"write `cvt[f64](x)`"
+                          (Ast.expr_span expression)
+                          "C varargs do not accept `f32`; convert it to `f64` \
+                           explicitly";
+                      ]
+                  else if
                     is_scalar (Hir.expr_ty value)
                     ||
                     match Hir.expr_ty value with

@@ -1360,9 +1360,7 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
       match t with
       | Hir.Struct sn -> (
           match field_info layout_structs sn n with
-          | Some { unsupported_reason = Some reason; _ }
-            when reason <> "floating-point fields are not supported until v0.5" ->
-              error s reason
+          | Some { unsupported_reason = Some reason; _ } -> error s reason
           | Some f -> Ok (Hir.Int Hir.Usize, Int64.of_int f.offset)
           | None ->
               error s

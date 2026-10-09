@@ -11630,6 +11630,27 @@ let () =
     "fn probe() void { printf(c\"x\")\nreturn }\n";
   c_semantic_accept "c-string-printf-varargs" c_strings
     "fn probe() void { printf(c\"%s\", \"x\")\nreturn }\n";
+  let float_vararg =
+    c_semantic_result c_strings
+      "fn probe(value f32) void { printf(c\"%f\", value)\nreturn }\n"
+  in
+  (match float_vararg with
+  | Error [ diagnostic ]
+    when diagnostic.Diag.message
+         = "C varargs do not accept `f32`; convert it to `f64` explicitly"
+         && diagnostic.help = Some "write `cvt[f64](x)`" ->
+      ()
+  | Error diagnostics ->
+      failwith
+        ("c-float-vararg-help: unexpected diagnostic: "
+        ^ Diag.render_all ~source:None diagnostics)
+  | Ok _ -> failwith "c-float-vararg-help: expected rejection");
+  c_semantic_accept "c-f64-printf-varargs" c_strings
+    "fn probe(value f64) void { printf(c\"%.17g %a\\n\", value, value)\nreturn }\n";
+  c_semantic_accept "cvt-f64-printf-varargs" c_strings
+    "fn probe(value f32) void { printf(c\"%.17g %a\\n\", cvt[f64](value), \
+     cvt[f64](value))\n\
+     return }\n";
   c_semantic_message "c-string-puts"
     (c_string_message "\"x\"" "puts" "__s")
     c_strings "fn probe() void { puts(\"x\")\nreturn }\n";
@@ -12668,12 +12689,32 @@ let () =
       c_matrix
       ("fn probe() i32 {\n" ^ expression ^ "\nreturn 0 }\n")
   in
-  unsupported "fas_float_value" "floating-point types are not supported"
-    "fas_float_value(1)";
-  unsupported "fas_double_value" "floating-point types are not supported"
-    "fas_double_value(1)";
+  c_semantic_accept "c-import-float-functions" c_matrix
+    "fn float_call(value f32) f32 { return fas_float_value(value) }\n\
+     fn double_call(value f64) f64 { return fas_double_value(value) }\n\
+     fn static_float_call(value f32) f32 { return fas_static_float(value) }\n\
+     fn aliases(value fas_float) fas_double {\n\
+     return fas_double_value(fas_float_value(value)) }\n";
+  let float_manifest = C_import.manifest_text (snd c_matrix) in
+  if
+    (not
+       (contains float_manifest
+          "fas_float_value\tfloat (float) fas_float_value\tfn(f32)->f32"))
+    || (not
+          (contains float_manifest
+             "fas_double_value\tdouble (double) fas_double_value\tfn(f64)->f64"))
+    || not
+         (contains float_manifest
+            "fas_array_float\tfas_float[4] fas_array_float\tarr[4, f32]")
+  then failwith "C manifest did not record imported float types";
   unsupported "fas_long_double_value" "floating-point types are not supported"
     "fas_long_double_value(1)";
+  unsupported "fas_float16_value" "floating-point types are not supported"
+    "fas_float16_value(1)";
+  unsupported "fas_fp16_global" "floating-point types are not supported"
+    "fas_fp16_global = 1";
+  unsupported "fas_float128_value" "floating-point types are not supported"
+    "fas_float128_value(1)";
   unsupported "fas_int128_value" "`__int128` has no Fas type" "fas_int128_value(1)";
   unsupported "fas_uint128_value" "`__int128` has no Fas type" "fas_uint128_value(1)";
   unsupported "fas_bitint_value" "`_BitInt` has no Fas type" "fas_bitint_value(1)";
@@ -12697,8 +12738,10 @@ let () =
     "fn probe() i32 { return fas_alias_record_array[0].field }\n";
   unsupported "fas_array_unknown" "arrays of unknown size are not supported"
     "fas_array_unknown[0]";
-  unsupported "fas_array_float" "floating-point types are not supported"
-    "fas_array_float[0]";
+  c_semantic_accept "c-import-float-global-array" c_matrix
+    "fn probe() f32 { fas_array_float[2] = 1.5\nreturn fas_array_float[0] }\n";
+  c_semantic_accept "c-import-float-globals" c_matrix
+    "fn globals() f64 { fas_float_global = 2.5\nreturn fas_double_global }\n";
   List.iter
     (fun name ->
       c_semantic_message
@@ -12846,8 +12889,8 @@ let () =
       | Ok _ -> failwith "static adapter symbol collision was not avoided"
       | Error message -> failwith message)
   | None -> failwith "static inline handle function was not recorded");
-  unsupported "fas_static_float" "floating-point types are not supported"
-    "fas_static_float(1)";
+  c_semantic_accept "c-import-static-float" c_matrix
+    "fn probe(value f32) f32 { return fas_static_float(value) }\n";
   let static_collision_header = Filename.temp_file "fas-static-collision-" ".h" in
   Fun.protect
     ~finally:(fun () -> Sys.remove static_collision_header)
@@ -13349,11 +13392,11 @@ let () =
      raw addr = handle_addr(value)\n\
      raw[FasFloatUnion].bits = 9\n\
      return raw[FasFloatUnion].bits }\n";
-  c_semantic_message "c-import-float-union-member"
-    "floating-point fields are not supported until v0.5" record_import_cases
-    "fn read_float(value handle[FasFloatUnion]) u32 {\n\
+  c_semantic_accept "c-import-float-union-member" record_import_cases
+    "fn read_float(value handle[FasFloatUnion]) f32 {\n\
      raw addr = handle_addr(value)\n\
-     return raw[FasFloatUnion].value[0] }\n";
+     raw[FasFloatUnion].value = 3.5\n\
+     return raw[FasFloatUnion].value }\n";
   c_semantic_message "c-import-bitfield-union-member"
     "C declaration `FasBitfieldUnion` is not supported: bit-fields are not supported"
     record_import_cases
@@ -13387,73 +13430,67 @@ let () =
      unions are not supported"
     record_import_cases
     "fn read(value FasAnonymousUnsupportedRecord) i32 { return value.value }\n";
-  c_semantic_accept "c-import-float-fields-store-only" record_import_cases
-    "fn surrounding(value handle[FasFloatRecord]) i32 {\n\
+  c_semantic_accept "c-import-float-fields" record_import_cases
+    "fn read(value handle[FasFloatRecord]) f32 {\n\
      raw addr = handle_addr(value)\n\
-     return raw[FasFloatRecord].before + raw[FasFloatRecord].after }\n\
-     fn nested(value handle[FasNestedFloatRecord]) i32 {\n\
+     return raw[FasFloatRecord].value }\n\
+     fn write(value handle[FasFloatRecord]) void {\n\
      raw addr = handle_addr(value)\n\
-     return raw[FasNestedFloatRecord].inner.after }\n\
-     fn array_surrounding(value handle[FasFloatArrayRecord]) i32 {\n\
+     raw[FasFloatRecord].value = 1.25\n\
+     return }\n\
+     fn address(value handle[FasFloatRecord]) addr {\n\
      raw addr = handle_addr(value)\n\
-     return raw[FasFloatArrayRecord].after }\n";
+     return &raw[FasFloatRecord].value }\n\
+     fn nested(value handle[FasNestedFloatRecord]) f32 {\n\
+     raw addr = handle_addr(value)\n\
+     return raw[FasNestedFloatRecord].inner.value }\n\
+     fn array_element(value handle[FasFloatArrayRecord], index usize) f64 {\n\
+     raw addr = handle_addr(value)\n\
+     return raw[FasFloatArrayRecord].data[index] }\n\
+     fn initialize() f32 { value FasFloatRecord = {1, 2.5, 3}\n\
+     return value.value }\n";
   c_semantic_accept "c-import-empty-zero-union" record_import_cases
     "fn zero() i32 { value FasUnionRecord = {}\nreturn value.value }\n";
-  c_semantic_accept "c-import-empty-zero-storage-float-record" record_import_cases
+  c_semantic_accept "c-import-empty-zero-float-record" record_import_cases
     "fn zero() i32 { value FasFloatRecord = {}\nreturn value.after }\n";
   c_semantic_accept "c-import-empty-zero-union-global" record_import_cases
     "extern \"C\" { var empty_union FasUnionRecord = {} }\n";
-  c_semantic_accept "c-import-empty-zero-storage-float-record-global"
-    record_import_cases "extern \"C\" { var empty_float FasFloatRecord = {} }\n";
+  c_semantic_accept "c-import-empty-zero-float-record-global" record_import_cases
+    "extern \"C\" { var empty_float FasFloatRecord = {} }\n";
   c_semantic_accept "c-import-empty-zero-nested-record-array-global" record_import_cases
     "extern \"C\" { var empty_records arr[4,FasNestedRecord] = {} }\n";
-  c_semantic_message "c-import-float-field-read"
-    "floating-point fields are not supported until v0.5" record_import_cases
-    "fn read(value handle[FasFloatRecord]) i32 {\n\
-     raw addr = handle_addr(value)\n\
-     return raw[FasFloatRecord].value[0] }\n";
-  c_semantic_message "c-import-float-field-write"
-    "floating-point fields are not supported until v0.5" record_import_cases
-    "fn write(value handle[FasFloatRecord]) void {\n\
-     raw addr = handle_addr(value)\n\
-     raw[FasFloatRecord].value[0] = 1\n\
-     return }\n";
-  c_semantic_message "c-import-float-field-address"
-    "floating-point fields are not supported until v0.5" record_import_cases
-    "fn address(value handle[FasFloatRecord]) addr {\n\
-     raw addr = handle_addr(value)\n\
-     return &raw[FasFloatRecord].value }\n";
-  c_semantic_message "c-import-nested-float-field-select"
-    "floating-point fields are not supported until v0.5" record_import_cases
-    "fn read(value handle[FasNestedFloatRecord]) i32 {\n\
-     raw addr = handle_addr(value)\n\
-     return raw[FasNestedFloatRecord].inner.value[0] }\n";
-  c_semantic_message "c-import-float-array-field-read"
-    "floating-point fields are not supported until v0.5" record_import_cases
-    "fn read(value handle[FasFloatArrayRecord]) i32 {\n\
-     raw addr = handle_addr(value)\n\
-     return raw[FasFloatArrayRecord].data[0] }\n";
-  c_semantic_message "c-import-float-field-initializer"
-    "floating-point fields are not supported until v0.5" record_import_cases
-    "fn initialize() i32 { value FasFloatRecord = {1, 2, 3}\n return value.after }\n";
-  let storage_only_llvm =
+  List.iter
+    (fun (name, field) ->
+      c_semantic_message
+        ("c-import-unsupported-float-field-" ^ name)
+        (Printf.sprintf
+           "C declaration `%s` is not supported: floating-point types are not supported"
+           name)
+        record_import_cases
+        (Printf.sprintf "fn probe(value %s) i32 { return value.%s }\n" name field))
+    [
+      ("FasLongDoubleRecord", "value");
+      ("FasComplexRecord", "value");
+      ("FasFloat16Record", "value");
+      ("FasFp16Record", "value");
+      ("FasFloat128Record", "value");
+    ];
+  let imported_float_llvm =
     match
       c_semantic_result record_import_cases
-        "fn surrounding(value handle[FasFloatRecord]) i32 {\n\
+        "fn read(value handle[FasFloatRecord]) f32 {\n\
          raw addr = handle_addr(value)\n\
-         return raw[FasFloatRecord].before + raw[FasFloatRecord].after }\n\
-         fn nested(value handle[FasNestedFloatRecord]) i32 {\n\
+         raw[FasFloatRecord].value = 2.5\n\
+         return raw[FasFloatRecord].value }\n\
+         fn read_wide(value handle[FasFloatArrayRecord]) f64 {\n\
          raw addr = handle_addr(value)\n\
-         return raw[FasNestedFloatRecord].inner.after }\n\
-         fn array_surrounding(value handle[FasFloatArrayRecord]) i32 {\n\
-         raw addr = handle_addr(value)\n\
-         return raw[FasFloatArrayRecord].after }\n"
+         return raw[FasFloatArrayRecord].data[0] }\n"
     with
     | Ok program -> Ir.render (expect_ok (Lower.lower program))
     | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
   in
-  if contains storage_only_llvm "float" || contains storage_only_llvm "double" then
-    failwith "storage-only C float fields emitted LLVM floating-point types";
+  if not (contains imported_float_llvm "float" && contains imported_float_llvm "double")
+  then failwith "imported C float fields omitted LLVM floating-point types";
   c_semantic_accept "c-import-function-pointer-field-record" record_import_cases
     "fn read(value addr) addr { return value[FasFunctionPointerRecord].callback }\n";
   let keyword_fields, _ = require_struct "FasKeywordFieldRecord" in

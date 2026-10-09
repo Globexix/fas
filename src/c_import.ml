@@ -390,8 +390,9 @@ let builtin_info_of_name = function
   | "long" | "long long" -> Some (Integer (Ast.Int Ast.I64))
   | "unsigned long" | "unsigned long long" -> Some (Integer (Ast.Int Ast.U64))
   | "__int128" | "unsigned __int128" -> Some Unsupported_integer
-  | "float" | "double" | "long double" | "__fp16" | "_Float16" | "_Float128"
-  | "__float128" | "__bf16" ->
+  | "float" -> Some (Floating 32)
+  | "double" -> Some (Floating 64)
+  | "long double" | "__fp16" | "_Float16" | "_Float128" | "__float128" | "__bf16" ->
       Some (Floating 0)
   | _ -> None
 
@@ -1689,6 +1690,8 @@ let type_result ?(allow_arrays = false) ~alias_name ~alias_type_node ~resolve_al
           | None -> Error "unsupported C builtin type"
           | Some (Integer ty) -> Ok ty
           | Some Unsupported_integer -> Error "`__int128` has no Fas type"
+          | Some (Floating 32) -> Ok (Ast.Float Ast.F32)
+          | Some (Floating 64) -> Ok (Ast.Float Ast.F64)
           | Some (Floating _) -> Error "floating-point types are not supported")
       | Some "ComplexType" -> Error "floating-point types are not supported"
       | Some "BitIntType" -> Error "`_BitInt` has no Fas type"
@@ -2529,9 +2532,59 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
         let key = source_location_key node in
         match Option.bind key (Hashtbl.find_opt structured_types) with
         | Some _ as tree -> tree
-        | None ->
-            Option.bind (get "type" node) (fun ty ->
-                Option.bind (string "typeAliasDeclId" ty) alias_type_node))
+        | None -> (
+            let type_info = get "type" node in
+            match
+              Option.bind type_info (fun ty ->
+                  Option.bind (string "typeAliasDeclId" ty) alias_type_node)
+            with
+            | Some _ as tree -> tree
+            | None ->
+                let rec floating_tree spelling =
+                  let array_suffix () =
+                    if not (String.ends_with ~suffix:"]" spelling) then None
+                    else
+                      Option.bind (String.rindex_opt spelling '[') (fun open_index ->
+                          let size_start = open_index + 1 in
+                          let size =
+                            String.sub spelling size_start
+                              (String.length spelling - size_start - 1)
+                            |> int_of_string_opt
+                          in
+                          Option.map
+                            (fun size -> (String.sub spelling 0 open_index, size))
+                            size)
+                  in
+                  match array_suffix () with
+                  | Some (element, size) ->
+                      Option.map
+                        (fun element ->
+                          C_import_json.make_obj
+                            [
+                              ("kind", C_import_json.Str "ConstantArrayType");
+                              ("size", C_import_json.Num (string_of_int size));
+                              ("inner", C_import_json.Arr [ element ]);
+                            ])
+                        (floating_tree element)
+                  | None -> (
+                      match builtin_info_of_name spelling with
+                      | Some (Floating _) ->
+                          Some
+                            (C_import_json.make_obj
+                               [
+                                 ("kind", C_import_json.Str "BuiltinType");
+                                 ( "type",
+                                   C_import_json.make_obj
+                                     [ ("qualType", C_import_json.Str spelling) ] );
+                               ])
+                      | _ when spelling = "_Complex double" ->
+                          Some
+                            (C_import_json.make_obj
+                               [ ("kind", C_import_json.Str "ComplexType") ])
+                      | _ -> None)
+                in
+                Option.bind type_info (fun ty ->
+                    Option.bind (string "qualType" ty) floating_tree)))
     | _ -> (
         let direct =
           Option.bind
@@ -3138,43 +3191,6 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
         | None -> Option.map snd (List.nth_opt layout.direct_members field_index))
     | None -> Option.map snd (List.nth_opt layout.direct_members field_index)
   in
-  let field_storage_type field =
-    let rec storage seen count node =
-      match string "kind" node with
-      | Some "TypedefType" -> (
-          match type_node_id node with
-          | Some id when not (List.mem id seen) ->
-              Option.bind (alias_type_node id) (storage (id :: seen) count)
-          | _ -> None)
-      | Some "QualType" -> Option.bind (type_node node) (storage seen count)
-      | Some "ConstantArrayType" ->
-          let size =
-            match get "size" node with
-            | Some (C_import_json.Num value) -> int_of_string_opt value
-            | Some (C_import_json.Str value) -> int_of_string_opt value
-            | _ -> None
-          in
-          Option.bind size (fun size ->
-              if size < 0 || (size <> 0 && count > max_int / size) then None
-              else Option.bind (type_node node) (storage seen (count * size)))
-      | Some "BuiltinType" -> (
-          match
-            Option.bind (get "type" node) (fun ty ->
-                Option.bind (string "qualType" ty) builtin_info_of_name)
-          with
-          | Some (Floating bits) ->
-              let bytes = (bits + 7) / 8 in
-              if bytes <> 0 && count > max_int / bytes then None
-              else
-                Some
-                  (Ast.Array
-                     ( Ast.int_aggregate_length (count * bytes) Span.synthetic,
-                       Ast.Int Ast.U8 ))
-          | _ -> None)
-      | _ -> None
-    in
-    Option.bind (type_tree field) (storage [] 1)
-  in
   let source_offset node =
     let loc =
       Option.map
@@ -3273,28 +3289,13 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
                             parse_type ~allow_arrays:true ~allow_record:true tree
                           with
                           | Ok ty -> (None, Some ty)
-                          | Error "floating-point types are not supported" -> (
-                              match field_storage_type field with
-                              | Some ty ->
-                                  ( Some
-                                      "floating-point fields are not supported until \
-                                       v0.5",
-                                    Some ty )
-                              | None ->
-                                  (Some "floating-point fields are not supported", None)
-                              )
                           | Error "arrays of unknown size are not supported" ->
                               (Some "flexible array members are not supported", None)
                           | Error "function pointers are not supported" ->
                               (Some "function-pointer fields are not supported", None)
                           | Error reason -> (Some reason, None))
                     in
-                    (match reason with
-                    | Some reason
-                      when reason
-                           <> "floating-point fields are not supported until v0.5" ->
-                        reject reason
-                    | _ -> ());
+                    Option.iter reject reason;
                     match
                       ( ty,
                         Option.bind layout (fun layout ->
@@ -3377,6 +3378,8 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
       | Ast.Int I64 -> Some (Hir.Int Hir.I64)
       | Ast.Int Usize -> Some (Hir.Int Hir.Usize)
       | Ast.Int Isize -> Some (Hir.Int Hir.Isize)
+      | Ast.Float Ast.F32 -> Some (Hir.Float Hir.F32)
+      | Ast.Float Ast.F64 -> Some (Hir.Float Hir.F64)
       | Ast.Addr -> Some Hir.Addr
       | Ast.Handle (Ast.Named_type (name, _)) -> Some (Hir.Handle name)
       | Ast.Named_type (name, _) -> Some (Hir.Struct name)

@@ -7,7 +7,7 @@ static int imported_row[3] = {17, 23, 31};
 int (*imported_callbacks[2])(int) = {imported_first, imported_second};
 ImportedRowPointer imported_row_pointer = &imported_row;
 imported_word imported_word_value = 42;
-struct ImportedFloatRecord imported_float_record = {13, {1.0L, 2.0L}, 7};
+struct ImportedFloatRecord imported_float_record = {13, {1.0, 2.0, 3.0, 4.0}, 7};
 
 imported_stdcall_data imported_read_stdcall_data(void) { return 42; }
 

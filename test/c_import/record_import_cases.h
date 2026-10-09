@@ -38,6 +38,11 @@ struct FasAnonymousUnsupportedRecord {
 struct FasFloatRecord { int before; float value; int after; };
 struct FasNestedFloatRecord { int before; struct FasFloatRecord inner; int after; };
 struct FasFloatArrayRecord { int before; double data[6]; int after; };
+struct FasLongDoubleRecord { long double value; };
+struct FasComplexRecord { _Complex double value; };
+struct FasFloat16Record { _Float16 value; };
+struct FasFp16Record { __fp16 value; };
+struct FasFloat128Record { __float128 value; };
 typedef int (*FasCallback)(int);
 struct FasFunctionPointerRecord { int (*callback)(int); };
 extern FasCallback fas_callback_global;
