@@ -1,0 +1,37 @@
+use "C" <stdio.h>
+
+extern "C" {
+  fn fas_clear_rax() i32
+  fn fas_stdout() handle[_IO_FILE]
+  fn fas_expected_sum(n i32) i32
+  fn sum(n i32, ...) i32
+}
+
+fn main() i32 {
+  if printf(c"%.1f", 1.5) != 3 { return 1 }
+  if fprintf(fas_stdout(), c"%.1f", 2.5) != 3 { return 2 }
+  buffer arr[16,i8] = {}
+  if snprintf(&buffer[0], 16, c"%.1f", 3.5) != 3 { return 3 }
+  if buffer[0] != 51 || buffer[1] != 46 || buffer[2] != 53 { return 4 }
+  if fas_clear_rax() != 0 { return 5 }
+  if sum(1, 1.5, 1) != fas_expected_sum(1) { return 6 }
+  if fas_clear_rax() != 0 { return 7 }
+  if sum(2, 1.5, 1, 2.5, 2) != fas_expected_sum(2) { return 8 }
+  if fas_clear_rax() != 0 { return 9 }
+  if sum(3, 1.5, 1, 2.5, 2, 3.5, 3) != fas_expected_sum(3) { return 10 }
+  if fas_clear_rax() != 0 { return 11 }
+  if sum(4, 1.5, 1, 2.5, 2, 3.5, 3, 4.5, 4) != fas_expected_sum(4) { return 12 }
+  if fas_clear_rax() != 0 { return 13 }
+  if sum(5, 1.5, 1, 2.5, 2, 3.5, 3, 4.5, 4, 5.5, 5) != fas_expected_sum(5) { return 14 }
+  if fas_clear_rax() != 0 { return 15 }
+  if sum(6, 1.5, 1, 2.5, 2, 3.5, 3, 4.5, 4, 5.5, 5, 6.5, 6) != fas_expected_sum(6) { return 16 }
+  if fas_clear_rax() != 0 { return 17 }
+  if sum(7, 1.5, 1, 2.5, 2, 3.5, 3, 4.5, 4, 5.5, 5, 6.5, 6, 7.5, 7) != fas_expected_sum(7) { return 18 }
+  if fas_clear_rax() != 0 { return 19 }
+  if sum(8, 1.5, 1, 2.5, 2, 3.5, 3, 4.5, 4, 5.5, 5, 6.5, 6, 7.5, 7, 8.5, 8) != fas_expected_sum(8) { return 20 }
+  if fas_clear_rax() != 0 { return 21 }
+  if sum(9, 1.5, 1, 2.5, 2, 3.5, 3, 4.5, 4, 5.5, 5, 6.5, 6, 7.5, 7, 8.5, 8, 9.5, 9) != fas_expected_sum(9) { return 22 }
+  if fas_clear_rax() != 0 { return 23 }
+  if sum(10, 1.5, 1, 2.5, 2, 3.5, 3, 4.5, 4, 5.5, 5, 6.5, 6, 7.5, 7, 8.5, 8, 9.5, 9, 10.5, 10) != fas_expected_sum(10) { return 24 }
+  return 0
+}

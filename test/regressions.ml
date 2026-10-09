@@ -1768,6 +1768,22 @@ let () =
      extern \"C\" { fn consume(marker u64, ...) u64 }\n\
      fn pass(pointer addr, token handle[Token]) u64 { return consume(1, pointer, \
      token) }\n";
+  let typed_variadic_call =
+    llvm_of
+      "extern \"C\" { fn fas_sum(marker i32, ...) i32 }\n\
+       fn pass(value f64) i32 { return fas_sum(1, value) }\n"
+  in
+  if not (contains typed_variadic_call "call i32 (i32, ...) @fas_sum(i32 1, double")
+  then failwith "variadic-call-function-type: missing fixed signature and ellipsis";
+  let fixed_call =
+    llvm_of
+      "extern \"C\" { fn fas_fixed(value i32) i32 }\n\
+       fn pass(value i32) i32 { return fas_fixed(value) }\n"
+  in
+  if
+    (not (contains fixed_call "call i32 @fas_fixed(i32 %v"))
+    || contains fixed_call "call i32 (i32) @fas_fixed"
+  then failwith "nonvariadic-call-function-type: fixed call text changed";
   semantic_error "variadic-vector-argument"
     "aggregate `vec[2,u32]` cannot be passed through C varargs"
     "extern \"C\" { fn consume(marker u64, ...) void }\n\

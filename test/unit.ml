@@ -700,6 +700,24 @@ let () =
         ] )
   in
   assert (Ir.validate (ir_module [ call_target; call_caller valid_call ]) = Ok ());
+  let valid_call_text = Ir.render (ir_module [ call_target; call_caller valid_call ]) in
+  assert (contains valid_call_text "call signext i16 (i8, ...) @callee");
+  let fixed_call_target = { call_target with Ir.variadic = false } in
+  let fixed_call_text =
+    Ir.render
+      (ir_module
+         [
+           fixed_call_target;
+           call_caller
+             (Ir.Call
+                ( Some 0,
+                  Ir.Sign_extension,
+                  Ir.I16,
+                  "callee",
+                  [ (Ir.I8, Ir.Zero_extension, Ir.Const (Ir.I8, 7L)) ] ));
+         ])
+  in
+  assert (contains fixed_call_text "call signext i16 @callee(i8 zeroext 7)");
   expect_ir_error "duplicate function name `callee`"
     (ir_module [ call_target; call_target ]);
   expect_ir_error "call to `missing` has no matching function"

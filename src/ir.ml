@@ -1322,7 +1322,7 @@ let cmp_name = function
   | Fogt -> "ogt"
   | Foge -> "oge"
 
-let emit_instr sink = function
+let emit_instr variadic_signatures sink = function
   | Bin (i, op, t, a, b) ->
       sink.text "  %v";
       sink.text (string_of_int i);
@@ -1436,6 +1436,17 @@ let emit_instr sink = function
       | None -> sink.text "  call ");
       sink.text (extension_name extension);
       emit_ty sink t;
+      (match Hashtbl.find_opt variadic_signatures n with
+      | None -> ()
+      | Some params ->
+          sink.text " (";
+          List.iteri
+            (fun i (parameter : param) ->
+              if i > 0 then sink.text ", ";
+              emit_ty sink parameter.ty)
+            params;
+          if params <> [] then sink.text ", ";
+          sink.text "...)");
       sink.text " ";
       emit_symbol sink n;
       sink.text "(";
@@ -1572,9 +1583,9 @@ let emit_instr sink = function
       sink.text ", i64 0"
   | Trap -> sink.text "  call void @llvm.trap()"
 
-let instr_line instr =
+let instr_line variadic_signatures instr =
   let buffer = Buffer.create 64 in
-  emit_instr
+  emit_instr variadic_signatures
     { text = Buffer.add_string buffer; room = (fun _ -> true); redirect = Fun.id }
     instr;
   Buffer.contents buffer
@@ -1635,6 +1646,11 @@ let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false) ~budget m =
     let sink =
       { text = add; room = (fun n -> Buffer.length buffer <= budget - n); redirect }
     in
+    let variadic_signatures = Hashtbl.create (List.length m.funcs) in
+    List.iter
+      (fun (f : func) ->
+        if f.variadic then Hashtbl.replace variadic_signatures f.name f.params)
+      m.funcs;
     let newline () = add "\n" in
     let add_escaped_bytes s =
       let len = String.length s in
@@ -1867,7 +1883,7 @@ let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false) ~budget m =
                  List.iter
                    (fun instr ->
                      newline ();
-                     emit_instr sink instr)
+                     emit_instr variadic_signatures sink instr)
                    b.instrs;
                  newline ();
                  emit_term sink b.terminator)
@@ -1905,6 +1921,7 @@ let render_debug_bounded ~limits m =
          (Limits.budget_profile_name limits))
   else
     let buffer = Buffer.create 4096 in
+    let variadic_signatures = Hashtbl.create 0 in
     let add s =
       if Buffer.length buffer > budget - String.length s then raise Render_exhausted
       else Buffer.add_string buffer s
@@ -1929,7 +1946,8 @@ let render_debug_bounded ~limits m =
     let block (b : block) =
       line (Printf.sprintf "      Block { id = %d; label = %S; instrs = [" b.id b.label);
       List.iter
-        (fun instruction -> line ("        " ^ String.trim (instr_line instruction)))
+        (fun instruction ->
+          line ("        " ^ String.trim (instr_line variadic_signatures instruction)))
         b.instrs;
       line "      ];";
       line ("      terminator = " ^ String.trim (term_line b.terminator));
