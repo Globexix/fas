@@ -207,13 +207,17 @@ let unsigned = function
   | Hir.Vec (_, Hir.Int (Hir.U8 | U16 | U32 | U64 | Usize)) -> true
   | _ -> false
 
+let is_float_type = function
+  | Hir.Float _ | Hir.Vec (_, Hir.Float _) -> true
+  | _ -> false
+
 let cmp_for span t = function
-  | Ast.Eq when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Foeq
-  | Ne when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Fune
-  | Lt when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Folt
-  | Le when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Fole
-  | Gt when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Fogt
-  | Ge when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Foge
+  | Ast.Eq when is_float_type t -> Ok Ir.Foeq
+  | Ne when is_float_type t -> Ok Ir.Fune
+  | Lt when is_float_type t -> Ok Ir.Folt
+  | Le when is_float_type t -> Ok Ir.Fole
+  | Gt when is_float_type t -> Ok Ir.Fogt
+  | Ge when is_float_type t -> Ok Ir.Foge
   | Ast.Eq -> Ok Ir.Eq
   | Ne -> Ok Ne
   | Lt -> Ok (if unsigned t then Ult else Slt)
@@ -224,10 +228,10 @@ let cmp_for span t = function
       error span "internal error: non-comparison operator reached comparison lowering"
 
 let bin_for span t = function
-  | Ast.Add when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Fadd
-  | Sub when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Fsub
-  | Mul when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Fmul
-  | Div when match t with Hir.Float _ -> true | _ -> false -> Ok Ir.Fdiv
+  | Ast.Add when is_float_type t -> Ok Ir.Fadd
+  | Sub when is_float_type t -> Ok Ir.Fsub
+  | Mul when is_float_type t -> Ok Ir.Fmul
+  | Div when is_float_type t -> Ok Ir.Fdiv
   | Ast.Add -> Ok Ir.Add
   | Sub -> Ok Sub
   | Mul -> Ok Mul
@@ -310,6 +314,14 @@ let rec intrinsic_suffix span = function
       let* elem_suffix = intrinsic_suffix span elem in
       Ok (Printf.sprintf "v%d%s" lanes elem_suffix)
   | _ -> error span "internal error: integer intrinsic has a non-integer type"
+
+let rec float_suffix span = function
+  | Ir.F32 -> Ok "f32"
+  | Ir.F64 -> Ok "f64"
+  | Ir.Vector (lanes, elem) ->
+      let* suffix = float_suffix span elem in
+      Ok (Printf.sprintf "v%d%s" lanes suffix)
+  | _ -> error span "internal error: float intrinsic has a non-float type"
 
 let value_const s t value =
   match t with
@@ -576,7 +588,8 @@ let rec expr s = function
   | Hir.EInt (v, t, _) -> Ok (Ir.Const (ty t, v))
   | Hir.EFloat (v, t, _) -> Ok (Ir.Const (ty t, v))
   | Hir.EBool (v, _) -> Ok (Ir.Const (Ir.I1, if v then 1L else 0L))
-  | Hir.EVector (values, (Hir.Vec (lanes, (Hir.Bool | Hir.Int _)) as t), span) ->
+  | Hir.EVector
+      (values, (Hir.Vec (lanes, (Hir.Bool | Hir.Int _ | Hir.Float _)) as t), span) ->
       if List.length values = lanes then Ok (Ir.Const_vector (ty t, values))
       else error span "malformed vector constant lane count"
   | Hir.EVector (_, _, span) -> error span "malformed vector constant type"
@@ -621,7 +634,7 @@ let rec expr s = function
       match op with
       | Ast.Neg ->
           let id = fresh s in
-          if rt = Ir.F32 || rt = Ir.F64 then emit s (Ir.Fneg (id, rt, v))
+          if is_float_type t then emit s (Ir.Fneg (id, rt, v))
           else emit s (Ir.Bin (id, Sub, rt, zero rt, v));
           Ok (Ir.Local (id, rt))
       | Bit_not ->
@@ -832,8 +845,14 @@ and lower_builtin s b args t span =
       Ok (Ir.Local (id, Ir.Pointer Ir.I8))
   | Cvt target_ty, [ x ] ->
       let source_ty = Hir.expr_ty (List.hd args) in
+      let source_element =
+        match source_ty with Hir.Vec (_, element) -> element | ty -> ty
+      in
+      let target_element =
+        match target_ty with Hir.Vec (_, element) -> element | ty -> ty
+      in
       let opcode =
-        match (source_ty, target_ty) with
+        match (source_element, target_element) with
         | Hir.Int (Hir.I8 | I16 | I32 | I64 | Isize), Hir.Float _ -> "sitofp"
         | Hir.Int _, Hir.Float _ -> "uitofp"
         | Hir.Float Hir.F32, Hir.Float Hir.F64 -> "fpext"
@@ -846,7 +865,9 @@ and lower_builtin s b args t span =
         emit s (Ir.Cast (id, opcode, Ir.value_ty x, x, rt));
         Ok (Ir.Local (id, rt)))
       else
-        let destination = match target_ty with Hir.Int kind -> kind | _ -> Hir.I32 in
+        let destination =
+          match target_element with Hir.Int kind -> kind | _ -> Hir.I32
+        in
         let width =
           match destination with
           | Hir.U8 | I8 -> 8
@@ -860,23 +881,36 @@ and lower_builtin s b args t span =
           | Hir.I8 | I16 | I32 | I64 | Isize -> "fptosi"
           | _ -> "fptoui"
         in
-        let format = match source_ty with Hir.Float Hir.F32 -> "f32" | _ -> "f64" in
+        let format =
+          match float_suffix span (ty source_ty) with
+          | Ok suffix -> suffix
+          | Error _ -> "f64"
+        in
+        let result_suffix =
+          match rt with
+          | Ir.Vector (lanes, elem) ->
+              let elem_name =
+                match elem with
+                | Ir.I8 -> "i8"
+                | I16 -> "i16"
+                | I32 -> "i32"
+                | I64 -> "i64"
+                | _ -> "i64"
+              in
+              Printf.sprintf "v%d%s" lanes elem_name
+          | _ -> Printf.sprintf "i%d" width
+        in
         let id = fresh s in
         emit s
           (Ir.Call
              ( Some id,
                Ir.No_extension,
                rt,
-               Printf.sprintf "llvm.%s.sat.i%d.%s" conversion width format,
+               Printf.sprintf "llvm.%s.sat.%s.%s" conversion result_suffix format,
                [ (Ir.value_ty x, Ir.No_extension, x) ] ));
         Ok (Ir.Local (id, rt))
   | Float_math operation, values ->
-      let suffix =
-        match t with
-        | Hir.Float Hir.F32 -> Ok "f32"
-        | Hir.Float Hir.F64 -> Ok "f64"
-        | _ -> error span "internal error: float builtin has a non-float type"
-      in
+      let suffix = float_suffix span rt in
       let* suffix = suffix in
       let name =
         match operation with
@@ -1308,7 +1342,9 @@ and int_ty_bytes = function
   | Ir.I1 | Ir.I8 -> 1
   | Ir.I16 -> 2
   | Ir.I32 -> 4
+  | Ir.F32 -> 4
   | Ir.I64 -> 8
+  | Ir.F64 -> 8
   | Ir.I128 -> 16
   | _ -> 8
 
@@ -1538,6 +1574,10 @@ and simd_memory_load_lane s span access_ty pointer =
       let loaded = fresh s in
       emit s (Ir.Load (loaded, ty access_ty, pointer, 1));
       Ok (Ir.Local (loaded, ty access_ty))
+  | Hir.Float _ ->
+      let loaded = fresh s in
+      emit s (Ir.Load (loaded, ty access_ty, pointer, 1));
+      Ok (Ir.Local (loaded, ty access_ty))
   | _ -> error span "internal error: invalid SIMD memory element type"
 
 and simd_memory_store_lane s span access_ty value pointer =
@@ -1548,6 +1588,9 @@ and simd_memory_store_lane s span access_ty value pointer =
       emit s (Ir.Store (Ir.I8, Ir.Local (byte, Ir.I8), pointer, 1));
       Ok ()
   | Hir.Int _ ->
+      emit s (Ir.Store (ty access_ty, value, pointer, 1));
+      Ok ()
+  | Hir.Float _ ->
       emit s (Ir.Store (ty access_ty, value, pointer, 1));
       Ok ()
   | _ -> error span "internal error: invalid SIMD memory element type"
@@ -1728,6 +1771,11 @@ and raw_load s t p =
           go (i + 1) (Ir.Local (iid, vt))
       in
       go 0 (Ir.Undef vt)
+  | Hir.Vec (_, Hir.Float _) ->
+      let id = fresh s in
+      let vector_ty = ty t in
+      emit s (Ir.Load (id, vector_ty, p, 1));
+      Ok (Ir.Local (id, vector_ty))
   | Hir.Vec (lanes, Hir.Bool) -> packed_bool_load s false lanes p
   | _ -> error Span.synthetic "internal error: aggregate raw load"
 
@@ -1769,6 +1817,9 @@ and raw_store s t v p =
           go (i + 1)
       in
       go 0
+  | Hir.Vec (_, Hir.Float _) ->
+      emit s (Ir.Store (ty t, v, p, 1));
+      Ok ()
   | Hir.Vec (lanes, Hir.Bool) -> packed_bool_store s false lanes v p
   | _ -> error Span.synthetic "internal error: aggregate raw store"
 

@@ -51,6 +51,13 @@ let cast_legal kind from target =
         | _ -> false)
     | _ -> false
   in
+  let bit_width = function
+    | Hir.Float Hir.F32 -> Some 32
+    | Hir.Float Hir.F64 -> Some 64
+    | Hir.Vec (lanes, Hir.Float Hir.F32) -> Some (lanes * 32)
+    | Hir.Vec (lanes, Hir.Float Hir.F64) -> Some (lanes * 64)
+    | ty -> integer_value_bit_width ty
+  in
   match kind with
   | Ast.Float_widen -> from = Hir.Float Hir.F32 && target = Hir.Float Hir.F64
   | Ast.Zext | Ast.Sext ->
@@ -66,7 +73,7 @@ let cast_legal kind from target =
       | Hir.Float Hir.F64, Hir.Int kind | Hir.Int kind, Hir.Float Hir.F64 ->
           int_bits kind = 64
       | _ -> (
-          match (integer_value_bit_width from, integer_value_bit_width target) with
+          match (bit_width from, bit_width target) with
           | Some source_width, Some destination_width ->
               source_width = destination_width
           | _ -> false))
@@ -274,10 +281,13 @@ let constant_bitcast source_ty source_values destination_ty =
         Option.map (fun width -> (width, 1, values)) (integer_value_bit_width ty)
     | Hir.Float Hir.F32 -> Some (32, 1, values)
     | Hir.Float Hir.F64 -> Some (64, 1, values)
-    | Hir.Vec (lanes, ((Hir.Bool | Hir.Int _) as element)) ->
+    | Hir.Vec (lanes, ((Hir.Bool | Hir.Int _ | Hir.Float _) as element)) ->
         Option.map
           (fun width -> (width, lanes, values))
-          (integer_value_bit_width element)
+          (match element with
+          | Hir.Float Hir.F32 -> Some 32
+          | Hir.Float Hir.F64 -> Some 64
+          | _ -> integer_value_bit_width element)
     | _ -> None
   in
   match (shape source_ty source_values, shape destination_ty []) with

@@ -205,12 +205,13 @@ let valid_extension ty = function
   | Sign_extension | Zero_extension -> is_integer ty
 
 let is_equality_type = function
-  | Vector (_, Pointer _) | Pointer _ -> true
+  | Vector (_, (Pointer _ | F32 | F64)) | Pointer _ | F32 | F64 -> true
   | ty -> is_integer_like ty
 
 let rec valid_value_type = function
   | Void -> false
-  | Vector (lanes, elem) -> lanes > 0 && (is_integer elem || is_pointer elem)
+  | Vector (lanes, elem) ->
+      lanes > 0 && (is_integer elem || is_pointer elem || elem = F32 || elem = F64)
   | Array (length, elem) -> length >= 0 && valid_value_type elem
   | I1 | I8 | I16 | I32 | I64 | I128 | F32 | F64 | Pointer _ | Struct _ -> true
 
@@ -233,6 +234,7 @@ let validate_value_form = function
       if lanes <= 0 then Error "vector constant has a non-positive lane count"
       else if List.length values <> lanes then
         Error "vector constant lane count does not match its type"
+      else if elem = F32 || elem = F64 then Ok ()
       else if List.for_all (integer_constant_fits elem) values then Ok ()
       else Error "vector constant element does not fit its type"
   | Const_vector _ -> Error "vector constant requires an integer vector type"
@@ -429,15 +431,34 @@ let validate_function struct_names globals functions (func : func) =
           Ok ()
       | _ -> fail "block %d has invalid `%s` types" block_id opcode
     in
+    let float_type = function F32 | F64 -> true | _ -> false in
+    let lane_shape = function
+      | Vector (lanes, elem) -> Some (lanes, elem)
+      | ty -> Some (1, ty)
+    in
+    let lane_conversion source_ok destination_ok relation =
+      match (lane_shape source, lane_shape destination) with
+      | Some (source_lanes, source_elem), Some (destination_lanes, destination_elem)
+        when source_lanes = destination_lanes
+             && source_ok source_elem
+             && destination_ok destination_elem ->
+          relation source_elem destination_elem
+      | _ -> false
+    in
     match opcode with
     | "sitofp" | "uitofp" ->
-        if is_integer source && (destination = F32 || destination = F64) then Ok ()
+        if
+          lane_conversion is_integer float_type (fun _ _ -> true)
+          && match source with Vector _ -> true | _ -> is_integer source
+        then Ok ()
         else fail "block %d has invalid `%s` types" block_id opcode
     | "fpext" ->
-        if source = F32 && destination = F64 then Ok ()
+        if lane_conversion float_type float_type (fun s d -> s = F32 && d = F64) then
+          Ok ()
         else fail "block %d has invalid `fpext` types" block_id
     | "fptrunc" ->
-        if source = F64 && destination = F32 then Ok ()
+        if lane_conversion float_type float_type (fun s d -> s = F64 && d = F32) then
+          Ok ()
         else fail "block %d has invalid `fptrunc` types" block_id
     | "zext" | "sext" -> integer_cast ( < )
     | "trunc" -> integer_cast ( > )
@@ -448,7 +469,20 @@ let validate_function struct_names globals functions (func : func) =
         if is_integer source && is_pointer destination then Ok ()
         else fail "block %d has invalid `inttoptr` types" block_id
     | "bitcast" -> (
-        match (integer_shape source, integer_shape destination) with
+        let bitcast_shape = function
+          | Vector (lanes, elem) ->
+              let width =
+                match integer_width elem with
+                | Some _ as width -> width
+                | None -> (
+                    match elem with F32 -> Some 32 | F64 -> Some 64 | _ -> None)
+              in
+              Option.map (fun width -> (Some lanes, width)) width
+          | F32 -> Some (None, 32)
+          | F64 -> Some (None, 64)
+          | ty -> integer_shape ty
+        in
+        match (bitcast_shape source, bitcast_shape destination) with
         | Some (source_lanes, source_width), Some (destination_lanes, destination_width)
           ->
             let source_count = Option.value ~default:1 source_lanes in
@@ -480,8 +514,22 @@ let validate_function struct_names globals functions (func : func) =
               | F64, int_ty | int_ty, F64 -> scalar_int_float int_ty = Some 64
               | _ -> false
             in
-            if float_int_pair || (is_pointer source && is_pointer destination) then
-              Ok ()
+            let equal_lane_width_float =
+              lane_conversion
+                (fun ty -> is_integer ty || float_type ty)
+                (fun ty -> is_integer ty || float_type ty)
+                (fun source_elem destination_elem ->
+                  let width = function
+                    | F32 -> Some 32
+                    | F64 -> Some 64
+                    | ty -> integer_width ty
+                  in
+                  width source_elem = width destination_elem)
+            in
+            if
+              float_int_pair || equal_lane_width_float
+              || (is_pointer source && is_pointer destination)
+            then Ok ()
             else fail "block %d has invalid `bitcast` types" block_id)
     | _ -> fail "block %d has unknown cast opcode `%s`" block_id opcode
   in
@@ -513,15 +561,19 @@ let validate_function struct_names globals functions (func : func) =
         let is_float_operation =
           match operation with Fadd | Fsub | Fmul | Fdiv -> true | _ -> false
         in
+        let is_float_type = function
+          | F32 | F64 | Vector (_, (F32 | F64)) -> true
+          | _ -> false
+        in
         if
-          (is_float_operation && ty <> F32 && ty <> F64)
+          (is_float_operation && not (is_float_type ty))
           || ((not is_float_operation) && not (is_integer_like ty))
         then fail "block %d has a non-integer binary type" block_id
         else
           let* () = operand block_id ty left in
           operand block_id ty right
     | Fneg (_, ty, value) ->
-        if ty <> F32 && ty <> F64 then
+        if match ty with F32 | F64 | Vector (_, (F32 | F64)) -> false | _ -> true then
           fail "block %d has a non-float fneg type" block_id
         else operand block_id ty value
     | Cmp (_, comparison, ty, left, right) ->
@@ -529,7 +581,8 @@ let validate_function struct_names globals functions (func : func) =
           match comparison with
           | Eq | Ne -> is_equality_type ty
           | Slt | Sle | Sgt | Sge | Ult | Ule | Ugt | Uge -> is_integer_like ty
-          | Foeq | Fune | Folt | Fole | Fogt | Foge -> ty = F32 || ty = F64
+          | Foeq | Fune | Folt | Fole | Fogt | Foge -> (
+              match ty with F32 | F64 | Vector (_, (F32 | F64)) -> true | _ -> false)
         in
         if not valid_type then fail "block %d has an invalid comparison type" block_id
         else
@@ -1270,7 +1323,10 @@ let emit_value sink = function
           if i > 0 then sink.text ", ";
           emit_ty sink element_ty;
           sink.text " ";
-          sink.text (Int64.to_string value))
+          sink.text
+            (if element_ty = F32 || element_ty = F64 then
+               float_constant_text element_ty value
+             else Int64.to_string value))
         values;
       sink.text ">"
   | Const_vector (_, _) -> invalid_arg "vector constant requires a vector type"
@@ -2093,6 +2149,8 @@ let rec static_type_bytes structs visiting ty =
           | I32 -> Ok 32
           | I64 -> Ok 64
           | I128 -> Ok 128
+          | F32 -> Ok 32
+          | F64 -> Ok 64
           | Pointer _ -> Ok (Target_layout.current.pointer_size * 8)
           | _ -> Error ()
         in

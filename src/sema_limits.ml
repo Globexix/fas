@@ -12,7 +12,7 @@ let rec object_type (structs : Hir.struct_def list) = function
       if length < 0 then Error "negative array length" else object_type structs element
   | Hir.Vec (length, element) when length > 0 -> (
       match element with
-      | Hir.Int _ | Hir.Bool -> Ok ()
+      | Hir.Int _ | Hir.Bool | Hir.Float _ -> Ok ()
       | _ -> Error "vector element type must be `bool` or an integer type")
   | Hir.Vec _ -> Error "vector lane count must be positive"
   | Hir.Struct name ->

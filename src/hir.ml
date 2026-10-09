@@ -421,7 +421,8 @@ let int_layout target k = Target_layout.integer target (int_bytes ~target k * 8)
 let scalar_bits target = function
   | Bool -> Ok 1
   | Int k -> Ok (int_bytes ~target k * 8)
-  | Float _ -> Error "vector element type must be `bool` or an integer type"
+  | Float F32 -> Ok 32
+  | Float F64 -> Ok 64
   | Addr | Handle _ -> Ok (target.Target_layout.pointer_size * 8)
   | _ -> Error "vector element type must be `bool` or an integer type"
 

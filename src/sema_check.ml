@@ -2001,9 +2001,12 @@ and check_expr_inner ?destination (c : context) expected expression =
       in
       match op with
       | Ast.Neg | Ast.Bit_not ->
+          let floating =
+            match Hir.expr_ty te with Hir.Vec (_, Hir.Float _) -> true | _ -> false
+          in
           if
             (not (is_int (Hir.expr_ty te)))
-            && not (op = Ast.Neg && is_float (Hir.expr_ty te))
+            && not (op = Ast.Neg && (is_float (Hir.expr_ty te) || floating))
           then
             let operator = if op = Ast.Neg then "-" else "~" in
             let help =
@@ -2013,7 +2016,8 @@ and check_expr_inner ?destination (c : context) expected expression =
               | _ -> None
             in
             let expectation =
-              if op = Ast.Bit_not then "an integer or integer vector" else "an integer"
+              if op = Ast.Bit_not then "an integer or integer vector"
+              else "an integer or floating-point vector"
             in
             Error
               [
@@ -2939,7 +2943,7 @@ and simd_memory_access_type c name span arguments =
     | _ -> error span (Printf.sprintf "builtin `%s` expects one type argument" name)
   in
   match access_ty with
-  | Hir.Bool | Hir.Int _ -> Ok access_ty
+  | Hir.Bool | Hir.Int _ | Hir.Float _ -> Ok access_ty
   | _ ->
       error span
         (Printf.sprintf "`%s` needs an integer or bool element type, got `%s`" name
@@ -3043,7 +3047,9 @@ and check_float_math c expected operation name args s =
             Sema_flow.restore c.flow before;
             match result with
             | Ok value -> (
-                match Hir.expr_ty value with Hir.Float _ as ty -> Some ty | _ -> None)
+                match Hir.expr_ty value with
+                | (Hir.Float _ | Hir.Vec (_, Hir.Float _)) as ty -> Some ty
+                | _ -> None)
             | Error _ -> None)
         args
     in
@@ -3051,7 +3057,9 @@ and check_float_math c expected operation name args s =
       match peer_types with
       | ty :: _ -> ty
       | [] -> (
-          match expected with Some (Hir.Float _ as ty) -> ty | _ -> Hir.Float Hir.F64)
+          match expected with
+          | Some ((Hir.Float _ | Hir.Vec (_, Hir.Float _)) as ty) -> ty
+          | _ -> Hir.Float Hir.F64)
     in
     let* checked =
       Result_list.map
@@ -3062,7 +3070,10 @@ and check_float_math c expected operation name args s =
         args
     in
     let indexed = List.mapi (fun index value -> (index, value)) checked in
-    let float_type = function Hir.Float _ -> true | _ -> false in
+    let float_type = function
+      | Hir.Float _ | Hir.Vec (_, Hir.Float _) -> true
+      | _ -> false
+    in
     let rec first_bad = function
       | [] -> None
       | (index, value) :: rest ->
@@ -3179,6 +3190,16 @@ and check_call c expected fn args s =
           (integer source && floating target)
           || (floating source && integer target)
           || (floating source && floating target && source <> target)
+          ||
+          match (source, target) with
+          | ( Hir.Vec (source_lanes, source_element),
+              Hir.Vec (target_lanes, target_element) )
+            when source_lanes = target_lanes ->
+              (integer source_element && floating target_element)
+              || (floating source_element && integer target_element)
+              || floating source_element && floating target_element
+                 && source_element <> target_element
+          | _ -> false
         then Ok (Hir.Call (Hir.Builtin (Hir.Cvt target), [ checked ], target, s))
         else if integer source && integer target then
           let help =
@@ -3529,6 +3550,19 @@ and check_call c expected fn args s =
               match Hir.expr_ty a with
               | Hir.Vec (_, (Hir.Int _ as e)) ->
                   Ok (Hir.Call (Hir.Builtin b, [ a ], e, s))
+              | Hir.Vec (_, Hir.Float _) when b = Hir.Reduce_sum ->
+                  Error
+                    [
+                      Diag.error
+                        ~help:"the order is not defined; write the additions explicitly"
+                        (Ast.expr_span (List.hd args))
+                        "`reduce_sum` is not defined for floating-point vectors";
+                    ]
+              | Hir.Vec (_, Hir.Float _) ->
+                  error
+                    (Ast.expr_span (List.hd args))
+                    (Printf.sprintf "`%s` is not defined for floating-point vectors"
+                       name)
               | actual ->
                   error
                     (Ast.expr_span (List.hd args))
@@ -3541,8 +3575,8 @@ and check_call c expected fn args s =
               let* v = check_expr c None (List.nth args 0) in
               let* m = check_expr c None (List.nth args 1) in
               match (Hir.expr_ty v, Hir.expr_ty m) with
-              | Hir.Vec (n, ((Hir.Int _ | Hir.Bool) as e)), Hir.Vec (mcount, Hir.Bool)
-                ->
+              | ( Hir.Vec (n, ((Hir.Int _ | Hir.Bool | Hir.Float _) as e)),
+                  Hir.Vec (mcount, Hir.Bool) ) ->
                   if n <> mcount then
                     error s
                       (Printf.sprintf "%s values and mask must have the same lane count"
@@ -3581,7 +3615,7 @@ and check_call c expected fn args s =
                          (Sema_types.diagnostic_ty_name (Hir.expr_ty y)))
                   else
                     match Hir.expr_ty y with
-                    | Hir.Vec (n2, (Hir.Int _ | Hir.Bool)) when n2 = n ->
+                    | Hir.Vec (n2, (Hir.Int _ | Hir.Bool | Hir.Float _)) when n2 = n ->
                         Ok (Hir.Call (Hir.Builtin b, [ m; y; z ], Hir.expr_ty y, s))
                     | _ ->
                         error s "select values must be vectors with the mask lane count"
@@ -3593,7 +3627,9 @@ and check_call c expected fn args s =
               let* a, b2 = check_same_operands c (List.nth args 0) (List.nth args 1) in
               let at = Hir.expr_ty a in
               let ok_vec =
-                match at with Hir.Vec (_, (Hir.Int _ | Hir.Bool)) -> true | _ -> false
+                match at with
+                | Hir.Vec (_, (Hir.Int _ | Hir.Bool | Hir.Float _)) -> true
+                | _ -> false
               in
               if not ok_vec then
                 error
@@ -3716,7 +3752,7 @@ and check_call c expected fn args s =
               let* b2 = check_expr c None (List.hd (List.tl args)) in
               let ok_value =
                 match Hir.expr_ty a with
-                | Hir.Vec (_, (Hir.Int _ | Hir.Bool)) -> true
+                | Hir.Vec (_, (Hir.Int _ | Hir.Bool | Hir.Float _)) -> true
                 | _ -> false
               in
               let ok_indices =
@@ -4871,7 +4907,8 @@ and check_stmt (c : context) = function
       in
       let* v = if is_addr_step then normalize_offset_expr c.structs span v else Ok v in
       let float_arithmetic =
-        is_float et && List.mem op [ Ast.Add; Ast.Sub; Ast.Mul; Ast.Div ]
+        (is_float et || match et with Hir.Vec (_, Hir.Float _) -> true | _ -> false)
+        && List.mem op [ Ast.Add; Ast.Sub; Ast.Mul; Ast.Div ]
       in
       if (not (is_numeric et)) && (not float_arithmetic) && not is_addr_step then
         let help =

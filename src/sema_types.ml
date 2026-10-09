@@ -283,6 +283,8 @@ let vec_cap_error length (element : Hir.ty) =
       | Hir.Int (Hir.U16 | Hir.I16) -> Some 16
       | Hir.Int (Hir.U32 | Hir.I32) -> Some 32
       | Hir.Int (Hir.U64 | Hir.I64 | Hir.Usize | Hir.Isize) -> Some 64
+      | Hir.Float Hir.F32 -> Some 32
+      | Hir.Float Hir.F64 -> Some 64
       | Hir.Addr | Hir.Handle _ -> Some 64
       | _ -> None
     in
@@ -1261,7 +1263,10 @@ let binary_result_type ?left_expression ?right_expression ?result_expected
            | _ -> false)
          && not
               (Sema_numeric.is_int left || left = Hir.Addr || Sema_numeric.is_float left
-              || match left with Hir.Vec (_, Hir.Int _) -> true | _ -> false) ->
+              ||
+              match left with
+              | Hir.Vec (_, (Hir.Int _ | Hir.Float _)) -> true
+              | _ -> false) ->
       let error_span = if left = right then result_span left_expression else span in
       error error_span
         (Printf.sprintf
@@ -1360,6 +1365,32 @@ let binary_result_type ?left_expression ?right_expression ?result_expected
       match operation with
       | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> Ok Hir.Bool
       | _ -> Ok common)
+  | None
+    when match (left, right) with
+         | ( Hir.Vec (lanes, (Hir.Float _ as element)),
+             Hir.Vec (right_lanes, right_element) )
+           when lanes = right_lanes && element = right_element ->
+             true
+         | _ -> false -> (
+      if operation = Ast.Rem then
+        error
+          (result_span right_expression)
+          "remainder `%` is not defined for floating-point vectors"
+      else
+        match operation with
+        | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge ->
+            let lanes = match left with Hir.Vec (lanes, _) -> lanes | _ -> 0 in
+            Ok (Hir.Vec (lanes, Hir.Bool))
+        | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div -> Ok left
+        | Ast.Bit_and | Ast.Bit_or | Ast.Bit_xor ->
+            error (result_span left_expression)
+              (Printf.sprintf
+                 "operator `%s` needs integer or integer vector operands, got `%s`"
+                 (binary_operator_name operation)
+                 (diagnostic_ty_name left))
+        | Ast.And | Ast.Or -> assert false
+        | Ast.Rem -> assert false
+        | Ast.Shl | Ast.Shr -> Error [ shift_value_error operation span left ])
   | None when Sema_numeric.is_float left && Sema_numeric.is_float right -> (
       let common = Option.get (common_numeric_type left right) in
       let check_narrow expression actual =
@@ -1438,7 +1469,8 @@ let binary_result_type ?left_expression ?right_expression ?result_expected
       match operation with
       | Ast.Eq | Ast.Ne -> (
           match left with
-          | Hir.Vec (lanes, (Hir.Bool | Hir.Int _)) -> Ok (Hir.Vec (lanes, Hir.Bool))
+          | Hir.Vec (lanes, (Hir.Bool | Hir.Int _ | Hir.Float _)) ->
+              Ok (Hir.Vec (lanes, Hir.Bool))
           | Hir.Addr | Hir.Handle _ -> Ok Hir.Bool
           | _ when Sema_numeric.is_scalar left -> Ok Hir.Bool
           | _ ->
@@ -1451,7 +1483,8 @@ let binary_result_type ?left_expression ?right_expression ?result_expected
           then Ok Hir.Bool
           else
             match left with
-            | Hir.Vec (lanes, Hir.Int _) -> Ok (Hir.Vec (lanes, Hir.Bool))
+            | Hir.Vec (lanes, (Hir.Int _ | Hir.Float _)) ->
+                Ok (Hir.Vec (lanes, Hir.Bool))
             | _ ->
                 error (result_span left_expression)
                   (Printf.sprintf

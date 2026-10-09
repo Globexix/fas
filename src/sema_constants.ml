@@ -178,6 +178,29 @@ let mulhi_apply kind x y =
 let sat_or_mulhi name kind x y =
   if name = "mul_hi" then mulhi_apply kind x y else sat_apply name kind x y
 
+let float_value ty bits =
+  match ty with
+  | Hir.Float Hir.F32 -> Int32.float_of_bits (Int64.to_int32 bits)
+  | Hir.Float Hir.F64 -> Int64.float_of_bits bits
+  | _ -> invalid_arg "internal error: non-float vector lane"
+
+let float_binary_bits ty operation left right =
+  match ty with
+  | Hir.Float Hir.F32 ->
+      let opcode =
+        match operation with Ast.Add -> 0 | Ast.Sub -> 1 | Ast.Mul -> 2 | _ -> 3
+      in
+      Float_parse.f32_binary_bits opcode left right
+  | Hir.Float Hir.F64 ->
+      let left = Int64.float_of_bits left and right = Int64.float_of_bits right in
+      Int64.bits_of_float
+        (match operation with
+        | Ast.Add -> left +. right
+        | Ast.Sub -> left -. right
+        | Ast.Mul -> left *. right
+        | _ -> left /. right)
+  | _ -> invalid_arg "internal error: non-float vector lane"
+
 let active_layout_type_bindings = ref []
 and active_array_length_queries = ref []
 
@@ -1189,6 +1212,15 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
             | _ -> 0L
           in
           Ok (ty, result)
+      | Ok ((Hir.Vec (_, Hir.Float _) as actual), _) when name = "reduce_sum" ->
+          Error
+            [
+              Diag.error
+                ~help:"the order is not defined; write the additions explicitly"
+                (Ast.expr_span arg)
+                (Printf.sprintf "`%s` needs an integer vector, got `%s`" name
+                   (Sema_types.diagnostic_ty_name actual));
+            ]
       | Ok (actual, _) ->
           error (Ast.expr_span arg)
             (Printf.sprintf "`%s` needs an integer vector, got `%s`" name
@@ -1471,6 +1503,16 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
       | Hir.Vec (_, Hir.Bool) ->
           Ok (ty, List.map (fun value -> if value = 0L then 1L else 0L) values)
       | _ -> Error [ Sema_types.logical_not_error value ty ])
+  | Ast.Unary (Ast.Neg, value, _span) -> (
+      let* ty, values = evaluate expected value in
+      match lane_type ty with
+      | Some (Hir.Int _ as element) ->
+          Ok (ty, List.map (fun value -> lane_mask element (Int64.neg value)) values)
+      | Some (Hir.Float Hir.F32) ->
+          Ok (ty, List.map (fun value -> Int64.logxor value 0x8000_0000L) values)
+      | Some (Hir.Float Hir.F64) ->
+          Ok (ty, List.map (fun value -> Int64.logxor value Int64.min_int) values)
+      | _ -> error (Ast.expr_span value) "unary negation requires a numeric vector")
   | Ast.Binary (((Ast.Shl | Ast.Shr) as op), value, count, _span) ->
       let* ty, values = evaluate expected value in
       let* element =
@@ -1553,6 +1595,7 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
         | Some element -> Ok element
         | None -> error span "vector operation requires vector operands"
       in
+      let float_element = match element with Hir.Float _ -> true | _ -> false in
       let signed_min =
         match element with
         | Hir.Int kind ->
@@ -1564,10 +1607,13 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
       let rec first_offense lefts rights =
         match (lefts, rights) with
         | left :: left_rest, right :: right_rest ->
-            if (operation = Ast.Div || operation = Ast.Rem) && right = 0L then
-              Some "division by zero in constant expression"
+            if
+              (not float_element)
+              && (operation = Ast.Div || operation = Ast.Rem)
+              && right = 0L
+            then Some "division by zero in constant expression"
             else if
-              operation = Ast.Div
+              (not float_element) && operation = Ast.Div
               && (not (is_unsigned element))
               && lane_signed element left = signed_min
               && lane_signed element right = Int64.minus_one
@@ -1587,55 +1633,165 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
             | _ -> element
           in
           let apply left right =
-            let signed_left = lane_signed element left in
-            let signed_right = lane_signed element right in
-            let compare =
-              if is_unsigned element then Int64.unsigned_compare left right
-              else Int64.compare signed_left signed_right
-            in
-            match operation with
-            | Ast.Add -> Int64.add left right
-            | Ast.Sub -> Int64.sub left right
-            | Ast.Mul -> Int64.mul left right
-            | Ast.Bit_and -> Int64.logand left right
-            | Ast.Bit_or -> Int64.logor left right
-            | Ast.Bit_xor -> Int64.logxor left right
-            | Ast.Div ->
-                if check_only && right = 0L then 0L
-                else if
-                  check_only
-                  && (not (is_unsigned element))
-                  && signed_left = signed_min
-                  && signed_right = Int64.minus_one
-                then 0L
-                else if is_unsigned element then Int64.unsigned_div left right
-                else Int64.div signed_left signed_right
-            | Ast.Rem ->
-                if check_only && right = 0L then 0L
-                else if is_unsigned element then Int64.unsigned_rem left right
-                else Int64.rem signed_left signed_right
-            | Ast.Eq -> if left = right then 1L else 0L
-            | Ast.Ne -> if left <> right then 1L else 0L
-            | Ast.Lt -> if compare < 0 then 1L else 0L
-            | Ast.Le -> if compare <= 0 then 1L else 0L
-            | Ast.Gt -> if compare > 0 then 1L else 0L
-            | Ast.Ge -> if compare >= 0 then 1L else 0L
-            | Ast.Shl | Ast.Shr ->
-                let bits = Option.get (integer_value_bit_width element) in
-                let amount =
-                  Int64.to_int (Int64.logand right (Int64.of_int (bits - 1)))
-                in
-                if amount = 0 then left
-                else if operation = Ast.Shl then Int64.shift_left left amount
-                else if is_unsigned element then Int64.shift_right_logical left amount
-                else Int64.shift_right (lane_signed element left) amount
-            | Ast.And | Ast.Or -> 0L
+            if float_element then
+              let left_float = float_value element left
+              and right_float = float_value element right in
+              match operation with
+              | Ast.Eq -> if left_float = right_float then 1L else 0L
+              | Ast.Ne -> if left_float <> right_float then 1L else 0L
+              | Ast.Lt -> if left_float < right_float then 1L else 0L
+              | Ast.Le -> if left_float <= right_float then 1L else 0L
+              | Ast.Gt -> if left_float > right_float then 1L else 0L
+              | Ast.Ge -> if left_float >= right_float then 1L else 0L
+              | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div ->
+                  float_binary_bits element operation left right
+              | _ -> 0L
+            else
+              let signed_left = lane_signed element left in
+              let signed_right = lane_signed element right in
+              let compare =
+                if is_unsigned element then Int64.unsigned_compare left right
+                else Int64.compare signed_left signed_right
+              in
+              match operation with
+              | Ast.Add -> Int64.add left right
+              | Ast.Sub -> Int64.sub left right
+              | Ast.Mul -> Int64.mul left right
+              | Ast.Bit_and -> Int64.logand left right
+              | Ast.Bit_or -> Int64.logor left right
+              | Ast.Bit_xor -> Int64.logxor left right
+              | Ast.Div ->
+                  if check_only && right = 0L then 0L
+                  else if
+                    check_only
+                    && (not (is_unsigned element))
+                    && signed_left = signed_min
+                    && signed_right = Int64.minus_one
+                  then 0L
+                  else if is_unsigned element then Int64.unsigned_div left right
+                  else Int64.div signed_left signed_right
+              | Ast.Rem ->
+                  if check_only && right = 0L then 0L
+                  else if is_unsigned element then Int64.unsigned_rem left right
+                  else Int64.rem signed_left signed_right
+              | Ast.Eq -> if left = right then 1L else 0L
+              | Ast.Ne -> if left <> right then 1L else 0L
+              | Ast.Lt -> if compare < 0 then 1L else 0L
+              | Ast.Le -> if compare <= 0 then 1L else 0L
+              | Ast.Gt -> if compare > 0 then 1L else 0L
+              | Ast.Ge -> if compare >= 0 then 1L else 0L
+              | Ast.Shl | Ast.Shr ->
+                  let bits = Option.get (integer_value_bit_width element) in
+                  let amount =
+                    Int64.to_int (Int64.logand right (Int64.of_int (bits - 1)))
+                  in
+                  if amount = 0 then left
+                  else if operation = Ast.Shl then Int64.shift_left left amount
+                  else if is_unsigned element then Int64.shift_right_logical left amount
+                  else Int64.shift_right (lane_signed element left) amount
+              | Ast.And | Ast.Or -> 0L
           in
           Ok
             ( result_ty,
               List.map2
                 (fun left right -> lane_mask result_element (apply left right))
                 left_values right_values ))
+  | Ast.Call (Ast.Ident (name, _), args, span)
+    when Option.is_some (Names.float_math name) ->
+      let operation = Option.get (Names.float_math name) in
+      let expected_arity = if operation = Names.Fma then 3 else 1 in
+      if List.length args <> expected_arity then
+        error span
+          (Printf.sprintf "builtin `%s` expects %d argument%s" name expected_arity
+             (if expected_arity = 1 then "" else "s"))
+      else
+        let* ty, first = evaluate expected (List.hd args) in
+        let* element =
+          match lane_type ty with
+          | Some (Hir.Float _ as element) -> Ok element
+          | _ ->
+              error span (Printf.sprintf "invalid constant builtin call to `%s`" name)
+        in
+        let is_f32 = element = Hir.Float Hir.F32 in
+        let* result =
+          match (operation, args) with
+          | Names.Fma, [ _; second; third ] ->
+              let* second_ty, second_values = evaluate (Some ty) second in
+              let* third_ty, third_values = evaluate (Some ty) third in
+              if second_ty <> ty || third_ty <> ty then
+                error span (Printf.sprintf "invalid constant builtin call to `%s`" name)
+              else
+                Ok
+                  (List.mapi
+                     (fun index a ->
+                       Float_parse.float_fma_bits is_f32 a
+                         (List.nth second_values index)
+                         (List.nth third_values index))
+                     first)
+          | (Names.Sqrt | Names.Floor | Names.Ceil | Names.Round | Names.Abs), [ _ ] ->
+              let opcode =
+                match operation with
+                | Names.Sqrt -> 0
+                | Names.Floor -> 1
+                | Names.Ceil -> 2
+                | Names.Round -> 3
+                | Names.Abs -> 4
+                | Names.Fma -> assert false
+              in
+              Ok (List.map (Float_parse.float_unary_bits opcode is_f32) first)
+          | _ ->
+              error span (Printf.sprintf "invalid constant builtin call to `%s`" name)
+        in
+        Ok (ty, result)
+  | Ast.Call
+      ( Ast.Generic_args (Ast.Ident ("cvt", _), generic_args, target_span),
+        [ value ],
+        call_span ) ->
+      let* target =
+        match generic_args with
+        | [ Ast.Type_arg ty ] -> source_ty_with_values named_types consts target_span ty
+        | [ Ast.Name_arg (name, name_span) ] ->
+            source_ty_with_values named_types consts name_span
+              (Ast.Named_type (name, name_span))
+        | _ -> error target_span "cvt needs one target type: cvt[T](value)"
+      in
+      let* source, values = evaluate None value in
+      let* source_lanes, source_element, target_element =
+        match (source, target) with
+        | Hir.Vec (source_lanes, source_element), Hir.Vec (target_lanes, target_element)
+          when source_lanes = target_lanes ->
+            Ok (source_lanes, source_element, target_element)
+        | _ -> error call_span "constant vector cast requires matching lane counts"
+      in
+      let integer = function Hir.Int _ -> true | _ -> false in
+      let floating = function Hir.Float _ -> true | _ -> false in
+      let convert value =
+        match (source_element, target_element) with
+        | Hir.Int kind, Hir.Float float_kind ->
+            Float_parse.int_to_float_bits
+              (sign_extend_value source_element value)
+              (int_bits kind)
+              (not (is_unsigned source_element))
+              (float_kind = Hir.F32)
+        | Hir.Float Hir.F32, Hir.Float Hir.F64 ->
+            widen_integer_value Ast.Float_widen source_element target_element value
+        | Hir.Float Hir.F64, Hir.Float Hir.F32 ->
+            Int64.of_int32 (Int32.bits_of_float (Int64.float_of_bits value))
+        | Hir.Float ((Hir.F32 | Hir.F64) as float_kind), Hir.Int integer_kind ->
+            Float_parse.float_to_int_bits value
+              (if float_kind = Hir.F32 then 32 else 64)
+              (int_bits integer_kind)
+              (not (is_unsigned target_element))
+            |> mask_value target_element
+        | _ -> value
+      in
+      if
+        (integer source_element && floating target_element)
+        || (floating source_element && integer target_element)
+        || floating source_element && floating target_element
+           && source_element <> target_element
+      then Ok (Hir.Vec (source_lanes, target_element), List.map convert values)
+      else error call_span "invalid constant cvt conversion"
   | Ast.Call (Ast.Ident (name, _), [ value ], span)
     when List.mem name [ "popcount"; "clz"; "ctz" ] ->
       let* ty, values = evaluate expected value in
@@ -1695,7 +1851,7 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
       let* at, avalues = evaluate expected a in
       let* n, element =
         match at with
-        | Hir.Vec (n, ((Hir.Int _ | Hir.Bool) as e)) -> Ok (n, e)
+        | Hir.Vec (n, ((Hir.Int _ | Hir.Bool | Hir.Float _) as e)) -> Ok (n, e)
         | _ -> error span "permute value must be a vector"
       in
       let* idx_ty, idx_values = evaluate None idx in
@@ -1727,7 +1883,7 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
       in
       let* n, element =
         match at with
-        | Hir.Vec (n, ((Hir.Int _ | Hir.Bool) as e)) -> Ok (n, e)
+        | Hir.Vec (n, ((Hir.Int _ | Hir.Bool | Hir.Float _) as e)) -> Ok (n, e)
         | _ ->
             error (Ast.expr_span a)
               (Printf.sprintf
@@ -1810,7 +1966,8 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
           List.rev rev_out
       in
       match (vals_ty, masks_ty) with
-      | Hir.Vec (n, ((Hir.Int _ | Hir.Bool) as elem)), Hir.Vec (mcount, Hir.Bool)
+      | ( Hir.Vec (n, ((Hir.Int _ | Hir.Bool | Hir.Float _) as elem)),
+          Hir.Vec (mcount, Hir.Bool) )
         when n = mcount ->
           Ok (Hir.Vec (n, elem), out ())
       | Hir.Vec _, Hir.Vec (_, Hir.Bool) ->
@@ -1840,7 +1997,8 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
       in
       let* element =
         match yes_ty with
-        | Hir.Vec (n, ((Hir.Int _ | Hir.Bool) as e)) when n = lanes -> Ok e
+        | Hir.Vec (n, ((Hir.Int _ | Hir.Bool | Hir.Float _) as e)) when n = lanes ->
+            Ok e
         | _ -> error span "select values must be vectors with the mask lane count"
       in
       Ok

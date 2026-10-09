@@ -16238,4 +16238,202 @@ let () =
     "generic function `f` has no single address"
     "fn f[T](value T) T { return value }\nvar P addr = &f\n"
 
+let () =
+  let reduce_sum = "fn bad(v vec[4,f32]) f32 { return reduce_sum(v) }\n" in
+  semantic_pin "float-vector-reduce-sum" reduce_sum 1
+    (String.length "fn bad(v vec[4,f32]) f32 { return reduce_sum(" + 1)
+    1 "`reduce_sum` is not defined for floating-point vectors"
+    (Some "the order is not defined; write the additions explicitly");
+  semantic_accept "float-vector-reduce-sum-integer-twin"
+    "fn good(v vec[4,i32]) i32 { return reduce_sum(v) }\n";
+  let reduce_min = "fn bad(v vec[4,f32]) f32 { return reduce_min(v) }\n" in
+  semantic_pin "float-vector-reduce-min" reduce_min 1
+    (String.length "fn bad(v vec[4,f32]) f32 { return reduce_min(" + 1)
+    1 "`reduce_min` is not defined for floating-point vectors" None;
+  semantic_accept "float-vector-reduce-min-integer-twin"
+    "fn good(v vec[4,i32]) i32 { return reduce_min(v) }\n";
+  let rotl = "fn bad(v vec[4,f32]) vec[4,f32] { return rotl(v, 1) }\n" in
+  semantic_pin "float-vector-rotl" rotl 1
+    (String.length "fn bad(v vec[4,f32]) vec[4,f32] { return rotl(" + 1)
+    1 "`rotl` value must be an integer or integer vector, got `vec[4, f32]`" None;
+  semantic_accept "float-vector-rotl-integer-twin"
+    "fn good(v vec[4,u32]) vec[4,u32] { return rotl(v, 1) }\n";
+  let popcount = "fn bad(v vec[4,f32]) vec[4,f32] { return popcount(v) }\n" in
+  semantic_pin "float-vector-popcount" popcount 1
+    (String.length "fn bad(v vec[4,f32]) vec[4,f32] { return " + 1)
+    (String.length "popcount(v)")
+    "builtin argument must be an integer or an integer vector" None;
+  semantic_accept "float-vector-popcount-integer-twin"
+    "fn good(v vec[4,u32]) vec[4,u32] { return popcount(v) }\n";
+  let add_sat =
+    "fn bad(a vec[4,f32], b vec[4,f32]) vec[4,f32] { return add_sat(a,b) }\n"
+  in
+  semantic_pin "float-vector-add-sat" add_sat 1
+    (String.length "fn bad(a vec[4,f32], b vec[4,f32]) vec[4,f32] { return add_sat(" + 1)
+    1 "`add_sat` needs an integer or integer vector, got `vec[4, f32]`" None;
+  semantic_accept "float-vector-add-sat-integer-twin"
+    "fn good(a vec[4,u32], b vec[4,u32]) vec[4,u32] { return add_sat(a,b) }\n";
+  let remainder = "fn bad(a vec[4,f32], b vec[4,f32]) vec[4,f32] { return a % b }\n" in
+  semantic_pin "float-vector-remainder" remainder 1
+    (String.length "fn bad(a vec[4,f32], b vec[4,f32]) vec[4,f32] { return a % " + 1)
+    1 "remainder `%` is not defined for floating-point vectors" None;
+  semantic_accept "float-vector-remainder-integer-twin"
+    "fn good(a vec[4,i32], b vec[4,i32]) vec[4,i32] { return a % b }\n";
+  let bitwise = "fn bad(a vec[4,f32], b vec[4,f32]) vec[4,f32] { return a & b }\n" in
+  semantic_pin "float-vector-bitwise" bitwise 1
+    (String.length "fn bad(a vec[4,f32], b vec[4,f32]) vec[4,f32] { return " + 1)
+    1 "operator `&` needs integer or integer vector operands, got `vec[4, f32]`" None;
+  semantic_accept "float-vector-bitwise-integer-twin"
+    "fn good(a vec[4,u32], b vec[4,u32]) vec[4,u32] { return a & b }\n";
+  let shift = "fn bad(a vec[4,f32]) vec[4,f32] { return a << 1 }\n" in
+  semantic_pin "float-vector-shift" shift 1
+    (String.length "fn bad(a vec[4,f32]) vec[4,f32] { return " + 1)
+    1
+    "left operand of `<<` has type `vec[4, f32]`, expected an integer or integer vector"
+    None;
+  semantic_accept "float-vector-shift-integer-twin"
+    "fn good(a vec[4,u32]) vec[4,u32] { return a << 1 }\n";
+  let widening = "fn bad(a vec[4,f32]) vec[4,f64] { return a }\n" in
+  semantic_pin "float-vector-no-widening" widening 1
+    (String.length "fn bad(a vec[4,f32]) vec[4,f64] { return " + 1)
+    1 "return value is `vec[4, f32]`, expected `vec[4, f64]`" None;
+  semantic_accept "float-vector-explicit-widening-twin"
+    "fn good(a vec[4,f32]) vec[4,f64] { return cvt[vec[4,f64]](a) }\n";
+  let cvt_lanes = "fn bad(a vec[4,f32]) vec[8,f64] { return cvt[vec[8,f64]](a) }\n" in
+  semantic_pin "float-vector-cvt-lane-count" cvt_lanes 1
+    (String.length "fn bad(a vec[4,f32]) vec[8,f64] { return " + 1)
+    (String.length "cvt[vec[8,f64]](a)")
+    "`cvt` needs an integer or floating-point source and target, got `vec[4, f32]` to \
+     `vec[8, f64]`"
+    None;
+  semantic_accept "float-vector-cvt-lane-count-twin"
+    "fn good(a vec[4,f32]) vec[4,f64] { return cvt[vec[4,f64]](a) }\n";
+  semantic_error "extern-c-float-vector-parameter"
+    "cannot use `vec[4, f32]` by value; use a pointer"
+    "extern \"C\" { fn take(value vec[4,f32]) void }\n";
+  semantic_accept "float-vector-lane-and-constant-twins"
+    "const V vec[4,f32] = {1.0, 2.0, 3.0, 4.0}\n\
+     fn f(x vec[4,f32], i usize) f32 { y vec[4,f32] = x + splat(x[i])\n\
+     return y[i] }\n"
+
+let () =
+  let reductions = [ "reduce_max"; "reduce_and"; "reduce_or"; "reduce_xor" ] in
+  List.iter
+    (fun name ->
+      let source = Printf.sprintf "fn bad(v vec[4,f32]) f32 { return %s(v) }\n" name in
+      semantic_pin ("float-vector-" ^ name) source 1
+        (String.length ("fn bad(v vec[4,f32]) f32 { return " ^ name ^ "(") + 1)
+        1
+        (Printf.sprintf "`%s` is not defined for floating-point vectors" name)
+        None;
+      semantic_accept
+        ("float-vector-" ^ name ^ "-integer-twin")
+        (Printf.sprintf "fn good(v vec[4,i32]) i32 { return %s(v) }\n" name))
+    reductions;
+  let reduce_sum_f64 = "fn bad(v vec[2,f64]) f64 { return reduce_sum(v) }\n" in
+  semantic_pin "float-vector-reduce-sum-f64-help" reduce_sum_f64 1
+    (String.length "fn bad(v vec[2,f64]) f64 { return reduce_sum(" + 1)
+    1 "`reduce_sum` is not defined for floating-point vectors"
+    (Some "the order is not defined; write the additions explicitly");
+  List.iter
+    (fun (name, operation) ->
+      let source =
+        Printf.sprintf "fn bad(v vec[4,f32]) vec[4,f32] { return %s(v) }\n" name
+      in
+      semantic_pin ("float-vector-" ^ name) source 1
+        (String.length "fn bad(v vec[4,f32]) vec[4,f32] { return " + 1)
+        (String.length (name ^ "(v)"))
+        operation None;
+      semantic_accept
+        ("float-vector-" ^ name ^ "-integer-twin")
+        (Printf.sprintf "fn good(v vec[4,u32]) vec[4,u32] { return %s(v) }\n" name))
+    [
+      ("clz", "builtin argument must be an integer or an integer vector");
+      ("ctz", "builtin argument must be an integer or an integer vector");
+    ];
+  List.iter
+    (fun name ->
+      let source =
+        Printf.sprintf
+          "fn bad(a vec[4,f32], b vec[4,f32]) vec[4,f32] { return %s(a,b) }\n" name
+      in
+      semantic_pin ("float-vector-" ^ name) source 1
+        (String.length
+           (Printf.sprintf "fn bad(a vec[4,f32], b vec[4,f32]) vec[4,f32] { return %s("
+              name)
+        + 1)
+        1
+        (Printf.sprintf "`%s` needs an integer or integer vector, got `vec[4, f32]`"
+           name)
+        None;
+      semantic_accept
+        ("float-vector-" ^ name ^ "-integer-twin")
+        (Printf.sprintf
+           "fn good(a vec[4,u32], b vec[4,u32]) vec[4,u32] { return %s(a,b) }\n" name))
+    [ "sub_sat"; "mul_hi" ];
+  List.iter
+    (fun (operator, name) ->
+      let source =
+        Printf.sprintf
+          "fn bad(a vec[4,f32], b vec[4,f32]) vec[4,f32] { return a %s b }\n" operator
+      in
+      semantic_pin
+        ("float-vector-bitwise-" ^ name)
+        source 1
+        (String.length "fn bad(a vec[4,f32], b vec[4,f32]) vec[4,f32] { return " + 1)
+        1
+        (Printf.sprintf
+           "operator `%s` needs integer or integer vector operands, got `vec[4, f32]`"
+           operator)
+        None;
+      semantic_accept
+        ("float-vector-bitwise-" ^ name ^ "-integer-twin")
+        (Printf.sprintf
+           "fn good(a vec[4,u32], b vec[4,u32]) vec[4,u32] { return a %s b }\n" operator))
+    [ ("|", "or"); ("^", "xor") ];
+  List.iter
+    (fun (operator, name) ->
+      let source =
+        Printf.sprintf "fn bad(a vec[4,f32]) vec[4,f32] { return a %s 1 }\n" operator
+      in
+      semantic_pin
+        ("float-vector-shift-" ^ name)
+        source 1
+        (String.length "fn bad(a vec[4,f32]) vec[4,f32] { return " + 1)
+        1
+        (Printf.sprintf
+           "left operand of `%s` has type `vec[4, f32]`, expected an integer or \
+            integer vector"
+           operator)
+        None;
+      semantic_accept
+        ("float-vector-shift-" ^ name ^ "-integer-twin")
+        (Printf.sprintf "fn good(a vec[4,u32]) vec[4,u32] { return a %s 1 }\n" operator))
+    [ (">>", "right"); ("<<", "left") ];
+  let bit_not = "fn bad(v vec[4,f32]) vec[4,f32] { return ~v }\n" in
+  semantic_pin "float-vector-bit-not" bit_not 1
+    (String.length "fn bad(v vec[4,f32]) vec[4,f32] { return " + 2)
+    1 "unary operator `~` needs an integer or integer vector, got `vec[4, f32]`" None;
+  semantic_accept "float-vector-bit-not-integer-twin"
+    "fn good(v i32) i32 { return ~v }\n";
+  let compound_source operator =
+    Printf.sprintf "fn bad(a vec[4,f32], b vec[4,f32]) void { a %s b }\n" operator
+  in
+  List.iter
+    (fun (operator, name) ->
+      let source = compound_source operator in
+      let prefix = "fn bad(a vec[4,f32], b vec[4,f32]) void { a " in
+      semantic_pin
+        ("float-vector-compound-" ^ name)
+        source 1
+        (String.length prefix + 1)
+        (String.length operator)
+        (Printf.sprintf "compound assignment `%s` is not defined for `vec[4, f32]`"
+           operator)
+        None;
+      semantic_accept
+        ("float-vector-compound-" ^ name ^ "-integer-twin")
+        (Printf.sprintf "fn good(a vec[4,u32], b vec[4,u32]) void { a %s b }\n" operator))
+    [ ("%=", "remainder"); ("&=", "and"); ("|=", "or"); ("^=", "xor") ]
+
 let () = Printf.printf "all regression checks: %d passed\n" !checks_run
