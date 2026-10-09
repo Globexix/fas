@@ -20,6 +20,10 @@ let truthiness_help expression ty =
       Some (Printf.sprintf "Fas has no implicit truth values; write `%s != 0`" name)
   | Ast.Ident (name, _), Hir.Addr ->
       Some (Printf.sprintf "Fas has no implicit truth values; write `%s != null`" name)
+  | expression, Hir.Float _ ->
+      Some
+        (Printf.sprintf "Fas has no implicit truth values; write `%s != 0.0`"
+           (Ast.expr_name expression))
   | (Ast.Call _ | Ast.Binary _), Hir.Int _ ->
       Some
         (Printf.sprintf "Fas has no implicit truth values; write `%s != 0`"
@@ -92,6 +96,7 @@ let logical_not_error expression ty =
     match (expression, ty) with
     | Ast.Ident (name, _), Hir.Int _ -> Some (Printf.sprintf "write `%s == 0`" name)
     | Ast.Ident (name, _), Hir.Addr -> Some (Printf.sprintf "write `%s == null`" name)
+    | _, Hir.Float _ -> truthiness_help expression ty
     | _ -> None
   in
   Diag.error ?help (Ast.expr_span expression)

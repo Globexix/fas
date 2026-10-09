@@ -4211,6 +4211,34 @@ let () =
     "fn bad(p addr, n f32) f32 { return p[f32, n] }\n";
   semantic_message "float-condition" "condition of `if` is `f32`, not `bool`"
     "fn bad(x f32) i32 { if x { return 1 }\n return 0 }\n";
+  semantic_pin "float-condition-f32-help"
+    "fn bad(x f32) i32 { if x { return 1 }\n return 0 }\n" 1 24 1
+    "condition of `if` is `f32`, not `bool`"
+    (Some "Fas has no implicit truth values; write `x != 0.0`");
+  semantic_pin "float-condition-f64-help" "fn bad(x f64) void { while x { break } }\n" 1
+    28 1 "condition of `while` is `f64`, not `bool`"
+    (Some "Fas has no implicit truth values; write `x != 0.0`");
+  semantic_pin "float-logical-and-help" "fn bad(x f32) bool { return x && true }\n" 1 29
+    1 "left operand of `&&` is `f32`, not `bool`"
+    (Some "Fas has no implicit truth values; write `x != 0.0`");
+  semantic_pin "float-logical-or-help" "fn bad(x f64) bool { return true || x }\n" 1 37
+    1 "right operand of `||` is `f64`, not `bool`"
+    (Some "Fas has no implicit truth values; write `x != 0.0`");
+  semantic_pin "float-logical-not-help" "fn bad(x f32) bool { return !x }\n" 1 30 1
+    "operator `!` needs `bool` or a bool vector, got `f32`"
+    (Some "Fas has no implicit truth values; write `x != 0.0`");
+  semantic_accept "float-condition-help-f32-twin"
+    "fn good(x f32) i32 { if x != 0.0 { return 1 }\n\
+    \ while x != 0.0 { break }\n\
+    \ if (x != 0.0) && (x != 0.0) { return 2 }\n\
+    \ if !(x == 0.0) { return 3 }\n\
+    \ return 0 }\n";
+  semantic_accept "float-condition-help-f64-twin"
+    "fn good(x f64) i32 { if x != 0.0 { return 1 }\n\
+    \ while x != 0.0 { break }\n\
+    \ if (x != 0.0) || (x != 0.0) { return 2 }\n\
+    \ if !(x == 0.0) { return 3 }\n\
+    \ return 0 }\n";
   semantic_pin "float-integer-literal-help" "fn bad(x f32) f32 { return x * 2 }\n" 1 32
     1 "integer literals are not floating point literals" (Some "write `2.0`");
   semantic_pin "float-negative-integer-literal-help"
