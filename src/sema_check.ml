@@ -3062,6 +3062,52 @@ and check_call c expected fn args s =
     when Option.is_none (lookup_local name c)
          && Option.is_some (List.assoc_opt name c.c_unsupported) ->
       Option.get (c_unsupported c span name)
+  | Ast.Generic_args (Ast.Ident ("cvt", _), generic_args, application_span) ->
+      let* target =
+        match generic_args with
+        | [ Ast.Type_arg source ] -> source_ty_in_context c application_span source
+        | [ Ast.Name_arg (name, name_span) ] ->
+            source_ty_in_context c name_span (Ast.Named_type (name, name_span))
+        | _ -> error application_span "cvt needs one target type: cvt[T](value)"
+      in
+      if List.length args <> 1 then error s "builtin `cvt` expects one argument"
+      else
+        let value = List.hd args in
+        let* checked = check_expr c None value in
+        let source = Hir.expr_ty checked in
+        let integer = function Hir.Int _ -> true | _ -> false in
+        let floating = function Hir.Float _ -> true | _ -> false in
+        if
+          (integer source && floating target)
+          || (floating source && integer target)
+          || (floating source && floating target && source <> target)
+        then Ok (Hir.Call (Hir.Builtin (Hir.Cvt target), [ checked ], target, s))
+        else if integer source && integer target then
+          let help =
+            "integer width changes use `zext`, `sext`, or `trunc`; same-width values \
+             already have their representation"
+          in
+          Error
+            [
+              Diag.error ~help s
+                (Printf.sprintf "`cvt` does not convert `%s` to `%s`"
+                   (Sema_types.diagnostic_ty_name source)
+                   (Sema_types.diagnostic_ty_name target));
+            ]
+        else if Hir.ty_equal source target then
+          Error
+            [
+              Diag.error ~help:"remove the redundant conversion" s
+                (Printf.sprintf "`cvt` source and target are both `%s`"
+                   (Sema_types.diagnostic_ty_name source));
+            ]
+        else
+          error s
+            (Printf.sprintf
+               "`cvt` needs an integer or floating-point source and target, got `%s` \
+                to `%s`"
+               (Sema_types.diagnostic_ty_name source)
+               (Sema_types.diagnostic_ty_name target))
   | Ast.Ident (name, _) when Names.reserved_float_name name ->
       error s (Names.reserved_float_message name)
   | Ast.Generic_args (Ast.Ident (name, _), _, _) when Names.reserved_float_name name ->

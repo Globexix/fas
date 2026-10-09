@@ -430,9 +430,15 @@ let validate_function struct_names globals functions (func : func) =
       | _ -> fail "block %d has invalid `%s` types" block_id opcode
     in
     match opcode with
+    | "sitofp" | "uitofp" ->
+        if is_integer source && (destination = F32 || destination = F64) then Ok ()
+        else fail "block %d has invalid `%s` types" block_id opcode
     | "fpext" ->
         if source = F32 && destination = F64 then Ok ()
         else fail "block %d has invalid `fpext` types" block_id
+    | "fptrunc" ->
+        if source = F64 && destination = F32 then Ok ()
+        else fail "block %d has invalid `fptrunc` types" block_id
     | "zext" | "sext" -> integer_cast ( < )
     | "trunc" -> integer_cast ( > )
     | "ptrtoint" ->
@@ -460,7 +466,22 @@ let validate_function struct_names globals functions (func : func) =
             then Ok ()
             else fail "block %d has unequal-width `bitcast` types" block_id
         | _ ->
-            if is_pointer source && is_pointer destination then Ok ()
+            let scalar_int_float = function
+              | I8 -> Some 8
+              | I16 -> Some 16
+              | I32 -> Some 32
+              | I64 -> Some 64
+              | I128 -> Some 128
+              | _ -> None
+            in
+            let float_int_pair =
+              match (source, destination) with
+              | F32, int_ty | int_ty, F32 -> scalar_int_float int_ty = Some 32
+              | F64, int_ty | int_ty, F64 -> scalar_int_float int_ty = Some 64
+              | _ -> false
+            in
+            if float_int_pair || (is_pointer source && is_pointer destination) then
+              Ok ()
             else fail "block %d has invalid `bitcast` types" block_id)
     | _ -> fail "block %d has unknown cast opcode `%s`" block_id opcode
   in

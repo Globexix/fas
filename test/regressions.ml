@@ -4125,6 +4125,59 @@ let () =
     ];
   if contains float_arithmetic_llvm "contract" || contains float_arithmetic_llvm "fast"
   then failwith "float-arithmetic-lowering: emitted a fast-math flag";
+  semantic_accept "float-conversion-types"
+    "fn convert(value i64, whole u64, single f32, wide f64) f64 {\n\
+     as_single f32 = cvt[f32](value)\n\
+     as_wide f64 = cvt[f64](whole)\n\
+     widened f64 = cvt[f64](single)\n\
+     narrowed f32 = cvt[f32](wide)\n\
+     signed i32 = cvt[i32](wide)\n\
+     unsigned_result u16 = cvt[u16](single)\n\
+     return widened + narrowed + as_single + as_wide\n\
+     }\n\
+     fn to_bits32(value f32) u32 { return bitcast[u32](value) }\n\
+     fn from_bits64(value i64) f64 { return bitcast[f64](value) }\n";
+  semantic_pin "float-cvt-integer-to-integer"
+    "fn bad(x u32) i64 { return cvt[i64](x) }\n" 1 28 11
+    "`cvt` does not convert `u32` to `i64`"
+    (Some
+       "integer width changes use `zext`, `sext`, or `trunc`; same-width values \
+        already have their representation");
+  semantic_pin "float-cvt-same-type" "fn bad(x f32) f32 { return cvt[f32](x) }\n" 1 28
+    11 "`cvt` source and target are both `f32`" (Some "remove the redundant conversion");
+  semantic_message "float-cvt-bool-source"
+    "`cvt` needs an integer or floating-point source and target, got `bool` to `f32`"
+    "fn bad(x bool) f32 { return cvt[f32](x) }\n";
+  semantic_message "float-cvt-bool-target"
+    "`cvt` needs an integer or floating-point source and target, got `f32` to `bool`"
+    "fn bad(x f32) bool { return cvt[bool](x) }\n";
+  semantic_message "float-cvt-missing-type" "cvt needs one target type: cvt[T](value)"
+    "fn bad(x f32) f32 { return cvt[f32, f64](x) }\n";
+  let float_conversion_llvm =
+    llvm_of
+      "fn signed(value i64) f32 { return cvt[f32](value) }\n\
+       fn unsigned(value u64) f32 { return cvt[f32](value) }\n\
+       fn widen(value f32) f64 { return cvt[f64](value) }\n\
+       fn narrow(value f64) f32 { return cvt[f32](value) }\n\
+       fn to_signed(value f32) i64 { return cvt[i64](value) }\n\
+       fn to_unsigned(value f64) u32 { return cvt[u32](value) }\n\
+       fn bits32(value f32) u32 { return bitcast[u32](value) }\n\
+       fn bits64(value f64) i64 { return bitcast[i64](value) }\n"
+  in
+  List.iter
+    (fun instruction ->
+      if not (contains float_conversion_llvm instruction) then
+        failwith ("float-conversion-lowering: missing " ^ instruction))
+    [
+      "sitofp i64";
+      "uitofp i64";
+      "fpext float";
+      "fptrunc double";
+      "@llvm.fptosi.sat.i64.f32";
+      "@llvm.fptoui.sat.i32.f64";
+      "bitcast float";
+      "bitcast double";
+    ];
   semantic_constant "FloatSize32" 4L "const FloatSize32 usize = sizeof[f32]\n";
   semantic_constant "FloatAlign32" 4L "const FloatAlign32 usize = alignof[f32]\n";
   semantic_constant "FloatSize64" 8L "const FloatSize64 usize = sizeof[f64]\n";

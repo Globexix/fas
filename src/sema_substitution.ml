@@ -362,6 +362,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         Result_list.iter (validate_expression_names value_names type_names) arguments
     | Ast.Generic_args (Ast.Ident (name, _), arguments, span)
       when name = "volatile_load" || name = "volatile_store" || name = "call_addr"
+           || name = "cvt"
            || List.mem name simd_memory_names ->
         Result_list.iter
           (validate_generic_argument_names value_names type_names span)
@@ -1808,6 +1809,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         Ok (Ast.Call (callee, arguments, span))
     | Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span)
       when name = "volatile_load" || name = "volatile_store" || name = "call_addr"
+           || name = "cvt"
            || List.mem name simd_memory_names ->
         let resolve_argument argument =
           match

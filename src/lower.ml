@@ -830,6 +830,46 @@ and lower_builtin s b args t span =
       let id = fresh s in
       emit s (Ir.Cast (id, "inttoptr", Ir.value_ty x, x, Ir.Pointer Ir.I8));
       Ok (Ir.Local (id, Ir.Pointer Ir.I8))
+  | Cvt target_ty, [ x ] ->
+      let source_ty = Hir.expr_ty (List.hd args) in
+      let opcode =
+        match (source_ty, target_ty) with
+        | Hir.Int (Hir.I8 | I16 | I32 | I64 | Isize), Hir.Float _ -> "sitofp"
+        | Hir.Int _, Hir.Float _ -> "uitofp"
+        | Hir.Float Hir.F32, Hir.Float Hir.F64 -> "fpext"
+        | Hir.Float Hir.F64, Hir.Float Hir.F32 -> "fptrunc"
+        | Hir.Float _, Hir.Int _ -> ""
+        | _ -> ""
+      in
+      if opcode <> "" then (
+        let id = fresh s in
+        emit s (Ir.Cast (id, opcode, Ir.value_ty x, x, rt));
+        Ok (Ir.Local (id, rt)))
+      else
+        let destination = match target_ty with Hir.Int kind -> kind | _ -> Hir.I32 in
+        let width =
+          match destination with
+          | Hir.U8 | I8 -> 8
+          | U16 | I16 -> 16
+          | U32 | I32 -> 32
+          | U64 | I64 -> 64
+          | Usize | Isize -> Target_layout.current.pointer_size * 8
+        in
+        let conversion =
+          match destination with
+          | Hir.I8 | I16 | I32 | I64 | Isize -> "fptosi"
+          | _ -> "fptoui"
+        in
+        let format = match source_ty with Hir.Float Hir.F32 -> "f32" | _ -> "f64" in
+        let id = fresh s in
+        emit s
+          (Ir.Call
+             ( Some id,
+               Ir.No_extension,
+               rt,
+               Printf.sprintf "llvm.%s.sat.i%d.%s" conversion width format,
+               [ (Ir.value_ty x, Ir.No_extension, x) ] ));
+        Ok (Ir.Local (id, rt))
   | (Handle_addr | Handle_from_addr _), [ x ] -> Ok x
   | (Rotl | Rotr), [ x; n ] ->
       let* n = shift_amount s span rt n in
@@ -898,8 +938,8 @@ and lower_builtin s b args t span =
             | ( ( Rotl | Rotr | Popcount | Ctz | Clz | Mul_hi | Any | All | Select
                 | Shuffle | Permute | Reduce_sum | Reduce_min | Reduce_max | Reduce_and
                 | Reduce_or | Reduce_xor | Compress | Expand | Addr_bits
-                | Addr_from_bits | Handle_addr | Handle_from_addr _ | Volatile_load _
-                | Simd_load _ ),
+                | Addr_from_bits | Cvt _ | Handle_addr | Handle_from_addr _
+                | Volatile_load _ | Simd_load _ ),
                 _ ) ->
                 error span "internal error: invalid saturating builtin")
       in

@@ -776,6 +776,11 @@ let cast_error ?expression kind source destination span =
           ->
             Printf.sprintf "the source is %d bits and the destination is %d bits"
               source_bits destination_bits
+        | _
+          when (match source with Hir.Float _ -> true | _ -> false)
+               || match destination with Hir.Float _ -> true | _ -> false ->
+            "both types must be bool, integer, floating-point, or integer-vector types \
+             of equal width"
         | _ ->
             "both types must be bool, integer, or integer-vector types of equal width")
     | (Ast.Zext | Ast.Sext), _, _
@@ -829,7 +834,7 @@ let cast_target_error kind target =
     match kind with
     | Ast.Zext | Ast.Sext -> "an integer or integer-vector type"
     | Ast.Trunc -> "an integer or integer-vector type"
-    | Ast.Bitcast -> "a bool, integer, or integer-vector type"
+    | Ast.Bitcast -> "a bool, integer, floating-point, or integer-vector type"
     | Ast.Float_widen -> "`f64`"
   in
   Printf.sprintf "illegal `%s` target `%s`: expected %s" (cast_name kind)

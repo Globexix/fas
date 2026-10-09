@@ -72,6 +72,7 @@ type builtin =
   | Expand
   | Addr_bits
   | Addr_from_bits
+  | Cvt of ty
   | Handle_addr
   | Handle_from_addr of string
   | Volatile_load of ty

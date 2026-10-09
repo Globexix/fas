@@ -61,6 +61,10 @@ let cast_legal kind from target =
       || lane_conversion ( > ) from target
   | Ast.Bitcast -> (
       match (from, target) with
+      | Hir.Float Hir.F32, Hir.Int kind | Hir.Int kind, Hir.Float Hir.F32 ->
+          int_bits kind = 32
+      | Hir.Float Hir.F64, Hir.Int kind | Hir.Int kind, Hir.Float Hir.F64 ->
+          int_bits kind = 64
       | _ -> (
           match (integer_value_bit_width from, integer_value_bit_width target) with
           | Some source_width, Some destination_width ->

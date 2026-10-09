@@ -1,0 +1,122 @@
+const COUNT usize = 30
+
+extern "C" {
+  fn fas_i8_float(input addr, output addr) void {
+    for i usize = 0; i < COUNT; i += 1 {
+      value i8 = input[i8, i]
+      output[u64, i * 2] = zext[u64](bitcast[u32](cvt[f32](value)))
+      output[u64, i * 2 + 1] = bitcast[u64](cvt[f64](value))
+    }
+  }
+  fn fas_u8_float(input addr, output addr) void {
+    for i usize = 0; i < COUNT; i += 1 {
+      value u8 = input[u8, i]
+      output[u64, i * 2] = zext[u64](bitcast[u32](cvt[f32](value)))
+      output[u64, i * 2 + 1] = bitcast[u64](cvt[f64](value))
+    }
+  }
+  fn fas_i16_float(input addr, output addr) void {
+    for i usize = 0; i < COUNT; i += 1 {
+      value i16 = input[i16, i]
+      output[u64, i * 2] = zext[u64](bitcast[u32](cvt[f32](value)))
+      output[u64, i * 2 + 1] = bitcast[u64](cvt[f64](value))
+    }
+  }
+  fn fas_u16_float(input addr, output addr) void {
+    for i usize = 0; i < COUNT; i += 1 {
+      value u16 = input[u16, i]
+      output[u64, i * 2] = zext[u64](bitcast[u32](cvt[f32](value)))
+      output[u64, i * 2 + 1] = bitcast[u64](cvt[f64](value))
+    }
+  }
+  fn fas_i32_float(input addr, output addr) void {
+    for i usize = 0; i < COUNT; i += 1 {
+      value i32 = input[i32, i]
+      output[u64, i * 2] = zext[u64](bitcast[u32](cvt[f32](value)))
+      output[u64, i * 2 + 1] = bitcast[u64](cvt[f64](value))
+    }
+  }
+  fn fas_u32_float(input addr, output addr) void {
+    for i usize = 0; i < COUNT; i += 1 {
+      value u32 = input[u32, i]
+      output[u64, i * 2] = zext[u64](bitcast[u32](cvt[f32](value)))
+      output[u64, i * 2 + 1] = bitcast[u64](cvt[f64](value))
+    }
+  }
+  fn fas_i64_float(input addr, output addr) void {
+    for i usize = 0; i < COUNT; i += 1 {
+      value i64 = input[i64, i]
+      output[u64, i * 2] = zext[u64](bitcast[u32](cvt[f32](value)))
+      output[u64, i * 2 + 1] = bitcast[u64](cvt[f64](value))
+    }
+  }
+  fn fas_u64_float(input addr, output addr) void {
+    for i usize = 0; i < COUNT; i += 1 {
+      value u64 = input[u64, i]
+      output[u64, i * 2] = zext[u64](bitcast[u32](cvt[f32](value)))
+      output[u64, i * 2 + 1] = bitcast[u64](cvt[f64](value))
+    }
+  }
+  fn fas_isize_float(input addr, output addr) void {
+    for i usize = 0; i < COUNT; i += 1 {
+      value isize = input[isize, i]
+      output[u64, i * 2] = zext[u64](bitcast[u32](cvt[f32](value)))
+      output[u64, i * 2 + 1] = bitcast[u64](cvt[f64](value))
+    }
+  }
+  fn fas_usize_float(input addr, output addr) void {
+    for i usize = 0; i < COUNT; i += 1 {
+      value usize = input[usize, i]
+      output[u64, i * 2] = zext[u64](bitcast[u32](cvt[f32](value)))
+      output[u64, i * 2 + 1] = bitcast[u64](cvt[f64](value))
+    }
+  }
+  fn fas_f32_int(input addr, output addr) void {
+    for i usize = 0; i < COUNT; i += 1 {
+      value f32 = input[f32, i]
+      output[u64, i] = zext[u64](cvt[u8](value))
+      output[u64, COUNT + i] = zext[u64](cvt[u16](value))
+      output[u64, COUNT * 2 + i] = zext[u64](cvt[u32](value))
+      output[u64, COUNT * 3 + i] = cvt[u64](value)
+      output[u64, COUNT * 4 + i] = bitcast[u64](cvt[usize](value))
+      output[u64, COUNT * 5 + i] = zext[u64](cvt[i8](value))
+      output[u64, COUNT * 6 + i] = zext[u64](cvt[i16](value))
+      output[u64, COUNT * 7 + i] = zext[u64](cvt[i32](value))
+      output[u64, COUNT * 8 + i] = bitcast[u64](cvt[i64](value))
+      output[u64, COUNT * 9 + i] = bitcast[u64](cvt[isize](value))
+    }
+  }
+  fn fas_f64_int(input addr, output addr) void {
+    for i usize = 0; i < COUNT; i += 1 {
+      value f64 = input[f64, i]
+      output[u64, i] = zext[u64](cvt[u8](value))
+      output[u64, COUNT + i] = zext[u64](cvt[u16](value))
+      output[u64, COUNT * 2 + i] = zext[u64](cvt[u32](value))
+      output[u64, COUNT * 3 + i] = cvt[u64](value)
+      output[u64, COUNT * 4 + i] = bitcast[u64](cvt[usize](value))
+      output[u64, COUNT * 5 + i] = zext[u64](cvt[i8](value))
+      output[u64, COUNT * 6 + i] = zext[u64](cvt[i16](value))
+      output[u64, COUNT * 7 + i] = zext[u64](cvt[i32](value))
+      output[u64, COUNT * 8 + i] = bitcast[u64](cvt[i64](value))
+      output[u64, COUNT * 9 + i] = bitcast[u64](cvt[isize](value))
+    }
+  }
+  fn fas_float_float(input32 addr, input64 addr, output addr) void {
+    for i usize = 0; i < COUNT; i += 1 {
+      value32 f32 = input32[f32, i]
+      value64 f64 = input64[f64, i]
+      output[u64, i] = bitcast[u64](cvt[f64](value32))
+      output[u64, COUNT + i] = zext[u64](bitcast[u32](cvt[f32](value64)))
+    }
+  }
+  fn fas_float_bits(input32 addr, input64 addr, output addr) void {
+    for i usize = 0; i < COUNT; i += 1 {
+      value32 f32 = input32[f32, i]
+      value64 f64 = input64[f64, i]
+      bits32 u32 = bitcast[u32](value32)
+      bits64 u64 = bitcast[u64](value64)
+      output[u64, i] = zext[u64](bitcast[u32](bitcast[f32](bits32)))
+      output[u64, COUNT + i] = bitcast[u64](bitcast[f64](bits64))
+    }
+  }
+}
