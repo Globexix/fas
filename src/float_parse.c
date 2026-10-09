@@ -51,6 +51,69 @@ CAMLprim value fas_f32_binary_bits(value operation, value left_bits, value right
   return caml_copy_int64((int64_t)result_bits);
 }
 
+CAMLprim value fas_float_unary_bits(value operation, value is_f32, value input_bits) {
+  int op = Int_val(operation);
+  if (Bool_val(is_f32)) {
+    uint32_t bits = (uint32_t)Int64_val(input_bits);
+    if (op == 4) return caml_copy_int64((int64_t)(bits & 0x7fffffffU));
+    float input;
+    memcpy(&input, &bits, sizeof(input));
+    float result;
+    switch (op) {
+    case 0: result = sqrtf(input); break;
+    case 1: result = floorf(input); break;
+    case 2: result = ceilf(input); break;
+    default: result = roundevenf(input); break;
+    }
+    memcpy(&bits, &result, sizeof(bits));
+    return caml_copy_int64((int64_t)bits);
+  }
+  uint64_t bits = (uint64_t)Int64_val(input_bits);
+  if (op == 4) return caml_copy_int64((int64_t)(bits & 0x7fffffffffffffffULL));
+  double input;
+  memcpy(&input, &bits, sizeof(input));
+  double result;
+  switch (op) {
+  case 0: result = sqrt(input); break;
+  case 1: result = floor(input); break;
+  case 2: result = ceil(input); break;
+  default: result = roundeven(input); break;
+  }
+  memcpy(&bits, &result, sizeof(bits));
+  return caml_copy_int64((int64_t)bits);
+}
+
+CAMLprim value fas_float_fma_bits(value is_f32, value a_bits, value b_bits, value c_bits) {
+  if (Bool_val(is_f32)) {
+    uint32_t a_raw = (uint32_t)Int64_val(a_bits);
+    uint32_t b_raw = (uint32_t)Int64_val(b_bits);
+    uint32_t c_raw = (uint32_t)Int64_val(c_bits);
+    float a;
+    float b;
+    float c;
+    memcpy(&a, &a_raw, sizeof(a));
+    memcpy(&b, &b_raw, sizeof(b));
+    memcpy(&c, &c_raw, sizeof(c));
+    float result = fmaf(a, b, c);
+    uint32_t result_bits;
+    memcpy(&result_bits, &result, sizeof(result_bits));
+    return caml_copy_int64((int64_t)result_bits);
+  }
+  uint64_t a_raw = (uint64_t)Int64_val(a_bits);
+  uint64_t b_raw = (uint64_t)Int64_val(b_bits);
+  uint64_t c_raw = (uint64_t)Int64_val(c_bits);
+  double a;
+  double b;
+  double c;
+  memcpy(&a, &a_raw, sizeof(a));
+  memcpy(&b, &b_raw, sizeof(b));
+  memcpy(&c, &c_raw, sizeof(c));
+  double result = fma(a, b, c);
+  uint64_t result_bits;
+  memcpy(&result_bits, &result, sizeof(result_bits));
+  return caml_copy_int64((int64_t)result_bits);
+}
+
 CAMLprim value fas_int_to_float_bits(value raw, value width, value is_signed, value to_f32) {
   int64_t signed_value = Int64_val(raw);
   uint64_t unsigned_value = (uint64_t)signed_value;

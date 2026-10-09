@@ -48,6 +48,14 @@ type linkage = Internal | External_c
 type simd_load_kind = Masked | Gather | Gather_bytes
 type simd_store_kind = Masked_store | Scatter | Scatter_bytes
 
+type float_builtin =
+  | Float_sqrt
+  | Float_fma
+  | Float_floor
+  | Float_ceil
+  | Float_round
+  | Float_abs
+
 type builtin =
   | Rotl
   | Rotr
@@ -73,6 +81,7 @@ type builtin =
   | Addr_bits
   | Addr_from_bits
   | Cvt of ty
+  | Float_math of float_builtin
   | Handle_addr
   | Handle_from_addr of string
   | Volatile_load of ty

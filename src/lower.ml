@@ -870,6 +870,37 @@ and lower_builtin s b args t span =
                Printf.sprintf "llvm.%s.sat.i%d.%s" conversion width format,
                [ (Ir.value_ty x, Ir.No_extension, x) ] ));
         Ok (Ir.Local (id, rt))
+  | Float_math operation, values ->
+      let suffix =
+        match t with
+        | Hir.Float Hir.F32 -> Ok "f32"
+        | Hir.Float Hir.F64 -> Ok "f64"
+        | _ -> error span "internal error: float builtin has a non-float type"
+      in
+      let* suffix = suffix in
+      let name =
+        match operation with
+        | Float_sqrt -> "llvm.sqrt."
+        | Float_fma -> "llvm.fma."
+        | Float_floor -> "llvm.floor."
+        | Float_ceil -> "llvm.ceil."
+        | Float_round -> "llvm.roundeven."
+        | Float_abs -> "llvm.fabs."
+      in
+      let* () =
+        let expected = if operation = Float_fma then 3 else 1 in
+        if List.length values = expected then Ok ()
+        else error span "internal error: invalid float builtin arity"
+      in
+      let id = fresh s in
+      emit s
+        (Ir.Call
+           ( Some id,
+             Ir.No_extension,
+             rt,
+             name ^ suffix,
+             List.map (fun value -> (rt, Ir.No_extension, value)) values ));
+      Ok (Ir.Local (id, rt))
   | (Handle_addr | Handle_from_addr _), [ x ] -> Ok x
   | (Rotl | Rotr), [ x; n ] ->
       let* n = shift_amount s span rt n in
@@ -938,8 +969,8 @@ and lower_builtin s b args t span =
             | ( ( Rotl | Rotr | Popcount | Ctz | Clz | Mul_hi | Any | All | Select
                 | Shuffle | Permute | Reduce_sum | Reduce_min | Reduce_max | Reduce_and
                 | Reduce_or | Reduce_xor | Compress | Expand | Addr_bits
-                | Addr_from_bits | Cvt _ | Handle_addr | Handle_from_addr _
-                | Volatile_load _ | Simd_load _ ),
+                | Addr_from_bits | Cvt _ | Float_math _ | Handle_addr
+                | Handle_from_addr _ | Volatile_load _ | Simd_load _ ),
                 _ ) ->
                 error span "internal error: invalid saturating builtin")
       in

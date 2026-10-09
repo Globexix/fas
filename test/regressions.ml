@@ -3979,12 +3979,20 @@ let () =
   if reserved_float_names <> [ "sqrt"; "fma"; "floor"; "ceil"; "round"; "abs"; "cvt" ]
   then failwith "reserved-float-names: registry changed";
   List.iter
-    (fun name ->
-      exact_semantic_error
-        ("reserved-float-call-" ^ name)
-        (Names.reserved_float_message name)
+    (fun (name, message) ->
+      exact_semantic_error ("float-math-arity-" ^ name) message
         (Printf.sprintf "fn main() i32 { return %s() }\n" name))
-    reserved_float_names;
+    [
+      ("sqrt", "builtin `sqrt` expects 1 argument");
+      ("fma", "builtin `fma` expects 3 arguments");
+      ("floor", "builtin `floor` expects 1 argument");
+      ("ceil", "builtin `ceil` expects 1 argument");
+      ("round", "builtin `round` expects 1 argument");
+      ("abs", "builtin `abs` expects 1 argument");
+    ];
+  exact_semantic_error "reserved-float-call-cvt"
+    (Names.reserved_float_message "cvt")
+    "fn main() i32 { return cvt() }\n";
   List.iter
     (fun name ->
       exact_semantic_error
@@ -4239,6 +4247,79 @@ let () =
     \ if (x != 0.0) || (x != 0.0) { return 2 }\n\
     \ if !(x == 0.0) { return 3 }\n\
     \ return 0 }\n";
+  semantic_accept "float-math-contextual-operands"
+    "const Root f32 = sqrt(2.0)\n\
+    \ const Fused f32 = fma(1.0, 2.0, 3.0)\n\
+    \ const Down f64 = floor(-0.25)\n\
+    \ const Up f64 = ceil(0.25)\n\
+    \ const Nearest f64 = round(2.5)\n\
+    \ const Magnitude f32 = abs(-1.5)\n\
+    \ fn peer(x f32) f32 { return fma(1.0, x, 2.0) }\n\
+    \ fn defaults() f64 { return sqrt(2.0) }\n";
+  semantic_pin "float-math-integer-help" "fn bad(x i32) f64 { return sqrt(x) }\n" 1 33 1
+    "argument 1 of `sqrt` is `i32`, expected `f64`" (Some "write `sqrt(cvt[f64](x))`");
+  semantic_accept "float-math-integer-help-twin"
+    "fn good(x i32) f64 { return sqrt(cvt[f64](x)) }\n";
+  semantic_pin "float-fma-integer-help"
+    "fn bad(a i32, b f32, c f32) f32 { return fma(a, b, c) }\n" 1 46 1
+    "argument 1 of `fma` is `i32`, expected `f32`"
+    (Some "write `fma(cvt[f32](a), b, c)`");
+  semantic_accept "float-fma-integer-help-twin"
+    "fn good(a i32, b f32, c f32) f32 { return fma(cvt[f32](a), b, c) }\n";
+  semantic_message "float-fma-operands-must-match"
+    "argument 2 of `fma` is `f64`, expected `f32`"
+    "fn bad(a f32, b f64, c f32) f32 { return fma(a, b, c) }\n";
+  semantic_constant "FloatSqrt32" 0x3fb504f3L "const FloatSqrt32 f32 = sqrt(2.0)\n";
+  semantic_constant "FloatSqrt64" 0x3ff6a09e667f3bcdL
+    "const FloatSqrt64 f64 = sqrt(2.0)\n";
+  semantic_constant "FloatRoundTiesEven32" 0x40000000L
+    "const FloatRoundTiesEven32 f32 = round(2.5)\n";
+  semantic_constant "FloatRoundNegativeHalf32" 0x80000000L
+    "const FloatRoundNegativeHalf32 f32 = round(-0.5)\n";
+  semantic_constant "FloatFloor32" 0xbf800000L "const FloatFloor32 f32 = floor(-0.25)\n";
+  semantic_constant "FloatCeil32" 0x80000000L "const FloatCeil32 f32 = ceil(-0.25)\n";
+  semantic_constant "FloatAbsNan32" 0x7fc12345L
+    "const FloatAbsNan32 f32 = abs(bitcast[f32](bitcast[u32](0x7fc12345) | 0x80000000))\n";
+  semantic_constant "FloatFmaSingleRound32" 0x670239a1L
+    "const A u32 = 0xd0300000\n\
+    \ const B u32 = 0xd63d6b18\n\
+    \ const C u32 = 0x10948057\n\
+    \ const FloatFmaSingleRound32 f32 = fma(bitcast[f32](A), bitcast[f32](B), \
+     bitcast[f32](C))\n";
+  semantic_constant "FloatFmaSingleRound32Second" 0xe1834a61L
+    "const A u32 = 0xe36967c8\n\
+    \ const B u32 = 0x3d900000\n\
+    \ const C u32 = 0x8f93c7c8\n\
+    \ const FloatFmaSingleRound32Second f32 = fma(bitcast[f32](A), bitcast[f32](B), \
+     bitcast[f32](C))\n";
+  let float_math_llvm =
+    llvm_of
+      "fn unary32(x f32) f32 { return sqrt(x) + floor(x) + ceil(x) + round(x) + abs(x) }\n\
+      \ fn unary64(x f64) f64 { return sqrt(x) + floor(x) + ceil(x) + round(x) + \
+       abs(x) }\n\
+      \ fn fused32(a f32, b f32, c f32) f32 { return fma(a, b, c) }\n\
+      \ fn fused64(a f64, b f64, c f64) f64 { return fma(a, b, c) }\n"
+  in
+  List.iter
+    (fun name ->
+      if not (contains float_math_llvm name) then
+        failwith ("float-math-lowering: missing " ^ name))
+    [
+      "@llvm.sqrt.f32";
+      "@llvm.sqrt.f64";
+      "@llvm.fma.f32";
+      "@llvm.fma.f64";
+      "@llvm.floor.f32";
+      "@llvm.ceil.f32";
+      "@llvm.roundeven.f32";
+      "@llvm.fabs.f32";
+      "@llvm.floor.f64";
+      "@llvm.ceil.f64";
+      "@llvm.roundeven.f64";
+      "@llvm.fabs.f64";
+    ];
+  if contains float_math_llvm "llvm.fmuladd" then
+    failwith "float-math-lowering: fma must not use llvm.fmuladd";
   semantic_pin "float-integer-literal-help" "fn bad(x f32) f32 { return x * 2 }\n" 1 32
     1 "integer literals are not floating point literals" (Some "write `2.0`");
   semantic_pin "float-negative-integer-literal-help"

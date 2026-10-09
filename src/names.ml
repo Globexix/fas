@@ -36,6 +36,7 @@ type value_operation =
   | Handle_addr
   | Handle_from_addr
 
+type float_math = Sqrt | Fma | Floor | Ceil | Round | Abs
 type type_constructor = Array | Vector | Address | Handle
 type literal = True | False | Null
 
@@ -91,7 +92,11 @@ let literal = function
   | "null" -> Some Null
   | _ -> None
 
-type operation_kind = Parser of parser_operation | Value of value_operation | Reserved
+type operation_kind =
+  | Parser of parser_operation
+  | Value of value_operation
+  | Float_math of float_math
+  | Reserved
 
 let operations =
   [
@@ -139,11 +144,12 @@ let operations =
     ("addr_from_bits", Value Addr_from_bits);
     ("handle_addr", Value Handle_addr);
     ("handle_from_addr", Value Handle_from_addr);
-    ("sqrt", Reserved);
-    ("fma", Reserved);
-    ("floor", Reserved);
-    ("ceil", Reserved);
-    ("round", Reserved);
+    ("sqrt", Float_math Sqrt);
+    ("fma", Float_math Fma);
+    ("floor", Float_math Floor);
+    ("ceil", Float_math Ceil);
+    ("round", Float_math Round);
+    ("abs", Float_math Abs);
   ]
 
 let operation_names = List.map fst operations
@@ -159,11 +165,16 @@ let reserved_binding_name name =
 let parser_operation name =
   match List.assoc_opt name operations with
   | Some (Parser operation) -> Some operation
-  | Some (Value _ | Reserved) -> None
+  | Some (Value _ | Float_math _ | Reserved) -> None
   | None -> None
 
 let value_operation name =
   match List.assoc_opt name operations with
   | Some (Value operation) -> Some operation
-  | Some (Parser _ | Reserved) -> None
+  | Some (Parser _ | Float_math _ | Reserved) -> None
   | None -> None
+
+let float_math name =
+  match List.assoc_opt name operations with
+  | Some (Float_math operation) -> Some operation
+  | Some (Parser _ | Value _ | Reserved) | None -> None

@@ -1301,6 +1301,11 @@ let rec builtin_literal_operand = function
   | Ast.Array_lit (entries, _) -> List.for_all builtin_literal_operand entries
   | _ -> false
 
+let rec float_literal_operand = function
+  | Ast.Parenthesized (expression, _) -> float_literal_operand expression
+  | Ast.Float_lit _ | Ast.Unary (Ast.Neg, Ast.Float_lit _, _) -> true
+  | _ -> false
+
 let rec unresolved_vector_elements c expression =
   match expression with
   | Ast.Splat (element, _) -> (
@@ -3023,6 +3028,91 @@ and check_handle_from_addr c name opaque_name args s =
                    s ))
         | _ -> error s "handle_from_addr argument must be an addr")
 
+and check_float_math c expected operation name args s =
+  let arity = if operation = Names.Fma then 3 else 1 in
+  if List.length args <> arity then
+    error s
+      (Printf.sprintf "builtin `%s` expects %d argument%s" name arity
+         (if arity = 1 then "" else "s"))
+  else
+    let peer_types =
+      List.filter_map
+        (fun argument ->
+          if float_literal_operand argument then None
+          else
+            let before = Sema_flow.snapshot c.flow in
+            let result = check_expr c None argument in
+            Sema_flow.restore c.flow before;
+            match result with
+            | Ok value -> (
+                match Hir.expr_ty value with Hir.Float _ as ty -> Some ty | _ -> None)
+            | Error _ -> None)
+        args
+    in
+    let operand_ty =
+      match peer_types with
+      | ty :: _ -> ty
+      | [] -> (
+          match expected with Some (Hir.Float _ as ty) -> ty | _ -> Hir.Float Hir.F64)
+    in
+    let* checked =
+      Result_list.map
+        (fun argument ->
+          check_expr c
+            (if float_literal_operand argument then Some operand_ty else None)
+            argument)
+        args
+    in
+    let indexed = List.mapi (fun index value -> (index, value)) checked in
+    let float_type = function Hir.Float _ -> true | _ -> false in
+    let rec first_bad = function
+      | [] -> None
+      | (index, value) :: rest ->
+          if Hir.expr_ty value = operand_ty && float_type (Hir.expr_ty value) then
+            first_bad rest
+          else Some (index, value)
+    in
+    match first_bad indexed with
+    | Some (index, value) ->
+        let actual = Hir.expr_ty value in
+        let help =
+          match actual with
+          | Hir.Int _ ->
+              let converted =
+                List.mapi
+                  (fun argument_index argument ->
+                    if match Hir.expr_ty argument with Hir.Int _ -> true | _ -> false
+                    then
+                      Printf.sprintf "cvt[%s](%s)"
+                        (Sema_types.diagnostic_ty_name operand_ty)
+                        (Ast.expr_name (List.nth args argument_index))
+                    else Ast.expr_name (List.nth args argument_index))
+                  checked
+              in
+              Some (Printf.sprintf "write `%s(%s)`" name (String.concat ", " converted))
+          | _ -> None
+        in
+        Error
+          [
+            Diag.error ?help
+              (Ast.expr_span (List.nth args index))
+              (Printf.sprintf "argument %d of `%s` is `%s`, expected `%s`" (index + 1)
+                 name
+                 (Sema_types.diagnostic_ty_name actual)
+                 (Sema_types.diagnostic_ty_name operand_ty));
+          ]
+    | None ->
+        let builtin =
+          match operation with
+          | Names.Sqrt -> Hir.Float_sqrt
+          | Names.Fma -> Hir.Float_fma
+          | Names.Floor -> Hir.Float_floor
+          | Names.Ceil -> Hir.Float_ceil
+          | Names.Round -> Hir.Float_round
+          | Names.Abs -> Hir.Float_abs
+        in
+        Ok (Hir.Call (Hir.Builtin (Hir.Float_math builtin), checked, operand_ty, s))
+
 and check_call c expected fn args s =
   match fn with
   | Ast.Generic_args (Ast.Ident ("call_addr", _), generic_args, application_span) -> (
@@ -3108,6 +3198,8 @@ and check_call c expected fn args s =
                 to `%s`"
                (Sema_types.diagnostic_ty_name source)
                (Sema_types.diagnostic_ty_name target))
+  | Ast.Ident (name, _) when Option.is_some (Names.float_math name) ->
+      check_float_math c expected (Option.get (Names.float_math name)) name args s
   | Ast.Ident (name, _) when Names.reserved_float_name name ->
       error s (Names.reserved_float_message name)
   | Ast.Generic_args (Ast.Ident (name, _), _, _) when Names.reserved_float_name name ->

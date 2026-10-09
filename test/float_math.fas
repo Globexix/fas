@@ -1,0 +1,153 @@
+use "C" <stdio.h>
+
+const EDGE32 arr[24, u32] = {
+  0x00000000, 0x80000000, 0x00000001, 0x80000001,
+  0x007fffff, 0x807fffff, 0x00800000, 0x80800000,
+  0x7f7fffff, 0xff7fffff, 0x7f800000, 0xff800000,
+  0x7fc00001, 0xffc12345, 0x3f000000, 0xbf000000,
+  0x3fc00000, 0xbfc00000, 0x40200000, 0xc0200000,
+  0x4b000000, 0x4b000001, 0x4b800000, 0x4b800001
+}
+
+const EDGE64 arr[24, u64] = {
+  0x0000000000000000, 0x8000000000000000,
+  0x0000000000000001, 0x8000000000000001,
+  0x000fffffffffffff, 0x800fffffffffffff,
+  0x0010000000000000, 0x8010000000000000,
+  0x7fefffffffffffff, 0xffefffffffffffff,
+  0x7ff0000000000000, 0xfff0000000000000,
+  0x7ff8000000000001, 0xfff8123456789abc,
+  0x3fe0000000000000, 0xbfe0000000000000,
+  0x3ff8000000000000, 0xbff8000000000000,
+  0x4004000000000000, 0xc004000000000000,
+  0x4330000000000000, 0x4330000000000001,
+  0x4340000000000000, 0x4340000000000001
+}
+
+const FMA32_A arr[8, u32] = {
+  0xd0300000, 0xe36967c8, 0x3a6549a8, 0x53008000,
+  0xebe963c8, 0x9c61d300, 0x48500000, 0xf3bd2b68
+}
+const FMA32_B arr[8, u32] = {
+  0xd63d6b18, 0x3d900000, 0xf9500000, 0x23149180,
+  0x35900000, 0x66318000, 0x4254a128, 0x8cd00000
+}
+const FMA32_C arr[8, u32] = {
+  0x10948057, 0x8f93c7c8, 0xd35fe9a8, 0x95bdeb52,
+  0x879343c8, 0x9004c818, 0x18488810, 0x16d88b68
+}
+
+const NAN32_BITS u32 = 0xffc12345
+const NAN64_BITS u64 = 0xfff8123456789abc
+const FMA_A u32 = 0xd0300000
+const FMA_B u32 = 0xd63d6b18
+const FMA_C u32 = 0x10948057
+const ROOT32 f32 = sqrt(2.0)
+const FUSED32 f32 = fma(bitcast[f32](FMA_A), bitcast[f32](FMA_B), bitcast[f32](FMA_C))
+const FLOOR32 f32 = floor(-0.25)
+const CEIL32 f32 = ceil(-0.25)
+const ROUND32 f32 = round(2.5)
+const ROUND_NEGATIVE_HALF32 f32 = round(-0.5)
+const ABS_NAN32 f32 = abs(bitcast[f32](NAN32_BITS))
+const ROOT64 f64 = sqrt(2.0)
+const FUSED64 f64 = fma(1.25, 2.5, -0.75)
+const FLOOR64 f64 = floor(-0.25)
+const CEIL64 f64 = ceil(-0.25)
+const ROUND64 f64 = round(2.5)
+const ABS_NAN64 f64 = abs(bitcast[f64](NAN64_BITS))
+
+fn next32(state u32) u32 {
+  state ^= state << 13
+  state ^= state >> 17
+  state ^= state << 5
+  return state
+}
+
+fn next64(state u64) u64 {
+  state ^= state << 13
+  state ^= state >> 7
+  state ^= state << 17
+  return state
+}
+
+fn show32(bits u32) void {
+  value f32 = bitcast[f32](bits)
+  printf(c"32 %08x %08x %08x %08x %08x %08x\n", bits,
+    bitcast[u32](sqrt(value)), bitcast[u32](floor(value)),
+    bitcast[u32](ceil(value)), bitcast[u32](round(value)),
+    bitcast[u32](abs(value)))
+}
+
+fn show64(bits u64) void {
+  value f64 = bitcast[f64](bits)
+  printf(c"64 %016lx %016lx %016lx %016lx %016lx %016lx\n", bits,
+    bitcast[u64](sqrt(value)), bitcast[u64](floor(value)),
+    bitcast[u64](ceil(value)), bitcast[u64](round(value)),
+    bitcast[u64](abs(value)))
+}
+
+fn show_fma32(a_bits u32, b_bits u32, c_bits u32) void {
+  a f32 = bitcast[f32](a_bits)
+  b f32 = bitcast[f32](b_bits)
+  c f32 = bitcast[f32](c_bits)
+  printf(c"fma32 %08x %08x %08x %08x\n", a_bits, b_bits, c_bits,
+    bitcast[u32](fma(a, b, c)))
+}
+
+fn show_fma64(a_bits u64, b_bits u64, c_bits u64) void {
+  a f64 = bitcast[f64](a_bits)
+  b f64 = bitcast[f64](b_bits)
+  c f64 = bitcast[f64](c_bits)
+  printf(c"fma64 %016lx %016lx %016lx %016lx\n", a_bits, b_bits, c_bits,
+    bitcast[u64](fma(a, b, c)))
+}
+
+fn main() i32 {
+  printf(c"const32 %08x %08x %08x %08x %08x %08x %08x\n",
+    bitcast[u32](ROOT32), bitcast[u32](FUSED32), bitcast[u32](FLOOR32),
+    bitcast[u32](CEIL32), bitcast[u32](ROUND32),
+    bitcast[u32](ROUND_NEGATIVE_HALF32), bitcast[u32](ABS_NAN32))
+  printf(c"const64 %016lx %016lx %016lx %016lx %016lx %016lx\n",
+    bitcast[u64](ROOT64), bitcast[u64](FUSED64), bitcast[u64](FLOOR64),
+    bitcast[u64](CEIL64), bitcast[u64](ROUND64), bitcast[u64](ABS_NAN64))
+  for i usize = 0; i < len(EDGE32); i += 1 { show32(EDGE32[i]) }
+  state32 u32 = 0x9e3779b9
+  for i usize = 0; i < 2048; i += 1 {
+    state32 = next32(state32)
+    show32(state32)
+  }
+  for i usize = 0; i < len(EDGE64); i += 1 { show64(EDGE64[i]) }
+  state64 u64 = 0x9e3779b97f4a7c15
+  for i usize = 0; i < 2048; i += 1 {
+    state64 = next64(state64)
+    show64(state64)
+  }
+  for i usize = 0; i < len(FMA32_A); i += 1 {
+    show_fma32(FMA32_A[i], FMA32_B[i], FMA32_C[i])
+  }
+  for i usize = 0; i < len(EDGE32); i += 1 {
+    show_fma32(EDGE32[i], 0x3f800000, 0)
+  }
+  state32 = 0x6d2b79f5
+  for i usize = 0; i < 2048; i += 1 {
+    state32 = next32(state32)
+    a u32 = state32
+    state32 = next32(state32)
+    b u32 = state32
+    state32 = next32(state32)
+    show_fma32(a, b, state32)
+  }
+  for i usize = 0; i < len(EDGE64); i += 1 {
+    show_fma64(EDGE64[i], 0x3ff0000000000000, 0)
+  }
+  state64 = 0xd1b54a32d192ed03
+  for i usize = 0; i < 2048; i += 1 {
+    state64 = next64(state64)
+    a u64 = state64
+    state64 = next64(state64)
+    b u64 = state64
+    state64 = next64(state64)
+    show_fma64(a, b, state64)
+  }
+  return 0
+}

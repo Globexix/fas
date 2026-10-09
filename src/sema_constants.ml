@@ -1218,6 +1218,27 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
           args
       in
       match (name, vals) with
+      | math_name, values when Option.is_some (Names.float_math math_name) -> (
+          let operation = Option.get (Names.float_math math_name) in
+          let is_float = function Hir.Float _ -> true | _ -> false in
+          match (operation, values) with
+          | Names.Fma, [ (ty, a); (ty2, b); (ty3, c) ]
+            when is_float ty && ty = ty2 && ty = ty3 ->
+              Ok (ty, Float_parse.float_fma_bits (ty = Hir.Float Hir.F32) a b c)
+          | ( (Names.Sqrt | Names.Floor | Names.Ceil | Names.Round | Names.Abs),
+              [ (ty, input) ] )
+            when is_float ty ->
+              let opcode =
+                match operation with
+                | Names.Sqrt -> 0
+                | Names.Floor -> 1
+                | Names.Ceil -> 2
+                | Names.Round -> 3
+                | Names.Abs -> 4
+                | Names.Fma -> assert false
+              in
+              Ok (ty, Float_parse.float_unary_bits opcode (ty = Hir.Float Hir.F32) input)
+          | _ -> error s (Printf.sprintf "invalid constant builtin call to `%s`" name))
       | ("rotl" | "rotr"), [ (t, x); (count_ty, n) ] ->
           let count_expression = List.nth args 1 in
           let* () =

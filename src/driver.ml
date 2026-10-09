@@ -458,11 +458,12 @@ let report_kept config paths opt llc cc =
          (llc_opt config.Cli.optimization)))
 
 let executable_command config cc asm_path c_objects =
+  let math_library = if List.mem "-lm" config.Cli.link_inputs then [] else [ "-lm" ] in
   let argv =
     Array.of_list
       (cc :: asm_path
       :: (c_objects @ config.Cli.c_flags @ c_sanitizer_flags config
-        @ config.Cli.link_inputs @ [ "-o"; config.Cli.output ]))
+        @ config.Cli.link_inputs @ math_library @ [ "-o"; config.Cli.output ]))
   in
   if config.Cli.debug || config.Cli.keep then
     prerr_endline ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
