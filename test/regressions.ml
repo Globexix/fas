@@ -10657,6 +10657,68 @@ let () =
   semantic_error "construction-entry-type-mismatch"
     "bool and integer values use different representations"
     "struct S { flag i32 }\nfn f() void { value S = {true}\nreturn }\n";
+  semantic_accept "designated-struct-fields"
+    "struct Point { x i32 y i32 }\n\
+     fn f() i32 { point Point = {.y = 11, .x = 7}\n\
+     return point.x + point.y }\n";
+  semantic_accept "designated-nested-struct-and-array"
+    "struct Point { x i32 y i32 }\n\
+     struct Box { points arr[2,Point] }\n\
+     fn f() i32 { box Box = {.points = {{.y = 13}, {.x = 17}}}\n\
+     return box.points[0].y + box.points[1].x }\n";
+  semantic_accept "designated-positional-twin"
+    "struct Point { x i32 y i32 }\n\
+     fn f() i32 { point Point = {7, 11}\n\
+     return point.x + point.y }\n";
+  let designated_unknown_field =
+    "struct Point { x i32 }\nfn f() void { point Point = {.xx = 1}\nreturn }\n"
+  in
+  semantic_pin "designated-unknown-field" designated_unknown_field 2
+    (String.index "fn f() void { point Point = {.xx = 1}" '.' + 1)
+    1 "record `Point` has no field `xx`" (Some "did you mean `x`?");
+  let designated_duplicate_field =
+    "struct Point { x i32 }\nfn f() void { point Point = {.x = 1, .x = 2}\nreturn }\n"
+  in
+  semantic_pin "designated-duplicate-field" designated_duplicate_field 2
+    (List.nth (positions "fn f() void { point Point = {.x = 1, .x = 2}" ".x") 1 + 1)
+    1 "field `x` is designated more than once"
+    (Some "remove the repeated field designator");
+  let designated_mixed_entries =
+    "struct Point { x i32 y i32 }\nfn f() void { point Point = {.x = 1, 2}\nreturn }\n"
+  in
+  semantic_pin "designated-mixed-entries" designated_mixed_entries 2
+    (let line = "fn f() void { point Point = {.x = 1, 2}" in
+     String.index_from line (String.index line '=' + 1) '{' + 1)
+    1 "cannot mix designated and positional entries in one initializer"
+    (Some "use only `.field = value` entries");
+  let designated_array_field =
+    "fn f() void { values arr[2,i32] = {.x = 1, 2}\nreturn }\n"
+  in
+  semantic_pin "designated-field-on-array" designated_array_field 1
+    (String.index designated_array_field '.' + 1)
+    1 "field designator `.x` requires a struct initializer"
+    (Some "use a struct initializer without array designators");
+  let designated_array_index =
+    "fn f() void { values arr[2,i32] = {[0] = 1, 2}\nreturn }\n"
+  in
+  semantic_pin "designated-index-on-array" designated_array_index 1
+    (let line = "fn f() void { values arr[2,i32] = {[0] = 1, 2}" in
+     String.index_from line (String.index line '=' + 1) '[' + 1)
+    1 "array designators are not supported" (Some "write positional elements");
+  let designated_import = c_import_fixture "designated.h" in
+  c_semantic_pin "designated-field-on-union"
+    "initialize the union with one positional value" designated_import
+    "use \"C\" \"designated.h\"\n\
+     fn f() void { choice FasChoice = {.value = 1}\n\
+     return }\n"
+    2
+    (String.index "fn f() void { choice FasChoice = {.value = 1}" '.' + 1)
+    1 "designated initializer is not supported for union `FasChoice`";
+  let designated_scalar = "fn f() void { value i32 = {.x = 1}\nreturn }\n" in
+  semantic_pin "designated-field-on-scalar" designated_scalar 1
+    (String.index designated_scalar '.' + 1)
+    1 "field designator `.x` requires a struct initializer"
+    (Some "use a struct initializer without array designators");
   let compound_literal_error =
     "Fas has no compound literals; declare a typed local or `const`"
   in

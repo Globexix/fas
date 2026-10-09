@@ -224,6 +224,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         expression_mentions names condition
         || expression_mentions names yes || expression_mentions names no
     | Ast.Array_lit (elements, _) -> List.exists (expression_mentions names) elements
+    | Ast.Designated_field (_, value, _) -> expression_mentions names value
+    | Ast.Designated_index (index, value, _) ->
+        expression_mentions names index || expression_mentions names value
     | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ -> false
   in
   let shadowed_constant_error expression =
@@ -427,6 +430,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         validate_expression_names value_names type_names no
     | Ast.Array_lit (elements, _) ->
         Result_list.iter (validate_expression_names value_names type_names) elements
+    | Ast.Designated_field (_, value, _) ->
+        validate_expression_names value_names type_names value
+    | Ast.Designated_index (index, value, _) ->
+        let* () = validate_expression_names value_names type_names index in
+        validate_expression_names value_names type_names value
     | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ -> Ok ()
   in
   let rec validate_target_names value_names type_names = function
@@ -680,6 +688,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         has_generic_arguments condition
         || has_generic_arguments yes || has_generic_arguments no
     | Ast.Array_lit (values, _) -> List.exists has_generic_arguments values
+    | Ast.Designated_field (_, value, _) -> has_generic_arguments value
+    | Ast.Designated_index (index, value, _) ->
+        has_generic_arguments index || has_generic_arguments value
     | Ast.Ident _ | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ ->
         false
   in
@@ -964,6 +975,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           validate_non_dependent_expression c dependent expected no
       | Ast.Array_lit (values, _) ->
           Result_list.iter (validate_non_dependent_expression c dependent None) values
+      | Ast.Designated_field (_, value, _) ->
+          validate_non_dependent_expression c dependent expected value
+      | Ast.Designated_index (index, value, _) ->
+          let* () = validate_non_dependent_expression c dependent None index in
+          validate_non_dependent_expression c dependent expected value
       | Ast.Sizeof _ | Ast.Alignof _ | Ast.Offsetof _ | Ast.Ident _ | Ast.Int_lit _
       | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ ->
           Ok ()
@@ -1927,6 +1943,16 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             elements
         in
         Ok (Ast.Array_lit (elements, span))
+    | Ast.Designated_field (name, value, span) ->
+        let* value =
+          resolve_expr ~values ~defer_const_structs substitutions depth value
+        in
+        Ok (Ast.Designated_field (name, value, span))
+    | Ast.Designated_index (index, value, span) ->
+        let resolve = resolve_expr ~values ~defer_const_structs substitutions depth in
+        let* index = resolve index in
+        let* value = resolve value in
+        Ok (Ast.Designated_index (index, value, span))
   and resolve_target ?(values = []) ?(defer_const_structs = false) substitutions depth =
     function
     | Ast.Target_ident _ as target -> Ok target

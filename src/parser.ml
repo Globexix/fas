@@ -672,26 +672,8 @@ module P = struct
           if at p Token.Lbrace then
             let value_span = span p in
             let* () = expected p Token.Lbrace in
-            delimited p (fun () ->
-                let rec es acc =
-                  if at p Token.Rbrace then Ok (List.rev acc)
-                  else
-                    let* e = expr p in
-                    let* () =
-                      if eat p Token.Comma then Ok ()
-                      else if at p Token.Rbrace then Ok ()
-                      else
-                        Error
-                          [
-                            Diag.error (span p)
-                              "expected comma between literal elements";
-                          ]
-                    in
-                    es (e :: acc)
-                in
-                let* xs = es [] in
-                let* () = expected p Token.Rbrace in
-                Ok (Ast.Array_lit (xs, value_span)))
+            let* xs = literal_elements p in
+            Ok (Ast.Array_lit (xs, value_span))
           else expr p
         in
         let* () = end_stmt p in
@@ -1671,7 +1653,24 @@ module P = struct
             let* () = expected p Token.Rbrace in
             Ok (List.rev acc)
           else
-            let* expression = expr p in
+            let* expression =
+              if at p Token.Dot then
+                let designator_span = span p in
+                let* () = expected p Token.Dot in
+                let* name, _ = field_ident p in
+                let* () = expected p Token.Assign in
+                let* value = expr p in
+                Ok (Ast.Designated_field (name, value, designator_span))
+              else if at p Token.Lbracket then
+                let designator_span = span p in
+                let* () = expected p Token.Lbracket in
+                let* index = expr p in
+                let* () = expected p Token.Rbracket in
+                let* () = expected p Token.Assign in
+                let* value = expr p in
+                Ok (Ast.Designated_index (index, value, designator_span))
+              else expr p
+            in
             let* () =
               if eat p Token.Comma then Ok ()
               else if at p Token.Rbrace then Ok ()

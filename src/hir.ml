@@ -105,8 +105,9 @@ type expr =
 
 type construction =
   | Init_value of expr
-  | Init_zero of zero_initializer * Span.t
-  | Init_aggregate of ty * construction list * Span.t
+  | Init_zero of zero_initializer * bool * Span.t
+  | Init_omitted of zero_initializer * Span.t
+  | Init_aggregate of ty * bool * construction list * Span.t
 
 type assign_target =
   | ALocal of local

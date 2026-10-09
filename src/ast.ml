@@ -45,6 +45,8 @@ and expr =
   | Splat of expr * Span.t
   | Ternary of expr * expr * expr * Span.t
   | Array_lit of expr list * Span.t
+  | Designated_field of string * expr * Span.t
+  | Designated_index of expr * expr * Span.t
 
 and unop = Neg | Not | Bit_not
 
@@ -187,7 +189,9 @@ let stored_expr_span = function
   | Offsetof (_, _, s)
   | Splat (_, s)
   | Ternary (_, _, _, s)
-  | Array_lit (_, s) ->
+  | Array_lit (_, s)
+  | Designated_field (_, _, s)
+  | Designated_index (_, _, s) ->
       s
   | C_dereference (_, _, s) | C_dot_star (_, s) -> s
   | Unary _ | Binary _ | Parenthesized _ | Arrow_field _ | Field _ -> assert false
@@ -398,6 +402,9 @@ and expr_name = function
   | Ternary (c, a, b, _) ->
       "if " ^ expr_name c ^ " { " ^ expr_name a ^ " } else { " ^ expr_name b ^ " }"
   | Array_lit (xs, _) -> "{" ^ String.concat ", " (List.map expr_name xs) ^ "}"
+  | Designated_field (name, value, _) -> "." ^ name ^ " = " ^ expr_name value
+  | Designated_index (index, value, _) ->
+      "[" ^ expr_name index ^ "] = " ^ expr_name value
 
 let aggregate_length expression span = { expression; text = expr_name expression; span }
 
@@ -618,6 +625,16 @@ let render_program program =
         text "{";
         emit_comma_list emit_expr xs;
         text "}"
+    | Designated_field (name, value, _) ->
+        text ".";
+        add_name name;
+        text " = ";
+        emit_expr value
+    | Designated_index (index, value, _) ->
+        text "[";
+        emit_expr index;
+        text "] = ";
+        emit_expr value
   and emit_stmt indent s =
     match s with
     | Let { name; ty; init; _ } -> (
@@ -912,7 +929,11 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
           go_expr c;
           go_expr a;
           go_expr b
-      | Array_lit (xs, _) -> List.iter go_expr xs)
+      | Array_lit (xs, _) -> List.iter go_expr xs
+      | Designated_field (_, value, _) -> go_expr value
+      | Designated_index (index, value, _) ->
+          go_expr index;
+          go_expr value)
   and go_target = function
     | Target_ident (name, span) ->
         identifiers := name :: !identifiers;

@@ -532,7 +532,8 @@ let rec static_address structs = function
   | _ -> None
 
 let rec constant_construction structs = function
-  | Hir.Init_zero (zero, _) -> Some (Hir.Global_zero zero)
+  | Hir.Init_zero (zero, _, _) -> Some (Hir.Global_zero zero)
+  | Hir.Init_omitted (zero, _) -> Some (Hir.Global_zero zero)
   | Hir.Init_value (Hir.EInt (value, _, _)) -> Some (Hir.Global_int value)
   | Hir.Init_value (Hir.EBool (value, _)) -> Some (Hir.Global_bool value)
   | Hir.Init_value (Hir.Null _) -> Some Hir.Global_null
@@ -547,7 +548,7 @@ let rec constant_construction structs = function
   | Hir.Init_value (Hir.Call (Hir.Builtin (Hir.Handle_from_addr _), [ value ], _, _)) ->
       constant_construction structs (Hir.Init_value value)
   | Hir.Init_value (Hir.EVector (values, _, _)) -> Some (Hir.Global_vector values)
-  | Hir.Init_aggregate (aggregate_ty, entries, _) ->
+  | Hir.Init_aggregate (aggregate_ty, _, entries, _) ->
       let entries = List.map (constant_construction structs) entries in
       if List.for_all Option.is_some entries then
         let values = List.map Option.get entries in
@@ -2100,7 +2101,7 @@ and stmt s = function
 
 and construct_into s destination construction =
   let literal_ty =
-    match construction with Hir.Init_aggregate (t, _, _) -> Some t | _ -> None
+    match construction with Hir.Init_aggregate (t, _, _, _) -> Some t | _ -> None
   in
   match
     Option.bind literal_ty (fun t ->
@@ -2124,12 +2125,20 @@ and construct_into s destination construction =
   | _ -> construct_entries s destination construction
 
 and construct_entries s destination = function
+  | Hir.Init_omitted _ -> Ok ()
+  | Hir.Init_aggregate (aggregate_ty, true, entries, span) ->
+      let* () =
+        construct_entries s destination
+          (Hir.Init_zero (Hir.zero_initializer aggregate_ty, true, span))
+      in
+      construct_entries s destination
+        (Hir.Init_aggregate (aggregate_ty, false, entries, span))
   | Hir.Init_value expression ->
       let* value = expr s expression in
       let value_ty = Hir.expr_ty expression in
       let* alignment = align s value_ty in
       store_value s value_ty value destination alignment
-  | Hir.Init_zero (zero, span) -> (
+  | Hir.Init_zero (zero, bytewise, span) -> (
       match zero.zero_ty with
       | (Hir.Array _ | Hir.Struct _) as aggregate_ty ->
           let* size, _ =
@@ -2137,7 +2146,7 @@ and construct_entries s destination = function
             | Ok layout -> Ok layout
             | Error message -> error span ("internal error: " ^ message)
           in
-          if size <= 256 then
+          if size <= 256 && not bytewise then
             let* alignment = align s aggregate_ty in
             store_value s aggregate_ty (Ir.Zero (ty aggregate_ty)) destination alignment
           else
@@ -2181,7 +2190,7 @@ and construct_entries s destination = function
             s.current <- exit;
             Ok ()
       | _ -> error span "internal error: zero initializer requires an array or struct")
-  | Hir.Init_aggregate (Hir.Array (length, element_ty), elements, span) ->
+  | Hir.Init_aggregate (Hir.Array (length, element_ty), false, elements, span) ->
       if List.length elements <> length then
         error span "internal error: array construction arity"
       else
@@ -2204,7 +2213,7 @@ and construct_entries s destination = function
               go (index + 1) rest
         in
         go 0 elements
-  | Hir.Init_aggregate (Hir.Struct name, elements, span) -> (
+  | Hir.Init_aggregate (Hir.Struct name, false, elements, span) -> (
       match find_struct s name with
       | None -> error span ("internal error: unknown construction struct `" ^ name ^ "`")
       | Some definition ->
@@ -2233,7 +2242,7 @@ and construct_entries s destination = function
               | _ -> error span "internal error: struct construction arity"
             in
             go definition.fields elements)
-  | Hir.Init_aggregate (_, _, span) ->
+  | Hir.Init_aggregate (_, _, _, span) ->
       error span "internal error: construction requires an array or struct"
 
 and stmt_list s xs =
@@ -2468,7 +2477,8 @@ let address_taken_locals ?function_addresses body =
   let rec collect_construction = function
     | Hir.Init_value value -> collect_expr value
     | Hir.Init_zero _ -> ()
-    | Hir.Init_aggregate (_, entries, _) -> List.iter collect_construction entries
+    | Hir.Init_aggregate (_, _, entries, _) -> List.iter collect_construction entries
+    | Hir.Init_omitted _ -> ()
   and collect_target = function
     | Hir.ARaw (base, offset, _) | Hir.AIndex (base, offset) ->
         collect_expr base;

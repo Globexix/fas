@@ -1,0 +1,67 @@
+use "C" "c_import/designated.h"
+
+struct Inner {
+    first u8
+    second u32
+    third u16
+}
+
+struct Outer {
+    prefix u8
+    inner Inner
+    items arr[2,Inner]
+    tail u64
+}
+
+struct Envelope {
+    marker u16
+    outer Outer
+}
+
+struct Large {
+    values arr[17,u32]
+    tag u32
+}
+
+var global_value Outer = {
+    .tail = 47,
+    .items = {{.third = 43}, {.first = 41, .second = 42}},
+    .prefix = 37,
+    .inner = {.second = 39, .first = 38}
+}
+
+const constant_value Outer = {
+    .inner = {},
+    .prefix = 53,
+    .tail = 59,
+    .items = {{.second = 57}, {.third = 61}}
+}
+
+extern "C" {
+    var exported_value Outer = {
+        .items = {{.first = 67}, {.second = 71}},
+        .tail = 73,
+        .inner = {.third = 79},
+        .prefix = 83
+    }
+}
+
+fn main() i32 {
+    local Outer = {
+        .tail = 23,
+        .items = {{.second = 11}, {.first = 13, .second = 17, .third = 19}},
+        .prefix = 3,
+        .inner = {.third = 7, .first = 5}
+    }
+    if c_check_outer(&local, 0) != 0 { return 1 }
+    if c_check_outer(&global_value, 1) != 0 { return 2 }
+    if c_check_outer(&constant_value, 2) != 0 { return 3 }
+    if c_check_outer(&exported_value, 3) != 0 { return 4 }
+    envelope Envelope = {.outer = {.items = {{.third = 89}, {}}}, .marker = 97}
+    if c_check_envelope(&envelope) != 0 { return 5 }
+    large Large = {.tag = 107, .values = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}}
+    if large.values[16] != 17 || large.tag != 107 { return 6 }
+    imported FasImported = {.tail = 101, .tag = 103}
+    if c_check_imported(&imported) != 0 { return 7 }
+    return 0
+}

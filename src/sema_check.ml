@@ -909,15 +909,17 @@ let refine_condition (c : context) expression truth =
   in
   apply expression truth
 
-let aggregate_construction ty entries span =
+let aggregate_construction ?(zero_padding = false) ty entries span =
   let rec zero = function
     | Hir.Init_zero _ -> true
+    | Hir.Init_omitted _ -> true
     | Hir.Init_value (Hir.EInt (0L, _, _) | Hir.EBool (false, _) | Hir.Null _) -> true
-    | Hir.Init_aggregate (_, children, _) -> List.for_all zero children
+    | Hir.Init_aggregate (_, _, children, _) -> List.for_all zero children
     | _ -> false
   in
-  if List.for_all zero entries then Hir.Init_zero (Hir.zero_initializer ty, span)
-  else Hir.Init_aggregate (ty, entries, span)
+  if (not zero_padding) && List.for_all zero entries then
+    Hir.Init_zero (Hir.zero_initializer ty, false, span)
+  else Hir.Init_aggregate (ty, zero_padding, entries, span)
 
 let c_unsupported c span name =
   Option.map
@@ -2562,8 +2564,16 @@ and check_expr_inner ?destination (c : context) expected expression =
              (tq, widen a ta left_widen, widen b tb right_widen, result_type, s))
   | Ast.Array_lit (entries, s) -> (
       match expected with
-      | Some (Hir.Vec (lanes, element) as literal_type) ->
-          vector_literal literal_type lanes element entries s
+      | Some (Hir.Vec (lanes, element) as literal_type) -> (
+          match
+            List.find_opt
+              (function
+                | Ast.Designated_field _ | Ast.Designated_index _ -> true | _ -> false)
+              entries
+          with
+          | Some entry ->
+              Error [ Sema_types.invalid_designator_error literal_type entry ]
+          | None -> vector_literal literal_type lanes element entries s)
       | _ ->
           error
             ?help:
@@ -2571,6 +2581,13 @@ and check_expr_inner ?destination (c : context) expected expression =
               | Some Hir.Addr -> Some "store it in a local and pass `&local`"
               | _ -> None)
             s "array, struct, or vector initializer needs a destination type")
+  | (Ast.Designated_field _ | Ast.Designated_index _) as expression ->
+      Error
+        [
+          Sema_types.invalid_designator_error
+            (Option.value expected ~default:Hir.Void)
+            expression;
+        ]
 
 and check_same_operands ?expected c left right =
   let contextual expression = Option.is_some (unresolved_shape_of c expression) in
@@ -2642,26 +2659,42 @@ and check_initializer ?(constant = false) ?destination c expected expression =
   in
   let aggregate_entries ty entries span =
     match (ty, entries) with
-    | (Hir.Array _ | Hir.Struct _), [] -> Ok (`Aggregate (ty, [], span))
+    | (Hir.Array _ | Hir.Struct _), [] -> Ok (`Aggregate (ty, [], span, false))
     | _ ->
-        let* typed_entries =
+        let* typed_entries, zero_padding =
           match ty with
           | Hir.Array (length, element) ->
-              if List.length entries <> length then
+              if
+                List.exists
+                  (function
+                    | Ast.Designated_field _ | Ast.Designated_index _ -> true
+                    | _ -> false)
+                  entries
+              then
+                let entry =
+                  List.find
+                    (function
+                      | Ast.Designated_field _ | Ast.Designated_index _ -> true
+                      | _ -> false)
+                    entries
+                in
+                Error [ Sema_types.invalid_designator_error ty entry ]
+              else if List.length entries <> length then
                 error
                   (Sema_types.aggregate_count_error_span span length entries)
                   (Sema_types.array_element_count_message length (List.length entries))
               else
                 Ok
-                  (List.mapi
-                     (fun index entry ->
-                       ( element,
-                         entry,
-                         Printf.sprintf "element %d of array%s" (index + 1)
-                           (match destination with
-                           | Some name -> Printf.sprintf " `%s`" name
-                           | None -> "") ))
-                     entries)
+                  ( List.mapi
+                      (fun index entry ->
+                        ( element,
+                          Some entry,
+                          Printf.sprintf "element %d of array%s" (index + 1)
+                            (match destination with
+                            | Some name -> Printf.sprintf " `%s`" name
+                            | None -> "") ))
+                      entries,
+                    false )
           | Hir.Struct name -> (
               match
                 List.find_opt
@@ -2669,92 +2702,142 @@ and check_initializer ?(constant = false) ?destination c expected expression =
                   c.structs
               with
               | None -> error span (Printf.sprintf "unknown struct `%s`" name)
-              | Some definition ->
-                  if definition.is_union then
-                    match (definition.fields, entries) with
-                    | { unsupported_reason = Some reason; _ } :: _, _ ->
-                        error span reason
-                    | field :: _, [ entry ] ->
-                        Ok
-                          [
-                            ( field.ty,
-                              entry,
-                              Printf.sprintf "field `%s` of record `%s`" field.name name
-                            );
-                          ]
-                    | _ ->
-                        error
-                          (Sema_types.aggregate_count_error_span span 1 entries)
-                          (Sema_types.record_field_count_message name 1
-                             (List.length entries))
-                  else if List.length entries <> List.length definition.fields then
-                    error
-                      (Sema_types.aggregate_count_error_span span
-                         (List.length definition.fields)
-                         entries)
-                      (Sema_types.record_field_count_message name
-                         (List.length definition.fields)
-                         (List.length entries))
-                  else if
-                    List.exists
-                      (fun (field : Hir.field) ->
-                        Option.is_some field.unsupported_reason)
-                      definition.fields
-                  then
-                    error span
-                      (List.find_map
-                         (fun (field : Hir.field) -> field.unsupported_reason)
-                         definition.fields
-                      |> Option.get)
-                  else
-                    Ok
-                      (List.map2
-                         (fun (field : Hir.field) entry ->
-                           ( field.ty,
-                             entry,
-                             Printf.sprintf "field `%s` of record `%s`" field.name name
-                           ))
-                         definition.fields entries))
-          | _ -> scalar_initializer_error ty entries span
+              | Some definition -> (
+                  let* designated =
+                    Sema_types.designated_record_entries name definition.is_union
+                      definition.fields entries span
+                  in
+                  match designated with
+                  | Some fields -> (
+                      match
+                        List.find_opt
+                          (fun (field : Hir.field) ->
+                            Option.is_some field.unsupported_reason)
+                          definition.fields
+                      with
+                      | Some { unsupported_reason = Some reason; _ } ->
+                          error span reason
+                      | _ ->
+                          Ok
+                            ( List.map
+                                (fun ((field : Hir.field), value) ->
+                                  ( field.ty,
+                                    value,
+                                    Printf.sprintf "field `%s` of record `%s`"
+                                      field.name name ))
+                                fields,
+                              true ))
+                  | None when definition.is_union -> (
+                      match (definition.fields, entries) with
+                      | { unsupported_reason = Some reason; _ } :: _, _ ->
+                          error span reason
+                      | field :: _, [ entry ] ->
+                          Ok
+                            ( [
+                                ( field.ty,
+                                  Some entry,
+                                  Printf.sprintf "field `%s` of record `%s`" field.name
+                                    name );
+                              ],
+                              false )
+                      | _ ->
+                          error
+                            (Sema_types.aggregate_count_error_span span 1 entries)
+                            (Sema_types.record_field_count_message name 1
+                               (List.length entries)))
+                  | None when List.length entries <> List.length definition.fields ->
+                      error
+                        (Sema_types.aggregate_count_error_span span
+                           (List.length definition.fields)
+                           entries)
+                        (Sema_types.record_field_count_message name
+                           (List.length definition.fields)
+                           (List.length entries))
+                  | None
+                    when List.exists
+                           (fun (field : Hir.field) ->
+                             Option.is_some field.unsupported_reason)
+                           definition.fields ->
+                      error span
+                        (List.find_map
+                           (fun (field : Hir.field) -> field.unsupported_reason)
+                           definition.fields
+                        |> Option.get)
+                  | None ->
+                      Ok
+                        ( List.map2
+                            (fun (field : Hir.field) entry ->
+                              ( field.ty,
+                                Some entry,
+                                Printf.sprintf "field `%s` of record `%s`" field.name
+                                  name ))
+                            definition.fields entries,
+                          false )))
+          | _ -> (
+              match
+                List.find_opt
+                  (function
+                    | Ast.Designated_field _ | Ast.Designated_index _ -> true
+                    | _ -> false)
+                  entries
+              with
+              | Some entry -> Error [ Sema_types.invalid_designator_error ty entry ]
+              | None -> scalar_initializer_error ty entries span)
         in
         let rec check acc = function
           | [] -> Ok (List.rev acc)
-          | (entry_ty, entry, context) :: rest ->
-              let* initialized =
-                check_initializer ~constant:true ?destination c entry_ty entry
-              in
-              let* () =
-                let actual =
-                  match initialized with
-                  | `Value value -> Hir.expr_ty value
-                  | `Aggregate (ty, _, _) -> ty
-                in
-                if
-                  (match initialized with `Value _ -> true | `Aggregate _ -> false)
-                  && aggregate_value_type entry_ty && aggregate_value_type actual
-                then
-                  error (Ast.expr_span entry)
-                    "aggregate value initialization is not supported; use `copy(dst, \
-                     src)`"
-                else
-                  ensure_expected ~context ~expression:entry actual entry_ty
-                    (Ast.expr_span entry)
-              in
-              let child =
-                match initialized with
-                | `Value value -> Hir.Init_value value
-                | `Aggregate (ty, children, child_span) ->
-                    aggregate_construction ty children child_span
-              in
-              check (child :: acc) rest
+          | (entry_ty, entry, context) :: rest -> (
+              match entry with
+              | None ->
+                  check
+                    (Hir.Init_omitted (Hir.zero_initializer entry_ty, span) :: acc)
+                    rest
+              | Some entry ->
+                  let* initialized =
+                    check_initializer ~constant:true ?destination c entry_ty entry
+                  in
+                  let* () =
+                    let actual =
+                      match initialized with
+                      | `Value value -> Hir.expr_ty value
+                      | `Aggregate (ty, _, _, _) -> ty
+                    in
+                    if
+                      (match initialized with
+                        | `Value _ -> true
+                        | `Aggregate _ -> false)
+                      && aggregate_value_type entry_ty && aggregate_value_type actual
+                    then
+                      error (Ast.expr_span entry)
+                        "aggregate value initialization is not supported; use \
+                         `copy(dst, src)`"
+                    else
+                      ensure_expected ~context ~expression:entry actual entry_ty
+                        (Ast.expr_span entry)
+                  in
+                  let child =
+                    match initialized with
+                    | `Value value -> Hir.Init_value value
+                    | `Aggregate (ty, children, child_span, zero_padding) ->
+                        aggregate_construction ~zero_padding ty children child_span
+                  in
+                  check (child :: acc) rest)
         in
         let* entries = check [] typed_entries in
-        Ok (`Aggregate (ty, entries, span))
+        Ok (`Aggregate (ty, entries, span, zero_padding))
   in
   match expression with
   | Ast.Array_lit (entries, span) -> (
       match expected with
-      | Hir.Vec _ -> vector_value ()
+      | Hir.Vec _ -> (
+          match
+            List.find_opt
+              (function
+                | Ast.Designated_field _ | Ast.Designated_index _ -> true | _ -> false)
+              entries
+          with
+          | Some entry -> Error [ Sema_types.invalid_designator_error expected entry ]
+          | None -> vector_value ())
       | _ -> aggregate_entries expected entries span)
   | _ when match expected with Hir.Vec _ -> true | _ -> false -> vector_value ()
   | _ ->
@@ -3998,6 +4081,9 @@ let rec expression_mentions_name name = function
       || expression_mentions_name name yes
       || expression_mentions_name name no
   | Ast.Array_lit (values, _) -> List.exists (expression_mentions_name name) values
+  | Ast.Designated_field (_, value, _) -> expression_mentions_name name value
+  | Ast.Designated_index (index, value, _) ->
+      expression_mentions_name name index || expression_mentions_name name value
   | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Sizeof _
   | Ast.Alignof _ | Ast.Offsetof _ ->
       false
@@ -4036,6 +4122,10 @@ let rec expression_takes_name_address name = function
       || expression_takes_name_address name yes
       || expression_takes_name_address name no
   | Ast.Array_lit (values, _) -> List.exists (expression_takes_name_address name) values
+  | Ast.Designated_field (_, value, _) -> expression_takes_name_address name value
+  | Ast.Designated_index (index, value, _) ->
+      expression_takes_name_address name index
+      || expression_takes_name_address name value
   | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Ident _
   | Ast.Sizeof _ | Ast.Alignof _ | Ast.Offsetof _ ->
       false
@@ -4336,7 +4426,7 @@ and check_stmt (c : context) = function
               let actual =
                 match initialized with
                 | `Value value -> Hir.expr_ty value
-                | `Aggregate (ty, _, _) -> ty
+                | `Aggregate (ty, _, _, _) -> ty
               in
               if
                 (match initialized with `Value _ -> true | `Aggregate _ -> false)
@@ -4364,10 +4454,12 @@ and check_stmt (c : context) = function
       match x with
       | None -> Ok (Hir.Let (binding, None, span))
       | Some (`Value value) -> Ok (Hir.Let (binding, Some value, span))
-      | Some (`Aggregate (ty, entries, construction_span)) ->
+      | Some (`Aggregate (ty, entries, construction_span, zero_padding)) ->
           Ok
             (Hir.Let_construct
-               (binding, aggregate_construction ty entries construction_span, span)))
+               ( binding,
+                 aggregate_construction ~zero_padding ty entries construction_span,
+                 span )))
   | Ast.View { name; place; span } -> (
       let* () = ensure_new_local name c span in
       match place with

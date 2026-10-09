@@ -153,6 +153,87 @@ let similar_name_help visible_names name =
   | [ candidate ] -> Some (Printf.sprintf "did you mean `%s`?" candidate)
   | _ -> None
 
+let designated_record_entries record_name is_union fields entries span =
+  let designator_span = function
+    | Ast.Designated_field (_, _, span) | Ast.Designated_index (_, _, span) -> Some span
+    | _ -> None
+  in
+  let designators = List.filter_map designator_span entries in
+  if designators = [] then Ok None
+  else if is_union then
+    let span = List.hd designators in
+    Error
+      [
+        Diag.error ~help:"initialize the union with one positional value" span
+          (Printf.sprintf "designated initializer is not supported for union `%s`"
+             record_name);
+      ]
+  else if List.length designators <> List.length entries then
+    Error
+      [
+        Diag.error ~help:"use only `.field = value` entries" span
+          "cannot mix designated and positional entries in one initializer";
+      ]
+  else
+    let rec collect assigned = function
+      | [] ->
+          Ok
+            (Some
+               (List.map
+                  (fun (field : Hir.field) ->
+                    (field, List.assoc_opt field.name assigned))
+                  fields))
+      | Ast.Designated_field (name, value, at) :: rest -> (
+          match List.find_opt (fun (field : Hir.field) -> field.name = name) fields with
+          | None ->
+              Error
+                [
+                  Diag.error
+                    ?help:
+                      (similar_name_help
+                         (List.map (fun (field : Hir.field) -> field.name) fields)
+                         name)
+                    at
+                    (Printf.sprintf "record `%s` has no field `%s`" record_name name);
+                ]
+          | Some _ when List.mem_assoc name assigned ->
+              Error
+                [
+                  Diag.error ~help:"remove the repeated field designator" at
+                    (Printf.sprintf "field `%s` is designated more than once" name);
+                ]
+          | Some _ -> collect ((name, value) :: assigned) rest)
+      | Ast.Designated_index (_, _, at) :: _ ->
+          Error
+            [
+              Diag.error ~help:"write positional array elements" at
+                "array designators are not supported";
+            ]
+      | _ :: _ ->
+          Error
+            [
+              Diag.error ~help:"use only `.field = value` entries" span
+                "cannot mix designated and positional entries in one initializer";
+            ]
+    in
+    collect [] entries
+
+let invalid_designator_error _ty expression =
+  let help, message, span =
+    match expression with
+    | Ast.Designated_field (name, _, span) ->
+        ( Some "use a struct initializer without array designators",
+          Printf.sprintf "field designator `.%s` requires a struct initializer" name,
+          span )
+    | Ast.Designated_index (_, _, span) ->
+        (Some "write positional elements", "array designators are not supported", span)
+    | _ ->
+        ( Some "remove the designator",
+          "designator requires an aggregate initializer",
+          Ast.expr_span expression )
+  in
+  Diag.error ?help span message
+
 let unknown_type_name message =
   let prefix = "unknown type `" in
   if String.starts_with ~prefix message && String.ends_with ~suffix:"`" message then

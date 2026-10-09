@@ -40,6 +40,16 @@ val raw_access_needs_type_error :
 
 val unknown_type_error : string list -> Span.t -> string -> Diag.t
 val similar_name_help : string list -> string -> string option
+
+val designated_record_entries :
+  string ->
+  bool ->
+  Hir.field list ->
+  Ast.expr list ->
+  Span.t ->
+  ((Hir.field * Ast.expr option) list option, Diag.t list) result
+
+val invalid_designator_error : Hir.ty -> Ast.expr -> Diag.t
 val unknown_type_name : string -> string option
 
 val resolve_aggregate_length :
