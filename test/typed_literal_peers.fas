@@ -1,11 +1,35 @@
 use "C" <<C
+#include <stdint.h>
 static unsigned oracle(unsigned a, unsigned b, int op) {
   if (op == 0) { unsigned long long sum = (unsigned long long)a + b; return sum > 0xffffffffu ? 0xffffffffu : sum; }
   if (op == 1) return a < b ? 0 : a - b;
   return ((unsigned long long)a * b) >> 32;
 }
+static uint32_t oracle_rotl(uint32_t value, unsigned count) { return (value << count) | (value >> (32 - count)); }
+static uint32_t oracle_rotr(uint32_t value, unsigned count) { return (value >> count) | (value << (32 - count)); }
+static uint32_t oracle_popcount(uint32_t value) { uint32_t count = 0; for (; value; value &= value - 1) count++; return count; }
+static uint32_t oracle_clz(uint32_t value) { uint32_t count = 0; for (uint32_t bit = 1u << 31; bit && !(value & bit); bit >>= 1) count++; return count; }
+static uint32_t oracle_ctz(uint32_t value) { uint32_t count = 0; if (!value) return 32; for (; !(value & 1); value >>= 1) count++; return count; }
+static uint32_t oracle_select(int mask, uint32_t yes, uint32_t no) { return mask ? yes : no; }
 C
+const destination_const u32 = rotl(0x80000001, 1)
+var destination_global u32 = popcount(0xffffffff)
+fn accept_u32(value u32) u32 { return value }
+fn destination_case(value u32) u32 {
+  switch value {
+    case popcount(0xffffffff): return 1
+    default: return 0
+  }
+}
+fn destination_branch(condition bool) u32 {
+  return if condition { ctz(0x80000000) } else { clz(1) }
+}
+fn destination_vector(mask vec[4,bool]) vec[4,u32] {
+  return select(mask, {1, 2, 3, 4}, {5, 6, 7, 8})
+}
 fn main() i32 {
+  if destination_const != oracle_rotl(0x80000001, 1) { return 7 }
+  if destination_global != oracle_popcount(0xffffffff) { return 8 }
   k u32 = 0xfffffff0
   if add_sat(k, 37) != oracle(k, 37, 0) { return 1 }
   if add_sat(37, k) != oracle(37, k, 0) { return 2 }
@@ -13,5 +37,29 @@ fn main() i32 {
   if sub_sat(37, k) != oracle(37, k, 1) { return 4 }
   if mul_hi(k, 37) != oracle(k, 37, 2) { return 5 }
   if mul_hi(37, k) != oracle(37, k, 2) { return 6 }
+  x u32 = rotl(0x80000001, 1)
+  if x != oracle_rotl(0x80000001, 1) { return 9 }
+  x = rotr(0x80000001, 1)
+  if x != oracle_rotr(0x80000001, 1) { return 10 }
+  if accept_u32(popcount(0xffffffff)) != oracle_popcount(0xffffffff) { return 11 }
+  if destination_branch(true) != oracle_ctz(0x80000000) { return 12 }
+  if destination_branch(false) != oracle_clz(1) { return 13 }
+  if destination_case(32) != 1 { return 14 }
+  x = clz(1)
+  if x != oracle_clz(1) { return 19 }
+  x = ctz(0x80000000)
+  if x != oracle_ctz(0x80000000) { return 20 }
+  x = add_sat(0xfffffff0, 37)
+  if x != oracle(0xfffffff0, 37, 0) { return 21 }
+  x = sub_sat(0, 1)
+  if x != oracle(0, 1, 1) { return 22 }
+  x = mul_hi(0xffffffff, 0xffffffff)
+  if x != oracle(0xffffffff, 0xffffffff, 2) { return 23 }
+  mask vec[4,bool] = {true, false, true, false}
+  values vec[4,u32] = destination_vector(mask)
+  if values[0] != oracle_select(1, 1, 5) { return 15 }
+  if values[1] != oracle_select(0, 2, 6) { return 16 }
+  if values[2] != oracle_select(1, 3, 7) { return 17 }
+  if values[3] != oracle_select(0, 4, 8) { return 18 }
   return 0
 }

@@ -1293,6 +1293,12 @@ let unresolved_shape_of (c : context) expression =
     | None -> unresolved_shape_uncached expression
   else unresolved_shape_uncached expression
 
+let rec builtin_literal_operand = function
+  | Ast.Parenthesized (expression, _) -> builtin_literal_operand expression
+  | Ast.Int_lit _ | Ast.Unary (Ast.Neg, Ast.Int_lit _, _) -> true
+  | Ast.Array_lit (entries, _) -> List.for_all builtin_literal_operand entries
+  | _ -> false
+
 let rec unresolved_vector_elements c expression =
   match expression with
   | Ast.Splat (element, _) -> (
@@ -2250,7 +2256,7 @@ and check_expr_inner ?destination (c : context) expected expression =
                 (Sema_types.signed_division_overflow_message at
                    (Option.get (value_fact c a)).low (Option.get divisor_fact).low)
             else Ok (Hir.Binary (op, a, b, result_ty, s)))
-  | Ast.Call (fn, args, s) -> check_call c None fn args s
+  | Ast.Call (fn, args, s) -> check_call c expected fn args s
   | Ast.Generic_args (Ast.Ident ("call_addr", _), _, s) ->
       error s "call_addr is a builtin and has no address"
   | Ast.Handle_from_addr (t, e, s) -> (
@@ -2566,7 +2572,7 @@ and check_expr_inner ?destination (c : context) expected expression =
               | _ -> None)
             s "array, struct, or vector initializer needs a destination type")
 
-and check_same_operands c left right =
+and check_same_operands ?expected c left right =
   let contextual expression = Option.is_some (unresolved_shape_of c expression) in
   let hint peer expression =
     match (unresolved_shape_of c expression, Hir.expr_ty peer) with
@@ -2574,7 +2580,14 @@ and check_same_operands c left right =
     | Some Unresolved_vector, (Hir.Vec _ as ty) -> Some ty
     | _ -> None
   in
-  if contextual left && not (contextual right) then
+  if
+    contextual left && contextual right && Option.is_some expected
+    && builtin_literal_operand left && builtin_literal_operand right
+  then
+    let* left = check_expr c expected left in
+    let* right = check_expr c expected right in
+    Ok (left, right)
+  else if contextual left && not (contextual right) then
     let* right = check_expr c None right in
     let* left = check_expr c (hint right left) left in
     Ok (left, right)
@@ -2899,7 +2912,7 @@ and check_handle_from_addr c name opaque_name args s =
                    s ))
         | _ -> error s "handle_from_addr argument must be an addr")
 
-and check_call c _expected fn args s =
+and check_call c expected fn args s =
   match fn with
   | Ast.Generic_args (Ast.Ident ("call_addr", _), generic_args, application_span) -> (
       let* result_ty =
@@ -3180,12 +3193,20 @@ and check_call c _expected fn args s =
         | Some Names.Len | None -> None
       in
       let check_builtin b =
+        let result_context =
+          match expected with
+          | Some (Hir.Int _ | Hir.Vec (_, Hir.Int _)) -> expected
+          | _ -> None
+        in
+        let literal_context expression =
+          if builtin_literal_operand expression then result_context else None
+        in
         match b with
         | Hir.Popcount | Hir.Ctz | Hir.Clz ->
             if List.length args <> 1 then
               error s (Printf.sprintf "builtin `%s` expects one argument" name)
             else
-              let* a = check_expr c None (List.hd args) in
+              let* a = check_expr c (literal_context (List.hd args)) (List.hd args) in
               let valid_operand =
                 is_int (Hir.expr_ty a)
                 ||
@@ -3201,7 +3222,8 @@ and check_call c _expected fn args s =
               error s (Printf.sprintf "builtin `%s` expects two arguments" name)
             else
               let* a, b2 =
-                check_same_operands c (List.hd args) (List.hd (List.tl args))
+                check_same_operands ?expected:result_context c (List.hd args)
+                  (List.hd (List.tl args))
               in
               let valid_operand =
                 is_int (Hir.expr_ty a)
@@ -3277,7 +3299,10 @@ and check_call c _expected fn args s =
               error s (Printf.sprintf "builtin `%s` expects three arguments" name)
             else
               let* m = check_expr c None (List.nth args 0) in
-              let* y, z = check_same_operands c (List.nth args 1) (List.nth args 2) in
+              let* y, z =
+                check_same_operands ?expected:result_context c (List.nth args 1)
+                  (List.nth args 2)
+              in
               let mask_lanes =
                 match Hir.expr_ty m with Hir.Vec (n, Hir.Bool) -> Some n | _ -> None
               in
@@ -3499,7 +3524,7 @@ and check_call c _expected fn args s =
             if List.length args <> 2 then
               error s (Printf.sprintf "builtin `%s` expects two arguments" name)
             else
-              let* a = check_expr c None (List.hd args) in
+              let* a = check_expr c (literal_context (List.hd args)) (List.hd args) in
               let valid_operand =
                 is_int (Hir.expr_ty a)
                 ||

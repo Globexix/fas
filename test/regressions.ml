@@ -14228,6 +14228,42 @@ let () =
         ("fn f(k u32, v vec[4,u32]) u32 { return " ^ name ^ "(k, 1) + " ^ name
        ^ "(v, 1)[0] }\n"))
     [ "rotl"; "rotr" ];
+  List.iter
+    (fun (name, arguments) ->
+      semantic_accept
+        ("builtin-destination-literal-" ^ name)
+        ("fn f() u32 { return " ^ name ^ "(" ^ arguments ^ ") }\n"))
+    [
+      ("rotl", "0x80000001, 1");
+      ("rotr", "0x80000001, 1");
+      ("popcount", "0xffffffff");
+      ("clz", "1");
+      ("ctz", "0x80000000");
+      ("add_sat", "0xfffffff0, 37");
+      ("sub_sat", "0, 1");
+      ("mul_hi", "0xffffffff, 0xffffffff");
+    ];
+  semantic_accept "builtin-destination-literal-contexts"
+    "const C u32 = rotl(0x80000001, 1)\n\
+     var G u32 = popcount(0xffffffff)\n\
+     fn accept(value u32) u32 { return value }\n\
+     fn from_return() u32 { return clz(1) }\n\
+     fn from_case(value u32) u32 { switch value {\n\
+     case popcount(0xffffffff): return 1\n\
+     default: return 0 } }\n\
+     fn from_branch(condition bool) u32 { return if condition { ctz(0x80000000) } else \
+     { 1 } }\n\
+     fn from_assignment() u32 { x u32 = 0\n\
+     x = add_sat(0xfffffff0, 37)\n\
+     x = accept(popcount(0xffffffff))\n\
+     return x }\n\
+     fn from_initializer() u32 { x u32 = sub_sat(0, 1)\n\
+     return x }\n\
+     fn typed_peer(value u32) u32 { return add_sat(value, 1) }\n\
+     fn defaults() i32 { return popcount(1) }\n";
+  semantic_message "builtin-destination-literal-range"
+    "integer literal is out of range for u8: `256`"
+    "fn f() u8 { return popcount(256) }\n";
   semantic_accept "builtin-vector-typed-operands"
     "const indices vec[4,u8] = {0, 1, 2, 3}\n\
      fn f(v vec[4,u32], m vec[4,bool], p addr) u32 {\n\
