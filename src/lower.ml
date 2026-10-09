@@ -2126,13 +2126,36 @@ and construct_into s destination construction =
 
 and construct_entries s destination = function
   | Hir.Init_omitted _ -> Ok ()
-  | Hir.Init_aggregate (aggregate_ty, true, entries, span) ->
-      let* () =
-        construct_entries s destination
-          (Hir.Init_zero (Hir.zero_initializer aggregate_ty, true, span))
-      in
-      construct_entries s destination
-        (Hir.Init_aggregate (aggregate_ty, false, entries, span))
+  | Hir.Init_aggregate (Hir.Struct name, true, entries, span) -> (
+      match find_struct s name with
+      | None -> error span ("internal error: unknown construction struct `" ^ name ^ "`")
+      | Some definition when definition.is_union ->
+          error span "internal error: designated union construction"
+      | Some definition when List.length definition.fields <> List.length entries ->
+          error span "internal error: designated struct construction arity"
+      | Some definition ->
+          let* () =
+            construct_entries s destination
+              (Hir.Init_zero (Hir.zero_initializer (Hir.Struct name), true, span))
+          in
+          let init_span = function
+            | Hir.Init_value expression -> Hir.expr_span expression
+            | Hir.Init_zero (_, _, span)
+            | Hir.Init_omitted (_, span)
+            | Hir.Init_aggregate (_, _, _, span) ->
+                span
+          in
+          let ordered =
+            List.combine definition.fields entries
+            |> List.stable_sort (fun (_, left) (_, right) ->
+                Span.compare (init_span left) (init_span right))
+          in
+          List.fold_left
+            (fun result ((field : Hir.field), entry) ->
+              let* () = result in
+              let* pointer = copy_offset s destination field.offset in
+              construct_into s pointer entry)
+            (Ok ()) ordered)
   | Hir.Init_value expression ->
       let* value = expr s expression in
       let value_ty = Hir.expr_ty expression in

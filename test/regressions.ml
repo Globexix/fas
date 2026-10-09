@@ -10664,6 +10664,11 @@ let () =
     "struct Point { x i32 y i32 }\n\
      fn f() i32 { point Point = {.y = 11, .x = 7}\n\
      return point.x + point.y }\n";
+  semantic_accept "designated-written-order"
+    "struct Point { x i32 y i32 }\n\
+     fn value(v i32) i32 { return v }\n\
+     fn f() i32 { point Point = {.y = value(11), .x = value(7)}\n\
+     return point.x + point.y }\n";
   semantic_accept "designated-nested-struct-and-array"
     "struct Point { x i32 y i32 }\n\
      struct Box { points arr[2,Point] }\n\
