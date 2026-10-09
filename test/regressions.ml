@@ -4308,6 +4308,14 @@ let () =
     \ const C u32 = 0x8f93c7c8\n\
     \ const FloatFmaSingleRound32Second f32 = fma(bitcast[f32](A), bitcast[f32](B), \
      bitcast[f32](C))\n";
+  let signaling_nan_llvm =
+    llvm_of
+      "const N f32 = bitcast[f32](0x7f800001)\n\
+       var G f32 = N\n\
+       fn value() f32 { return N }\n"
+  in
+  if not (contains signaling_nan_llvm "float bitcast (i32 2139095041 to float)") then
+    failwith "float-signaling-nan-constant-bits";
   let float_math_llvm =
     llvm_of
       "fn unary32(x f32) f32 { return sqrt(x) + floor(x) + ceil(x) + round(x) + abs(x) }\n\

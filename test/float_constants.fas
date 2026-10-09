@@ -217,3 +217,32 @@ extern "C" {
   output[u64, 28] = zext[u64](bitcast[u32](if h32 == 0.0 { a32 + b32 } else { c32 }))
   }
 }
+
+const SIGNALING32 f32 = bitcast[f32](0x7f800001)
+const SIGNALING32_NEGATIVE f32 = -SIGNALING32
+const SIGNALING32_VECTOR vec[3,f32] = {SIGNALING32, SIGNALING32_NEGATIVE, abs(SIGNALING32_NEGATIVE)}
+var SIGNALING32_MEMORY f32 = SIGNALING32
+var SIGNALING32_ARRAY arr[2,f32] = {SIGNALING32, SIGNALING32_NEGATIVE}
+struct SignalingBox { value f32 }
+var SIGNALING32_BOX SignalingBox = {SIGNALING32}
+const SIGNALING64_BITS u64 = 0x7ff0000000000001
+const SIGNALING64 f64 = bitcast[f64](SIGNALING64_BITS)
+const SIGNALING64_VECTOR vec[2,f64] = {SIGNALING64, -SIGNALING64}
+
+extern "C" {
+  fn float_nan_transport(output32 addr, output64 addr) void {
+    output32[f32,0] = SIGNALING32
+    output32[f32,1] = SIGNALING32_NEGATIVE
+    output32[f32,2] = abs(SIGNALING32_NEGATIVE)
+    output32[f32,3] = SIGNALING32_MEMORY
+    output32[f32,4] = SIGNALING32_ARRAY[1]
+    output32[f32,5] = SIGNALING32_BOX.value
+    (&output32[f32,6])[vec[3,f32]] = SIGNALING32_VECTOR
+    copy(output32[SignalingBox,9], SIGNALING32_BOX)
+    copy(output32[arr[2,f32],5], SIGNALING32_ARRAY)
+    output64[f64,0] = SIGNALING64
+    output64[f64,1] = -SIGNALING64
+    output64[f64,2] = abs(-SIGNALING64)
+    output64[vec[2,f64],2] = SIGNALING64_VECTOR
+  }
+}

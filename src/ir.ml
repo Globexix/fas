@@ -1303,13 +1303,19 @@ let emit_ty sink t =
   go t
 
 let float_constant_text ty bits =
-  let bits =
-    match ty with
-    | F32 -> Int64.bits_of_float (Int32.float_of_bits (Int64.to_int32 bits))
-    | F64 -> bits
-    | _ -> invalid_arg "internal error: float constant has a non-float type"
-  in
-  Printf.sprintf "0x%016LX" bits
+  if
+    ty = F32
+    && Int64.logand bits 0x7fc00000L = 0x7f800000L
+    && Int64.logand bits 0x3fffffL <> 0L
+  then Printf.sprintf "bitcast (i32 %Ld to float)" (Int64.logand bits 0xffffffffL)
+  else
+    let bits =
+      match ty with
+      | F32 -> Int64.bits_of_float (Int32.float_of_bits (Int64.to_int32 bits))
+      | F64 -> bits
+      | _ -> invalid_arg "internal error: float constant has a non-float type"
+    in
+    Printf.sprintf "0x%016LX" bits
 
 let emit_value sink = function
   | Const (I1, 0L) -> sink.text "false"

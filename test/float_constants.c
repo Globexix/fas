@@ -5,6 +5,7 @@
 #include <string.h>
 
 extern void float_constants(uint64_t *output);
+extern void float_nan_transport(uint32_t *output32, uint64_t *output64);
 extern void float_runtime(float *input32, double *input64, uint64_t *output);
 
 static uint64_t bits32(float value) {
@@ -60,6 +61,30 @@ static double divide64(double left, double right) {
 }
 
 int main(void) {
+  uint32_t transported32[12] = {0};
+  uint64_t transported64[6] = {0};
+  uint32_t expected32[] = {0x7f800001, 0xff800001, 0x7f800001, 0x7f800001,
+                           0xff800001, 0x7f800001, 0x7f800001, 0xff800001, 0x7f800001,
+                           0x7f800001, 0x7f800001, 0xff800001};
+  uint64_t expected64[] = {UINT64_C(0x7ff0000000000001), UINT64_C(0xfff0000000000001),
+                           UINT64_C(0x7ff0000000000001), 0,
+                           UINT64_C(0x7ff0000000000001), UINT64_C(0xfff0000000000001)};
+  float_nan_transport(transported32, transported64);
+  for (unsigned i = 0; i < sizeof expected32 / sizeof expected32[0]; ++i) {
+    if (transported32[i] != expected32[i]) {
+      fprintf(stderr, "signaling NaN transport changed bits: f32 index=%u actual=%08x expected=%08x\n",
+              i, transported32[i], expected32[i]);
+      return 1;
+    }
+  }
+  for (unsigned i = 0; i < sizeof expected64 / sizeof expected64[0]; ++i) {
+    if (transported64[i] != expected64[i]) {
+      fprintf(stderr, "signaling NaN transport changed bits: f64 index=%u actual=%016llx expected=%016llx\n",
+              i, (unsigned long long)transported64[i], (unsigned long long)expected64[i]);
+      return 1;
+    }
+  }
+
   float input32[16] = {1.0f, 0x1p-24f, FLT_MAX, FLT_MAX, FLT_TRUE_MIN,
                        0.5f, 1.0f, 0.0f, 0.0f, 0.0f, NAN, NAN,
                        NAN, 1.0f, -0.0f, 0.0f};
