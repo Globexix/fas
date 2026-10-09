@@ -154,6 +154,9 @@ let operations =
 
 let operation_names = List.map fst operations
 
+let builtin_name name =
+  List.mem name operation_names || List.mem name reserved_float_names
+
 let reserved_binding_name name =
   List.mem name primitive_type_names
   || List.mem name literal_names

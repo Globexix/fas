@@ -1,0 +1,31 @@
+use "C" <math.h>
+use "C" <stdlib.h>
+use "C" <sys/select.h>
+
+extern "C" {
+  fn fas_oracle_sqrt() u64
+  fn fas_oracle_fma() u64
+  fn fas_oracle_floor() u64
+  fn fas_oracle_ceil() u64
+  fn fas_oracle_round() u64
+  fn fas_oracle_abs() u64
+}
+
+fn truncate(values vec[2,u16]) vec[2,u8] {
+  return trunc[vec[2,u8]](values)
+}
+
+fn main() i32 {
+  if bitcast[u64](sqrt(4.0)) != fas_oracle_sqrt() { return 1 }
+  if bitcast[u64](fma(1.125, 2.25, -0.5)) != fas_oracle_fma() { return 2 }
+  if bitcast[u64](floor(-2.75)) != fas_oracle_floor() { return 3 }
+  if bitcast[u64](ceil(-2.75)) != fas_oracle_ceil() { return 4 }
+  if bitcast[u64](round(2.5)) != fas_oracle_round() { return 5 }
+  if bitcast[u64](abs(-2.5)) != fas_oracle_abs() { return 6 }
+  mask vec[2,bool] = {true, false}
+  selected vec[2,u32] = select(mask, {17, 19}, {23, 29})
+  if selected[0] != 17 || selected[1] != 29 { return 7 }
+  narrowed vec[2,u8] = truncate({258, 511})
+  if narrowed[0] != 2 || narrowed[1] != 255 { return 8 }
+  return 0
+}

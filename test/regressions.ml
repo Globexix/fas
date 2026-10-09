@@ -11586,6 +11586,72 @@ let () =
   c_semantic_accept "widening-imported-c-function-argument-twin" c_matrix
     "fn probe(value u16) u32 { return fas_u32_echo(value) }\n";
   let c_stdlib = c_import_system_fixture "stdlib.h" in
+  let c_math = c_import_system_fixture "math.h" in
+  let c_select = c_import_system_fixture "sys/select.h" in
+  let builtin_collision_headers =
+    [
+      ("stdio.h", c_import_system_fixture "stdio.h");
+      ("stdlib.h", c_stdlib);
+      ("string.h", c_import_system_fixture "string.h");
+      ("time.h", c_import_system_fixture "time.h");
+      ("zlib.h", c_import_system_fixture "zlib.h");
+      ("net/if.h", c_import_system_fixture "net/if.h");
+      ("math.h", c_math);
+      ("sys/select.h", c_select);
+      ("limits.h", c_import_system_fixture "limits.h");
+      ("stdbool.h", c_import_system_fixture "stdbool.h");
+      ("stdint.h", c_import_system_fixture "stdint.h");
+      ("sys/stat.h", c_import_system_fixture "sys/stat.h");
+    ]
+  in
+  let builtin_collision_sources =
+    [
+      ("sqrt", "fn probe(x f64) f64 { return sqrt(x) }\n");
+      ("fma", "fn probe(x f64) f64 { return fma(x, x, x) }\n");
+      ("floor", "fn probe(x f64) f64 { return floor(x) }\n");
+      ("ceil", "fn probe(x f64) f64 { return ceil(x) }\n");
+      ("round", "fn probe(x f64) f64 { return round(x) }\n");
+      ("trunc", "fn probe(x vec[2,u16]) vec[2,u8] { return trunc[vec[2,u8]](x) }\n");
+      ("abs", "fn probe(x f64) f64 { return abs(x) }\n");
+      ( "select",
+        "fn probe(mask vec[2,bool], yes vec[2,u32], no vec[2,u32]) vec[2,u32] {\n\
+         return select(mask, yes, no) }\n" );
+      ( "compress",
+        "fn probe(values vec[2,u32], mask vec[2,bool]) vec[2,u32] {\n\
+         return compress(values, mask) }\n" );
+    ]
+  in
+  List.iter
+    (fun (header, imported) ->
+      List.iter
+        (fun name ->
+          if Option.is_some (List.assoc_opt name (snd imported).C_import.unsupported)
+          then
+            match List.assoc_opt name builtin_collision_sources with
+            | Some source ->
+                c_semantic_accept
+                  ("builtin-c-header-" ^ header ^ "-" ^ name)
+                  imported source
+            | None when Names.builtin_name name ->
+                failwith ("builtin-c-header: missing source for " ^ header ^ " " ^ name)
+            | None -> ())
+        Names.operation_names)
+    builtin_collision_headers;
+  c_semantic_message "builtin-c-header-noncall-reserved-name"
+    "C declaration `sqrt` is not supported: name is reserved in Fas; call it through a \
+     C container function with another name"
+    c_math "fn probe() f64 { return sqrt }\n";
+  (match c_semantic_result c_stdlib "fn probe(x i32) f64 { return abs(x) }\n" with
+  | Error [ diagnostic ]
+    when diagnostic.Diag.message = "argument 1 of `abs` is `i32`, expected `f64`"
+         && diagnostic.help
+            = Some "C's integer `abs` is not available under that name; call `labs`" ->
+      ()
+  | Error diagnostics ->
+      failwith
+        ("builtin-c-header-abs-int: unexpected diagnostic: "
+        ^ Diag.render_all ~source:None diagnostics)
+  | Ok _ -> failwith "builtin-c-header-abs-int: accepted an integer operand");
   let c_strings = c_import_system_fixtures [ "stdio.h"; "string.h"; "stdlib.h" ] in
   let c_string_types = c_import_fixture "c_string_parameters.h" in
   let c_string_message literal function_name parameter_name =

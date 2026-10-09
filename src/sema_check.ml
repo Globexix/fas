@@ -3076,18 +3076,26 @@ and check_float_math c expected operation name args s =
         let help =
           match actual with
           | Hir.Int _ ->
-              let converted =
-                List.mapi
-                  (fun argument_index argument ->
-                    if match Hir.expr_ty argument with Hir.Int _ -> true | _ -> false
-                    then
-                      Printf.sprintf "cvt[%s](%s)"
-                        (Sema_types.diagnostic_ty_name operand_ty)
-                        (Ast.expr_name (List.nth args argument_index))
-                    else Ast.expr_name (List.nth args argument_index))
-                  checked
-              in
-              Some (Printf.sprintf "write `%s(%s)`" name (String.concat ", " converted))
+              if
+                name = "abs" && actual = Hir.Int Hir.I32
+                && Option.is_some (List.assoc_opt name c.c_unsupported)
+              then
+                Some "C's integer `abs` is not available under that name; call `labs`"
+              else
+                let converted =
+                  List.mapi
+                    (fun argument_index argument ->
+                      if
+                        match Hir.expr_ty argument with Hir.Int _ -> true | _ -> false
+                      then
+                        Printf.sprintf "cvt[%s](%s)"
+                          (Sema_types.diagnostic_ty_name operand_ty)
+                          (Ast.expr_name (List.nth args argument_index))
+                      else Ast.expr_name (List.nth args argument_index))
+                    checked
+                in
+                Some
+                  (Printf.sprintf "write `%s(%s)`" name (String.concat ", " converted))
           | _ -> None
         in
         Error
@@ -3144,10 +3152,12 @@ and check_call c expected fn args s =
               Ok (Hir.Indirect_call (checked_callee, checked_args, result_ty, s)))
   | Ast.Ident (name, span)
     when Option.is_none (lookup_local name c)
+         && (not (Names.builtin_name name))
          && Option.is_some (List.assoc_opt name c.c_unsupported) ->
       Option.get (c_unsupported c span name)
   | Ast.Generic_args (Ast.Ident (name, span), _, _)
     when Option.is_none (lookup_local name c)
+         && (not (Names.builtin_name name))
          && Option.is_some (List.assoc_opt name c.c_unsupported) ->
       Option.get (c_unsupported c span name)
   | Ast.Generic_args (Ast.Ident ("cvt", _), generic_args, application_span) ->
