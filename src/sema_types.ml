@@ -218,12 +218,16 @@ let designated_record_entries record_name is_union fields entries span =
     in
     collect [] entries
 
-let invalid_designator_error _ty expression =
+let invalid_designator_error ty expression =
   let help, message, span =
     match expression with
     | Ast.Designated_field (name, _, span) ->
-        ( Some "use a struct initializer without array designators",
-          Printf.sprintf "field designator `.%s` requires a struct initializer" name,
+        ( (match ty with
+          | Hir.Array _ ->
+              Some "initialize an array with positional entries `{a, b, ...}`"
+          | _ -> None),
+          Printf.sprintf "field designator `.%s` requires a struct type, got `%s`" name
+            (Hir.ty_name ty),
           span )
     | Ast.Designated_index (_, _, span) ->
         (Some "write positional elements", "array designators are not supported", span)

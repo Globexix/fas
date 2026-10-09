@@ -10684,6 +10684,20 @@ let () =
   semantic_pin "designated-unknown-field" designated_unknown_field 2
     (String.index "fn f() void { point Point = {.xx = 1}" '.' + 1)
     1 "record `Point` has no field `xx`" (Some "did you mean `x`?");
+  let designated_unknown_near_field =
+    "struct P { b u32 }\nfn f() void { value P = {.bb = 1}\nreturn }\n"
+  in
+  semantic_pin "designated-unknown-near-field" designated_unknown_near_field 2
+    (String.index "fn f() void { value P = {.bb = 1}" '.' + 1)
+    1 "record `P` has no field `bb`" (Some "did you mean `b`?");
+  semantic_accept "designated-unknown-near-field-twin"
+    "struct P { b u32 }\nfn f() u32 { value P = {.b = 1}\nreturn value.b }\n";
+  let designated_unknown_no_candidate =
+    "struct P { b u32 }\nfn f() void { value P = {.zzzz = 1}\nreturn }\n"
+  in
+  semantic_pin "designated-unknown-no-candidate" designated_unknown_no_candidate 2
+    (String.index "fn f() void { value P = {.zzzz = 1}" '.' + 1)
+    1 "record `P` has no field `zzzz`" None;
   let designated_duplicate_field =
     "struct Point { x i32 }\nfn f() void { point Point = {.x = 1, .x = 2}\nreturn }\n"
   in
@@ -10700,12 +10714,12 @@ let () =
     1 "cannot mix designated and positional entries in one initializer"
     (Some "use only `.field = value` entries");
   let designated_array_field =
-    "fn f() void { values arr[2,i32] = {.x = 1, 2}\nreturn }\n"
+    "fn f() void { values arr[2, u8] = {.a = 1}\nreturn }\n"
   in
   semantic_pin "designated-field-on-array" designated_array_field 1
     (String.index designated_array_field '.' + 1)
-    1 "field designator `.x` requires a struct initializer"
-    (Some "use a struct initializer without array designators");
+    1 "field designator `.a` requires a struct type, got `arr[2, u8]`"
+    (Some "initialize an array with positional entries `{a, b, ...}`");
   let designated_array_index =
     "fn f() void { values arr[2,i32] = {[0] = 1, 2}\nreturn }\n"
   in
@@ -10714,6 +10728,18 @@ let () =
      String.index_from line (String.index line '=' + 1) '[' + 1)
     1 "array designators are not supported" (Some "write positional elements");
   let designated_import = c_import_fixture "designated.h" in
+  c_semantic_pin "designated-c-unknown-near-field" "did you mean `value`?"
+    designated_import
+    "use \"C\" \"designated.h\"\n\
+     fn f() void { imported FasImported = {.valu = 1}\n\
+     return }\n"
+    2
+    (String.index "fn f() void { imported FasImported = {.valu = 1}" '.' + 1)
+    1 "record `FasImported` has no field `valu`";
+  c_semantic_accept "designated-c-unknown-near-field-twin" designated_import
+    "use \"C\" \"designated.h\"\n\
+     fn f() u32 { imported FasImported = {.value = 1}\n\
+     return imported.value }\n";
   c_semantic_pin "designated-field-on-union"
     "initialize the union with one positional value" designated_import
     "use \"C\" \"designated.h\"\n\
@@ -10725,8 +10751,15 @@ let () =
   let designated_scalar = "fn f() void { value i32 = {.x = 1}\nreturn }\n" in
   semantic_pin "designated-field-on-scalar" designated_scalar 1
     (String.index designated_scalar '.' + 1)
-    1 "field designator `.x` requires a struct initializer"
-    (Some "use a struct initializer without array designators");
+    1 "field designator `.x` requires a struct type, got `i32`" None;
+  semantic_pin "designated-field-on-u32"
+    "fn f() void { value u32 = {.a = 1}\nreturn }\n" 1
+    (String.index "fn f() void { value u32 = {.a = 1}" '.' + 1)
+    1 "field designator `.a` requires a struct type, got `u32`" None;
+  semantic_accept "designated-field-on-non-struct-twins"
+    "fn f() u32 { value u32 = 1\n\
+     items arr[2, u8] = {3, 5}\n\
+     return value + zext[u32](items[1]) }\n";
   let compound_literal_error =
     "Fas has no compound literals; declare a typed local or `const`"
   in
@@ -15669,6 +15702,24 @@ let () =
     (String.length "fn f(a u8, b u32) u32 { return " + 1)
     (String.length "max(a, b)") "cannot infer `T` for `max`: `a` is `u8`, `b` is `u32`"
     (Some "write `max[u32](a, b)`");
+  let signed_unsigned_conflict =
+    "fn max[T](a T, b T) T { return a }\nfn f(a i32, b u32) i32 { return max(a, b) }\n"
+  in
+  semantic_pin "generic-inference-no-rejected-help-i32-u32" signed_unsigned_conflict 2
+    (String.length "fn f(a i32, b u32) i32 { return " + 1)
+    (String.length "max(a, b)") "cannot infer `T` for `max`: `a` is `i32`, `b` is `u32`"
+    None;
+  let wide_signed_unsigned_conflict =
+    "fn max[T](a T, b T) T { return a }\nfn f(a u64, b i64) u64 { return max(a, b) }\n"
+  in
+  semantic_pin "generic-inference-no-rejected-help-u64-i64"
+    wide_signed_unsigned_conflict 2
+    (String.length "fn f(a u64, b i64) u64 { return " + 1)
+    (String.length "max(a, b)") "cannot infer `T` for `max`: `a` is `u64`, `b` is `i64`"
+    None;
+  semantic_accept "generic-inference-explicit-widening-twin"
+    "fn max[T](a T, b T) T { return a }\n\
+     fn f(a u8, b u32) u32 { return max[u32](a, b) }\n";
   let literals =
     "fn max[T](a T, b T) T { return a }\nfn f() i32 { return max(1, 2) }\n"
   in
@@ -15698,6 +15749,31 @@ let () =
     (String.length "zero()")
     "cannot infer `T` for `zero`; provide explicit generic arguments"
     (Some "write the explicit generic argument list for `zero`");
+  let const_conflict =
+    "fn sc2[N const usize](v vec[N, u16], w vec[N, u16]) void { return }\n\
+     fn f(v vec[2, u16], w vec[3, u16]) void { sc2(v, w)\n\
+     return }\n"
+  in
+  semantic_pin "generic-inference-conflicting-const" const_conflict 2
+    (String.length "fn f(v vec[2, u16], w vec[3, u16]) void { " + 1)
+    (String.length "sc2(v, w)")
+    "cannot infer `N` for `sc2`: `v` gives `2`, `w` gives `3`" None;
+  let const_type_position_conflict =
+    "struct Blob[N const usize] { values arr[N, u8] }\n\
+     fn sc2[N const usize](v vec[N, u8], b handle[Blob[N]]) void { return }\n\
+     fn f(v vec[2, u8], b handle[Blob[3]]) void { sc2(v, b)\n\
+     return }\n"
+  in
+  semantic_pin "generic-inference-const-type-position-conflict"
+    const_type_position_conflict 3
+    (String.length "fn f(v vec[2, u8], b handle[Blob[3]]) void { " + 1)
+    (String.length "sc2(v, b)")
+    "cannot infer `N` for `sc2`: `v` gives `2`, `b` gives `3`" None;
+  semantic_accept "generic-inference-const-type-position-twin"
+    "struct Blob[N const usize] { values arr[N, u8] }\n\
+     fn sc2[N const usize](v vec[N, u8], b handle[Blob[N]]) void { return }\n\
+     fn f(v vec[2, u8], b handle[Blob[2]]) void { sc2(v, b)\n\
+     return }\n";
   semantic_message "generic-inference-generic-function-address"
     "generic function `f` has no single address"
     "fn f[T](value T) T { return value }\nvar P addr = &f\n"

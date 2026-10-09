@@ -664,6 +664,37 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     let type_params = type_param_names generic_params in
     let const_params = const_params generic_params |> List.map (fun p -> p.Ast.name) in
     let inferred_types = ref [] and inferred_consts = ref [] and origins = ref [] in
+    let direct_type_parameter _ =
+      List.for_all
+        (fun (param : Ast.param) ->
+          match param.ty with
+          | Ast.Handle _ | Ast.Array _ | Ast.Vec _ | Ast.Applied_type _ -> false
+          | _ -> true)
+        params
+    in
+    let integer_shape ty =
+      let name = Ast.type_name ty in
+      if not (String.starts_with ~prefix:"u" name || String.starts_with ~prefix:"i" name)
+      then None
+      else
+        let bits =
+          if name = "usize" || name = "isize" || String.ends_with ~suffix:"64" name then
+            64
+          else if String.ends_with ~suffix:"32" name then 32
+          else if String.ends_with ~suffix:"16" name then 16
+          else if String.ends_with ~suffix:"8" name then 8
+          else 0
+        in
+        if bits = 0 then None else Some (bits, String.starts_with ~prefix:"u" name)
+    in
+    let type_holds actual expected =
+      Ast.type_name actual = Ast.type_name expected
+      ||
+      match (integer_shape actual, integer_shape expected) with
+      | Some (actual_bits, actual_unsigned), Some (expected_bits, expected_unsigned) ->
+          expected_bits > actual_bits && (actual_unsigned || not expected_unsigned)
+      | _ -> false
+    in
     let bind_type parameter ty argument =
       match List.assoc_opt parameter !inferred_types with
       | None ->
@@ -673,27 +704,42 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       | Some previous when Ast.type_name previous = Ast.type_name ty -> Ok ()
       | Some previous ->
           let previous_argument = Ast.expr_name (List.assoc parameter !origins) in
-          let explicit_call =
-            Printf.sprintf "%s[%s](%s)" name (Ast.type_name ty)
-              (String.concat ", " (List.map Ast.expr_name arguments))
+          let candidate =
+            if not (direct_type_parameter parameter) then None
+            else if type_holds previous ty then Some ty
+            else if type_holds ty previous then Some previous
+            else None
+          in
+          let help =
+            match candidate with
+            | None -> None
+            | Some candidate ->
+                Some
+                  (Printf.sprintf "write `%s[%s](%s)`" name (Ast.type_name candidate)
+                     (String.concat ", " (List.map Ast.expr_name arguments)))
           in
           Error
             [
-              Diag.error
-                ~help:(Printf.sprintf "write `%s`" explicit_call)
-                span
+              Diag.error ?help span
                 (Printf.sprintf "cannot infer `%s` for `%s`: `%s` is `%s`, `%s` is `%s`"
                    parameter name previous_argument (Ast.type_name previous)
                    (Ast.expr_name argument) (Ast.type_name ty));
             ]
     in
-    let bind_const parameter value =
+    let bind_const parameter value argument =
       match List.assoc_opt parameter !inferred_consts with
       | None ->
           inferred_consts := (parameter, value) :: !inferred_consts;
+          origins := (parameter, argument) :: !origins;
           Ok ()
       | Some previous when previous = value -> Ok ()
-      | Some _ -> error span "conflicting const generic arguments"
+      | Some previous ->
+          let previous_argument = Ast.expr_name (List.assoc parameter !origins) in
+          error span
+            (Printf.sprintf
+               "cannot infer `%s` for `%s`: `%s` gives `%s`, `%s` gives `%s`" parameter
+               name previous_argument (Int64.to_string previous)
+               (Ast.expr_name argument) (Int64.to_string value))
     in
     let int_value (length : Ast.aggregate_length) =
       try Some (Int64.of_string length.text) with _ -> None
@@ -727,7 +773,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           let* () =
             match (length.expression, int_value actual_length) with
             | Ast.Ident (n, _), Some value when List.mem n const_params ->
-                bind_const n value
+                bind_const n value argument
             | _ -> Ok ()
           in
           match_type argument p a
@@ -754,7 +800,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                     Ast.Const_arg (Ast.Int_lit (v, _)) :: rest )
                   when List.mem n const_params ->
                     let* () =
-                      try bind_const n (Int64.of_string v) with Failure _ -> Ok ()
+                      try bind_const n (Int64.of_string v) argument
+                      with Failure _ -> Ok ()
                     in
                     args es rest
                 | Ast.Name_arg (n, _) :: es, Ast.Type_arg a :: rest
