@@ -4056,6 +4056,14 @@ let () =
      fn comparisons(a f32, b f32) bool {\n\
      return a == b || a != b || a < b || a <= b || a > b || a >= b\n\
      }\n";
+  semantic_accept "float-constant-evaluation-accept"
+    "const HALF_BITS u32 = 0x33800000\n\
+     const ONE f32 = 1.0\n\
+     const HALF f32 = bitcast[f32](HALF_BITS)\n\
+     const ROUNDED f32 = ONE + HALF + HALF\n\
+     const WIDE f64 = ROUNDED\n\
+     const INTEGER i32 = cvt[i32](WIDE)\n\
+     fn main() i32 { return INTEGER }\n";
   semantic_accept "float-widening-returns-and-arguments"
     "fn widen(value f32) f64 { return value }\n\
      fn identity(value f64) f64 { return value }\n\

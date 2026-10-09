@@ -182,6 +182,10 @@ def ir_tag(line):
         return "store"
     if rhs.startswith("icmp "):
         return "cmp"
+    if rhs.startswith("fcmp "):
+        return "cmp"
+    if rhs.startswith("fneg "):
+        return "fneg"
     if rhs.startswith("alloca "):
         return "alloca"
     if rhs.startswith("call "):
@@ -197,10 +201,12 @@ def ir_tag(line):
     if rhs.startswith("shufflevector "):
         return "shuffle_zero" if rhs.endswith("zeroinitializer") else "shufflevector"
     if rhs.startswith(("zext ", "sext ", "trunc ", "bitcast ", "ptrtoint ",
-                       "inttoptr ", "sitofp ", "uitofp ", "fptosi ", "fptoui ")):
+                       "inttoptr ", "sitofp ", "uitofp ", "fptosi ", "fptoui ",
+                       "fpext ", "fptrunc ")):
         return "cast"
     if rhs.startswith(("add ", "sub ", "mul ", "sdiv ", "srem ", "udiv ",
-                       "urem ", "and ", "or ", "xor ", "shl ", "lshr ", "ashr ")):
+                       "urem ", "and ", "or ", "xor ", "shl ", "lshr ", "ashr ",
+                       "fadd ", "fsub ", "fmul ", "fdiv ")):
         return "bin"
     raise AssertionError("unrecognized --emit-ir instruction: " + line)
 
@@ -408,12 +414,13 @@ def llvm_adapter_symbols(text):
 
 expected = {
     "value": {"const", "vconst", "null", "undef", "zero", "local", "param", "func"},
-    "instr": {"bin", "cmp", "alloca", "load", "load_volatile", "store",
+    "instr": {"bin", "cmp", "fneg", "alloca", "load", "load_volatile", "store",
               "store_volatile", "gep", "cast", "call", "phi", "select", "extract",
               "insert", "shuffle_zero", "shufflevector", "string_ptr", "global_ptr", "call_indirect", "trap"},
     "terminator": {"ret", "br", "condbr", "switch", "unreachable"},
     "global": {"string", "array", "storage"},
-    "ty": {"i1", "i8", "i16", "i32", "i64", "i128", "ptr", "vector", "struct", "array", "void"},
+    "ty": {"i1", "i8", "i16", "i32", "i64", "i128", "float", "double",
+           "ptr", "vector", "struct", "array", "void"},
 }
 observed = {key: set() for key in expected}
 value_tags, instruction_tags, terminator_tags = expected["value"], expected["instr"], expected["terminator"]
@@ -438,7 +445,8 @@ def visit(value):
         for item in value.values():
             visit(item)
     elif isinstance(value, str):
-        if value in {"i1", "i8", "i16", "i32", "i64", "i128", "ptr", "void"}:
+        if value in {"i1", "i8", "i16", "i32", "i64", "i128", "float", "double",
+                     "ptr", "void"}:
             observed["ty"].add(value)
         elif value.startswith("<") and " x " in value:
             observed["ty"].add("vector")

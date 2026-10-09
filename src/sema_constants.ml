@@ -631,7 +631,12 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
           (if is_if_operand e then None else expected)
           ~check_only ~validate_dead ~allow_widen:false e
       in
-      if not (is_int t) then error s "unary minus requires an integer"
+      if is_float t then
+        Ok
+          ( t,
+            Int64.logxor v
+              (if t = Hir.Float Hir.F32 then 0x80000000L else Int64.min_int) )
+      else if not (is_int t) then error s "unary minus requires an integer"
       else Ok (t, mask_value t (Int64.neg v))
   | Ast.Unary (Ast.Bit_not, e, s) ->
       let* t, v =
@@ -831,7 +836,47 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
           ?result_expected:expected ~comparison_chain_rewrite_valid s op original_lt
           original_rt
       in
-      if (not check_only) && (op = Ast.Div || op = Ast.Rem) && rv = 0L then
+      if is_float lt && is_float rt then
+        let common = Option.get (common_numeric_type lt rt) in
+        let widen ty value =
+          match Sema_types.implicit_numeric_widen ty common with
+          | Some Ast.Float_widen -> widen_integer_value Ast.Float_widen ty common value
+          | _ -> value
+        in
+        let lv = widen lt lv and rv = widen rt rv in
+        let as_float ty value =
+          match ty with
+          | Hir.Float Hir.F32 -> Int32.float_of_bits (Int64.to_int32 value)
+          | Hir.Float Hir.F64 -> Int64.float_of_bits value
+          | _ -> assert false
+        in
+        let result =
+          match op with
+          | Ast.Eq -> if as_float common lv = as_float common rv then 1L else 0L
+          | Ast.Ne -> if as_float common lv <> as_float common rv then 1L else 0L
+          | Ast.Lt -> if as_float common lv < as_float common rv then 1L else 0L
+          | Ast.Le -> if as_float common lv <= as_float common rv then 1L else 0L
+          | Ast.Gt -> if as_float common lv > as_float common rv then 1L else 0L
+          | Ast.Ge -> if as_float common lv >= as_float common rv then 1L else 0L
+          | (Ast.Add | Ast.Sub | Ast.Mul | Ast.Div) when common = Hir.Float Hir.F32 ->
+              let operation =
+                match op with Ast.Add -> 0 | Ast.Sub -> 1 | Ast.Mul -> 2 | _ -> 3
+              in
+              Float_parse.f32_binary_bits operation lv rv
+          | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div ->
+              let left = Int64.float_of_bits lv and right = Int64.float_of_bits rv in
+              let value =
+                match op with
+                | Ast.Add -> left +. right
+                | Ast.Sub -> left -. right
+                | Ast.Mul -> left *. right
+                | _ -> left /. right
+              in
+              Int64.bits_of_float value
+          | _ -> assert false
+        in
+        Ok (result_ty, mask_value result_ty result)
+      else if (not check_only) && (op = Ast.Div || op = Ast.Rem) && rv = 0L then
         error s "division by zero in constant expression"
       else
         let signed_lv = sign_extend_value lt lv in
@@ -998,15 +1043,20 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
         else Error [ Sema_types.cast_error ~expression:e k st dt s ]
       in
       let* () =
-        if ((st = Hir.Bool || is_int st) && (dt = Hir.Bool || is_int dt)) || reshaped
+        if
+          ((st = Hir.Bool || is_int st) && (dt = Hir.Bool || is_int dt))
+          || (k = Ast.Bitcast && (is_float st || is_float dt))
+          || (k = Ast.Float_widen && is_float st && is_float dt)
+          || reshaped
         then Ok ()
-        else error s "constant cast requires scalar integer or bool types"
+        else error s "constant cast requires scalar numeric types"
       in
       let sb = match st with Hir.Bool -> 1 | Hir.Int q -> int_bits q | _ -> 0 in
       let result =
         if reshaped then v
         else
           match k with
+          | Ast.Float_widen -> widen_integer_value Ast.Float_widen st dt v
           | Ast.Sext when sb < 64 ->
               let shift = 64 - sb in
               Int64.shift_right (Int64.shift_left v shift) shift
@@ -1014,6 +1064,44 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
           | _ -> v
       in
       Ok (dt, mask_value dt result)
+  | Ast.Call
+      ( Ast.Generic_args (Ast.Ident ("cvt", _), generic_args, target_span),
+        [ value ],
+        call_span ) ->
+      let* target =
+        match generic_args with
+        | [ Ast.Type_arg ty ] -> source_ty_with_values named_types consts target_span ty
+        | [ Ast.Name_arg (name, name_span) ] ->
+            source_ty_with_values named_types consts name_span
+              (Ast.Named_type (name, name_span))
+        | _ -> error target_span "cvt needs one target type: cvt[T](value)"
+      in
+      let* source, input =
+        const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
+          ~globals ?resolve consts None ~check_only ~validate_dead value
+      in
+      let* output =
+        match (source, target) with
+        | Hir.Int kind, Hir.Float float_kind ->
+            Ok
+              (Float_parse.int_to_float_bits
+                 (sign_extend_value source input)
+                 (int_bits kind)
+                 (not (is_unsigned source))
+                 (float_kind = Hir.F32))
+        | Hir.Float Hir.F32, Hir.Float Hir.F64 ->
+            Ok (widen_integer_value Ast.Float_widen source target input)
+        | Hir.Float Hir.F64, Hir.Float Hir.F32 ->
+            Ok (Int64.of_int32 (Int32.bits_of_float (Int64.float_of_bits input)))
+        | Hir.Float ((Hir.F32 | Hir.F64) as kind), Hir.Int integer_kind ->
+            Float_parse.float_to_int_bits input
+              (if kind = Hir.F32 then 32 else 64)
+              (int_bits integer_kind)
+              (not (is_unsigned target))
+            |> mask_value target |> Result.ok
+        | _ -> error call_span "invalid constant cvt conversion"
+      in
+      Ok (target, output)
   | Ast.Call (Ast.Ident ("len", _), [ Ast.String_lit (cstr, v, _) ], s) ->
       if cstr && String.contains v '\000' then
         error s "C string literal cannot contain embedded NUL"

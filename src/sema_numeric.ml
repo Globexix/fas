@@ -272,6 +272,8 @@ let constant_bitcast source_ty source_values destination_ty =
     match ty with
     | Hir.Bool | Hir.Int _ ->
         Option.map (fun width -> (width, 1, values)) (integer_value_bit_width ty)
+    | Hir.Float Hir.F32 -> Some (32, 1, values)
+    | Hir.Float Hir.F64 -> Some (64, 1, values)
     | Hir.Vec (lanes, ((Hir.Bool | Hir.Int _) as element)) ->
         Option.map
           (fun width -> (width, lanes, values))

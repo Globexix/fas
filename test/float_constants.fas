@@ -1,0 +1,219 @@
+const F32_NEG_ZERO_BITS u32 = 0x80000000
+const F32_HALF_ULP_BITS u32 = 0x33800000
+const F32_ONE_BITS u32 = 0x3f800000
+const F32_MAX_FINITE_BITS u32 = 0x7f7fffff
+const F32_NAN_BITS u32 = 0x7fc00000
+const F32_INFINITY_BITS u32 = 0x7f800000
+const F32_NEG_INFINITY_BITS u32 = 0xff800000
+const F32_SUBNORMAL_MAX_BITS u32 = 0x007fffff
+const F32_NORMAL_MIN_BITS u32 = 0x00800000
+const F32_POS_ZERO f32 = bitcast[f32](0x00000000)
+const F32_NEG_ZERO f32 = bitcast[f32](F32_NEG_ZERO_BITS)
+const F32_MIN_SUBNORMAL f32 = bitcast[f32](0x00000001)
+const F32_HALF_ULP f32 = bitcast[f32](F32_HALF_ULP_BITS)
+const F32_ONE f32 = bitcast[f32](F32_ONE_BITS)
+const F32_MAX_FINITE f32 = bitcast[f32](F32_MAX_FINITE_BITS)
+const F32_NAN f32 = bitcast[f32](F32_NAN_BITS)
+const F32_INFINITY f32 = bitcast[f32](F32_INFINITY_BITS)
+const F32_SUBNORMAL_MAX f32 = bitcast[f32](F32_SUBNORMAL_MAX_BITS)
+const F32_NORMAL_MIN f32 = bitcast[f32](F32_NORMAL_MIN_BITS)
+const F32_ADD_TIE f32 = F32_ONE + F32_HALF_ULP
+const F32_ADD_OVERFLOW f32 = F32_MAX_FINITE + F32_MAX_FINITE
+const F32_MUL_UNDERFLOW f32 = F32_MIN_SUBNORMAL * 0.5
+const F32_DIV_ZERO f32 = F32_ONE / F32_POS_ZERO
+const F32_NEGATE_ZERO f32 = -F32_POS_ZERO
+const F32_NAN_NOT_EQUAL bool = F32_NAN != F32_NAN
+const F32_NAN_LESS bool = F32_NAN < F32_ONE
+const F32_ZERO_EQUAL bool = F32_NEG_ZERO == F32_POS_ZERO
+const F32_SUBTRACT_ZERO f32 = F32_MIN_SUBNORMAL - F32_MIN_SUBNORMAL
+const F32_CHAINED_TIE f32 = F32_ONE + F32_HALF_ULP + F32_HALF_ULP
+const F32_ONE_LE bool = F32_ONE <= F32_ONE
+const F32_ONE_GT_ZERO bool = F32_ONE > F32_POS_ZERO
+const F32_ONE_GE bool = F32_ONE >= F32_ONE
+const F32_IF_RESULT f32 = if true { F32_ADD_TIE } else { F32_MAX_FINITE }
+
+const F64_NEG_ZERO_BITS u64 = 0x8000000000000000
+const F64_POS_ZERO_BITS u64 = 0
+const F64_MIN_SUBNORMAL_BITS u64 = 1
+const F64_HALF_ULP_BITS u64 = 0x3ca0000000000000
+const F64_F32_TIE_BITS u64 = 0x3e70000000000000
+const F64_ONE_BITS u64 = 0x3ff0000000000000
+const F64_MAX_FINITE_BITS u64 = 0x7fefffffffffffff
+const F64_NAN_BITS u64 = 0x7ff8000000000000
+const F64_INFINITY_BITS u64 = 0x7ff0000000000000
+const F64_POS_ZERO f64 = bitcast[f64](F64_POS_ZERO_BITS)
+const F64_NEG_ZERO f64 = bitcast[f64](F64_NEG_ZERO_BITS)
+const F64_MIN_SUBNORMAL f64 = bitcast[f64](F64_MIN_SUBNORMAL_BITS)
+const F64_HALF_ULP f64 = bitcast[f64](F64_HALF_ULP_BITS)
+const F64_ONE f64 = bitcast[f64](F64_ONE_BITS)
+const F64_MAX_FINITE f64 = bitcast[f64](F64_MAX_FINITE_BITS)
+const F64_NAN f64 = bitcast[f64](F64_NAN_BITS)
+const F64_INFINITY f64 = bitcast[f64](F64_INFINITY_BITS)
+const F64_F32_TIE f64 = F64_ONE + bitcast[f64](F64_F32_TIE_BITS)
+const F64_ADD_TIE f64 = F64_ONE + F64_HALF_ULP
+const F64_ADD_OVERFLOW f64 = F64_MAX_FINITE + F64_MAX_FINITE
+const F64_MUL_UNDERFLOW f64 = F64_MIN_SUBNORMAL * 0.5
+const F64_DIV_ZERO f64 = F64_ONE / F64_POS_ZERO
+const F64_NEGATE_ZERO f64 = -F64_POS_ZERO
+const F64_NAN_NOT_EQUAL bool = F64_NAN != F64_NAN
+const F64_NAN_LESS bool = F64_NAN < F64_ONE
+const F64_ZERO_EQUAL bool = F64_NEG_ZERO == F64_POS_ZERO
+const F64_SUBTRACT_ZERO f64 = F64_MIN_SUBNORMAL - F64_MIN_SUBNORMAL
+const F64_CHAINED_TIE f64 = F64_ONE + F64_HALF_ULP + F64_HALF_ULP
+const F64_ONE_LE bool = F64_ONE <= F64_ONE
+const F64_ONE_GT_ZERO bool = F64_ONE > F64_POS_ZERO
+const F64_ONE_GE bool = F64_ONE >= F64_ONE
+const F32_WIDENED f64 = F32_MIN_SUBNORMAL
+const F32_MIXED_ADD f64 = F32_MIN_SUBNORMAL + F64_ONE
+
+const I64_SOURCE i64 = 9007199254740993
+const U64_SOURCE u64 = 18446744073709551615
+const I64_TO_F32 f32 = cvt[f32](I64_SOURCE)
+const U64_TO_F32 f32 = cvt[f32](U64_SOURCE)
+const U64_TO_F64 f64 = cvt[f64](U64_SOURCE)
+const F32_TO_F64 f64 = cvt[f64](F32_MIN_SUBNORMAL)
+const F64_TO_F32 f32 = cvt[f32](F64_F32_TIE)
+const NAN_TO_I32 i32 = cvt[i32](F64_NAN)
+const INFINITY_TO_U8 u8 = cvt[u8](F32_INFINITY)
+const FRACTION_TO_I8_BITS u32 = 0x42ffcccd
+const NEG_INFINITY_TO_I8 i8 = cvt[i8](bitcast[f32](F32_NEG_INFINITY_BITS))
+const FRACTION_TO_I8 i8 = cvt[i8](bitcast[f32](FRACTION_TO_I8_BITS))
+const POWER_TO_U64 u64 = cvt[u64](18446744073709551616.0)
+
+const FloatValues arr[7, f32] = {
+  F32_NEG_ZERO, F32_MIN_SUBNORMAL, F32_ADD_TIE, F32_SUBNORMAL_MAX,
+  F32_NORMAL_MIN, F32_INFINITY, F32_NAN
+}
+
+var Float64Values arr[4, f64] = {
+  F64_NEG_ZERO, F64_MIN_SUBNORMAL, F64_INFINITY, F64_NAN
+}
+
+const ConstFloat64Values arr[4, f64] = {
+  F64_NEG_ZERO, F64_MIN_SUBNORMAL, F64_INFINITY, F64_NAN
+}
+
+struct FloatRecord { first f32, second f64 }
+
+var FloatRecordValue FloatRecord = {F32_ADD_TIE, F64_ADD_TIE}
+
+extern "C" {
+  fn float_constants(output addr) void {
+  output[u64, 0] = zext[u64](bitcast[u32](F32_ADD_TIE))
+  output[u64, 1] = zext[u64](bitcast[u32](F32_ADD_OVERFLOW))
+  output[u64, 2] = zext[u64](bitcast[u32](F32_MUL_UNDERFLOW))
+  output[u64, 3] = zext[u64](bitcast[u32](F32_DIV_ZERO))
+  output[u64, 4] = zext[u64](bitcast[u32](F32_NEGATE_ZERO))
+  output[u64, 5] = zext[u64](F32_NAN_NOT_EQUAL)
+  output[u64, 6] = zext[u64](F32_NAN_LESS)
+  output[u64, 7] = zext[u64](F32_ZERO_EQUAL)
+  output[u64, 8] = bitcast[u64](F64_ADD_TIE)
+  output[u64, 9] = bitcast[u64](F64_ADD_OVERFLOW)
+  output[u64, 10] = bitcast[u64](F64_MUL_UNDERFLOW)
+  output[u64, 11] = bitcast[u64](F64_DIV_ZERO)
+  output[u64, 12] = bitcast[u64](F64_NEGATE_ZERO)
+  output[u64, 13] = zext[u64](F64_NAN_NOT_EQUAL)
+  output[u64, 14] = zext[u64](F64_NAN_LESS)
+  output[u64, 15] = zext[u64](F64_ZERO_EQUAL)
+  output[u64, 16] = zext[u64](bitcast[u32](FloatValues[0]))
+  output[u64, 17] = zext[u64](bitcast[u32](FloatValues[1]))
+  output[u64, 18] = zext[u64](bitcast[u32](FloatValues[2]))
+  output[u64, 19] = zext[u64](bitcast[u32](FloatRecordValue.first))
+  output[u64, 20] = bitcast[u64](FloatRecordValue.second)
+  output[u64, 21] = zext[u64](bitcast[u32](I64_TO_F32))
+  output[u64, 22] = zext[u64](bitcast[u32](U64_TO_F32))
+  output[u64, 23] = bitcast[u64](U64_TO_F64)
+  output[u64, 24] = bitcast[u64](F32_TO_F64)
+  output[u64, 25] = zext[u64](bitcast[u32](F64_TO_F32))
+  output[u64, 26] = bitcast[u64](sext[i64](NAN_TO_I32))
+  output[u64, 27] = zext[u64](INFINITY_TO_U8)
+  output[u64, 28] = bitcast[u64](sext[i64](NEG_INFINITY_TO_I8))
+  output[u64, 29] = bitcast[u64](sext[i64](FRACTION_TO_I8))
+  output[u64, 30] = POWER_TO_U64
+  output[u64, 31] = zext[u64](bitcast[u32](F32_CHAINED_TIE))
+  output[u64, 32] = bitcast[u64](F64_CHAINED_TIE)
+  output[u64, 33] = zext[u64](bitcast[u32](F32_SUBTRACT_ZERO))
+  output[u64, 34] = bitcast[u64](F64_SUBTRACT_ZERO)
+  output[u64, 35] = zext[u64](F32_ONE_LE)
+  output[u64, 36] = zext[u64](F32_ONE_GT_ZERO)
+  output[u64, 37] = zext[u64](F32_ONE_GE)
+  output[u64, 38] = zext[u64](F64_ONE_LE)
+  output[u64, 39] = zext[u64](F64_ONE_GT_ZERO)
+  output[u64, 40] = zext[u64](F64_ONE_GE)
+  output[u64, 41] = bitcast[u64](F32_WIDENED)
+  output[u64, 42] = bitcast[u64](F32_MIXED_ADD)
+  output[u64, 43] = zext[u64](bitcast[u32](F32_IF_RESULT))
+  output[u64, 44] = zext[u64](bitcast[u32](FloatValues[3]))
+  output[u64, 45] = zext[u64](bitcast[u32](FloatValues[4]))
+  output[u64, 46] = zext[u64](bitcast[u32](FloatValues[5]))
+  output[u64, 47] = zext[u64](bitcast[u32](FloatValues[6]))
+  output[u64, 48] = bitcast[u64](Float64Values[0])
+  output[u64, 49] = bitcast[u64](Float64Values[1])
+  output[u64, 50] = bitcast[u64](Float64Values[2])
+  output[u64, 51] = bitcast[u64](Float64Values[3])
+  output[u64, 52] = bitcast[u64](ConstFloat64Values[0])
+  output[u64, 53] = bitcast[u64](ConstFloat64Values[1])
+  output[u64, 54] = bitcast[u64](ConstFloat64Values[2])
+  output[u64, 55] = bitcast[u64](ConstFloat64Values[3])
+  }
+  fn float_runtime(input32 addr, input64 addr, output addr) void {
+  a32 f32 = input32[f32, 0]
+  b32 f32 = input32[f32, 1]
+  c32 f32 = input32[f32, 2]
+  d32 f32 = input32[f32, 3]
+  e32 f32 = input32[f32, 4]
+  f32value f32 = input32[f32, 5]
+  g32 f32 = input32[f32, 6]
+  h32 f32 = input32[f32, 7]
+  n32a f32 = input32[f32, 10]
+  n32b f32 = input32[f32, 11]
+  n32c f32 = input32[f32, 12]
+  n32d f32 = input32[f32, 13]
+  z32a f32 = input32[f32, 14]
+  z32b f32 = input32[f32, 15]
+  output[u64, 0] = zext[u64](bitcast[u32](a32 + b32))
+  output[u64, 1] = zext[u64](bitcast[u32](c32 + d32))
+  output[u64, 2] = zext[u64](bitcast[u32](e32 * f32value))
+  output[u64, 3] = zext[u64](bitcast[u32](g32 / h32))
+  output[u64, 4] = zext[u64](bitcast[u32](-input32[f32, 8]))
+  output[u64, 5] = zext[u64](n32a != n32b)
+  output[u64, 6] = zext[u64](n32c < n32d)
+  output[u64, 7] = zext[u64](z32a == z32b)
+  a64 f64 = input64[f64, 0]
+  b64 f64 = input64[f64, 1]
+  c64 f64 = input64[f64, 2]
+  d64 f64 = input64[f64, 3]
+  e64 f64 = input64[f64, 4]
+  f64value f64 = input64[f64, 5]
+  g64 f64 = input64[f64, 6]
+  h64 f64 = input64[f64, 7]
+  n64a f64 = input64[f64, 10]
+  n64b f64 = input64[f64, 11]
+  n64c f64 = input64[f64, 12]
+  n64d f64 = input64[f64, 13]
+  z64a f64 = input64[f64, 14]
+  z64b f64 = input64[f64, 15]
+  output[u64, 8] = bitcast[u64](a64 + b64)
+  output[u64, 9] = bitcast[u64](c64 + d64)
+  output[u64, 10] = bitcast[u64](e64 * f64value)
+  output[u64, 11] = bitcast[u64](g64 / h64)
+  output[u64, 12] = bitcast[u64](-input64[f64, 8])
+  output[u64, 13] = zext[u64](n64a != n64b)
+  output[u64, 14] = zext[u64](n64c < n64d)
+  output[u64, 15] = zext[u64](z64a == z64b)
+  output[u64, 16] = zext[u64](bitcast[u32](a32 + b32 + b32))
+  output[u64, 17] = bitcast[u64](a64 + b64 + b64)
+  output[u64, 18] = zext[u64](bitcast[u32](e32 - e32))
+  output[u64, 19] = bitcast[u64](e64 - e64)
+  output[u64, 20] = zext[u64](g32 <= g32)
+  output[u64, 21] = zext[u64](g32 > h32)
+  output[u64, 22] = zext[u64](g32 >= g32)
+  output[u64, 23] = zext[u64](g64 <= g64)
+  output[u64, 24] = zext[u64](g64 > h64)
+  output[u64, 25] = zext[u64](g64 >= g64)
+  wide32 f64 = e32
+  output[u64, 26] = bitcast[u64](wide32)
+  output[u64, 27] = bitcast[u64](e32 + a64)
+  output[u64, 28] = zext[u64](bitcast[u32](if h32 == 0.0 { a32 + b32 } else { c32 }))
+  }
+}
