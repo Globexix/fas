@@ -234,8 +234,8 @@ grep -F 'fas_scalar_pointer' "$bindings" | grep -F 'const' >/dev/null \
   || fail "bindings manifest omitted the const qualifier obligation"
 grep -F "$USE_EDGES_TMP/paths/matrix.h:" "$bindings" >/dev/null \
   || fail "bindings manifest omitted the declaration origin"
-grep -F 'fas_float_value' "$bindings" | grep -F 'floating-point types are not supported' \
-  >/dev/null || fail "bindings manifest omitted the unsupported reason"
+grep -F 'fas_float_value' "$bindings" | grep -F 'fn(f32)->f32' \
+  >/dev/null || fail "bindings manifest omitted the f32 function signature"
 TMPDIR="$USE_EDGES_TMP" "$OCAML_FAS" --keep --emit-ir \
   "$USE_EDGES_TMP/paths/manifest.fas" >"$USE_EDGES_TMP/manifest-second.ir" \
   2>"$USE_EDGES_TMP/manifest-second.log"
