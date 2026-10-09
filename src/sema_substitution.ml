@@ -109,14 +109,23 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   let generic_type_names = ref [] in
   let local_values = ref String_set.empty in
   let shadowed_constants = ref String_set.empty in
+  let inference_types = ref [] in
+  let set_inference_params params =
+    inference_types :=
+      List.map (fun (parameter : Ast.param) -> (parameter.name, parameter.ty)) params
+  in
   let with_local_values names f =
     let previous = !local_values in
     let previous_shadowed_constants = !shadowed_constants in
+    let previous_inference_types = !inference_types in
     local_values := names;
     shadowed_constants := names;
+    inference_types :=
+      List.filter (fun (name, _) -> String_set.mem name names) !inference_types;
     let result = f () in
     local_values := previous;
     shadowed_constants := previous_shadowed_constants;
+    inference_types := previous_inference_types;
     result
   in
   let ambiguous_name = function
@@ -650,6 +659,174 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       ret_ty;
       limits;
     }
+  in
+  let infer_generic_arguments name generic_params params arguments span =
+    let type_params = type_param_names generic_params in
+    let const_params = const_params generic_params |> List.map (fun p -> p.Ast.name) in
+    let inferred_types = ref [] and inferred_consts = ref [] and origins = ref [] in
+    let bind_type parameter ty argument =
+      match List.assoc_opt parameter !inferred_types with
+      | None ->
+          inferred_types := (parameter, ty) :: !inferred_types;
+          origins := (parameter, argument) :: !origins;
+          Ok ()
+      | Some previous when Ast.type_name previous = Ast.type_name ty -> Ok ()
+      | Some previous ->
+          let previous_argument = Ast.expr_name (List.assoc parameter !origins) in
+          let explicit_call =
+            Printf.sprintf "%s[%s](%s)" name (Ast.type_name ty)
+              (String.concat ", " (List.map Ast.expr_name arguments))
+          in
+          Error
+            [
+              Diag.error
+                ~help:(Printf.sprintf "write `%s`" explicit_call)
+                span
+                (Printf.sprintf "cannot infer `%s` for `%s`: `%s` is `%s`, `%s` is `%s`"
+                   parameter name previous_argument (Ast.type_name previous)
+                   (Ast.expr_name argument) (Ast.type_name ty));
+            ]
+    in
+    let bind_const parameter value =
+      match List.assoc_opt parameter !inferred_consts with
+      | None ->
+          inferred_consts := (parameter, value) :: !inferred_consts;
+          Ok ()
+      | Some previous when previous = value -> Ok ()
+      | Some _ -> error span "conflicting const generic arguments"
+    in
+    let int_value (length : Ast.aggregate_length) =
+      try Some (Int64.of_string length.text) with _ -> None
+    in
+    let specialized_args name span =
+      match find_by_name specializations Struct_specialization name with
+      | Some
+          {
+            payload =
+              Struct_payload { template = Ast.Struct item; substitutions; values };
+            _;
+          } ->
+          Some
+            ( item.name,
+              List.map
+                (function
+                  | Ast.Type_param { name; _ } ->
+                      Ast.Type_arg (List.assoc name substitutions)
+                  | Ast.Const_param { name; _ } ->
+                      let _, _, value = List.find (fun (n, _, _) -> n = name) values in
+                      Ast.Const_arg (Ast.Int_lit (Int64.to_string value, span)))
+                item.generic_params )
+      | _ -> None
+    in
+    let rec match_type argument pattern actual =
+      match (pattern, actual) with
+      | Ast.Named_type (n, _), actual when List.mem n type_params ->
+          bind_type n actual argument
+      | Ast.Handle p, Ast.Handle a -> match_type argument p a
+      | Ast.Vec (length, p), Ast.Vec (actual_length, a) ->
+          let* () =
+            match (length.expression, int_value actual_length) with
+            | Ast.Ident (n, _), Some value when List.mem n const_params ->
+                bind_const n value
+            | _ -> Ok ()
+          in
+          match_type argument p a
+      | Ast.Applied_type (template, expected, _), actual -> (
+          let actual =
+            match actual with
+            | Ast.Applied_type (name, args, _) -> Some (name, args)
+            | Ast.Named_type (name, _) -> specialized_args name span
+            | _ -> None
+          in
+          match actual with
+          | Some (name, actual_args) when name = template ->
+              let rec args expected actual =
+                match (expected, actual) with
+                | [], [] -> Ok ()
+                | ( (Ast.Type_arg p | Ast.Type_or_index p) :: es,
+                    (Ast.Type_arg a | Ast.Type_or_index a) :: rest ) ->
+                    let* () = match_type argument p a in
+                    args es rest
+                | ( ( Ast.Name_arg (n, _)
+                    | Ast.Const_arg (Ast.Ident (n, _))
+                    | Ast.Type_or_index (Ast.Named_type (n, _)) )
+                    :: es,
+                    Ast.Const_arg (Ast.Int_lit (v, _)) :: rest )
+                  when List.mem n const_params ->
+                    let* () =
+                      try bind_const n (Int64.of_string v) with Failure _ -> Ok ()
+                    in
+                    args es rest
+                | Ast.Name_arg (n, _) :: es, Ast.Type_arg a :: rest
+                  when List.mem n type_params ->
+                    let* () = bind_type n a argument in
+                    args es rest
+                | _ -> Ok ()
+              in
+              args expected actual_args
+          | _ -> Ok ())
+      | _ -> Ok ()
+    in
+    let rec actual_type = function
+      | Ast.Parenthesized (value, _) -> actual_type value
+      | Ast.Ident (name, _) when String_set.mem name !local_values ->
+          List.assoc_opt name !inference_types
+      | Ast.Ident _ -> None
+      | _ -> None
+    in
+    let* () =
+      List.fold_left2
+        (fun result (parameter : Ast.param) argument ->
+          let* () = result in
+          match actual_type argument with
+          | Some actual -> match_type argument parameter.ty actual
+          | None -> Ok ())
+        (Ok ()) params arguments
+    in
+    let is_literal = function
+      | Ast.Int_lit _ | Ast.Parenthesized (Ast.Int_lit _, _) -> true
+      | _ -> false
+    in
+    let literal_only parameter =
+      let occurrences =
+        List.filter_map
+          (fun ((param : Ast.param), argument) ->
+            match param.ty with
+            | Ast.Named_type (name, _) when name = parameter -> Some argument
+            | _ -> None)
+          (List.combine params arguments)
+      in
+      occurrences <> [] && List.for_all is_literal occurrences
+    in
+    let missing parameter =
+      let message, help =
+        if List.mem parameter type_params && literal_only parameter then
+          ( Printf.sprintf "cannot infer `%s` for `%s` from literals only" parameter name,
+            Printf.sprintf "write `%s[i32](%s)`" name
+              (String.concat ", " (List.map Ast.expr_name arguments)) )
+        else
+          ( Printf.sprintf
+              "cannot infer `%s` for `%s`; provide explicit generic arguments" parameter
+              name,
+            Printf.sprintf "write the explicit generic argument list for `%s`" name )
+      in
+      Diag.error ~help span message
+    in
+    let rec make_args acc = function
+      | [] -> Ok (List.rev acc)
+      | Ast.Type_param { name = parameter; _ } :: rest -> (
+          match List.assoc_opt parameter !inferred_types with
+          | Some ty -> make_args (Ast.Type_arg ty :: acc) rest
+          | None -> Error [ missing parameter ])
+      | Ast.Const_param { name = parameter; _ } :: rest -> (
+          match List.assoc_opt parameter !inferred_consts with
+          | Some value ->
+              make_args
+                (Ast.Const_arg (Ast.Int_lit (Int64.to_string value, span)) :: acc)
+                rest
+          | None -> Error [ missing parameter ])
+    in
+    make_args [] generic_params
   in
   let rec has_generic_type = function
     | Ast.Applied_type _ -> true
@@ -1251,6 +1428,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               else if
                 String_set.mem name named_type_names
                 || List.mem name !generic_type_names
+                || Option.is_some
+                     (find_by_name specializations Struct_specialization name)
               then Ok (Ast.Named_type (name, type_span))
               else
                 Error
@@ -1465,6 +1644,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         Ok (Ast.aggregate_length expression length_info.span)
   and resolve_expr ?(values = []) ?(defer_const_structs = false) substitutions depth
       expression =
+    let resolve_exprs arguments =
+      Result_list.map
+        (resolve_expr ~values ~defer_const_structs substitutions depth)
+        arguments
+    in
     let rec resolve_layout_parts span = function
       | Ast.Named_type (name, _) as ty ->
           Ok (Option.value ~default:ty (List.assoc_opt name substitutions))
@@ -1545,15 +1729,28 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           resolve_expr ~values ~defer_const_structs substitutions depth right
         in
         Ok (Ast.Binary (op, left, right, span))
+    | Ast.Call (Ast.Ident (name, ident_span), arguments, span)
+      when not (String_set.mem name !local_values) -> (
+        match List.assoc_opt name function_templates with
+        | Some (Ast.Func { generic_params = _ :: _ as generic_params; params; _ })
+          when List.length params = List.length arguments ->
+            let* arguments = resolve_exprs arguments in
+            let* generic_arguments =
+              infer_generic_arguments name generic_params params arguments span
+            in
+            let* callee =
+              resolve_expr ~values ~defer_const_structs substitutions depth
+                (Ast.Generic_args (Ast.Ident (name, ident_span), generic_arguments, span))
+            in
+            Ok (Ast.Call (callee, arguments, span))
+        | _ ->
+            let* arguments = resolve_exprs arguments in
+            Ok (Ast.Call (Ast.Ident (name, ident_span), arguments, span)))
     | Ast.Call (callee, arguments, span) ->
         let* callee =
           resolve_expr ~values ~defer_const_structs substitutions depth callee
         in
-        let* arguments =
-          Result_list.map
-            (resolve_expr ~values ~defer_const_structs substitutions depth)
-            arguments
-        in
+        let* arguments = resolve_exprs arguments in
         Ok (Ast.Call (callee, arguments, span))
     | Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span)
       when name = "volatile_load" || name = "volatile_store" || name = "call_addr"
@@ -1937,11 +2134,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let* no = resolve no in
         Ok (Ast.Ternary (condition, yes, no, span))
     | Ast.Array_lit (elements, span) ->
-        let* elements =
-          Result_list.map
-            (resolve_expr ~values ~defer_const_structs substitutions depth)
-            elements
-        in
+        let* elements = resolve_exprs elements in
         Ok (Ast.Array_lit (elements, span))
     | Ast.Designated_field (name, value, span) ->
         let* value =
@@ -2011,6 +2204,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           in
           local_values := String_set.add name !local_values;
           shadowed_constants := String_set.add name !shadowed_constants;
+          inference_types := (name, ty) :: List.remove_assoc name !inference_types;
           Ok (Ast.Let { name; ty; ty_span; init; span })
       | Ast.View { name; place; span } ->
           let* place =
@@ -2229,6 +2423,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                   Ok ({ parameter with ty } : Ast.param))
                 params
             in
+            set_inference_params params;
             let* ret =
               resolve_ty ~values ~defer_const_structs substitutions depth span ret
             in
@@ -2270,6 +2465,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             in
             local_values := previous_local_values;
             shadowed_constants := previous_shadowed_constants;
+            inference_types := [];
             Ok
               (Ast.Func
                  {
@@ -2338,6 +2534,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                   Ok (Ast.Const_param { parameter with ty }))
             generic_params
         in
+        set_inference_params params;
         let* body =
           match body with
           | Ast.Declaration -> Ok Ast.Declaration
@@ -2356,6 +2553,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               in
               Ok (Ast.Statements statements)
         in
+        inference_types := [];
         Ok (Ast.Func { item with params; ret; body; generic_params })
   in
   let with_current_trace trace f =

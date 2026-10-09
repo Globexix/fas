@@ -4682,9 +4682,10 @@ let () =
   in
   if not (contains literal_underscores "ret i64 256\n") then
     failwith "literal-bases: underscore-separated literal did not evaluate to 256";
-  semantic_error "generic-args-missing-rejected"
-    "generic function `f` expects 1 generic argument, got 0"
-    "fn f[N const usize]() usize { return N }\nfn test() usize { return f() }\n";
+  semantic_pin "generic-args-missing-rejected"
+    "fn f[N const usize]() usize { return N }\nfn test() usize { return f() }\n" 2 26 3
+    "cannot infer `N` for `f`; provide explicit generic arguments"
+    (Some "write the explicit generic argument list for `f`");
   semantic_error "generic-args-extra-rejected"
     "generic function `f` expects 1 generic argument, got 2"
     "fn f[N const usize]() usize { return N }\nfn test() usize { return f[1, 2]() }\n";
@@ -5716,9 +5717,10 @@ let () =
      fn test() i64 { return identity[i64](1) }\n";
   semantic_error "unknown-generic-function" "unknown generic function `identity`"
     "fn test() i64 { return identity[i64](1) }\n";
-  semantic_error "generic-function-missing-type-arguments"
-    "generic function `identity` expects 1 generic argument, got 0"
-    "fn identity[T](value T) T { return value }\nfn test() i64 { return identity(1) }\n";
+  semantic_pin "generic-function-missing-type-arguments"
+    "fn identity[T](value T) T { return value }\nfn test() i64 { return identity(1) }\n"
+    2 24 11 "cannot infer `T` for `identity` from literals only"
+    (Some "write `identity[i32](1)`");
   semantic_error "generic-function-unknown-type-argument" "unknown type `Missing`"
     "fn ignore[T]() i64 { return 7 }\nfn test() i64 { return ignore[Missing]() }\n";
   semantic_error "generic-name-as-value" "`f` is a function, not a value"
@@ -8766,9 +8768,10 @@ let () =
     "fn f(x u8) bool { return 300 == x }\n";
   semantic_error "context-literal-range-right" "integer literal is out of range for u8"
     "fn f(x u8) bool { return x == 300 }\n";
-  semantic_error "context-generic-call-needs-explicit-arguments"
-    "generic function `id` expects 1 generic argument, got 0"
-    "fn id[N const u64](x u64) u64 { return x }\nfn f() u64 { return id(1) }\n";
+  semantic_pin "context-generic-call-needs-explicit-arguments"
+    "fn id[N const u64](x u64) u64 { return x }\nfn f() u64 { return id(1) }\n" 2 21 5
+    "cannot infer `N` for `id`; provide explicit generic arguments"
+    (Some "write the explicit generic argument list for `id`");
   ignore (llvm_of "fn f(x u32, y u64) u64 { return zext[u64](x) + y }\n");
   ignore (llvm_of "fn f(x i32, y i64) i64 { return sext[i64](x) + y }\n");
   ignore (llvm_of "fn f(x u64) u32 { return trunc[u32](x) }\n");
@@ -14652,9 +14655,10 @@ let () =
           "gather_bytes";
           "scatter_bytes";
         ];
-      semantic_message ("generic-slot-handle-" ^ ty)
-        "handle type argument must be an opaque type"
-        (body ("handle_from_addr[" ^ ty ^ "](p)"));
+      if ty = "arr[4,u32]" then
+        semantic_message ("generic-slot-handle-" ^ ty)
+          "handle type argument must be an opaque type"
+          (body ("handle_from_addr[" ^ ty ^ "](p)"));
       List.iter
         (fun name ->
           let reason =
@@ -14670,6 +14674,8 @@ let () =
             (body (name ^ "[" ^ ty ^ "](1)")))
         [ "bitcast"; "zext"; "sext"; "trunc" ])
     [ "Ring[4]"; "arr[4,u32]" ];
+  semantic_accept "generic-slot-handle-generic-struct"
+    (prefix ^ "fn f(p addr) void { handle_from_addr[Ring[4]](p)\nreturn }");
   semantic_accept "vector-volatile-type-slot"
     "fn f(p addr) void { volatile_store[vec[4,u32]](p, splat(7))\n\
     \ volatile_load[vec[4,u32]](p)\n\
@@ -15643,5 +15649,52 @@ let () =
     "illegal `zext` from `i32` to `void`: the source and destination must be integer \
      types"
     None
+
+let () =
+  semantic_accept "generic-inference-plain-and-handle-type"
+    "opaque O\n\
+     fn pass[T](value T) T { return value }\n\
+     fn keep[T](value handle[T]) handle[T] { return value }\n\
+     fn run(value handle[O]) handle[O] { return keep(value) }\n\
+     fn plain(value u8) u8 { return pass(value) }\n";
+  let conflicting =
+    "fn max[T](a T, b T) T { return a }\nfn f(a u8, b u32) u32 { return max(a, b) }\n"
+  in
+  semantic_pin "generic-inference-conflicting-types" conflicting 2
+    (String.length "fn f(a u8, b u32) u32 { return " + 1)
+    (String.length "max(a, b)") "cannot infer `T` for `max`: `a` is `u8`, `b` is `u32`"
+    (Some "write `max[u32](a, b)`");
+  let literals =
+    "fn max[T](a T, b T) T { return a }\nfn f() i32 { return max(1, 2) }\n"
+  in
+  semantic_pin "generic-inference-literals-only" literals 2
+    (String.length "fn f() i32 { return " + 1)
+    (String.length "max(1, 2)") "cannot infer `T` for `max` from literals only"
+    (Some "write `max[i32](1, 2)`");
+  semantic_pin "generic-inference-literal-parameter-with-unrelated-peer"
+    "fn choose[T](value T, count u32) T { return value }\n\
+     fn run(count u32) i32 { return choose(1, count) }\n"
+    2
+    (String.length "fn run(count u32) i32 { return " + 1)
+    16 "cannot infer `T` for `choose` from literals only"
+    (Some "write `choose[i32](1, count)`");
+  let undetermined =
+    "fn choose[N const usize, T](value T) T { return value }\n\
+     fn run(value u32) u32 { return choose(value) }\n"
+  in
+  semantic_pin "generic-inference-undetermined-parameter" undetermined 2
+    (String.length "fn run(value u32) u32 { return " + 1)
+    (String.length "choose(value)")
+    "cannot infer `N` for `choose`; provide explicit generic arguments"
+    (Some "write the explicit generic argument list for `choose`");
+  semantic_pin "generic-inference-no-result-inference"
+    "fn zero[T]() T { return 0 }\nfn run() u32 { return zero() }\n" 2
+    (String.length "fn run() u32 { return " + 1)
+    (String.length "zero()")
+    "cannot infer `T` for `zero`; provide explicit generic arguments"
+    (Some "write the explicit generic argument list for `zero`");
+  semantic_message "generic-inference-generic-function-address"
+    "generic function `f` has no single address"
+    "fn f[T](value T) T { return value }\nvar P addr = &f\n"
 
 let () = Printf.printf "all regression checks: %d passed\n" !checks_run

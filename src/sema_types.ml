@@ -326,6 +326,7 @@ let rec source_ty named_types = function
 and handle_target named_types = function
   | Ast.Named_type (name, _) -> (
       match List.assoc_opt name named_types with
+      | Some Struct_name when String.contains name '$' -> Ok name
       | Some (C_record_name (record, _)) -> Ok record
       | _ -> (
           match source_ty named_types (Ast.Named_type (name, Span.synthetic)) with

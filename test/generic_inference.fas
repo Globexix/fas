@@ -1,0 +1,37 @@
+use "C" <<C
+#include <stdint.h>
+static uint32_t oracle_max(uint32_t a, uint32_t b) { return a > b ? a : b; }
+static uint32_t oracle_sum(uint32_t a, uint32_t b, uint32_t c, uint32_t d) { return a + b + c + d; }
+struct OracleRing { uint32_t value; };
+static uint32_t oracle_ring(void) { struct OracleRing ring = {41}; return ring.value; }
+C
+
+struct Ring[N const usize] { value u32 }
+
+fn max[T](a T, b T) T { return if a > b { a } else { b } }
+fn total[N const usize, T](values vec[N,T]) T { return reduce_sum(values) }
+fn ring_value[N const usize](value handle[Ring[N]]) u32 {
+  return handle_addr(value)[Ring[N]].value
+}
+fn identity[T](value T) T { return value }
+fn relay[T](value T) T { return identity(value) }
+
+extern "C" {
+  fn oracle_max(a u32, b u32) u32
+  fn oracle_ring() u32
+  fn oracle_sum(a u32, b u32, c u32, d u32) u32
+}
+
+fn main() i32 {
+  small u8 = 200
+  if zext[u32](max(small, 12)) != oracle_max(zext[u32](small), 12) { return 1 }
+  values vec[4,u32] = {1, 2, 3, 4}
+  if total(values) != oracle_sum(1, 2, 3, 4) { return 2 }
+  ring Ring[4] = {41}
+  value handle[Ring[4]] = handle_from_addr[Ring[4]](&ring)
+  if ring_value(value) != oracle_ring() { return 3 }
+  narrow u8 = 7
+  wide u32 = 9
+  if relay(narrow) != 7 || relay(wide) != 9 { return 4 }
+  return 0
+}
