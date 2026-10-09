@@ -73,6 +73,8 @@ let value_ty = function
 
 let rec ty = function
   | Hir.Bool -> Ir.I1
+  | Hir.Float Hir.F32 -> Ir.F32
+  | Hir.Float Hir.F64 -> Ir.F64
   | Hir.Int Hir.U8 | Hir.Int Hir.I8 -> I8
   | Hir.Int Hir.U16 | Hir.Int Hir.I16 -> I16
   | Hir.Int Hir.U32 | Hir.Int Hir.I32 -> I32
@@ -535,6 +537,7 @@ let rec constant_construction structs = function
   | Hir.Init_zero (zero, _, _) -> Some (Hir.Global_zero zero)
   | Hir.Init_omitted (zero, _) -> Some (Hir.Global_zero zero)
   | Hir.Init_value (Hir.EInt (value, _, _)) -> Some (Hir.Global_int value)
+  | Hir.Init_value (Hir.EFloat (value, _, _)) -> Some (Hir.Global_float value)
   | Hir.Init_value (Hir.EBool (value, _)) -> Some (Hir.Global_bool value)
   | Hir.Init_value (Hir.Null _) -> Some Hir.Global_null
   | Hir.Init_value (Hir.EString (id, _, _)) ->
@@ -561,6 +564,7 @@ let rec constant_construction structs = function
 
 let rec expr s = function
   | Hir.EInt (v, t, _) -> Ok (Ir.Const (ty t, v))
+  | Hir.EFloat (v, t, _) -> Ok (Ir.Const (ty t, v))
   | Hir.EBool (v, _) -> Ok (Ir.Const (Ir.I1, if v then 1L else 0L))
   | Hir.EVector (values, (Hir.Vec (lanes, (Hir.Bool | Hir.Int _)) as t), span) ->
       if List.length values = lanes then Ok (Ir.Const_vector (ty t, values))
@@ -1344,6 +1348,10 @@ and volatile_load s span access_ty pointer =
       let loaded = fresh s in
       emit s (Ir.Load_volatile (loaded, ty access_ty, pointer, 1));
       Ok (Ir.Local (loaded, ty access_ty))
+  | Hir.Float _ ->
+      let loaded = fresh s in
+      emit s (Ir.Load_volatile (loaded, ty access_ty, pointer, 1));
+      Ok (Ir.Local (loaded, ty access_ty))
   | Hir.Addr | Hir.Handle _ ->
       let loaded = fresh s in
       emit s (Ir.Load_volatile (loaded, Ir.Pointer Ir.I8, pointer, 1));
@@ -1380,6 +1388,9 @@ and volatile_store s span access_ty value pointer =
       emit s (Ir.Store_volatile (Ir.I8, Ir.Local (stored, Ir.I8), pointer, 1));
       Ok ()
   | Hir.Int _ ->
+      emit s (Ir.Store_volatile (ty access_ty, value, pointer, 1));
+      Ok ()
+  | Hir.Float _ ->
       emit s (Ir.Store_volatile (ty access_ty, value, pointer, 1));
       Ok ()
   | Hir.Addr | Hir.Handle _ ->
@@ -1591,6 +1602,10 @@ and simd_memory_store s span access_ty kind args values =
 
 and raw_load s t p =
   match t with
+  | Hir.Float _ ->
+      let id = fresh s in
+      emit s (Ir.Load (id, ty t, p, 1));
+      Ok (Ir.Local (id, ty t))
   | Hir.Int k ->
       let it = ty (Hir.Int k) in
       let id = fresh s in
@@ -1635,6 +1650,9 @@ and raw_load s t p =
 
 and raw_store s t v p =
   match t with
+  | Hir.Float _ ->
+      emit s (Ir.Store (ty t, v, p, 1));
+      Ok ()
   | Hir.Int k ->
       let it = ty (Hir.Int k) in
       emit s (Ir.Store (it, v, p, 1));
@@ -1722,7 +1740,7 @@ let rec copy_leaf_count structs = function
             0 definition.fields)
   | Hir.Array (length, element_ty) ->
       capped_mul length (copy_leaf_count structs element_ty)
-  | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ | Hir.Vec _ -> 1
+  | Hir.Bool | Hir.Int _ | Hir.Float _ | Hir.Addr | Hir.Handle _ | Hir.Vec _ -> 1
   | _ -> 17
 
 let rec copy_place s span ty destination source =
@@ -1772,7 +1790,7 @@ let rec copy_place s span ty destination source =
             elements (index + 1)
         in
         elements 0
-  | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ | Hir.Vec _ ->
+  | Hir.Bool | Hir.Int _ | Hir.Float _ | Hir.Addr | Hir.Handle _ | Hir.Vec _ ->
       let* value = raw_load s ty source in
       raw_store s ty value destination
   | _ -> error span "internal error: invalid leaf type in aggregate copy"
@@ -2492,9 +2510,9 @@ let address_taken_locals ?function_addresses body =
         collect_expr no
     | Hir.Function_address (name, _) ->
         Option.iter (fun table -> Hashtbl.replace table name ()) function_addresses
-    | Hir.EInt _ | Hir.EBool _ | Hir.EVector _ | Hir.Null _ | Hir.EString _
-    | Hir.Local _ | Hir.Global _ | Hir.Sizeof _ | Hir.Alignof _ | Hir.Offsetof _
-    | Hir.Const_array _ ->
+    | Hir.EInt _ | Hir.EFloat _ | Hir.EBool _ | Hir.EVector _ | Hir.Null _
+    | Hir.EString _ | Hir.Local _ | Hir.Global _ | Hir.Sizeof _ | Hir.Alignof _
+    | Hir.Offsetof _ | Hir.Const_array _ ->
         ()
   in
   let rec collect_construction = function
@@ -2758,6 +2776,7 @@ let global_storage structs (global : Hir.global) =
             if not (Hir.ty_equal zero.zero_ty ty) then
               failwith "zero initializer type mismatch"
         | Hir.Global_int value -> write_integer offset (object_size ty) value
+        | Hir.Global_float value -> write_integer offset (object_size ty) value
         | Hir.Global_bool value -> set offset (if value then 1 else 0)
         | Hir.Global_null -> ()
         | Hir.Global_address (symbol, displacement) ->
@@ -2884,8 +2903,8 @@ let lower ?(sanitize_address = false) (p : Hir.program) =
         Hashtbl.replace addressed_functions name ()
     | Hir.Global_array entries | Hir.Global_struct entries ->
         List.iter collect_global_addresses entries
-    | Hir.Global_zero _ | Hir.Global_int _ | Hir.Global_bool _ | Hir.Global_null
-    | Hir.Global_address _ | Hir.Global_vector _ ->
+    | Hir.Global_zero _ | Hir.Global_int _ | Hir.Global_float _ | Hir.Global_bool _
+    | Hir.Global_null | Hir.Global_address _ | Hir.Global_vector _ ->
         ()
   in
   List.iter

@@ -245,6 +245,8 @@ and query_layout_in_state state ~named_types ~generic_structs ~globals ~evaluate
     | Ast.Bool -> Ok Hir.Bool
     | Ast.Void -> Ok Hir.Void
     | Ast.Int kind -> Ok (Hir.Int (source_int kind))
+    | Ast.Float Ast.F32 -> Ok (Hir.Float Hir.F32)
+    | Ast.Float Ast.F64 -> Ok (Hir.Float Hir.F64)
     | Ast.Addr -> Ok Hir.Addr
     | Ast.Handle ty -> (
         let* ty = resolve_type type_bindings const_bindings at ty in
@@ -542,11 +544,31 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
-      if not (fits_literal ty v) then
+      if match ty with Hir.Float _ -> true | _ -> false then
+        Error
+          [
+            Diag.error
+              ~help:(Printf.sprintf "write `%s.0`" raw)
+              s "integer literals are not floating point literals";
+          ]
+      else if not (fits_literal ty v) then
         error s
           (Printf.sprintf "integer literal is out of range for %s: `%s`" (ty_name ty)
              raw)
       else Ok (ty, mask_value ty v)
+  | Ast.Float_lit (raw, s) -> (
+      let ty = Option.value ~default:(Hir.Float Hir.F64) expected in
+      match ty with
+      | Hir.Float _ ->
+          let* bits =
+            parse_float_literal ty raw
+            |> Result.map_error (fun message -> [ Diag.error s message ])
+          in
+          Ok (ty, bits)
+      | _ ->
+          error s
+            (Printf.sprintf "floating point literal cannot be used as `%s`" (ty_name ty))
+      )
   | Ast.Null s -> (
       match expected with
       | Some (Hir.Addr | Hir.Handle _) as ty -> Ok (Option.get ty, 0L)
@@ -569,6 +591,7 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
             | Some (_, ty, _) -> Some ty
             | None -> Option.map (fun (_, ty, _) -> ty) (lookup name arrays))
         | Ast.Int_lit _ -> Some (Hir.Int Hir.I32)
+        | Ast.Float_lit _ -> Some (Hir.Float Hir.F64)
         | Ast.Bool_lit _ -> Some Hir.Bool
         | _ -> None
       in
@@ -590,6 +613,13 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
         | _ -> false
       in
       if fits_negative_literal t v || allowed then Ok (t, mask_value t (Int64.neg v))
+      else if match t with Hir.Float _ -> true | _ -> false then
+        Error
+          [
+            Diag.error
+              ~help:(Printf.sprintf "write `-%s.0`" raw)
+              s "integer literals are not floating point literals";
+          ]
       else
         error s
           (Printf.sprintf "integer literal is out of range for %s: `-%s`" (ty_name t)
@@ -1845,7 +1875,7 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
 let resolve_scalar_declarations ?(globals = []) ?(array_lengths = [])
     ?(generic_structs = []) ~structs ~named_types ~resolve_type ~strict items =
   let scalar_constant_type = function
-    | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ -> true
+    | Hir.Bool | Hir.Int _ | Hir.Float _ | Hir.Addr | Hir.Handle _ -> true
     | _ -> false
   in
   let declarations =

@@ -10,6 +10,7 @@ type diagnostic_type =
   | Diagnostic_bool
   | Diagnostic_void
   | Diagnostic_int of Ast.int_kind
+  | Diagnostic_float of Ast.float_kind
   | Diagnostic_ptr of diagnostic_type
   | Diagnostic_const_ptr of diagnostic_type
   | Diagnostic_addr
@@ -128,6 +129,7 @@ let rec diagnostic_type_of_ast specializations = function
   | Ast.Bool -> Diagnostic_bool
   | Ast.Void -> Diagnostic_void
   | Ast.Int kind -> Diagnostic_int kind
+  | Ast.Float kind -> Diagnostic_float kind
   | Ast.Addr -> Diagnostic_addr
   | Ast.Handle ty -> Diagnostic_handle (diagnostic_type_of_ast specializations ty)
   | Ast.Array (length, ty) ->
@@ -169,6 +171,7 @@ let rec render_diagnostic_type = function
   | Diagnostic_bool -> "bool"
   | Diagnostic_void -> "void"
   | Diagnostic_int kind -> Ast.type_name (Ast.Int kind)
+  | Diagnostic_float kind -> Ast.type_name (Ast.Float kind)
   | Diagnostic_ptr ty -> "ptr[" ^ render_diagnostic_type ty ^ "]"
   | Diagnostic_const_ptr ty -> "ptr[const " ^ render_diagnostic_type ty ^ "]"
   | Diagnostic_addr -> "addr"
@@ -383,6 +386,7 @@ let rec specialization_type_key = function
   | Ast.Bool -> "bool"
   | Ast.Void -> "void"
   | Ast.Int kind -> Ast.type_name (Ast.Int kind)
+  | Ast.Float kind -> Ast.type_name (Ast.Float kind)
   | Ast.Addr -> "addr"
   | Ast.Handle ty ->
       let key = specialization_type_key ty in

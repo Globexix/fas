@@ -1,0 +1,31 @@
+const SampleValues arr[3, f32] = {3.25, 4.5, 5.75}
+var GlobalValue f64 = 6.5
+
+struct Pair {
+  first f32,
+  tag u32,
+  second f64,
+  samples arr[3, f32]
+}
+
+fn identity32(value f32) f32 { return value }
+fn identity64(value f64) f64 { return value }
+
+extern "C" {
+  fn float_type_check(pair addr, global addr, samples addr) i32
+}
+
+fn main() i32 {
+  source Pair = {0.5, 7, 1.25, {0.0, 0.0, 0.0}}
+  target Pair
+  copy(target, source)
+  copy(target.samples, SampleValues)
+  target.second = identity64(GlobalValue)
+  p addr = &target
+  p[f32, 0] = identity32(0.1)
+  view samples = (p + 16)[f32, ..]
+  samples[1] = 5.25
+  volatile_store[f32](p + 24, 6.25)
+  target.samples[2] = volatile_load[f32](p + 24)
+  return float_type_check(p, &GlobalValue, &SampleValues)
+}

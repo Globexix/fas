@@ -10,6 +10,7 @@ type diagnostic_type =
   | Diagnostic_bool
   | Diagnostic_void
   | Diagnostic_int of Ast.int_kind
+  | Diagnostic_float of Ast.float_kind
   | Diagnostic_ptr of diagnostic_type
   | Diagnostic_const_ptr of diagnostic_type
   | Diagnostic_addr

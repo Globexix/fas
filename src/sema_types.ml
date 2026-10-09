@@ -290,6 +290,8 @@ let rec source_ty named_types = function
   | Ast.Bool -> Ok Hir.Bool
   | Ast.Void -> Ok Hir.Void
   | Ast.Int kind -> Ok (Hir.Int (src_int kind))
+  | Ast.Float Ast.F32 -> Ok (Hir.Float Hir.F32)
+  | Ast.Float Ast.F64 -> Ok (Hir.Float Hir.F64)
   | Ast.Addr -> Ok Hir.Addr
   | Ast.Handle ty ->
       Result.map (fun name -> Hir.Handle name) (handle_target named_types ty)
@@ -682,8 +684,8 @@ let cast_name = function
 
 let cast_integer_value = function
   | Hir.Int _ | Hir.Vec (_, Hir.Int _) -> true
-  | Hir.Bool | Hir.Addr | Hir.Handle _ | Hir.Array _ | Hir.Struct _ | Hir.Opaque _
-  | Hir.Void | Hir.Vec _ ->
+  | Hir.Bool | Hir.Float _ | Hir.Addr | Hir.Handle _ | Hir.Array _ | Hir.Struct _
+  | Hir.Opaque _ | Hir.Void | Hir.Vec _ ->
       false
 
 let integer_literal_value = function

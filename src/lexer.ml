@@ -30,8 +30,8 @@ let is_keyword name = match keyword name with Token.Ident _ -> false | _ -> true
 let lex ?(limits = Limits.default) source =
   let text = Source.text source in
   let n = String.length text in
-  let diagnostic offset message =
-    Diag.error
+  let diagnostic ?help offset message =
+    Diag.error ?help
       (Source.span source ~start_offset:offset ~end_offset:(min n (offset + 1)))
       message
   in
@@ -102,10 +102,22 @@ let lex ?(limits = Limits.default) source =
         let value = String.sub text offset (stop - offset) in
         let sp = Source.span source ~start_offset:offset ~end_offset:stop in
         loop stop (count + 1) ({ Token.kind = keyword value; span = sp } :: tokens)
+      else if c = '.' && offset + 1 < n && is_digit text.[offset + 1] then
+        Error
+          [
+            diagnostic ~help:"write `0.5` with a leading zero" offset
+              "floating point literals need a leading zero";
+          ]
       else if is_digit c then
         let rec number_end i =
-          if i < n && (is_ident_continue text.[i] || text.[i] = '_') then
-            number_end (i + 1)
+          if i < n && (is_ident_continue text.[i] || text.[i] = '_' || text.[i] = '.')
+          then number_end (i + 1)
+          else if
+            i < n
+            && (text.[i] = '+' || text.[i] = '-')
+            && i > offset
+            && (text.[i - 1] = 'e' || text.[i - 1] = 'E')
+          then number_end (i + 1)
           else i
         in
         let stop = number_end (offset + 1) in
@@ -151,7 +163,109 @@ let lex ?(limits = Limits.default) source =
           | 'u' | 'U' | 'l' | 'L' -> true
           | _ -> false
         in
-        if stop + 1 < n && text.[stop] = '.' && is_digit text.[stop + 1] then
+        let based =
+          raw_prefix "0x" || raw_prefix "0X" || raw_prefix "0b" || raw_prefix "0B"
+          || raw_prefix "0o" || raw_prefix "0O"
+        in
+        let float_marker =
+          (not based)
+          &&
+          let rec find i =
+            if i >= String.length raw then false
+            else if raw.[i] = '.' || raw.[i] = 'e' || raw.[i] = 'E' then true
+            else if is_digit raw.[i] || raw.[i] = '_' then find (i + 1)
+            else false
+          in
+          find 0
+        in
+        let float_syntax =
+          let clean = String.concat "" (String.split_on_char '_' raw) in
+          let length = String.length clean in
+          let rec digits index =
+            if index < length && is_digit clean.[index] then digits (index + 1)
+            else index
+          in
+          let whole_end = digits 0 in
+          if whole_end = 0 then false
+          else
+            let fraction_end =
+              if whole_end < length && clean.[whole_end] = '.' then
+                digits (whole_end + 1)
+              else whole_end
+            in
+            let has_fraction = fraction_end > whole_end + 1 in
+            let exponent_end =
+              if
+                fraction_end < length
+                && (clean.[fraction_end] = 'e' || clean.[fraction_end] = 'E')
+              then
+                let start =
+                  if
+                    fraction_end + 1 < length
+                    && (clean.[fraction_end + 1] = '+' || clean.[fraction_end + 1] = '-')
+                  then fraction_end + 2
+                  else fraction_end + 1
+                in
+                digits start
+              else fraction_end
+            in
+            exponent_end = length
+            && (has_fraction || fraction_end < length)
+            && (clean.[whole_end] <> '.' || has_fraction)
+            && (fraction_end >= length
+               || (clean.[fraction_end] <> 'e' && clean.[fraction_end] <> 'E')
+               || exponent_end > fraction_end + 1)
+        in
+        let misplaced_float_separator =
+          let rec find i =
+            if i >= String.length raw then false
+            else if raw.[i] = '_' then
+              i = 0
+              || i + 1 >= String.length raw
+              || (not (is_digit raw.[i - 1]))
+              || (not (is_digit raw.[i + 1]))
+              || find (i + 1)
+            else find (i + 1)
+          in
+          find 0
+        in
+        if float_marker then
+          let suffix =
+            match raw.[String.length raw - 1] with
+            | 'f' | 'F' | 'd' | 'D' -> true
+            | _ -> false
+          in
+          if suffix then
+            let unsuffixed = String.sub raw 0 (String.length raw - 1) in
+            Error
+              [
+                diagnostic
+                  ~help:(Printf.sprintf "write `%s` without a suffix" unsuffixed)
+                  offset "floating point literals do not have suffixes";
+              ]
+          else if misplaced_float_separator then
+            Error [ diagnostic offset "misplaced digit separator `_`" ]
+          else if String.length raw > 0 && raw.[String.length raw - 1] = '.' then
+            Error
+              [
+                diagnostic
+                  ~help:(Printf.sprintf "write `%s0`" raw)
+                  offset "floating point literals need digits after `.`";
+              ]
+          else if not float_syntax then
+            Error [ diagnostic offset "invalid floating point literal" ]
+          else
+            let sp = Source.span source ~start_offset:offset ~end_offset:stop in
+            loop stop (count + 1) ({ Token.kind = Token.Float raw; span = sp } :: tokens)
+        else if c_suffix then
+          let unsuffixed = String.sub raw 0 (String.length raw - 1) in
+          Error
+            [
+              diagnostic offset
+                (Printf.sprintf "C integer suffix `%s` is not valid in Fas; write `%s`"
+                   raw unsuffixed);
+            ]
+        else if stop + 1 < n && text.[stop] = '.' && is_digit text.[stop + 1] then
           Error
             [
               diagnostic offset

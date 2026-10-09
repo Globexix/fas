@@ -471,6 +471,20 @@ let syntax_pin name text line column width message =
         (name ^ ": unexpected diagnostic: "
         ^ Diag.render_all ~source:(Some (source text)) diagnostics)
 
+let parse_pin name text line column width message help =
+  match parse_diagnostics name text with
+  | [ diagnostic ]
+    when diagnostic.Diag.primary.Span.line = line
+         && diagnostic.primary.Span.column = column
+         && diagnostic.primary.Span.end_offset - diagnostic.primary.Span.start_offset
+            = width
+         && diagnostic.message = message && diagnostic.help = Some help ->
+      ()
+  | diagnostics ->
+      failwith
+        (name ^ ": unexpected diagnostic: "
+        ^ Diag.render_all ~source:(Some (source text)) diagnostics)
+
 let parse_error name text = ignore (parse_diagnostics name text)
 
 let parse_messages text =
@@ -3962,14 +3976,10 @@ let () =
           (name ^ ": expected `" ^ expected ^ "`, got " ^ String.concat "; " messages)
   in
   let reserved_float_names = Names.reserved_float_names in
-  if reserved_float_names <> [ "f32"; "f64"; "sqrt"; "fma"; "floor"; "ceil"; "round" ]
+  if reserved_float_names <> [ "sqrt"; "fma"; "floor"; "ceil"; "round"; "abs"; "cvt" ]
   then failwith "reserved-float-names: registry changed";
   List.iter
     (fun name ->
-      exact_semantic_error
-        ("reserved-float-type-" ^ name)
-        (Names.reserved_float_message name)
-        (Printf.sprintf "fn test() %s { return 1 }\n" name);
       exact_semantic_error
         ("reserved-float-call-" ^ name)
         (Names.reserved_float_message name)
@@ -3984,12 +3994,21 @@ let () =
       if not (Names.reserved_binding_name name) then
         failwith ("reserved-float-binding-registry: " ^ name))
     reserved_float_names;
+  if Names.reserved_float_type_names <> [ "f32"; "f64" ] then
+    failwith "reserved-float-type-names: registry changed";
+  List.iter
+    (fun name ->
+      exact_semantic_error
+        ("reserved-float-type-binding-" ^ name)
+        (Names.reserved_binding_message name)
+        (Printf.sprintf "fn %s() i32 { return 0 }\n" name))
+    Names.reserved_float_type_names;
   List.iter
     (fun (name, binding_name, text) ->
       exact_semantic_error name (Names.reserved_binding_message binding_name) text)
     [
-      ("reserved-float-local", "f32", "fn main() i32 { f32 i32 = 1\n return f32 }\n");
-      ("reserved-float-parameter", "f64", "fn test(f64 i32) i32 { return f64 }\n");
+      ("reserved-float-local", "abs", "fn main() i32 { abs i32 = 1\n return abs }\n");
+      ("reserved-float-parameter", "cvt", "fn test(cvt i32) i32 { return cvt }\n");
       ("reserved-float-function", "sqrt", "fn sqrt() i32 { return 0 }\n");
       ("reserved-float-struct", "fma", "struct fma { value i32 }\n");
       ( "reserved-float-generic-parameter",
@@ -4000,9 +4019,85 @@ let () =
         "fn value[ceil const u32](x i32) i32 { return x }\n" );
       ("reserved-float-const", "round", "const round i32 = 1\n");
     ];
-  semantic_pin "reserved-float-result-caret" "fn test() f32 { return 1 }\n" 1 11 3
-    (Names.reserved_float_message "f32")
-    None;
+  semantic_accept "float-types-and-storage-accept"
+    "const Half f32 = 1.5\n\
+     const Values arr[2, f32] = {Half, 0.1}\n\
+     var Mutable f64 = 3.0\n\
+     struct Pair { first f32, second f64 }\n\
+     fn identity32(x f32) f32 { return x }\n\
+     fn identity64(x f64) f64 { return x }\n\
+     fn read(p addr, i usize) f32 { return p[f32, i] }\n\
+     fn use_storage(p addr) i32 {\n\
+     view values = p[f64, ..]\n\
+     volatile_store[f32](p, Half)\n\
+     x f32 = volatile_load[f32](p)\n\
+     y f64 = Mutable\n\
+     pair Pair = {x, y}\n\
+     out Pair\n\
+     copy(out, pair)\n\
+     size usize = sizeof[f32] + sizeof[f64] + alignof[f32] + alignof[f64]\n\
+     return trunc[i32](size)\n\
+     }\n";
+  semantic_accept "float-literal-destination-peer-typing"
+    "fn accept(value f32) f32 { return value }\n\
+     fn use_value() f32 { return accept(0.1) }\n";
+  semantic_constant "FloatSize32" 4L "const FloatSize32 usize = sizeof[f32]\n";
+  semantic_constant "FloatAlign32" 4L "const FloatAlign32 usize = alignof[f32]\n";
+  semantic_constant "FloatSize64" 8L "const FloatSize64 usize = sizeof[f64]\n";
+  semantic_constant "FloatAlign64" 8L "const FloatAlign64 usize = alignof[f64]\n";
+  semantic_accept "float-index-condition-and-constant-exclusions-twin"
+    "fn use_index(p addr, i usize) f32 { return p[f32, i] }\n\
+     fn use_switch(x i32) i32 { switch x { case 1: { return 1 } default: { return 0 } \
+     } }\n";
+  semantic_message "float-const-generic-type"
+    "const parameter type must be a scalar integer or bool"
+    "fn bad[N const f32]() i32 { return 0 }\n";
+  semantic_message "float-switch-scrutinee"
+    "switch value must be an integer or bool, got `f32`"
+    "fn bad(x f32) i32 { switch x { case 1: { return 1 } default: { return 0 } } }\n";
+  semantic_message "float-switch-case" "case label must be a compile-time constant"
+    "fn bad(x i32) i32 { switch x { case 1.0: { return 1 } default: { return 0 } } }\n";
+  semantic_message "float-array-length"
+    "floating point literal cannot be used as `usize`" "var values arr[2.0, i32]\n";
+  semantic_message "float-shift-count"
+    "right operand of `<<` has type `f32`, expected an integer"
+    "fn bad(x i32, n f32) i32 { return x << n }\n";
+  semantic_message "float-index" "raw access index must be an integer, got `f32`"
+    "fn bad(p addr, n f32) f32 { return p[f32, n] }\n";
+  semantic_message "float-condition" "condition of `if` is `f32`, not `bool`"
+    "fn bad(x f32) i32 { if x { return 1 }\n return 0 }\n";
+  semantic_pin "float-integer-literal-help" "fn bad(x f32) f32 { return x * 2 }\n" 1 32
+    1 "integer literals are not floating point literals" (Some "write `2.0`");
+  semantic_pin "float-negative-integer-literal-help"
+    "fn bad(x f32) f32 { return x + -2 }\n" 1 32 1
+    "integer literals are not floating point literals" (Some "write `-2.0`");
+  semantic_message "float-rounds-to-infinity"
+    "floating point literal rounds to infinity for `f32`" "const X f32 = 1e39\n";
+  semantic_message "float-nonzero-rounds-to-zero"
+    "nonzero floating point literal rounds to zero for `f32`" "const X f32 = 1e-50\n";
+  semantic_message "float64-rounds-to-infinity"
+    "floating point literal rounds to infinity for `f64`" "const X f64 = 1e309\n";
+  semantic_message "float64-nonzero-rounds-to-zero"
+    "nonzero floating point literal rounds to zero for `f64`" "const X f64 = 1e-400\n";
+  parse_pin "float-literal-trailing-dot" "fn bad() f32 { return 1. }\n" 1 23 1
+    "floating point literals need digits after `.`" "write `1.0`";
+  parse_pin "float-literal-leading-dot" "fn bad() f32 { return .5 }\n" 1 23 1
+    "floating point literals need a leading zero" "write `0.5` with a leading zero";
+  parse_pin "float-literal-f-suffix" "fn bad() f32 { return 1.0f }\n" 1 23 1
+    "floating point literals do not have suffixes" "write `1.0` without a suffix";
+  parse_pin "float-literal-d-suffix" "fn bad() f64 { return 1.5d }\n" 1 23 1
+    "floating point literals do not have suffixes" "write `1.5` without a suffix";
+  let float_llvm =
+    llvm_of
+      "const A f32 = 0.1\n\
+       fn default_float() f64 { return 1.5 }\n\
+       fn float_constant() f32 { return A }\n\
+       fn main() i32 { return 0 }\n"
+  in
+  if not (contains float_llvm "float 0x3FB99999A0000000") then
+    failwith "float-literal-f32-rounding: expected a binary32 LLVM constant";
+  if not (contains float_llvm "double 0x3FF8000000000000") then
+    failwith "float-literal-default-type: expected a binary64 result";
   let released_unreserved_names =
     llvm_of
       "struct Members { len i32 i32 i32 true i32 }\n\
@@ -4011,9 +4106,6 @@ let () =
   in
   if not (contains released_unreserved_names "%struct.Members = type") then
     failwith "released-unreserved-name: member labels stopped compiling";
-  parse_error_message "floating-literal-unavailable"
-    "float literals are not Fas syntax; use an integer literal"
-    "fn main() i32 { return 1.5 }\n";
   semantic_accept "labeled-break-accept"
     "fn f() i32 { value i32\n\
      outer: while true { while true { value = 9\n\
@@ -15584,11 +15676,6 @@ let () =
   let comma = "fn f(left i32, right i32) i32 { return (left, right) }\n" in
   pin "c-comma-operator" comma 1 "fn f(left i32, right i32) i32 { return (left" 1
     "Fas has no comma operator; put each expression in its own statement";
-  pin "float-literal" "fn f() i32 { return 1.0 }\n" 1 "fn f() i32 { return " 1
-    "float literals are not Fas syntax; use an integer literal";
-  pin "float-shift-count" "fn f(value i32) i32 { return value << 1.0 }\n" 1
-    "fn f(value i32) i32 { return value << " 1
-    "float literals are not Fas syntax; use an integer literal";
   pin "unsigned-integer-suffix" "fn f() u32 { return 10u }\n" 1 "fn f() u32 { return " 1
     "C integer suffix `10u` is not valid in Fas; write `10`";
   pin "long-integer-suffix" "fn f() i64 { return 10L }\n" 1 "fn f() i64 { return " 1

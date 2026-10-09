@@ -94,7 +94,8 @@ let rec count_expanded_type_nodes ty cap total =
   else
     let total = total + 1 in
     match ty with
-    | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Named_type _ | Ast.Addr -> total
+    | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Float _ | Ast.Named_type _ | Ast.Addr ->
+        total
     | Ast.Handle element | Ast.Array (_, element) | Ast.Vec (_, element) ->
         count_expanded_type_nodes element cap total
     | Ast.Applied_type (_, arguments, _) ->
@@ -112,7 +113,8 @@ let rec count_expanded_expr_type_nodes expr cap total =
   if total >= cap then cap
   else
     match expr with
-    | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Ident _ ->
+    | Ast.Int_lit _ | Ast.Float_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _
+    | Ast.Ident _ ->
         total
     | Ast.Unary (_, value, _)
     | Ast.C_dereference (value, _, _)

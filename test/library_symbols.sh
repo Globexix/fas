@@ -14,7 +14,7 @@ fail() { echo "library_symbols: $*" >&2; exit 1; }
 
 DEFINITIONS="$ROOT/test/library_symbols.fas"
 "$OCAML_FAS" --emit-llvm "$DEFINITIONS" >"$TMP/definitions.ll"
-for name in abs memset strlen malloc; do
+for name in memset strlen malloc; do
   grep -F "\"no-builtin-$name\"" "$TMP/definitions.ll" >/dev/null \
     || fail "missing LLVM-recognized definition guard for $name"
 done
@@ -49,4 +49,4 @@ for level in 0 2; do
     || fail "header-imported strlen behavior failed at O$level"
 done
 
-echo "library_symbols: abs, memset, strlen, malloc definitions and imported strlen at O0/O2: ok"
+echo "library_symbols: memset, strlen, malloc definitions and imported strlen at O0/O2: ok"

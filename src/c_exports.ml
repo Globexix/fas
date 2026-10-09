@@ -187,6 +187,8 @@ let declarations ?(reserved = []) ?specializations records (program : program) =
         (if name.[0] = 'u' then "uint" else "int")
         ^ String.sub name 1 (String.length name - 1)
         ^ "_t"
+    | Float Hir.F32 -> "float"
+    | Float Hir.F64 -> "double"
     | Void -> "void"
     | Addr -> "void *"
     | Handle name -> (

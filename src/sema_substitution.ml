@@ -195,7 +195,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Applied_type (_, arguments, _) ->
         List.exists (generic_argument_mentions names) arguments
     | Ast.Named_type (name, _) -> List.mem name names
-    | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Addr -> false
+    | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Float _ | Ast.Addr -> false
   and generic_argument_mentions names = function
     | Ast.Type_arg ty | Ast.Type_or_index ty -> type_mentions names ty
     | Ast.Const_arg expression -> expression_mentions names expression
@@ -236,7 +236,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Designated_field (_, value, _) -> expression_mentions names value
     | Ast.Designated_index (index, value, _) ->
         expression_mentions names index || expression_mentions names value
-    | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ -> false
+    | Ast.Int_lit _ | Ast.Float_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _
+      ->
+        false
   in
   let shadowed_constant_error expression =
     match
@@ -283,7 +285,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           Result_list.iter
             (validate_generic_argument_names value_names type_names application_span)
             arguments
-    | Ast.Bool | Ast.Void | Ast.Int _ -> Ok ()
+    | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Float _ -> Ok ()
   and validate_aggregate_length_names value_names type_names span _kind length ty =
     let* () = validate_expression_names value_names type_names length.Ast.expression in
     validate_type_names value_names type_names span ty
@@ -444,7 +446,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Designated_index (index, value, _) ->
         let* () = validate_expression_names value_names type_names index in
         validate_expression_names value_names type_names value
-    | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ -> Ok ()
+    | Ast.Int_lit _ | Ast.Float_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _
+      ->
+        Ok ()
   in
   let rec validate_target_names value_names type_names = function
     | Ast.Target_ident (name, span) -> (
@@ -915,7 +919,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Designated_field (_, value, _) -> has_generic_arguments value
     | Ast.Designated_index (index, value, _) ->
         has_generic_arguments index || has_generic_arguments value
-    | Ast.Ident _ | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ ->
+    | Ast.Ident _ | Ast.Int_lit _ | Ast.Float_lit _ | Ast.Bool_lit _ | Ast.Null _
+    | Ast.String_lit _ ->
         false
   in
   let rec substitute_validation_type substitutions = function
@@ -941,7 +946,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 | argument -> argument)
               arguments,
             span )
-    | (Ast.Bool | Ast.Void | Ast.Int _) as ty -> ty
+    | (Ast.Bool | Ast.Void | Ast.Int _ | Ast.Float _) as ty -> ty
   in
   let rec validate_non_dependent_expression c dependent expected expression =
     if
@@ -1205,7 +1210,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           let* () = validate_non_dependent_expression c dependent None index in
           validate_non_dependent_expression c dependent expected value
       | Ast.Sizeof _ | Ast.Alignof _ | Ast.Offsetof _ | Ast.Ident _ | Ast.Int_lit _
-      | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ ->
+      | Ast.Float_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ ->
           Ok ()
   in
   let validate_non_dependent_condition c dependent label expression =
@@ -1434,13 +1439,15 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Applied_type _ -> true
     | Ast.Handle ty | Ast.Array (_, ty) | Ast.Vec (_, ty) ->
         has_unresolved_application ty
-    | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Named_type _ | Ast.Addr -> false
+    | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Float _ | Ast.Named_type _ | Ast.Addr ->
+        false
   in
   let rec resolve_ty ?(values = []) ?(defer_const_structs = false) substitutions depth
       span = function
     | Ast.Bool -> Ok Ast.Bool
     | Ast.Void -> Ok Ast.Void
     | Ast.Int kind -> Ok (Ast.Int kind)
+    | Ast.Float kind -> Ok (Ast.Float kind)
     | Ast.Addr -> Ok Ast.Addr
     | Ast.Handle ty ->
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
@@ -1745,8 +1752,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       else Ok ty
     in
     match expression with
-    | (Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Ident _) as
-      expression ->
+    | ( Ast.Int_lit _ | Ast.Float_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _
+      | Ast.Ident _ ) as expression ->
         Ok expression
     | Ast.Unary (op, expression, span) ->
         let* expression =

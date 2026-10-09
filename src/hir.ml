@@ -1,10 +1,12 @@
 module Hashtbl = C_import_json.Hashtbl
 
 type int_kind = U8 | U16 | U32 | I8 | I16 | I32 | I64 | U64 | Usize | Isize
+type float_kind = F32 | F64
 
 type ty =
   | Bool
   | Int of int_kind
+  | Float of float_kind
   | Addr
   | Handle of string
   | Array of int * ty
@@ -37,7 +39,7 @@ let zero_initializer zero_ty = { zero_ty }
 
 let zero_integer_array_values { zero_ty } =
   match zero_ty with
-  | Array (length, (Bool | Int _)) -> Some (List.init length (fun _ -> 0L))
+  | Array (length, (Bool | Int _ | Float _)) -> Some (List.init length (fun _ -> 0L))
   | _ -> None
 
 type func_sig = { params : (string * ty) list; ret : ty; variadic : bool }
@@ -79,6 +81,7 @@ type call_target = User of string | Builtin of builtin
 
 type expr =
   | EInt of int64 * ty * Span.t
+  | EFloat of int64 * ty * Span.t
   | EBool of bool * Span.t
   | EVector of int64 list * ty * Span.t
   | Vector_lit of expr list * ty * Span.t
@@ -150,6 +153,7 @@ type func = {
 type global_initializer =
   | Global_zero of zero_initializer
   | Global_int of int64
+  | Global_float of int64
   | Global_bool of bool
   | Global_null
   | Global_address of string * int
@@ -178,6 +182,7 @@ let rec ty_equal a b =
   match (a, b) with
   | Bool, Bool | Void, Void -> true
   | Int a, Int b -> a = b
+  | Float a, Float b -> a = b
   | Addr, Addr -> true
   | Handle a, Handle b -> a = b
   | Array (na, a), Array (nb, b) | Vec (na, a), Vec (nb, b) -> na = nb && ty_equal a b
@@ -197,6 +202,8 @@ let rec ty_name = function
   | Int I64 -> "i64"
   | Int Usize -> "usize"
   | Int Isize -> "isize"
+  | Float F32 -> "f32"
+  | Float F64 -> "f64"
   | Addr -> "addr"
   | Handle name -> "handle[" ^ name ^ "]"
   | Array (n, t) -> Printf.sprintf "arr[%d, %s]" n (ty_name t)
@@ -205,6 +212,7 @@ let rec ty_name = function
 
 let expr_ty = function
   | EInt (_, t, _)
+  | EFloat (_, t, _)
   | EVector (_, t, _)
   | Vector_lit (_, t, _)
   | Unary (_, _, t, _)
@@ -230,6 +238,7 @@ let expr_ty = function
 
 let expr_span = function
   | EInt (_, _, s)
+  | EFloat (_, _, s)
   | EVector (_, _, s)
   | Vector_lit (_, _, s)
   | EBool (_, s)
@@ -402,6 +411,7 @@ let int_layout target k = Target_layout.integer target (int_bytes ~target k * 8)
 let scalar_bits target = function
   | Bool -> Ok 1
   | Int k -> Ok (int_bytes ~target k * 8)
+  | Float _ -> Error "vector element type must be `bool` or an integer type"
   | Addr | Handle _ -> Ok (target.Target_layout.pointer_size * 8)
   | _ -> Error "vector element type must be `bool` or an integer type"
 
@@ -409,6 +419,8 @@ let layout ?(target = Target_layout.current) structs ty =
   let rec go visiting = function
     | Bool -> Target_layout.integer target 1
     | Int k -> int_layout target k
+    | Float F32 -> Target_layout.float target 32
+    | Float F64 -> Target_layout.float target 64
     | Addr | Handle _ -> Target_layout.pointer target
     | Array (n, t) ->
         let* s, a = go visiting t in
@@ -619,6 +631,8 @@ let compute_struct_cached ?overflow_field cache name =
   and field_layout visiting = function
     | Bool -> Target_layout.integer target 1
     | Int k -> int_layout target k
+    | Float F32 -> Target_layout.float target 32
+    | Float F64 -> Target_layout.float target 64
     | Addr | Handle _ -> Target_layout.pointer target
     | Void -> Error "void has no object layout"
     | Opaque n -> Error (Printf.sprintf "opaque type `%s` has no layout" n)

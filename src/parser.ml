@@ -336,6 +336,12 @@ module P = struct
     | Token.Ident name when Names.type_constructor name = Some Names.Address ->
         ignore (bump p);
         Ok Ast.Addr
+    | Token.Ident "f32" ->
+        ignore (bump p);
+        Ok (Ast.Float Ast.F32)
+    | Token.Ident "f64" ->
+        ignore (bump p);
+        Ok (Ast.Float Ast.F64)
     | Token.Ident name when Names.type_constructor name = Some Names.Handle ->
         ignore (bump p);
         let* () = expected p Token.Lbracket in
@@ -1765,6 +1771,10 @@ module P = struct
         let sp = span p in
         ignore (bump p);
         Ok (Ast.Int_lit (s, sp))
+    | Token.Float s ->
+        let sp = span p in
+        ignore (bump p);
+        Ok (Ast.Float_lit (s, sp))
     | Token.String s ->
         let sp = span p in
         ignore (bump p);

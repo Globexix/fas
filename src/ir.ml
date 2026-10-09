@@ -7,6 +7,8 @@ type ty =
   | I32
   | I64
   | I128
+  | F32
+  | F64
   | Pointer of ty
   | Vector of int * ty
   | Struct of string
@@ -127,6 +129,8 @@ let rec ty_name = function
   | I32 -> "i32"
   | I64 -> "i64"
   | I128 -> "i128"
+  | F32 -> "float"
+  | F64 -> "double"
   | Pointer _ -> "ptr"
   | Vector (n, t) -> Printf.sprintf "<%d x %s>" n (ty_name t)
   | Struct n -> struct_name n
@@ -163,7 +167,7 @@ let integer_width = function
   | I32 -> Some 32
   | I64 -> Some 64
   | I128 -> Some 128
-  | Pointer _ | Vector _ | Struct _ | Array _ | Void -> None
+  | F32 | F64 | Pointer _ | Vector _ | Struct _ | Array _ | Void -> None
 
 let integer_shape = function
   | Vector (lanes, elem) ->
@@ -186,7 +190,7 @@ let rec valid_value_type = function
   | Void -> false
   | Vector (lanes, elem) -> lanes > 0 && (is_integer elem || is_pointer elem)
   | Array (length, elem) -> length >= 0 && valid_value_type elem
-  | I1 | I8 | I16 | I32 | I64 | I128 | Pointer _ | Struct _ -> true
+  | I1 | I8 | I16 | I32 | I64 | I128 | F32 | F64 | Pointer _ | Struct _ -> true
 
 let integer_constant_fits ty value =
   match integer_width ty with
@@ -199,6 +203,7 @@ let integer_constant_fits ty value =
       value >= minimum && value <= maximum
 
 let validate_value_form = function
+  | Const ((F32 | F64), _) -> Ok ()
   | Const (ty, value) ->
       if integer_constant_fits ty value then Ok ()
       else Error "integer constant does not fit its type"
@@ -255,7 +260,7 @@ let validate_function struct_names globals functions (func : func) =
   let rec references_defined_type = function
     | Struct name -> Hashtbl.mem struct_names name
     | Array (_, elem) | Vector (_, elem) -> references_defined_type elem
-    | Pointer _ | I1 | I8 | I16 | I32 | I64 | I128 | Void -> true
+    | Pointer _ | I1 | I8 | I16 | I32 | I64 | I128 | F32 | F64 | Void -> true
   in
   let valid_module_value_type ty = valid_value_type ty && references_defined_type ty in
   let block_ids = Hashtbl.create (List.length func.blocks) in
@@ -504,8 +509,8 @@ let validate_function struct_names globals functions (func : func) =
           match (result, ty) with
           | None, Void
           | ( Some _,
-              ( I1 | I8 | I16 | I32 | I64 | I128 | Pointer _ | Vector _ | Struct _
-              | Array _ ) ) ->
+              ( I1 | I8 | I16 | I32 | I64 | I128 | F32 | F64 | Pointer _ | Vector _
+              | Struct _ | Array _ ) ) ->
               Ok ()
           | None, _ -> fail "block %d discards a non-void call result" block_id
           | Some _, Void -> fail "block %d assigns a void call result" block_id
@@ -522,8 +527,8 @@ let validate_function struct_names globals functions (func : func) =
           match (result, ty) with
           | None, Void
           | ( Some _,
-              ( I1 | I8 | I16 | I32 | I64 | I128 | Pointer _ | Vector _ | Struct _
-              | Array _ ) ) ->
+              ( I1 | I8 | I16 | I32 | I64 | I128 | F32 | F64 | Pointer _ | Vector _
+              | Struct _ | Array _ ) ) ->
               Ok ()
           | None, _ -> fail "block %d discards a non-void call result" block_id
           | Some _, Void -> fail "block %d assigns a void call result" block_id
@@ -886,7 +891,7 @@ let validate module_ =
   let rec references_defined_type = function
     | Struct name -> Hashtbl.mem struct_names name
     | Array (_, elem) | Vector (_, elem) -> references_defined_type elem
-    | Pointer _ | I1 | I8 | I16 | I32 | I64 | I128 | Void -> true
+    | Pointer _ | I1 | I8 | I16 | I32 | I64 | I128 | F32 | F64 | Void -> true
   in
   let validate_struct (struct_def : struct_def) =
     let rec validate_fields = function
@@ -919,7 +924,7 @@ let validate module_ =
         let rec validate_type = function
           | Struct referenced -> validate_struct_cycles referenced
           | Array (_, elem) | Vector (_, elem) -> validate_type elem
-          | Pointer _ | I1 | I8 | I16 | I32 | I64 | I128 | Void -> Ok ()
+          | Pointer _ | I1 | I8 | I16 | I32 | I64 | I128 | F32 | F64 | Void -> Ok ()
         in
         let rec validate_fields = function
           | [] -> Ok ()
@@ -952,9 +957,14 @@ let validate module_ =
   let validate_global = function
     | String_global _ -> Ok ()
     | Array_global { name; elem_ty; elems; align } ->
-        if not (is_integer elem_ty) then
-          Error ("global `" ^ name ^ "` has a non-integer element type")
-        else if not (List.for_all (integer_constant_fits elem_ty) elems) then
+        let constant_fits =
+          match elem_ty with
+          | F32 | F64 -> Fun.const true
+          | _ -> integer_constant_fits elem_ty
+        in
+        if not (is_integer elem_ty || elem_ty = F32 || elem_ty = F64) then
+          Error ("global `" ^ name ^ "` has an unsupported element type")
+        else if not (List.for_all constant_fits elems) then
           Error ("global `" ^ name ^ "` has an element outside its type")
         else if not (valid_alignment align) then
           Error (Printf.sprintf "global `%s` has invalid alignment %d" name align)
@@ -1161,6 +1171,8 @@ let emit_ty sink t =
     | I32 -> sink.text "i32"
     | I64 -> sink.text "i64"
     | I128 -> sink.text "i128"
+    | F32 -> sink.text "float"
+    | F64 -> sink.text "double"
     | Pointer _ -> sink.text "ptr"
     | Vector (n, t) ->
         sink.text "<";
@@ -1179,9 +1191,19 @@ let emit_ty sink t =
   in
   go t
 
+let float_constant_text ty bits =
+  let bits =
+    match ty with
+    | F32 -> Int64.bits_of_float (Int32.float_of_bits (Int64.to_int32 bits))
+    | F64 -> bits
+    | _ -> invalid_arg "internal error: float constant has a non-float type"
+  in
+  Printf.sprintf "0x%016LX" bits
+
 let emit_value sink = function
   | Const (I1, 0L) -> sink.text "false"
   | Const (I1, _) -> sink.text "true"
+  | Const (((F32 | F64) as ty), bits) -> sink.text (float_constant_text ty bits)
   | Const (_, v) -> sink.text (Int64.to_string v)
   | Const_vector (Vector (_, element_ty), values) ->
       sink.text "<";
@@ -1650,7 +1672,7 @@ let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false) ~budget m =
                     if i > 0 then add ", ";
                     emit_ty sink elem_ty;
                     add " ";
-                    add (Int64.to_string v))
+                    emit_value sink (Const (elem_ty, v)))
                   elems;
                 add "], align ");
               add (string_of_int align);
@@ -1930,6 +1952,8 @@ let rec static_type_bytes structs visiting ty =
   | I32 -> Ok 4
   | I64 -> Ok 8
   | I128 -> Ok 16
+  | F32 -> Ok 4
+  | F64 -> Ok 8
   | Void -> Ok 0
   | Pointer _ -> Ok Target_layout.current.pointer_size
   | Struct name ->

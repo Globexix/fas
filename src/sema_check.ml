@@ -1883,11 +1883,28 @@ and check_expr_inner ?destination (c : context) expected expression =
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
-      if not (fits_literal ty v) then
+      if match ty with Hir.Float _ -> true | _ -> false then
+        error
+          ~help:(Printf.sprintf "write `%s.0`" raw)
+          s "integer literals are not floating point literals"
+      else if not (fits_literal ty v) then
         error s
           (Printf.sprintf "integer literal is out of range for %s: `%s`" (ty_name ty)
              raw)
       else Ok (Hir.EInt (mask_value ty v, ty, s))
+  | Ast.Float_lit (raw, s) -> (
+      let ty = Option.value ~default:(Hir.Float Hir.F64) expected in
+      match ty with
+      | Hir.Float _ ->
+          let* bits =
+            parse_float_literal ty raw
+            |> Result.map_error (fun message -> [ Diag.error s message ])
+          in
+          Ok (Hir.EFloat (bits, ty, s))
+      | _ ->
+          error s
+            (Printf.sprintf "floating point literal cannot be used as `%s`" (ty_name ty))
+      )
   | Ast.Bool_lit (v, s) -> Ok (Hir.EBool (v, s))
   | Ast.Null s -> (
       match expected with
@@ -1939,6 +1956,7 @@ and check_expr_inner ?destination (c : context) expected expression =
               | Some (_, ((Hir.Addr | Hir.Handle _) as t), 0L) -> Ok (Hir.Null (t, s))
               | Some (_, (Hir.Addr | Hir.Handle _), _) ->
                   error s "address and handle constants must be null"
+              | Some (_, (Hir.Float _ as t), v) -> Ok (Hir.EFloat (v, t, s))
               | Some (_, t, v) -> Ok (Hir.EInt (v, t, s))
               | None -> (
                   match lookup n c.arrays with
@@ -1959,6 +1977,10 @@ and check_expr_inner ?destination (c : context) expected expression =
       in
       if fits_negative_literal t v || allowed then
         Ok (Hir.EInt (mask_value t (Int64.neg v), t, s))
+      else if match t with Hir.Float _ -> true | _ -> false then
+        error
+          ~help:(Printf.sprintf "write `-%s.0`" raw)
+          s "integer literals are not floating point literals"
       else
         error s
           (Printf.sprintf "integer literal is out of range for %s: `-%s`" (ty_name t)
@@ -2856,7 +2878,7 @@ and check_initializer ?(constant = false) ?destination c expected expression =
         in
         let value =
           match expected with
-          | Hir.Bool | Hir.Int _ -> (
+          | Hir.Bool | Hir.Int _ | Hir.Float _ -> (
               match
                 const_expr ~structs:c.structs ~named_types:c.named_types
                   ~generic_structs:c.generic_structs ~arrays consts (Some expected)
@@ -2867,6 +2889,8 @@ and check_initializer ?(constant = false) ?destination c expected expression =
                      && Hir.ty_equal actual (Hir.expr_ty value) ->
                   if expected = Hir.Bool then
                     Hir.EBool (bits <> 0L, Ast.expr_span expression)
+                  else if match expected with Hir.Float _ -> true | _ -> false then
+                    Hir.EFloat (bits, expected, Ast.expr_span expression)
                   else Hir.EInt (bits, expected, Ast.expr_span expression)
               | _ -> value)
           | _ -> value
@@ -2891,8 +2915,8 @@ and volatile_access_type c name span arguments =
     | _ -> error span (Printf.sprintf "builtin `%s` expects one type argument" name)
   in
   match access_ty with
-  | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ | Hir.Vec (_, (Hir.Int _ | Hir.Bool))
-    ->
+  | Hir.Bool | Hir.Int _ | Hir.Float _ | Hir.Addr | Hir.Handle _
+  | Hir.Vec (_, (Hir.Int _ | Hir.Bool)) ->
       Ok access_ty
   | _ ->
       error span
@@ -4084,8 +4108,8 @@ let rec expression_mentions_name name = function
   | Ast.Designated_field (_, value, _) -> expression_mentions_name name value
   | Ast.Designated_index (index, value, _) ->
       expression_mentions_name name index || expression_mentions_name name value
-  | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Sizeof _
-  | Ast.Alignof _ | Ast.Offsetof _ ->
+  | Ast.Int_lit _ | Ast.Float_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _
+  | Ast.Sizeof _ | Ast.Alignof _ | Ast.Offsetof _ ->
       false
   | Ast.Sizeof_value (value, _) -> expression_mentions_name name value
 
@@ -4126,8 +4150,8 @@ let rec expression_takes_name_address name = function
   | Ast.Designated_index (index, value, _) ->
       expression_takes_name_address name index
       || expression_takes_name_address name value
-  | Ast.Int_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _ | Ast.Ident _
-  | Ast.Sizeof _ | Ast.Alignof _ | Ast.Offsetof _ ->
+  | Ast.Int_lit _ | Ast.Float_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _
+  | Ast.Ident _ | Ast.Sizeof _ | Ast.Alignof _ | Ast.Offsetof _ ->
       false
   | Ast.Sizeof_value (value, _) -> expression_takes_name_address name value
 

@@ -3,6 +3,7 @@ type aggregate_length = { expression : expr; text : string; span : Span.t }
 and ty =
   | Bool
   | Int of int_kind
+  | Float of float_kind
   | Addr
   | Handle of ty
   | Array of aggregate_length * ty
@@ -12,6 +13,7 @@ and ty =
   | Void
 
 and int_kind = U8 | U16 | U32 | U64 | I8 | I16 | I32 | I64 | Usize | Isize
+and float_kind = F32 | F64
 
 and generic_arg =
   | Type_arg of ty
@@ -21,6 +23,7 @@ and generic_arg =
 
 and expr =
   | Int_lit of string * Span.t
+  | Float_lit of string * Span.t
   | Bool_lit of bool * Span.t
   | Null of Span.t
   | String_lit of bool * string * Span.t
@@ -173,6 +176,7 @@ let const_item name name_span ty value span =
 
 let stored_expr_span = function
   | Int_lit (_, s)
+  | Float_lit (_, s)
   | Bool_lit (_, s)
   | Null s
   | String_lit (_, _, s)
@@ -283,6 +287,8 @@ let rec type_name = function
   | Int I64 -> "i64"
   | Int Usize -> "usize"
   | Int Isize -> "isize"
+  | Float F32 -> "f32"
+  | Float F64 -> "f64"
   | Addr -> "addr"
   | Handle t -> "handle[" ^ type_name t ^ "]"
   | Array (n, t) -> "arr[" ^ n.text ^ ", " ^ type_name t ^ "]"
@@ -326,6 +332,7 @@ and expr_name_child parent_precedence right_child expression =
 
 and expr_name = function
   | Int_lit (s, _) -> s
+  | Float_lit (s, _) -> s
   | Bool_lit (true, _) -> "true"
   | Bool_lit (false, _) -> "false"
   | Null _ -> "null"
@@ -455,6 +462,8 @@ let render_program program =
     | Int I64 -> text "i64"
     | Int Usize -> text "usize"
     | Int Isize -> text "isize"
+    | Float F32 -> text "f32"
+    | Float F64 -> text "f64"
     | Addr -> text "addr"
     | Handle inner ->
         text "handle[";
@@ -498,6 +507,7 @@ let render_program program =
   and emit_expr e =
     match e with
     | Int_lit (s, _) -> add_name s
+    | Float_lit (s, _) -> add_name s
     | Bool_lit (true, _) -> text "true"
     | Bool_lit (false, _) -> text "false"
     | Null _ -> text "null"
@@ -868,7 +878,7 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
   let rec go_ty at ty =
     if !failed = None then
       match ty with
-      | Bool | Int _ | Void | Addr -> count at
+      | Bool | Int _ | Float _ | Void | Addr -> count at
       | Named_type (name, _) ->
           identifiers := name :: !identifiers;
           count at
@@ -898,7 +908,7 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
       count at;
       match e with
       | Ident (name, _) -> identifiers := name :: !identifiers
-      | Int_lit _ | Bool_lit _ | Null _ | String_lit _ -> ()
+      | Int_lit _ | Float_lit _ | Bool_lit _ | Null _ | String_lit _ -> ()
       | Unary (_, x, _) | C_dereference (x, _, _) | C_dot_star (x, _) -> go_expr x
       | Parenthesized (x, _) -> go_expr x
       | Binary (_, l, r, _) ->

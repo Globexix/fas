@@ -136,6 +136,43 @@ let parse_integer raw =
         digits;
       Ok !value)
 
+let parse_float_literal ty raw =
+  let clean = String.concat "" (String.split_on_char '_' raw) in
+  let bits =
+    match ty with
+    | Hir.Float Hir.F32 -> Some (Float_parse.f32_bits clean, 0x7f800000L, 0x007fffffL)
+    | Hir.Float Hir.F64 ->
+        Some (Float_parse.f64_bits clean, 0x7ff0000000000000L, 0x000fffffffffffffL)
+    | _ -> None
+  in
+  match bits with
+  | None -> Error "expected a floating point type"
+  | Some (bits, exponent_mask, fraction_mask) ->
+      let infinity_bits = exponent_mask in
+      let is_infinity =
+        Int64.logand bits exponent_mask = infinity_bits
+        && Int64.logand bits fraction_mask = 0L
+      in
+      let mantissa =
+        let stop =
+          match String.index_opt clean 'e' with
+          | Some index -> index
+          | None ->
+              Option.value ~default:(String.length clean) (String.index_opt clean 'E')
+        in
+        String.sub clean 0 stop
+      in
+      let nonzero = String.exists (fun c -> c >= '1' && c <= '9') mantissa in
+      if is_infinity then
+        Error
+          (Printf.sprintf "floating point literal rounds to infinity for `%s`"
+             (Hir.ty_name ty))
+      else if bits = 0L && nonzero then
+        Error
+          (Printf.sprintf "nonzero floating point literal rounds to zero for `%s`"
+             (Hir.ty_name ty))
+      else Ok bits
+
 let integer_exceeds_max_int raw =
   match parse_integer raw with
   | Ok value -> Int64.unsigned_compare value (Int64.of_int max_int) > 0

@@ -95,6 +95,12 @@ let integer target bits =
         Ok (size, align)
     | None -> Error (Printf.sprintf "target has no i%d layout" bits)
 
+let float _target bits =
+  match bits with
+  | 32 -> Ok (4, 4)
+  | 64 -> Ok (8, 8)
+  | _ -> Error (Printf.sprintf "target has no f%d layout" bits)
+
 let vector target lanes element_bits =
   if lanes <= 0 then Error "vector lane count must be positive"
   else if element_bits <= 0 then Error "vector element has no bit width"

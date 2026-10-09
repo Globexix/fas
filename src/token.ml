@@ -1,6 +1,7 @@
 type kind =
   | Ident of string
   | Int of string
+  | Float of string
   | String of string
   | CString of string
   | Kw_fn
@@ -71,7 +72,7 @@ type t = { kind : kind; span : Span.t }
 
 let show = function
   | Ident s -> "`" ^ s ^ "`"
-  | Int s -> "`" ^ s ^ "`"
+  | Int s | Float s -> "`" ^ s ^ "`"
   | String s -> "\"" ^ s ^ "\""
   | CString s -> "c\"" ^ s ^ "\""
   | Kw_fn -> "`fn`"
@@ -139,7 +140,7 @@ let show = function
   | Eof -> "end of file"
 
 let c_header_component = function
-  | Ident text | Int text -> Some text
+  | Ident text | Int text | Float text -> Some text
   | Kw_fn -> Some "fn"
   | Kw_return -> Some "return"
   | Kw_if -> Some "if"

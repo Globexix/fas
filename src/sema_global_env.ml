@@ -37,7 +37,7 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~generic_structs ~c
     | (Hir.Addr | Hir.Handle _) when expression <> Ast.Null (Ast.expr_span expression)
       ->
         address_value ty expression
-    | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ ->
+    | Hir.Bool | Hir.Int _ | Hir.Float _ | Hir.Addr | Hir.Handle _ ->
         let* actual, bits =
           const_expr ~array_lengths ~structs ~named_types ~generic_structs ~arrays
             ~globals:global_names consts (Some ty) expression
@@ -48,6 +48,7 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~generic_structs ~c
           Ok
             (match ty with
             | Hir.Bool -> Hir.Global_bool (bits <> 0L)
+            | Hir.Float _ -> Hir.Global_float bits
             | Hir.Addr | Hir.Handle _ -> Hir.Global_null
             | _ -> Hir.Global_int bits)
     | Hir.Vec _ ->

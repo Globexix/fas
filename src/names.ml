@@ -57,20 +57,20 @@ let scalar_type_names =
 
 let primitive_type_names = scalar_type_names @ [ "addr"; "handle"; "arr"; "vec" ]
 let literal_names = [ "true"; "false"; "null" ]
-let reserved_float_names = [ "f32"; "f64"; "sqrt"; "fma"; "floor"; "ceil"; "round" ]
+let reserved_float_names = [ "sqrt"; "fma"; "floor"; "ceil"; "round"; "abs"; "cvt" ]
 let reserved_float_name name = List.mem name reserved_float_names
-let reserved_v05_float_names = [ "f32"; "f64"; "sqrt"; "fma"; "floor"; "ceil"; "round" ]
 let reserved_float_type_names = [ "f32"; "f64" ]
+let reserved_v04_float_names = reserved_float_type_names @ reserved_float_names
 
 let reserved_float_message name =
-  if List.mem name reserved_v05_float_names then
-    Printf.sprintf "`%s` is reserved for v0.5 floating point" name
+  if List.mem name reserved_v04_float_names then
+    Printf.sprintf "`%s` is reserved for v0.4 floating point" name
   else Printf.sprintf "`%s` is reserved" name
 
 let reserved_binding_message name =
-  if List.mem name reserved_v05_float_names then
+  if List.mem name reserved_v04_float_names then
     Printf.sprintf
-      "`%s` is reserved for v0.5 floating point and cannot be used as a name" name
+      "`%s` is reserved for v0.4 floating point and cannot be used as a name" name
   else Printf.sprintf "`%s` is reserved and cannot be used as a name" name
 
 let parser_type_name name =
@@ -153,6 +153,7 @@ let reserved_binding_name name =
   || List.mem name literal_names
   || List.mem name [ "view"; "use"; "var" ]
   || reserved_float_name name
+  || List.mem name reserved_float_type_names
   || Option.is_some (List.assoc_opt name operations)
 
 let parser_operation name =

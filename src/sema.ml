@@ -56,7 +56,7 @@ let validate_function_params generic_params params =
   validate [] params
 
 let extern_c_value_type = function
-  | Hir.Bool | Hir.Int _ | Hir.Addr | Hir.Handle _ -> true
+  | Hir.Bool | Hir.Int _ | Hir.Float _ | Hir.Addr | Hir.Handle _ -> true
   | Hir.Void | Hir.Array _ | Hir.Vec _ | Hir.Struct _ | Hir.Opaque _ -> false
 
 let aggregate_value_type = function Hir.Array _ | Hir.Struct _ -> true | _ -> false
