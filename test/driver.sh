@@ -221,7 +221,7 @@ CC="$WORK/import-cc" IMPORT_LOG="$WORK/import-clang.log" \
   || fail "C import probe translation unit was not shared"
 [ "$(grep -c '^fas: kept ' "$WORK/c-import.stderr")" -eq 2 ] \
   || fail "C import --keep listing changed"
-grep -E "^fas: kept C import unit: $TMPDIR/fas-c-import-[^ ]+\\.c$" \
+grep -E "^fas: kept C import unit: $TMPDIR/fas-c-unit-[^ /]+/fas-c-import-[^ /]+\\.c$" \
   "$WORK/c-import.stderr" >/dev/null || fail "--keep omitted the C import unit"
 grep -E "^fas: kept C bindings: $TMPDIR/c-import.bindings-[^ ]+\\.txt$" \
   "$WORK/c-import.stderr" >/dev/null || fail "--keep C import listing changed"
@@ -243,7 +243,7 @@ asm_path=$(sed -n 's/^fas: CC command: [^ ]* \([^ ]*fas-module-[^ ]*\.s\) .*/\1/
 : >"$TOOL_LOG"
 "$OCAML_FAS" --sanitize=address --keep "$WORK/c-sanitize.fas" -o "$WORK/c-sanitize" \
   >"$WORK/stdout" 2>"$WORK/stderr"
-grep -E '^cc --target=x86_64-unknown-linux-gnu -fPIC -O2 -fsanitize=address -c .*\.c -o ' \
+grep -E '^cc --target=x86_64-unknown-linux-gnu -fPIC -O2 -Xclang -main-file-name -Xclang fas-c-import-[0-9a-f]{32}\.c -ffile-prefix-map=[^ ]+=fas-c-import-[0-9a-f]{32}\.c -fsanitize=address -c .*\.c -o ' \
   "$TOOL_LOG" >/dev/null || fail "generated C input was not compiled with ASan"
 grep -E '^cc [^ ]*fas-module-[^ ]*\.s .* -fsanitize=address (-lm )?-o ' "$TOOL_LOG" >/dev/null \
   || fail "generated C program link omitted ASan runtime"
@@ -260,14 +260,14 @@ cmp "$WORK/no-sanitizer.ll" "$WORK/undefined.ll" >/dev/null \
 : >"$TOOL_LOG"
 "$OCAML_FAS" --sanitize=undefined "$WORK/c-sanitize.fas" -o "$WORK/undefined-c-link" \
   >"$WORK/stdout" 2>"$WORK/stderr"
-grep -E '^cc --target=x86_64-unknown-linux-gnu -fPIC -O2 -fsanitize=undefined -c .*\.c -o ' \
+grep -E '^cc --target=x86_64-unknown-linux-gnu -fPIC -O2 -Xclang -main-file-name -Xclang fas-c-import-[0-9a-f]{32}\.c -ffile-prefix-map=[^ ]+=fas-c-import-[0-9a-f]{32}\.c -fsanitize=undefined -c .*\.c -o ' \
   "$TOOL_LOG" >/dev/null || fail "generated C input was not compiled with UBSan"
 grep -E '^cc [^ ]*fas-module-[^ ]*\.s .* -fsanitize=undefined (-lm )?-o ' "$TOOL_LOG" >/dev/null \
   || fail "C program link omitted UBSan runtime"
 : >"$TOOL_LOG"
 "$OCAML_FAS" --sanitize=address,undefined "$WORK/c-sanitize.fas" \
   -o "$WORK/combined-c-link" >"$WORK/stdout" 2>"$WORK/stderr"
-grep -E '^cc --target=x86_64-unknown-linux-gnu -fPIC -O2 -fsanitize=address,undefined -c .*\.c -o ' \
+grep -E '^cc --target=x86_64-unknown-linux-gnu -fPIC -O2 -Xclang -main-file-name -Xclang fas-c-import-[0-9a-f]{32}\.c -ffile-prefix-map=[^ ]+=fas-c-import-[0-9a-f]{32}\.c -fsanitize=address,undefined -c .*\.c -o ' \
   "$TOOL_LOG" >/dev/null || fail "generated C input omitted a combined sanitizer"
 grep -E '^cc [^ ]*fas-module-[^ ]*\.s .* -fsanitize=address,undefined (-lm )?-o ' \
   "$TOOL_LOG" >/dev/null || fail "C program link omitted a combined sanitizer"

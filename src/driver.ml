@@ -588,6 +588,7 @@ let apply_no_inline config ir =
 
 type imported_c_unit = {
   source : string;
+  stable_name : string;
   unit_path : string;
   use_span : Span.t;
   has_fragments : bool;
@@ -682,6 +683,9 @@ let compile_c_units config cc units adapters standard_headers declaration_header
                  llc_opt config.Cli.optimization;
                ]
               @ config.Cli.c_flags
+              @ (if Option.is_none unit.assembly then
+                   C_import.reproducible_flags unit.stable_name unit.unit_path
+                 else [])
               @ (if Option.is_none unit.assembly && config.Cli.emit <> Cli.Header then
                    c_sanitizer_flags config
                  else [])
@@ -781,7 +785,8 @@ let add_static_adapters units referenced_names ir =
 let run_unprotected ?header_output config =
   let c_artifacts = ref [] in
   Fun.protect
-    ~finally:(fun () -> if not config.Cli.keep then List.iter remove !c_artifacts)
+    ~finally:(fun () ->
+      if not config.Cli.keep then List.iter C_import.remove_artifact !c_artifacts)
     (fun () ->
       match load_program ~limits config.Cli.input with
       | Error diagnostics -> Error diagnostics
@@ -823,6 +828,7 @@ let run_unprotected ?header_output config =
                   c_units :=
                     {
                       source;
+                      stable_name = C_import.stable_unit_name source headers;
                       assembly = None;
                       unit_path = List.hd artifacts;
                       use_span = (List.hd headers).C_import.span;
@@ -905,6 +911,7 @@ let run_unprotected ?header_output config =
                 c_units :=
                   {
                     source;
+                    stable_name = "";
                     unit_path;
                     assembly =
                       Some

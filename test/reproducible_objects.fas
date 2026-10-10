@@ -1,0 +1,12 @@
+use "C" <<C
+#include <stdint.h>
+const char *object_base_file(void) { return __BASE_FILE__; }
+const char *object_source_file(void) { return __FILE__; }
+static uint32_t object_inline(uint32_t x) { return x * 3 + 1; }
+C
+
+extern "C" {
+  fn object_compute(x u32) u32 { return object_inline(x) }
+  fn object_origin() addr { return object_base_file() }
+  fn object_source() addr { return object_source_file() }
+}
