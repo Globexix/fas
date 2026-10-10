@@ -1,0 +1,303 @@
+extern "C" {
+  fn program_value(x f64) void
+  fn program_count(x u32) void
+  fn program_header(n i32) void
+  fn program_pixel(x u32) void
+  fn cos(x f64) f64
+  fn sin(x f64) f64
+}
+
+fn sphere_x(i i32) f64 { return if i == 0 { -0.8 } else if i == 1 { 0.9 } else { 0.0 } }
+fn sphere_y(i i32) f64 { return if i == 2 { 0.6 } else { -0.3 } }
+fn sphere_z(i i32) f64 { return if i == 2 { 4.0 } else { 3.0 } }
+fn sphere_r(i i32) f64 { return if i == 2 { 0.5 } else { 0.7 } }
+
+fn distance(ox f64, oy f64, oz f64, dx f64, dy f64, dz f64, i i32) f64 {
+  if i == 3 {
+    if dy >= 0.0 { return 1.0e30 }
+    t f64 = (-1.0 - oy) / dy
+    return if t > 0.00001 { t } else { 1.0e30 }
+  }
+  x f64 = ox - sphere_x(i)
+  y f64 = oy - sphere_y(i)
+  z f64 = oz - sphere_z(i)
+  b f64 = x * dx + y * dy + z * dz
+  c f64 = x * x + y * y + z * z - sphere_r(i) * sphere_r(i)
+  d f64 = b * b - c
+  if d < 0.0 { return 1.0e30 }
+  t f64 = -b - sqrt(d)
+  return if t > 0.00001 { t } else { 1.0e30 }
+}
+
+fn trace_ray(ox f64, oy f64, oz f64, dx f64, dy f64, dz f64, depth i32) f64 {
+  nearest f64 = 1.0e30
+  object i32 = -1
+  i i32 = 0
+  while i < 4 {
+    t f64 = distance(ox, oy, oz, dx, dy, dz, i)
+    if t < nearest { nearest = t; object = i }
+    i += 1
+  }
+  if object < 0 { return 0.08 + 0.12 * (dy + 1.0) }
+  x f64 = ox + nearest * dx
+  y f64 = oy + nearest * dy
+  z f64 = oz + nearest * dz
+  nx f64 = 0.0
+  ny f64 = 1.0
+  nz f64 = 0.0
+  if object < 3 {
+    nx = (x - sphere_x(object)) / sphere_r(object)
+    ny = (y - sphere_y(object)) / sphere_r(object)
+    nz = (z - sphere_z(object)) / sphere_r(object)
+  }
+  lx f64 = -3.0 - x
+  ly f64 = 5.0 - y
+  lz f64 = -4.0 - z
+  length f64 = sqrt(lx * lx + ly * ly + lz * lz)
+  lx /= length
+  ly /= length
+  lz /= length
+  intensity f64 = nx * lx + ny * ly + nz * lz
+  if intensity < 0.0 { intensity = 0.0 }
+  sx f64 = x + nx * 0.0001
+  sy f64 = y + ny * 0.0001
+  sz f64 = z + nz * 0.0001
+  i = 0
+  while i < 4 {
+    if distance(sx, sy, sz, lx, ly, lz, i) < length { intensity = 0.0 }
+    i += 1
+  }
+  shade f64 = 0.1 + 0.6 * intensity
+  if depth < 2 {
+    dot f64 = dx * nx + dy * ny + dz * nz
+    reflected f64 = trace_ray(sx, sy, sz, dx - 2.0 * dot * nx,
+      dy - 2.0 * dot * ny, dz - 2.0 * dot * nz, depth + 1)
+    shade += 0.25 * reflected
+  }
+  return shade
+}
+
+fn ray_program(n i32) void {
+  program_header(n)
+  y i32 = 0
+  while y < n {
+    x i32 = 0
+    while x < n {
+      dx f64 = (cvt[f64](x) + 0.5) * 2.0 / cvt[f64](n) - 1.0
+      dy f64 = 1.0 - (cvt[f64](y) + 0.5) * 2.0 / cvt[f64](n)
+      length f64 = sqrt(dx * dx + dy * dy + 1.0)
+      shade f64 = trace_ray(0.0, 0.0, -2.0, dx / length, dy / length, 1.0 / length, 0)
+      if shade > 1.0 { shade = 1.0 }
+      program_pixel(cvt[u32](shade * 255.0))
+      x += 1
+    }
+    y += 1
+  }
+}
+
+fn nbody_program(steps i32) void {
+  px arr[16,f64] = {}
+  py arr[16,f64] = {}
+  pz arr[16,f64] = {}
+  vx arr[16,f64] = {}
+  vy arr[16,f64] = {}
+  vz arr[16,f64] = {}
+  i i32 = 0
+  while i < 16 {
+    px[i] = cvt[f64](i) * 0.3 - 2.0
+    py[i] = cvt[f64](i % 3) * 0.2
+    pz[i] = cvt[f64](i % 5) * 0.1
+    vy[i] = cvt[f64](i % 2) * 0.02 - 0.01
+    i += 1
+  }
+  step i32 = 0
+  while step < steps {
+    i = 0
+    while i < 16 {
+      ax f64 = 0.0
+      ay f64 = 0.0
+      az f64 = 0.0
+      j i32 = 0
+      while j < 16 {
+        if i != j {
+          dx f64 = px[j] - px[i]
+          dy f64 = py[j] - py[i]
+          dz f64 = pz[j] - pz[i]
+          r2 f64 = dx * dx + dy * dy + dz * dz + 0.01
+          force f64 = 1.0 / (r2 * sqrt(r2))
+          ax += dx * force
+          ay += dy * force
+          az += dz * force
+        }
+        j += 1
+      }
+      vx[i] += 0.001 * ax
+      vy[i] += 0.001 * ay
+      vz[i] += 0.001 * az
+      i += 1
+    }
+    i = 0
+    while i < 16 {
+      px[i] += 0.001 * vx[i]
+      py[i] += 0.001 * vy[i]
+      pz[i] += 0.001 * vz[i]
+      i += 1
+    }
+    step += 1
+  }
+  i = 0
+  while i < 16 {
+    program_value(px[i]); program_value(py[i]); program_value(pz[i])
+    program_value(vx[i]); program_value(vy[i]); program_value(vz[i])
+    i += 1
+  }
+}
+
+fn matrix_program(repeats i32) void {
+  a arr[4096,f64] = {}
+  b arr[4096,f64] = {}
+  product arr[4096,f64] = {}
+  lu arr[4096,f64] = {}
+  i i32 = 0
+  while i < 64 {
+    j i32 = 0
+    while j < 64 {
+      index i32 = i * 64 + j
+      a[index] = cvt[f64]((i * 17 + j * 13) % 23) / 23.0
+      b[index] = cvt[f64]((i * 7 + j * 19) % 29) / 29.0
+      lu[index] = a[index] + (if i == j { 64.0 } else { 0.0 })
+      j += 1
+    }
+    i += 1
+  }
+  repeat i32 = 0
+  while repeat < repeats {
+    i = 0
+    while i < 64 {
+      j i32 = 0
+      while j < 64 {
+        sum f64 = 0.0
+        k i32 = 0
+        while k < 64 {
+          sum += a[i * 64 + k] * b[k * 64 + j]
+          k += 1
+        }
+        product[i * 64 + j] = sum
+        j += 1
+      }
+      i += 1
+    }
+    repeat += 1
+  }
+  k i32 = 0
+  while k < 64 {
+    i = k + 1
+    while i < 64 {
+      lu[i * 64 + k] /= lu[k * 64 + k]
+      j i32 = k + 1
+      while j < 64 {
+        lu[i * 64 + j] -= lu[i * 64 + k] * lu[k * 64 + j]
+        j += 1
+      }
+      i += 1
+    }
+    k += 1
+  }
+  i = 0
+  while i < 4096 { program_value(product[i]); program_value(lu[i]); i += 1 }
+}
+
+fn fft_program(n i32) void {
+  real arr[1024,f64] = {}
+  imag arr[1024,f64] = {}
+  i i32 = 0
+  while i < n {
+    real[i] = cvt[f64]((i * 13) % 31) / 31.0
+    i += 1
+  }
+  j i32 = 0
+  i = 1
+  while i < n {
+    bit i32 = n >> 1
+    while (j & bit) != 0 { j ^= bit; bit >>= 1 }
+    j ^= bit
+    if i < j {
+      temp f64 = real[i]; real[i] = real[j]; real[j] = temp
+    }
+    i += 1
+  }
+  length i32 = 2
+  while length <= n {
+    angle f64 = -6.283185307179586 / cvt[f64](length)
+    wr_step f64 = cos(angle)
+    wi_step f64 = sin(angle)
+    base i32 = 0
+    while base < n {
+      wr f64 = 1.0
+      wi f64 = 0.0
+      j = 0
+      while j < length / 2 {
+        left i32 = base + j
+        right i32 = left + length / 2
+        vr f64 = real[right] * wr - imag[right] * wi
+        vi f64 = real[right] * wi + imag[right] * wr
+        ur f64 = real[left]
+        ui f64 = imag[left]
+        real[left] = ur + vr
+        imag[left] = ui + vi
+        real[right] = ur - vr
+        imag[right] = ui - vi
+        next_wr f64 = wr * wr_step - wi * wi_step
+        wi = wr * wi_step + wi * wr_step
+        wr = next_wr
+        j += 1
+      }
+      base += length
+    }
+    length *= 2
+  }
+  i = 0
+  while i < n { program_value(real[i]); program_value(imag[i]); i += 1 }
+}
+
+fn mandelbrot_program(n i32, limit i32) void {
+  y i32 = 0
+  while y < n {
+    base i32 = 0
+    while base < n {
+      columns vec[8,f32] = { cvt[f32](base), cvt[f32](base+1), cvt[f32](base+2), cvt[f32](base+3),
+        cvt[f32](base+4), cvt[f32](base+5), cvt[f32](base+6), cvt[f32](base+7) }
+      cx vec[8,f32] = columns * splat(3.0 / cvt[f32](n)) - splat(2.0)
+      cy vec[8,f32] = splat(cvt[f32](y) * 2.0 / cvt[f32](n) - 1.0)
+      x vec[8,f32] = splat(0.0)
+      z vec[8,f32] = splat(0.0)
+      counts vec[8,u32] = splat(0)
+      active vec[8,bool] = splat(true)
+      iteration i32 = 0
+      while iteration < limit {
+        xx vec[8,f32] = x * x
+        zz vec[8,f32] = z * z
+        active = active & (xx + zz <= splat(4.0))
+        counts = select(active, counts + splat(1), counts)
+        next_z vec[8,f32] = splat(2.0) * x * z + cy
+        x = select(active, xx - zz + cx, x)
+        z = select(active, next_z, z)
+        iteration += 1
+      }
+      lane i32 = 0
+      while lane < 8 { program_count(counts[lane]); lane += 1 }
+      base += 8
+    }
+    y += 1
+  }
+}
+
+extern "C" {
+fn programs_run(kind i32, size i32) void {
+  if kind == 0 { ray_program(size) }
+  else if kind == 1 { nbody_program(size) }
+  else if kind == 2 { matrix_program(size) }
+  else if kind == 3 { fft_program(size) }
+  else { mandelbrot_program(size, 96) }
+}
+}
