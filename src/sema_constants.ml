@@ -184,6 +184,20 @@ let float_value ty bits =
   | Hir.Float Hir.F64 -> Int64.float_of_bits bits
   | _ -> invalid_arg "internal error: non-float vector lane"
 
+let float_comparison_bits ty operation left right =
+  let left = float_value ty left and right = float_value ty right in
+  let result =
+    match operation with
+    | Ast.Eq -> left = right
+    | Ast.Ne -> left <> right
+    | Ast.Lt -> left < right
+    | Ast.Le -> left <= right
+    | Ast.Gt -> left > right
+    | Ast.Ge -> left >= right
+    | _ -> invalid_arg "internal error: non-comparison float operation"
+  in
+  if result then 1L else 0L
+
 let float_binary_bits ty operation left right =
   match ty with
   | Hir.Float Hir.F32 ->
@@ -867,35 +881,11 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
           | _ -> value
         in
         let lv = widen lt lv and rv = widen rt rv in
-        let as_float ty value =
-          match ty with
-          | Hir.Float Hir.F32 -> Int32.float_of_bits (Int64.to_int32 value)
-          | Hir.Float Hir.F64 -> Int64.float_of_bits value
-          | _ -> assert false
-        in
         let result =
           match op with
-          | Ast.Eq -> if as_float common lv = as_float common rv then 1L else 0L
-          | Ast.Ne -> if as_float common lv <> as_float common rv then 1L else 0L
-          | Ast.Lt -> if as_float common lv < as_float common rv then 1L else 0L
-          | Ast.Le -> if as_float common lv <= as_float common rv then 1L else 0L
-          | Ast.Gt -> if as_float common lv > as_float common rv then 1L else 0L
-          | Ast.Ge -> if as_float common lv >= as_float common rv then 1L else 0L
-          | (Ast.Add | Ast.Sub | Ast.Mul | Ast.Div) when common = Hir.Float Hir.F32 ->
-              let operation =
-                match op with Ast.Add -> 0 | Ast.Sub -> 1 | Ast.Mul -> 2 | _ -> 3
-              in
-              Float_parse.f32_binary_bits operation lv rv
-          | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div ->
-              let left = Int64.float_of_bits lv and right = Int64.float_of_bits rv in
-              let value =
-                match op with
-                | Ast.Add -> left +. right
-                | Ast.Sub -> left -. right
-                | Ast.Mul -> left *. right
-                | _ -> left /. right
-              in
-              Int64.bits_of_float value
+          | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge ->
+              float_comparison_bits common op lv rv
+          | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div -> float_binary_bits common op lv rv
           | _ -> assert false
         in
         Ok (result_ty, mask_value result_ty result)
@@ -1634,15 +1624,9 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
           in
           let apply left right =
             if float_element then
-              let left_float = float_value element left
-              and right_float = float_value element right in
               match operation with
-              | Ast.Eq -> if left_float = right_float then 1L else 0L
-              | Ast.Ne -> if left_float <> right_float then 1L else 0L
-              | Ast.Lt -> if left_float < right_float then 1L else 0L
-              | Ast.Le -> if left_float <= right_float then 1L else 0L
-              | Ast.Gt -> if left_float > right_float then 1L else 0L
-              | Ast.Ge -> if left_float >= right_float then 1L else 0L
+              | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge ->
+                  float_comparison_bits element operation left right
               | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div ->
                   float_binary_bits element operation left right
               | _ -> 0L

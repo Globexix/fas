@@ -1,14 +1,17 @@
 (test
  (name foundations)
+ (modules foundations)
  (libraries fas_compiler))
 
 (test
  (name unit)
+ (modules unit)
  (libraries fas_compiler)
  (deps ir_simple.expected))
 
 (test
  (name regressions)
+ (modules regressions)
  (libraries fas_compiler)
  (deps
   c_import/matrix.h
@@ -40,3 +43,12 @@
   c_import/alloc_size_field.h
   c_import/alloc_size_parameter.h
   c_import/c_string_parameters.h))
+
+(executable
+ (name float_proof)
+ (modules float_proof)
+ (libraries fas_compiler unix)
+ (foreign_stubs
+  (language c)
+  (names float_proof_oracle)
+  (flags -O0 -ffp-contract=off -fno-fast-math)))

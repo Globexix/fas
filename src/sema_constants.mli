@@ -55,3 +55,6 @@ val query_layout :
   Span.t ->
   Ast.ty ->
   (Hir.ty * Hir.struct_def list, Diag.t list) result
+
+val float_binary_bits : Hir.ty -> Ast.binop -> int64 -> int64 -> int64
+val float_comparison_bits : Hir.ty -> Ast.binop -> int64 -> int64 -> int64
