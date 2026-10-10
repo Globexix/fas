@@ -1,5 +1,6 @@
 external f32_bits : string -> int64 = "fas_parse_f32_bits"
 external f64_bits : string -> int64 = "fas_parse_f64_bits"
+external literal_kind : string -> int = "fas_float_literal_kind"
 external f32_binary_bits : int -> int64 -> int64 -> int64 = "fas_f32_binary_bits"
 external float_unary_bits : int -> bool -> int64 -> int64 = "fas_float_unary_bits"
 

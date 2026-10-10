@@ -166,21 +166,11 @@ let parse_float_literal ty raw =
         Int64.logand bits exponent_mask = infinity_bits
         && Int64.logand bits fraction_mask = 0L
       in
-      let mantissa =
-        let stop =
-          match String.index_opt clean 'e' with
-          | Some index -> index
-          | None ->
-              Option.value ~default:(String.length clean) (String.index_opt clean 'E')
-        in
-        String.sub clean 0 stop
-      in
-      let nonzero = String.exists (fun c -> c >= '1' && c <= '9') mantissa in
       if is_infinity then
         Error
           (Printf.sprintf "floating point literal rounds to infinity for `%s`"
              (Hir.ty_name ty))
-      else if bits = 0L && nonzero then
+      else if bits = 0L && Float_parse.literal_kind clean land 4 <> 0 then
         Error
           (Printf.sprintf "nonzero floating point literal rounds to zero for `%s`"
              (Hir.ty_name ty))

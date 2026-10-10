@@ -32,6 +32,24 @@ CAMLprim value fas_parse_f64_bits(value text) {
   return caml_copy_int64((int64_t)bits);
 }
 
+CAMLprim value fas_float_literal_kind(value text) {
+  const char *input = String_val(text); size_t length = strlen(input); char *end;
+  if (length == 0 || *input == '+' || *input == '-') return Val_int(0);
+  (void)strtod_l(input, &end, get_c_locale()); size_t used = (size_t)(end - input); int kind = 1;
+  if (used != length) {
+    char suffix = input[length - 1]; if (used + 1 != length || !strchr("fFlL", suffix)) return Val_int(0);
+    kind = suffix == 'f' || suffix == 'F' ? 2 : 3;
+  }
+  int hex = length > 1 && input[0] == '0' && (input[1] == 'x' || input[1] == 'X'); if (hex && !memchr(input, 'p', used) && !memchr(input, 'P', used)) return Val_int(0);
+  if (!hex && !memchr(input, '.', used) && !memchr(input, 'e', used) && !memchr(input, 'E', used)) return Val_int(0);
+  size_t mantissa_end = used; for (size_t i = hex ? 2 : 0; i < used; i++)
+    if (strchr(hex ? "pP" : "eE", input[i])) { mantissa_end = i; break; }
+  int nonzero = 0;
+  for (size_t i = hex ? 2 : 0; i < mantissa_end; i++)
+    nonzero |= ((input[i] >= '1' && input[i] <= '9') || (hex && ((input[i] >= 'a' && input[i] <= 'f') || (input[i] >= 'A' && input[i] <= 'F'))));
+  return Val_int(kind | (nonzero << 2));
+}
+
 CAMLprim value fas_f32_binary_bits(value operation, value left_bits, value right_bits) {
   uint32_t left_raw = (uint32_t)Int64_val(left_bits);
   uint32_t right_raw = (uint32_t)Int64_val(right_bits);

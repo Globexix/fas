@@ -1,0 +1,1 @@
+#define FAS_FLOAT_MACRO_CONFLICT 1.0

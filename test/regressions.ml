@@ -13824,6 +13824,166 @@ let () =
   in
   c_semantic_message "c-import-command-line-macro-is-invisible"
     "unknown name `FAS_FROM_D`" c_from_d "fn probe() i32 { return FAS_FROM_D }\n";
+  let float_macros =
+    c_import_macro_fixture
+      ~c_flags:[ "-D_GNU_SOURCE"; "-DFAS_FLOAT_FROM_D=1.25" ]
+      "float_macros.h"
+      [
+        "FAS_FLOAT_DECIMAL";
+        "FAS_FLOAT_F_SUFFIX";
+        "FAS_FLOAT_UPPER_F_SUFFIX";
+        "FAS_FLOAT_TRAILING_DOT";
+        "FAS_FLOAT_LEADING_DOT";
+        "FAS_FLOAT_EXPONENT";
+        "FAS_FLOAT_EXPONENT_F";
+        "FAS_FLOAT_PARENS";
+        "FAS_FLOAT_NEGATIVE";
+        "FAS_FLOAT_NEGATIVE_PARENS";
+        "FAS_FLOAT_NEGATIVE_ZERO";
+        "FAS_FLOAT_HEX";
+        "FAS_FLOAT_HEX_MIN";
+        "FAS_FLOAT_CHAIN_A";
+        "FAS_FLOAT_CHAIN_B";
+        "FAS_FLOAT_PREDEFINED_CHAIN";
+        "FAS_FLOAT_DOUBLE_ROUND";
+        "FAS_FLOAT_LONG_DOUBLE";
+        "FAS_FLOAT_LONG_DOUBLE_LOWER";
+        "FAS_FLOAT_OVERFLOW";
+        "FAS_FLOAT_UNDERFLOW";
+        "FAS_FLOAT_HEX_UNDERFLOW";
+        "FAS_FLOAT_DIVISION";
+        "FAS_FLOAT_ADD";
+        "FAS_FLOAT_DOUBLE_NEGATIVE";
+        "FAS_FLOAT_PLUS";
+        "FAS_FLOAT_CAST";
+        "FAS_FLOAT_FUNCTION";
+        "FAS_FLOAT_STRING";
+        "FAS_FLOAT_EMPTY";
+        "HUGE_VAL";
+        "INFINITY";
+        "NAN";
+        "M_PIl";
+        "M_Ef16";
+        "FAS_FLOAT_FROM_D";
+      ]
+  in
+  let float_macro_program =
+    match
+      c_semantic_result float_macros
+        ("const FAS_FLOAT_CONST f64 = FAS_FLOAT_DECIMAL + FAS_FLOAT_HEX\n"
+       ^ "fn float_macro_all() f64 { return FAS_FLOAT_DECIMAL + FAS_FLOAT_F_SUFFIX + "
+       ^ "FAS_FLOAT_UPPER_F_SUFFIX + FAS_FLOAT_TRAILING_DOT + FAS_FLOAT_LEADING_DOT + "
+       ^ "FAS_FLOAT_EXPONENT + FAS_FLOAT_EXPONENT_F + FAS_FLOAT_NEGATIVE + "
+       ^ "FAS_FLOAT_NEGATIVE_PARENS + FAS_FLOAT_HEX_MIN + FAS_FLOAT_CHAIN_A + "
+       ^ "FAS_FLOAT_PREDEFINED_CHAIN + FAS_FLOAT_DOUBLE_ROUND }\n"
+       ^ "fn float_macro_vector() vec[4, f32] { return splat(FAS_FLOAT_F_SUFFIX) + "
+       ^ "{FAS_FLOAT_CHAIN_A, FAS_FLOAT_PARENS, FAS_FLOAT_DOUBLE_ROUND, "
+       ^ "FAS_FLOAT_HEX_MIN} }\n"
+       ^ "fn float_macro_convert() f64 { return cvt[f64](FAS_FLOAT_F_SUFFIX) }\n"
+       ^ "fn float_macro_bits() u32 { return bitcast[u32](FAS_FLOAT_F_SUFFIX) }\n"
+       ^ "fn float_macro_compare() bool { return FAS_FLOAT_DECIMAL < FAS_FLOAT_HEX }\n"
+        )
+    with
+    | Ok program -> program
+    | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+  in
+  List.iter
+    (fun (name, ty, bits) ->
+      incr checks_run;
+      match
+        List.find_opt
+          (fun (constant : Hir.const_def) -> constant.name = name)
+          float_macro_program.consts
+      with
+      | Some { ty = actual_ty; bits = actual_bits; _ }
+        when actual_ty = ty && actual_bits = bits ->
+          ()
+      | Some { ty = actual_ty; bits = actual_bits; _ } ->
+          failwith
+            (Printf.sprintf "C float macro %s: expected %s 0x%Lx, got %s 0x%Lx" name
+               (Hir.ty_name ty) bits (Hir.ty_name actual_ty) actual_bits)
+      | None -> failwith ("C float macro was not imported: " ^ name))
+    [
+      ("FAS_FLOAT_DECIMAL", Hir.Float Hir.F64, 0x3ff8000000000000L);
+      ("FAS_FLOAT_F_SUFFIX", Hir.Float Hir.F32, 0x40000000L);
+      ("FAS_FLOAT_UPPER_F_SUFFIX", Hir.Float Hir.F32, 0x40400000L);
+      ("FAS_FLOAT_TRAILING_DOT", Hir.Float Hir.F64, 0x3ff0000000000000L);
+      ("FAS_FLOAT_LEADING_DOT", Hir.Float Hir.F64, 0x3fe0000000000000L);
+      ("FAS_FLOAT_NEGATIVE", Hir.Float Hir.F64, 0xbff8000000000000L);
+      ("FAS_FLOAT_NEGATIVE_PARENS", Hir.Float Hir.F64, 0xbff8000000000000L);
+      ("FAS_FLOAT_NEGATIVE_ZERO", Hir.Float Hir.F64, 0x8000000000000000L);
+      ("FAS_FLOAT_HEX", Hir.Float Hir.F64, 0x4008000000000000L);
+      ("FAS_FLOAT_HEX_MIN", Hir.Float Hir.F32, 1L);
+      ("FAS_FLOAT_CHAIN_A", Hir.Float Hir.F32, 0x40200000L);
+      ("FAS_FLOAT_PREDEFINED_CHAIN", Hir.Float Hir.F32, 0x7f7fffffL);
+      ("FAS_FLOAT_DOUBLE_ROUND", Hir.Float Hir.F32, 0x3f800001L);
+    ];
+  if
+    not
+      (contains
+         (C_import.manifest_text (snd float_macros))
+         "FAS_FLOAT_F_SUFFIX\tmacro FAS_FLOAT_F_SUFFIX\tmacro f32 2.0\t\t<unknown>:0")
+  then failwith "C float macro manifest line changed";
+  c_semantic_message "c-float-macro-long-double"
+    "C declaration `FAS_FLOAT_LONG_DOUBLE` is not supported: long double types are not \
+     supported"
+    float_macros "fn probe() f64 { return FAS_FLOAT_LONG_DOUBLE }\n";
+  c_semantic_message "c-float-macro-overflow"
+    "C declaration `FAS_FLOAT_OVERFLOW` is not supported: floating point literal \
+     rounds to infinity for `f64`"
+    float_macros "fn probe() f64 { return FAS_FLOAT_OVERFLOW }\n";
+  c_semantic_message "c-float-macro-underflow"
+    "C declaration `FAS_FLOAT_UNDERFLOW` is not supported: nonzero floating point \
+     literal rounds to zero for `f32`"
+    float_macros "fn probe() f32 { return FAS_FLOAT_UNDERFLOW }\n";
+  c_semantic_message "c-float-macro-hex-underflow"
+    "C declaration `FAS_FLOAT_HEX_UNDERFLOW` is not supported: nonzero floating point \
+     literal rounds to zero for `f64`"
+    float_macros "fn probe() f64 { return FAS_FLOAT_HEX_UNDERFLOW }\n";
+  c_semantic_message "c-float-macro-math-long-double"
+    "C declaration `M_PIl` is not supported: long double types are not supported"
+    float_macros "fn probe() f64 { return M_PIl }\n";
+  c_semantic_message "c-float-macro-reserved"
+    "`addr` is reserved and cannot be used as a name"
+    (c_import_macro_fixture ~c_flags:[ "-D_GNU_SOURCE" ] "float_macros.h" [ "addr" ])
+    "fn probe() f64 { return addr }\n";
+  List.iter
+    (fun name ->
+      c_semantic_message
+        ("c-float-macro-invisible-" ^ name)
+        ("unknown name `" ^ name ^ "`")
+        float_macros
+        ("fn probe() f64 { return " ^ name ^ " }\n"))
+    [
+      "FAS_FLOAT_DIVISION";
+      "FAS_FLOAT_ADD";
+      "FAS_FLOAT_DOUBLE_NEGATIVE";
+      "FAS_FLOAT_PLUS";
+      "FAS_FLOAT_CAST";
+      "FAS_FLOAT_FUNCTION";
+      "FAS_FLOAT_STRING";
+      "FAS_FLOAT_EMPTY";
+      "HUGE_VAL";
+      "INFINITY";
+      "NAN";
+      "M_Ef16";
+      "FAS_FLOAT_FROM_D";
+    ];
+  let first_float_macro =
+    c_import_macro_fixture "float_macros_conflict_first.h"
+      [ "FAS_FLOAT_MACRO_CONFLICT" ]
+  and second_float_macro =
+    c_import_macro_fixture "float_macros_conflict_second.h"
+      [ "FAS_FLOAT_MACRO_CONFLICT" ]
+  in
+  let float_macro_conflict =
+    ( fst first_float_macro,
+      C_import.merge_imports [ snd first_float_macro; snd second_float_macro ] )
+  in
+  c_semantic_message "c-float-macro-conflict"
+    "C declaration `FAS_FLOAT_MACRO_CONFLICT` is not supported: conflicting C \
+     declarations"
+    float_macro_conflict "fn probe() f64 { return FAS_FLOAT_MACRO_CONFLICT }\n";
   let first_macro =
     c_import_macro_fixture "macros_conflict_first.h" [ "FAS_MACRO_CONFLICT" ]
   and second_macro =

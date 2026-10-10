@@ -363,18 +363,116 @@ let fas_macro_value width unsigned literal =
   else if unsigned && value < 0L then Printf.sprintf "0x%Lx" value
   else Int64.to_string value
 
+let c_import_args ~cc ~c_flags ~source =
+  [ cc; "-x"; "c"; "--target=x86_64-unknown-linux-gnu" ]
+  @ c_flags
+  @ [ "-iquote"; Filename.dirname source ]
+
 let imported_macro_definitions ~cc ~c_flags ~source ~unit_path ~macro_names =
   if macro_names = [] then Ok []
   else
-    let common =
-      [ "-x"; "c"; "--target=x86_64-unknown-linux-gnu" ]
-      @ c_flags
-      @ [ "-iquote"; Filename.dirname source ]
+    let argv =
+      Array.of_list (c_import_args ~cc ~c_flags ~source @ [ "-E"; "-dD"; unit_path ])
     in
-    let argv = Array.of_list ([ cc; "-E"; "-dD" ] @ common @ [ unit_path ]) in
     match Process.run argv with
     | Error failure -> Error failure.stderr
     | Ok (text, _) -> Ok (macro_definitions text macro_names)
+
+let imported_macro_expansions ~cc ~c_flags ~source ~unit_path ~paths candidates =
+  if candidates = [] then Ok []
+  else
+    let probe = Filename.temp_file "fas-c-macro-expand-" ".c" in
+    paths := probe :: !paths;
+    let digest = Digest.to_hex (Digest.string unit_path) in
+    let marker index side = Printf.sprintf "__fas_macro_%s_%s_%d" digest side index in
+    let output = open_out_bin probe in
+    Printf.fprintf output "#include %S\n" unit_path;
+    List.iteri
+      (fun index (name, _, _) ->
+        Printf.fprintf output "%s %s %s\n" (marker index "b") name (marker index "e"))
+      candidates;
+    close_out output;
+    match
+      Process.run
+        (Array.of_list (c_import_args ~cc ~c_flags ~source @ [ "-E"; "-P"; probe ]))
+    with
+    | Error failure -> Error failure.stderr
+    | Ok (text, _) ->
+        let lines = String.split_on_char '\n' text in
+        Ok
+          (List.mapi
+             (fun index (name, _, _) ->
+               let first = marker index "b" and last = marker index "e" in
+               let prefix = first ^ " " and suffix = " " ^ last in
+               let expansion =
+                 List.find_map
+                   (fun line ->
+                     if String.starts_with ~prefix line && String.ends_with ~suffix line
+                     then
+                       Some
+                         (String.sub line (String.length prefix)
+                            (String.length line - String.length prefix
+                           - String.length suffix)
+                         |> String.trim)
+                     else None)
+                   lines
+               in
+               (name, expansion))
+             candidates)
+
+let macro_float_literal expansion =
+  let rec strip text =
+    let text = String.trim text in
+    if String.length text < 2 || text.[0] <> '(' then text
+    else
+      let depth = ref 0 and closing = ref (-1) in
+      String.iteri
+        (fun i c ->
+          if !closing < 0 then
+            if c = '(' then incr depth
+            else if c = ')' then (
+              decr depth;
+              if !depth = 0 then closing := i))
+        text;
+      if !closing = String.length text - 1 then
+        strip (String.sub text 1 (String.length text - 2))
+      else text
+  in
+  let text = strip expansion in
+  let negative, text =
+    if String.length text > 0 && text.[0] = '-' then
+      (true, strip (String.sub text 1 (String.length text - 1)))
+    else (false, text)
+  in
+  match Float_parse.literal_kind text land 3 with
+  | 0 -> None
+  | 3 -> Some (Error "long double types are not supported")
+  | kind -> (
+      let ty = if kind = 2 then Hir.Float Hir.F32 else Hir.Float Hir.F64 in
+      match Sema_numeric.parse_float_literal ty text with
+      | Error reason -> Some (Error reason)
+      | Ok _ ->
+          let type_name = if kind = 2 then "f32" else "f64" in
+          Some
+            (Ok
+               ( String.sub text 0 (String.length text - if kind = 2 then 1 else 0),
+                 type_name,
+                 negative )))
+
+let float_macro_node name result =
+  let fields =
+    ("name", C_import_json.Str name)
+    ::
+    (match result with
+    | Error reason -> [ ("reason", C_import_json.Str reason) ]
+    | Ok (literal, type_name, negative) ->
+        [
+          ("type", C_import_json.Str type_name);
+          ("literal", C_import_json.Str literal);
+          ("negative", C_import_json.Bool negative);
+        ])
+  in
+  C_import_json.make_obj (("kind", C_import_json.Str "FasFloatMacro") :: fields)
 
 type builtin_info = Integer of Ast.ty | Unsupported_integer | Floating of int
 
@@ -968,7 +1066,8 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
       Ok (declarations @ probe_types @ collision_nodes, macro_infos)
 
 let imported_probe_nodes ~cc ~c_flags ~source ~unit_path ~paths ~definitions
-    ~macro_candidates ~macro_infos ~alloc_size_declarations declarations =
+    ~macro_candidates ~macro_expansions ~macro_infos ~alloc_size_declarations
+    declarations =
   let field name node = C_import_json.field name node in
   let text name node = Option.bind (field name node) C_import_json.string in
   let children node =
@@ -978,6 +1077,13 @@ let imported_probe_nodes ~cc ~c_flags ~source ~unit_path ~paths ~definitions
   let name node = text "name" node in
   let object_of_kind kind fields =
     C_import_json.make_obj (("kind", C_import_json.Str kind) :: fields)
+  in
+  let float_macros =
+    List.filter_map
+      (fun (name, expansion) ->
+        Option.bind expansion (fun expansion ->
+            Option.map (float_macro_node name) (macro_float_literal expansion)))
+      macro_expansions
   in
   let rec flatten node = node :: List.concat_map flatten (children node) in
   let all_nodes = List.concat_map flatten declarations in
@@ -1078,7 +1184,7 @@ let imported_probe_nodes ~cc ~c_flags ~source ~unit_path ~paths ~definitions
   in
   let has_probes =
     enum_candidates <> [] || layout_candidates <> [] || indexed_macros <> []
-    || alloc_size_functions <> []
+    || alloc_size_functions <> [] || float_macros <> []
   in
   if not has_probes then Ok ([], [], [], [])
   else
@@ -1259,10 +1365,10 @@ let imported_probe_nodes ~cc ~c_flags ~source ~unit_path ~paths ~definitions
               | _ -> None)
         in
         let imported_names =
-          List.filter_map (fun node -> text "name" node) imported_macros
+          List.filter_map (fun node -> text "name" node) (imported_macros @ float_macros)
         in
         let macros =
-          imported_macros
+          imported_macros @ float_macros
           @ List.filter_map
               (fun (name, _, _) ->
                 if List.mem name imported_names then None
@@ -1444,6 +1550,11 @@ let import ~cc ~debug ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
                     (not function_like) && has_value)
                   definitions
               in
+              let* macro_expansions =
+                map_error "internal error: C macro expansion failed: "
+                  (imported_macro_expansions ~cc ~c_flags ~source ~unit_path
+                     ~paths:macro_paths macro_candidates)
+              in
               let* structured_ast, macro_infos =
                 map_error "internal error: C structured type import failed: "
                   (imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path
@@ -1471,8 +1582,8 @@ let import ~cc ~debug ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
               let* enum_types, typedef_layouts, macros, alloc_size_parameters =
                 map_error "internal error: C import probe failed: "
                   (imported_probe_nodes ~cc ~c_flags ~source ~unit_path
-                     ~paths:macro_paths ~definitions ~macro_candidates ~macro_infos
-                     ~alloc_size_declarations:structured_ast declarations)
+                     ~paths:macro_paths ~definitions ~macro_candidates ~macro_expansions
+                     ~macro_infos ~alloc_size_declarations:structured_ast declarations)
               in
               Ok
                 ( declarations @ enum_types @ typedef_layouts
@@ -2276,7 +2387,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
     List.filter_map
       (fun node ->
         match string "kind" node with
-        | Some "FasIntegerMacro" -> string "name" node
+        | Some ("FasIntegerMacro" | "FasFloatMacro") -> string "name" node
         | _ -> None)
       nodes
   in
@@ -2284,7 +2395,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
     List.filter
       (fun node ->
         match string "kind" node with
-        | Some ("FasIntegerMacro" | "FasInvisibleMacro") -> true
+        | Some ("FasIntegerMacro" | "FasFloatMacro" | "FasInvisibleMacro") -> true
         | _ ->
             not
               (List.mem
@@ -3780,6 +3891,36 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
                     (None, None) [] None ())
                 ty
           | _ -> ())
+      | Some "FasFloatMacro", name when name <> "" ->
+          let record =
+            match string "reason" node with
+            | None ->
+                Option.bind (string "type" node) (fun type_name ->
+                    Option.map
+                      (fun literal ->
+                        let ty =
+                          if type_name = "f32" then Ast.Float Ast.F32
+                          else Ast.Float Ast.F64
+                        in
+                        let negative =
+                          get "negative" node = Some (C_import_json.Bool true)
+                        in
+                        let value = (if negative then "-" else "") ^ literal in
+                        let lit = Ast.Float_lit (literal, span) in
+                        let expression =
+                          if negative then Ast.Unary (Ast.Neg, lit, span) else lit
+                        in
+                        ( Some (Ast.const_item name span ty expression span),
+                          "macro " ^ type_name ^ " " ^ value,
+                          None ))
+                      (string "literal" node))
+            | Some reason -> Some (None, "macro unsupported", Some reason)
+          in
+          Option.iter
+            (fun (item, signature, reason) ->
+              add_item name ("macro " ^ name) signature item (None, None) [] reason
+                ~keep_unsupported_item:true ())
+            record
       | Some "RecordDecl", _ -> ()
       | Some "EnumDecl", _ ->
           let previous_value = ref None in
