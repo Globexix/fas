@@ -627,7 +627,15 @@ let rec narrow_float_result expression =
   | Ast.Parenthesized (expression, _) -> narrow_float_result expression
   | Ast.Unary (Ast.Neg, _, _) -> true
   | Ast.Binary ((Ast.Add | Ast.Sub | Ast.Mul | Ast.Div), _, _, _) -> true
+  | Ast.Call (Ast.Ident (name, _), _, _) when Option.is_some (Names.float_math name) ->
+      true
   | Ast.Ternary (_, yes, no, _) -> narrow_float_result yes || narrow_float_result no
+  | _ -> false
+
+let rec float_literal_expression = function
+  | Ast.Float_lit _ -> true
+  | Ast.Parenthesized (expression, _) | Ast.Unary (Ast.Neg, expression, _) ->
+      float_literal_expression expression
   | _ -> false
 
 let convert_expected_kind ?expression actual expected =
@@ -978,9 +986,16 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
             | Ast.Div -> "/"
             | _ -> assert false
           in
-          Some
-            (Printf.sprintf "write `cvt[f64](%s) %s %s`" (Ast.expr_name left)
-               operator_text (Ast.expr_name right))
+          let help_expression =
+            if float_literal_expression left && not (float_literal_expression right)
+            then
+              Printf.sprintf "%s %s cvt[f64](%s)" (Ast.expr_name left) operator_text
+                (Ast.expr_name right)
+            else
+              Printf.sprintf "cvt[f64](%s) %s %s" (Ast.expr_name left) operator_text
+                (Ast.expr_name right)
+          in
+          Some (Printf.sprintf "write `%s`" help_expression)
       | Some (Ast.Unary (Ast.Neg, value, _)), Hir.Float Hir.F32, Hir.Float Hir.F64
         when narrow_float && widening_help ->
           Some (Printf.sprintf "write `-cvt[f64](%s)`" (Ast.expr_name value))

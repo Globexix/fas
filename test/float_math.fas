@@ -58,6 +58,12 @@ const ABS_NAN64 f64 = abs(bitcast[f64](NAN64_BITS))
 const SPLAT_INPUT vec[4, f32] = splat(1.0)
 const SPLAT_FMA vec[4, f32] = fma(SPLAT_INPUT, SPLAT_INPUT, splat(1.0))
 const PEER_A f32 = 0.10000001
+const FMA_SHAPE_NEG f32 = fma(PEER_A, PEER_A, -(0.5))
+const FMA_SHAPE_NEG_FIRST f32 = fma(-(0.5), PEER_A, PEER_A)
+const FMA_SHAPE_PRODUCT f32 = fma(PEER_A, PEER_A, 0.5 * 2.0)
+const FMA_SHAPE_IF f32 = fma(PEER_A, PEER_A, if true { 0.5 } else { 1.0 })
+const NEG_SPLAT vec[4, f32] = -splat(2.0) * SPLAT_INPUT
+const NEG_SPLAT_FMA vec[4, f32] = fma(SPLAT_INPUT, SPLAT_INPUT, -splat(0.5))
 const PEER_ADD_LEFT f32 = PEER_A + 0.1
 const PEER_ADD_RIGHT f32 = 0.1 + PEER_A
 const PEER_SUB_LEFT f32 = PEER_A - 0.1
@@ -147,6 +153,22 @@ fn show_peer(b bool) void {
   printf(c"peer_if %08x %08x\n", bitcast[u32](left), bitcast[u32](right))
 }
 
+fn show_float_shapes(b bool) void {
+  a f32 = PEER_A
+  left_chain f32 = if b { a } else if !b { 0.2 } else { 0.3 }
+  right_chain f32 = if b { 0.2 } else if !b { a } else { 0.3 }
+  fused1 f32 = fma(a, a, -(0.5))
+  fused2 f32 = fma(-(0.5), a, a)
+  fused3 f32 = fma(a, a, 0.5 * 2.0)
+  fused4 f32 = fma(a, a, if b { 0.5 } else { 1.0 })
+  neg vec[4, f32] = -splat(2.0) * SPLAT_INPUT
+  neg_fma vec[4, f32] = fma(SPLAT_INPUT, SPLAT_INPUT, -splat(0.5))
+  printf(c"shape_runtime %08x %08x %08x %08x %08x %08x %08x %08x\n",
+    bitcast[u32](fused1), bitcast[u32](fused2), bitcast[u32](fused3),
+    bitcast[u32](fused4), bitcast[u32](left_chain), bitcast[u32](right_chain),
+    bitcast[u32](neg[0]), bitcast[u32](neg_fma[0]))
+}
+
 fn main() i32 {
   printf(c"const32 %08x %08x %08x %08x %08x %08x %08x\n",
     bitcast[u32](ROOT32), bitcast[u32](FUSED32), bitcast[u32](FLOOR32),
@@ -155,6 +177,10 @@ fn main() i32 {
   printf(c"const64 %016lx %016lx %016lx %016lx %016lx %016lx\n",
     bitcast[u64](ROOT64), bitcast[u64](FUSED64), bitcast[u64](FLOOR64),
     bitcast[u64](CEIL64), bitcast[u64](ROUND64), bitcast[u64](ABS_NAN64))
+  printf(c"shape_const %08x %08x %08x %08x %08x %08x\n",
+    bitcast[u32](FMA_SHAPE_NEG), bitcast[u32](FMA_SHAPE_NEG_FIRST),
+    bitcast[u32](FMA_SHAPE_PRODUCT), bitcast[u32](FMA_SHAPE_IF),
+    bitcast[u32](NEG_SPLAT[0]), bitcast[u32](NEG_SPLAT_FMA[0]))
   printf(c"peer_const %08x %08x %08x %08x %08x %08x %08x %08x\n",
     bitcast[u32](PEER_ADD_LEFT), bitcast[u32](PEER_ADD_RIGHT),
     bitcast[u32](PEER_SUB_LEFT), bitcast[u32](PEER_SUB_RIGHT),
@@ -162,6 +188,8 @@ fn main() i32 {
     bitcast[u32](PEER_DIV_LEFT), bitcast[u32](PEER_DIV_RIGHT))
   show_peer(true)
   show_peer(false)
+  show_float_shapes(true)
+  show_float_shapes(false)
   show_splat_fma()
   for i usize = 0; i < len(EDGE32); i += 1 { show32(EDGE32[i]) }
   state32 u32 = 0x9e3779b9

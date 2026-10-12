@@ -46,7 +46,7 @@ let rec unresolved_shape_of expression =
   | Ast.Null _ -> Some Unresolved_null
   | Ast.Unary (Ast.Neg, operand, _) -> (
       match unresolved_shape_of operand with
-      | Some (Unresolved_int | Unresolved_float) as shape -> shape
+      | Some (Unresolved_int | Unresolved_float | Unresolved_vector) as shape -> shape
       | _ -> None)
   | Ast.Unary (Ast.Bit_not, operand, _) -> (
       match unresolved_shape_of operand with
@@ -59,6 +59,7 @@ let rec unresolved_shape_of expression =
         right,
         _ ) ->
       combined left right
+  | Ast.Ternary (_, yes, no, _) -> combined yes no
   | Ast.Splat (_, _) | Ast.Array_lit _ -> Some Unresolved_vector
   | _ -> None
 
@@ -73,6 +74,9 @@ let rec unresolved_vector_elements expression =
         right,
         _ ) ->
       unresolved_vector_elements left && unresolved_vector_elements right
+  | Ast.Unary (Ast.Neg, operand, _) -> unresolved_vector_elements operand
+  | Ast.Ternary (_, yes, no, _) ->
+      unresolved_vector_elements yes && unresolved_vector_elements no
   | _ -> false
 
 let rec is_if_operand = function
@@ -1237,13 +1241,41 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
                    (Sema_types.diagnostic_ty_name actual))
           | Error _ -> Error e))
   | Ast.Call (Ast.Ident (name, _), args, s) -> (
+      let math_type =
+        match Names.float_math name with
+        | None -> None
+        | Some _ ->
+            let peer =
+              List.find_map
+                (fun argument ->
+                  if Option.is_some (unresolved_shape_of argument) then None
+                  else
+                    match
+                      const_expr ~structs ~named_types ~generic_structs ~arrays
+                        ~array_lengths ~globals ?resolve consts None ~check_only
+                        argument
+                    with
+                    | Ok ((Hir.Float _ as ty), _) -> Some ty
+                    | _ -> None)
+                args
+            in
+            Some
+              (Option.value peer
+                 ~default:
+                   (match expected with
+                   | Some (Hir.Float _ as ty) -> ty
+                   | _ -> Hir.Float Hir.F64))
+      in
       let* vals =
         Result_list.map
           (fun a ->
             let expected =
-              match a with
-              | Ast.Ternary _ | Ast.Parenthesized (Ast.Ternary _, _) -> None
-              | _ -> expected
+              match (math_type, unresolved_shape_of a) with
+              | Some ty, Some Unresolved_float -> Some ty
+              | _ -> (
+                  match a with
+                  | Ast.Ternary _ | Ast.Parenthesized (Ast.Ternary _, _) -> None
+                  | _ -> expected)
             in
             const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
               ~globals ?resolve consts expected ~check_only ~validate_dead

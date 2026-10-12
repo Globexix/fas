@@ -107,6 +107,17 @@ static void show_peer(int branch) {
   printf("peer_if %08x %08x\n", bits32(left), bits32(right));
 }
 
+static void show_float_shapes(int branch) {
+  volatile float a = 0.10000001f;
+  float left_chain = branch ? a : 0.2f;
+  float right_chain = branch ? 0.2f : a;
+  printf("shape_runtime %08x %08x %08x %08x %08x %08x %08x %08x\n",
+         bits32(fmaf(a, a, -(0.5f))), bits32(fmaf(-(0.5f), a, a)),
+         bits32(fmaf(a, a, 0.5f * 2.0f)),
+         bits32(fmaf(a, a, branch ? 0.5f : 1.0f)), bits32(left_chain),
+         bits32(right_chain), bits32(-2.0f), bits32(fmaf(1.0f, 1.0f, -0.5f)));
+}
+
 static int fma32_cases_are_single_rounding_cases(void) {
   for (size_t i = 0; i < sizeof(fma32_a) / sizeof(fma32_a[0]); ++i) {
     float a = float32(fma32_a[i]);
@@ -132,6 +143,12 @@ int main(void) {
          (unsigned long)bits64(floor(-0.25)), (unsigned long)bits64(ceil(-0.25)),
          (unsigned long)bits64(roundeven(2.5)),
          (unsigned long)bits64(fabs(float64(0xfff8123456789abcULL))));
+  printf("shape_const %08x %08x %08x %08x %08x %08x\n",
+         bits32(fmaf(0.10000001f, 0.10000001f, -(0.5f))),
+         bits32(fmaf(-(0.5f), 0.10000001f, 0.10000001f)),
+         bits32(fmaf(0.10000001f, 0.10000001f, 0.5f * 2.0f)),
+         bits32(fmaf(0.10000001f, 0.10000001f, 0.5f)), bits32(-2.0f),
+         bits32(fmaf(1.0f, 1.0f, -0.5f)));
   const float peer_a = 0.10000001f;
   printf("peer_const %08x %08x %08x %08x %08x %08x %08x %08x\n",
          bits32(peer_a + 0.1f), bits32(0.1f + peer_a),
@@ -140,6 +157,8 @@ int main(void) {
          bits32(peer_a / 2.0f), bits32(2.0f / peer_a));
   show_peer(1);
   show_peer(0);
+  show_float_shapes(1);
+  show_float_shapes(0);
   printf("splat %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
          0x40000000, 0x40000000, 0x40000000, 0x40000000,
          0x40000000, 0x40000000, 0x40000000, 0x40000000,

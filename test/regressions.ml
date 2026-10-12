@@ -4198,6 +4198,78 @@ let () =
   semantic_pin "float-narrow-unary-widening" "fn bad(a f32) f64 { return -a }\n" 1 28 2
     "`-a` is computed in `f32` and may round before it reaches `f64`"
     (Some "write `-cvt[f64](a)`");
+  List.iter
+    (fun builtin ->
+      let call = if builtin = "fma" then "fma(a, a, a)" else builtin ^ "(a)" in
+      let narrow_message =
+        Printf.sprintf "`%s` is computed in `f32` and may round before it reaches `f64`"
+          call
+      in
+      List.iter
+        (fun (context, source) ->
+          semantic_message
+            ("float-builtin-narrow-" ^ builtin ^ "-" ^ context)
+            (if context = "constant" then
+               Printf.sprintf
+                 "`%s` is computed in `f32` and may round before it reaches `f64`"
+                 (if builtin = "fma" then "fma(A, A, A)" else builtin ^ "(A)")
+             else narrow_message)
+            source)
+        [
+          ("return", "fn bad(a f32) f64 { return " ^ call ^ " }\n");
+          ( "initializer",
+            "fn bad(a f32) f64 { value f64 = " ^ call ^ "\n return value }\n" );
+          ( "assignment",
+            "fn bad(a f32, b f64) f64 { value f64 = b\n value = " ^ call
+            ^ "\n return value }\n" );
+          ( "argument",
+            "fn take(value f64) f64 { return value }\nfn bad(a f32) f64 { return take("
+            ^ call ^ ") }\n" );
+          ("comparison", "fn bad(a f32, b f64) bool { return " ^ call ^ " < b }\n");
+          ( "branch",
+            "fn bad(a f32, b f64, c bool) f64 { return if c { " ^ call
+            ^ " } else { b } }\n" );
+          ( "constant",
+            "const A f32 = 1.0\nconst BAD f64 = "
+            ^ (if builtin = "fma" then "fma(A, A, A)" else builtin ^ "(A)")
+            ^ "\nfn main() i32 { return 0 }\n" );
+        ])
+    [ "sqrt"; "fma"; "abs"; "floor"; "ceil"; "round" ];
+  semantic_accept "float-builtin-explicit-widening"
+    "fn good(a f32) f64 { return cvt[f64](sqrt(a)) }\n";
+  semantic_error "float-vector-builtin-no-implicit-widening" "expected `vec[4, f64]`"
+    "fn bad(a vec[4, f32]) vec[4, f64] { return sqrt(a) }\n";
+  semantic_accept "float-vector-builtin-explicit-widening"
+    "fn good(a vec[4, f32]) vec[4, f64] { return cvt[vec[4, f64]](sqrt(a)) }\n";
+  semantic_pin "float-literal-left-widening-help"
+    "fn bad(a f32) f64 { return 0.1 * a }\n" 1 28 7
+    "`0.1 * a` is computed in `f32` and may round before it reaches `f64`"
+    (Some "write `0.1 * cvt[f64](a)`");
+  semantic_pin "float-negative-literal-left-widening-help"
+    "fn bad(a f32) f64 { return -0.5 * a }\n" 1 28 8
+    "`-0.5 * a` is computed in `f32` and may round before it reaches `f64`"
+    (Some "write `-0.5 * cvt[f64](a)`");
+  semantic_pin "float-parenthesized-literal-left-widening-help"
+    "fn bad(a f32) f64 { return (0.1) + a }\n" 1 28 9
+    "`(0.1) + a` is computed in `f32` and may round before it reaches `f64`"
+    (Some "write `(0.1) + cvt[f64](a)`");
+  semantic_pin "float-compound-literal-left-widening-help"
+    "fn bad(a f32) f64 { x f64 = 1.0\n x += 0.1 * a\n return x }\n" 2 7 7
+    "`0.1 * a` is computed in `f32` and may round before it reaches `f64`"
+    (Some "write `0.1 * cvt[f64](a)`");
+  semantic_pin "float-constant-literal-left-widening-help"
+    "const A f32 = 1.0\nconst C f64 = 0.1 + A\n" 2 15 7
+    "`0.1 + A` is computed in `f32` and may round before it reaches `f64`"
+    (Some "write `0.1 + cvt[f64](A)`");
+  semantic_accept "float-literal-left-widening-help-twins"
+    "const A f32 = 1.0\n\
+     const C f64 = 0.1 + cvt[f64](A)\n\
+     fn good(a f32) f64 {\n\
+     x f64 = 0.1 * cvt[f64](a)\n\
+     y f64 = -0.5 * cvt[f64](a)\n\
+     z f64 = (0.1) + cvt[f64](a)\n\
+     x += 0.1 * cvt[f64](a)\n\
+     return x + y + z + C }\n";
   semantic_pin "float-remainder-help" "fn bad(a f32, b f32) f32 { return a % b }\n" 1 39
     1 "remainder `%` is not defined for floating point"
     (Some "use C `fmod(a, b)` from `<math.h>`");
@@ -4320,6 +4392,10 @@ let () =
     "fn bad(x f32) i32 { switch x { case 1: { return 1 } default: { return 0 } } }\n";
   semantic_message "float-switch-case" "floating point literal cannot be used as `i32`"
     "fn bad(x i32) i32 { switch x { case 1.0: { return 1 } default: { return 0 } } }\n";
+  semantic_message "float-switch-arithmetic-case"
+    "floating point literal cannot be used as `i32`"
+    "fn bad(x i32) i32 { switch x { case 2.0 + 1.0: { return 1 } default: { return 0 } \
+     } }\n";
   semantic_message "float-array-length"
     "floating point literal cannot be used as `usize`" "var values arr[2.0, i32]\n";
   semantic_message "float-shift-count"
@@ -4365,6 +4441,31 @@ let () =
     \ const Magnitude f32 = abs(-1.5)\n\
     \ fn peer(x f32) f32 { return fma(1.0, x, 2.0) }\n\
     \ fn defaults() f64 { return sqrt(2.0) }\n";
+  semantic_accept "float-math-unresolved-operands"
+    "const A f32 = 0.10000001\n\
+     const N f32 = fma(A, A, -(0.5))\n\
+     const F f32 = fma(-(0.5), A, A)\n\
+     const P f32 = fma(A, A, 0.5 * 2.0)\n\
+     const I f32 = fma(A, A, if true { 0.5 } else { 1.0 })\n\
+     fn shaped(a f32, c bool) f32 {\n\
+     x f32 = fma(a, a, -(0.5))\n\
+     y f32 = fma(-(0.5), a, a)\n\
+     z f32 = fma(a, a, 0.5 * 2.0)\n\
+     w f32 = fma(a, a, if c { 0.5 } else { 1.0 })\n\
+     return x + y + z + w }\n";
+  semantic_message "float-if-chain-vararg-peer-left"
+    "C varargs do not accept `f32`; convert it to `f64` explicitly"
+    "extern \"C\" { fn printf(format addr, ...) i32 }\n\
+     fn bad(a f32, c bool, d bool) i32 { return printf(c\"%f\", if c { a } else if d { \
+     0.2 } else { 0.3 }) }\n";
+  semantic_message "float-if-chain-vararg-peer-right"
+    "C varargs do not accept `f32`; convert it to `f64` explicitly"
+    "extern \"C\" { fn printf(format addr, ...) i32 }\n\
+     fn bad(a f32, c bool, d bool) i32 { return printf(c\"%f\", if c { 0.2 } else if d \
+     { a } else { 0.3 }) }\n";
+  semantic_accept "integer-if-chain-peer-shapes"
+    "fn left(a u8, c bool, d bool) u8 { return if c { a } else if d { 2 } else { 3 } }\n\
+     fn right(a u8, c bool, d bool) u8 { return if c { 2 } else if d { a } else { 3 } }\n";
   semantic_accept "float-fma-vector-splat-peers"
     "fn fused(a vec[4, f32]) vec[4, f32] {\n\
      x vec[4, f32] = fma(splat(2.0), a, a)\n\
@@ -11896,18 +11997,45 @@ let () =
   | Error [ diagnostic ]
     when diagnostic.Diag.message
          = "C varargs do not accept `f32`; convert it to `f64` explicitly"
-         && diagnostic.help = Some "write `cvt[f64](x)`" ->
+         && diagnostic.help = Some "write `cvt[f64](value)`" ->
       ()
   | Error diagnostics ->
       failwith
         ("c-float-vararg-help: unexpected diagnostic: "
         ^ Diag.render_all ~source:None diagnostics)
   | Ok _ -> failwith "c-float-vararg-help: expected rejection");
+  List.iter
+    (fun (name, text, help) ->
+      match c_semantic_result c_strings text with
+      | Error [ diagnostic ]
+        when diagnostic.Diag.message
+             = "C varargs do not accept `f32`; convert it to `f64` explicitly"
+             && diagnostic.help = Some help ->
+          ()
+      | Error diagnostics ->
+          failwith
+            (name ^ ": unexpected diagnostic: "
+            ^ Diag.render_all ~source:None diagnostics)
+      | Ok _ -> failwith (name ^ ": expected rejection"))
+    [
+      ( "c-float-vararg-help-builtin",
+        "fn probe(a f32) void { printf(c\"%f\", sqrt(a))\nreturn }\n",
+        "write `cvt[f64](sqrt(a))`" );
+      ( "c-float-vararg-help-if-expression",
+        "fn probe(a f32, c bool) void { printf(c\"%f\", if c { a } else { 1.0 })\n\
+         return }\n",
+        "write `cvt[f64](if c { a } else { 1.0 })`" );
+    ];
   c_semantic_accept "c-f64-printf-varargs" c_strings
     "fn probe(value f64) void { printf(c\"%.17g %a\\n\", value, value)\nreturn }\n";
   c_semantic_accept "cvt-f64-printf-varargs" c_strings
     "fn probe(value f32) void { printf(c\"%.17g %a\\n\", cvt[f64](value), \
      cvt[f64](value))\n\
+     return }\n";
+  c_semantic_accept "c-float-vararg-help-builtin-applied" c_strings
+    "fn probe(a f32) void { printf(c\"%f\", cvt[f64](sqrt(a)))\nreturn }\n";
+  c_semantic_accept "c-float-vararg-help-if-expression-applied" c_strings
+    "fn probe(a f32, c bool) void { printf(c\"%f\", cvt[f64](if c { a } else { 1.0 }))\n\
      return }\n";
   c_semantic_message "c-string-puts"
     (c_string_message "\"x\"" "puts" "__s")

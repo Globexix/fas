@@ -1216,6 +1216,7 @@ let shape_children = function
         right,
         _ ) ->
       [ left; right ]
+  | Ast.Ternary (_, yes, no, _) -> [ yes; no ]
   | _ -> []
 
 let unresolved_shape_cache_worthwhile expression =
@@ -1238,6 +1239,9 @@ let unresolved_shape_cache_worthwhile expression =
               _ ) ->
             incr operators;
             pending := left :: right :: !pending
+        | Ast.Ternary (_, yes, no, _) ->
+            incr operators;
+            pending := yes :: no :: !pending
         | _ -> ())
     | [] -> ()
   done;
@@ -1266,6 +1270,7 @@ let build_unresolved_shapes expression =
               match cached_shape operand with
               | Some Unresolved_int -> Some Unresolved_int
               | Some Unresolved_float -> Some Unresolved_float
+              | Some Unresolved_vector -> Some Unresolved_vector
               | _ -> None)
           | Ast.Unary (Ast.Bit_not, operand, _) -> (
               match cached_shape operand with
@@ -1280,6 +1285,11 @@ let build_unresolved_shapes expression =
               match (cached_shape left, cached_shape right) with
               | Some left_shape, Some right_shape when left_shape = right_shape ->
                   Some left_shape
+              | _ -> None)
+          | Ast.Ternary (_, yes, no, _) -> (
+              match (cached_shape yes, cached_shape no) with
+              | Some yes_shape, Some no_shape when yes_shape = no_shape ->
+                  Some yes_shape
               | _ -> None)
           | Ast.Splat _ | Ast.Array_lit _ -> Some Unresolved_vector
           | _ -> None
@@ -1309,7 +1319,7 @@ let rec unresolved_shape_uncached expression =
   | Ast.Null _ -> Some Unresolved_null
   | Ast.Unary (Ast.Neg, operand, _) -> (
       match unresolved_shape_uncached operand with
-      | Some (Unresolved_int | Unresolved_float) as shape -> shape
+      | Some (Unresolved_int | Unresolved_float | Unresolved_vector) as shape -> shape
       | _ -> None)
   | Ast.Unary (Ast.Bit_not, operand, _) -> (
       match unresolved_shape_uncached operand with
@@ -1322,6 +1332,7 @@ let rec unresolved_shape_uncached expression =
         right,
         _ ) ->
       combined left right
+  | Ast.Ternary (_, yes, no, _) -> combined yes no
   | Ast.Splat _ | Ast.Array_lit _ -> Some Unresolved_vector
   | _ -> None
 
@@ -1338,9 +1349,9 @@ let rec builtin_literal_operand = function
   | Ast.Array_lit (entries, _) -> List.for_all builtin_literal_operand entries
   | _ -> false
 
-let rec float_literal_operand = function
-  | Ast.Parenthesized (expression, _) -> float_literal_operand expression
-  | Ast.Float_lit _ | Ast.Unary (Ast.Neg, Ast.Float_lit _, _) -> true
+let unresolved_float_operand c expression =
+  match unresolved_shape_of c expression with
+  | Some (Unresolved_float | Unresolved_vector) -> true
   | _ -> false
 
 let rec unresolved_vector_elements c expression =
@@ -3080,10 +3091,7 @@ and check_float_math c expected operation name args s =
     let peer_types =
       List.filter_map
         (fun argument ->
-          if
-            float_literal_operand argument
-            || unresolved_shape_of c argument = Some Unresolved_vector
-          then None
+          if unresolved_float_operand c argument then None
           else
             let before = Sema_flow.snapshot c.flow in
             let result = check_expr c None argument in
@@ -3108,11 +3116,7 @@ and check_float_math c expected operation name args s =
       Result_list.map
         (fun argument ->
           check_expr c
-            (if
-               float_literal_operand argument
-               || unresolved_shape_of c argument = Some Unresolved_vector
-             then Some operand_ty
-             else None)
+            (if unresolved_float_operand c argument then Some operand_ty else None)
             argument)
         args
     in
@@ -4107,7 +4111,10 @@ and check_actuals ?callee c policy span formals actuals =
                   if Hir.expr_ty value = Hir.Float Hir.F32 then
                     Error
                       [
-                        Diag.error ~help:"write `cvt[f64](x)`"
+                        Diag.error
+                          ~help:
+                            (Printf.sprintf "write `cvt[f64](%s)`"
+                               (Ast.expr_name expression))
                           (Ast.expr_span expression)
                           "C varargs do not accept `f32`; convert it to `f64` \
                            explicitly";
@@ -5362,6 +5369,10 @@ and check_stmt (c : context) = function
           | Ast.Float_lit _ -> true
           | Ast.Parenthesized (value, _) | Ast.Unary (Ast.Neg, value, _) ->
               float_case_literal value
+          | Ast.Binary (_, left, right, _) ->
+              float_case_literal left || float_case_literal right
+          | Ast.Ternary (_, yes, no, _) ->
+              float_case_literal yes || float_case_literal no
           | _ -> false
         in
         let rec case_values acc selected = function
