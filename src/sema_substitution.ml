@@ -904,17 +904,29 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             | _ -> None)
           (List.combine params arguments)
       in
-      let is_literal = function
-        | Ast.Int_lit _ | Ast.Parenthesized (Ast.Int_lit _, _) -> true
-        | _ -> false
-      in
-      occurrences <> [] && List.for_all is_literal occurrences
+      let kinds = List.map literal_kind occurrences in
+      occurrences <> []
+      && List.for_all Option.is_some kinds
+      && List.for_all (( = ) (List.hd kinds)) kinds
     in
     let missing parameter =
       let message, help =
         if List.mem parameter type_params && literal_only parameter then
+          let kind =
+            match
+              List.find_map
+                (fun ((param : Ast.param), argument) ->
+                  match param.ty with
+                  | Ast.Named_type (name, _) when name = parameter ->
+                      literal_kind argument
+                  | _ -> None)
+                (List.combine params arguments)
+            with
+            | Some `Float -> "f64"
+            | _ -> "i32"
+          in
           ( Printf.sprintf "cannot infer `%s` for `%s` from literals only" parameter name,
-            Printf.sprintf "write `%s[i32](%s)`" name
+            Printf.sprintf "write `%s[%s](%s)`" name kind
               (String.concat ", " (List.map Ast.expr_name arguments)) )
         else
           ( Printf.sprintf

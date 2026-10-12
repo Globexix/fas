@@ -96,7 +96,8 @@ let logical_not_error expression ty =
     match (expression, ty) with
     | Ast.Ident (name, _), Hir.Int _ -> Some (Printf.sprintf "write `%s == 0`" name)
     | Ast.Ident (name, _), Hir.Addr -> Some (Printf.sprintf "write `%s == null`" name)
-    | _, Hir.Float _ -> truthiness_help expression ty
+    | _, Hir.Float _ ->
+        Some (Printf.sprintf "write `%s == 0.0`" (Ast.expr_name expression))
     | _ -> None
   in
   Diag.error ?help (Ast.expr_span expression)
@@ -564,8 +565,13 @@ let scalar_conversion_pair actual expected =
   match (actual, expected) with
   | Hir.Int _, (Hir.Int _ | Hir.Bool | Hir.Addr) | (Hir.Bool | Hir.Addr), Hir.Int _ ->
       true
-  | Hir.Float Hir.F32, Hir.Float Hir.F64 -> true
+  | Hir.Float _, (Hir.Float _ | Hir.Int _) | Hir.Int _, Hir.Float _ -> true
   | _ -> false
+
+let float_literal_type_error ty span =
+  Diag.error span
+    (Printf.sprintf "floating point literal cannot be used as `%s`"
+       (diagnostic_ty_name ty))
 
 let implicit_integer_widen actual expected =
   match (actual, expected) with
@@ -935,6 +941,11 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
       | Hir.Int _, Hir.Addr -> "integers convert to addresses with `addr_from_bits`"
       | Hir.Float Hir.F32, Hir.Float Hir.F64 ->
           "the `f32` result may round before it reaches `f64`"
+      | Hir.Float _, Hir.Float _ -> "floating-point widths need explicit conversion"
+      | Hir.Float _, Hir.Int _ ->
+          "floating-point values need explicit conversion to integer"
+      | Hir.Int _, Hir.Float _ ->
+          "integer values need explicit conversion to floating point"
       | _ -> assert false
     in
     let message =
@@ -973,6 +984,10 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
       | Some (Ast.Unary (Ast.Neg, value, _)), Hir.Float Hir.F32, Hir.Float Hir.F64
         when narrow_float && widening_help ->
           Some (Printf.sprintf "write `-cvt[f64](%s)`" (Ast.expr_name value))
+      | Some expression, Hir.Float _, (Hir.Float _ | Hir.Int _)
+      | Some expression, Hir.Int _, Hir.Float _ ->
+          Some
+            (Printf.sprintf "write `cvt[%s](%s)`" destination (Ast.expr_name expression))
       | Some (Ast.Binary (operator, left, right, _)), Hir.Int _, Hir.Int _
         when narrow_result && widening_help ->
           let extension = if Sema_numeric.is_unsigned actual then "zext" else "sext" in

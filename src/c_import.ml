@@ -870,21 +870,19 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
   let errors =
     Option.fold ~none:[]
       ~some:(fun (failure : Process.failure) ->
-        String.split_on_char '\n' failure.stderr |> List.map error_location)
+        String.split_on_char '\n' failure.stderr |> List.filter_map error_location)
       failure
   in
-  let macro_error = function
-    | Some (file, line, _) ->
-        file = probe && line >= macro_start_line
-        && line < macro_start_line + List.length macro_candidates
-    | None -> false
+  let macro_error (file, line, _) =
+    file = probe && line >= macro_start_line
+    && line < macro_start_line + List.length macro_candidates
   in
   let bad_macros = Stdlib.Hashtbl.create 8 in
   List.iter
-    (function
-      | Some (file, line, _) when macro_error (Some (file, line, 0)) ->
-          Stdlib.Hashtbl.replace bad_macros (line - macro_start_line) ()
-      | _ -> ())
+    (fun location ->
+      if macro_error location then
+        let _, line, _ = location in
+        Stdlib.Hashtbl.replace bad_macros (line - macro_start_line) ())
     errors;
   let structured_failure =
     Option.bind failure (fun (failure : Process.failure) ->
@@ -1775,7 +1773,6 @@ let type_result ?(allow_arrays = false) ~alias_name ~alias_type_node ~resolve_al
   let contains_array = function Ast.Array _ -> true | _ -> false in
   let rec resolve seen node =
     if type_has_address_space node then Error "C address spaces are not supported"
-    else if type_has_vector node then Error "vector types are not supported by value"
     else
       match string "kind" node with
       | Some "QualType" ->
@@ -1828,6 +1825,8 @@ let type_result ?(allow_arrays = false) ~alias_name ~alias_type_node ~resolve_al
           | Some (Floating 64) -> Ok (Ast.Float Ast.F64)
           | Some (Floating _) -> Error "floating-point types are not supported")
       | Some "ComplexType" -> Error "floating-point types are not supported"
+      | Some ("VectorType" | "ExtVectorType" | "DependentSizedExtVectorType") ->
+          Error "vector types are not supported by value"
       | Some "BitIntType" -> Error "`_BitInt` has no Fas type"
       | Some "EnumType" -> (
           match type_node_id node with
@@ -1850,8 +1849,6 @@ let type_result ?(allow_arrays = false) ~alias_name ~alias_type_node ~resolve_al
               Ok Ast.Addr
           | Some pointee when type_has_address_space pointee ->
               Error "C address spaces are not supported"
-          | Some pointee when type_has_vector pointee ->
-              Error "vector types are not supported by value"
           | Some pointee ->
               let rec target seen node =
                 match string "kind" node with
@@ -1879,7 +1876,8 @@ let type_result ?(allow_arrays = false) ~alias_name ~alias_type_node ~resolve_al
                 | Some
                     ( "BuiltinType" | "BitIntType" | "EnumType" | "PointerType"
                     | "BlockPointerType" | "ConstantArrayType" | "IncompleteArrayType"
-                    | "VariableArrayType" | "DependentSizedArrayType" ) ->
+                    | "VariableArrayType" | "DependentSizedArrayType" | "VectorType"
+                    | "ExtVectorType" | "DependentSizedExtVectorType" ) ->
                     Ok Ast.Addr
                 | Some ("FunctionProtoType" | "FunctionNoProtoType") -> Ok Ast.Addr
                 | Some

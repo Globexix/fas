@@ -1943,10 +1943,7 @@ and check_expr_inner ?destination (c : context) expected expression =
             |> Result.map_error (fun message -> [ Diag.error s message ])
           in
           Ok (Hir.EFloat (bits, ty, s))
-      | _ ->
-          error s
-            (Printf.sprintf "floating point literal cannot be used as `%s`" (ty_name ty))
-      )
+      | _ -> Error [ Sema_types.float_literal_type_error ty s ])
   | Ast.Bool_lit (v, s) -> Ok (Hir.EBool (v, s))
   | Ast.Null s -> (
       match expected with
@@ -3137,11 +3134,21 @@ and check_float_math c expected operation name args s =
         let help =
           match actual with
           | Hir.Int _ ->
-              if
-                name = "abs" && actual = Hir.Int Hir.I32
-                && Option.is_some (List.assoc_opt name c.c_unsupported)
+              if name = "abs" && Option.is_some (List.assoc_opt name c.c_unsupported)
               then
-                Some "C's integer `abs` is not available under that name; call `labs`"
+                match expected with
+                | Some (Hir.Float _ as ty) ->
+                    Some
+                      (Printf.sprintf "write `cvt[%s](labs(%s))`"
+                         (Sema_types.diagnostic_ty_name ty)
+                         (Ast.expr_name (List.nth args index)))
+                | _ -> None
+              else if
+                name = "abs"
+                && Option.fold ~none:false
+                     ~some:(function Hir.Int _ -> true | _ -> false)
+                     expected
+              then None
               else
                 let converted =
                   List.mapi
@@ -3149,9 +3156,28 @@ and check_float_math c expected operation name args s =
                       if
                         match Hir.expr_ty argument with Hir.Int _ -> true | _ -> false
                       then
-                        Printf.sprintf "cvt[%s](%s)"
-                          (Sema_types.diagnostic_ty_name operand_ty)
-                          (Ast.expr_name (List.nth args argument_index))
+                        let source = List.nth args argument_index in
+                        let rec literal_float = function
+                          | Ast.Parenthesized (value, _) -> literal_float value
+                          | Ast.Int_lit (raw, _) ->
+                              if
+                                String.length raw >= 2
+                                && raw.[0] = '0'
+                                && List.mem
+                                     (Char.lowercase_ascii raw.[1])
+                                     [ 'x'; 'b'; 'o' ]
+                              then None
+                              else Some (raw ^ ".0")
+                          | Ast.Unary (Ast.Neg, value, _) ->
+                              Option.map (( ^ ) "-") (literal_float value)
+                          | _ -> None
+                        in
+                        Option.value
+                          ~default:
+                            (Printf.sprintf "cvt[%s](%s)"
+                               (Sema_types.diagnostic_ty_name operand_ty)
+                               (Ast.expr_name source))
+                          (literal_float source)
                       else Ast.expr_name (List.nth args argument_index))
                     checked
                 in
@@ -4965,7 +4991,6 @@ and check_stmt (c : context) = function
           match (et, op, t) with
           | Hir.Bool, Ast.Bit_and, Ast.Target_ident (name, _) ->
               Some (Printf.sprintf "write `%s = %s & %s`" name name (Ast.expr_name e))
-          | Hir.Float _, Ast.Rem, _ -> Some "use C `fmod(x, y)` from `<math.h>`"
           | _ -> None
         in
         error ?help operator_span
@@ -5333,12 +5358,20 @@ and check_stmt (c : context) = function
             Sema_numeric.unsigned_int64_to_string value
           else Int64.to_string (Sema_numeric.sign_extend_value source value)
         in
+        let rec float_case_literal = function
+          | Ast.Float_lit _ -> true
+          | Ast.Parenthesized (value, _) | Ast.Unary (Ast.Neg, value, _) ->
+              float_case_literal value
+          | _ -> false
+        in
         let rec case_values acc selected = function
           | [] -> Ok (List.rev acc, selected)
           | k :: rest -> (
               let* kt, kv =
                 evaluate_case (Some et) k
                 |> Result.map_error (function
+                  | _ when float_case_literal k ->
+                      [ Sema_types.float_literal_type_error et (Ast.expr_span k) ]
                   | [ diagnostic ]
                     when String.starts_with ~prefix:"global `" diagnostic.Diag.message
                          && String.ends_with ~suffix:" is not a constant"

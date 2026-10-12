@@ -393,6 +393,14 @@ grep -F -- "unknown option: --emit-ast" "$WORK/stderr" >/dev/null || fail "remov
 printf 'stale artifact\n' >"$WORK/compile-fail"
 expect_failure "$OCAML_FAS" "$WORK/bad.fas" -o "$WORK/compile-fail"
 [ ! -e "$WORK/compile-fail" ] || fail "compile failure left stale output"
+expect_failure "$OCAML_FAS" --emit-llvm "$WORK/bad.fas" \
+  -o "$WORK/missing-output-directory/out.ll"
+grep -F 'unknown name `missing`' "$WORK/stderr" >/dev/null \
+  || fail "output path hid the compile diagnostic"
+if grep -F '.fas-output-' "$WORK/stderr" >/dev/null; then
+  fail "compile diagnostic exposed a temporary output path"
+fi
+[ ! -e "$WORK/missing-output-directory" ] || fail "compile failure created an output directory"
 temps_empty
 
 ir_status=0

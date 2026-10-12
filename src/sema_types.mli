@@ -99,6 +99,7 @@ val convert_expected_kind :
 
 val widen_integer_value : Ast.cast_kind -> Hir.ty -> Hir.ty -> int64 -> int64
 val diagnostic_ty_name : Hir.ty -> string
+val float_literal_type_error : Hir.ty -> Span.t -> Diag.t
 val function_arity_message : string -> int -> int -> string
 val generic_arity_message : string -> string -> int -> int -> string
 val constant_initializer_type_message : Hir.ty -> Hir.ty -> string

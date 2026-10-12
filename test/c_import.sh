@@ -47,6 +47,8 @@ SH
 chmod +x "$C_IMPORT_TMP/count-clang"
 CC="$C_IMPORT_TMP/count-clang" REAL_CC="$REAL_CC" MACRO_LOG="$C_IMPORT_TMP/macros.log" \
   "$OCAML_FAS" --emit-ir "$C_IMPORT_TMP/lazy.fas" >"$C_IMPORT_TMP/lazy.ir"
-[ ! -e "$C_IMPORT_TMP/macros.log" ] || fail "resolved C function triggered a macro scan"
+[ -f "$C_IMPORT_TMP/macros.log" ] || fail "header declaration conflict macro scan was not run"
+[ "$(wc -l <"$C_IMPORT_TMP/macros.log")" -eq 1 ] \
+  || fail "header declaration conflict macro scan did not run exactly once"
 
 echo "c_import: O0/O2 verified and linked through L1: ok"

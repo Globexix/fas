@@ -1,0 +1,2 @@
+#define FAS_BAD_INT undeclared_integer_name
+#define FAS_BAD_FLOAT undeclared_float_name

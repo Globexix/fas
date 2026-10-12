@@ -4203,8 +4203,7 @@ let () =
     (Some "use C `fmod(a, b)` from `<math.h>`");
   semantic_pin "float-compound-remainder-help"
     "fn bad(a f32, b f32) void { a %= b\nreturn }\n" 1 31 2
-    "compound assignment `%=` is not defined for `f32`"
-    (Some "use C `fmod(x, y)` from `<math.h>`");
+    "compound assignment `%=` is not defined for `f32`" None;
   semantic_message "float-integer-operands-rejected"
     "operands of `+` have different types: `f32` and `i32`"
     "fn bad(a f32, b i32) f32 { return a + b }\n";
@@ -4319,7 +4318,7 @@ let () =
   semantic_message "float-switch-scrutinee"
     "switch value must be an integer or bool, got `f32`"
     "fn bad(x f32) i32 { switch x { case 1: { return 1 } default: { return 0 } } }\n";
-  semantic_message "float-switch-case" "case label must be a compile-time constant"
+  semantic_message "float-switch-case" "floating point literal cannot be used as `i32`"
     "fn bad(x i32) i32 { switch x { case 1.0: { return 1 } default: { return 0 } } }\n";
   semantic_message "float-array-length"
     "floating point literal cannot be used as `usize`" "var values arr[2.0, i32]\n";
@@ -4344,8 +4343,7 @@ let () =
     1 "right operand of `||` is `f64`, not `bool`"
     (Some "Fas has no implicit truth values; write `x != 0.0`");
   semantic_pin "float-logical-not-help" "fn bad(x f32) bool { return !x }\n" 1 30 1
-    "operator `!` needs `bool` or a bool vector, got `f32`"
-    (Some "Fas has no implicit truth values; write `x != 0.0`");
+    "operator `!` needs `bool` or a bool vector, got `f32`" (Some "write `x == 0.0`");
   semantic_accept "float-condition-help-f32-twin"
     "fn good(x f32) i32 { if x != 0.0 { return 1 }\n\
     \ while x != 0.0 { break }\n\
@@ -4380,11 +4378,42 @@ let () =
      x f32 = generic[4](a)\n\
      return 0\n\
      }\n";
-
   semantic_pin "float-math-integer-help" "fn bad(x i32) f64 { return sqrt(x) }\n" 1 33 1
     "argument 1 of `sqrt` is `i32`, expected `f64`" (Some "write `sqrt(cvt[f64](x))`");
   semantic_accept "float-math-integer-help-twin"
     "fn good(x i32) f64 { return sqrt(cvt[f64](x)) }\n";
+  semantic_pin "float-math-integer-literal-help" "fn bad() f32 { return floor(2) }\n" 1
+    29 1 "argument 1 of `floor` is `i32`, expected `f32`" (Some "write `floor(2.0)`");
+  semantic_accept "float-math-integer-literal-help-twin"
+    "fn good() f32 { return floor(2.0) }\n";
+  semantic_pin "float-math-hex-integer-literal-help"
+    "fn bad() f32 { return floor(0xff) }\n" 1 29 4
+    "argument 1 of `floor` is `i32`, expected `f32`"
+    (Some "write `floor(cvt[f32](0xff))`");
+  semantic_pin "float-math-binary-integer-literal-help"
+    "fn bad() f32 { return floor(0b10) }\n" 1 29 4
+    "argument 1 of `floor` is `i32`, expected `f32`"
+    (Some "write `floor(cvt[f32](0b10))`");
+  semantic_pin "float-math-octal-integer-literal-help"
+    "fn bad() f32 { return floor(0o10) }\n" 1 29 4
+    "argument 1 of `floor` is `i32`, expected `f32`"
+    (Some "write `floor(cvt[f32](0o10))`");
+  semantic_accept "float-math-based-integer-literal-help-twin"
+    "fn good() f32 { return floor(cvt[f32](0xff)) + floor(cvt[f32](0b10)) + \
+     floor(cvt[f32](0o10)) }\n";
+  semantic_pin "float-abs-integer-result-help" "fn bad(x i32) i32 { return abs(x) }\n" 1
+    32 1 "argument 1 of `abs` is `i32`, expected `f64`" None;
+  semantic_pin "float-f64-to-f32-help" "fn bad(x f64) f32 { return x }\n" 1 28 1
+    "cannot return `f64` as `f32`: floating-point widths need explicit conversion"
+    (Some "write `cvt[f32](x)`");
+  semantic_accept "float-f64-to-f32-help-twin"
+    "fn good(x f64) f32 { return cvt[f32](x) }\n";
+  semantic_pin "float-f32-to-i32-help" "fn bad(x f32) i32 { return x }\n" 1 28 1
+    "cannot return `f32` as `i32`: floating-point values need explicit conversion to \
+     integer"
+    (Some "write `cvt[i32](x)`");
+  semantic_accept "float-f32-to-i32-help-twin"
+    "fn good(x f32) i32 { return cvt[i32](x) }\n";
   semantic_pin "float-fma-integer-help"
     "fn bad(a i32, b f32, c f32) f32 { return fma(a, b, c) }\n" 1 46 1
     "argument 1 of `fma` is `i32`, expected `f32`"
@@ -11806,14 +11835,15 @@ let () =
   (match c_semantic_result c_stdlib "fn probe(x i32) f64 { return abs(x) }\n" with
   | Error [ diagnostic ]
     when diagnostic.Diag.message = "argument 1 of `abs` is `i32`, expected `f64`"
-         && diagnostic.help
-            = Some "C's integer `abs` is not available under that name; call `labs`" ->
+         && diagnostic.help = Some "write `cvt[f64](labs(x))`" ->
       ()
   | Error diagnostics ->
       failwith
         ("builtin-c-header-abs-int: unexpected diagnostic: "
         ^ Diag.render_all ~source:None diagnostics)
   | Ok _ -> failwith "builtin-c-header-abs-int: accepted an integer operand");
+  c_semantic_accept "builtin-c-header-abs-int-help-twin" c_stdlib
+    "fn good(x i32) f64 { return cvt[f64](labs(x)) }\n";
   let c_strings = c_import_system_fixtures [ "stdio.h"; "string.h"; "stdlib.h" ] in
   let c_string_types = c_import_fixture "c_string_parameters.h" in
   let c_string_message literal function_name parameter_name =
@@ -12239,6 +12269,19 @@ let () =
     <> 1
     || List.mem_assoc "printf" stdio_import.unsupported
   then failwith "implicit C builtin declaration conflicted with stdio.h printf";
+  let lazy_long_double = snd (c_import_fixture "lazy_long_double.h") in
+  let lazy_long_double_manifest = C_import.manifest_text lazy_long_double in
+  incr checks_run;
+  (match
+     List.find_opt
+       (fun line -> String.starts_with ~prefix:"FasLazyLongDouble\t" line)
+       (String.split_on_char '\n' lazy_long_double_manifest)
+   with
+  | Some line
+    when contains line "opaque FasLazyLongDouble"
+         && contains line "unsupported=floating-point types are not supported" ->
+      ()
+  | _ -> failwith "lazy long-double record was not preserved as an opaque manifest type");
   let restrict_manifest =
     C_import.manifest_text c_matrix_imported
     |> String.split_on_char '\n'
@@ -13951,6 +13994,18 @@ let () =
       "FAS_MACRO_POINTER";
       "FAS_MACRO_EMPTY";
     ];
+  let undeclared_macros =
+    c_import_macro_fixture "macro_undeclared.h" [ "FAS_BAD_INT"; "FAS_BAD_FLOAT" ]
+  in
+  c_semantic_message "c-macro-undeclared-integer-is-invisible"
+    "unknown name `FAS_BAD_INT`" undeclared_macros
+    "fn probe() i32 { return FAS_BAD_INT }\n";
+  c_semantic_message "c-macro-undeclared-float-is-invisible"
+    "unknown name `FAS_BAD_FLOAT`" undeclared_macros
+    "fn probe() f64 { return FAS_BAD_FLOAT }\n";
+  let vector_pointer = c_import_macro_fixture "vector_pointer.h" [] in
+  c_semantic_accept "c-vector-pointer-is-address" vector_pointer
+    "fn probe(value addr) addr { return fas_vector_pointer(value) }\n";
   c_semantic_accept "c-import-stdio-self-macro" c_macros
     "fn probe() i32 { return fputs(c\"hello\", stdout) }\n";
   c_semantic_message "c-import-reserved-macro"
@@ -16493,6 +16548,15 @@ let () =
     (String.length "fn f() i32 { return " + 1)
     (String.length "max(1, 2)") "cannot infer `T` for `max` from literals only"
     (Some "write `max[i32](1, 2)`");
+  let float_literals =
+    "fn max[T](a T, b T) T { return a }\nfn f() f64 { return max(1.0, 2.0) }\n"
+  in
+  semantic_pin "generic-inference-float-literals-only" float_literals 2
+    (String.length "fn f() f64 { return " + 1)
+    (String.length "max(1.0, 2.0)")
+    "cannot infer `T` for `max` from literals only" (Some "write `max[f64](1.0, 2.0)`");
+  semantic_accept "generic-inference-float-literals-only-help-twin"
+    "fn max[T](a T, b T) T { return a }\nfn f() f64 { return max[f64](1.0, 2.0) }\n";
   semantic_pin "generic-inference-literal-parameter-with-unrelated-peer"
     "fn choose[T](value T, count u32) T { return value }\n\
      fn run(count u32) i32 { return choose(1, count) }\n"

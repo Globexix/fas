@@ -345,13 +345,59 @@ let write_file path text =
     ~finally:(fun () -> close_out_noerr channel)
     (fun () -> output_string channel text)
 
+let is_non_regular_output path =
+  try (Unix.stat path).Unix.st_kind <> Unix.S_REG with
+  | Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR), _, _) -> false
+  | Unix.Unix_error _ -> true
+
+let with_staged_output config write =
+  if (not config.Cli.output_explicit) || is_non_regular_output config.Cli.output then
+    write config.Cli.output
+  else
+    let staged =
+      try
+        Ok
+          (Filename.temp_file
+             ~temp_dir:(Filename.dirname config.Cli.output)
+             ".fas-output-" ".tmp")
+      with Sys_error _ -> Error ()
+    in
+    match staged with
+    | Error () ->
+        Error
+          [
+            Diag.error Span.synthetic
+              (Printf.sprintf "output I/O failed for `%s`" config.Cli.output);
+          ]
+    | Ok staged_path -> (
+        match write staged_path with
+        | Error diagnostics ->
+            (try Sys.remove staged_path with Sys_error _ -> ());
+            Error diagnostics
+        | Ok output -> (
+            try
+              Sys.rename staged_path config.Cli.output;
+              Ok output
+            with Sys_error _ ->
+              (try Sys.remove staged_path with Sys_error _ -> ());
+              Error
+                [
+                  Diag.error Span.synthetic
+                    (Printf.sprintf "output I/O failed for `%s`" config.Cli.output);
+                ]))
+
 let emit_text config text =
   if config.Cli.output_explicit then
-    try
-      write_file config.output text;
-      Ok ""
-    with Sys_error message ->
-      Error [ Diag.error Span.synthetic ("output I/O failed: " ^ message) ]
+    with_staged_output config (fun path ->
+        try
+          write_file path text;
+          Ok ""
+        with Sys_error _ ->
+          Error
+            [
+              Diag.error Span.synthetic
+                (Printf.sprintf "output I/O failed for `%s`" config.Cli.output);
+            ])
   else Ok text
 
 let tool name legacy default =
@@ -521,36 +567,51 @@ let emit_tools_unprotected config program ir c_objects redirect =
       match config.emit with
       | Cli.Asm ->
           let* assembly = build_assembly config llc opt_path asm_path in
-          write_file config.output assembly;
-          Ok ""
+          with_staged_output config (fun output ->
+              try
+                write_file output assembly;
+                Ok ""
+              with Sys_error _ ->
+                Error
+                  [
+                    Diag.error Span.synthetic
+                      (Printf.sprintf "output I/O failed for `%s`" config.output);
+                  ])
       | Cli.Obj ->
-          let* () =
-            if c_objects = [] then
-              run_llc config llc ~filetype:"obj" ~input:opt_path ~output:config.output
-            else
-              let fas_object = Filename.temp_file "fas-object-" ".o" in
-              let cleanup_object () = if not config.Cli.keep then remove fas_object in
-              Fun.protect ~finally:cleanup_object (fun () ->
-                  if config.Cli.keep then
-                    prerr_endline ("fas: kept Fas object: " ^ fas_object);
-                  let* () =
-                    run_llc config llc ~filetype:"obj" ~input:opt_path
-                      ~output:fas_object
+          with_staged_output config (fun output ->
+              let* () =
+                if c_objects = [] then
+                  run_llc config llc ~filetype:"obj" ~input:opt_path ~output
+                else
+                  let fas_object = Filename.temp_file "fas-object-" ".o" in
+                  let cleanup_object () =
+                    if not config.Cli.keep then remove fas_object
                   in
-                  let argv =
-                    Array.of_list
-                      ((cc :: "-r" :: fas_object :: c_objects) @ [ "-o"; config.output ])
-                  in
-                  if config.Cli.debug || config.Cli.keep then
-                    prerr_endline
-                      ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
-                  run_tool cc argv)
-          in
-          Ok ""
+                  Fun.protect ~finally:cleanup_object (fun () ->
+                      if config.Cli.keep then
+                        prerr_endline ("fas: kept Fas object: " ^ fas_object);
+                      let* () =
+                        run_llc config llc ~filetype:"obj" ~input:opt_path
+                          ~output:fas_object
+                      in
+                      let argv =
+                        Array.of_list
+                          ((cc :: "-r" :: fas_object :: c_objects) @ [ "-o"; output ])
+                      in
+                      if config.Cli.debug || config.Cli.keep then
+                        prerr_endline
+                          ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
+                      run_tool cc argv)
+              in
+              Ok "")
       | Cli.Executable ->
           let* _ = build_assembly config llc opt_path asm_path in
-          let* () = run_tool cc (executable_command config cc asm_path c_objects) in
-          Ok ""
+          with_staged_output config (fun output ->
+              let output_config = { config with Cli.output } in
+              let* () =
+                run_tool cc (executable_command output_config cc asm_path c_objects)
+              in
+              Ok "")
       | Cli.Ir | Cli.Ir_json | Cli.Llvm | Cli.Header ->
           invalid_arg "Driver.emit_tools: non-tool emission")
 
@@ -795,10 +856,22 @@ let run_unprotected ?header_output config =
           let imported = ref [] in
           let c_units = ref [] in
           let referenced_names = Ast.unresolved_names program in
+          let declared_names =
+            List.filter_map
+              (function
+                | Ast.Const { name; _ }
+                | Ast.Global { name; _ }
+                | Ast.Struct { name; _ }
+                | Ast.Opaque { name; _ }
+                | Ast.Func { name; _ } ->
+                    Some name
+                | Ast.Use _ -> None)
+              program.Ast.items
+          in
           let macro_names =
             List.filter
               (fun name -> Option.is_none (Names.value_operation name))
-              referenced_names
+              (List.sort_uniq String.compare (referenced_names @ declared_names))
           in
           let* () =
             let rec import = function
@@ -1132,41 +1205,13 @@ let run_unstaged ?header_output config =
 let same_as_input config =
   canonical_path config.Cli.input = canonical_path config.Cli.output
 
-let is_non_regular_output path =
-  try (Unix.stat path).Unix.st_kind <> Unix.S_REG with
-  | Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR), _, _) -> false
-  | Unix.Unix_error _ -> true
-
 let run config =
   if not config.Cli.output_explicit then run_unstaged config
   else if same_as_input config then
     Error [ Diag.error Span.synthetic "output path must differ from the input file" ]
-  else if is_non_regular_output config.Cli.output then run_unstaged config
   else
-    let directory = Filename.dirname config.Cli.output in
-    let staged =
-      try Ok (Filename.temp_file ~temp_dir:directory ".fas-output-" ".tmp")
-      with Sys_error message -> Error message
-    in
-    match staged with
-    | Error message ->
-        remove config.Cli.output;
-        Error [ Diag.error Span.synthetic ("output I/O failed: " ^ message) ]
-    | Ok staged_path -> (
-        let result =
-          run_unstaged ~header_output:config.Cli.output
-            { config with Cli.output = staged_path }
-        in
-        match result with
-        | Ok output -> (
-            try
-              Sys.rename staged_path config.Cli.output;
-              Ok output
-            with Sys_error message ->
-              remove staged_path;
-              remove config.Cli.output;
-              Error [ Diag.error Span.synthetic ("output I/O failed: " ^ message) ])
-        | Error diagnostics ->
-            remove staged_path;
-            remove config.Cli.output;
-            Error diagnostics)
+    match run_unstaged config with
+    | Ok _ as result -> result
+    | Error _ as result ->
+        if not (is_non_regular_output config.Cli.output) then remove config.Cli.output;
+        result
