@@ -55,6 +55,17 @@ const FLOOR64 f64 = floor(-0.25)
 const CEIL64 f64 = ceil(-0.25)
 const ROUND64 f64 = round(2.5)
 const ABS_NAN64 f64 = abs(bitcast[f64](NAN64_BITS))
+const SPLAT_INPUT vec[4, f32] = splat(1.0)
+const SPLAT_FMA vec[4, f32] = fma(SPLAT_INPUT, SPLAT_INPUT, splat(1.0))
+const PEER_A f32 = 0.10000001
+const PEER_ADD_LEFT f32 = PEER_A + 0.1
+const PEER_ADD_RIGHT f32 = 0.1 + PEER_A
+const PEER_SUB_LEFT f32 = PEER_A - 0.1
+const PEER_SUB_RIGHT f32 = 0.1 - PEER_A
+const PEER_MUL_LEFT f32 = PEER_A * -1.5
+const PEER_MUL_RIGHT f32 = -1.5 * PEER_A
+const PEER_DIV_LEFT f32 = PEER_A / 2.0
+const PEER_DIV_RIGHT f32 = 2.0 / PEER_A
 
 fn next32(state u32) u32 {
   state ^= state << 13
@@ -102,6 +113,40 @@ fn show_fma64(a_bits u64, b_bits u64, c_bits u64) void {
     bitcast[u64](fma(a, b, c)))
 }
 
+fn splat_fma[N const usize](a vec[N, f32]) vec[N, f32] {
+  return fma(a, a, splat(1.0))
+}
+
+fn show_splat_fma() void {
+  runtime vec[4, f32] = fma(SPLAT_INPUT, SPLAT_INPUT, splat(1.0))
+  generic_value vec[4, f32] = splat_fma[4](SPLAT_INPUT)
+  printf(c"splat %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
+    bitcast[u32](SPLAT_FMA[0]), bitcast[u32](SPLAT_FMA[1]),
+    bitcast[u32](SPLAT_FMA[2]), bitcast[u32](SPLAT_FMA[3]),
+    bitcast[u32](runtime[0]), bitcast[u32](runtime[1]),
+    bitcast[u32](runtime[2]), bitcast[u32](runtime[3]),
+    bitcast[u32](generic_value[0]), bitcast[u32](generic_value[1]),
+    bitcast[u32](generic_value[2]), bitcast[u32](generic_value[3]))
+}
+
+fn show_peer(b bool) void {
+  a f32 = PEER_A
+  left f32 = if b { a } else { 0.1 }
+  right f32 = if b { 0.1 } else { a }
+  printf(c"peer %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
+    bitcast[u32](a + 0.1), bitcast[u32](0.1 + a),
+    bitcast[u32](a - 0.1), bitcast[u32](0.1 - a),
+    bitcast[u32](a * -1.5), bitcast[u32](-1.5 * a),
+    bitcast[u32](a / 2.0), bitcast[u32](2.0 / a),
+    zext[u32](a == 0.1), zext[u32](0.1 == a),
+    zext[u32](a != 0.1), zext[u32](0.1 != a),
+    zext[u32](a < 0.1), zext[u32](0.1 < a),
+    zext[u32](a <= 0.1), zext[u32](0.1 <= a),
+    zext[u32](a > 0.1), zext[u32](0.1 > a),
+    zext[u32](a >= 0.1), zext[u32](0.1 >= a))
+  printf(c"peer_if %08x %08x\n", bitcast[u32](left), bitcast[u32](right))
+}
+
 fn main() i32 {
   printf(c"const32 %08x %08x %08x %08x %08x %08x %08x\n",
     bitcast[u32](ROOT32), bitcast[u32](FUSED32), bitcast[u32](FLOOR32),
@@ -110,6 +155,14 @@ fn main() i32 {
   printf(c"const64 %016lx %016lx %016lx %016lx %016lx %016lx\n",
     bitcast[u64](ROOT64), bitcast[u64](FUSED64), bitcast[u64](FLOOR64),
     bitcast[u64](CEIL64), bitcast[u64](ROUND64), bitcast[u64](ABS_NAN64))
+  printf(c"peer_const %08x %08x %08x %08x %08x %08x %08x %08x\n",
+    bitcast[u32](PEER_ADD_LEFT), bitcast[u32](PEER_ADD_RIGHT),
+    bitcast[u32](PEER_SUB_LEFT), bitcast[u32](PEER_SUB_RIGHT),
+    bitcast[u32](PEER_MUL_LEFT), bitcast[u32](PEER_MUL_RIGHT),
+    bitcast[u32](PEER_DIV_LEFT), bitcast[u32](PEER_DIV_RIGHT))
+  show_peer(true)
+  show_peer(false)
+  show_splat_fma()
   for i usize = 0; i < len(EDGE32); i += 1 { show32(EDGE32[i]) }
   state32 u32 = 0x9e3779b9
   for i usize = 0; i < 2048; i += 1 {

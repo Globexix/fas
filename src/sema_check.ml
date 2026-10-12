@@ -249,7 +249,7 @@ and comparison_truth op ty left right =
   | Ast.Ne when exact && compare left.low right.low <> 0 -> Some true
   | Ast.Ne when exact && compare left.low right.low = 0 -> Some false
   | Ast.Ne when compare left.high right.low < 0 || compare right.high left.low < 0 ->
-      Some false
+      Some true
   | _ -> None
 
 and condition_truth c = function
@@ -276,9 +276,26 @@ and condition_truth c = function
       (((Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge) as op), left, right, _, _)
     -> (
       let ty = Hir.expr_ty left in
-      match (fact_for_condition c left, fact_for_condition c right) with
-      | Some left, Some right -> comparison_truth op ty left right
-      | _ -> None)
+      match ty with
+      | Hir.Float _ -> (
+          match (float_constant_bits left, float_constant_bits right) with
+          | Some left, Some right ->
+              Some (Sema_constants.float_comparison_bits ty op left right <> 0L)
+          | _ -> None)
+      | _ -> (
+          match (fact_for_condition c left, fact_for_condition c right) with
+          | Some left, Some right -> comparison_truth op ty left right
+          | _ -> None))
+  | _ -> None
+
+and float_constant_bits = function
+  | Hir.EFloat (bits, _, _) -> Some bits
+  | Hir.Unary (Ast.Neg, value, Hir.Float Hir.F32, _) ->
+      Option.map (fun bits -> Int64.logxor bits 0x80000000L) (float_constant_bits value)
+  | Hir.Unary (Ast.Neg, value, Hir.Float Hir.F64, _) ->
+      Option.map
+        (fun bits -> Int64.logxor bits Int64.min_int)
+        (float_constant_bits value)
   | _ -> None
 
 let exact_address_offset c expression =
@@ -911,14 +928,23 @@ let refine_condition (c : context) expression truth =
 
 let aggregate_construction ?(zero_padding = false) ty entries span =
   let rec zero = function
-    | Hir.Init_zero _ -> true
-    | Hir.Init_omitted _ -> true
+    | Hir.Init_zero _ | Hir.Init_omitted _ -> true
     | Hir.Init_value (Hir.EInt (0L, _, _) | Hir.EBool (false, _) | Hir.Null _) -> true
     | Hir.Init_aggregate (_, _, children, _) -> List.for_all zero children
     | _ -> false
   in
+  let rec bytewise_zero = function
+    | Hir.Init_zero (_, true, _) -> true
+    | Hir.Init_aggregate (_, _, children, _) -> List.exists bytewise_zero children
+    | _ -> false
+  in
   if (not zero_padding) && List.for_all zero entries then
-    Hir.Init_zero (Hir.zero_initializer ty, false, span)
+    let zero = Hir.zero_initializer ty in
+    Hir.Init_zero
+      ( zero,
+        List.exists bytewise_zero entries
+        || (entries = [] && Option.is_none (Hir.zero_integer_array_values zero)),
+        span )
   else Hir.Init_aggregate (ty, zero_padding, entries, span)
 
 let c_unsupported c span name =
@@ -1234,8 +1260,14 @@ let build_unresolved_shapes expression =
           match current with
           | Ast.Parenthesized (operand, _) -> cached_shape operand
           | Ast.Int_lit _ -> Some Unresolved_int
+          | Ast.Float_lit _ -> Some Unresolved_float
           | Ast.Null _ -> Some Unresolved_null
-          | Ast.Unary ((Ast.Neg | Ast.Bit_not), operand, _) -> (
+          | Ast.Unary (Ast.Neg, operand, _) -> (
+              match cached_shape operand with
+              | Some Unresolved_int -> Some Unresolved_int
+              | Some Unresolved_float -> Some Unresolved_float
+              | _ -> None)
+          | Ast.Unary (Ast.Bit_not, operand, _) -> (
               match cached_shape operand with
               | Some Unresolved_int -> Some Unresolved_int
               | _ -> None)
@@ -1273,8 +1305,13 @@ let rec unresolved_shape_uncached expression =
   match expression with
   | Ast.Parenthesized (operand, _) -> unresolved_shape_uncached operand
   | Ast.Int_lit _ -> Some Unresolved_int
+  | Ast.Float_lit _ -> Some Unresolved_float
   | Ast.Null _ -> Some Unresolved_null
-  | Ast.Unary ((Ast.Neg | Ast.Bit_not), operand, _) -> (
+  | Ast.Unary (Ast.Neg, operand, _) -> (
+      match unresolved_shape_uncached operand with
+      | Some (Unresolved_int | Unresolved_float) as shape -> shape
+      | _ -> None)
+  | Ast.Unary (Ast.Bit_not, operand, _) -> (
       match unresolved_shape_uncached operand with
       | Some Unresolved_int -> Some Unresolved_int
       | _ -> None)
@@ -2498,7 +2535,7 @@ and check_expr_inner ?destination (c : context) expected expression =
         let* a_expected =
           if
             Option.is_none expected
-            && left_shape = Some Unresolved_int
+            && List.mem left_shape [ Some Unresolved_int; Some Unresolved_float ]
             && Option.is_none right_shape
           then (
             Sema_flow.restore c.flow before_arms;
@@ -2508,7 +2545,12 @@ and check_expr_inner ?destination (c : context) expected expression =
             in
             Sema_flow.restore c.flow before_arms;
             refine_condition c tq true;
-            Ok (match Hir.expr_ty peer with Hir.Int _ as ty -> Some ty | _ -> None))
+            Ok
+              (match (left_shape, Hir.expr_ty peer) with
+              | Some Unresolved_int, (Hir.Int _ as ty)
+              | Some Unresolved_float, (Hir.Float _ as ty) ->
+                  Some ty
+              | _ -> None))
           else Ok expected
         in
         let* ta =
@@ -2522,6 +2564,7 @@ and check_expr_inner ?destination (c : context) expected expression =
           match (expected, right_shape, Hir.expr_ty ta) with
           | Some _, _, _ -> expected
           | None, Some Unresolved_int, (Hir.Int _ as ty)
+          | None, Some Unresolved_float, (Hir.Float _ as ty)
           | None, Some Unresolved_vector, (Hir.Vec _ as ty) ->
               Some ty
           | _ -> None
@@ -3040,7 +3083,10 @@ and check_float_math c expected operation name args s =
     let peer_types =
       List.filter_map
         (fun argument ->
-          if float_literal_operand argument then None
+          if
+            float_literal_operand argument
+            || unresolved_shape_of c argument = Some Unresolved_vector
+          then None
           else
             let before = Sema_flow.snapshot c.flow in
             let result = check_expr c None argument in
@@ -3065,7 +3111,11 @@ and check_float_math c expected operation name args s =
       Result_list.map
         (fun argument ->
           check_expr c
-            (if float_literal_operand argument then Some operand_ty else None)
+            (if
+               float_literal_operand argument
+               || unresolved_shape_of c argument = Some Unresolved_vector
+             then Some operand_ty
+             else None)
             argument)
         args
     in

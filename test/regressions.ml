@@ -4065,6 +4065,101 @@ let () =
   semantic_accept "float-literal-destination-peer-typing"
     "fn accept(value f32) f32 { return value }\n\
      fn use_value() f32 { return accept(0.1) }\n";
+  semantic_accept "float-literal-peer-order"
+    "const A f32 = 0.1\n\
+     const ADD1 f32 = A + 0.1\n\
+     const ADD2 f32 = 0.1 + A\n\
+     const SUB1 f32 = A - 0.1\n\
+     const SUB2 f32 = 0.1 - A\n\
+     const MUL1 f32 = A * -1.5\n\
+     const MUL2 f32 = -1.5 * A\n\
+     const DIV1 f32 = A / 2.0\n\
+     const DIV2 f32 = 2.0 / A\n\
+     const EQ1 bool = A == 0.1\n\
+     const EQ2 bool = 0.1 == A\n\
+     const NE1 bool = A != 0.1\n\
+     const NE2 bool = 0.1 != A\n\
+     const LT1 bool = A < 0.1\n\
+     const LT2 bool = 0.1 < A\n\
+     const LE1 bool = A <= 0.1\n\
+     const LE2 bool = 0.1 <= A\n\
+     const GT1 bool = A > 0.1\n\
+     const GT2 bool = 0.1 > A\n\
+     const GE1 bool = A >= 0.1\n\
+     const GE2 bool = 0.1 >= A\n\
+     fn branches(a f32, b bool) f32 {\n\
+     x f32 = if b { a } else { 0.1 }\n\
+     y f32 = if b { 0.1 } else { a }\n\
+     return x + y\n\
+     }\n\
+     fn unary(a f32) f32 { return -1.5 * a + a * -1.5 }\n";
+  semantic_message "float-literal-peer-order-widening-left"
+    "`0.1 + a` is computed in `f32` and may round before it reaches `f64`"
+    "fn bad(a f32) f64 { return 0.1 + a }\n";
+  semantic_message "float-literal-peer-order-widening-right"
+    "`a + 0.1` is computed in `f32` and may round before it reaches `f64`"
+    "fn bad(a f32) f64 { return a + 0.1 }\n";
+  semantic_message "float-if-vararg-peer-rejection"
+    "C varargs do not accept `f32`; convert it to `f64` explicitly"
+    "extern \"C\" { fn printf(format addr, ...) i32 }\n\
+     fn bad(x f32, b bool) i32 { return printf(c\"%f\", if b { x } else { 1.0 }) }\n";
+  semantic_accept "float-if-vararg-explicit-conversion"
+    "extern \"C\" { fn printf(format addr, ...) i32 }\n\
+     fn good(x f32, b bool) i32 { return printf(c\"%f\", cvt[f64](if b { x } else { \
+     1.0 })) }\n";
+  semantic_accept "float-comparison-branch-feasibility"
+    "const X f64 = -1.0\n\
+     const N f64 = 0.0 / 0.0\n\
+     fn false_branches() i32 {\n\
+     a arr[4, i32] = {}\n\
+     i usize = 10\n\
+     if X < -2.0 { return a[i] }\n\
+     if N == N { return a[i] }\n\
+     if -0.0 < 0.0 { return a[i] }\n\
+     return 0\n\
+     }\n\
+     fn disjoint(c bool) u8 {\n\
+     a arr[4, u8] = {10, 11, 12, 13}\n\
+     i usize = if (if c { 1 } else { 2 }) != 5 { 1 } else { 9 }\n\
+     return a[i]\n\
+     }\n";
+  semantic_message "float-comparison-proven-true-still-checks"
+    "array index is out of bounds for length 4"
+    "fn bad() i32 { a arr[4, i32] = {}\n\
+    \ i usize = 10\n\
+    \ if 1.0 < 2.0 { return a[i] }\n\
+    \ return 0 }\n";
+  semantic_message "float-comparison-signed-zero-proven-true-still-checks"
+    "array index is out of bounds for length 4"
+    "fn bad() i32 { a arr[4, i32] = {}\n\
+    \ i usize = 10\n\
+    \ if -0.0 == 0.0 { return a[i] }\n\
+    \ return 0 }\n";
+  semantic_message "float-comparison-nan-not-equal-proven-true-still-checks"
+    "array index is out of bounds for length 4"
+    "const N f64 = 0.0 / 0.0\n\
+    \ fn bad() i32 { a arr[4, i32] = {}\n\
+    \ i usize = 10\n\
+    \ if N != N { return a[i] }\n\
+    \ return 0 }\n";
+  semantic_accept "generic-inference-checked-expressions"
+    "struct S { x f32 }\n\
+     fn pick[T](a T, b T, mode bool) T { return if mode { a } else { b } }\n\
+     fn get() f64 { return 1.0 }\n\
+     fn use_values(p addr, bits u32) i32 {\n\
+     w arr[2, vec[4, u32]] = {}\n\
+     s S = {}\n\
+     a vec[4, u32] = pick(w[0], w[1], true)\n\
+     b f32 = pick(s.x, s.x, true)\n\
+     c f32 = pick(p[f32], p[f32], true)\n\
+     d f64 = pick(get(), get(), true)\n\
+     e f32 = pick(cvt[f32](bits), cvt[f32](bits), true)\n\
+     return 0\n\
+     }\n";
+  semantic_message "generic-inference-checked-expression-conflict"
+    "cannot infer `T` for `pick`: `x` is `f32`, `y` is `i32`"
+    "fn pick[T](a T, b T, mode bool) T { return if mode { a } else { b } }\n\
+     fn bad(x f32, y i32) f32 { return pick(x, y, true) }\n";
   semantic_accept "float-arithmetic-widening-and-if-expressions"
     "fn operations(a f32, b f32, wide f64, condition bool) f64 {\n\
      plain f64 = a\n\
@@ -4272,6 +4367,20 @@ let () =
     \ const Magnitude f32 = abs(-1.5)\n\
     \ fn peer(x f32) f32 { return fma(1.0, x, 2.0) }\n\
     \ fn defaults() f64 { return sqrt(2.0) }\n";
+  semantic_accept "float-fma-vector-splat-peers"
+    "fn fused(a vec[4, f32]) vec[4, f32] {\n\
+     x vec[4, f32] = fma(splat(2.0), a, a)\n\
+     y vec[4, f32] = fma(a, splat(2.0), a)\n\
+     return fma(a, a, splat(-0.0))\n\
+     }\n\
+     fn generic[N const usize](a vec[N, f32]) f32 {\n\
+     return (a * splat(2.0))[0]\n\
+     }\n\
+     fn main() i32 { a vec[4, f32] = splat(1.0)\n\
+     x f32 = generic[4](a)\n\
+     return 0\n\
+     }\n";
+
   semantic_pin "float-math-integer-help" "fn bad(x i32) f64 { return sqrt(x) }\n" 1 33 1
     "argument 1 of `sqrt` is `i32`, expected `f64`" (Some "write `sqrt(cvt[f64](x))`");
   semantic_accept "float-math-integer-help-twin"
@@ -10969,6 +11078,36 @@ let () =
   semantic_error "construction-empty-scalar"
     "initializer needs an array, struct, or vector type, got `i32`"
     "fn f() void { value i32 = {}\nreturn }\n";
+  List.iter
+    (fun (name, text) ->
+      semantic_message name "wrong number of vector literal lanes" text)
+    [
+      ( "construction-empty-vector-local",
+        "fn f() void { value vec[3,f32] = {}\nreturn }\n" );
+      ("construction-empty-vector-constant", "const V vec[3,f32] = {}\n");
+      ( "construction-empty-vector-field-local",
+        "struct V { n f32 value vec[3,f32] }\n\
+         fn f() void { value V = {1.0, {}}\n\
+         return }\n" );
+      ( "construction-empty-vector-field-constant",
+        "struct V { n f32 value vec[3,f32] }\nconst X V = {1.0, {}}\n" );
+      ( "construction-empty-vector-designated-local",
+        "struct V { value vec[3,f32] }\n\
+         fn f() void { value V = {.value = {}}\n\
+         return }\n" );
+      ( "construction-empty-vector-designated-constant",
+        "struct V { value vec[3,f32] }\nconst X V = {.value = {}}\n" );
+      ( "construction-empty-vector-array-local",
+        "fn f() void { value arr[2,vec[3,f32]] = {{}, {1.0, 2.0, 3.0}}\nreturn }\n" );
+      ( "construction-empty-vector-array-constant",
+        "const X arr[2,vec[3,f32]] = {{}, {1.0, 2.0, 3.0}}\n" );
+      ( "construction-empty-vector-whole-zero-local",
+        "struct V { n u8 value vec[3,f32] }\n\
+         fn f() void { value V = {0, {}}\n\
+         return }\n" );
+      ( "construction-empty-vector-whole-zero-constant",
+        "struct V { n u8 value vec[3,f32] }\nconst X V = {0, {}}\n" );
+    ];
   semantic_error "construction-empty-array-nonzero-count" "array of 5 elements, got 1"
     "fn f() void { values arr[5,u8] = {0}\nreturn }\n";
   let empty_aggregate_llvm =
@@ -10990,9 +11129,8 @@ let () =
     || (not
           (contains empty_aggregate_llvm
              "@EmptyConst = private unnamed_addr constant [5 x i8] zeroinitializer"))
-    || (not (contains empty_aggregate_llvm "store [5 x i8] zeroinitializer"))
-    || not (contains empty_aggregate_llvm "store [2 x i32] zeroinitializer")
-  then failwith "empty aggregate initializers did not share zero storage lowering";
+    || not (contains empty_aggregate_llvm "store i8 0")
+  then failwith "empty aggregate initializers did not zero every storage byte";
   let empty_exported_global_llvm =
     llvm_of "extern \"C\" { var screens arr[5,addr] = {} }\n"
   in

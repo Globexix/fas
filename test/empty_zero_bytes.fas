@@ -1,0 +1,66 @@
+use "C" "empty_zero.h"
+use "C" <stdio.h>
+struct Local {
+  tag u8
+  floats vec[3, f32]
+  doubles vec[5, f64]
+  integers vec[3, u32]
+}
+struct Nested {
+  values arr[2, vec[3, f32]]
+  inner Local
+}
+struct Tail {
+  c u8
+  w arr[2, vec[3, f32]]
+}
+struct Padding {
+  b u8
+  w u64
+}
+struct Node {
+  tag u8
+  inner Padding
+}
+struct Big {
+  k u8
+  p arr[20, u64]
+}
+fn dirty() void {
+  bytes arr[512, u8] = {}
+  for i usize = 0; i < len(bytes); i += 1 { bytes[i] = 0xab }
+  printf(c"dirty %02x\n", zext[u32](bytes[3]))
+  fas_keep_bytes(&bytes[0])
+}
+fn dump(label addr, value addr, size usize) void {
+  printf(c"%s", label)
+  for i usize = 0; i < size; i += 1 {
+    printf(c"%02x", zext[u32](value[u8, i]))
+  }
+  printf(c"\n")
+}
+fn show() void {
+  local Local = {}
+  vectors arr[2, vec[3, f32]] = {}
+  nested Nested = {}
+  partial Tail = {0, {}}
+  nested_elements arr[3, Tail] = {{}, {}, {}}
+  union_value FasZeroUnion = {}
+  nodes arr[20, Node] = {{1, {}}, {1, {}}, {1, {}}, {1, {}}, {1, {}}, {1, {}}, {1, {}}, {1, {}}, {1, {}}, {1, {}}, {1, {}}, {1, {}}, {1, {}}, {1, {}}, {1, {}}, {1, {}}, {1, {}}, {1, {}}, {1, {}}, {1, {}}}
+  large Big = {.k = 1, .p = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}}
+  dump(c"local ", &local, sizeof[Local])
+  dump(c"vectors ", &vectors, sizeof[arr[2, vec[3, f32]]])
+  dump(c"nested ", &nested, sizeof[Nested])
+  dump(c"partial ", &partial, sizeof[Tail])
+  dump(c"nested elements ", &nested_elements, sizeof[arr[3, Tail]])
+  dump(c"union ", &union_value, sizeof[FasZeroUnion])
+  for i usize = 0; i < len(nodes); i += 1 {
+    dump(c"nested constant ", &nodes[i].inner, sizeof[Padding])
+  }
+  dump(c"designated constant ", &large, sizeof[Big])
+}
+fn main() i32 {
+  dirty()
+  show()
+  return 0
+}

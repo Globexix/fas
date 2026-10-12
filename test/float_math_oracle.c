@@ -94,6 +94,19 @@ static void show_fma64(uint64_t a_bits, uint64_t b_bits, uint64_t c_bits) {
          (unsigned long)bits64(fma(float64(a_bits), float64(b_bits), float64(c_bits))));
 }
 
+static void show_peer(int branch) {
+  volatile float a = 0.10000001f;
+  float left = branch ? a : 0.1f;
+  float right = branch ? 0.1f : a;
+  printf("peer %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
+         bits32(a + 0.1f), bits32(0.1f + a), bits32(a - 0.1f),
+         bits32(0.1f - a), bits32(a * -1.5f), bits32(-1.5f * a),
+         bits32(a / 2.0f), bits32(2.0f / a), a == 0.1f, 0.1f == a,
+         a != 0.1f, 0.1f != a, a < 0.1f, 0.1f < a, a <= 0.1f,
+         0.1f <= a, a > 0.1f, 0.1f > a, a >= 0.1f, 0.1f >= a);
+  printf("peer_if %08x %08x\n", bits32(left), bits32(right));
+}
+
 static int fma32_cases_are_single_rounding_cases(void) {
   for (size_t i = 0; i < sizeof(fma32_a) / sizeof(fma32_a[0]); ++i) {
     float a = float32(fma32_a[i]);
@@ -119,6 +132,18 @@ int main(void) {
          (unsigned long)bits64(floor(-0.25)), (unsigned long)bits64(ceil(-0.25)),
          (unsigned long)bits64(roundeven(2.5)),
          (unsigned long)bits64(fabs(float64(0xfff8123456789abcULL))));
+  const float peer_a = 0.10000001f;
+  printf("peer_const %08x %08x %08x %08x %08x %08x %08x %08x\n",
+         bits32(peer_a + 0.1f), bits32(0.1f + peer_a),
+         bits32(peer_a - 0.1f), bits32(0.1f - peer_a),
+         bits32(peer_a * -1.5f), bits32(-1.5f * peer_a),
+         bits32(peer_a / 2.0f), bits32(2.0f / peer_a));
+  show_peer(1);
+  show_peer(0);
+  printf("splat %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
+         0x40000000, 0x40000000, 0x40000000, 0x40000000,
+         0x40000000, 0x40000000, 0x40000000, 0x40000000,
+         0x40000000, 0x40000000, 0x40000000, 0x40000000);
   for (size_t i = 0; i < sizeof(edge32) / sizeof(edge32[0]); ++i) show32(edge32[i]);
   uint32_t state32 = 0x9e3779b9;
   for (unsigned i = 0; i < 2048; ++i) show32(next32(&state32));

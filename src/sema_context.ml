@@ -34,7 +34,12 @@ type string_pool = {
   budget_profile : string;
 }
 
-type unresolved_shape = Unresolved_int | Unresolved_vector | Unresolved_null
+type unresolved_shape =
+  | Unresolved_int
+  | Unresolved_float
+  | Unresolved_vector
+  | Unresolved_null
+
 type unresolved_shape_cache = (string * int * int, unresolved_shape option) Hashtbl.t
 
 let create_string_pool limits =

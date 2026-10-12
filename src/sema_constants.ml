@@ -27,7 +27,11 @@ let shuffle_indices_in_range lane_ty n values =
 
 let ty_name = Hir.ty_name
 
-type unresolved_shape = Unresolved_int | Unresolved_vector | Unresolved_null
+type unresolved_shape =
+  | Unresolved_int
+  | Unresolved_float
+  | Unresolved_vector
+  | Unresolved_null
 
 let rec unresolved_shape_of expression =
   let combined left right =
@@ -38,8 +42,13 @@ let rec unresolved_shape_of expression =
   match expression with
   | Ast.Parenthesized (expression, _) -> unresolved_shape_of expression
   | Ast.Int_lit _ -> Some Unresolved_int
+  | Ast.Float_lit _ -> Some Unresolved_float
   | Ast.Null _ -> Some Unresolved_null
-  | Ast.Unary ((Ast.Neg | Ast.Bit_not), operand, _) -> (
+  | Ast.Unary (Ast.Neg, operand, _) -> (
+      match unresolved_shape_of operand with
+      | Some (Unresolved_int | Unresolved_float) as shape -> shape
+      | _ -> None)
+  | Ast.Unary (Ast.Bit_not, operand, _) -> (
       match unresolved_shape_of operand with
       | Some Unresolved_int -> Some Unresolved_int
       | _ -> None)
@@ -967,6 +976,7 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
         let branch_hint shape peer_type =
           match (shape, peer_type) with
           | Some Unresolved_int, (Hir.Int _ as ty)
+          | Some Unresolved_float, (Hir.Float _ as ty)
           | Some Unresolved_vector, (Hir.Vec _ as ty) ->
               Some ty
           | _ -> None
@@ -974,7 +984,8 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
         let* (left_type, left_value), (right_type, right_value) =
           if
             right_shape = None
-            && (left_shape = Some Unresolved_int || left_shape = Some Unresolved_vector)
+            && List.mem left_shape
+                 [ Some Unresolved_int; Some Unresolved_float; Some Unresolved_vector ]
           then
             let* right_type, right_value = branch b None (cv = 0L) in
             let left_expected = branch_hint left_shape right_type in

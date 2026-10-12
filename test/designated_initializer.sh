@@ -9,7 +9,7 @@ trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
 "$OCAML_FAS" --emit-llvm "$ROOT/test/designated_initializer.fas" >"$TMP/program.ll"
 "$LLVM_OPT" -passes=verify "$TMP/program.ll" -disable-output
-grep -F '@.literal.0 = private constant [72 x i8]' "$TMP/program.ll" >/dev/null
+grep -F '@.literal.0 = private constant [68 x i8]' "$TMP/program.ll" >/dev/null
 for level in 0 2; do
   "$LLVM_OPT" -S "-passes=default<O$level>" "$TMP/program.ll" -o "$TMP/program.O$level.ll"
   "$LLVM_OPT" -passes=verify "$TMP/program.O$level.ll" -disable-output

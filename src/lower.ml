@@ -2110,7 +2110,7 @@ and stmt s = function
       let pointer = Ir.Local (id, Ir.Pointer (storage_ty local.ty)) in
       let* () = register_local_lifetime s local pointer in
       bind_local s local pointer alignment;
-      construct_into s pointer construction
+      construct_into ~alignment s pointer construction
   | Hir.View (local, place, span) ->
       let* pointer = address s place in
       let* alignment = place_alignment s place in
@@ -2251,7 +2251,13 @@ and stmt s = function
           Ok ()
       | None -> error sp "continue outside loop")
 
-and construct_into s destination construction =
+and construct_into ?alignment s destination construction =
+  let rec requires_bytewise_zero = function
+    | Hir.Init_zero (_, true, _) | Hir.Init_aggregate (_, true, _, _) -> true
+    | Hir.Init_aggregate (_, false, entries, _) ->
+        List.exists requires_bytewise_zero entries
+    | _ -> false
+  in
   let literal_ty =
     match construction with Hir.Init_aggregate (t, _, _, _) -> Some t | _ -> None
   in
@@ -2261,7 +2267,9 @@ and construct_into s destination construction =
           (fun value -> (t, value))
           (constant_construction s.structs construction))
   with
-  | Some (t, value) when copy_leaf_count s.structs t > 16 ->
+  | Some (t, value)
+    when copy_leaf_count s.structs t > 16 && not (requires_bytewise_zero construction)
+    ->
       let name = ".literal." ^ string_of_int (List.length !(s.literal_globals)) in
       s.literal_globals :=
         {
@@ -2274,9 +2282,9 @@ and construct_into s destination construction =
         :: !(s.literal_globals);
       let* source = address s (Hir.Global (name, t, Span.synthetic)) in
       copy_place s Span.synthetic t destination source
-  | _ -> construct_entries s destination construction
+  | _ -> construct_entries ?alignment s destination construction
 
-and construct_entries s destination = function
+and construct_entries ?alignment s destination = function
   | Hir.Init_omitted _ -> Ok ()
   | Hir.Init_aggregate (Hir.Struct name, true, entries, span) -> (
       match find_struct s name with
@@ -2287,7 +2295,7 @@ and construct_entries s destination = function
           error span "internal error: designated struct construction arity"
       | Some definition ->
           let* () =
-            construct_entries s destination
+            construct_entries ?alignment s destination
               (Hir.Init_zero (Hir.zero_initializer (Hir.Struct name), true, span))
           in
           let init_span = function
@@ -2306,12 +2314,23 @@ and construct_entries s destination = function
             (fun result ((field : Hir.field), entry) ->
               let* () = result in
               let* pointer = copy_offset s destination field.offset in
-              construct_into s pointer entry)
+              let* base_alignment =
+                match alignment with
+                | Some value -> Ok value
+                | None -> align s (Hir.Struct name)
+              in
+              let* field_alignment = align s field.ty in
+              construct_into
+                ~alignment:
+                  (min (offset_alignment base_alignment field.offset) field_alignment)
+                s pointer entry)
             (Ok ()) ordered)
   | Hir.Init_value expression ->
       let* value = expr s expression in
       let value_ty = Hir.expr_ty expression in
-      let* alignment = align s value_ty in
+      let* alignment =
+        match alignment with Some value -> Ok value | None -> align s value_ty
+      in
       store_value s value_ty value destination alignment
   | Hir.Init_zero (zero, bytewise, span) -> (
       match zero.zero_ty with
@@ -2322,8 +2341,10 @@ and construct_entries s destination = function
             | Error message -> error span ("internal error: " ^ message)
           in
           if size <= 256 && not bytewise then
-            let* alignment = align s aggregate_ty in
-            store_value s aggregate_ty (Ir.Zero (ty aggregate_ty)) destination alignment
+            let* a =
+              match alignment with Some a -> Ok a | None -> align s aggregate_ty
+            in
+            store_value s aggregate_ty (Ir.Zero (ty aggregate_ty)) destination a
           else
             let preheader = s.current.id in
             let head = fresh_block s
@@ -2370,6 +2391,17 @@ and construct_entries s destination = function
         error span "internal error: array construction arity"
       else
         let aggregate_ty = Ir.Array (length, storage_ty element_ty) in
+        let* base_alignment =
+          match alignment with
+          | Some value -> Ok value
+          | None -> align s (Hir.Array (length, element_ty))
+        in
+        let* element_size, _ =
+          match Hir.layout s.structs element_ty with
+          | Ok layout -> Ok layout
+          | Error message -> error span ("internal error: " ^ message)
+        in
+        let* element_natural_alignment = align s element_ty in
         let rec go index = function
           | [] -> Ok ()
           | element :: rest ->
@@ -2380,8 +2412,13 @@ and construct_entries s destination = function
                      aggregate_ty,
                      destination,
                      [ Ir.Zero; Ir.Index (Ir.Const (Ir.I64, Int64.of_int index)) ] ));
+              let element_alignment =
+                min
+                  (offset_alignment base_alignment (index * element_size))
+                  element_natural_alignment
+              in
               let* () =
-                construct_into s
+                construct_into ~alignment:element_alignment s
                   (Ir.Local (pointer_id, Ir.Pointer (storage_ty element_ty)))
                   element
               in
@@ -2395,14 +2432,23 @@ and construct_entries s destination = function
           if definition.is_union then
             match (definition.fields, elements) with
             | field :: _, [ entry ] ->
-                let* alignment = align s (Hir.Struct name) in
+                let* base_alignment =
+                  match alignment with
+                  | Some value -> Ok value
+                  | None -> align s (Hir.Struct name)
+                in
+                let* field_natural_alignment = align s field.Hir.ty in
+                let field_alignment =
+                  min
+                    (offset_alignment base_alignment field.Hir.offset)
+                    field_natural_alignment
+                in
                 let* () =
-                  store_value s (Hir.Struct name)
-                    (Ir.Zero (ty (Hir.Struct name)))
-                    destination alignment
+                  construct_entries ~alignment:base_alignment s destination
+                    (Hir.Init_zero (Hir.zero_initializer (Hir.Struct name), true, span))
                 in
                 let* pointer = copy_offset s destination field.Hir.offset in
-                construct_into s pointer entry
+                construct_into ~alignment:field_alignment s pointer entry
             | _ -> error span "internal error: union construction arity"
           else if List.length elements <> List.length definition.fields then
             error span "internal error: struct construction arity"
@@ -2412,7 +2458,18 @@ and construct_entries s destination = function
               | [], [] -> Ok ()
               | field :: rest_fields, entry :: rest_entries ->
                   let* pointer = copy_offset s destination field.Hir.offset in
-                  let* () = construct_into s pointer entry in
+                  let* base_alignment =
+                    match alignment with
+                    | Some value -> Ok value
+                    | None -> align s (Hir.Struct name)
+                  in
+                  let* field_natural_alignment = align s field.ty in
+                  let field_alignment =
+                    min
+                      (offset_alignment base_alignment field.offset)
+                      field_natural_alignment
+                  in
+                  let* () = construct_into ~alignment:field_alignment s pointer entry in
                   go rest_fields rest_entries
               | _ -> error span "internal error: struct construction arity"
             in

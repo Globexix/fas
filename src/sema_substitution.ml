@@ -819,12 +819,72 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           | _ -> Ok ())
       | _ -> Ok ()
     in
+    let inference_context = make_legality_context Hir.Void in
+    List.iter
+      (fun (local, source_type) ->
+        if String_set.mem local !local_values then
+          match
+            source_ty_with_values ~globals:global_names eval_named_types eval_consts
+              span source_type
+          with
+          | Ok ty -> (
+              match Sema_flow.add_local local ty inference_context.flow span with
+              | Ok binding -> Sema_flow.mark_init binding inference_context.flow
+              | Error _ -> ())
+          | Error _ -> ())
+      !inference_types;
+    let rec literal_kind = function
+      | Ast.Int_lit _ -> Some `Int
+      | Ast.Float_lit _ -> Some `Float
+      | Ast.Parenthesized (value, _) | Ast.Unary (Ast.Neg, value, _) ->
+          literal_kind value
+      | _ -> None
+    in
     let rec actual_type = function
       | Ast.Parenthesized (value, _) -> actual_type value
-      | Ast.Ident (name, _) when String_set.mem name !local_values ->
-          List.assoc_opt name !inference_types
-      | Ast.Ident _ -> None
-      | _ -> None
+      | Ast.Ident (local, _) when String_set.mem local !local_values ->
+          List.assoc_opt local !inference_types
+      | argument when Option.is_some (literal_kind argument) -> None
+      | argument -> (
+          match check_expr inference_context None argument with
+          | Error _ -> None
+          | Ok checked ->
+              let length count =
+                let text = string_of_int count in
+                let expression = Ast.Int_lit (text, span) in
+                { Ast.expression; text; span }
+              in
+              let rec ast_type = function
+                | Hir.Bool -> Ast.Bool
+                | Hir.Int Hir.U8 -> Ast.Int Ast.U8
+                | Hir.Int Hir.U16 -> Ast.Int Ast.U16
+                | Hir.Int Hir.U32 -> Ast.Int Ast.U32
+                | Hir.Int Hir.U64 -> Ast.Int Ast.U64
+                | Hir.Int Hir.I8 -> Ast.Int Ast.I8
+                | Hir.Int Hir.I16 -> Ast.Int Ast.I16
+                | Hir.Int Hir.I32 -> Ast.Int Ast.I32
+                | Hir.Int Hir.I64 -> Ast.Int Ast.I64
+                | Hir.Int Hir.Usize -> Ast.Int Ast.Usize
+                | Hir.Int Hir.Isize -> Ast.Int Ast.Isize
+                | Hir.Float Hir.F32 -> Ast.Float Ast.F32
+                | Hir.Float Hir.F64 -> Ast.Float Ast.F64
+                | Hir.Addr -> Ast.Addr
+                | Hir.Handle name -> (
+                    match specialized_args name span with
+                    | Some (template, args) ->
+                        Ast.Handle (Ast.Applied_type (template, args, span))
+                    | None -> Ast.Handle (Ast.Named_type (name, span)))
+                | Hir.Array (count, element) ->
+                    Ast.Array (length count, ast_type element)
+                | Hir.Vec (count, element) -> Ast.Vec (length count, ast_type element)
+                | Hir.Struct name -> (
+                    match specialized_args name span with
+                    | Some (template, args) -> Ast.Applied_type (template, args, span)
+                    | None -> Ast.Named_type (name, span))
+                | Hir.Opaque name -> Ast.Named_type (name, span)
+                | Hir.Void -> Ast.Void
+              in
+              Some (ast_type (Hir.expr_ty checked)))
     in
     let* () =
       List.fold_left2
@@ -835,10 +895,6 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           | None -> Ok ())
         (Ok ()) params arguments
     in
-    let is_literal = function
-      | Ast.Int_lit _ | Ast.Parenthesized (Ast.Int_lit _, _) -> true
-      | _ -> false
-    in
     let literal_only parameter =
       let occurrences =
         List.filter_map
@@ -847,6 +903,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             | Ast.Named_type (name, _) when name = parameter -> Some argument
             | _ -> None)
           (List.combine params arguments)
+      in
+      let is_literal = function
+        | Ast.Int_lit _ | Ast.Parenthesized (Ast.Int_lit _, _) -> true
+        | _ -> false
       in
       occurrences <> [] && List.for_all is_literal occurrences
     in
@@ -970,8 +1030,29 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       | Ast.Splat (value, _) ->
           validate_non_dependent_expression c dependent None value
       | Ast.Binary (_, left, right, _) ->
-          let* () = validate_non_dependent_expression c dependent None left in
-          validate_non_dependent_expression c dependent None right
+          let peer_type peer operand =
+            if
+              (match operand with
+                | Ast.Splat _ -> true
+                | Ast.Call (Ast.Ident ("splat", _), _, _) -> true
+                | Ast.Parenthesized (Ast.Splat _, _) -> true
+                | Ast.Parenthesized (Ast.Call (Ast.Ident ("splat", _), _, _), _) -> true
+                | _ -> false)
+              |> not
+            then None
+            else
+              let before = Sema_flow.snapshot c.flow in
+              let checked = check_expr c None peer in
+              Sema_flow.restore c.flow before;
+              match checked with
+              | Ok value -> (
+                  match Hir.expr_ty value with Hir.Vec _ as ty -> Some ty | _ -> None)
+              | Error _ -> None
+          in
+          let left_expected = peer_type right left
+          and right_expected = peer_type left right in
+          let* () = validate_non_dependent_expression c dependent left_expected left in
+          validate_non_dependent_expression c dependent right_expected right
       | Ast.Select (base, args, _) ->
           let* () = validate_non_dependent_expression c dependent None base in
           Result_list.iter
@@ -2507,10 +2588,18 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                       body_value_names body_type_names statements
                   in
                   let* () =
+                    let validation_params =
+                      List.map2
+                        (fun (original : Ast.param) (resolved : Ast.param) ->
+                          match (original.ty, resolved.ty) with
+                          | Ast.Vec _, Ast.Vec _ -> resolved
+                          | _ -> original)
+                        item.params params
+                    in
                     if (not eager_functions) || item.generic_params = [] then Ok ()
                     else
                       validate_generic_legality ~span:item.span ~ret:item.ret
-                        ~params:item.params ~generic_params:item.generic_params
+                        ~params:validation_params ~generic_params:item.generic_params
                         statements
                   in
                   let* statements =
