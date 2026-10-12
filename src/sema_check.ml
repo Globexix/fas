@@ -1211,7 +1211,7 @@ let shape_children = function
   | Ast.Unary ((Ast.Neg | Ast.Bit_not), operand, _) -> [ operand ]
   | Ast.Binary
       ( ( Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
-        | Ast.Bit_xor ),
+        | Ast.Bit_xor | Ast.Shl | Ast.Shr ),
         left,
         right,
         _ ) ->
@@ -1233,7 +1233,7 @@ let unresolved_shape_cache_worthwhile expression =
             pending := operand :: !pending
         | Ast.Binary
             ( ( Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and
-              | Ast.Bit_or | Ast.Bit_xor ),
+              | Ast.Bit_or | Ast.Bit_xor | Ast.Shl | Ast.Shr ),
               left,
               right,
               _ ) ->
@@ -1278,7 +1278,7 @@ let build_unresolved_shapes expression =
               | _ -> None)
           | Ast.Binary
               ( ( Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and
-                | Ast.Bit_or | Ast.Bit_xor ),
+                | Ast.Bit_or | Ast.Bit_xor | Ast.Shl | Ast.Shr ),
                 left,
                 right,
                 _ ) -> (
@@ -1327,7 +1327,7 @@ let rec unresolved_shape_uncached expression =
       | _ -> None)
   | Ast.Binary
       ( ( Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
-        | Ast.Bit_xor ),
+        | Ast.Bit_xor | Ast.Shl | Ast.Shr ),
         left,
         right,
         _ ) ->
@@ -1920,8 +1920,8 @@ and check_expr_inner ?destination (c : context) expected expression =
                     Printf.sprintf "element %d of vector `%s`" (index + 1) name
                 | None -> Printf.sprintf "lane %d of vector literal" (index + 1)
               in
-              ensure_expected ~context ~expression:entry (Hir.expr_ty value) element
-                (Ast.expr_span entry)
+              ensure_expected ~checked_expression:value ~context ~expression:entry
+                (Hir.expr_ty value) element (Ast.expr_span entry)
             in
             go (index + 1) (value :: acc) rest
       in
@@ -2615,11 +2615,13 @@ and check_expr_inner ?destination (c : context) expected expression =
               match expected with
               | Some target when scalar_conversion_pair at target ->
                   let* () =
-                    ensure_expected ~widening_help ~context:"if-expression branch"
-                      ~expression:a at target (Ast.expr_span a)
+                    ensure_expected ~checked_expression:ta ~widening_help
+                      ~context:"if-expression branch" ~expression:a at target
+                      (Ast.expr_span a)
                   in
-                  ensure_expected ~widening_help ~context:"if-expression branch"
-                    ~expression:b bt target (Ast.expr_span b)
+                  ensure_expected ~checked_expression:tb ~widening_help
+                    ~context:"if-expression branch" ~expression:b bt target
+                    (Ast.expr_span b)
               | _ -> Ok ()
             in
             let result_ty =
@@ -2896,8 +2898,13 @@ and check_initializer ?(constant = false) ?destination c expected expression =
                         "aggregate value initialization is not supported; use \
                          `copy(dst, src)`"
                     else
-                      ensure_expected ~context ~expression:entry actual entry_ty
-                        (Ast.expr_span entry)
+                      let checked_expression =
+                        match initialized with
+                        | `Value value -> Some value
+                        | `Aggregate _ -> None
+                      in
+                      ensure_expected ?checked_expression ~context ~expression:entry
+                        actual entry_ty (Ast.expr_span entry)
                   in
                   let child =
                     match initialized with
@@ -4737,7 +4744,12 @@ and check_stmt (c : context) = function
                   "aggregate value initialization is not supported; use `copy(dst, \
                    src)`"
               else
-                ensure_expected
+                let checked_expression =
+                  match initialized with
+                  | `Value value -> Some value
+                  | `Aggregate _ -> None
+                in
+                ensure_expected ?checked_expression
                   ~context:(Printf.sprintf "value for `%s`" name)
                   ~expression:e actual t (Ast.expr_span e)
             in
@@ -4885,8 +4897,8 @@ and check_stmt (c : context) = function
                 src)`"
              else "aggregate assignment is not supported; use `copy(dst, src)`")
         else
-          ensure_expected ~context:(assignment_context target) ~expression:e
-            (Hir.expr_ty v) expected (Ast.expr_span e)
+          ensure_expected ~checked_expression:v ~context:(assignment_context target)
+            ~expression:e (Hir.expr_ty v) expected (Ast.expr_span e)
       in
       (match target with
       | Hir.ALocal binding when binding.ty = Hir.Addr ->
@@ -4984,7 +4996,7 @@ and check_stmt (c : context) = function
                    (compound_operator op)
                    (Sema_types.diagnostic_ty_name actual))
         else
-          ensure_expected
+          ensure_expected ~checked_expression:v
             ~context:(Printf.sprintf "right operand of `%s`" (compound_operator op))
             ~expression:e (Hir.expr_ty v) et (Ast.expr_span e)
       in
@@ -5047,8 +5059,8 @@ and check_stmt (c : context) = function
         | Some e, t ->
             let* v = check_expr c (Some t) e in
             let* () =
-              ensure_expected ~context:"return value" ~expression:e (Hir.expr_ty v) t
-                (Ast.expr_span e)
+              ensure_expected ~checked_expression:v ~context:"return value"
+                ~expression:e (Hir.expr_ty v) t (Ast.expr_span e)
             in
             let* () =
               if t = Hir.Addr && Sema_flow.proof_checks_enabled c.flow then

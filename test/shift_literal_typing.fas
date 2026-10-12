@@ -1,0 +1,50 @@
+use "C" <<C
+#include <stdint.h>
+static int oracle_u8_above_max(uint8_t value) {
+  uint16_t widened = value;
+  return widened > UINT8_MAX;
+}
+static int oracle_mul_left(uint8_t value) {
+  uint8_t result = (uint8_t)(UINT8_C(16) * value);
+  return oracle_u8_above_max(result);
+}
+static int oracle_mul_right(uint8_t value) {
+  uint8_t result = (uint8_t)(value * UINT8_C(16));
+  return oracle_u8_above_max(result);
+}
+static int oracle_add_left(uint8_t value) {
+  uint8_t shifted = (uint8_t)(UINT8_C(1) << (9u % 8u));
+  uint8_t result = (uint8_t)(shifted + value);
+  return result == UINT8_C(2);
+}
+static int oracle_add_right(uint8_t value) {
+  uint8_t shifted = (uint8_t)(UINT8_C(1) << (9u % 8u));
+  uint8_t result = (uint8_t)(value + shifted);
+  return result == UINT8_C(2);
+}
+C
+
+extern "C" {
+  fn oracle_mul_left(value u8) i32
+  fn oracle_mul_right(value u8) i32
+  fn oracle_add_left(value u8) i32
+  fn oracle_add_right(value u8) i32
+}
+
+const X u8 = 16
+const Y u8 = 0
+const MUL_LEFT bool = (1 << 4) * X > 255
+const MUL_RIGHT bool = X * (1 << 4) > 255
+const ADD_LEFT bool = (1 << 9) + Y == 2
+const ADD_RIGHT bool = Y + (1 << 9) == 2
+
+fn main() i32 {
+  x u8 = 16
+  y u8 = 0
+  if ((1 << 4) * x > 255) != (oracle_mul_left(x) != 0) { return 1 }
+  if (x * (1 << 4) > 255) != (oracle_mul_right(x) != 0) { return 2 }
+  if ((1 << 9) + y == 2) != (oracle_add_left(y) != 0) { return 3 }
+  if (y + (1 << 9) == 2) != (oracle_add_right(y) != 0) { return 4 }
+  if MUL_LEFT || MUL_RIGHT || !ADD_LEFT || !ADD_RIGHT { return 5 }
+  return 0
+}

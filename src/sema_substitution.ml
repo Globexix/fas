@@ -1250,8 +1250,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       match expected with
       | None -> Ok ()
       | Some expected ->
-          ensure_expected ~expression (Hir.expr_ty checked) expected
-            (Ast.expr_span expression)
+          ensure_expected ~checked_expression:checked ~expression (Hir.expr_ty checked)
+            expected (Ast.expr_span expression)
     else
       match expression with
       | Ast.Unary (_, value, _)

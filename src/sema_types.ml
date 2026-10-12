@@ -610,6 +610,7 @@ let common_numeric_type left right =
 
 let rec narrow_arithmetic_result = function
   | Ast.Parenthesized (expression, _) -> narrow_arithmetic_result expression
+  | Ast.Select (expression, [ _ ], _) -> narrow_arithmetic_result expression
   | Ast.Unary ((Ast.Neg | Ast.Bit_not), _, _) -> true
   | Ast.Binary
       ( ( Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Shl | Ast.Shr
@@ -625,6 +626,7 @@ let rec narrow_arithmetic_result = function
 let rec narrow_float_result expression =
   match expression with
   | Ast.Parenthesized (expression, _) -> narrow_float_result expression
+  | Ast.Select (expression, [ _ ], _) -> narrow_float_result expression
   | Ast.Unary (Ast.Neg, _, _) -> true
   | Ast.Binary ((Ast.Add | Ast.Sub | Ast.Mul | Ast.Div), _, _, _) -> true
   | Ast.Call (Ast.Ident (name, _), _, _) when Option.is_some (Names.float_math name) ->
@@ -636,6 +638,22 @@ let rec float_literal_expression = function
   | Ast.Float_lit _ -> true
   | Ast.Parenthesized (expression, _) | Ast.Unary (Ast.Neg, expression, _) ->
       float_literal_expression expression
+  | _ -> false
+
+let rec integer_literal_expression = function
+  | Ast.Int_lit _ -> true
+  | Ast.Parenthesized (expression, _)
+  | Ast.Unary ((Ast.Neg | Ast.Bit_not), expression, _) ->
+      integer_literal_expression expression
+  | Ast.Binary
+      ( ( Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
+        | Ast.Bit_xor | Ast.Shl | Ast.Shr ),
+        left,
+        right,
+        _ ) ->
+      integer_literal_expression left && integer_literal_expression right
+  | Ast.Ternary (_, yes, no, _) ->
+      integer_literal_expression yes && integer_literal_expression no
   | _ -> false
 
 let convert_expected_kind ?expression actual expected =
@@ -970,8 +988,54 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
             reason
     in
     let operand = Option.fold ~none:"value" ~some:Ast.expr_name expression in
+    let rec unparenthesized = function
+      | Ast.Parenthesized (expression, _) -> unparenthesized expression
+      | expression -> expression
+    in
+    let lane_index_help =
+      match (expression, actual, expected) with
+      | Some expression, Hir.Int _, Hir.Int _ when narrow_result && widening_help -> (
+          match unparenthesized expression with
+          | Ast.Select (base_expression, [ Ast.Const_arg index ], _) -> (
+              match (unparenthesized base_expression, checked_expression) with
+              | ( Ast.Binary
+                    ( ((Ast.Add | Ast.Sub | Ast.Mul | Ast.Div) as operator),
+                      left,
+                      right,
+                      _ ),
+                  Some (Hir.Index (base, _, _, _)) ) -> (
+                  match Hir.expr_ty base with
+                  | Hir.Vec (lanes, Hir.Int _) ->
+                      let vector_ty = diagnostic_ty_name (Hir.Vec (lanes, expected)) in
+                      let extension =
+                        if Sema_numeric.is_unsigned actual then "zext" else "sext"
+                      in
+                      let operator_text =
+                        match operator with
+                        | Ast.Add -> "+"
+                        | Ast.Sub -> "-"
+                        | Ast.Mul -> "*"
+                        | Ast.Div -> "/"
+                        | _ -> assert false
+                      in
+                      let left = Ast.expr_name left and right = Ast.expr_name right in
+                      let widened_left =
+                        Printf.sprintf "%s[%s](%s)" extension vector_ty left
+                      and widened_right =
+                        Printf.sprintf "%s[%s](%s)" extension vector_ty right
+                      in
+                      Some
+                        (Printf.sprintf "widen vector operands first: `(%s %s %s)[%s]`"
+                           widened_left operator_text widened_right
+                           (Ast.expr_name index))
+                  | _ -> None)
+              | _ -> None)
+          | _ -> None)
+      | _ -> None
+    in
     let help =
       match (expression, actual, expected) with
+      | _ when Option.is_some lane_index_help -> lane_index_help
       | ( Some
             (Ast.Binary
                (((Ast.Add | Ast.Sub | Ast.Mul | Ast.Div) as operator), left, right, _)),
@@ -1020,10 +1084,19 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
             | Ast.Bit_xor -> "^"
             | _ -> assert false
           in
+          let widened expression =
+            Printf.sprintf "%s[%s](%s)" extension destination (Ast.expr_name expression)
+          in
+          let left_text, right_text =
+            if integer_literal_expression left && not (integer_literal_expression right)
+            then (Ast.expr_name left, widened right)
+            else
+              ( widened left,
+                Ast.expr_name_child (Ast.binop_precedence operator) true right )
+          in
           Some
-            (Printf.sprintf "widen an operand first: `%s[%s](%s) %s %s`" extension
-               destination (Ast.expr_name left) operator_text
-               (Ast.expr_name_child (Ast.binop_precedence operator) true right))
+            (Printf.sprintf "widen an operand first: `%s %s %s`" left_text operator_text
+               right_text)
       | Some (Ast.Unary (Ast.Neg, value, _)), Hir.Int _, Hir.Int _
         when narrow_result && widening_help ->
           let extension = if Sema_numeric.is_unsigned actual then "zext" else "sext" in

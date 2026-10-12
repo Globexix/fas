@@ -4191,6 +4191,24 @@ let () =
     "fn bad(a f32, b f32) f64 { return a * b }\n" 1 35 5
     "`a * b` is computed in `f32` and may round before it reaches `f64`"
     (Some "write `cvt[f64](a) * b`");
+  let float_vector_lane_source = "fn bad(v vec[4,f32]) f64 { return (v * v)[0] }\n" in
+  semantic_pin "float-vector-lane-arithmetic-widening" float_vector_lane_source 1
+    (String.length "fn bad(v vec[4,f32]) f64 { return " + 1)
+    (String.length "(v * v)[0]")
+    "`(v * v)[0]` is computed in `f32` and may round before it reaches `f64`"
+    (Some "write `cvt[f64]((v * v)[0])`");
+  semantic_accept "float-vector-lane-arithmetic-explicit-widening"
+    "fn good(v vec[4,f32]) f64 { return cvt[f64]((v * v)[0]) }\n";
+  let float_vector_lane_builtin_source =
+    "fn bad(v vec[4,f32]) f64 { return sqrt(v)[1] }\n"
+  in
+  semantic_pin "float-vector-lane-builtin-widening" float_vector_lane_builtin_source 1
+    (String.length "fn bad(v vec[4,f32]) f64 { return " + 1)
+    (String.length "sqrt(v)[1]")
+    "`sqrt(v)[1]` is computed in `f32` and may round before it reaches `f64`"
+    (Some "write `cvt[f64](sqrt(v)[1])`");
+  semantic_accept "float-vector-lane-builtin-explicit-widening"
+    "fn good(v vec[4,f32]) f64 { return cvt[f64](sqrt(v)[1]) }\n";
   semantic_pin "float-narrow-mixed-operand-widening"
     "fn bad(a f32, b f32, wide f64) f64 { return wide + a * b }\n" 1 52 5
     "`a * b` is computed in `f32` and may round before it reaches `f64`"
@@ -4466,6 +4484,35 @@ let () =
   semantic_accept "integer-if-chain-peer-shapes"
     "fn left(a u8, c bool, d bool) u8 { return if c { a } else if d { 2 } else { 3 } }\n\
      fn right(a u8, c bool, d bool) u8 { return if c { 2 } else if d { a } else { 3 } }\n";
+  semantic_accept "integer-shift-unresolved-peer-shapes"
+    "const X u8 = 5\n\
+     const A u8 = (1 << 2) + X\n\
+     const B u8 = X + (1 << 2)\n\
+     const C u8 = if true { X } else { 1 << 2 }\n\
+     fn left(x u8) u8 { return (1 << 2) + x }\n\
+     fn right(x u8) u8 { return x + (1 << 2) }\n\
+     fn conditional(x u8, c bool) u8 { return if c { x } else { 1 << 2 } }\n";
+  let shift_literal_constant_source =
+    "const X u8 = 16\n\
+     const Y u8 = 0\n\
+     const MUL_LEFT bool = (1 << 4) * X > 255\n\
+     const MUL_RIGHT bool = X * (1 << 4) > 255\n\
+     const ADD_LEFT bool = (1 << 9) + Y == 2\n\
+     const ADD_RIGHT bool = Y + (1 << 9) == 2\n"
+  in
+  semantic_constant "MUL_LEFT" 0L shift_literal_constant_source;
+  semantic_constant "MUL_RIGHT" 0L shift_literal_constant_source;
+  semantic_constant "ADD_LEFT" 1L shift_literal_constant_source;
+  semantic_constant "ADD_RIGHT" 1L shift_literal_constant_source;
+  let cached_shift = String.concat " + " ("(1 << 1)" :: List.init 63 (fun _ -> "1")) in
+  semantic_accept "integer-shift-unresolved-peer-cached"
+    ("fn cached(x u8) u8 { return (" ^ cached_shift ^ ") + x }\n");
+  semantic_message "integer-shift-peer-range-left"
+    "integer literal is out of range for u8: `256`"
+    "fn bad(x u8) u8 { return (256 >> 1) | x }\n";
+  semantic_message "integer-shift-peer-range-right"
+    "integer literal is out of range for u8: `256`"
+    "fn bad(x u8) u8 { return x | (256 >> 1) }\n";
   semantic_accept "generic-dependent-vector-splat-locals"
     "fn float[N const usize](v vec[N, f32]) f32 {\n\
      x vec[N, f32] = v\n\
@@ -8568,6 +8615,34 @@ let () =
     (String.length "a * b")
     "`a * b` is computed in `u16` and may wrap before it reaches `u32`"
     (Some "widen an operand first: `zext[u32](a) * b`");
+  let shift_widening_help_source = "fn f(x u8) u32 { return (1 << 2) + x }\n" in
+  semantic_pin "shift-left-widening-help-typed-operand" shift_widening_help_source 1
+    (String.length "fn f(x u8) u32 { return " + 1)
+    (String.length "(1 << 2) + x")
+    "`(1 << 2) + x` is computed in `u8` and may wrap before it reaches `u32`"
+    (Some "widen an operand first: `(1 << 2) + zext[u32](x)`");
+  conversion_help_twin "shift-left-widening-help-compiles" shift_widening_help_source
+    "(1 << 2) + x" "(1 << 2) + zext[u32](x)"
+    "widen an operand first: `(1 << 2) + zext[u32](x)`";
+  let literal_widening_help_source = "fn f(x u8) u32 { return 4 + x }\n" in
+  semantic_pin "integer-literal-left-widening-help-typed-operand"
+    literal_widening_help_source 1
+    (String.length "fn f(x u8) u32 { return " + 1)
+    (String.length "4 + x")
+    "`4 + x` is computed in `u8` and may wrap before it reaches `u32`"
+    (Some "widen an operand first: `4 + zext[u32](x)`");
+  conversion_help_twin "integer-literal-left-widening-help-compiles"
+    literal_widening_help_source "4 + x" "4 + zext[u32](x)"
+    "widen an operand first: `4 + zext[u32](x)`";
+  let integer_vector_lane_source = "fn bad(v vec[4,u16]) u32 { return (v * v)[0] }\n" in
+  semantic_pin "integer-vector-lane-arithmetic-widening" integer_vector_lane_source 1
+    (String.length "fn bad(v vec[4,u16]) u32 { return " + 1)
+    (String.length "(v * v)[0]")
+    "`(v * v)[0]` is computed in `u16` and may wrap before it reaches `u32`"
+    (Some
+       "widen vector operands first: `(zext[vec[4, u32]](v) * zext[vec[4, u32]](v))[0]`");
+  semantic_accept "integer-vector-lane-arithmetic-explicit-widening"
+    "fn good(v vec[4,u16]) u32 { return (zext[vec[4,u32]](v) * zext[vec[4,u32]](v))[0] }\n";
   conversion_help_twin "narrow-arithmetic-help-compiles" narrow_arithmetic_source
     "a * b" "zext[u32](a) * b" "widen an operand first: `zext[u32](a) * b`";
   let nested_arithmetic_source =
