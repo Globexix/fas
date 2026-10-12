@@ -30,6 +30,9 @@ let () =
   assert (Limits.default.max_object_size = 1_073_741_824);
   assert (Limits.default.max_use_files = 10_000);
   assert (Limits.default.max_use_bytes = 1_073_741_824);
+  let handle_view_type = Ast.Handle (Ast.Named_type ("Opaque", Span.synthetic)) in
+  assert (
+    Sema_substitution.view_source_type (Some handle_view_type) = Some handle_view_type);
   assert (Target_layout.pointer_integer_bits Target_layout.current = Ok 64);
   assert (
     Sema_types.source_ty [] (Ast.Applied_type ("G", [], Span.synthetic))

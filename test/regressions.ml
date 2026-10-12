@@ -16880,8 +16880,7 @@ let () =
      { view outer = source\n\
      result u32 = id[u8](outer) + id[u8](outer) }\n\
      return 0 }\n";
-  semantic_message "generic-view-inference-unknown-local-shadow"
-    "cannot infer `T` for `id`; provide explicit generic arguments"
+  semantic_accept "generic-view-inference-call-result-local-shadow"
     "fn id[T](value T) T { return value }\n\
      fn at(pointer addr) addr { return pointer }\n\
      fn local() u32 { value u32 = 1\n\
@@ -16889,15 +16888,13 @@ let () =
      { view value = at(pointer)[u8, 1]\n\
      return zext[u32](id(value)) }\n\
      return 0 }\n";
-  semantic_message "generic-view-inference-unknown-parameter-shadow"
-    "cannot infer `T` for `id`; provide explicit generic arguments"
+  semantic_accept "generic-view-inference-call-result-parameter-shadow"
     "fn id[T](value T) T { return value }\n\
      fn at(pointer addr) addr { return pointer }\n\
      fn parameter(value u32, pointer addr) u32 {\n\
      { view value = at(pointer)[u8, 1]\n\
      return zext[u32](id(value)) } }\n";
-  semantic_message "generic-view-inference-unknown-global-shadow"
-    "cannot infer `T` for `id`; provide explicit generic arguments"
+  semantic_accept "generic-view-inference-call-result-global-shadow"
     "fn id[T](value T) T { return value }\n\
      fn at(pointer addr) addr { return pointer }\n\
      var value u32 = 1\n\
@@ -16935,8 +16932,7 @@ let () =
      pointer addr = &values\n\
      view value = (pointer + 1)[u8]\n\
      return trunc[i32](zext[u64](id(value) << 4) >> 4) }\n";
-  semantic_message "generic-view-inference-global-const-call-shadow"
-    "cannot infer `T` for `id`; provide explicit generic arguments"
+  semantic_accept "generic-view-inference-global-const-call-shadow"
     "fn id[T](value T) T { return value }\n\
      const value u32 = 1\n\
      fn at(pointer addr) addr { return pointer }\n\
@@ -16996,16 +16992,57 @@ let () =
      return result }\n\
      fn main() i32 { values arr[2, u8] = {}\n\
      return bitcast[i32](bad[u8](&values)) }\n";
-  semantic_message "generic-view-inference-struct-const-shadow"
-    "cannot infer `T` for `id`; provide explicit generic arguments"
+  semantic_accept "generic-view-inference-field-const-shadow"
     "fn id[T](value T) T { return value }\n\
-     struct A { field u32 }\n\
      struct B { field u8 }\n\
-     const item A = {1}\n\
+     const item u32 = 1\n\
      fn main() i32 { b B = {200}\n\
      pointer addr = &b\n\
      view item = pointer[B]\n\
      return trunc[i32](zext[u64](id(item.field) << 4) >> 4) }\n";
+  let view_wrap_source declarations argument explicit =
+    Printf.sprintf
+      "fn id[T](value T) T { return value }\n\
+       fn at(pointer addr) addr { return pointer }\n\
+       struct Sample { value u8 }\n\
+       struct Packet { values arr[2, u8] }\n\
+       fn bad(source addr) u32 { %s\n\
+       result u32 = id%s(%s) << 4\n\
+       return result }\n"
+      declarations
+      (if explicit then "[u8]" else "")
+      argument
+  in
+  let view_wrap_cases =
+    [
+      ("field", "view selected = source[Sample]", "selected.value");
+      ("call", "view selected = at(source)[u8, 1]", "selected");
+      ("element", "view selected = source[u8, ..]", "selected[1]");
+      ("call-field", "view selected = at(source)[Sample]", "selected.value");
+      ( "field-element",
+        "view packet = source[Packet]\nview selected = packet.values",
+        "selected[1]" );
+      ("call-element", "view selected = at(source)[u8, ..]", "selected[1]");
+    ]
+  in
+  List.iter
+    (fun (name, declarations, argument) ->
+      let expected =
+        Printf.sprintf
+          "`id[u8](%s) << 4` is computed in `u8` and may wrap before it reaches `u32`"
+          argument
+      in
+      let messages explicit =
+        try semantic_messages (view_wrap_source declarations argument explicit)
+        with Failure message ->
+          failwith ("generic-view-place-wrap-" ^ name ^ ": " ^ message)
+      in
+      let inferred = messages false and explicit = messages true in
+      if inferred <> [ expected ] || explicit <> inferred then
+        failwith
+          ("generic-view-place-wrap-" ^ name
+         ^ ": inferred and explicit diagnostics differ"))
+    view_wrap_cases;
   semantic_accept "generic-const-local-types-in-scopes"
     "fn nested[M const usize](condition u32) u32 { total u32 = 0\n\
      { lanes vec[M, u8] = splat(11)\n\

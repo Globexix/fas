@@ -13,6 +13,10 @@ module String_set = Set.Make (String)
 let error span message = Error [ Diag.error span message ]
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 
+let view_source_type = function
+  | Some (Ast.Handle _ as ty) -> Some ty
+  | source_type -> source_type
+
 let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     ~generic_const_argument ?eval_context ?(eval_globals = []) ?(array_lengths = [])
     ?(c_aliases = []) ?(c_unsupported = []) ?(c_nonnull_parameters = [])
@@ -110,11 +114,18 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   let local_values = ref String_set.empty in
   let shadowed_constants = ref String_set.empty in
   let inference_types = ref [] in
+  let inference_raw_view_types = ref [] in
+  let set_inference_raw_view_type name ty =
+    inference_raw_view_types :=
+      (name, ty) :: List.remove_assoc name !inference_raw_view_types
+  in
   let set_inference_type name ty =
-    inference_types := (name, ty) :: List.remove_assoc name !inference_types
+    inference_types := (name, ty) :: List.remove_assoc name !inference_types;
+    inference_raw_view_types := List.remove_assoc name !inference_raw_view_types
   in
   let set_inference_params params =
     inference_types := [];
+    inference_raw_view_types := [];
     List.iter
       (fun (parameter : Ast.param) ->
         set_inference_type parameter.name (Some parameter.ty))
@@ -124,14 +135,18 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     let previous = !local_values in
     let previous_shadowed_constants = !shadowed_constants in
     let previous_inference_types = !inference_types in
+    let previous_inference_raw_view_types = !inference_raw_view_types in
     local_values := names;
     shadowed_constants := String_set.inter names previous_shadowed_constants;
     inference_types :=
       List.filter (fun (name, _) -> String_set.mem name names) !inference_types;
+    inference_raw_view_types :=
+      List.filter (fun (name, _) -> String_set.mem name names) !inference_raw_view_types;
     let result = f () in
     local_values := previous;
     shadowed_constants := previous_shadowed_constants;
     inference_types := previous_inference_types;
+    inference_raw_view_types := previous_inference_raw_view_types;
     result
   in
   let ambiguous_name = function
@@ -690,6 +705,40 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               item.generic_params )
     | _ -> None
   in
+  let rec source_type_of_hir span = function
+    | Hir.Bool -> Ast.Bool
+    | Hir.Int Hir.U8 -> Ast.Int Ast.U8
+    | Hir.Int Hir.U16 -> Ast.Int Ast.U16
+    | Hir.Int Hir.U32 -> Ast.Int Ast.U32
+    | Hir.Int Hir.U64 -> Ast.Int Ast.U64
+    | Hir.Int Hir.I8 -> Ast.Int Ast.I8
+    | Hir.Int Hir.I16 -> Ast.Int Ast.I16
+    | Hir.Int Hir.I32 -> Ast.Int Ast.I32
+    | Hir.Int Hir.I64 -> Ast.Int Ast.I64
+    | Hir.Int Hir.Usize -> Ast.Int Ast.Usize
+    | Hir.Int Hir.Isize -> Ast.Int Ast.Isize
+    | Hir.Float Hir.F32 -> Ast.Float Ast.F32
+    | Hir.Float Hir.F64 -> Ast.Float Ast.F64
+    | Hir.Addr -> Ast.Addr
+    | Hir.Handle name -> (
+        match specialized_args name span with
+        | Some (template, args) -> Ast.Handle (Ast.Applied_type (template, args, span))
+        | None -> Ast.Handle (Ast.Named_type (name, span)))
+    | Hir.Array (count, element) ->
+        Ast.Array
+          ( Ast.aggregate_length (Ast.Int_lit (string_of_int count, span)) span,
+            source_type_of_hir span element )
+    | Hir.Vec (count, element) ->
+        Ast.Vec
+          ( Ast.aggregate_length (Ast.Int_lit (string_of_int count, span)) span,
+            source_type_of_hir span element )
+    | Hir.Struct name -> (
+        match specialized_args name span with
+        | Some (template, args) -> Ast.Applied_type (template, args, span)
+        | None -> Ast.Named_type (name, span))
+    | Hir.Opaque name -> Ast.Named_type (name, span)
+    | Hir.Void -> Ast.Void
+  in
   let rec substitute_field_type substitutions = function
     | Ast.Named_type (parameter, _) as ty ->
         Option.value ~default:ty (List.assoc_opt parameter substitutions)
@@ -785,10 +834,88 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         match source_place_type base with Some Ast.Addr -> Some ty | _ -> None)
     | _ -> None
   in
-  let view_source_type place =
-    match source_place_type place with
-    | Some (Ast.Handle ty) -> Some ty
-    | source_type -> source_type
+  let view_place_type place = view_source_type (source_place_type place) in
+  let inference_context span =
+    let inferred_globals =
+      List.filter_map
+        (function
+          | Ast.Global { name; ty; linkage; span; _ } -> (
+              match
+                source_ty_with_values ~globals:global_names eval_named_types eval_consts
+                  span ty
+              with
+              | Ok ty -> Some (name, ty, linkage)
+              | Error _ -> None)
+          | _ -> None)
+        program.items
+    in
+    let globals =
+      List.fold_left
+        (fun globals (name, ty, linkage) ->
+          if List.exists (fun (existing, _, _) -> existing = name) globals then globals
+          else globals @ [ (name, ty, linkage) ])
+        eval_globals inferred_globals
+    in
+    let shadowed =
+      String_set.union !local_values
+        (List.map fst !inference_types |> String_set.of_list)
+    in
+    let context =
+      filter_context_names
+        (fun name -> not (String_set.mem name shadowed))
+        { (make_legality_context Hir.Void) with globals }
+    in
+    List.iter
+      (fun (local, source_type) ->
+        match source_type with
+        | Some source_type when String_set.mem local !local_values -> (
+            match
+              source_ty_with_values ~globals:global_names eval_named_types eval_consts
+                span source_type
+            with
+            | Ok ty -> (
+                match Sema_flow.add_local local ty context.flow span with
+                | Ok binding ->
+                    Sema_flow.mark_init binding context.flow;
+                    Option.iter
+                      (fun element ->
+                        match
+                          source_ty_with_values ~globals:global_names eval_named_types
+                            eval_consts span element
+                        with
+                        | Ok element ->
+                            Sema_flow.bind_raw_view context.flow binding element
+                              Sema_flow.Mutable_access None
+                        | Error _ -> ())
+                      (List.assoc_opt local !inference_raw_view_types)
+                | Error _ -> ())
+            | Error _ -> ())
+        | _ -> ())
+      !inference_types;
+    context
+  in
+  let checked_view_types name place span =
+    let context = inference_context span in
+    Sema_flow.push context.flow;
+    let checked = check_stmt context (Ast.View { name; place; span }) in
+    let source_type, raw_type =
+      match checked with
+      | Ok (Hir.View (binding, _, _)) ->
+          (Some (source_type_of_hir span binding.ty), None)
+      | Ok (Hir.Let (binding, _, _)) ->
+          ( Some (source_type_of_hir span binding.ty),
+            Option.map (source_type_of_hir span)
+              (Sema_flow.raw_view_type context.flow binding) )
+      | _ -> (None, None)
+    in
+    Sema_flow.pop context.flow;
+    let source_type =
+      match view_place_type place with
+      | Some (Ast.Handle _) as source_type -> source_type
+      | _ -> (
+          match source_type with Some _ -> source_type | None -> view_place_type place)
+    in
+    (source_type, raw_type)
   in
   let infer_generic_arguments name generic_params params arguments span =
     let type_params = type_param_names generic_params in
@@ -924,50 +1051,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           | _ -> Ok ())
       | _ -> Ok ()
     in
-    let inferred_globals =
-      List.filter_map
-        (function
-          | Ast.Global { name; ty; linkage; span; _ } -> (
-              match
-                source_ty_with_values ~globals:global_names eval_named_types eval_consts
-                  span ty
-              with
-              | Ok ty -> Some (name, ty, linkage)
-              | Error _ -> None)
-          | _ -> None)
-        program.items
-    in
-    let globals =
-      List.fold_left
-        (fun globals (name, ty, linkage) ->
-          if List.exists (fun (existing, _, _) -> existing = name) globals then globals
-          else globals @ [ (name, ty, linkage) ])
-        eval_globals inferred_globals
-    in
-    let shadowed =
-      String_set.union !local_values
-        (List.map fst !inference_types |> String_set.of_list)
-    in
-    let inference_context =
-      filter_context_names
-        (fun name -> not (String_set.mem name shadowed))
-        { (make_legality_context Hir.Void) with globals }
-    in
-    List.iter
-      (fun (local, source_type) ->
-        match source_type with
-        | Some source_type when String_set.mem local !local_values -> (
-            match
-              source_ty_with_values ~globals:global_names eval_named_types eval_consts
-                span source_type
-            with
-            | Ok ty -> (
-                match Sema_flow.add_local local ty inference_context.flow span with
-                | Ok binding -> Sema_flow.mark_init binding inference_context.flow
-                | Error _ -> ())
-            | Error _ -> ())
-        | _ -> ())
-      !inference_types;
+    let inference_context = inference_context span in
     let rec literal_kind = function
       | Ast.Int_lit _ -> Some `Int
       | Ast.Float_lit _ -> Some `Float
@@ -978,42 +1062,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     let checked_type argument =
       match check_expr inference_context None argument with
       | Error _ -> None
-      | Ok checked ->
-          let length count =
-            let text = string_of_int count in
-            let expression = Ast.Int_lit (text, span) in
-            { Ast.expression; text; span }
-          in
-          let rec ast_type = function
-            | Hir.Bool -> Ast.Bool
-            | Hir.Int Hir.U8 -> Ast.Int Ast.U8
-            | Hir.Int Hir.U16 -> Ast.Int Ast.U16
-            | Hir.Int Hir.U32 -> Ast.Int Ast.U32
-            | Hir.Int Hir.U64 -> Ast.Int Ast.U64
-            | Hir.Int Hir.I8 -> Ast.Int Ast.I8
-            | Hir.Int Hir.I16 -> Ast.Int Ast.I16
-            | Hir.Int Hir.I32 -> Ast.Int Ast.I32
-            | Hir.Int Hir.I64 -> Ast.Int Ast.I64
-            | Hir.Int Hir.Usize -> Ast.Int Ast.Usize
-            | Hir.Int Hir.Isize -> Ast.Int Ast.Isize
-            | Hir.Float Hir.F32 -> Ast.Float Ast.F32
-            | Hir.Float Hir.F64 -> Ast.Float Ast.F64
-            | Hir.Addr -> Ast.Addr
-            | Hir.Handle name -> (
-                match specialized_args name span with
-                | Some (template, args) ->
-                    Ast.Handle (Ast.Applied_type (template, args, span))
-                | None -> Ast.Handle (Ast.Named_type (name, span)))
-            | Hir.Array (count, element) -> Ast.Array (length count, ast_type element)
-            | Hir.Vec (count, element) -> Ast.Vec (length count, ast_type element)
-            | Hir.Struct name -> (
-                match specialized_args name span with
-                | Some (template, args) -> Ast.Applied_type (template, args, span)
-                | None -> Ast.Named_type (name, span))
-            | Hir.Opaque name -> Ast.Named_type (name, span)
-            | Hir.Void -> Ast.Void
-          in
-          Some (ast_type (Hir.expr_ty checked))
+      | Ok checked -> Some (source_type_of_hir span (Hir.expr_ty checked))
     in
     let rec actual_type = function
       | Ast.Parenthesized (value, _) -> actual_type value
@@ -1021,7 +1070,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       | argument -> (
           let place = source_place_type argument in
           let checked = checked_type argument in
-          match place with Some _ as ty -> ty | None -> checked)
+          match checked with Some _ as ty -> ty | None -> place)
     in
     let* () =
       List.fold_left2
@@ -1553,9 +1602,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   let with_dependent_local_types f =
     let previous_types = !dependent_local_types in
     let previous_inference_types = !inference_types in
+    let previous_raw_view_types = !inference_raw_view_types in
     let result = f () in
     dependent_local_types := previous_types;
     inference_types := previous_inference_types;
+    inference_raw_view_types := previous_raw_view_types;
     result
   in
   let dependent_generic_field_type source_type field_name =
@@ -1699,7 +1750,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.View { name; place; _ } as statement ->
         dependent_local_types := List.remove_assoc name !dependent_local_types;
         if expression_mentions dependent place || has_generic_arguments place then (
-          let source_type = view_source_type place in
+          let source_type = view_place_type place in
           (match source_type with
           | Some source_type ->
               dependent_local_types :=
@@ -1712,7 +1763,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             let* _ = check_stmt c statement in
             Ok ()
           in
-          set_inference_type name (view_source_type place);
+          let source_type, raw_type =
+            checked_view_types name place (Ast.expr_span place)
+          in
+          set_inference_type name source_type;
+          Option.iter (set_inference_raw_view_type name) raw_type;
           Ok (List.filter (fun dependent_name -> dependent_name <> name) dependent)
     | (Ast.Assign (target, value, _) | Ast.Compound_assign (target, _, value, _, _)) as
       statement ->
@@ -2734,10 +2789,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           let* place =
             resolve_expr ~values ~defer_const_structs substitutions depth place
           in
-          let inference_type = view_source_type place in
+          let inference_type, raw_type = checked_view_types name place span in
           local_values := String_set.add name !local_values;
           shadowed_constants := String_set.add name !shadowed_constants;
           set_inference_type name inference_type;
+          Option.iter (set_inference_raw_view_type name) raw_type;
           Ok (Ast.View { name; place; span })
       | Ast.Assign (target, expression, span) ->
           let* target =
@@ -3010,6 +3066,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             local_values := previous_local_values;
             shadowed_constants := previous_shadowed_constants;
             inference_types := [];
+            inference_raw_view_types := [];
             Ok
               (Ast.Func
                  {
@@ -3099,6 +3156,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               Ok (Ast.Statements statements)
         in
         inference_types := [];
+        inference_raw_view_types := [];
         Ok (Ast.Func { item with params; ret; body; generic_params })
   in
   let with_current_trace trace f =

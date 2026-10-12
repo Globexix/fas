@@ -1,0 +1,231 @@
+fn id[T](value T) T { return value }
+fn at(pointer addr) addr { return pointer }
+
+struct Sample {
+  value u8
+}
+
+struct Packet {
+  prefix u8
+  values arr[2, u8]
+}
+
+var field_shadow_var u32 = 1
+const field_shadow_const u32 = 1
+var call_shadow_var u32 = 1
+const call_shadow_const u32 = 1
+var elem_shadow_var u32 = 1
+const elem_shadow_const u32 = 1
+
+extern "C" {
+  fn field_shadow_c() u32
+  fn call_shadow_c() u32
+  fn elem_shadow_c() u32
+  fn expected_field(pointer addr) u32
+  fn expected_second(pointer addr) u32
+  fn expected_packet_element(pointer addr) u32
+}
+
+fn field_inferred(source addr) u32 {
+  view record = source[Sample]
+  return id(record.value)
+}
+
+fn field_explicit(source addr) u32 {
+  view record = source[Sample]
+  return id[u8](record.value)
+}
+
+fn call_inferred(source addr) u32 {
+  view value = at(source)[u8, 1]
+  return id(value)
+}
+
+fn call_explicit(source addr) u32 {
+  view value = at(source)[u8, 1]
+  return id[u8](value)
+}
+
+fn element_inferred(source addr) u32 {
+  view values = source[u8, ..]
+  return id(values[1])
+}
+
+fn element_explicit(source addr) u32 {
+  view values = source[u8, ..]
+  return id[u8](values[1])
+}
+
+fn call_field_inferred(source addr) u32 {
+  view record = at(source)[Sample]
+  return id(record.value)
+}
+
+fn call_field_explicit(source addr) u32 {
+  view record = at(source)[Sample]
+  return id[u8](record.value)
+}
+
+fn field_element_inferred(source addr) u32 {
+  view packet = source[Packet]
+  view values = packet.values
+  return id(values[1])
+}
+
+fn field_element_explicit(source addr) u32 {
+  view packet = source[Packet]
+  view values = packet.values
+  return id[u8](values[1])
+}
+
+fn call_element_inferred(source addr) u32 {
+  view values = at(source)[u8, ..]
+  return id(values[1])
+}
+
+fn call_element_explicit(source addr) u32 {
+  view values = at(source)[u8, ..]
+  return id[u8](values[1])
+}
+
+fn field_local(source addr) u32 {
+  field_shadow_local u32 = 1
+  {
+    view field_shadow_local = source[Sample]
+    return id(field_shadow_local.value)
+  }
+}
+
+fn field_parameter(field_shadow_parameter u32, source addr) u32 {
+  {
+    view field_shadow_parameter = source[Sample]
+    return id(field_shadow_parameter.value)
+  }
+}
+
+fn field_global(source addr) u32 {
+  {
+    view field_shadow_var = source[Sample]
+    return id(field_shadow_var.value)
+  }
+}
+
+fn field_constant(source addr) u32 {
+  {
+    view field_shadow_const = source[Sample]
+    return id(field_shadow_const.value)
+  }
+}
+
+fn field_c_name(source addr) u32 {
+  {
+    view field_shadow_c = source[Sample]
+    return id(field_shadow_c.value)
+  }
+}
+
+fn call_local(source addr) u32 {
+  call_shadow_local u32 = 1
+  {
+    view call_shadow_local = at(source)[u8, 1]
+    return id(call_shadow_local)
+  }
+}
+
+fn call_parameter(call_shadow_parameter u32, source addr) u32 {
+  {
+    view call_shadow_parameter = at(source)[u8, 1]
+    return id(call_shadow_parameter)
+  }
+}
+
+fn call_global(source addr) u32 {
+  {
+    view call_shadow_var = at(source)[u8, 1]
+    return id(call_shadow_var)
+  }
+}
+
+fn call_constant(source addr) u32 {
+  {
+    view call_shadow_const = at(source)[u8, 1]
+    return id(call_shadow_const)
+  }
+}
+
+fn call_c_name(source addr) u32 {
+  {
+    view call_shadow_c = at(source)[u8, 1]
+    return id(call_shadow_c)
+  }
+}
+
+fn elem_local(source addr) u32 {
+  elem_shadow_local u32 = 1
+  {
+    view elem_shadow_local = source[u8, ..]
+    return id(elem_shadow_local[1])
+  }
+}
+
+fn elem_parameter(elem_shadow_parameter u32, source addr) u32 {
+  {
+    view elem_shadow_parameter = source[u8, ..]
+    return id(elem_shadow_parameter[1])
+  }
+}
+
+fn elem_global(source addr) u32 {
+  {
+    view elem_shadow_var = source[u8, ..]
+    return id(elem_shadow_var[1])
+  }
+}
+
+fn elem_constant(source addr) u32 {
+  {
+    view elem_shadow_const = source[u8, ..]
+    return id(elem_shadow_const[1])
+  }
+}
+
+fn elem_c_name(source addr) u32 {
+  {
+    view elem_shadow_c = source[u8, ..]
+    return id(elem_shadow_c[1])
+  }
+}
+
+fn main() i32 {
+  packet Packet = {7, {200, 41}}
+  pointer addr = &packet
+  expected u32 = expected_field(pointer)
+  if field_inferred(pointer) != field_explicit(pointer) { return 1 }
+  if field_inferred(pointer) != expected { return 2 }
+  if call_inferred(pointer) != call_explicit(pointer) { return 3 }
+  if call_inferred(pointer) != expected_second(pointer) { return 4 }
+  if element_inferred(pointer) != element_explicit(pointer) { return 5 }
+  if element_inferred(pointer) != expected_second(pointer) { return 6 }
+  if call_field_inferred(pointer) != call_field_explicit(pointer) { return 7 }
+  if call_field_inferred(pointer) != expected { return 8 }
+  if field_element_inferred(pointer) != field_element_explicit(pointer) { return 9 }
+  if field_element_inferred(pointer) != expected_packet_element(pointer) { return 10 }
+  if call_element_inferred(pointer) != call_element_explicit(pointer) { return 11 }
+  if call_element_inferred(pointer) != expected_second(pointer) { return 12 }
+  if field_local(pointer) != expected { return 13 }
+  if field_parameter(1, pointer) != expected { return 14 }
+  if field_global(pointer) != expected { return 15 }
+  if field_constant(pointer) != expected { return 16 }
+  if field_c_name(pointer) != expected { return 17 }
+  if call_local(pointer) != expected_second(pointer) { return 18 }
+  if call_parameter(1, pointer) != expected_second(pointer) { return 19 }
+  if call_global(pointer) != expected_second(pointer) { return 20 }
+  if call_constant(pointer) != expected_second(pointer) { return 21 }
+  if call_c_name(pointer) != expected_second(pointer) { return 22 }
+  if elem_local(pointer) != expected_second(pointer) { return 23 }
+  if elem_parameter(1, pointer) != expected_second(pointer) { return 24 }
+  if elem_global(pointer) != expected_second(pointer) { return 25 }
+  if elem_constant(pointer) != expected_second(pointer) { return 26 }
+  if elem_c_name(pointer) != expected_second(pointer) { return 27 }
+  return 0
+}
