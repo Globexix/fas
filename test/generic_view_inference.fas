@@ -1,0 +1,139 @@
+fn id[T](value T) T { return value }
+
+struct Pair {
+  value u8
+}
+
+var shadowed u32 = 1
+
+fn narrow(value u8) u32 {
+  return zext[u32](value << 4) >> 4
+}
+
+fn local_view_inferred() u32 {
+  outer u32 = 1
+  source u8 = 200
+  {
+    view outer = source
+    return zext[u32](id(outer) << 4) >> 4
+  }
+}
+
+fn local_view_explicit() u32 {
+  outer u32 = 1
+  source u8 = 200
+  {
+    view outer = source
+    return zext[u32](id[u8](outer) << 4) >> 4
+  }
+}
+
+fn parameter_view_inferred(outer u32, source u8) u32 {
+  {
+    view outer = source
+    return zext[u32](id(outer) << 4) >> 4
+  }
+}
+
+fn parameter_view_explicit(outer u32, source u8) u32 {
+  {
+    view outer = source
+    return zext[u32](id[u8](outer) << 4) >> 4
+  }
+}
+
+fn global_view_inferred(source u8) u32 {
+  {
+    view shadowed = source
+    return zext[u32](id(shadowed) << 4) >> 4
+  }
+}
+
+fn global_view_explicit(source u8) u32 {
+  {
+    view shadowed = source
+    return zext[u32](id[u8](shadowed) << 4) >> 4
+  }
+}
+
+fn generic_view_inferred[T](source T) u32 {
+  outer u32 = 1
+  {
+    view outer = source
+    return zext[u32](id(outer) << 4) >> 4
+  }
+}
+
+fn generic_view_explicit[T](source T) u32 {
+  outer u32 = 1
+  {
+    view outer = source
+    return zext[u32](id[T](outer) << 4) >> 4
+  }
+}
+
+fn reverse_view_inferred() u32 {
+  outer u8 = 1
+  source u32 = 65541
+  {
+    view outer = source
+    return id(outer)
+  }
+}
+
+fn reverse_view_explicit() u32 {
+  outer u8 = 1
+  source u32 = 65541
+  {
+    view outer = source
+    return id[u32](outer)
+  }
+}
+
+fn field_view_inferred() u32 {
+  pair Pair = {200}
+  view value = pair.value
+  return zext[u32](id(value) << 4) >> 4
+}
+
+fn raw_view_inferred() u32 {
+  source u8 = 200
+  pointer addr = &source
+  view value = pointer[u8]
+  return zext[u32](id(value) << 4) >> 4
+}
+
+fn for_view_inferred(source u8) u32 {
+  for view value = source; true; {
+    return zext[u32](id(value) << 4) >> 4
+  }
+  return 0
+}
+
+fn const_parameter_inference[N const usize]() usize {
+  return id(N)
+}
+
+extern "C" {
+  fn expected_narrow() u32
+  fn expected_reverse() u32
+  fn expected_const() usize
+}
+
+fn main() i32 {
+  if local_view_inferred() != local_view_explicit() { return 1 }
+  if local_view_inferred() != expected_narrow() { return 2 }
+  if parameter_view_inferred(1, 200) != parameter_view_explicit(1, 200) { return 3 }
+  if parameter_view_inferred(1, 200) != expected_narrow() { return 4 }
+  if global_view_inferred(200) != global_view_explicit(200) { return 5 }
+  if global_view_inferred(200) != expected_narrow() { return 6 }
+  if generic_view_inferred[u8](200) != generic_view_explicit[u8](200) { return 7 }
+  if generic_view_inferred[u8](200) != expected_narrow() { return 8 }
+  if reverse_view_inferred() != reverse_view_explicit() { return 9 }
+  if reverse_view_inferred() != expected_reverse() { return 10 }
+  if field_view_inferred() != expected_narrow() { return 11 }
+  if raw_view_inferred() != expected_narrow() { return 12 }
+  if for_view_inferred(200) != expected_narrow() { return 13 }
+  if const_parameter_inference[19]() != expected_const() { return 14 }
+  return 0
+}

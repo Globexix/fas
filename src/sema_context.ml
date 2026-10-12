@@ -86,6 +86,41 @@ let lookup_top_level name bindings =
 let lookup_global name globals =
   List.find_opt (fun (global_name, _, _) -> global_name = name) globals
 
+let filter_context_names visible context =
+  let filter_pairs table = List.filter (fun (name, _) -> visible name) table in
+  let filter_triples table = List.filter (fun (name, _, _) -> visible name) table in
+  let filter_items = function
+    | Ast.Func { name; _ } | Ast.Struct { name; _ } -> visible name
+    | _ -> false
+  in
+  let structs =
+    List.filter
+      (fun (struct_def : Hir.struct_def) -> visible struct_def.name)
+      context.structs
+  in
+  let flow = Sema_flow.create ~initial_scope:true structs in
+  {
+    context with
+    structs;
+    generic_structs = List.filter filter_items context.generic_structs;
+    named_types = filter_pairs context.named_types;
+    consts = filter_triples context.consts;
+    arrays = filter_triples context.arrays;
+    globals = filter_triples context.globals;
+    external_c_functions = List.filter visible context.external_c_functions;
+    c_nonnull_parameters = filter_pairs context.c_nonnull_parameters;
+    c_string_parameters = filter_pairs context.c_string_parameters;
+    c_alloc_size_parameters = filter_pairs context.c_alloc_size_parameters;
+    c_unsupported = filter_pairs context.c_unsupported;
+    signatures = filter_pairs context.signatures;
+    templates = List.filter (fun (name, _) -> visible name) context.templates;
+    top_level_bindings =
+      List.filter
+        (fun binding -> visible binding.declaration_name)
+        context.top_level_bindings;
+    flow;
+  }
+
 type type_node_account = {
   type_node_limits : Limits.t;
   mutable expanded_type_nodes : int;

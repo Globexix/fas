@@ -54,7 +54,7 @@ let rec unresolved_shape_of expression =
       | _ -> None)
   | Ast.Binary
       ( ( Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Bit_and | Ast.Bit_or
-        | Ast.Bit_xor ),
+        | Ast.Bit_xor | Ast.Shl | Ast.Shr ),
         left,
         right,
         _ ) ->

@@ -1,3 +1,11 @@
+type unresolved_shape =
+  | Unresolved_int
+  | Unresolved_float
+  | Unresolved_vector
+  | Unresolved_null
+
+val unresolved_shape_of : Ast.expr -> unresolved_shape option
+
 val const_expr :
   ?structs:Hir.struct_def list ->
   ?named_types:Sema_types.named_types ->

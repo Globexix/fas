@@ -335,7 +335,7 @@ let rec source_ty named_types = function
           Error (Printf.sprintf "C declaration `%s` is not supported: %s" entity reason)
       | None -> Error (Printf.sprintf "unknown type `%s`" name))
   | Ast.Applied_type _ ->
-      Error "generic type application reached ordinary type checking"
+      Error "internal error: generic type application reached ordinary type checking"
 
 and handle_target named_types = function
   | Ast.Named_type (name, _) -> (

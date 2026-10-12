@@ -110,16 +110,22 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   let local_values = ref String_set.empty in
   let shadowed_constants = ref String_set.empty in
   let inference_types = ref [] in
+  let set_inference_type name ty =
+    inference_types := (name, ty) :: List.remove_assoc name !inference_types
+  in
   let set_inference_params params =
-    inference_types :=
-      List.map (fun (parameter : Ast.param) -> (parameter.name, parameter.ty)) params
+    inference_types := [];
+    List.iter
+      (fun (parameter : Ast.param) ->
+        set_inference_type parameter.name (Some parameter.ty))
+      (List.rev params)
   in
   let with_local_values names f =
     let previous = !local_values in
     let previous_shadowed_constants = !shadowed_constants in
     let previous_inference_types = !inference_types in
     local_values := names;
-    shadowed_constants := names;
+    shadowed_constants := String_set.inter names previous_shadowed_constants;
     inference_types :=
       List.filter (fun (name, _) -> String_set.mem name names) !inference_types;
     let result = f () in
@@ -665,6 +671,125 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       limits;
     }
   in
+  let specialized_args name span =
+    match find_by_name specializations Struct_specialization name with
+    | Some
+        {
+          payload = Struct_payload { template = Ast.Struct item; substitutions; values };
+          _;
+        } ->
+        Some
+          ( item.name,
+            List.map
+              (function
+                | Ast.Type_param { name; _ } ->
+                    Ast.Type_arg (List.assoc name substitutions)
+                | Ast.Const_param { name; _ } ->
+                    let _, _, value = List.find (fun (n, _, _) -> n = name) values in
+                    Ast.Const_arg (Ast.Int_lit (Int64.to_string value, span)))
+              item.generic_params )
+    | _ -> None
+  in
+  let rec substitute_field_type substitutions = function
+    | Ast.Named_type (parameter, _) as ty ->
+        Option.value ~default:ty (List.assoc_opt parameter substitutions)
+    | Ast.Handle ty -> Ast.Handle (substitute_field_type substitutions ty)
+    | Ast.Array (length, ty) ->
+        Ast.Array (length, substitute_field_type substitutions ty)
+    | Ast.Vec (length, ty) -> Ast.Vec (length, substitute_field_type substitutions ty)
+    | Ast.Applied_type (name, arguments, span) ->
+        Ast.Applied_type
+          ( name,
+            List.map
+              (function
+                | Ast.Type_arg ty ->
+                    Ast.Type_arg (substitute_field_type substitutions ty)
+                | Ast.Type_or_index ty ->
+                    Ast.Type_or_index (substitute_field_type substitutions ty)
+                | Ast.Name_arg (parameter, span) -> (
+                    match List.assoc_opt parameter substitutions with
+                    | Some ty -> Ast.Type_arg (substitute_field_type substitutions ty)
+                    | None -> Ast.Name_arg (parameter, span))
+                | argument -> argument)
+              arguments,
+            span )
+    | (Ast.Addr | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Float _) as ty -> ty
+  in
+  let generic_field_type source_type field_name =
+    let instance =
+      match source_type with
+      | Ast.Applied_type (template, arguments, _) -> Some (template, arguments)
+      | Ast.Named_type (name, source_span) -> (
+          match specialized_args name source_span with
+          | Some _ as instance -> instance
+          | None -> Some (name, []))
+      | _ -> None
+    in
+    match instance with
+    | None -> None
+    | Some (template, arguments) ->
+        List.find_map
+          (function
+            | Ast.Struct { name; generic_params; fields; _ } when name = template ->
+                let rec substitutions parameters arguments =
+                  match (parameters, arguments) with
+                  | [], [] -> []
+                  | ( Ast.Type_param { name; _ } :: rest,
+                      (Ast.Type_arg ty | Ast.Type_or_index ty) :: args ) ->
+                      (name, ty) :: substitutions rest args
+                  | Ast.Const_param _ :: rest, _ :: args -> substitutions rest args
+                  | _ -> []
+                in
+                let substitutions = substitutions generic_params arguments in
+                fields
+                |> List.find_opt (fun (field : Ast.field) -> field.name = field_name)
+                |> Option.map (fun (field : Ast.field) ->
+                    substitute_field_type substitutions field.ty)
+            | _ -> None)
+          generic_structs
+  in
+  let global_source_type name =
+    List.find_map
+      (function
+        | Ast.Const { name = constant; ty; _ } when constant = name -> Some ty
+        | Ast.Global { name = global; ty; _ } when global = name -> Some ty
+        | _ -> None)
+      program.items
+  in
+  let rec source_place_type = function
+    | Ast.Parenthesized (expression, _) -> source_place_type expression
+    | Ast.Ident (name, _)
+      when String_set.mem name !local_values || List.mem_assoc name !inference_types ->
+        Option.join (List.assoc_opt name !inference_types)
+    | Ast.Ident (name, _) -> global_source_type name
+    | Ast.Binary ((Ast.Add | Ast.Sub), left, _, _) ->
+        Option.bind (source_place_type left) (function
+          | Ast.Addr -> Some Ast.Addr
+          | _ -> None)
+    | Ast.Field (base, field, _) ->
+        Option.bind (source_place_type base) (fun ty -> generic_field_type ty field)
+    | Ast.Select (base, [ Ast.Const_arg _ ], _)
+    | Ast.Select (base, [ Ast.Name_arg _ ], _) ->
+        Option.bind (source_place_type base) (function
+          | Ast.Array (_, element) | Ast.Vec (_, element) -> Some element
+          | _ -> None)
+    | Ast.Select (base, [ Ast.Type_arg ty ], _)
+    | Ast.Select (base, [ Ast.Type_or_index ty ], _) -> (
+        match source_place_type base with Some Ast.Addr -> Some ty | _ -> None)
+    | Ast.Select
+        ( base,
+          [
+            (Ast.Type_arg ty | Ast.Type_or_index ty); (Ast.Const_arg _ | Ast.Name_arg _);
+          ],
+          _ ) -> (
+        match source_place_type base with Some Ast.Addr -> Some ty | _ -> None)
+    | _ -> None
+  in
+  let view_source_type place =
+    match source_place_type place with
+    | Some (Ast.Handle ty) -> Some ty
+    | source_type -> source_type
+  in
   let infer_generic_arguments name generic_params params arguments span =
     let type_params = type_param_names generic_params in
     let const_params = const_params generic_params |> List.map (fun p -> p.Ast.name) in
@@ -749,26 +874,6 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     let int_value (length : Ast.aggregate_length) =
       try Some (Int64.of_string length.text) with _ -> None
     in
-    let specialized_args name span =
-      match find_by_name specializations Struct_specialization name with
-      | Some
-          {
-            payload =
-              Struct_payload { template = Ast.Struct item; substitutions; values };
-            _;
-          } ->
-          Some
-            ( item.name,
-              List.map
-                (function
-                  | Ast.Type_param { name; _ } ->
-                      Ast.Type_arg (List.assoc name substitutions)
-                  | Ast.Const_param { name; _ } ->
-                      let _, _, value = List.find (fun (n, _, _) -> n = name) values in
-                      Ast.Const_arg (Ast.Int_lit (Int64.to_string value, span)))
-                item.generic_params )
-      | _ -> None
-    in
     let rec match_type argument pattern actual =
       match (pattern, actual) with
       | Ast.Named_type (n, _), actual when List.mem n type_params ->
@@ -819,19 +924,49 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           | _ -> Ok ())
       | _ -> Ok ()
     in
-    let inference_context = make_legality_context Hir.Void in
+    let inferred_globals =
+      List.filter_map
+        (function
+          | Ast.Global { name; ty; linkage; span; _ } -> (
+              match
+                source_ty_with_values ~globals:global_names eval_named_types eval_consts
+                  span ty
+              with
+              | Ok ty -> Some (name, ty, linkage)
+              | Error _ -> None)
+          | _ -> None)
+        program.items
+    in
+    let globals =
+      List.fold_left
+        (fun globals (name, ty, linkage) ->
+          if List.exists (fun (existing, _, _) -> existing = name) globals then globals
+          else globals @ [ (name, ty, linkage) ])
+        eval_globals inferred_globals
+    in
+    let shadowed =
+      String_set.union !local_values
+        (List.map fst !inference_types |> String_set.of_list)
+    in
+    let inference_context =
+      filter_context_names
+        (fun name -> not (String_set.mem name shadowed))
+        { (make_legality_context Hir.Void) with globals }
+    in
     List.iter
       (fun (local, source_type) ->
-        if String_set.mem local !local_values then
-          match
-            source_ty_with_values ~globals:global_names eval_named_types eval_consts
-              span source_type
-          with
-          | Ok ty -> (
-              match Sema_flow.add_local local ty inference_context.flow span with
-              | Ok binding -> Sema_flow.mark_init binding inference_context.flow
-              | Error _ -> ())
-          | Error _ -> ())
+        match source_type with
+        | Some source_type when String_set.mem local !local_values -> (
+            match
+              source_ty_with_values ~globals:global_names eval_named_types eval_consts
+                span source_type
+            with
+            | Ok ty -> (
+                match Sema_flow.add_local local ty inference_context.flow span with
+                | Ok binding -> Sema_flow.mark_init binding inference_context.flow
+                | Error _ -> ())
+            | Error _ -> ())
+        | _ -> ())
       !inference_types;
     let rec literal_kind = function
       | Ast.Int_lit _ -> Some `Int
@@ -840,51 +975,53 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           literal_kind value
       | _ -> None
     in
+    let checked_type argument =
+      match check_expr inference_context None argument with
+      | Error _ -> None
+      | Ok checked ->
+          let length count =
+            let text = string_of_int count in
+            let expression = Ast.Int_lit (text, span) in
+            { Ast.expression; text; span }
+          in
+          let rec ast_type = function
+            | Hir.Bool -> Ast.Bool
+            | Hir.Int Hir.U8 -> Ast.Int Ast.U8
+            | Hir.Int Hir.U16 -> Ast.Int Ast.U16
+            | Hir.Int Hir.U32 -> Ast.Int Ast.U32
+            | Hir.Int Hir.U64 -> Ast.Int Ast.U64
+            | Hir.Int Hir.I8 -> Ast.Int Ast.I8
+            | Hir.Int Hir.I16 -> Ast.Int Ast.I16
+            | Hir.Int Hir.I32 -> Ast.Int Ast.I32
+            | Hir.Int Hir.I64 -> Ast.Int Ast.I64
+            | Hir.Int Hir.Usize -> Ast.Int Ast.Usize
+            | Hir.Int Hir.Isize -> Ast.Int Ast.Isize
+            | Hir.Float Hir.F32 -> Ast.Float Ast.F32
+            | Hir.Float Hir.F64 -> Ast.Float Ast.F64
+            | Hir.Addr -> Ast.Addr
+            | Hir.Handle name -> (
+                match specialized_args name span with
+                | Some (template, args) ->
+                    Ast.Handle (Ast.Applied_type (template, args, span))
+                | None -> Ast.Handle (Ast.Named_type (name, span)))
+            | Hir.Array (count, element) -> Ast.Array (length count, ast_type element)
+            | Hir.Vec (count, element) -> Ast.Vec (length count, ast_type element)
+            | Hir.Struct name -> (
+                match specialized_args name span with
+                | Some (template, args) -> Ast.Applied_type (template, args, span)
+                | None -> Ast.Named_type (name, span))
+            | Hir.Opaque name -> Ast.Named_type (name, span)
+            | Hir.Void -> Ast.Void
+          in
+          Some (ast_type (Hir.expr_ty checked))
+    in
     let rec actual_type = function
       | Ast.Parenthesized (value, _) -> actual_type value
-      | Ast.Ident (local, _) when String_set.mem local !local_values ->
-          List.assoc_opt local !inference_types
-      | argument when Option.is_some (literal_kind argument) -> None
+      | argument when Option.is_some (unresolved_shape_of argument) -> None
       | argument -> (
-          match check_expr inference_context None argument with
-          | Error _ -> None
-          | Ok checked ->
-              let length count =
-                let text = string_of_int count in
-                let expression = Ast.Int_lit (text, span) in
-                { Ast.expression; text; span }
-              in
-              let rec ast_type = function
-                | Hir.Bool -> Ast.Bool
-                | Hir.Int Hir.U8 -> Ast.Int Ast.U8
-                | Hir.Int Hir.U16 -> Ast.Int Ast.U16
-                | Hir.Int Hir.U32 -> Ast.Int Ast.U32
-                | Hir.Int Hir.U64 -> Ast.Int Ast.U64
-                | Hir.Int Hir.I8 -> Ast.Int Ast.I8
-                | Hir.Int Hir.I16 -> Ast.Int Ast.I16
-                | Hir.Int Hir.I32 -> Ast.Int Ast.I32
-                | Hir.Int Hir.I64 -> Ast.Int Ast.I64
-                | Hir.Int Hir.Usize -> Ast.Int Ast.Usize
-                | Hir.Int Hir.Isize -> Ast.Int Ast.Isize
-                | Hir.Float Hir.F32 -> Ast.Float Ast.F32
-                | Hir.Float Hir.F64 -> Ast.Float Ast.F64
-                | Hir.Addr -> Ast.Addr
-                | Hir.Handle name -> (
-                    match specialized_args name span with
-                    | Some (template, args) ->
-                        Ast.Handle (Ast.Applied_type (template, args, span))
-                    | None -> Ast.Handle (Ast.Named_type (name, span)))
-                | Hir.Array (count, element) ->
-                    Ast.Array (length count, ast_type element)
-                | Hir.Vec (count, element) -> Ast.Vec (length count, ast_type element)
-                | Hir.Struct name -> (
-                    match specialized_args name span with
-                    | Some (template, args) -> Ast.Applied_type (template, args, span)
-                    | None -> Ast.Named_type (name, span))
-                | Hir.Opaque name -> Ast.Named_type (name, span)
-                | Hir.Void -> Ast.Void
-              in
-              Some (ast_type (Hir.expr_ty checked)))
+          let place = source_place_type argument in
+          let checked = checked_type argument in
+          match place with Some _ as ty -> ty | None -> checked)
     in
     let* () =
       List.fold_left2
@@ -979,6 +1116,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                | Ast.Type_arg ty | Ast.Type_or_index ty -> has_generic_type ty
                | Ast.Name_arg _ -> false)
              args
+    | Ast.Call (Ast.Ident (name, _), arguments, _) ->
+        List.mem_assoc name function_templates
+        || List.exists has_generic_arguments arguments
     | Ast.Call (callee, arguments, _) ->
         has_generic_arguments callee || List.exists has_generic_arguments arguments
     | Ast.Cast (_, ty, expression, _) | Ast.Handle_from_addr (ty, expression, _) ->
@@ -996,30 +1136,110 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.String_lit _ ->
         false
   in
-  let rec substitute_validation_type substitutions = function
+  let rec substitute_validation_type type_substitutions const_substitutions = function
     | Ast.Named_type (name, _) as ty ->
-        Option.value ~default:ty (List.assoc_opt name substitutions)
+        Option.value ~default:ty (List.assoc_opt name type_substitutions)
     | Ast.Addr -> Ast.Addr
-    | Ast.Handle ty -> Ast.Handle (substitute_validation_type substitutions ty)
+    | Ast.Handle ty ->
+        Ast.Handle
+          (substitute_validation_type type_substitutions const_substitutions ty)
     | Ast.Array (length, ty) ->
-        Ast.Array (length, substitute_validation_type substitutions ty)
+        Ast.Array
+          ( substitute_validation_length type_substitutions const_substitutions length,
+            substitute_validation_type type_substitutions const_substitutions ty )
     | Ast.Vec (length, ty) ->
-        Ast.Vec (length, substitute_validation_type substitutions ty)
+        Ast.Vec
+          ( substitute_validation_length type_substitutions const_substitutions length,
+            substitute_validation_type type_substitutions const_substitutions ty )
     | Ast.Applied_type (name, arguments, span) ->
         Ast.Applied_type
           ( name,
             List.map
-              (function
-                | Ast.Type_arg ty | Ast.Type_or_index ty ->
-                    Ast.Type_arg (substitute_validation_type substitutions ty)
-                | Ast.Name_arg (name, span) -> (
-                    match List.assoc_opt name substitutions with
-                    | Some ty -> Ast.Type_arg ty
-                    | None -> Ast.Name_arg (name, span))
-                | argument -> argument)
+              (substitute_validation_argument type_substitutions const_substitutions)
               arguments,
             span )
     | (Ast.Bool | Ast.Void | Ast.Int _ | Ast.Float _) as ty -> ty
+  and substitute_validation_length type_substitutions const_substitutions length =
+    let expression =
+      substitute_validation_expression type_substitutions const_substitutions
+        length.Ast.expression
+    in
+    { length with Ast.expression; text = Ast.expr_name expression }
+  and substitute_validation_argument type_substitutions const_substitutions = function
+    | Ast.Type_arg ty | Ast.Type_or_index ty ->
+        Ast.Type_arg
+          (substitute_validation_type type_substitutions const_substitutions ty)
+    | Ast.Const_arg expression ->
+        Ast.Const_arg
+          (substitute_validation_expression type_substitutions const_substitutions
+             expression)
+    | Ast.Name_arg (name, span) -> (
+        match List.assoc_opt name type_substitutions with
+        | Some ty ->
+            Ast.Type_arg
+              (substitute_validation_type type_substitutions const_substitutions ty)
+        | None -> (
+            match List.assoc_opt name const_substitutions with
+            | Some expression -> Ast.Const_arg expression
+            | None -> Ast.Name_arg (name, span)))
+  and substitute_validation_expression type_substitutions const_substitutions expression
+      =
+    let sub = substitute_validation_expression type_substitutions const_substitutions in
+    match expression with
+    | Ast.Ident (name, _) as expression ->
+        Option.value ~default:expression (List.assoc_opt name const_substitutions)
+    | Ast.Unary (op, e, s) -> Ast.Unary (op, sub e, s)
+    | Ast.Parenthesized (e, s) -> Ast.Parenthesized (sub e, s)
+    | Ast.Binary (op, l, r, s) -> Ast.Binary (op, sub l, sub r, s)
+    | Ast.Cast (k, ty, e, s) ->
+        Ast.Cast
+          ( k,
+            substitute_validation_type type_substitutions const_substitutions ty,
+            sub e,
+            s )
+    | Ast.Select (b, args, s) ->
+        Ast.Select
+          ( sub b,
+            List.map
+              (substitute_validation_argument type_substitutions const_substitutions)
+              args,
+            s )
+    | Ast.Sizeof (ty, s) ->
+        Ast.Sizeof
+          (substitute_validation_type type_substitutions const_substitutions ty, s)
+    | Ast.Sizeof_value (e, s) -> Ast.Sizeof_value (sub e, s)
+    | Ast.Alignof (ty, s) ->
+        Ast.Alignof
+          (substitute_validation_type type_substitutions const_substitutions ty, s)
+    | Ast.Offsetof (ty, f, s) ->
+        Ast.Offsetof
+          (substitute_validation_type type_substitutions const_substitutions ty, f, s)
+    | Ast.Ternary (c, y, n, s) -> Ast.Ternary (sub c, sub y, sub n, s)
+    | expression -> expression
+  in
+  let dependent_vector_type dependent type_span ty =
+    match
+      source_ty_with_values ~globals:global_names eval_named_types eval_consts type_span
+        ty
+    with
+    | Ok ty -> Some (ty, false)
+    | Error _ -> (
+        match ty with
+        | Ast.Vec (_, element) when not (type_mentions dependent element) ->
+            Option.map
+              (fun element -> (Hir.Vec (1, element), true))
+              (Result.to_option
+                 (source_ty_with_values ~globals:global_names eval_named_types
+                    eval_consts type_span element))
+        | _ -> None)
+  in
+  let add_dependent_local dependent c name type_span ty =
+    match dependent_vector_type dependent type_span ty with
+    | None -> Ok ()
+    | Some (ty, _) ->
+        let* binding = add_local name ty c type_span in
+        mark_init binding c;
+        Ok ()
   in
   let rec validate_non_dependent_expression c dependent expected expression =
     if
@@ -1043,16 +1263,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           validate_non_dependent_expression c dependent None value
       | Ast.Binary (_, left, right, _) ->
           let peer_type peer operand =
-            if
-              (match operand with
-                | Ast.Splat _ -> true
-                | Ast.Call (Ast.Ident ("splat", _), _, _) -> true
-                | Ast.Parenthesized (Ast.Splat _, _) -> true
-                | Ast.Parenthesized (Ast.Call (Ast.Ident ("splat", _), _, _), _) -> true
-                | _ -> false)
-              |> not
-            then None
-            else
+            let vector_type () =
               let before = Sema_flow.snapshot c.flow in
               let checked = check_expr c None peer in
               Sema_flow.restore c.flow before;
@@ -1060,6 +1271,19 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               | Ok value -> (
                   match Hir.expr_ty value with Hir.Vec _ as ty -> Some ty | _ -> None)
               | Error _ -> None
+            in
+            match operand with
+            | Ast.Splat _
+            | Ast.Call (Ast.Ident ("splat", _), _, _)
+            | Ast.Parenthesized (Ast.Splat _, _)
+            | Ast.Parenthesized (Ast.Call (Ast.Ident ("splat", _), _, _), _) ->
+                vector_type ()
+            | Ast.Array_lit (entries, _) -> (
+                match vector_type () with
+                | Some (Hir.Vec (_, element)) ->
+                    Some (Hir.Vec (List.length entries, element))
+                | _ -> None)
+            | _ -> None
           in
           let left_expected = peer_type right left
           and right_expected = peer_type left right in
@@ -1142,7 +1366,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                     if expression_mentions dependent expression then Ok None
                     else
                       let substituted =
-                        substitute_validation_type substitutions parameter.ty
+                        substitute_validation_type substitutions [] parameter.ty
                       in
                       let* () =
                         charge_expanded_type type_node_account ~span:parameter.span
@@ -1184,7 +1408,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                     Result_list.map
                       (fun (parameter : Ast.param) ->
                         let substituted =
-                          substitute_validation_type substitutions parameter.ty
+                          substitute_validation_type substitutions [] parameter.ty
                         in
                         let* () =
                           charge_expanded_type type_node_account ~span:parameter.span
@@ -1208,7 +1432,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                         (List.combine formals arguments)
                     in
                     let* return_ty =
-                      let substituted = substitute_validation_type substitutions ret in
+                      let substituted =
+                        substitute_validation_type substitutions [] ret
+                      in
                       let* () =
                         charge_expanded_type type_node_account ~span
                           ~where:(Printf.sprintf "declaration `%s`" name)
@@ -1323,6 +1549,90 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         expression_mentions names base
         || List.exists (generic_argument_mentions names) args
   in
+  let dependent_local_types = ref [] in
+  let with_dependent_local_types f =
+    let previous_types = !dependent_local_types in
+    let previous_inference_types = !inference_types in
+    let result = f () in
+    dependent_local_types := previous_types;
+    inference_types := previous_inference_types;
+    result
+  in
+  let dependent_generic_field_type source_type field_name =
+    let instance =
+      match source_type with
+      | Ast.Applied_type (template, arguments, _) -> Some (template, arguments)
+      | Ast.Named_type (name, _) -> Some (name, [])
+      | _ -> None
+    in
+    match instance with
+    | None -> None
+    | Some (template, arguments) ->
+        List.find_map
+          (function
+            | Ast.Struct { name; generic_params; fields; _ } when name = template ->
+                let rec substitutions types consts parameters arguments =
+                  match (parameters, arguments) with
+                  | [], [] -> (types, consts)
+                  | ( Ast.Type_param { name; _ } :: rest,
+                      (Ast.Type_arg ty | Ast.Type_or_index ty) :: args ) ->
+                      substitutions ((name, ty) :: types) consts rest args
+                  | Ast.Type_param { name; _ } :: rest, Ast.Name_arg (arg, span) :: args
+                    ->
+                      substitutions
+                        ((name, Ast.Named_type (arg, span)) :: types)
+                        consts rest args
+                  | ( Ast.Const_param { name; _ } :: rest,
+                      Ast.Const_arg expression :: args ) ->
+                      substitutions types ((name, expression) :: consts) rest args
+                  | ( Ast.Const_param { name; _ } :: rest,
+                      Ast.Name_arg (arg, span) :: args ) ->
+                      substitutions types
+                        ((name, Ast.Ident (arg, span)) :: consts)
+                        rest args
+                  | ( Ast.Const_param { name; _ } :: rest,
+                      Ast.Type_or_index (Ast.Named_type (arg, span)) :: args ) ->
+                      substitutions types
+                        ((name, Ast.Ident (arg, span)) :: consts)
+                        rest args
+                  | _ -> ([], [])
+                in
+                let type_substitutions, const_substitutions =
+                  substitutions [] [] generic_params arguments
+                in
+                fields
+                |> List.find_opt (fun (field : Ast.field) -> field.name = field_name)
+                |> Option.map (fun (field : Ast.field) ->
+                    substitute_validation_type type_substitutions const_substitutions
+                      field.ty)
+            | _ -> None)
+          generic_structs
+  in
+  let rec dependent_expression_type = function
+    | Ast.Parenthesized (expression, _) -> dependent_expression_type expression
+    | Ast.Ident (name, _) -> List.assoc_opt name !dependent_local_types
+    | Ast.Field (base, field, _) ->
+        Option.bind (dependent_expression_type base) (fun ty ->
+            dependent_generic_field_type ty field)
+    | Ast.Select (base, [ Ast.Const_arg _ ], _)
+    | Ast.Select (base, [ Ast.Name_arg _ ], _) ->
+        Option.bind (dependent_expression_type base) (function
+          | Ast.Array (_, element) | Ast.Vec (_, element) -> Some element
+          | _ -> None)
+    | Ast.Select (base, [ Ast.Type_arg ty ], _)
+    | Ast.Select (base, [ Ast.Type_or_index ty ], _) ->
+        Option.bind (dependent_expression_type base) (function
+          | Ast.Addr -> Some ty
+          | _ -> None)
+    | _ -> None
+  in
+  let dependent_target_type = function
+    | Ast.Target_ident (name, _) -> List.assoc_opt name !dependent_local_types
+    | Ast.Target_field (base, field, _) ->
+        Option.bind (dependent_expression_type base) (fun ty ->
+            dependent_generic_field_type ty field)
+    | Ast.Target_select (base, _) -> dependent_expression_type base
+  in
   let rec validate_non_dependent_statements c dependent expected_return statements =
     match statements with
     | [] -> Ok dependent
@@ -1334,18 +1644,29 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   and validate_non_dependent_block c dependent expected_return statements =
     push c;
     let result =
-      validate_non_dependent_statements c dependent expected_return statements
+      with_dependent_local_types (fun () ->
+          validate_non_dependent_statements c dependent expected_return statements)
     in
     pop c;
     let* _ = result in
     Ok ()
   and validate_non_dependent_statement c dependent expected_return = function
-    | Ast.Let { name; ty; init; span; _ } as statement ->
-        if type_mentions dependent ty then Ok (name :: dependent)
+    | Ast.Let { name; ty = source_ty; init; span; _ } as statement ->
+        if type_mentions dependent source_ty || has_generic_type source_ty then begin
+          dependent_local_types :=
+            (name, source_ty) :: List.remove_assoc name !dependent_local_types;
+          set_inference_type name (Some source_ty);
+          let* () =
+            if type_mentions dependent source_ty then
+              add_dependent_local dependent c name span source_ty
+            else Ok ()
+          in
+          Ok (name :: dependent)
+        end
         else
           let* ty =
             source_ty_with_values ~globals:global_names eval_named_types eval_consts
-              span ty
+              span source_ty
             |> Diag.local_type_error name
           in
           if
@@ -1356,9 +1677,12 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 (not (expression_mentions dependent value))
                 && not (has_generic_arguments value)
             | None -> false
-          then
+          then (
             let* _ = check_stmt c statement in
-            Ok (List.filter (fun dependent_name -> dependent_name <> name) dependent)
+            dependent_local_types :=
+              (name, source_ty) :: List.remove_assoc name !dependent_local_types;
+            set_inference_type name (Some source_ty);
+            Ok (List.filter (fun dependent_name -> dependent_name <> name) dependent))
           else
             let* () =
               match init with
@@ -1368,21 +1692,61 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             in
             let* binding = add_local name ty c span in
             if Option.is_some init then mark_init binding c;
+            dependent_local_types :=
+              (name, source_ty) :: List.remove_assoc name !dependent_local_types;
+            set_inference_type name (Some source_ty);
             Ok (List.filter (fun dependent_name -> dependent_name <> name) dependent)
     | Ast.View { name; place; _ } as statement ->
-        if expression_mentions dependent place || has_generic_arguments place then
-          Ok (name :: dependent)
+        dependent_local_types := List.remove_assoc name !dependent_local_types;
+        if expression_mentions dependent place || has_generic_arguments place then (
+          let source_type = view_source_type place in
+          (match source_type with
+          | Some source_type ->
+              dependent_local_types :=
+                (name, source_type) :: List.remove_assoc name !dependent_local_types
+          | None -> ());
+          set_inference_type name source_type;
+          Ok (name :: dependent))
         else
           let* () =
             let* _ = check_stmt c statement in
             Ok ()
           in
+          set_inference_type name (view_source_type place);
           Ok (List.filter (fun dependent_name -> dependent_name <> name) dependent)
     | (Ast.Assign (target, value, _) | Ast.Compound_assign (target, _, value, _, _)) as
       statement ->
+        let vector_literal_expected expected placeholder = function
+          | Ast.Array_lit (entries, _) when placeholder -> (
+              match expected with
+              | Some (Hir.Vec (_, element)) ->
+                  Some (Hir.Vec (List.length entries, element))
+              | _ -> expected)
+          | _ when placeholder -> None
+          | _ -> expected
+        in
         if target_mentions dependent target then
-          let* () = validate_non_dependent_expression c dependent None value in
-          Ok dependent
+          let expected, placeholder =
+            match
+              Option.bind (dependent_target_type target) (fun ty ->
+                  dependent_vector_type dependent (Ast.expr_span value) ty)
+            with
+            | Some (ty, placeholder) -> (Some ty, placeholder)
+            | None -> (
+                match check_target c target with
+                | Ok checked -> (target_ty c checked.target, false)
+                | Error _ -> (None, false))
+          in
+          if
+            placeholder && not (match value with Ast.Array_lit _ -> true | _ -> false)
+          then Ok dependent
+          else
+            let* () =
+              validate_non_dependent_expression c dependent
+                (vector_literal_expected expected placeholder value)
+                value
+            in
+            Ok dependent
         else if expression_mentions dependent value || has_generic_arguments value then
           let* checked_target = check_target c target in
           let* expected =
@@ -1430,25 +1794,26 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.For (_, init, condition, step, body, _) ->
         push c;
         let result =
-          let* loop_dependent =
-            match init with
-            | None -> Ok dependent
-            | Some init ->
-                validate_non_dependent_statement c dependent expected_return init
-          in
-          let* () =
-            match condition with
-            | None -> Ok ()
-            | Some condition ->
-                validate_non_dependent_condition c loop_dependent "for" condition
-          in
-          let* () =
-            validate_non_dependent_block c loop_dependent expected_return body
-          in
-          match step with
-          | None -> Ok loop_dependent
-          | Some step ->
-              validate_non_dependent_statement c loop_dependent expected_return step
+          with_dependent_local_types (fun () ->
+              let* loop_dependent =
+                match init with
+                | None -> Ok dependent
+                | Some init ->
+                    validate_non_dependent_statement c dependent expected_return init
+              in
+              let* () =
+                match condition with
+                | None -> Ok ()
+                | Some condition ->
+                    validate_non_dependent_condition c loop_dependent "for" condition
+              in
+              let* () =
+                validate_non_dependent_block c loop_dependent expected_return body
+              in
+              match step with
+              | None -> Ok loop_dependent
+              | Some step ->
+                  validate_non_dependent_statement c loop_dependent expected_return step)
         in
         pop c;
         let* _ = result in
@@ -1498,21 +1863,30 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       Result_list.iter
         (function
           | Ast.Type_param _ -> Ok ()
-          | Ast.Const_param ({ name; ty; span; _ } : Ast.const_param) ->
+          | Ast.Const_param ({ name; ty = source_ty; span; _ } : Ast.const_param) ->
               let* ty =
                 source_ty_with_values ~globals:global_names eval_named_types eval_consts
-                  span ty
+                  span source_ty
               in
               let* binding = add_local name ty context span in
               mark_init binding context;
+              set_inference_type name (Some source_ty);
               Ok ())
         generic_params
     in
     let rec add_parameters dependent = function
       | [] -> Ok dependent
       | (parameter : Ast.param) :: rest ->
-          if type_mentions dependent parameter.ty then
+          if type_mentions dependent parameter.ty then begin
+            dependent_local_types :=
+              (parameter.name, parameter.ty)
+              :: List.remove_assoc parameter.name !dependent_local_types;
+            let* () =
+              add_dependent_local dependent context parameter.name parameter.span
+                parameter.ty
+            in
             add_parameters (parameter.name :: dependent) rest
+          end
           else
             let* ty =
               source_ty_with_values ~globals:global_names eval_named_types eval_consts
@@ -2354,14 +2728,16 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           in
           local_values := String_set.add name !local_values;
           shadowed_constants := String_set.add name !shadowed_constants;
-          inference_types := (name, ty) :: List.remove_assoc name !inference_types;
+          set_inference_type name (Some ty);
           Ok (Ast.Let { name; ty; ty_span; init; span })
       | Ast.View { name; place; span } ->
           let* place =
             resolve_expr ~values ~defer_const_structs substitutions depth place
           in
+          let inference_type = view_source_type place in
           local_values := String_set.add name !local_values;
           shadowed_constants := String_set.add name !shadowed_constants;
+          set_inference_type name inference_type;
           Ok (Ast.View { name; place; span })
       | Ast.Assign (target, expression, span) ->
           let* target =
@@ -2460,17 +2836,19 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             resolve_expr ~values ~defer_const_structs substitutions depth condition
           in
           let* body =
-            Result_list.map
-              (resolve_stmt ~values ~defer_const_structs substitutions depth)
-              body
+            with_local_values !local_values (fun () ->
+                Result_list.map
+                  (resolve_stmt ~values ~defer_const_structs substitutions depth)
+                  body)
           in
           Ok (Ast.While (label, condition, body, span))
       | (Ast.Break _ | Ast.Continue _) as statement -> Ok statement
       | Ast.Defer (body, span) ->
           let* body =
-            Result_list.map
-              (resolve_stmt ~values ~defer_const_structs substitutions depth)
-              body
+            with_local_values !local_values (fun () ->
+                Result_list.map
+                  (resolve_stmt ~values ~defer_const_structs substitutions depth)
+                  body)
           in
           Ok (Ast.Defer (body, span))
       | Ast.Expr_stmt (expression, span) ->
@@ -2480,32 +2858,34 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           Ok (Ast.Expr_stmt (expression, span))
       | Ast.Block (body, span) ->
           let* body =
-            Result_list.map
-              (resolve_stmt ~values ~defer_const_structs substitutions depth)
-              body
+            with_local_values !local_values (fun () ->
+                Result_list.map
+                  (resolve_stmt ~values ~defer_const_structs substitutions depth)
+                  body)
           in
           Ok (Ast.Block (body, span))
       | Ast.For (label, init, condition, step, body, span) ->
-          let resolve_optional resolve = function
-            | None -> Ok None
-            | Some value ->
-                let* value = resolve value in
-                Ok (Some value)
-          in
-          let resolve_stmt =
-            resolve_stmt ~values ~defer_const_structs substitutions depth
-          in
-          let resolve_expr =
-            resolve_expr ~values ~defer_const_structs substitutions depth
-          in
-          let* init = resolve_optional resolve_stmt init in
-          let* condition = resolve_optional resolve_expr condition in
-          let* step = resolve_optional resolve_stmt step in
-          let* body =
-            with_local_values !local_values (fun () ->
-                Result_list.map resolve_stmt body)
-          in
-          Ok (Ast.For (label, init, condition, step, body, span))
+          with_local_values !local_values (fun () ->
+              let resolve_optional resolve = function
+                | None -> Ok None
+                | Some value ->
+                    let* value = resolve value in
+                    Ok (Some value)
+              in
+              let resolve_stmt =
+                resolve_stmt ~values ~defer_const_structs substitutions depth
+              in
+              let resolve_expr =
+                resolve_expr ~values ~defer_const_structs substitutions depth
+              in
+              let* init = resolve_optional resolve_stmt init in
+              let* condition = resolve_optional resolve_expr condition in
+              let* step = resolve_optional resolve_stmt step in
+              let* body =
+                with_local_values !local_values (fun () ->
+                    Result_list.map resolve_stmt body)
+              in
+              Ok (Ast.For (label, init, condition, step, body, span)))
       | Ast.Switch (expression, cases, default, span) ->
           let resolve_expr =
             resolve_expr ~values ~defer_const_structs substitutions depth
@@ -2590,6 +2970,12 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 generic_params
             in
             let generic_params = List.filter_map Fun.id generic_params in
+            List.iter
+              (function
+                | Ast.Const_param parameter ->
+                    set_inference_type parameter.name (Some parameter.ty)
+                | Ast.Type_param _ -> ())
+              generic_params;
             let* body =
               match body with
               | Ast.Declaration -> Ok Ast.Declaration
@@ -2707,6 +3093,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               in
               let* statements =
                 with_local_values body_value_names (fun () ->
+                    shadowed_constants := body_value_names;
                     Result_list.map (resolve_stmt ~defer_const_structs [] 0) statements)
               in
               Ok (Ast.Statements statements)

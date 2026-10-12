@@ -1,0 +1,56 @@
+var deferred_value u32 = 0
+
+fn nested[M const usize](condition u32) u32 {
+  total u32 = 0
+  {
+    lanes vec[M, u8] = splat(11)
+    total += zext[u32](lanes[0])
+  }
+  if condition > 0 {
+    values arr[M, u8] = {}
+    values[0] = 13
+    total += zext[u32](values[0])
+  }
+  index u32 = 0
+  loop: while index < 1 {
+    lanes vec[M, u8] = splat(17)
+    total += zext[u32](lanes[0])
+    index += 1
+    break loop
+  }
+  outer: for index usize = 0; index < 1; index += 1 {
+    values arr[M, u8] = {}
+    values[0] = 19
+    total += zext[u32](values[0])
+    break outer
+  }
+  defer {
+    lanes vec[M, u8] = splat(31)
+    deferred_value += zext[u32](lanes[0])
+  }
+  switch 0 {
+    case 0: {
+      values arr[M, u8] = {}
+      values[0] = 23
+      total += zext[u32](values[0])
+    }
+    default: {}
+  }
+  if condition > 0 {
+    lanes vec[M, u8] = splat(29)
+    total += zext[u32](lanes[0])
+  }
+  return total
+}
+
+extern "C" {
+  fn expected_nested_sum() u32
+  fn expected_deferred_value() u32
+}
+
+fn main() i32 {
+  result u32 = nested[3](1)
+  if result != expected_nested_sum() { return 1 }
+  if deferred_value != expected_deferred_value() { return 2 }
+  return 0
+}

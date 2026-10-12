@@ -4466,6 +4466,109 @@ let () =
   semantic_accept "integer-if-chain-peer-shapes"
     "fn left(a u8, c bool, d bool) u8 { return if c { a } else if d { 2 } else { 3 } }\n\
      fn right(a u8, c bool, d bool) u8 { return if c { 2 } else if d { a } else { 3 } }\n";
+  semantic_accept "generic-dependent-vector-splat-locals"
+    "fn float[N const usize](v vec[N, f32]) f32 {\n\
+     x vec[N, f32] = v\n\
+     y vec[N, f32] = v * splat(2.0)\n\
+     x = x * splat(2.0)\n\
+     x *= splat(2.0)\n\
+     x = splat(3.0)\n\
+     return (x * splat(2.0))[0] + y[0] }\n\
+     fn integer[N const usize](v vec[N, u32]) u32 {\n\
+     x vec[N, u32] = v\n\
+     x += splat(2)\n\
+     return x[0] }\n\
+     fn main() i32 {\n\
+     f vec[4, f32] = splat(1.0)\n\
+     i vec[4, u32] = splat(1)\n\
+     a f32 = float[4](f)\n\
+     b u32 = integer[4](i)\n\
+     return cvt[i32](a) + bitcast[i32](b) }\n";
+  semantic_accept "generic-dependent-vector-brace-locals"
+    "fn parameter[N const usize](v vec[N, f32]) f32 { return (v * {1.0, 2.0, 3.0, \
+     4.0})[3] }\n\
+     fn local[N const usize](v vec[N, f32]) f32 { x vec[N, f32] = v\n\
+     y f32 = (x * {1.0, 2.0, 3.0, 4.0})[3]\n\
+     x *= {1.0, 2.0, 3.0, 4.0}\n\
+     return y + x[3] }\n\
+     fn fixed(v vec[4, f32]) f32 { x vec[4, f32] = v\n\
+     y f32 = (x * {1.0, 2.0, 3.0, 4.0})[3]\n\
+     x *= {1.0, 2.0, 3.0, 4.0}\n\
+     return y + x[3] }\n\
+     fn main() i32 { v vec[4, f32] = {2.0, 3.0, 4.0, 5.0}\n\
+     a f32 = parameter[4](v)\n\
+     b f32 = local[4](v)\n\
+     c f32 = fixed(v)\n\
+     return cvt[i32](a + b + c) }\n";
+  semantic_accept "generic-const-struct-literal-body"
+    "struct H[N const usize] { v vec[N, f32] }\n\
+     fn wrapped[N const usize](v vec[N, f32]) f32 { l H[N] = {v}\n\
+     l.v *= {1.0, 2.0, 3.0, 4.0}\n\
+     return l.v[0] }\n\
+     fn fixed(v vec[4, f32]) f32 { l H[4] = {v}\n\
+     return l.v[0] }\n\
+     fn main() i32 { v vec[4, f32] = {1.0, 2.0, 3.0, 4.0}\n\
+     return cvt[i32](wrapped[4](v) + fixed(v)) }\n";
+  semantic_accept "dependent-vector-field-assignment"
+    "struct H[K const usize] { v vec[K, u32] }\n\
+     struct O[M const usize] { inner H[M] }\n\
+     struct H2[N const usize, T] { v vec[N, T] }\n\
+     fn nested[N const usize](v vec[N, u32]) u32 { o O[N]\n\
+     o.inner.v = v\n\
+     return o.inner.v[3] }\n\
+     fn generic[N const usize, T](v vec[N, T]) T { o H2[N, T]\n\
+     o.v = v\n\
+     return o.v[3] }\n\
+     fn direct[N const usize](v vec[N, u32]) u32 { o vec[N, u32]\n\
+     o = v\n\
+     return o[3] }\n\
+     fn main() i32 { v vec[4, u32] = {2, 3, 4, 5}\n\
+     return bitcast[i32](nested[4](v) + generic[4, u32](v) + direct[4](v)) }\n";
+  semantic_accept "const-only-generic-struct-locals"
+    "struct Box[K const usize] { v vec[K, u8] }\n\
+     struct G[T] { v T }\n\
+     fn box_only[M const usize]() usize { b Box[8]\n\
+    \ return M }\n\
+     fn box_twin[M const usize, T]() usize { b Box[8]\n\
+    \ return M }\n\
+     fn generic_only[M const usize]() usize { b G[u8]\n\
+    \ b.v = 3\n\
+    \ return M + zext[usize](b.v) }\n\
+     fn generic_twin[M const usize, T]() usize { b G[u8]\n\
+    \ b.v = 3\n\
+    \ return M + zext[usize](b.v) }\n\
+     fn main() i32 { return trunc[i32](box_only[4]() + box_twin[4, u8]() + \
+     generic_only[4]() + generic_twin[4, u8]()) }\n";
+  semantic_accept "const-only-generic-inference"
+    "fn id[T](a T) T { return a }\n\
+     fn only[M const usize]() usize { y u8 = 3\n\
+    \ return M + zext[usize](id(y)) }\n\
+     fn twin[M const usize, T]() usize { y u8 = 3\n\
+    \ return M + zext[usize](id(y)) }\n\
+     fn main() i32 { return trunc[i32](only[4]() + twin[4, u8]()) }\n";
+  semantic_message "generic-dependent-vector-brace-width"
+    "wrong number of vector literal lanes"
+    "fn local[N const usize](v vec[N, f32]) void { x vec[N, f32] = v\n\
+     x *= {1.0, 2.0, 3.0}\n\
+     return }\n\
+     fn main() i32 { v vec[4, f32] = {1.0, 2.0, 3.0, 4.0}\n\
+     local[4](v)\n\
+     return 0 }\n";
+  semantic_accept "generic-inference-globals-and-generic-fields"
+    "struct S { x u32 }\n\
+     struct G[T] { v T }\n\
+     var glob u32 = 1\n\
+     var ga arr[2, u32] = {}\n\
+     var gs S = {}\n\
+     fn pick[T](a T, b T, mode bool) T { return if mode { a } else { b } }\n\
+     fn infer() u32 {\n\
+     x u32 = pick(glob, glob, true)\n\
+     y u32 = pick(ga[0], 1, true)\n\
+     z u32 = pick(gs.x, gs.x, true)\n\
+     s G[u32] = {}\n\
+     q u32 = pick(s.v, s.v, true)\n\
+     return x + y + z + q }\n\
+     fn main() i32 { return bitcast[i32](infer()) }\n";
   semantic_accept "float-fma-vector-splat-peers"
     "fn fused(a vec[4, f32]) vec[4, f32] {\n\
      x vec[4, f32] = fma(splat(2.0), a, a)\n\
@@ -16644,6 +16747,272 @@ let () =
      fn keep[T](value handle[T]) handle[T] { return value }\n\
      fn run(value handle[O]) handle[O] { return keep(value) }\n\
      fn plain(value u8) u8 { return pass(value) }\n";
+  semantic_accept "generic-inference-visible-scope-types"
+    "fn id[T](value T) T { return value }\n\
+     fn scopes() u32 { y u8 = 200\n\
+     { y u32 = 1000 }\n\
+     k u32 = 0\n\
+     loop: while k < 1 { y u32 = 1000\n\
+     k += 1\n\
+     break loop }\n\
+     outer: for y u32 = 0; y < 1; y += 1 { break outer }\n\
+     defer { y u32 = 1000 }\n\
+     switch 0 { case 0: { y u32 = 1000 } default: {} }\n\
+     if true { y u32 = 1000 }\n\
+     return zext[u32](id(y) << 4) >> 4 }\n\
+     fn shadow() u32 { y u32 = 1000\n\
+     { y u8 = 200\n\
+     x u32 = zext[u32](id(y) << 4) >> 4 }\n\
+     return id(y) }\n";
+  semantic_accept "generic-view-inference-bindings"
+    "fn id[T](value T) T { return value }\n\
+     var global u32 = 1\n\
+     fn nested[T](source T) T { outer u32 = 1\n\
+     { view outer = source\n\
+     return id(outer) } }\n\
+     fn parameter(outer u32, source u8) u8 {\n\
+     { view outer = source\n\
+     return id(outer) } }\n\
+     fn global_view(source u8) u8 {\n\
+     { view global = source\n\
+     return id(global) } }\n\
+     fn reverse() u32 { outer u8 = 1\n\
+     source u32 = 65541\n\
+     { view outer = source\n\
+     return id(outer) } }\n\
+     fn for_view(source u8) u8 {\n\
+     for view value = source; true; { return id(value) }\n\
+     return 0 }\n\
+     fn switch_view(source u8) u8 {\n\
+     switch 0 { case 0: { view value = source\n\
+     return id(value) } default: { return 0 } } }\n\
+     fn const_parameter[N const usize]() usize { return id(N) }\n";
+  semantic_message "generic-view-inference-wrap-rejected"
+    "`id[u8](outer) + id[u8](outer)` is computed in `u8` and may wrap before it \
+     reaches `u32`"
+    "fn id[T](value T) T { return value }\n\
+     fn bad() u32 { outer u32 = 1\n\
+     source u8 = 200\n\
+     { view outer = source\n\
+     result u32 = id(outer) + id(outer) }\n\
+     return 0 }\n";
+  semantic_message "generic-view-inference-wrap-explicit-twin"
+    "`id[u8](outer) + id[u8](outer)` is computed in `u8` and may wrap before it \
+     reaches `u32`"
+    "fn id[T](value T) T { return value }\n\
+     fn bad() u32 { outer u32 = 1\n\
+     source u8 = 200\n\
+     { view outer = source\n\
+     result u32 = id[u8](outer) + id[u8](outer) }\n\
+     return 0 }\n";
+  semantic_message "generic-view-inference-unknown-local-shadow"
+    "cannot infer `T` for `id`; provide explicit generic arguments"
+    "fn id[T](value T) T { return value }\n\
+     fn at(pointer addr) addr { return pointer }\n\
+     fn local() u32 { value u32 = 1\n\
+     pointer addr = null\n\
+     { view value = at(pointer)[u8, 1]\n\
+     return zext[u32](id(value)) }\n\
+     return 0 }\n";
+  semantic_message "generic-view-inference-unknown-parameter-shadow"
+    "cannot infer `T` for `id`; provide explicit generic arguments"
+    "fn id[T](value T) T { return value }\n\
+     fn at(pointer addr) addr { return pointer }\n\
+     fn parameter(value u32, pointer addr) u32 {\n\
+     { view value = at(pointer)[u8, 1]\n\
+     return zext[u32](id(value)) } }\n";
+  semantic_message "generic-view-inference-unknown-global-shadow"
+    "cannot infer `T` for `id`; provide explicit generic arguments"
+    "fn id[T](value T) T { return value }\n\
+     fn at(pointer addr) addr { return pointer }\n\
+     var value u32 = 1\n\
+     fn global(pointer addr) u32 {\n\
+     { view value = at(pointer)[u8, 1]\n\
+     return zext[u32](id(value)) } }\n";
+  semantic_accept "generic-view-inference-unknown-explicit"
+    "fn id[T](value T) T { return value }\n\
+     fn at(pointer addr) addr { return pointer }\n\
+     fn explicit(pointer addr) u32 {\n\
+     { view value = at(pointer)[u8, 1]\n\
+     return zext[u32](id[u8](value)) } }\n";
+  semantic_message "generic-view-inference-dependent-wrap"
+    "`id[u8](value) + id[u8](value)` is computed in `u8` and may wrap before it \
+     reaches `u32`"
+    "fn id[T](value T) T { return value }\n\
+     fn bad[T](pointer addr) u32 { view value = pointer[T, 1]\n\
+     result u32 = id(value) + id(value)\n\
+     return 0 }\n\
+     fn main() i32 { values arr[2, u8] = {}\n\
+     return bitcast[i32](bad[u8](&values)) }\n";
+  semantic_message "generic-view-inference-dependent-wrap-explicit-twin"
+    "`id[u8](value) + id[u8](value)` is computed in `u8` and may wrap before it \
+     reaches `u32`"
+    "fn id[T](value T) T { return value }\n\
+     fn bad[T](pointer addr) u32 { view value = pointer[T, 1]\n\
+     result u32 = id[T](value) + id[T](value)\n\
+     return 0 }\n\
+     fn main() i32 { values arr[2, u8] = {}\n\
+     return bitcast[i32](bad[u8](&values)) }\n";
+  semantic_accept "generic-view-inference-global-const-shadow"
+    "fn id[T](value T) T { return value }\n\
+     const value u32 = 1\n\
+     fn main() i32 { values arr[4, u8] = {0, 200, 0, 0}\n\
+     pointer addr = &values\n\
+     view value = (pointer + 1)[u8]\n\
+     return trunc[i32](zext[u64](id(value) << 4) >> 4) }\n";
+  semantic_message "generic-view-inference-global-const-call-shadow"
+    "cannot infer `T` for `id`; provide explicit generic arguments"
+    "fn id[T](value T) T { return value }\n\
+     const value u32 = 1\n\
+     fn at(pointer addr) addr { return pointer }\n\
+     fn main() i32 { values arr[4, u8] = {0, 200, 0, 0}\n\
+     pointer addr = &values\n\
+     view value = at(pointer)[u8, 1]\n\
+     return trunc[i32](zext[u64](id(value) << 4) >> 4) }\n";
+  semantic_message "generic-view-inference-global-const-loop-shadow"
+    "`id[u8](value) << 4` is computed in `u8` and may wrap before it reaches `u32`"
+    "fn id[T](value T) T { return value }\n\
+     const value u32 = 1\n\
+     fn main() i32 { values arr[4, u8] = {0, 200, 0, 0}\n\
+     pointer addr = &values\n\
+     for view value = (pointer + 1)[u8]; true; {\n\
+     result u32 = id(value) << 4\n\
+     return bitcast[i32](result >> 4) }\n\
+     return 0 }\n";
+  semantic_message "generic-view-inference-global-const-loop-shadow-explicit-twin"
+    "`id[u8](value) << 4` is computed in `u8` and may wrap before it reaches `u32`"
+    "fn id[T](value T) T { return value }\n\
+     const value u32 = 1\n\
+     fn main() i32 { values arr[4, u8] = {0, 200, 0, 0}\n\
+     pointer addr = &values\n\
+     for view value = (pointer + 1)[u8]; true; {\n\
+     result u32 = id[u8](value) << 4\n\
+     return bitcast[i32](result >> 4) }\n\
+     return 0 }\n";
+  semantic_message "generic-view-inference-global-const-wrap"
+    "`id[u8](value) << 4` is computed in `u8` and may wrap before it reaches `u32`"
+    "fn id[T](value T) T { return value }\n\
+     const value u32 = 1\n\
+     fn bad(pointer addr) u32 { view value = (pointer + 1)[u8]\n\
+     result u32 = id(value) << 4\n\
+     return result }\n";
+  semantic_message "generic-view-inference-global-const-wrap-explicit-twin"
+    "`id[u8](value) << 4` is computed in `u8` and may wrap before it reaches `u32`"
+    "fn id[T](value T) T { return value }\n\
+     const value u32 = 1\n\
+     fn bad(pointer addr) u32 { view value = (pointer + 1)[u8]\n\
+     result u32 = id[u8](value) << 4\n\
+     return result }\n";
+  semantic_message "generic-view-inference-global-const-generic-wrap"
+    "`id[u8](value) << 4` is computed in `u8` and may wrap before it reaches `u32`"
+    "fn id[T](value T) T { return value }\n\
+     const value u32 = 1\n\
+     fn bad[T](pointer addr) u32 { view value = (pointer + 1)[T]\n\
+     result u32 = id(value) << 4\n\
+     return result }\n\
+     fn main() i32 { values arr[2, u8] = {}\n\
+     return bitcast[i32](bad[u8](&values)) }\n";
+  semantic_message "generic-view-inference-global-const-generic-wrap-explicit-twin"
+    "`id[u8](value) << 4` is computed in `u8` and may wrap before it reaches `u32`"
+    "fn id[T](value T) T { return value }\n\
+     const value u32 = 1\n\
+     fn bad[T](pointer addr) u32 { view value = (pointer + 1)[T]\n\
+     result u32 = id[T](value) << 4\n\
+     return result }\n\
+     fn main() i32 { values arr[2, u8] = {}\n\
+     return bitcast[i32](bad[u8](&values)) }\n";
+  semantic_message "generic-view-inference-struct-const-shadow"
+    "cannot infer `T` for `id`; provide explicit generic arguments"
+    "fn id[T](value T) T { return value }\n\
+     struct A { field u32 }\n\
+     struct B { field u8 }\n\
+     const item A = {1}\n\
+     fn main() i32 { b B = {200}\n\
+     pointer addr = &b\n\
+     view item = pointer[B]\n\
+     return trunc[i32](zext[u64](id(item.field) << 4) >> 4) }\n";
+  semantic_accept "generic-const-local-types-in-scopes"
+    "fn nested[M const usize](condition u32) u32 { total u32 = 0\n\
+     { lanes vec[M, u8] = splat(11)\n\
+     total += zext[u32](lanes[0]) }\n\
+     if condition > 0 { values arr[M, u8] = {}\n\
+     values[0] = 13\n\
+     total += zext[u32](values[0]) }\n\
+     return total }\n\
+     fn main() i32 { return bitcast[i32](nested[3](1)) - 24 }\n";
+  let closed_scope_inference =
+    "fn id[T](value T) T { return value }\n\
+     fn f[T](x u32) u32 { y u8 = 200\n\
+     k u32 = 0\n\
+     { y u32 = 1000\n\
+     x += id(y) }\n\
+     r u32 = id(y) + id(y)\n\
+     return r + x }\n\
+     fn main() i32 { return bitcast[i32](f[u8](10)) }\n"
+  in
+  semantic_message "generic-inference-closed-scope-narrow-result"
+    "`id[u8](y) + id[u8](y)` is computed in `u8` and may wrap before it reaches `u32`"
+    closed_scope_inference;
+  semantic_accept "generic-inference-unresolved-literal-shapes"
+    "fn pick[T](a T, b T, m bool) T { return if m { a } else { b } }\n\
+     fn integers(seed i64, c bool) i64 {\n\
+     a i64 = pick(seed, 1 + 2, false)\n\
+     b i64 = pick(~0, seed, true)\n\
+     d i64 = pick(seed, 1 << 40, false)\n\
+     e i64 = pick(seed, if c {1} else {2}, false)\n\
+     return a + b + d + e\n\
+     }\n\
+     fn floats(seed f32, c bool) f32 {\n\
+     a f32 = pick(seed, 0.5 * 3.0, false)\n\
+     b f32 = pick(seed, if c {0.5} else {1.5}, false)\n\
+     return a + b\n\
+     }\n";
+  semantic_accept "generic-inference-generic-field-places"
+    "struct G[T] { v T, w arr[2,T] }\n\
+     fn pick[T](a T, b T, m bool) T { return if m {a} else {b} }\n\
+     fn id[T](a T) T { return a }\n\
+     var gg G[u16] = {13, {17, 19}}\n\
+     fn main() i32 {\n\
+     a u16 = pick(gg.v, gg.v, true)\n\
+     b u16 = id(gg.v)\n\
+     c u16 = pick(gg.w[0], 1, true)\n\
+     g G[u32] = {23, {29, 31}}\n\
+     d u32 = id(g.w[1])\n\
+     return 0\n\
+     }\n";
+  semantic_accept "generic-inference-nested-applied-field-places"
+    "struct G[T] { v T, w arr[2, T] }\n\
+     struct N[U] { inner G[U], k U }\n\
+     struct P { g G[u16] }\n\
+     var gn N[u8]\n\
+     var gp P\n\
+     fn id[T](a T) T { return a }\n\
+     fn outer[U](x U) U { return id(gn.inner.v) + x }\n\
+     fn indexed() u16 { i usize = 0\n\
+     return id(gp.g.w[i]) }\n\
+     fn raw(p addr) u16 { return id(p[G[u16]].v) }\n";
+  let nested_literal_range =
+    "struct G[T] { v T }\n\
+     struct N[U] { inner G[U] }\n\
+     fn pick[T](a T, b T, mode bool) T { return if mode { a } else { b } }\n\
+     var n N[u8]\n\
+     fn bad() u8 { return pick(n.inner.v, 300 - 299, true) }\n"
+  in
+  semantic_pin "generic-inference-nested-u8-literal-range" nested_literal_range 5
+    (String.length "fn bad() u8 { return pick(n.inner.v, " + 1)
+    3 "integer literal is out of range for u8: `300`" None;
+  let conflicting_fields =
+    "struct P { a u16 }\n\
+     struct N { k i8 }\n\
+     var gp P\n\
+     var gn N\n\
+     fn pick[T](a T, b T, mode bool) T { return a }\n\
+     fn bad() i32 { return zext[i32](pick(gp.a, gn.k, true)) }\n"
+  in
+  semantic_pin "generic-inference-conflicting-field-types" conflicting_fields 6
+    (String.length "fn bad() i32 { return zext[i32](" + 1)
+    (String.length "pick(gp.a, gn.k, true)")
+    "cannot infer `T` for `pick`: `gp.a` is `u16`, `gn.k` is `i8`" None;
   let conflicting =
     "fn max[T](a T, b T) T { return a }\nfn f(a u8, b u32) u32 { return max(a, b) }\n"
   in

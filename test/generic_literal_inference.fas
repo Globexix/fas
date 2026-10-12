@@ -1,0 +1,44 @@
+use "C" <<C
+#include <stdint.h>
+static int64_t oracle_add(void) { int64_t a = 1, b = 2; return a + b; }
+static int64_t oracle_complement(void) { return (int64_t)~(uint64_t)0; }
+static int64_t oracle_shift(void) { return INT64_C(1) << 40; }
+static float oracle_multiply(void) { float a = 0.5f, b = 3.0f; return a * b; }
+static int64_t oracle_if_integer(int c) { return c ? 1 : 2; }
+static float oracle_if_float(int c) { return c ? 0.5f : 1.5f; }
+C
+
+extern "C" {
+  fn oracle_add() i64
+  fn oracle_complement() i64
+  fn oracle_shift() i64
+  fn oracle_multiply() f32
+  fn oracle_if_integer(c i32) i64
+  fn oracle_if_float(c i32) f32
+}
+
+fn pick[T](a T, b T, choose bool) T { return if choose { a } else { b } }
+
+fn main() i32 {
+  seed i64 = 7
+  single f32 = 9.0
+  condition bool = true
+  if pick(seed, 1 + 2, false) != oracle_add() { return 1 }
+  if pick(~0, seed, true) != oracle_complement() { return 2 }
+  if pick(seed, 1 << 40, false) != oracle_shift() { return 3 }
+  if pick(single, 0.5 * 3.0, false) != oracle_multiply() { return 4 }
+  if pick(seed, if condition {1} else {2}, false) != oracle_if_integer(1) {
+    return 5
+  }
+  if pick(single, if condition {0.5} else {1.5}, false) != oracle_if_float(1) {
+    return 6
+  }
+  condition = false
+  if pick(seed, if condition {1} else {2}, false) != oracle_if_integer(0) {
+    return 7
+  }
+  if pick(single, if condition {0.5} else {1.5}, false) != oracle_if_float(0) {
+    return 8
+  }
+  return 0
+}

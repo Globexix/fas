@@ -1,0 +1,129 @@
+fn id[T](value T) T { return value }
+
+fn block_inferred() u32 {
+  y u8 = 200
+  { y u32 = 1000 }
+  return zext[u32](id(y) << 4) >> 4
+}
+
+fn block_explicit() u32 {
+  y u8 = 200
+  { y u32 = 1000 }
+  return zext[u32](id[u8](y) << 4) >> 4
+}
+
+fn while_inferred() u32 {
+  y u8 = 200
+  k u32 = 0
+  loop: while k < 1 {
+    y u32 = 1000
+    k += 1
+    break loop
+  }
+  return zext[u32](id(y) << 4) >> 4
+}
+
+fn while_explicit() u32 {
+  y u8 = 200
+  k u32 = 0
+  loop: while k < 1 {
+    y u32 = 1000
+    k += 1
+    break loop
+  }
+  return zext[u32](id[u8](y) << 4) >> 4
+}
+
+fn for_inferred() u32 {
+  y u8 = 200
+  outer: for y u32 = 0; y < 1; y += 1 {
+    break outer
+  }
+  return zext[u32](id(y) << 4) >> 4
+}
+
+fn for_explicit() u32 {
+  y u8 = 200
+  outer: for y u32 = 0; y < 1; y += 1 {
+    break outer
+  }
+  return zext[u32](id[u8](y) << 4) >> 4
+}
+
+fn defer_inferred() u32 {
+  y u8 = 200
+  defer { y u32 = 1000 }
+  return zext[u32](id(y) << 4) >> 4
+}
+
+fn defer_explicit() u32 {
+  y u8 = 200
+  defer { y u32 = 1000 }
+  return zext[u32](id[u8](y) << 4) >> 4
+}
+
+fn case_inferred() u32 {
+  y u8 = 200
+  switch 0 {
+    case 0: { y u32 = 1000 }
+    default: {}
+  }
+  return zext[u32](id(y) << 4) >> 4
+}
+
+fn case_explicit() u32 {
+  y u8 = 200
+  switch 0 {
+    case 0: { y u32 = 1000 }
+    default: {}
+  }
+  return zext[u32](id[u8](y) << 4) >> 4
+}
+
+fn if_inferred() u32 {
+  y u8 = 200
+  if true { y u32 = 1000 }
+  return zext[u32](id(y) << 4) >> 4
+}
+
+fn if_explicit() u32 {
+  y u8 = 200
+  if true { y u32 = 1000 }
+  return zext[u32](id[u8](y) << 4) >> 4
+}
+
+fn shadow_inferred() u32 {
+  y u32 = 1000
+  result u32 = 0
+  {
+    y u8 = 200
+    result = zext[u32](id(y) << 4) >> 4
+  }
+  return result * 1000 + id(y)
+}
+
+fn shadow_explicit() u32 {
+  y u32 = 1000
+  result u32 = 0
+  {
+    y u8 = 200
+    result = zext[u32](id[u8](y) << 4) >> 4
+  }
+  return result * 1000 + id[u32](y)
+}
+
+extern "C" {
+  fn expected_scope_value() u32
+  fn expected_shadow_value() u32
+}
+
+fn main() i32 {
+  if block_inferred() != block_explicit() || block_inferred() != expected_scope_value() { return 1 }
+  if while_inferred() != while_explicit() || while_inferred() != expected_scope_value() { return 2 }
+  if for_inferred() != for_explicit() || for_inferred() != expected_scope_value() { return 3 }
+  if defer_inferred() != defer_explicit() || defer_inferred() != expected_scope_value() { return 4 }
+  if case_inferred() != case_explicit() || case_inferred() != expected_scope_value() { return 5 }
+  if if_inferred() != if_explicit() || if_inferred() != expected_scope_value() { return 6 }
+  if shadow_inferred() != shadow_explicit() || shadow_inferred() != expected_shadow_value() { return 7 }
+  return 0
+}

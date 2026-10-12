@@ -296,8 +296,8 @@ def validate_adapter_metadata(module, source_name):
         function = functions[adapter["name"]]
         assert function["linkage"] == "external", (source_name, adapter)
         assert function["blocks"] == [], (source_name, adapter)
-    assert [function["name"] for function in module["funcs"]
-            if function["name"] in set(names)] == names, (source_name, names)
+    assert {function["name"] for function in module["funcs"]
+            if function["name"] in set(names)} == set(names), (source_name, names)
 
     def check_symbols(value, path=()):
         if isinstance(value, dict):

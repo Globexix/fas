@@ -32,6 +32,9 @@ let () =
   assert (Limits.default.max_use_bytes = 1_073_741_824);
   assert (Target_layout.pointer_integer_bits Target_layout.current = Ok 64);
   assert (
+    Sema_types.source_ty [] (Ast.Applied_type ("G", [], Span.synthetic))
+    = Error "internal error: generic type application reached ordinary type checking");
+  assert (
     Target_layout.pointer_integer_bits
       { Target_layout.current with pointer_size = 4; pointer_align = 4 }
     = Ok 32);

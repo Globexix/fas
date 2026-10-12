@@ -1,0 +1,63 @@
+fn id[T](value T) T { return value }
+
+const value u32 = 1
+
+struct A {
+  field u32
+}
+
+struct B {
+  field u8
+}
+
+fn at(pointer addr) addr { return pointer }
+
+fn offset_inferred() u32 {
+  values arr[4, u8] = {0, 200, 0, 0}
+  pointer addr = &values
+  view value = (pointer + 1)[u8]
+  return trunc[u32](zext[u64](id(value) << 4) >> 4)
+}
+
+fn offset_explicit() u32 {
+  values arr[4, u8] = {0, 200, 0, 0}
+  pointer addr = &values
+  view value = (pointer + 1)[u8]
+  return zext[u32](id[u8](value) << 4) >> 4
+}
+
+fn call_explicit() u32 {
+  values arr[4, u8] = {0, 200, 0, 0}
+  pointer addr = &values
+  view value = at(pointer)[u8, 1]
+  return zext[u32](id[u8](value) << 4) >> 4
+}
+
+fn loop_explicit() u32 {
+  values arr[4, u8] = {0, 200, 0, 0}
+  pointer addr = &values
+  for view value = (pointer + 1)[u8]; true; {
+    return zext[u32](id[u8](value) << 4) >> 4
+  }
+  return 0
+}
+
+fn struct_explicit() u32 {
+  record B = {200}
+  pointer addr = &record
+  view item = pointer[B]
+  return zext[u32](id[u8](item.field) << 4) >> 4
+}
+
+extern "C" {
+  fn expected_narrow() u32
+}
+
+fn main() i32 {
+  if offset_inferred() != offset_explicit() { return 1 }
+  if offset_inferred() != expected_narrow() { return 2 }
+  if call_explicit() != expected_narrow() { return 3 }
+  if loop_explicit() != expected_narrow() { return 4 }
+  if struct_explicit() != expected_narrow() { return 5 }
+  return 0
+}

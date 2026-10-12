@@ -1,0 +1,57 @@
+use "C" <<C
+#include <stdint.h>
+static uint64_t oracle_box(uint64_t m, uint64_t x) { return m + x; }
+static uint64_t oracle_generic(uint64_t m, uint64_t x) { return m + x + 3; }
+C
+
+extern "C" {
+  fn oracle_box(m usize, x usize) usize
+  fn oracle_generic(m usize, x usize) usize
+}
+
+struct Box[K const usize] { v vec[K, u8] }
+struct G[T] { v T }
+
+fn id[T](a T) T { return a }
+
+fn box_only[M const usize](x usize) usize {
+  b Box[8]
+  return M + x
+}
+
+fn box_twin[M const usize, T](x usize) usize {
+  b Box[8]
+  return M + x
+}
+
+fn generic_only[M const usize](x usize) usize {
+  b G[u8]
+  b.v = 3
+  return M + x + zext[usize](b.v)
+}
+
+fn generic_twin[M const usize, T](x usize) usize {
+  b G[u8]
+  b.v = 3
+  return M + x + zext[usize](b.v)
+}
+
+fn infer_only[M const usize](x usize) usize {
+  y u8 = 3
+  return M + x + zext[usize](id(y))
+}
+
+fn infer_twin[M const usize, T](x usize) usize {
+  y u8 = 3
+  return M + x + zext[usize](id(y))
+}
+
+fn main() i32 {
+  if box_only[4](2) != oracle_box(4, 2) { return 1 }
+  if box_twin[4, u8](2) != oracle_box(4, 2) { return 2 }
+  if generic_only[4](2) != oracle_generic(4, 2) { return 3 }
+  if generic_twin[4, u8](2) != oracle_generic(4, 2) { return 4 }
+  if infer_only[4](2) != oracle_generic(4, 2) { return 5 }
+  if infer_twin[4, u8](2) != oracle_generic(4, 2) { return 6 }
+  return 0
+}

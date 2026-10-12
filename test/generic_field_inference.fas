@@ -1,0 +1,68 @@
+use "C" <<C
+#include <stdint.h>
+static uint16_t oracle_global_value(void) { return UINT16_C(13); }
+static uint16_t oracle_global_element(void) { return UINT16_C(17); }
+static uint32_t oracle_local_element(void) { return UINT32_C(31); }
+static uint16_t oracle_nested_struct_field(void) { return UINT16_C(4); }
+static uint16_t oracle_raw_field(void) { return UINT16_C(29); }
+typedef struct { uint16_t v; } ConstantField;
+const ConstantField KG = { UINT16_C(23) };
+static uint16_t oracle_constant_field(void) { return KG.v; }
+static uint8_t oracle_id_u8(uint8_t value) { return value; }
+static int32_t oracle_nested_u8_result(void) {
+  uint8_t sum = (uint8_t)(oracle_id_u8(UINT8_C(200)) + oracle_id_u8(UINT8_C(200)));
+  return sum >> 4;
+}
+static int32_t oracle_nested_i8_result(void) { return (int8_t)-3; }
+C
+
+extern "C" {
+  fn oracle_global_value() u16
+  fn oracle_global_element() u16
+  fn oracle_local_element() u32
+  fn oracle_nested_struct_field() u16
+  fn oracle_raw_field() u16
+  fn oracle_constant_field() u16
+  fn oracle_nested_u8_result() i32
+  fn oracle_nested_i8_result() i32
+}
+
+struct G[T] { v T, w arr[2,T] }
+struct N[T] { inner G[T], k T }
+struct P { g G[u16] }
+var gg G[u16] = {13, {17, 19}}
+var gp P
+var gn N[u8]
+var gn_signed N[i8]
+
+fn pick[T](a T, b T, choose bool) T { return if choose { a } else { b } }
+fn id[T](value T) T { return value }
+fn outer[T](x T) T {
+  gn.inner.v = 200
+  return id(gn.inner.v) + id(gn.inner.v) + x
+}
+fn outer_signed[T](x T) T {
+  gn_signed.inner.v = -3
+  return pick(gn_signed.inner.v, 1, true) + x
+}
+fn raw_field(p addr) u16 { return id(p[G[u16]].v) }
+
+fn main() i32 {
+  if pick(gg.v, gg.v, true) != oracle_global_value() { return 1 }
+  if id(gg.v) != oracle_global_value() { return 2 }
+  if pick(gg.w[0], 1, true) != oracle_global_element() { return 3 }
+  value G[u32] = {23, {29, 31}}
+  if id(value.w[1]) != oracle_local_element() { return 4 }
+  gp.g.w[1] = 4
+  if id(gp.g.w[1]) != oracle_nested_struct_field() { return 5 }
+  index usize = 0
+  if id(gg.w[index]) != oracle_global_element() { return 6 }
+  gg.v = 29
+  if raw_field(&gg) != oracle_raw_field() { return 7 }
+  if id(KG.v) != oracle_constant_field() { return 10 }
+  zero u64 = 0
+  if trunc[i32](outer(zero) >> 4) != oracle_nested_u8_result() { return 8 }
+  zero_signed i8 = 0
+  if sext[i32](outer_signed(zero_signed)) != oracle_nested_i8_result() { return 9 }
+  return 0
+}
