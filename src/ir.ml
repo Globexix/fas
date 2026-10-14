@@ -1721,7 +1721,7 @@ let absolute_directory path =
   | dir -> dir
 
 let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false)
-    ?(debug_info = false) ~budget m =
+    ?(debug_info = false) ?target ~budget m =
   if budget < 0 then Error "rendered LLVM text budget must not be negative"
   else
     let buffer = Buffer.create 4096 in
@@ -1999,6 +1999,7 @@ let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false)
              add no_inline;
              add sanitize_address;
              if no_builtin_names <> [] then add " #0";
+             if target <> None then add " #1";
              Option.iter (fun sp -> add (Printf.sprintf " !dbg !%d" sp)) scope;
              add " {";
              newline ();
@@ -2045,6 +2046,15 @@ let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false)
           no_builtin_names;
         add " }";
         newline ());
+      Option.iter
+        (fun (cpu, features) ->
+          add "attributes #1 = { \"target-cpu\"=\"";
+          add_escaped_bytes cpu;
+          add "\" \"target-features\"=\"";
+          add_escaped_bytes features;
+          add "\" }";
+          newline ())
+        target;
       if !file_order <> [] then (
         add "!llvm.dbg.cu = !{!0}";
         newline ();

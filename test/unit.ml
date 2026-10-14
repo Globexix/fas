@@ -1568,6 +1568,23 @@ attributes #0 = { "no-builtin-helper" }
     cli_named_obj.Cli.emit = Cli.Obj
     && cli_named_obj.output = "artifact"
     && cli_named_obj.output_explicit);
+  assert (
+    (expect_cli (Cli.parse [| "fas"; "-c"; "prog.fas" |])).Cli.target = Cli.Portable);
+  assert (
+    (expect_cli (Cli.parse [| "fas"; "--target=force-native"; "prog.fas" |])).Cli.target
+    = Cli.Force_native);
+  assert (
+    (expect_cli (Cli.parse [| "fas"; "--target=portable"; "prog.fas" |])).Cli.target
+    = Cli.Portable);
+  (match Cli.parse [| "fas"; "--target=bogus"; "prog.fas" |] with
+  | Error message ->
+      assert (
+        message
+        = "unknown --target value `bogus`; accepted values are `portable` and \
+           `force-native`")
+  | Ok _ -> assert false);
+  assert (contains Cli.usage "--target=force-native");
+  assert (contains Cli.usage "--target=portable");
   (match Cli.parse [| "fas"; "--help" |] with
   | Ok Cli.Help ->
       assert (contains Cli.usage "-g");

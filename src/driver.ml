@@ -504,9 +504,60 @@ let run_tool label argv =
 let remove path = try Sys.remove path with Sys_error _ -> ()
 let optimization_level level = max 0 (min 3 level)
 
-let render_ir ?(redirect = Fun.id) ?(sanitize_address = false) ~debug_info ir =
+let host_cpu_of_driver_output text =
+  let words =
+    String.split_on_char '\n' text
+    |> List.concat_map (fun line ->
+        String.split_on_char '"' line |> List.filteri (fun i _ -> i mod 2 = 1))
+  in
+  let rec scan cpu features = function
+    | "-target-cpu" :: value :: rest -> scan (Some value) features rest
+    | "-target-feature" :: value :: rest -> scan cpu (value :: features) rest
+    | _ :: rest -> scan cpu features rest
+    | [] -> Option.map (fun cpu -> (cpu, String.concat "," (List.rev features))) cpu
+  in
+  scan None [] words
+
+let host_cpu =
+  lazy
+    (let _, _, cc = tools () in
+     match
+       Process.run [| cc; "-march=native"; "-###"; "-x"; "c"; "-c"; "/dev/null" |]
+     with
+     | Error failure ->
+         Error (Printf.sprintf "%s failed (%s)" cc (status_name failure.Process.status))
+     | Ok (_, stderr) ->
+         Option.to_result
+           ~none:("no -target-cpu in " ^ cc ^ " output")
+           (host_cpu_of_driver_output stderr))
+
+let resolve_target config =
+  match config.Cli.target with
+  | Cli.Portable -> Ok config
+  | Cli.Force_native -> (
+      match Lazy.force host_cpu with
+      | Ok (cpu, features) ->
+          Ok { config with Cli.target_cpu = Some cpu; target_features = Some features }
+      | Error reason ->
+          Error
+            [
+              Diag.error Span.synthetic
+                ("--target=force-native: cannot determine the host CPU (" ^ reason ^ ")");
+            ])
+
+let target_attributes config =
+  match (config.Cli.target_cpu, config.Cli.target_features) with
+  | Some cpu, Some features -> Some (cpu, features)
+  | _ -> None
+
+let host_march config =
+  match config.Cli.target with
+  | Cli.Force_native -> [ "-march=native" ]
+  | Cli.Portable -> []
+
+let render_ir ?(redirect = Fun.id) ?(sanitize_address = false) ?target ~debug_info ir =
   match
-    Ir.render_bounded ~redirect ~sanitize_address ~debug_info
+    Ir.render_bounded ~redirect ~sanitize_address ~debug_info ?target
       ~budget:limits.Limits.max_rendered_ir_bytes ir
   with
   | Ok text -> Ok text
@@ -564,7 +615,8 @@ let with_debug_c_inputs ~enabled config cc f =
                 run_tool cc
                   (Array.of_list
                      ([ cc; "-g"; "-c"; path; "-o"; object_path ]
-                     @ config.Cli.c_flags @ c_sanitizer_flags config))
+                     @ host_march config @ config.Cli.c_flags @ c_sanitizer_flags config
+                     ))
               in
               compile (object_path :: acc) rest
           | path :: rest -> compile (path :: acc) rest
@@ -576,7 +628,7 @@ let executable_command config cc asm_path c_objects =
   let argv =
     Array.of_list
       (cc :: asm_path
-      :: (c_objects @ config.Cli.c_flags @ c_sanitizer_flags config
+      :: (c_objects @ host_march config @ config.Cli.c_flags @ c_sanitizer_flags config
         @ config.Cli.link_inputs @ math_library @ [ "-o"; config.Cli.output ]))
   in
   if config.Cli.keep then
@@ -634,7 +686,7 @@ let emit_tools_unprotected ?remarks ?llc_remarks ?llvm_text ?(c_debug = false) c
   let* ll_text =
     render_ir ~redirect
       ~sanitize_address:(List.mem "address" config.Cli.sanitizers)
-      ~debug_info:config.Cli.debug ir
+      ~debug_info:config.Cli.debug ?target:(target_attributes config) ir
   in
   Option.iter (fun report -> report ll_text) llvm_text;
   let ll_path = Filename.temp_file "fas-module-" ".ll" in
@@ -736,7 +788,7 @@ let emit_optimized_llvm config program ir redirect =
   let* ll_text =
     render_ir ~redirect
       ~sanitize_address:(List.mem "address" config.Cli.sanitizers)
-      ~debug_info:config.Cli.debug ir
+      ~debug_info:config.Cli.debug ?target:(target_attributes config) ir
   in
   let ll_path = Filename.temp_file "fas-module-" ".ll" in
   let opt_path = Filename.temp_file "fas-opt-" ".ll" in
@@ -869,7 +921,7 @@ let compile_c_units config cc units adapters standard_headers declaration_header
                  "-fPIC";
                  llc_opt config.Cli.optimization;
                ]
-              @ config.Cli.c_flags
+              @ host_march config @ config.Cli.c_flags
               @ (if Option.is_none unit.assembly then
                    C_import.reproducible_flags unit.stable_name unit.unit_path
                  else [])
@@ -1301,7 +1353,7 @@ let run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug con
               let* text =
                 render_ir ~redirect
                   ~sanitize_address:(List.mem "address" config.Cli.sanitizers)
-                  ~debug_info:config.Cli.debug ir
+                  ~debug_info:config.Cli.debug ?target:(target_attributes config) ir
               in
               let opt, _, _ = tools () in
               let path = Filename.temp_file "fas-verify-" ".ll" in
@@ -1337,7 +1389,7 @@ let run_unstaged ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug config
 let same_as_input config =
   canonical_path config.Cli.input = canonical_path config.Cli.output
 
-let run ?remarks ?llc_remarks ?llvm_text ?c_debug config =
+let run_resolved ?remarks ?llc_remarks ?llvm_text ?c_debug config =
   if not config.Cli.output_explicit then
     run_unstaged ?remarks ?llc_remarks ?llvm_text ?c_debug config
   else if same_as_input config then
@@ -1348,3 +1400,7 @@ let run ?remarks ?llc_remarks ?llvm_text ?c_debug config =
     | Error _ as result ->
         if not (is_non_regular_output config.Cli.output) then remove config.Cli.output;
         result
+
+let run ?remarks ?llc_remarks ?llvm_text ?c_debug config =
+  let* config = resolve_target config in
+  run_resolved ?remarks ?llc_remarks ?llvm_text ?c_debug config

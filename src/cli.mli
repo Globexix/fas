@@ -1,5 +1,6 @@
 type emit = Ir | Ir_json | Llvm | Optimized_llvm | Asm | Obj | Header | Executable
 type diagnostics = Text | Json
+type target = Portable | Force_native
 
 type t = {
   input : string;
@@ -15,6 +16,8 @@ type t = {
   c_flags : string list;
   diagnostics : diagnostics;
   target_cpu : string option;
+  target : target;
+  target_features : string option;
 }
 
 type perf_options = {

@@ -77,6 +77,7 @@ let native_rows (config : Cli.t) names dir =
           Cli.debug = true;
           keep = false;
           target_cpu = Some "native";
+          target = Cli.Portable;
           output = exe;
           output_explicit = true;
         }

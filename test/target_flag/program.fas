@@ -1,0 +1,38 @@
+use "C" <stdio.h>
+
+var buf arr[256, u32] = {}
+
+fn fill(n usize) i32 {
+    for i usize = 0; i < n; i += 1 {
+        buf[i] = trunc[u32](i) * 2654435761 + 12345
+    }
+    return 0
+}
+
+fn total(n usize) u64 {
+    sum u64 = 0
+    for i usize = 0; i < n; i += 1 {
+        sum += zext[u64](buf[i])
+    }
+    return sum
+}
+
+fn permute_lanes() i32 {
+    raw vec[16,u8] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}
+    pidx vec[16,u8] = {15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0}
+    moved vec[16,u8] = permute(raw, pidx)
+    for k usize = 0; k < 16; k += 1 {
+        lane u32 = zext[u32](moved[k])
+        printed i32 = printf(c"%u\n", lane)
+        if printed <= 0 { return 1 }
+    }
+    return 0
+}
+
+fn main() i32 {
+    if fill(256) != 0 { return 3 }
+    printed i32 = printf(c"sum %lu\n", total(256))
+    if printed <= 0 { return 1 }
+    if permute_lanes() != 0 { return 2 }
+    return 0
+}

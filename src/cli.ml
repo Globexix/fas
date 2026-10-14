@@ -1,5 +1,6 @@
 type emit = Ir | Ir_json | Llvm | Optimized_llvm | Asm | Obj | Header | Executable
 type diagnostics = Text | Json
+type target = Portable | Force_native
 
 type t = {
   input : string;
@@ -15,6 +16,8 @@ type t = {
   c_flags : string list;
   diagnostics : diagnostics;
   target_cpu : string option;
+  target : target;
+  target_features : string option;
 }
 
 type perf_options = {
@@ -51,6 +54,9 @@ let usage =
   \  perf FILE     profile: hot loops by Fas line (needs perf)\n\
    build:\n\
   \  -O0..-O3      set opt and llc optimization levels (default -O2)\n\
+  \  --target=portable  baseline x86-64, runs on any x86-64 CPU (default)\n\
+  \  --target=force-native  use this CPU's instructions everywhere, without prediction \
+   (normal compile time; can be slower than portable in places)\n\
    output:\n\
   \  -o PATH       output path (default a.out, INPUT.o with -c, INPUT.s with -S)\n\
   \  --emit-header write an ABI-checked C header (stdout without -o)\n\
@@ -89,6 +95,7 @@ let parse_invocation ~subcommand argv =
   let c_flags_rev = ref [] in
   let sanitizers = ref None in
   let diagnostics = ref Text in
+  let target = ref Portable in
   let add_link_inputs values =
     link_inputs_rev := List.rev_append values !link_inputs_rev
   in
@@ -137,6 +144,8 @@ let parse_invocation ~subcommand argv =
             c_flags = List.rev !c_flags_rev;
             diagnostics = !diagnostics;
             target_cpu = None;
+            target = !target;
+            target_features = None;
           }
         in
         Ok (if subcommand = Check_subcommand then Check config else Run config)
@@ -207,6 +216,20 @@ let parse_invocation ~subcommand argv =
               Error
                 ("unknown --diagnostics value `" ^ value
                ^ "`; accepted values are `text` and `json`"))
+      | flag when String.starts_with ~prefix:"--target=" flag -> (
+          let value = String.sub flag 9 (String.length flag - 9) in
+          let select selected =
+            target := selected;
+            loop (i + 1) input output emit keep optimization optimization_explicit debug
+              no_inline_function
+          in
+          match value with
+          | "portable" -> select Portable
+          | "force-native" -> select Force_native
+          | _ ->
+              Error
+                ("unknown --target value `" ^ value
+               ^ "`; accepted values are `portable` and `force-native`"))
       | "--keep" ->
           loop (i + 1) input output emit true optimization optimization_explicit debug
             no_inline_function
