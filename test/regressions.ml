@@ -1005,15 +1005,15 @@ let () =
   | Ok (size, align) ->
       failwith (Printf.sprintf "isize-layout: expected (4, 4), got (%d, %d)" size align)
   | Error message -> failwith ("isize-layout: " ^ message));
-  semantic_error "usize-distinct-from-u64" "cannot return `u64` as `usize`"
+  semantic_accept "usize-return-from-u64"
     "fn convert(value u64) usize { return value }\n";
-  semantic_error "u64-distinct-from-usize" "cannot return `usize` as `u64`"
+  semantic_accept "u64-return-from-usize"
     "fn convert(value usize) u64 { return value }\n";
-  semantic_error "isize-distinct-from-i64" "cannot return `i64` as `isize`"
+  semantic_accept "isize-return-from-i64"
     "fn convert(value i64) isize { return value }\n";
-  semantic_error "i64-distinct-from-isize" "cannot return `isize` as `i64`"
+  semantic_accept "i64-return-from-isize"
     "fn convert(value isize) i64 { return value }\n";
-  semantic_error "usize-call-distinct-from-u64" "cannot pass `u64` as `usize`"
+  semantic_accept "usize-call-from-u64"
     "fn take(value usize) void { return }\n\
      fn check_case(value u64) void { take(value) }\n";
   semantic_error "named-bool-constant-keeps-type" "cannot assign `bool` to `i32`"
@@ -1581,10 +1581,9 @@ let () =
   semantic_accept "constant-shift-left-type-twin" "const FLAG u32 = 7 << 1\n";
   semantic_error "shift-no-splat-lift" "is `i32`, expected `vec[4,u32]`"
     "fn f(n u32) vec[4,u32] { return 1 << n }\n";
-  semantic_error "len-returns-usize" "cannot return `usize` as `u64`"
+  semantic_accept "len-returns-usize-as-u64"
     "const Values arr[3,u8] = {1, 2, 3}\nfn size() u64 { return len(Values) }\n";
-  semantic_error "sizeof-returns-usize" "cannot return `usize` as `u64`"
-    "fn size() u64 { return sizeof[u8] }\n";
+  semantic_accept "sizeof-returns-usize-as-u64" "fn size() u64 { return sizeof[u8] }\n";
   ignore
     (lower_of
        "struct Measure { left u8 right u64 }\n\
@@ -1592,12 +1591,8 @@ let () =
         const Alignment usize = alignof[Measure]\n\
         const Offset usize = offsetof[Measure,right]\n\
         fn size() usize { return Size + Alignment + Offset }\n");
-  let const_sizeof_mismatch =
-    "const Size u64 = sizeof[u8]\nfn size() u64 { return Size }\n"
-  in
-  semantic_pin "const-sizeof-returns-usize" const_sizeof_mismatch 1 18 6
-    "cannot use `usize` as `u64`: values above 18446744073709551615 would be lost"
-    (Some "write `bitcast[u64](sizeof[u8])`");
+  semantic_accept "const-sizeof-usize-as-u64"
+    "const Size u64 = sizeof[u8]\nfn size() u64 { return Size }\n";
   let usize_specialization =
     llvm_of
       "fn id[N const usize](value usize) usize { return value + N }\n\
@@ -7813,7 +7808,7 @@ let () =
     "fn size[N const isize]() usize { return sizeof[arr[N,u8]] }\n\
      fn test() usize { return size[-2]() }\n";
   semantic_message "const-generic-function-machine-length"
-    "cannot use `u64` as `usize`: values above 18446744073709551615 would be lost"
+    "array length `9223372036854775808` is too large"
     "fn size[N const u64]() usize { return sizeof[arr[N,u8]] }\n\
      fn test() usize { return size[9223372036854775808]() }\n";
   let sizeof_large_array_source =
@@ -9473,6 +9468,41 @@ let () =
      branch u32 = if flag { value } else { value }\n\
      return take(local) + Boxed.value + ItemsLocal[0] + branch\n\
      }\n";
+  semantic_accept "machine-integer-u64-usize-mixed-sum"
+    "fn f(a u64, b usize) usize { return a + b }\n";
+  semantic_accept "machine-integer-u64-usize-mixed-compare"
+    "fn f(a u64, b usize) bool { return a < b }\n";
+  semantic_accept "machine-integer-i64-isize-mixed-difference"
+    "fn f(a i64, b isize) isize { return a - b }\n";
+  semantic_accept "machine-integer-i64-isize-mixed-compare"
+    "fn f(a i64, b isize) bool { return a >= b }\n";
+  semantic_accept "machine-integer-u64-to-usize-argument"
+    "fn take(value usize) usize { return value }\n\
+     fn f(value u64) usize { return take(value) }\n";
+  semantic_accept "machine-integer-usize-to-u64-if"
+    "fn f(flag bool, a u64, b usize) u64 { return if flag { a } else { b } }\n";
+  semantic_pin "machine-integer-u64-to-isize-diagnostic"
+    "fn f(a u64) isize { return a }\n" 1 28 1
+    "cannot return `u64` as `isize`: values above 9223372036854775807 change meaning"
+    (Some "write `bitcast[isize](a)`");
+  semantic_pin "machine-integer-i64-to-usize-diagnostic"
+    "fn f(a i64) usize { return a }\n" 1 28 1
+    "cannot return `i64` as `usize`: negative values change meaning"
+    (Some
+       "reinterpret the bits with `bitcast[usize](a)`, or widen with `sext`/`zext` \
+        first if that is what you mean");
+  semantic_pin "machine-integer-usize-to-u32-diagnostic"
+    "fn f(a usize) u32 { return a }\n" 1 28 1
+    "cannot return `usize` as `u32`: values above 4294967295 would be lost"
+    (Some "keep the low bits with `trunc[u32](a)`");
+  semantic_pin "machine-integer-mixed-sum-to-isize-diagnostic"
+    "fn mixed_is(a u64, b usize) isize { return a + b }\n" 1 44 5
+    "cannot return `usize` as `isize`: values above 9223372036854775807 change meaning"
+    (Some "write `bitcast[isize](a + b)`");
+  semantic_error "machine-integer-generic-u64-usize-conflict"
+    "cannot infer `T` for `gen`: `a` is `u64`, `b` is `usize`"
+    "fn gen[T](a T, b T) T { return a }\n\
+     fn f(a u64, b usize) usize { return gen(a, b) }\n";
   let widening_c_import_source =
     "extern \"C\" { fn imported(value u32) void }\n\
      fn f(value i64) void { imported(value); return }\n"

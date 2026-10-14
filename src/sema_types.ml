@@ -575,12 +575,23 @@ let float_literal_type_error ty span =
     (Printf.sprintf "floating point literal cannot be used as `%s`"
        (diagnostic_ty_name ty))
 
+let equal_range_integers actual expected =
+  actual <> expected
+  &&
+  match (actual, expected) with
+  | Hir.Int (Hir.U64 | Hir.Usize), Hir.Int (Hir.U64 | Hir.Usize)
+  | Hir.Int (Hir.I64 | Hir.Isize), Hir.Int (Hir.I64 | Hir.Isize) ->
+      true
+  | _ -> false
+
 let implicit_integer_widen actual expected =
   match (actual, expected) with
   | Hir.Int _, Hir.Int _ ->
       let actual_bits = Option.get (Sema_numeric.integer_value_bit_width actual) in
       let expected_bits = Option.get (Sema_numeric.integer_value_bit_width expected) in
-      if expected_bits <= actual_bits then None
+      if expected_bits = actual_bits && equal_range_integers actual expected then
+        Some Ast.Bitcast
+      else if expected_bits <= actual_bits then None
       else if Sema_numeric.is_unsigned actual then Some Ast.Zext
       else if not (Sema_numeric.is_unsigned expected) then Some Ast.Sext
       else None
@@ -597,6 +608,10 @@ let common_integer_type left right =
   if Hir.ty_equal left right then Some left
   else
     match (implicit_integer_widen left right, implicit_integer_widen right left) with
+    | Some _, Some _ -> (
+        match right with
+        | Hir.Int (Hir.Usize | Hir.Isize) -> Some right
+        | _ -> Some left)
     | Some _, _ -> Some right
     | _, Some _ -> Some left
     | _ -> None
@@ -715,7 +730,8 @@ let rec widened_arithmetic (extension, target) expression =
 let convert_expected_kind ?expression actual expected =
   match expression with
   | Some expression
-    when narrow_arithmetic_result expression || narrow_float_result expression ->
+    when (narrow_arithmetic_result expression || narrow_float_result expression)
+         && not (equal_range_integers actual expected) ->
       None
   | _ -> implicit_numeric_widen actual expected
 
@@ -1253,6 +1269,7 @@ let unify_if_branches left_expression left_type right_expression right_type =
       and right_widen = implicit_numeric_widen right_type result_type in
       if
         Option.is_some left_widen
+        && (not (equal_range_integers left_type result_type))
         && (narrow_arithmetic_result left_expression
            || narrow_float_result left_expression)
       then
@@ -1261,6 +1278,7 @@ let unify_if_branches left_expression left_type right_expression right_type =
              (left_type = Hir.Float Hir.F32))
       else if
         Option.is_some right_widen
+        && (not (equal_range_integers right_type result_type))
         && (narrow_arithmetic_result right_expression
            || narrow_float_result right_expression)
       then

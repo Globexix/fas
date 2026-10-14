@@ -1,0 +1,43 @@
+const Top u64 = 18446744073709551615
+const Half usize = 9223372036854775808
+const Low isize = -9223372036854775807
+const Back usize = Top
+fn take_usize(value usize) usize { return value }
+fn take_isize(value isize) isize { return value }
+fn wrap_sum(a usize, b u64) u64 { return a + b }
+fn mixed_sum(a u64, b usize) usize { return a + b }
+fn signed_difference(a i64, b isize) isize { return a - b }
+fn unsigned_less(a u64, b usize) bool { return a < b }
+fn signed_less(a i64, b isize) bool { return a < b }
+fn unsigned_equal(a usize, b u64) bool { return a == b }
+fn choose_unsigned(flag bool, a usize, b u64) u64 { return if flag { a } else { b } }
+fn choose_signed(flag bool, a isize, b i64) i64 { return if flag { a } else { b } }
+fn unsigned_switch(value usize) u32 {
+  switch value {
+    case Top: return 1
+    case Half: return 2
+    default: return 0
+  }
+}
+fn signed_switch(value isize) u32 {
+  switch value {
+    case Low: return 3
+    default: return 0
+  }
+}
+fn bit(value bool, weight u32) u32 { return if value { weight } else { 0 } }
+fn flag_bits() u32 {
+  return bit(unsigned_less(1, Half), 1) + bit(unsigned_less(Top, Half), 2) + bit(signed_less(-1, 0), 4) + bit(signed_less(Low, 0), 8) + bit(unsigned_equal(Half, Half), 16) + bit(unsigned_equal(Top, Half), 32)
+}
+fn const_back() u64 { return Back }
+extern "C" {
+  fn machine_integers_unsigned(a u64, b u64, c u64, d u64, e u64, f u64, g u64, h u64) void
+  fn machine_integers_signed(a i64, b i64, c i64, d i64) void
+  fn machine_integers_bits(bits u32) void
+}
+fn main() i32 {
+  machine_integers_unsigned(take_usize(Top), wrap_sum(Top, 3), mixed_sum(Top, 2), wrap_sum(Half, Half), choose_unsigned(false, Half, Top), unsigned_switch(Top), unsigned_switch(Half), const_back())
+  machine_integers_signed(signed_difference(-9223372036854775807, 2), take_isize(Low), choose_signed(false, Low, -1), signed_switch(Low))
+  machine_integers_bits(flag_bits())
+  return 0
+}
