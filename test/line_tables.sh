@@ -7,6 +7,7 @@ LLVM_OPT=${LLVM_OPT:-opt-22}
 LLVM_OBJCOPY=${LLVM_OBJCOPY:-llvm-objcopy-22}
 LLVM_READELF=${LLVM_READELF:-llvm-readelf-22}
 LLVM_DWARFDUMP=${LLVM_DWARFDUMP:-llvm-dwarfdump-22}
+LLVM_OBJDUMP=${LLVM_OBJDUMP:-llvm-objdump-22}
 OCAML_FAS=${OCAML_FAS:-$ROOT/_build/default/bin/main.exe}
 LT_TMP=$(mktemp -d)
 trap 'rm -rf "$LT_TMP"' EXIT HUP INT TERM
@@ -158,6 +159,51 @@ grep -q 'name: "prog.fas"' "$LT_TMP/lines.txt" || fail "debug line table lacks p
 grep -Eq "^0x[0-9a-f]+ +$BODY_LINE +" "$LT_TMP/lines.txt" ||
   fail "debug line table lacks loop body line $BODY_LINE"
 echo "line tables: -O2 debug line table lists prog.fas and loop body line $BODY_LINE"
+
+cat >"$SRC/loops.fas" <<'EOF'
+fn sum_while(n i64) i64 {
+    total i64 = 0
+    i i64 = 0
+    while i < n {
+        total = total + i
+        i = i + 1
+    }
+    return total
+}
+
+fn sum_for(n i64) i64 {
+    total i64 = 0
+    i i64 = 0
+    for ; i < n; {
+        total = total + i
+        i = i + 1
+    }
+    return total
+}
+
+fn main(argc i32, argv addr) i32 {
+    a i64 = sum_while(sext[i64](argc))
+    b i64 = sum_for(sext[i64](argc))
+    if a == b {
+        return 0
+    }
+    return 1
+}
+EOF
+"$OCAML_FAS" -g -O0 -c "$SRC/loops.fas" -o "$LT_TMP/loops.o"
+WHILE_LINE=$(grep -n 'while i < n {' "$SRC/loops.fas" | cut -d: -f1)
+FOR_LINE=$(grep -n 'for ; i < n; {' "$SRC/loops.fas" | cut -d: -f1)
+for loop in sum_while:$WHILE_LINE sum_for:$FOR_LINE; do
+  name=${loop%%:*}
+  want=${loop#*:}
+  got=$("$LLVM_OBJDUMP" -d -l --no-show-raw-insn --disassemble-symbols="$name" "$LT_TMP/loops.o" | awk -v name="$name" '
+    /^[0-9a-f]+ <.*>:$/ { cur = $2; gsub(/[<>:]/, "", cur) }
+    cur == name && /\.fas:[0-9]+$/ { line = $NF; sub(/.*\.fas:/, "", line) }
+    cur == name && /[[:space:]]jmp[[:space:]]/ { last = line }
+    END { print last }')
+  [ "$got" = "$want" ] || fail "$name backedge is on line ${got:-none}, expected loop line $want"
+done
+echo "line tables: -O0 loop backedges carry the while and for loop lines"
 
 if ! command -v gdb >/dev/null 2>&1; then
   echo "line tables: gdb not found, debugger checks skipped" >&2

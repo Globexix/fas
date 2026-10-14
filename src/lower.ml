@@ -2249,8 +2249,8 @@ and stmt s statement =
           s.defer_scopes <- (xs :: ds) :: rest;
           Ok ()
       | [] -> error Span.synthetic "defer outside scope")
-  | Hir.While (label, c, b, _) -> lower_while s label c b
-  | Hir.For (label, i, c, st, b, _) -> lower_for s label i c st b
+  | Hir.While (label, c, b, sp) -> lower_while s label c b sp
+  | Hir.For (label, i, c, st, b, sp) -> lower_for s label i c st b sp
   | Hir.Switch (e, arms, d, span) -> lower_switch s e arms d span
   | Hir.Break (label, sp) -> (
       match target_loop s label with
@@ -2263,6 +2263,7 @@ and stmt s statement =
       match target_loop s label with
       | Some l ->
           let* () = unwind s l.keep_scopes in
+          mark s sp;
           s.current.term := Some (Ir.Br l.continue_to);
           Ok ()
       | None -> error sp "continue outside loop")
@@ -2549,7 +2550,12 @@ and target_loop s label =
   | None -> List.nth_opt s.loops 0
   | Some name -> List.find_opt (fun loop -> loop.label = Some name) s.loops
 
-and lower_while s label c body =
+and loop_backedge s span target =
+  if open_block s then (
+    mark s span;
+    s.current.term := Some (Ir.Br target))
+
+and lower_while s label c body span =
   let head = fresh_block s and bb = fresh_block s and exit = fresh_block s in
   s.current.term := Some (Ir.Br head.id);
   enter s head;
@@ -2568,13 +2574,13 @@ and lower_while s label c body =
     :: s.loops;
   let* () = scoped s body in
   s.loops <- List.tl s.loops;
-  if open_block s then s.current.term := Some (Ir.Br head.id);
+  loop_backedge s span head.id;
   enter s exit;
   if Hir.condition_is_true c && not (Hir.loop_body_has_break label body) then
     s.current.term := Some Ir.Unreachable;
   Ok ()
 
-and lower_for s label init cond step body =
+and lower_for s label init cond step body span =
   push_scope s;
   let lowered =
     let* () = match init with None -> Ok () | Some x -> stmt s x in
@@ -2610,7 +2616,7 @@ and lower_for s label init cond step body =
     if open_block s then s.current.term := Some (Ir.Br sb.id);
     enter s sb;
     let* () = match step with None -> Ok () | Some x -> stmt s x in
-    if open_block s then s.current.term := Some (Ir.Br head.id);
+    loop_backedge s span head.id;
     enter s exit;
     let* () = if open_block s then emit_scope_defers s 0 else Ok () in
     let* () = if open_block s then emit_current_scope_lifetimes s else Ok () in
@@ -2818,6 +2824,7 @@ let lower_func ~sanitize_address ~address_taken ~addressed_functions literal_glo
           linkage = Ir.External;
           variadic = f.variadic;
           source;
+          display = f.display;
         }
   | Hir.Statements body ->
       let* () =
@@ -2929,6 +2936,7 @@ let lower_func ~sanitize_address ~address_taken ~addressed_functions literal_glo
              else External);
           variadic = f.variadic;
           source;
+          display = f.display;
         }
 
 let intrinsic_decls funcs =
@@ -2965,6 +2973,7 @@ let intrinsic_decls funcs =
         linkage = Ir.External;
         variadic = false;
         source = None;
+        display = None;
       })
   |> List.of_seq
   |> List.sort (fun (a : Ir.func) b -> String.compare a.name b.name)

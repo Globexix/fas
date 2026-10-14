@@ -159,6 +159,7 @@ type func = {
   linkage : linkage;
   variadic : bool;
   span : Span.t;
+  display : string option;
 }
 
 type global_initializer =

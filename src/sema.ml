@@ -845,6 +845,10 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
     | Ast.Break _ | Ast.Continue _ | Ast.Expr_stmt _ ->
         []
   in
+  let display_name name =
+    Sema_specialization.specialization_application_name specializations
+      Function_specialization name
+  in
   let check_function_body ~name ~diagnostic_name ~description ~span ~diagnostic_span
       ~params ~ret ~stmts ~linkage ~variadic ~extra_consts ~spec_depth ~spec_trace
       ~require_return =
@@ -867,7 +871,16 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       else Ok ()
     in
     Ok
-      ({ Hir.name; params; ret; body = Hir.Statements body; linkage; variadic; span }
+      ({
+         Hir.name;
+         params;
+         ret;
+         body = Hir.Statements body;
+         linkage;
+         variadic;
+         span;
+         display = display_name name;
+       }
         : Hir.func)
   in
   let add_func func = funcs := func :: !funcs in
@@ -905,6 +918,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                    linkage;
                    variadic;
                    span;
+                   display = display_name name;
                  }
                   : Hir.func)
           | Ast.Statements stmts ->

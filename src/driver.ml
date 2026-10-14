@@ -453,6 +453,10 @@ let version_lines () =
     tool_line "opt" opt;
     tool_line "llc" llc;
     tool_line "cc" cc;
+    tool_line "perf" (tool "FAS_PERF" "perf");
+    tool_line "objdump" (tool "FAS_OBJDUMP" "llvm-objdump-22");
+    tool_line "symbolizer" (tool "FAS_SYMBOLIZER" "llvm-symbolizer-22");
+    tool_line "mca" (tool "FAS_MCA" "llvm-mca-22");
   ]
 
 let status_name = function
@@ -545,6 +549,28 @@ let report_kept config paths opt llc cc =
          opt llc cc (pass_report config)
          (llc_opt config.Cli.optimization)))
 
+let with_debug_c_inputs ~enabled config cc f =
+  if not enabled then f config.Cli.link_inputs
+  else
+    let objects = ref [] in
+    let cleanup () = if not config.Cli.keep then List.iter remove !objects in
+    Fun.protect ~finally:cleanup (fun () ->
+        let rec compile acc = function
+          | [] -> f (List.rev acc)
+          | path :: rest when Filename.check_suffix path ".c" ->
+              let object_path = Filename.temp_file "fas-c-link-" ".o" in
+              objects := object_path :: !objects;
+              let* () =
+                run_tool cc
+                  (Array.of_list
+                     ([ cc; "-g"; "-c"; path; "-o"; object_path ]
+                     @ config.Cli.c_flags @ c_sanitizer_flags config))
+              in
+              compile (object_path :: acc) rest
+          | path :: rest -> compile (path :: acc) rest
+        in
+        compile [] config.Cli.link_inputs)
+
 let executable_command config cc asm_path c_objects =
   let math_library = if List.mem "-lm" config.Cli.link_inputs then [] else [ "-lm" ] in
   let argv =
@@ -557,20 +583,29 @@ let executable_command config cc asm_path c_objects =
     prerr_endline ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
   argv
 
-let run_llc config llc ~filetype ~input ~output =
-  run_tool llc
-    [|
-      llc;
-      llc_opt config.Cli.optimization;
-      "-relocation-model=pic";
-      "-filetype=" ^ filetype;
-      input;
-      "-o";
-      output;
-    |]
+let remark_option = function
+  | Some path -> [ "-pass-remarks-output=" ^ path ]
+  | None -> []
 
-let build_assembly config llc opt_path asm_path =
-  let* () = run_llc config llc ~filetype:"asm" ~input:opt_path ~output:asm_path in
+let target_cpu_option config =
+  match config.Cli.target_cpu with Some cpu -> [ "-mcpu=" ^ cpu ] | None -> []
+
+let run_llc ?llc_remarks config llc ~filetype ~input ~output =
+  run_tool llc
+    (Array.of_list
+       ([
+          llc;
+          llc_opt config.Cli.optimization;
+          "-relocation-model=pic";
+          "-filetype=" ^ filetype;
+        ]
+       @ target_cpu_option config @ remark_option llc_remarks @ [ input; "-o"; output ]
+       ))
+
+let build_assembly ?llc_remarks config llc opt_path asm_path =
+  let* () =
+    run_llc ?llc_remarks config llc ~filetype:"asm" ~input:opt_path ~output:asm_path
+  in
   let* generated =
     read_file asm_path
     |> Result.map_error (fun message ->
@@ -578,7 +613,7 @@ let build_assembly config llc opt_path asm_path =
   in
   Ok generated
 
-let optimize_module config opt ll_path opt_path =
+let optimize_module ?remarks config opt ll_path opt_path =
   let* () = verify_llvm opt ll_path in
   let* () =
     let address_scope_option =
@@ -588,18 +623,20 @@ let optimize_module config opt ll_path opt_path =
     run_tool opt
       (Array.of_list
          ([ opt; "-passes=" ^ opt_pass config ]
-         @ address_scope_option
+         @ target_cpu_option config @ remark_option remarks @ address_scope_option
          @ [ ll_path; "-S"; "-o"; opt_path ]))
   in
   verify_llvm opt opt_path
 
-let emit_tools_unprotected config program ir c_objects redirect =
+let emit_tools_unprotected ?remarks ?llc_remarks ?llvm_text ?(c_debug = false) config
+    program ir c_objects redirect =
   let* () = ir_budget program (Ir.check_static_data_bytes ~limits ir) in
   let* ll_text =
     render_ir ~redirect
       ~sanitize_address:(List.mem "address" config.Cli.sanitizers)
       ~debug_info:config.Cli.debug ir
   in
+  Option.iter (fun report -> report ll_text) llvm_text;
   let ll_path = Filename.temp_file "fas-module-" ".ll" in
   let opt_path = Filename.temp_file "fas-opt-" ".ll" in
   let asm_path = Filename.temp_file "fas-module-" ".s" in
@@ -610,10 +647,10 @@ let emit_tools_unprotected config program ir c_objects redirect =
       write_file ll_path ll_text;
       let opt, llc, cc = tools () in
       report_kept config [ ll_path; opt_path; asm_path ] opt llc cc;
-      let* () = optimize_module config opt ll_path opt_path in
+      let* () = optimize_module ?remarks config opt ll_path opt_path in
       match config.emit with
       | Cli.Asm ->
-          let* assembly = build_assembly config llc opt_path asm_path in
+          let* assembly = build_assembly ?llc_remarks config llc opt_path asm_path in
           with_staged_output config (fun output ->
               try
                 write_file output assembly;
@@ -628,7 +665,8 @@ let emit_tools_unprotected config program ir c_objects redirect =
           with_staged_output config (fun output ->
               let* () =
                 if c_objects = [] then
-                  run_llc config llc ~filetype:"obj" ~input:opt_path ~output
+                  run_llc ?llc_remarks config llc ~filetype:"obj" ~input:opt_path
+                    ~output
                 else
                   let fas_object = Filename.temp_file "fas-object-" ".o" in
                   let cleanup_object () =
@@ -638,7 +676,7 @@ let emit_tools_unprotected config program ir c_objects redirect =
                       if config.Cli.keep then
                         prerr_endline ("fas: kept Fas object: " ^ fas_object);
                       let* () =
-                        run_llc config llc ~filetype:"obj" ~input:opt_path
+                        run_llc ?llc_remarks config llc ~filetype:"obj" ~input:opt_path
                           ~output:fas_object
                       in
                       let argv =
@@ -652,18 +690,27 @@ let emit_tools_unprotected config program ir c_objects redirect =
               in
               Ok "")
       | Cli.Executable ->
-          let* _ = build_assembly config llc opt_path asm_path in
+          let* _ = build_assembly ?llc_remarks config llc opt_path asm_path in
           with_staged_output config (fun output ->
               let output_config = { config with Cli.output } in
               let* () =
-                run_tool cc (executable_command output_config cc asm_path c_objects)
+                with_debug_c_inputs ~enabled:c_debug output_config cc
+                  (fun link_inputs ->
+                    run_tool cc
+                      (executable_command
+                         { output_config with Cli.link_inputs }
+                         cc asm_path c_objects))
               in
               Ok "")
       | Cli.Ir | Cli.Ir_json | Cli.Llvm | Cli.Optimized_llvm | Cli.Header ->
           invalid_arg "Driver.emit_tools: non-tool emission")
 
-let emit_tools config program ir c_objects redirect =
-  try emit_tools_unprotected config program ir c_objects redirect with
+let emit_tools ?remarks ?llc_remarks ?llvm_text ?c_debug config program ir c_objects
+    redirect =
+  try
+    emit_tools_unprotected ?remarks ?llc_remarks ?llvm_text ?c_debug config program ir
+      c_objects redirect
+  with
   | Sys_error message ->
       Error [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ]
   | Unix.Unix_error (code, operation, argument) ->
@@ -922,7 +969,7 @@ let add_static_adapters units referenced_names ir =
   | Ok () -> Ok (ir, adapters, redirect)
   | Error message -> Error [ Diag.error Span.synthetic ("internal error: " ^ message) ]
 
-let run_unprotected ?header_output config =
+let run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug config =
   let c_artifacts = ref [] in
   Fun.protect
     ~finally:(fun () ->
@@ -1270,10 +1317,13 @@ let run_unprotected ?header_output config =
                   emit_text config text)
           | Cli.Optimized_llvm -> emit_optimized_llvm config program ir redirect
           | Cli.Asm | Cli.Obj | Cli.Executable ->
-              emit_tools config program ir c_objects redirect))
+              emit_tools ?remarks ?llc_remarks ?llvm_text ?c_debug config program ir
+                c_objects redirect))
 
-let run_unstaged ?header_output config =
-  try run_unprotected ?header_output config with
+let run_unstaged ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug config =
+  try
+    run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug config
+  with
   | Sys_error message ->
       Error [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ]
   | Unix.Unix_error (code, operation, argument) ->
@@ -1287,12 +1337,13 @@ let run_unstaged ?header_output config =
 let same_as_input config =
   canonical_path config.Cli.input = canonical_path config.Cli.output
 
-let run config =
-  if not config.Cli.output_explicit then run_unstaged config
+let run ?remarks ?llc_remarks ?llvm_text ?c_debug config =
+  if not config.Cli.output_explicit then
+    run_unstaged ?remarks ?llc_remarks ?llvm_text ?c_debug config
   else if same_as_input config then
     Error [ Diag.error Span.synthetic "output path must differ from the input file" ]
   else
-    match run_unstaged config with
+    match run_unstaged ?remarks ?llc_remarks ?llvm_text ?c_debug config with
     | Ok _ as result -> result
     | Error _ as result ->
         if not (is_non_regular_output config.Cli.output) then remove config.Cli.output;

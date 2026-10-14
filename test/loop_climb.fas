@@ -1,0 +1,29 @@
+var sink arr[4096, u8] = {}
+
+fn put(o addr, value u64) addr {
+    ip u64 = value
+    tmp arr[24, u8] = {}
+    n usize = 0
+    while ip > 0 {
+        tmp[n] = '0' + trunc[u8](ip % 10)
+        n += 1
+        ip /= 10
+    }
+    while n > 0 {
+        n -= 1
+        o[u8] = tmp[n]
+        o += 1
+    }
+    o[u8] = ';'
+    return o + 1
+}
+
+fn main() i32 {
+    last addr = &sink
+    total u64 = 0
+    for r u64 = 0; r < 3000; r += 1 {
+        last = put(&sink, r * 977)
+        total += zext[u64](sink[r])
+    }
+    return trunc[i32](total % 256)
+}

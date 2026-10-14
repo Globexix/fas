@@ -108,6 +108,7 @@ type func = {
   linkage : linkage;
   variadic : bool;
   source : (string * int) option;
+  display : string option;
 }
 
 and block = { id : int; label : string; instrs : instr list; terminator : terminator }
@@ -2074,11 +2075,12 @@ let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false)
             match (scope, f.source) with
             | Some sp, Some (path, line) ->
                 let file = Hashtbl.find file_ids path in
+                let display = Option.value f.display ~default:f.name in
                 add (Printf.sprintf "!%d = distinct !DISubprogram(name: \"" sp);
-                add_escaped_bytes f.name;
+                add_escaped_bytes display;
                 add "\"";
                 let linkage_name = redirect f.name in
-                if linkage_name <> f.name then (
+                if linkage_name <> display then (
                   add ", linkageName: \"";
                   add_escaped_bytes linkage_name;
                   add "\"");

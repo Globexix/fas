@@ -1,0 +1,20 @@
+fn scan(limit u64) u64 {
+    v u64 = 0
+    total u64 = 0
+    while v < limit {
+        v += 1
+        if v % 3 == 0 {
+            continue
+        }
+        total += v * v
+    }
+    return total
+}
+
+fn main() i32 {
+    total u64 = 0
+    for r u64 = 0; r < 3000; r += 1 {
+        total += scan(r % 17 + 40)
+    }
+    return trunc[i32](total % 256)
+}

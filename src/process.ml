@@ -118,7 +118,7 @@ let run_program path argv =
         | 0 ->
             restore ();
             unblock ();
-            (try Unix.execv path argv
+            (try Unix.execvp path argv
              with Unix.Unix_error (code, _, _) ->
                let message = Unix.error_message code in
                ignore (Unix.write_substring write_end message 0 (String.length message)));

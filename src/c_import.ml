@@ -2018,6 +2018,19 @@ type mapped = {
 let adapter_symbol source name =
   "__fas_c_adapter_" ^ Digest.to_hex (Digest.string source) ^ "_" ^ name
 
+let adapter_c_name symbol =
+  let prefix = "__fas_c_adapter_" in
+  let start = String.length prefix + 32 in
+  if
+    String.length symbol > start + 1
+    && String.starts_with ~prefix symbol
+    && String.for_all
+         (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false)
+         (String.sub symbol (String.length prefix) 32)
+    && symbol.[start] = '_'
+  then Some (String.sub symbol (start + 1) (String.length symbol - start - 1))
+  else None
+
 let make_adapter ~occupied source (static : static_function) =
   if static.variadic then
     Error ("static variadic function `" ^ static.name ^ "` needs an adapter")

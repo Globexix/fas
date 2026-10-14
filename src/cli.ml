@@ -14,18 +14,41 @@ type t = {
   link_inputs : string list;
   c_flags : string list;
   diagnostics : diagnostics;
+  target_cpu : string option;
 }
 
-type command = Run of t | Run_program of t * string list | Check of t | Help | Version
-type subcommand = Build | Run_subcommand | Check_subcommand
+type perf_options = {
+  top : int;
+  static : bool;
+  json : bool;
+  asm : (string * int) option;
+  copy : int option;
+  compare : string option;
+}
+
+type command =
+  | Run of t
+  | Run_program of t * string list
+  | Check of t
+  | Perf of t * perf_options * string list
+  | Help
+  | Version
+
+type subcommand = Build | Run_subcommand | Check_subcommand | Perf_subcommand
+
+let default_perf =
+  { top = 5; static = false; json = false; asm = None; copy = None; compare = None }
 
 let usage =
   "usage: fas [options] file.fas [C inputs and link flags]\n\
   \       fas run file.fas [options] [-- program arguments]\n\
   \       fas check file.fas [options]\n\
+  \       fas perf file.fas [options] [--top N] [--static] [--compare FILE] [-- \
+   program arguments]\n\
    commands:\n\
   \  run FILE      build to a temporary executable, run it, delete it\n\
   \  check FILE    check without building (no LLVM, no linking)\n\
+  \  perf FILE     profile: hot loops by Fas line (needs perf)\n\
    build:\n\
   \  -O0..-O3      set opt and llc optimization levels (default -O2)\n\
    output:\n\
@@ -76,7 +99,7 @@ let parse_invocation ~subcommand argv =
   let rejected flag =
     match subcommand with
     | Build -> false
-    | Run_subcommand ->
+    | Run_subcommand | Perf_subcommand ->
         List.mem flag [ "-o"; "-c"; "-S" ] || String.starts_with ~prefix:"--emit-" flag
     | Check_subcommand ->
         List.mem flag [ "-o"; "-c"; "-S"; "-l"; "-L" ]
@@ -113,6 +136,7 @@ let parse_invocation ~subcommand argv =
             link_inputs = List.rev !link_inputs_rev;
             c_flags = List.rev !c_flags_rev;
             diagnostics = !diagnostics;
+            target_cpu = None;
           }
         in
         Ok (if subcommand = Check_subcommand then Check config else Run config)
@@ -121,10 +145,14 @@ let parse_invocation ~subcommand argv =
       | "--help" | "-h" -> Ok Help
       | flag when rejected flag ->
           Error
-            (if subcommand = Check_subcommand then
-               "fas check checks one Fas file; `" ^ flag ^ "` is not accepted"
-             else
-               "fas run builds and runs an executable; `" ^ flag ^ "` is not accepted")
+            (match subcommand with
+            | Check_subcommand ->
+                "fas check checks one Fas file; `" ^ flag ^ "` is not accepted"
+            | Perf_subcommand ->
+                "fas perf builds and profiles an executable; `" ^ flag
+                ^ "` is not accepted"
+            | Build | Run_subcommand ->
+                "fas run builds and runs an executable; `" ^ flag ^ "` is not accepted")
       | "-o" ->
           if i + 1 >= n then Error "-o requires an output path"
           else if argv.(i + 1) = "-" then Error "-o - is not supported"
@@ -279,21 +307,101 @@ let parse_invocation ~subcommand argv =
     (if subcommand = Check_subcommand then Ir else Executable)
     false 2 false false None
 
+let split_perf_options argv =
+  let n = Array.length argv in
+  let rec scan i kept options =
+    if i >= n then Ok (Array.of_list (List.rev kept), options)
+    else
+      let with_value error update =
+        if i + 1 >= n then Error error
+        else
+          match update argv.(i + 1) with
+          | Some options -> scan (i + 2) kept options
+          | None -> Error error
+      in
+      match argv.(i) with
+      | "--static" -> scan (i + 1) kept { options with static = true }
+      | "--json" -> scan (i + 1) kept { options with json = true }
+      | "--compare" ->
+          with_value "--compare requires a file" (fun path ->
+              Some { options with compare = Some path })
+      | "--top" ->
+          with_value "--top requires a number from 1 to 50" (fun text ->
+              match int_of_string_opt text with
+              | Some top when top >= 1 && top <= 50 -> Some { options with top }
+              | _ -> None)
+      | "--asm" ->
+          with_value "--asm requires FILE:LINE or FILE:LINE@N" (fun text ->
+              let at =
+                Option.value (String.rindex_opt text '@') ~default:(String.length text)
+              in
+              let copy =
+                if at = String.length text then Some None
+                else
+                  match
+                    int_of_string_opt
+                      (String.sub text (at + 1) (String.length text - at - 1))
+                  with
+                  | Some n when n >= 1 -> Some (Some n)
+                  | _ -> None
+              in
+              let place = String.sub text 0 at in
+              match (String.rindex_opt place ':', copy) with
+              | Some colon, Some copy -> (
+                  let line =
+                    String.sub place (colon + 1) (String.length place - colon - 1)
+                  in
+                  match int_of_string_opt line with
+                  | Some line when colon > 0 && line > 0 ->
+                      Some
+                        {
+                          options with
+                          asm = Some (String.sub place 0 colon, line);
+                          copy;
+                        }
+                  | _ -> None)
+              | _ -> None)
+      | flag -> scan (i + 1) (flag :: kept) options
+  in
+  scan 0 [] default_perf
+
+let perf_command config options args =
+  if options.json && Option.is_some options.asm then
+    Error "fas perf: --json and --asm cannot be combined"
+  else if options.static && args <> [] then
+    Error "fas perf --static does not run the program; `--` arguments are not accepted"
+  else Ok (Perf (config, options, args))
+
 let parse argv =
   let n = Array.length argv in
   let subcommand =
     if n > 1 && String.equal argv.(1) "run" then Run_subcommand
     else if n > 1 && String.equal argv.(1) "check" then Check_subcommand
+    else if n > 1 && String.equal argv.(1) "perf" then Perf_subcommand
     else Build
   in
   let rec find i = if i >= n || String.equal argv.(i) "--" then i else find (i + 1) in
-  let sep = if subcommand = Run_subcommand then find 2 else n in
+  let sep = if subcommand = Build || subcommand = Check_subcommand then n else find 2 in
   if n > 1 && Array.exists (String.equal "--version") (Array.sub argv 1 (sep - 1)) then
     if n = 2 then Ok Version
     else Error "--version cannot be combined with other arguments"
   else
-    match parse_invocation ~subcommand (Array.sub argv 0 sep) with
-    | Ok (Run config) when subcommand = Run_subcommand ->
-        let program = Array.to_list (Array.sub argv sep (n - sep)) in
-        Ok (Run_program (config, match program with _ :: args -> args | [] -> []))
-    | result -> result
+    let args =
+      match Array.to_list (Array.sub argv sep (n - sep)) with
+      | _ :: args -> args
+      | [] -> []
+    in
+    let build_argv = Array.sub argv 0 sep in
+    let invocation =
+      if subcommand = Perf_subcommand then split_perf_options build_argv
+      else Ok (build_argv, default_perf)
+    in
+    match invocation with
+    | Error _ as error -> error
+    | Ok (build_argv, options) -> (
+        match parse_invocation ~subcommand build_argv with
+        | Ok (Run config) when subcommand = Run_subcommand ->
+            Ok (Run_program (config, args))
+        | Ok (Run config) when subcommand = Perf_subcommand ->
+            perf_command config options args
+        | result -> result)

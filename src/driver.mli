@@ -10,5 +10,14 @@ val load_program :
     Diag.t list )
   result
 
-val run : Cli.t -> (string, Diag.t list) result
+val run :
+  ?remarks:string ->
+  ?llc_remarks:string ->
+  ?llvm_text:(string -> unit) ->
+  ?c_debug:bool ->
+  Cli.t ->
+  (string, Diag.t list) result
+
+val tool : string -> string -> string
+val executable_path : string -> string
 val version_lines : unit -> string list

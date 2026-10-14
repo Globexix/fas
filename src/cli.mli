@@ -14,9 +14,25 @@ type t = {
   link_inputs : string list;
   c_flags : string list;
   diagnostics : diagnostics;
+  target_cpu : string option;
 }
 
-type command = Run of t | Run_program of t * string list | Check of t | Help | Version
+type perf_options = {
+  top : int;
+  static : bool;
+  json : bool;
+  asm : (string * int) option;
+  copy : int option;
+  compare : string option;
+}
+
+type command =
+  | Run of t
+  | Run_program of t * string list
+  | Check of t
+  | Perf of t * perf_options * string list
+  | Help
+  | Version
 
 val parse : string array -> (command, string) result
 val usage : string

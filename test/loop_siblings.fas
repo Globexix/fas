@@ -1,0 +1,24 @@
+fn fold(x u64) u64 {
+    v u64 = x
+    while v > 1000 {
+        v = v / 10
+    }
+    return v
+}
+
+fn tally(n u64) u64 {
+    acc u64 = 0
+    for i u64 = 0; i < n; i += 1 {
+        acc += fold(i * 7)
+    }
+    return acc
+}
+
+fn main() i32 {
+    total u64 = 0
+    for r u64 = 0; r < 3000; r += 1 {
+        total += fold(r * 13)
+        total += tally(r % 5)
+    }
+    return trunc[i32](total % 256)
+}

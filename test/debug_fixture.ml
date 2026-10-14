@@ -30,6 +30,7 @@ let module_ ~markers =
       linkage = Ir.Internal;
       variadic = false;
       source = Some ("/work/lib/util.fas", 10);
+      display = None;
     }
   in
   let main =
@@ -63,6 +64,7 @@ let module_ ~markers =
       linkage = Ir.External;
       variadic = false;
       source = Some ("/work/app/main.fas", 3);
+      display = None;
     }
   in
   let plain =
@@ -75,6 +77,7 @@ let module_ ~markers =
       linkage = Ir.Internal;
       variadic = false;
       source = None;
+      display = None;
     }
   in
   {

@@ -131,34 +131,7 @@ let render ~source diagnostic = render_one ~source diagnostic
 let render_all ~source diagnostics =
   String.concat "\n" (List.map (render_one ~source) diagnostics)
 
-let json_string text =
-  let buffer = Buffer.create (String.length text + 2) in
-  let length = String.length text in
-  let rec add index =
-    if index < length then
-      let decoded = String.get_utf_8_uchar text index in
-      let width = Uchar.utf_decode_length decoded in
-      if Uchar.utf_decode_is_valid decoded && width > 1 then (
-        Buffer.add_substring buffer text index width;
-        add (index + width))
-      else (
-        (match text.[index] with
-        | '"' -> Buffer.add_string buffer "\\\""
-        | '\\' -> Buffer.add_string buffer "\\\\"
-        | '\n' -> Buffer.add_string buffer "\\n"
-        | '\r' -> Buffer.add_string buffer "\\r"
-        | '\t' -> Buffer.add_string buffer "\\t"
-        | '\b' -> Buffer.add_string buffer "\\b"
-        | '\012' -> Buffer.add_string buffer "\\f"
-        | c when Char.code c < 0x20 || Char.code c >= 0x80 ->
-            Buffer.add_string buffer (Printf.sprintf "\\u%04x" (Char.code c))
-        | c -> Buffer.add_char buffer c);
-        add (index + 1))
-  in
-  Buffer.add_char buffer '"';
-  add 0;
-  Buffer.add_char buffer '"';
-  Buffer.contents buffer
+let json_string = Json.quote
 
 let json_diagnostic diagnostic =
   let span = diagnostic.primary in

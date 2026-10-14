@@ -155,7 +155,7 @@ if grep -E -- 'LLVM_OPT|LLVM_LLC|(^|[^A-Za-z_])CC([^A-Za-z_]|$)' "$WORK/help-env
 fi
 "$OCAML_FAS" --version >"$WORK/version" 2>"$WORK/stderr" || fail "--version failed"
 [ ! -s "$WORK/stderr" ] || fail "--version wrote stderr"
-[ "$(wc -l <"$WORK/version")" -eq 4 ] || fail "--version line count changed"
+[ "$(wc -l <"$WORK/version")" -eq 8 ] || fail "--version line count changed"
 head -n 1 "$WORK/version" | grep -E '^fas 0\.5\.0-dev \(([0-9a-f]+|unknown)\)$' >/dev/null \
   || fail "--version first line changed"
 grep -F -- "opt: $WORK/opt-wrap (" "$WORK/version" >/dev/null || fail "--version omitted the opt in use"
@@ -169,6 +169,10 @@ if grep -F -- "not found" "$WORK/version" >/dev/null; then fail "--version could
 grep -E '^opt: [^ ]*/opt-22 \(' "$WORK/default-version" >/dev/null || fail "--version omitted the default opt"
 grep -E '^llc: [^ ]*/llc-22 \(' "$WORK/default-version" >/dev/null || fail "--version omitted the default llc"
 grep -E '^cc: [^ ]*/clang-22 \(' "$WORK/default-version" >/dev/null || fail "--version omitted the default C compiler"
+grep -E '^perf: [^ ]+ \(' "$WORK/default-version" >/dev/null || fail "--version omitted the perf tool"
+grep -E '^objdump: [^ ]*/llvm-objdump-22 \(' "$WORK/default-version" >/dev/null || fail "--version omitted the default objdump"
+grep -E '^symbolizer: [^ ]*/llvm-symbolizer-22 \(' "$WORK/default-version" >/dev/null || fail "--version omitted the default symbolizer"
+grep -E '^mca: [^ ]*/llvm-mca-22 \(' "$WORK/default-version" >/dev/null || fail "--version omitted the default mca"
 expect_failure "$OCAML_FAS" --version "$WORK/good.fas"
 grep -Fx -- "--version cannot be combined with other arguments" "$WORK/stderr" >/dev/null \
   || fail "--version with a file was not rejected"

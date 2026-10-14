@@ -900,6 +900,7 @@ let cli_run args =
   | Ok Cli.Version -> failwith "expected compiler invocation"
   | Ok (Cli.Run_program _) -> failwith "expected compiler invocation"
   | Ok (Cli.Check _) -> failwith "expected compiler invocation"
+  | Ok (Cli.Perf _) -> failwith "expected compiler invocation"
   | Error message -> failwith message
 
 let lower_of text =
@@ -948,6 +949,7 @@ let lower_function_error name fragment params body =
               linkage = Hir.Internal;
               variadic = false;
               span = Span.synthetic;
+              display = None;
             };
           ];
         strings = [];
@@ -3563,6 +3565,38 @@ let () =
           if not (contains rendered "not a normal definition") then
             failwith "no-inline: external declaration diagnostic changed"
       | Ok _ -> failwith "no-inline: external declaration was accepted");
+  let display_source_path = Filename.temp_file "fas-display-" ".fas" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove display_source_path)
+    (fun () ->
+      let channel = open_out_bin display_source_path in
+      output_string channel
+        (String.concat "\n"
+           [
+             "fn sum[T](data addr, n usize) T {";
+             "    total T = 0";
+             "    for i usize = 0; i < n; i += 1 {";
+             "        total += data[T, i]";
+             "    }";
+             "    return total";
+             "}";
+             "fn main() i32 {";
+             "    s addr = \"abcd\"";
+             "    return trunc[i32](sum[u64](s, 0))";
+             "}";
+             "";
+           ]);
+      close_out channel;
+      let output =
+        match Driver.run (cli_run [ "-g"; "--emit-llvm"; display_source_path ]) with
+        | Ok output -> output
+        | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
+      in
+      if
+        not
+          (contains output
+             "DISubprogram(name: \"sum[u64]\", linkageName: \"sum$spec$3_u64\", ")
+      then failwith "debug names: generic specialization display pair changed");
   let budget_source_path = Filename.temp_file "fas-budget-source-" ".fas" in
   Fun.protect
     ~finally:(fun () -> Sys.remove budget_source_path)
@@ -8323,6 +8357,7 @@ let () =
                linkage = Hir.Internal;
                variadic = false;
                span = Span.synthetic;
+               display = None;
              };
            ];
        }
@@ -8350,6 +8385,7 @@ let () =
                linkage = Hir.Internal;
                variadic = false;
                span = Span.synthetic;
+               display = None;
              };
            ];
        }
@@ -8393,6 +8429,7 @@ let () =
                linkage = Hir.Internal;
                variadic = false;
                span = Span.synthetic;
+               display = None;
              };
            ];
        }
