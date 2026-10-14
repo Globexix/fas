@@ -406,7 +406,7 @@ let tool name default =
 let tools () =
   (tool "FAS_OPT" "opt-22", tool "FAS_LLC" "llc-22", tool "FAS_CC" "clang-22")
 
-let version = "0.5.0-dev"
+let version = "0.5.0"
 
 let executable_path name =
   if String.contains name '/' then name
