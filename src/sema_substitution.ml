@@ -549,7 +549,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Defer (body, _) | Ast.Block (body, _) ->
         let* () = validate_statement_block_names value_names type_names body in
         Ok (value_names, scope_names)
-    | Ast.Expr_stmt (expression, _) ->
+    | Ast.Expr_stmt (expression, _, _) ->
         let* () = validate_expression_names value_names type_names expression in
         Ok (value_names, scope_names)
     | Ast.For (_, init, condition, step, body, _) ->
@@ -1846,7 +1846,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Defer (body, _) | Ast.Block (body, _) ->
         let* () = validate_non_dependent_block c dependent expected_return body in
         Ok dependent
-    | Ast.Expr_stmt (expression, _) ->
+    | Ast.Expr_stmt (expression, _, _) ->
         let* () = validate_non_dependent_expression c dependent None expression in
         Ok dependent
     | Ast.For (_, init, condition, step, body, _) ->
@@ -2910,11 +2910,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                   body)
           in
           Ok (Ast.Defer (body, span))
-      | Ast.Expr_stmt (expression, span) ->
+      | Ast.Expr_stmt (expression, span, finish) ->
           let* expression =
             resolve_expr ~values ~defer_const_structs substitutions depth expression
           in
-          Ok (Ast.Expr_stmt (expression, span))
+          Ok (Ast.Expr_stmt (expression, span, finish))
       | Ast.Block (body, span) ->
           let* body =
             with_local_values !local_values (fun () ->

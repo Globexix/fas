@@ -92,7 +92,7 @@ and stmt =
   | Break of (string * Span.t) option * Span.t
   | Continue of (string * Span.t) option * Span.t
   | Defer of stmt list * Span.t
-  | Expr_stmt of expr * Span.t
+  | Expr_stmt of expr * Span.t * Span.t
   | Block of stmt list * Span.t
   | For of
       loop_label option * stmt option * expr option * stmt option * stmt list * Span.t
@@ -232,6 +232,12 @@ and expr_end_span = function
   | Arrow_field (_, _, _, field_span) | Field (_, _, field_span) -> field_span
   | expression -> expr_span expression
 
+let rec expr_leading_operator = function
+  | Binary (_, left, _, _) | Ternary (left, _, _, _) -> expr_leading_operator left
+  | Unary (Neg, _, _) -> Some "-"
+  | Addr_of _ -> Some "&"
+  | _ -> None
+
 let rec index_expression = function
   | Named_type (name, span) -> Ident (name, span)
   | Applied_type (name, arguments, span) ->
@@ -253,7 +259,7 @@ let stmt_span = function
   | Break (_, span)
   | Continue (_, span)
   | Defer (_, span)
-  | Expr_stmt (_, span)
+  | Expr_stmt (_, span, _)
   | Block (_, span)
   | For (_, _, _, _, _, span)
   | Switch (_, _, _, span) ->
@@ -685,7 +691,7 @@ let render_program program =
         text indent;
         text "return ";
         emit_expr e
-    | Expr_stmt (e, _) ->
+    | Expr_stmt (e, _, _) ->
         text indent;
         emit_expr e
     | Break (None, _) ->
@@ -980,7 +986,7 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
           go_stmts xs
       | Break _ | Continue _ -> ()
       | Defer (xs, _) | Block (xs, _) -> go_stmts xs
-      | Expr_stmt (e, _) -> go_expr e
+      | Expr_stmt (e, _, _) -> go_expr e
       | For (_, i, c, st, body, _) ->
           Option.iter go_stmt i;
           Option.iter go_expr c;

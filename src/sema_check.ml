@@ -10,6 +10,11 @@ let error ?help span message = Error [ Diag.error ?help span message ]
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 let literal_condition_truth = function Hir.EBool (value, _) -> Some value | _ -> None
 
+let rec statement_call = function
+  | Ast.Call _ -> true
+  | Ast.Parenthesized (e, _) -> statement_call e
+  | _ -> false
+
 let index_type_error label expression ty =
   error (Ast.expr_span expression)
     (Printf.sprintf "%s must be an integer, got `%s`" label
@@ -4465,7 +4470,7 @@ let rec statement_changes_name name = function
       || List.exists (statement_changes_name name) body
   | Ast.Defer (body, _) | Ast.Block (body, _) ->
       List.exists (statement_changes_name name) body
-  | Ast.Expr_stmt (expression, _) -> expression_takes_name_address name expression
+  | Ast.Expr_stmt (expression, _, _) -> expression_takes_name_address name expression
   | Ast.For (_, init, condition, step, body, _) ->
       Option.fold ~none:false ~some:(statement_changes_name name) init
       || Option.fold ~none:false ~some:(expression_takes_name_address name) condition
@@ -5036,10 +5041,10 @@ and check_stmt (c : context) = function
         | Some binding, _ -> Sema_flow.note_binding_write c.flow binding.id
         | _ -> ());
         Ok (Hir.Compound_assign (target, op, v, et, span)))
-  | Ast.Expr_stmt (Ast.Call (Ast.Ident ("copy", _), args, call_span), _) ->
+  | Ast.Expr_stmt (Ast.Call (Ast.Ident ("copy", _), args, call_span), _, _) ->
       check_copy c args call_span
   | Ast.Expr_stmt
-      (Ast.Call (Ast.Generic_args (Ast.Ident ("copy", _), _, _), _, call_span), _) ->
+      (Ast.Call (Ast.Generic_args (Ast.Ident ("copy", _), _, _), _, call_span), _, _) ->
       error call_span "copy takes no type arguments"
   | Ast.Return (e, span) ->
       let* () = Sema_flow.validate_return c.flow span in
@@ -5084,7 +5089,8 @@ and check_stmt (c : context) = function
               (Ast.Ident ("volatile_store", _), generic_args, application_span),
             args,
             call_span ),
-        span ) ->
+        span,
+        _ ) ->
       let* access_ty =
         volatile_access_type c "volatile_store" application_span generic_args
       in
@@ -5119,7 +5125,8 @@ and check_stmt (c : context) = function
           ( Ast.Generic_args (Ast.Ident (name, _), generic_args, application_span),
             args,
             call_span ),
-        span )
+        span,
+        _ )
     when name = "masked_store" || name = "scatter" || name = "scatter_bytes" ->
       let* access_ty = simd_memory_access_type c name application_span generic_args in
       let* checked, _ = check_simd_memory_args c name access_ty args call_span in
@@ -5152,11 +5159,23 @@ and check_stmt (c : context) = function
         | _ -> Hir.Scatter_bytes
       in
       Ok (Hir.Simd_store (access_ty, kind, checked, span))
-  | Ast.Expr_stmt (e, s) ->
+  | Ast.Expr_stmt (e, s, finish) ->
       let* x = check_expr c None e in
       if aggregate_value_type (Hir.expr_ty x) then
         error s "aggregate values cannot be used by value; use `copy(dst, src)`"
-      else Ok (Hir.Expr (x, s))
+      else if statement_call e then Ok (Hir.Expr (x, s))
+      else
+        let span =
+          Span.make ~file:s.Span.file ~start_offset:s.Span.start_offset
+            ~end_offset:finish.Span.end_offset ~line:s.Span.line ~column:s.Span.column
+        in
+        error
+          ?help:
+            (Option.map
+               (fun op -> "to continue the previous line, end it with `" ^ op ^ "`")
+               (Ast.expr_leading_operator e))
+          span
+          (Printf.sprintf "`%s` is not used" (Ast.expr_name e))
   | Ast.Block (xs, s) ->
       let* x = check_block c xs in
       Ok (Hir.Block (x, s))

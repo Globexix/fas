@@ -243,7 +243,7 @@ and count_expanded_stmt_type_nodes stmt cap total =
     | Ast.Break _ | Ast.Continue _ -> total
     | Ast.Defer (body, _) | Ast.Block (body, _) ->
         count_expanded_stmts_type_nodes body cap total
-    | Ast.Expr_stmt (expression, _) ->
+    | Ast.Expr_stmt (expression, _, _) ->
         count_expanded_expr_type_nodes expression cap total
     | Ast.For (_, init, condition, step, body, _) ->
         let total =

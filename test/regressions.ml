@@ -353,7 +353,7 @@ let replay_nodes index (program : Ast.program) =
         List.iter stmt body
     | Break _ | Continue _ -> ()
     | Defer (body, _) | Block (body, _) -> List.iter stmt body
-    | Expr_stmt (operand, _) -> run operand
+    | Expr_stmt (operand, _, _) -> run operand
     | For (_, initial, condition, step, body, _) ->
         Option.iter stmt initial;
         Option.iter run condition;
@@ -1232,10 +1232,10 @@ let () =
     "fn f(value vec[4,u8]) vec[4,u16] { return trunc[vec[4,u16]](value) }\n";
   semantic_error "integer-vector-bitcast-opaque"
     "illegal cast for source and destination widths"
-    "opaque Handle\nfn f(value i64) void { bitcast[Handle](value)\n return }\n";
+    "opaque Handle\nfn f(value i64) void { return bitcast[Handle](value) }\n";
   semantic_error "integer-vector-bitcast-void"
     "illegal cast for source and destination widths"
-    "fn f(value i64) void { bitcast[void](value)\n return }\n";
+    "fn f(value i64) void { return bitcast[void](value) }\n";
   semantic_error "constant-bool-arithmetic"
     "operator `+` needs integer or integer vector operands"
     "const Invalid bool = true + true\nfn main() i32 { return 0 }\n";
@@ -1367,7 +1367,7 @@ let () =
   semantic_error "constant-vector-index-compound-assignment" "cannot modify constant"
     "const Values vec[4,u8] = splat(1)\nfn main() i32 { Values[0] += 2\n return 0 }\n";
   semantic_error "constant-vector-address" "cannot take the address"
-    "const Values vec[4,u8] = splat(1)\nfn main() i32 { &Values\n return 0 }\n";
+    "const Values vec[4,u8] = splat(1)\nfn main() i32 { p addr = &Values\n return 0 }\n";
   ignore
     (llvm_of
        "const Safe vec[4,u8] = if true { splat(7) } else { splat(1) / splat(0) }\n\
@@ -1933,7 +1933,7 @@ let () =
   semantic_error "place-init-short-circuit-escape" "use of uninitialized local `s`"
     "struct S { x i64 y i64 }\n\
      fn f() i64 { s S\n\
-    \ true || (&s != addr_from_bits(0))\n\
+    \ b bool = true || (&s != addr_from_bits(0))\n\
     \ t S\n\
     \ copy(t, s)\n\
     \ return 0 }\n";
@@ -1943,7 +1943,7 @@ let () =
         fn take(p addr) void { return }\n\
         fn f() i64 { s S\n\
        \ take(&s)\n\
-       \ true || false\n\
+       \ b bool = true || false\n\
        \ t S\n\
        \ copy(t, s)\n\
        \ return 0 }\n");
@@ -3344,7 +3344,7 @@ let () =
        "fn controls(value i64, condition bool) i64 {\n\
         while (condition){ break }\n\
         switch (value){ case 0: { return 0 } default: { } }\n\
-        for ; condition; (value){ break }\n\
+        for ; condition; { break }\n\
         return value\n\
         }\n");
   semantic_error "fas-005-void-if-expression"
@@ -3845,7 +3845,7 @@ let () =
     "fn main() i32 { bytes arr[3,u8] = \"abc\"\n return 0 }\n";
   semantic_error "fas-030-c-string-literal-nul"
     "C string literal cannot contain embedded NUL"
-    "fn main() i32 { c\"a\\0b\"[0]\n return 0 }\n";
+    "fn main() i32 { v u8 = c\"a\\0b\"[0]\n return 0 }\n";
   semantic_error "fas-030-const-c-string-literal-nul"
     "C string literal cannot contain embedded NUL"
     "const N usize = len(c\"a\\0b\")\nfn test() usize { return N }\n";
@@ -3854,7 +3854,7 @@ let () =
     "fn test() usize { return len(c\"a\\0b\") }\n";
   semantic_error "fas-030-c-string-literal-hex-nul"
     "C string literal cannot contain embedded NUL"
-    "fn main() i32 { c\"a\\x00b\"[0]\n return 0 }\n";
+    "fn main() i32 { v u8 = c\"a\\x00b\"[0]\n return 0 }\n";
   semantic_error "fas-030-const-c-string-literal-hex-nul"
     "C string literal cannot contain embedded NUL"
     "const N usize = len(c\"a\\x00b\")\nfn test() usize { return N }\n";
@@ -5857,7 +5857,7 @@ let () =
   let expr_statement_shadow =
     llvm_of
       "const N usize = 99\n\
-       fn f[N const usize]() usize { N + 1\n\
+       fn f[N const usize]() usize { v usize = N + 1\n\
       \ return N }\n\
        fn test() usize { return f[2]() }\n"
   in
@@ -8573,7 +8573,7 @@ let () =
     "condition of `while` is `addr`, not `bool`"
     "fn f(value addr) void { while value { break } }\n";
   semantic_error "for-condition-bool-only" "condition of `for` is `i32`, not `bool`"
-    "fn f() void { for ; 1; (1) { break } }\n";
+    "fn f() void { for ; 1; { break } }\n";
   let removed_question = "fn f(c bool) i32 { return c ? 1 : 0 }" in
   syntax_pin "removed-question-token" removed_question 1
     (String.index removed_question '?' + 1)
@@ -10052,7 +10052,7 @@ let () =
        \ return value != addr_from_bits(0)\n\
        \ }\n\
         fn counted(value i64) i64 {\n\
-       \ for ; value != 0; (value) { break }\n\
+       \ for ; value != 0; { break }\n\
        \ return value\n\
        \ }\n");
   let vector_logical_not =
@@ -14051,7 +14051,7 @@ let () =
   c_semantic_accept "c-import-typedef-record-array-global" c_matrix
     "fn probe() i32 { return fas_alias_record_array[0].field }\n";
   unsupported "fas_array_unknown" "arrays of unknown size are not supported"
-    "fas_array_unknown[0]";
+    "v i32 = fas_array_unknown[0]";
   c_semantic_accept "c-import-float-global-array" c_matrix
     "fn probe() f32 { fas_array_float[2] = 1.5\nreturn fas_array_float[0] }\n";
   c_semantic_accept "c-import-float-globals" c_matrix
@@ -16654,7 +16654,7 @@ let () =
       if ty = "arr[4,u32]" then
         semantic_message ("generic-slot-handle-" ^ ty)
           "handle type argument must be an opaque type"
-          (body ("handle_from_addr[" ^ ty ^ "](p)"));
+          (body ("h handle[" ^ ty ^ "] = handle_from_addr[" ^ ty ^ "](p)"));
       List.iter
         (fun name ->
           let reason =
@@ -16667,11 +16667,12 @@ let () =
             ("generic-slot-conversion-" ^ name ^ "-" ^ ty)
             (Printf.sprintf "illegal `%s` from integer literal `1` to `%s`: %s" name
                printed_ty reason)
-            (body (name ^ "[" ^ ty ^ "](1)")))
+            (body ("v " ^ ty ^ " = " ^ name ^ "[" ^ ty ^ "](1)")))
         [ "bitcast"; "zext"; "sext"; "trunc" ])
     [ "Ring[4]"; "arr[4,u32]" ];
   semantic_accept "generic-slot-handle-generic-struct"
-    (prefix ^ "fn f(p addr) void { handle_from_addr[Ring[4]](p)\nreturn }");
+    (prefix
+   ^ "fn f(p addr) void { h handle[Ring[4]] = handle_from_addr[Ring[4]](p)\nreturn }");
   semantic_accept "vector-volatile-type-slot"
     "fn f(p addr) void { volatile_store[vec[4,u32]](p, splat(7))\n\
     \ volatile_load[vec[4,u32]](p)\n\
@@ -16785,7 +16786,8 @@ let () =
     ];
   semantic_message "vector-handle-type-slot"
     "handle type argument must be an opaque type"
-    "fn f(p addr) void { handle_from_addr[vec[4,u32]](p)\nreturn }";
+    "fn f(p addr) void { h handle[vec[4,u32]] = handle_from_addr[vec[4,u32]](p)\n\
+     return }";
   List.iter
     (fun name ->
       semantic_message
@@ -16798,7 +16800,7 @@ let () =
             else
               "the destination must be a wider integer type with the same vector lane \
                count"))
-        ("fn f() void { " ^ name ^ "[vec[4,u32]](1)\nreturn }"))
+        ("fn f() void { v vec[4,u32] = " ^ name ^ "[vec[4,u32]](1)\nreturn }"))
     [ "zext"; "sext"; "trunc" ];
   List.iter
     (fun name ->
@@ -16947,7 +16949,7 @@ let () =
      index usize = 4\n\
      for i usize = 0; i <= 4; i += 1 {\n\
      break\n\
-     values[index]\n\
+     v u8 = values[index]\n\
      }\n\
      return 0 }";
   semantic_accept "value-fact-labeled-break-index"
@@ -17682,9 +17684,9 @@ let () =
     "illegal `trunc` from `usize` to `addr`: integer-to-address conversion uses \
      `addr_from_bits`"
     (Some "write `addr_from_bits(bits)`");
-  let void_cast = "fn invalid(value i32) void { zext[void](value)\nreturn }\n" in
+  let void_cast = "fn invalid(value i32) void { return zext[void](value) }\n" in
   semantic_pin "cast-void-target" void_cast 1
-    (String.length "fn invalid(value i32) void { " + 1)
+    (String.length "fn invalid(value i32) void { return " + 1)
     4
     "illegal `zext` from `i32` to `void`: the source and destination must be integer \
      types"
@@ -18289,6 +18291,150 @@ let () =
         ("float-vector-compound-" ^ name ^ "-integer-twin")
         (Printf.sprintf "fn good(a vec[4,u32], b vec[4,u32]) void { a %s b }\n" operator))
     [ ("%=", "remainder"); ("&=", "and"); ("|=", "or"); ("^=", "xor") ]
+
+let () =
+  List.iter
+    (fun (operator, name) ->
+      semantic_accept ("line-continuation-" ^ name)
+        (Printf.sprintf "fn good(a i32, b i32) i32 {\n  return a %s\n  b\n}\n" operator))
+    [
+      ("+", "add");
+      ("-", "sub");
+      ("*", "mul");
+      ("/", "div");
+      ("%", "rem");
+      ("&", "bit-and");
+      ("|", "bit-or");
+      ("^", "bit-xor");
+      ("<<", "shl");
+      (">>", "shr");
+    ];
+  List.iter
+    (fun (operator, name) ->
+      semantic_accept ("line-continuation-" ^ name)
+        (Printf.sprintf
+           "fn good(a i32, b i32) i32 {\n\
+           \  if a %s\n\
+           \  b {\n\
+           \    return 1\n\
+           \  }\n\
+           \  return 0\n\
+            }\n"
+           operator))
+    [ ("==", "eq"); ("!=", "ne"); ("<", "lt"); ("<=", "le"); (">", "gt"); (">=", "ge") ];
+  semantic_accept "line-continuation-and"
+    "fn good(a i32, b i32) i32 {\n\
+    \  if a > 0 &&\n\
+    \  b > 0 {\n\
+    \    return 1\n\
+    \  }\n\
+    \  return 0\n\
+     }\n";
+  semantic_accept "line-continuation-or"
+    "fn good(a i32, b i32) i32 {\n\
+    \  if a > 0 ||\n\
+    \  b > 0 {\n\
+    \    return 1\n\
+    \  }\n\
+    \  return 0\n\
+     }\n";
+  semantic_accept "line-continuation-while-condition"
+    "fn good(n i32) i32 {\n\
+    \  i i32 = 0\n\
+    \  while i <\n\
+    \  n {\n\
+    \    i += 1\n\
+    \  }\n\
+    \  return i\n\
+     }\n";
+  semantic_accept "line-continuation-for-condition"
+    "fn good(n i32) i32 {\n\
+    \  total i32 = 0\n\
+    \  for i i32 = 0; i <\n\
+    \  n &&\n\
+    \  total >=\n\
+    \  0; i += 1 {\n\
+    \    total += i\n\
+    \  }\n\
+    \  return total\n\
+     }\n";
+  semantic_accept "line-continuation-call-argument"
+    "fn add(a i32, b i32) i32 {\n\
+    \  return a + b\n\
+     }\n\
+     fn good(a i32, b i32) i32 {\n\
+    \  return add(a +\n\
+    \  b, 1)\n\
+     }\n";
+  semantic_accept "line-continuation-initializer"
+    "fn good(a i32, b i32) i32 {\n  x i32 = a +\n  b\n  return x\n}\n";
+  semantic_accept "line-continuation-assignment"
+    "fn good(a i32, b i32) i32 {\n  x i32 = 0\n  x = a *\n  b\n  return x\n}\n";
+  semantic_accept "line-continuation-return-chain"
+    "fn good(a i32, b i32, c i32) i32 {\n  return a +\n  b +\n  c\n}\n";
+  semantic_accept "line-continuation-blank-and-comment-lines"
+    "fn good(a i32, b i32) i32 {\n  return a *\n\n  // a comment\n\n  b\n}\n";
+  syntax_pin "line-continuation-operator-before-closing-brace"
+    "fn bad(a i32) i32 {\n  x i32 = a +\n}\n" 2 14 1
+    "expected an expression, found newline";
+  syntax_pin "line-continuation-operator-before-blank-and-comment-lines"
+    "fn bad(a i32) i32 {\n  x i32 = a +\n\n  // note\n}\n" 2 14 1
+    "expected an expression, found newline";
+  syntax_pin "line-continuation-operator-before-closing-paren"
+    "fn bad(a i32) i32 {\n  return (a +\n)\n}\n" 3 1 1
+    "expected an expression, found `)`";
+  syntax_pin "line-continuation-assignment-stays-unjoined"
+    "fn bad(a i32) i32 {\n  x i32 = 0\n  x =\n  a\n  return x\n}\n" 3 6 1
+    "expected an expression, found newline";
+  syntax_pin "line-continuation-while-operator-before-brace"
+    "fn bad(n i32) i32 {\n  while n <\n}\n" 2 12 1
+    "expected an expression, found newline"
+
+let () =
+  let c_matrix = c_import_fixture "matrix.h" in
+  semantic_accept "expression-statement-void-call"
+    "fn g() void { }\nfn f() i32 {\n  g()\n  return 0\n}\n";
+  semantic_accept "expression-statement-value-call"
+    "fn h() i32 { return 1 }\nfn f() i32 {\n  h()\n  return 0\n}\n";
+  semantic_accept "expression-statement-builtin-store"
+    "fn f(p addr) void {\n  volatile_store[u32](p, 7)\n  return\n}\n";
+  c_semantic_accept "expression-statement-c-call" c_matrix
+    "fn probe(value u32) u32 {\n  fas_u32_echo(value)\n  return value\n}\n";
+  semantic_accept "expression-statement-parenthesized-call"
+    "fn g() i32 { return 1 }\nfn f() i32 {\n  (g())\n  return 0\n}\n";
+  semantic_pin "expression-statement-address-of"
+    "fn f(x i32) i32 {\n  &x\n  return 0\n}\n" 2 3 2 "`&x` is not used"
+    (Some "to continue the previous line, end it with `&`");
+  semantic_pin "expression-statement-leading-and"
+    "fn f(a u32, b u32) u32 {\n  y u32 = a\n  & b\n  return y\n}\n" 3 3 3
+    "`&b` is not used" (Some "to continue the previous line, end it with `&`");
+  semantic_pin "expression-statement-leading-minus"
+    "fn f(a u32, b u32) u32 {\n  y u32 = a\n  - b\n  return y\n}\n" 3 3 3
+    "`-b` is not used" (Some "to continue the previous line, end it with `-`");
+  semantic_pin "expression-statement-identifier"
+    "fn f(i i32) i32 {\n  i\n  return 0\n}\n" 2 3 1 "`i` is not used" None;
+  semantic_pin "expression-statement-not" "fn f(b bool) i32 {\n  !b\n  return 0\n}\n" 2
+    3 2 "`!b` is not used" None;
+  semantic_pin "expression-statement-binary-operator"
+    "fn f(x i32) i32 {\n  x + 1\n  return 0\n}\n" 2 3 5 "`x + 1` is not used" None;
+  semantic_pin "expression-statement-comparison"
+    "fn f(a i32, b i32) i32 {\n  a == b\n  return 0\n}\n" 2 3 6 "`a == b` is not used"
+    None;
+  semantic_pin "expression-statement-cast"
+    "fn f(x u32) u32 {\n  zext[u32](x)\n  return 0\n}\n" 2 3 4
+    "illegal `zext` from `u32` to `u32`: the value already has type `u32`" None;
+  semantic_pin "expression-statement-star-dereference"
+    "fn f(p addr) i32 {\n  *p\n  return 0\n}\n" 2 3 1
+    "Fas has no unary `*`; read through an `addr` with `p[T]`" None;
+  semantic_pin "expression-statement-arrow-field"
+    "fn f(p addr) i32 {\n  p->value\n  return 0\n}\n" 2 4 2 "Fas has no `->` operator"
+    None;
+  semantic_pin "expression-statement-sizeof-without-type"
+    "fn f(i i32) i32 {\n  sizeof(i)\n  return 0\n}\n" 2 3 6
+    "`sizeof` needs a type in brackets" (Some "write `sizeof[i32]`");
+  semantic_pin "expression-statement-for-step"
+    "fn f(value u32) u32 {\n  for i u32 = 0; i < 4; (value) {\n  }\n  return 0\n}\n" 2
+    25 7 "`(value)` is not used" None
 
 let replay_unmatched_bound = 30
 

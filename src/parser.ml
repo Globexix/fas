@@ -1295,8 +1295,14 @@ module P = struct
             let* () = finish_statement p consume_end in
             Ok (Ast.Assign (t, rhs, s))
         else
+          let last = p.tokens.(max 0 (p.pos - 1)) in
+          let finish =
+            Span.make ~file:s.Span.file ~start_offset:s.Span.start_offset
+              ~end_offset:last.Token.span.Span.end_offset ~line:s.Span.line
+              ~column:s.Span.column
+          in
           let* () = finish_statement p consume_end in
-          Ok (Ast.Expr_stmt (lhs, s))
+          Ok (Ast.Expr_stmt (lhs, s, finish))
 
   and assignment_or_expr p = assignment_or_expr_with_end p true
 
@@ -1484,6 +1490,16 @@ module P = struct
     let* () = expected p Token.Rbrace in
     Ok expression
 
+  and continued_operand p next =
+    let before = p.pos in
+    skip_newlines p;
+    match (peek p).kind with
+    | Token.Rbrace | Token.Rparen | Token.Rbracket | Token.Comma | Token.Semi
+    | Token.Eof ->
+        p.pos <- before;
+        next p
+    | _ -> next p
+
   and binary p next ops =
     let* first = next p in
     let rec go lhs =
@@ -1506,7 +1522,7 @@ module P = struct
           let op = List.assoc k ops in
           let s = span p in
           ignore (bump p);
-          let* rhs = next p in
+          let* rhs = continued_operand p next in
           go (Ast.Binary (op, lhs, rhs, s))
       | _ -> Ok lhs
     in
