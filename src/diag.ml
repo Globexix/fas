@@ -130,3 +130,70 @@ let render ~source diagnostic = render_one ~source diagnostic
 
 let render_all ~source diagnostics =
   String.concat "\n" (List.map (render_one ~source) diagnostics)
+
+let json_string text =
+  let buffer = Buffer.create (String.length text + 2) in
+  let length = String.length text in
+  let rec add index =
+    if index < length then
+      let decoded = String.get_utf_8_uchar text index in
+      let width = Uchar.utf_decode_length decoded in
+      if Uchar.utf_decode_is_valid decoded && width > 1 then (
+        Buffer.add_substring buffer text index width;
+        add (index + width))
+      else (
+        (match text.[index] with
+        | '"' -> Buffer.add_string buffer "\\\""
+        | '\\' -> Buffer.add_string buffer "\\\\"
+        | '\n' -> Buffer.add_string buffer "\\n"
+        | '\r' -> Buffer.add_string buffer "\\r"
+        | '\t' -> Buffer.add_string buffer "\\t"
+        | '\b' -> Buffer.add_string buffer "\\b"
+        | '\012' -> Buffer.add_string buffer "\\f"
+        | c when Char.code c < 0x20 || Char.code c >= 0x80 ->
+            Buffer.add_string buffer (Printf.sprintf "\\u%04x" (Char.code c))
+        | c -> Buffer.add_char buffer c);
+        add (index + 1))
+  in
+  Buffer.add_char buffer '"';
+  add 0;
+  Buffer.add_char buffer '"';
+  Buffer.contents buffer
+
+let json_diagnostic diagnostic =
+  let span = diagnostic.primary in
+  let location =
+    if Span.is_synthetic span then
+      [
+        ("file", "null");
+        ("line", "null");
+        ("column", "null");
+        ("start_offset", "null");
+        ("end_offset", "null");
+      ]
+    else
+      [
+        ("file", json_string span.Span.file);
+        ("line", string_of_int span.Span.line);
+        ("column", string_of_int span.Span.column);
+        ("start_offset", string_of_int span.Span.start_offset);
+        ("end_offset", string_of_int span.Span.end_offset);
+      ]
+  in
+  let severity = if diagnostic.severity = Warning then "warning" else "error" in
+  let fields =
+    (("severity", json_string severity) :: location)
+    @ [
+        ("message", json_string diagnostic.message);
+        ("notes", "[" ^ String.concat "," (List.map json_string diagnostic.notes) ^ "]");
+        ( "help",
+          match diagnostic.help with None -> "null" | Some text -> json_string text );
+      ]
+  in
+  "{"
+  ^ String.concat ","
+      (List.map (fun (key, value) -> json_string key ^ ":" ^ value) fields)
+  ^ "}"
+
+let render_json diagnostics =
+  "{\"diagnostics\":[" ^ String.concat "," (List.map json_diagnostic diagnostics) ^ "]}"

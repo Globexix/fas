@@ -13,6 +13,13 @@ let diagnostic_source _config = function
   | diagnostic :: _ -> load_source diagnostic.Diag.primary.Span.file
   | _ -> None
 
+let report (config : Cli.t) diagnostics =
+  match config.diagnostics with
+  | Cli.Text ->
+      let source = diagnostic_source config diagnostics in
+      prerr_endline (Diag.render_all ~source diagnostics)
+  | Cli.Json -> prerr_endline (Diag.render_json diagnostics)
+
 let run_program (config : Cli.t) args =
   match Filename.temp_file "fas-run-" "" with
   | exception Sys_error message ->
@@ -26,8 +33,7 @@ let run_program (config : Cli.t) args =
             Driver.run { config with Cli.output = path; output_explicit = true }
           with
           | Error diagnostics ->
-              let source = diagnostic_source config diagnostics in
-              prerr_endline (Diag.render_all ~source diagnostics);
+              report config diagnostics;
               1
           | Ok _ -> (
               let name =
@@ -48,8 +54,15 @@ let () =
       match Driver.run config with
       | Ok output -> print_string output
       | Error diagnostics ->
-          let source = diagnostic_source config diagnostics in
-          prerr_endline (Diag.render_all ~source diagnostics);
+          report config diagnostics;
+          exit 1)
+  | Ok (Cli.Check config) -> (
+      match Driver.run config with
+      | Ok _ ->
+          if config.diagnostics = Cli.Json then prerr_endline (Diag.render_json []);
+          exit 0
+      | Error diagnostics ->
+          report config diagnostics;
           exit 1)
   | Ok (Cli.Run_program (config, args)) -> exit (run_program config args)
   | Error message ->

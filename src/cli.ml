@@ -1,4 +1,5 @@
 type emit = Ir | Ir_json | Llvm | Optimized_llvm | Asm | Obj | Header | Executable
+type diagnostics = Text | Json
 
 type t = {
   input : string;
@@ -12,15 +13,19 @@ type t = {
   sanitizers : string list;
   link_inputs : string list;
   c_flags : string list;
+  diagnostics : diagnostics;
 }
 
-type command = Run of t | Run_program of t * string list | Help | Version
+type command = Run of t | Run_program of t * string list | Check of t | Help | Version
+type subcommand = Build | Run_subcommand | Check_subcommand
 
 let usage =
   "usage: fas [options] file.fas [C inputs and link flags]\n\
   \       fas run file.fas [options] [-- program arguments]\n\
+  \       fas check file.fas [options]\n\
    commands:\n\
   \  run FILE      build to a temporary executable, run it, delete it\n\
+  \  check FILE    check without building (no LLVM, no linking)\n\
    build:\n\
   \  -O0..-O3      set opt and llc optimization levels (default -O2)\n\
    output:\n\
@@ -29,6 +34,7 @@ let usage =
   \  --emit-llvm[=optimized]  print LLVM IR before (default) or after opt, verified\n\
   \  --emit-asm, -S emit assembly\n\
   \  --emit-obj, -c emit object\n\
+  \  --diagnostics=text|json  print diagnostics as text (default) or one JSON line\n\
   \  --version     print the fas version and the opt, llc and C compiler in use\n\
   \  -h, --help    show this help\n\
    C inputs:\n\
@@ -53,18 +59,31 @@ let default_output emit input =
   in
   match emit with Asm -> source_output ".s" | Obj -> source_output ".o" | _ -> "a.out"
 
-let parse_invocation ~run argv =
+let parse_invocation ~subcommand argv =
   let n = Array.length argv in
   let header_selected = ref false and other_output = ref false in
   let link_inputs_rev = ref [] in
   let c_flags_rev = ref [] in
   let sanitizers = ref None in
+  let diagnostics = ref Text in
   let add_link_inputs values =
     link_inputs_rev := List.rev_append values !link_inputs_rev
   in
   let add_c_flags values = c_flags_rev := List.rev_append values !c_flags_rev in
   let passthrough_file file =
     List.exists (Filename.check_suffix file) [ ".c"; ".o"; ".a"; ".so" ]
+  in
+  let rejected flag =
+    match subcommand with
+    | Build -> false
+    | Run_subcommand ->
+        List.mem flag [ "-o"; "-c"; "-S" ] || String.starts_with ~prefix:"--emit-" flag
+    | Check_subcommand ->
+        List.mem flag [ "-o"; "-c"; "-S"; "-l"; "-L" ]
+        || String.starts_with ~prefix:"--emit-" flag
+        || String.starts_with ~prefix:"-l" flag
+        || String.starts_with ~prefix:"-L" flag
+        || passthrough_file flag
   in
   let rec loop i input output emit keep optimization optimization_explicit debug
       no_inline_function =
@@ -80,29 +99,32 @@ let parse_invocation ~run argv =
         let output =
           match output with Some path -> path | None -> default_output emit input
         in
-        Ok
-          (Run
-             {
-               input;
-               output;
-               output_explicit;
-               emit;
-               keep;
-               optimization;
-               debug;
-               no_inline_function;
-               sanitizers = Option.value ~default:[] !sanitizers;
-               link_inputs = List.rev !link_inputs_rev;
-               c_flags = List.rev !c_flags_rev;
-             })
+        let config =
+          {
+            input;
+            output;
+            output_explicit;
+            emit;
+            keep;
+            optimization;
+            debug;
+            no_inline_function;
+            sanitizers = Option.value ~default:[] !sanitizers;
+            link_inputs = List.rev !link_inputs_rev;
+            c_flags = List.rev !c_flags_rev;
+            diagnostics = !diagnostics;
+          }
+        in
+        Ok (if subcommand = Check_subcommand then Check config else Run config)
     else
       match argv.(i) with
       | "--help" | "-h" -> Ok Help
-      | flag
-        when run
-             && (List.mem flag [ "-o"; "-c"; "-S" ]
-                || String.starts_with ~prefix:"--emit-" flag) ->
-          Error ("fas run builds and runs an executable; `" ^ flag ^ "` is not accepted")
+      | flag when rejected flag ->
+          Error
+            (if subcommand = Check_subcommand then
+               "fas check checks one Fas file; `" ^ flag ^ "` is not accepted"
+             else
+               "fas run builds and runs an executable; `" ^ flag ^ "` is not accepted")
       | "-o" ->
           if i + 1 >= n then Error "-o requires an output path"
           else if argv.(i + 1) = "-" then Error "-o - is not supported"
@@ -142,6 +164,21 @@ let parse_invocation ~run argv =
           other_output := true;
           loop (i + 1) input output Obj keep optimization optimization_explicit debug
             no_inline_function
+      | flag when String.starts_with ~prefix:"--diagnostics=" flag -> (
+          let value = String.sub flag 14 (String.length flag - 14) in
+          match value with
+          | "text" ->
+              diagnostics := Text;
+              loop (i + 1) input output emit keep optimization optimization_explicit
+                debug no_inline_function
+          | "json" ->
+              diagnostics := Json;
+              loop (i + 1) input output emit keep optimization optimization_explicit
+                debug no_inline_function
+          | _ ->
+              Error
+                ("unknown --diagnostics value `" ^ value
+               ^ "`; accepted values are `text` and `json`"))
       | "--keep" ->
           loop (i + 1) input output emit true optimization optimization_explicit debug
             no_inline_function
@@ -237,19 +274,27 @@ let parse_invocation ~run argv =
                 "multiple input files are not supported; use \"path.fas\" for \
                  dependencies")
   in
-  loop (if run then 2 else 1) None None Executable false 2 false false None
+  loop
+    (if subcommand = Build then 1 else 2)
+    None None
+    (if subcommand = Check_subcommand then Ir else Executable)
+    false 2 false false None
 
 let parse argv =
   let n = Array.length argv in
-  let run = n > 1 && String.equal argv.(1) "run" in
+  let subcommand =
+    if n > 1 && String.equal argv.(1) "run" then Run_subcommand
+    else if n > 1 && String.equal argv.(1) "check" then Check_subcommand
+    else Build
+  in
   let rec find i = if i >= n || String.equal argv.(i) "--" then i else find (i + 1) in
-  let sep = if run then find 2 else n in
+  let sep = if subcommand = Run_subcommand then find 2 else n in
   if n > 1 && Array.exists (String.equal "--version") (Array.sub argv 1 (sep - 1)) then
     if n = 2 then Ok Version
     else Error "--version cannot be combined with other arguments"
   else
-    match parse_invocation ~run (Array.sub argv 0 sep) with
-    | Ok (Run config) when run ->
+    match parse_invocation ~subcommand (Array.sub argv 0 sep) with
+    | Ok (Run config) when subcommand = Run_subcommand ->
         let program = Array.to_list (Array.sub argv sep (n - sep)) in
         Ok (Run_program (config, match program with _ :: args -> args | [] -> []))
     | result -> result

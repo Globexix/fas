@@ -1313,6 +1313,7 @@ let () =
     | Ok Cli.Help -> failwith "expected compiler invocation"
     | Ok Cli.Version -> failwith "expected compiler invocation"
     | Ok (Cli.Run_program _) -> failwith "expected compiler invocation"
+    | Ok (Cli.Check _) -> failwith "expected compiler invocation"
     | Error message -> failwith message
   in
   let cli = expect_cli (Cli.parse [| "fas"; "--emit-ir"; "-o"; "out"; "one.fas" |]) in
@@ -1451,7 +1452,12 @@ let () =
       assert (contains Cli.usage "--no-inline");
       assert (contains Cli.usage "-I DIR, -isystem DIR, -D NAME[=VALUE]");
       assert (contains Cli.usage "--sanitize=LIST")
-  | Ok (Cli.Run _) | Ok (Cli.Run_program _) | Ok Cli.Version | Error _ -> assert false);
+  | Ok (Cli.Run _)
+  | Ok (Cli.Run_program _)
+  | Ok (Cli.Check _)
+  | Ok Cli.Version
+  | Error _ ->
+      assert false);
   let input_path = Filename.temp_file "fas-driver-" ".fas" in
   Fun.protect
     ~finally:(fun () -> Sys.remove input_path)
@@ -1500,6 +1506,45 @@ let () =
       ("-debug", "unknown option `-debug`; write `-g`");
       ("-no-inline", "unknown option `-no-inline`; write `--no-inline`");
     ];
+  (match Cli.parse [| "fas"; "check"; "-O3"; "--sanitize=address"; "one.fas" |] with
+  | Ok (Cli.Check config) ->
+      assert (config.Cli.emit = Cli.Ir && config.Cli.optimization = 3);
+      assert (config.Cli.sanitizers = [ "address" ] && config.Cli.diagnostics = Cli.Text)
+  | Ok _ | Error _ -> assert false);
+  (match Cli.parse [| "fas"; "check"; "--diagnostics=json"; "one.fas" |] with
+  | Ok (Cli.Check config) -> assert (config.Cli.diagnostics = Cli.Json)
+  | Ok _ | Error _ -> assert false);
+  List.iter
+    (fun (args, expected) ->
+      match Cli.parse (Array.of_list ("fas" :: args)) with
+      | Error message -> assert (message = expected)
+      | Ok _ -> assert false)
+    [
+      ( [ "check"; "-lm"; "one.fas" ],
+        "fas check checks one Fas file; `-lm` is not accepted" );
+      ( [ "check"; "helper.c"; "one.fas" ],
+        "fas check checks one Fas file; `helper.c` is not accepted" );
+      ( [ "check"; "--emit-ir"; "one.fas" ],
+        "fas check checks one Fas file; `--emit-ir` is not accepted" );
+      ( [ "check"; "--diagnostics=xml"; "one.fas" ],
+        "unknown --diagnostics value `xml`; accepted values are `text` and `json`" );
+      ([ "check" ], "no input files");
+    ];
+  let json_diagnostics =
+    [
+      Diag.error
+        (Span.make ~file:"a.fas" ~start_offset:3 ~end_offset:4 ~line:1 ~column:4)
+        "bad \"x\"\\\n\tcaf\xc3\xa9 \001 \255 \b\012";
+      Diag.warning ~notes:[ "n1" ] ~help:"h"
+        (Span.make ~file:"a.fas" ~start_offset:5 ~end_offset:6 ~line:2 ~column:1)
+        "w";
+      Diag.error Span.synthetic "synthetic";
+    ]
+  in
+  assert (Diag.render_json [] = {|{"diagnostics":[]}|});
+  assert (
+    Diag.render_json json_diagnostics
+    = {|{"diagnostics":[{"severity":"error","file":"a.fas","line":1,"column":4,"start_offset":3,"end_offset":4,"message":"bad \"x\"\\\n\tcafé \u0001 \u00ff \b\f","notes":[],"help":null},{"severity":"warning","file":"a.fas","line":2,"column":1,"start_offset":5,"end_offset":6,"message":"w","notes":["n1"],"help":"h"},{"severity":"error","file":null,"line":null,"column":null,"start_offset":null,"end_offset":null,"message":"synthetic","notes":[],"help":null}]}|});
   let sema_error ?message text =
     let program = expect_ok (Parser.parse (source text)) in
     match Sema.check program with

@@ -518,6 +518,7 @@ let cli_run args =
   | Ok Cli.Help -> failwith "expected compiler invocation"
   | Ok Cli.Version -> failwith "expected compiler invocation"
   | Ok (Cli.Run_program _) -> failwith "expected compiler invocation"
+  | Ok (Cli.Check _) -> failwith "expected compiler invocation"
   | Error message -> failwith message
 
 let lower_of text =
