@@ -1090,6 +1090,9 @@ let run_unprotected ?header_output config =
                  ~container_mismatch_to_clang:(config.Cli.emit <> Cli.Header)
                  program.items
           in
+          let imported =
+            C_import.prune_unreferenced_records ~referenced_names imported
+          in
           let program = { Ast.items = program.items @ imported.items } in
           let* () = ast_budget (Ast.check_expanded_nodes ~limits program) in
           let specializations = Sema_specialization.create () in

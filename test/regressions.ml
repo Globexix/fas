@@ -156,6 +156,384 @@ let c_import_macro_fixture ?(c_flags = []) file macro_names =
   in
   (source, C_import.map_declarations ~span:Span.synthetic declarations)
 
+let replay_replayed = ref 0
+let replay_template = ref 0
+let replay_prose = ref 0
+let replay_unmatched = ref []
+let replay_failures = ref []
+let replay_seen = Hashtbl.create 256
+
+let replay_program src =
+  match Parser.parse src with Ok program -> Some program | Error _ -> None
+
+let replay_quoted help =
+  List.filteri (fun index _ -> index mod 2 = 1) (String.split_on_char '`' help)
+
+let replay_span_text text (span : Span.t) =
+  String.sub text span.Span.start_offset (span.Span.end_offset - span.Span.start_offset)
+
+let replay_plain_name name =
+  not
+    (Names.builtin_name name
+    || List.mem name Names.primitive_type_names
+    || List.mem name Names.reserved_float_type_names
+    || List.mem name Names.literal_names)
+
+let replay_tokens text =
+  match Lexer.lex (Source.create ~file:"replay" ~text) with
+  | Error _ -> []
+  | Ok tokens -> tokens
+
+let replay_names text =
+  List.filter_map
+    (fun (token : Token.t) ->
+      match token.Token.kind with
+      | Token.Ident name when replay_plain_name name -> Some name
+      | _ -> None)
+    (replay_tokens text)
+  |> List.sort_uniq compare
+
+let replay_residual text =
+  List.filter_map
+    (fun (token : Token.t) ->
+      match token.Token.kind with
+      | Token.Ident name when replay_plain_name name -> Some ("name " ^ name)
+      | Token.Int digits -> Some ("int " ^ digits)
+      | Token.Float digits -> Some ("float " ^ digits)
+      | Token.String value | Token.CString value -> Some ("string " ^ value)
+      | _ -> None)
+    (replay_tokens text)
+  |> List.sort compare
+
+let replay_is_name residual =
+  String.length residual > 5 && String.sub residual 0 5 = "name "
+
+let replay_name residual = String.sub residual 5 (String.length residual - 5)
+
+let replay_index tokens =
+  let array = Array.of_list tokens in
+  let table = Hashtbl.create (Array.length array) in
+  Array.iteri
+    (fun index (token : Token.t) ->
+      Hashtbl.replace table token.Token.span.Span.start_offset index)
+    array;
+  (array, table)
+
+let replay_call_extent (array, table) (span : Span.t) =
+  let count = Array.length array in
+  let rec close index opener closer depth =
+    if index >= count then None
+    else
+      let kind = array.(index).Token.kind in
+      let depth =
+        if kind = opener then depth + 1 else if kind = closer then depth - 1 else depth
+      in
+      if kind = closer && depth = 0 then Some index
+      else close (index + 1) opener closer depth
+  in
+  match Hashtbl.find_opt table span.Span.start_offset with
+  | Some index
+    when match array.(index).Token.kind with Token.Ident _ -> true | _ -> false -> (
+      let after =
+        if index + 1 < count && array.(index + 1).Token.kind = Token.Lbracket then
+          Option.map
+            (fun close_index -> close_index + 1)
+            (close (index + 1) Token.Lbracket Token.Rbracket 0)
+        else Some (index + 1)
+      in
+      match after with
+      | Some next when next < count && array.(next).Token.kind = Token.Lparen -> (
+          match close next Token.Lparen Token.Rparen 0 with
+          | Some last ->
+              Some
+                { span with Span.end_offset = array.(last).Token.span.Span.end_offset }
+          | None -> None)
+      | _ -> None)
+  | _ -> None
+
+let replay_unknown_token tokens (primary : Span.t) message =
+  let inside (token : Token.t) =
+    primary.Span.start_offset <= token.Token.span.Span.start_offset
+    && token.Token.span.Span.end_offset <= primary.Span.end_offset
+  in
+  if String.starts_with ~prefix:"unknown " message then
+    match replay_quoted message with
+    | unknown :: _ ->
+        List.find_map
+          (fun (token : Token.t) ->
+            if token.Token.kind = Token.Ident unknown && inside token then
+              Some token.Token.span
+            else None)
+          tokens
+    | [] -> None
+  else None
+
+let replay_join (left : Span.t) (right : Span.t) =
+  {
+    left with
+    Span.start_offset = min left.Span.start_offset right.Span.start_offset;
+    end_offset = max left.Span.end_offset right.Span.end_offset;
+  }
+
+let replay_target text tokens nodes (primary : Span.t) message names =
+  let inside (outer : Span.t) (inner : Span.t) =
+    outer.Span.start_offset <= inner.Span.start_offset
+    && inner.Span.end_offset <= outer.Span.end_offset
+  in
+  let size (span : Span.t) = span.Span.end_offset - span.Span.start_offset in
+  match
+    nodes
+    |> List.filter (fun node -> inside node primary)
+    |> List.filter (fun node -> replay_names (replay_span_text text node) = names)
+    |> List.stable_sort (fun left right -> compare (size right) (size left))
+  with
+  | node :: _ -> Some node
+  | [] -> replay_unknown_token tokens primary message
+
+let replay_nodes index (program : Ast.program) =
+  let spans = ref [] in
+  let open Ast in
+  let extend span =
+    match replay_call_extent index span with
+    | Some extended -> replay_join span extended
+    | None -> span
+  in
+  let rec expr (value : expr) =
+    let own = extend (expr_span value) in
+    let inner =
+      match value with
+      | Int_lit _ | Float_lit _ | Bool_lit _ | Null _ | String_lit _ | Ident _
+      | Sizeof _ | Alignof _ | Offsetof _ ->
+          []
+      | Unary (_, operand, _)
+      | C_dereference (operand, _, _)
+      | C_dot_star (operand, _)
+      | Parenthesized (operand, _)
+      | Addr_of (operand, _)
+      | Field (operand, _, _)
+      | Arrow_field (operand, _, _, _)
+      | Splat (operand, _)
+      | Sizeof_value (operand, _)
+      | Cast (_, _, operand, _)
+      | Handle_from_addr (_, operand, _)
+      | Designated_field (_, operand, _) ->
+          [ expr operand ]
+      | Binary (_, left, right, _) | Designated_index (left, right, _) ->
+          [ expr left; expr right ]
+      | Ternary (first, second, third, _) -> [ expr first; expr second; expr third ]
+      | Call (callee, arguments, _) -> expr callee :: List.map expr arguments
+      | Generic_args (operand, arguments, _) | Select (operand, arguments, _) ->
+          expr operand :: List.concat_map generic arguments
+      | Array_lit (values, _) -> List.map expr values
+    in
+    let extent = List.fold_left replay_join own inner in
+    spans := extent :: !spans;
+    extent
+  and generic = function Const_arg value -> [ expr value ] | _ -> []
+  and target = function
+    | Target_ident _ -> []
+    | Target_select (operand, arguments) ->
+        expr operand :: List.concat_map generic arguments
+    | Target_field (operand, _, _) -> [ expr operand ]
+  and run value = ignore (expr value)
+  and stmt (value : stmt) =
+    match value with
+    | Let { init; _ } -> Option.iter run init
+    | View { place; _ } -> run place
+    | Assign (assigned, operand, _) | Compound_assign (assigned, _, operand, _, _) ->
+        ignore (target assigned);
+        run operand
+    | Return (operand, _) -> Option.iter run operand
+    | If (condition, body, otherwise, _) ->
+        run condition;
+        List.iter stmt body;
+        Option.iter (List.iter stmt) otherwise
+    | While (_, condition, body, _) ->
+        run condition;
+        List.iter stmt body
+    | Break _ | Continue _ -> ()
+    | Defer (body, _) | Block (body, _) -> List.iter stmt body
+    | Expr_stmt (operand, _) -> run operand
+    | For (_, initial, condition, step, body, _) ->
+        Option.iter stmt initial;
+        Option.iter run condition;
+        Option.iter stmt step;
+        List.iter stmt body
+    | Switch (operand, cases, default, _) ->
+        run operand;
+        List.iter
+          (fun (values, body) ->
+            List.iter run values;
+            List.iter stmt body)
+          cases;
+        Option.iter (List.iter stmt) default
+  in
+  List.iter
+    (function
+      | Const { value; _ } -> run value
+      | Global { init; _ } -> Option.iter run init
+      | Func { body = Statements statements; _ } -> List.iter stmt statements
+      | _ -> ())
+    program.items;
+  !spans
+
+let replay_mentions_vector message =
+  let rec scan index =
+    index + 4 <= String.length message
+    && (String.sub message index 4 = "vec[" || scan (index + 1))
+  in
+  scan 0
+
+let replay_check ~run ~text ~(target : Span.t) ~code ~message ~name_only =
+  let replaced =
+    String.sub text 0 target.Span.start_offset
+    ^ code
+    ^ String.sub text target.Span.end_offset
+        (String.length text - target.Span.end_offset)
+  in
+  let after = run replaced in
+  let region_end = target.Span.start_offset + String.length code in
+  let gone =
+    List.for_all (fun (diagnostic : Diag.t) -> diagnostic.Diag.message <> message) after
+  in
+  let clear =
+    List.for_all
+      (fun (diagnostic : Diag.t) ->
+        let start = diagnostic.primary.Span.start_offset in
+        start < target.Span.start_offset
+        || start >= region_end
+        || name_only
+           && not (String.starts_with ~prefix:"unknown " diagnostic.Diag.message))
+      after
+  in
+  if gone && clear then None else Some (replaced, after)
+
+let replay_diagnostics ~run ~program ~text diagnostics =
+  List.iter
+    (fun (diagnostic : Diag.t) ->
+      match diagnostic.Diag.help with
+      | None -> ()
+      | Some help ->
+          let primary = diagnostic.primary in
+          let key =
+            ( text,
+              diagnostic.Diag.message,
+              primary.Span.start_offset,
+              primary.Span.end_offset,
+              help )
+          in
+          if not (Hashtbl.mem replay_seen key) then (
+            Hashtbl.add replay_seen key ();
+            let tokens = replay_tokens text in
+            let index = replay_index tokens in
+            let primary_names =
+              List.filter_map
+                (fun (token : Token.t) ->
+                  match token.Token.kind with
+                  | Token.Ident name
+                    when primary.Span.start_offset <= token.Token.span.Span.start_offset
+                         && token.Token.span.Span.end_offset <= primary.Span.end_offset
+                    ->
+                      Some name
+                  | _ -> None)
+                tokens
+            in
+            let rewrites =
+              List.filter
+                (fun code ->
+                  match replay_names code with
+                  | [ name ] ->
+                      not (String.trim code = name && List.mem name primary_names)
+                  | _ -> true)
+                (replay_quoted help)
+            in
+            match
+              List.find_map
+                (fun code ->
+                  match replay_residual code with
+                  | [] -> None
+                  | residual -> Some (code, residual))
+                rewrites
+            with
+            | None -> incr replay_prose
+            | Some (code, residual) -> (
+                let source_names = replay_names text in
+                if
+                  List.exists
+                    (fun r ->
+                      replay_is_name r && not (List.mem (replay_name r) source_names))
+                    residual
+                then incr replay_template
+                else
+                  let nodes =
+                    match program with
+                    | None -> []
+                    | Some program -> replay_nodes index program
+                  in
+                  match
+                    replay_target text tokens nodes primary diagnostic.Diag.message
+                      (replay_names code)
+                  with
+                  | None ->
+                      replay_unmatched :=
+                        Printf.sprintf "line %d: `%s` for %s" primary.Span.line help
+                          diagnostic.Diag.message
+                        :: !replay_unmatched
+                  | Some target -> (
+                      let name_only =
+                        String.starts_with ~prefix:"did you mean " help
+                        && replay_names code = [ String.trim code ]
+                      in
+                      match
+                        replay_check ~run ~text ~target ~code
+                          ~message:diagnostic.Diag.message ~name_only
+                      with
+                      | None -> incr replay_replayed
+                      | Some (_, after)
+                        when List.exists
+                               (fun (other : Diag.t) ->
+                                 let start = other.Diag.primary.Span.start_offset in
+                                 target.Span.start_offset <= start
+                                 && start
+                                    < target.Span.start_offset + String.length code
+                                 && replay_mentions_vector other.Diag.message)
+                               after ->
+                          replay_unmatched :=
+                            Printf.sprintf "line %d: `%s` for %s (vector operands)"
+                              primary.Span.line help diagnostic.Diag.message
+                            :: !replay_unmatched
+                      | Some (replaced, after) ->
+                          replay_failures :=
+                            Printf.sprintf "line %d: `%s` for %s\n%s" primary.Span.line
+                              help diagnostic.Diag.message
+                              (Diag.render_all ~source:(Some (source replaced)) after)
+                            :: !replay_failures))))
+    diagnostics
+
+let semantic_replay_run text =
+  match Parser.parse (source text) with
+  | Error diagnostics -> diagnostics
+  | Ok program -> (
+      match Sema.check program with Ok _ -> [] | Error diagnostics -> diagnostics)
+
+let parse_replay_run text =
+  match Parser.parse (source text) with Ok _ -> [] | Error diagnostics -> diagnostics
+
+let c_replay_run ((file, imported) : string * C_import.mapped) text =
+  match Parser.parse (Source.create ~file ~text) with
+  | Error diagnostics -> diagnostics
+  | Ok program -> (
+      let program = { Ast.items = program.items @ imported.items } in
+      match
+        Sema.check ~c_aliases:imported.aliases ~c_unsupported:imported.unsupported
+          ~c_nonnull_parameters:imported.nonnull_parameters
+          ~c_records:imported.record_types
+          ~c_string_parameters:imported.c_string_parameters
+          ~c_alloc_size_parameters:imported.alloc_size_parameters program
+      with
+      | Ok _ -> []
+      | Error diagnostics -> diagnostics)
+
 let c_semantic_result ((source, imported) : string * C_import.mapped) text =
   incr checks_run;
   let src = Source.create ~file:source ~text in
@@ -181,6 +559,9 @@ let c_semantic_result ((source, imported) : string * C_import.mapped) text =
         | Ok _ -> failwith "C semantic result changed between repeated checks"
       in
       assert_deterministic "C semantic rejection" src diagnostics repeated;
+      replay_diagnostics
+        ~run:(c_replay_run (source, imported))
+        ~program:(replay_program src) ~text diagnostics;
       result
 
 let c_semantic_accept name imported text =
@@ -248,6 +629,7 @@ let semantic_diagnostics text =
   let first = run () in
   let second = run () in
   assert_deterministic "semantic rejection" src first second;
+  replay_diagnostics ~run:semantic_replay_run ~program:(replay_program src) ~text first;
   first
 
 let semantic_messages text =
@@ -453,6 +835,7 @@ let parse_diagnostics name text =
   let first = run () in
   let second = run () in
   assert_deterministic name src first second;
+  replay_diagnostics ~run:parse_replay_run ~program:None ~text first;
   first
 
 let syntax_pin name text line column width message =
@@ -2495,7 +2878,7 @@ let () =
      h handle[Token] = handle_from_addr[Token](&x)\n\
      return handle_addr(h) }\n";
   semantic_error "handle-from-addr-bare"
-    "builtin `handle_from_addr` expects a type argument"
+    "`handle_from_addr` needs a type argument: `handle_from_addr[T](p)`"
     "fn f(p addr) addr { return handle_from_addr(p) }\n";
   semantic_error "addr-const-context" "expression is not compile-time constant"
     "opaque O\nconst X addr = handle_from_addr[O](addr_from_bits(0))\n";
@@ -3706,7 +4089,7 @@ let () =
   List.iter
     (fun name ->
       semantic_error ("reserved-builtin-" ^ name)
-        (Names.reserved_binding_message name)
+        (Printf.sprintf "`%s` is a builtin and cannot be used as a name" name)
         (Printf.sprintf "fn %s(x i64) i64 { return x }\n" name))
     Names.operation_names;
 
@@ -3955,27 +4338,38 @@ let () =
   List.iter
     (fun name ->
       semantic_error ("reserved-type-" ^ name)
-        "is reserved and cannot be used as a name"
+        (Printf.sprintf "`%s` is a type name and cannot be used as a name" name)
         (Printf.sprintf "struct %s { value i32 }\n" name))
     Names.primitive_type_names;
 
   List.iter
     (fun name ->
       semantic_error ("reserved-literal-" ^ name)
-        "is reserved and cannot be used as a name"
+        (Printf.sprintf "`%s` is a literal and cannot be used as a name" name)
         (Printf.sprintf "const %s bool = false\n" name))
     Names.literal_names;
 
   List.iter
-    (fun (name, text) ->
-      semantic_error name "is reserved and cannot be used as a name" text)
+    (fun (name, fragment, text) -> semantic_error name fragment text)
     [
-      ("reserved-primitive-type", "struct i32 { value i32 }\n");
-      ("reserved-literal-const", "const true bool = false\n");
-      ("reserved-generic-parameter", "fn value[len](x i32) i32 { return x }\n");
-      ("reserved-const-parameter", "fn value[splat const i32](x i32) i32 { return x }\n");
-      ("reserved-runtime-parameter", "fn value(popcount i32) i32 { return popcount }\n");
-      ("reserved-local", "fn value() i32 { len i32 = 1\n return len }\n");
+      ( "reserved-primitive-type",
+        "`i32` is a type name and cannot be used as a name",
+        "struct i32 { value i32 }\n" );
+      ( "reserved-literal-const",
+        "`true` is a literal and cannot be used as a name",
+        "const true bool = false\n" );
+      ( "reserved-generic-parameter",
+        "`len` is a builtin and cannot be used as a name",
+        "fn value[len](x i32) i32 { return x }\n" );
+      ( "reserved-const-parameter",
+        "`splat` is a builtin and cannot be used as a name",
+        "fn value[splat const i32](x i32) i32 { return x }\n" );
+      ( "reserved-runtime-parameter",
+        "`popcount` is a builtin and cannot be used as a name",
+        "fn value(popcount i32) i32 { return popcount }\n" );
+      ( "reserved-local",
+        "`len` is a builtin and cannot be used as a name",
+        "fn value() i32 { len i32 = 1\n return len }\n" );
     ];
 
   let released_shift_names =
@@ -4015,13 +4409,12 @@ let () =
       ("abs", "builtin `abs` expects 1 argument");
     ];
   exact_semantic_error "reserved-float-call-cvt"
-    (Names.reserved_float_message "cvt")
-    "fn main() i32 { return cvt() }\n";
+    "`cvt` needs a target type: `cvt[T](x)`" "fn main() i32 { return cvt() }\n";
   List.iter
     (fun name ->
       exact_semantic_error
         ("reserved-float-function-" ^ name)
-        (Names.reserved_binding_message name)
+        (Printf.sprintf "`%s` is a builtin and cannot be used as a name" name)
         (Printf.sprintf "fn %s() i32 { return 0 }\n" name);
       if not (Names.reserved_binding_name name) then
         failwith ("reserved-float-binding-registry: " ^ name))
@@ -4032,12 +4425,14 @@ let () =
     (fun name ->
       exact_semantic_error
         ("reserved-float-type-binding-" ^ name)
-        (Names.reserved_binding_message name)
+        (Printf.sprintf "`%s` is a type name and cannot be used as a name" name)
         (Printf.sprintf "fn %s() i32 { return 0 }\n" name))
     Names.reserved_float_type_names;
   List.iter
     (fun (name, binding_name, text) ->
-      exact_semantic_error name (Names.reserved_binding_message binding_name) text)
+      exact_semantic_error name
+        (Printf.sprintf "`%s` is a builtin and cannot be used as a name" binding_name)
+        text)
     [
       ("reserved-float-local", "abs", "fn main() i32 { abs i32 = 1\n return abs }\n");
       ("reserved-float-parameter", "cvt", "fn test(cvt i32) i32 { return cvt }\n");
@@ -4051,6 +4446,84 @@ let () =
         "fn value[ceil const u32](x i32) i32 { return x }\n" );
       ("reserved-float-const", "round", "const round i32 = 1\n");
     ];
+  exact_semantic_error "reserved-float-local-round"
+    "`round` is a builtin and cannot be used as a name"
+    "fn main() i32 { round i32 = 1\n return round }\n";
+  exact_semantic_error "reserved-float-function-f32"
+    "`f32` is a type name and cannot be used as a name" "fn f32() i32 { return 0 }\n";
+  List.iter
+    (fun (name, expected) ->
+      exact_semantic_error
+        ("reserved-category-local-" ^ name)
+        expected
+        (Printf.sprintf "fn main() i32 { %s u32 = 3\n return 0 }\n" name);
+      exact_semantic_error
+        ("reserved-category-fn-" ^ name)
+        expected
+        (Printf.sprintf "fn %s(x u32) u32 { return x }\n" name))
+    [
+      ("len", "`len` is a builtin and cannot be used as a name");
+      ("zext", "`zext` is a builtin and cannot be used as a name");
+      ("sqrt", "`sqrt` is a builtin and cannot be used as a name");
+      ("u32", "`u32` is a type name and cannot be used as a name");
+      ("vec", "`vec` is a type name and cannot be used as a name");
+      ("true", "`true` is a literal and cannot be used as a name");
+    ];
+  semantic_pin "builtin-type-position-len" "fn f(x len) i32 { return 0 }\n" 1 8 3
+    "`len` is a builtin, not a type" None;
+  semantic_pin "builtin-type-position-true" "fn f(x true) i32 { return 0 }\n" 1 8 4
+    "`true` is a literal, not a type" None;
+  semantic_pin "builtin-type-position-null" "fn f(x null) i32 { return 0 }\n" 1 8 4
+    "`null` is a literal, not a type" None;
+  semantic_pin "builtin-type-position-sqrt" "fn f(x sqrt) i32 { return 0 }\n" 1 8 4
+    "`sqrt` is a builtin, not a type" None;
+  semantic_pin "builtin-type-position-zext" "fn f(x zext) i32 { return 0 }\n" 1 8 4
+    "`zext` is a builtin, not a type" None;
+  semantic_pin "builtin-type-position-local" "fn f() i32 { x len = 1\nreturn 0 }\n" 1 16
+    3 "`len` is a builtin, not a type" None;
+  semantic_pin "builtin-type-position-generic-argument"
+    "fn g[T](x T) i32 { return 0 }\nfn f() i32 { return g[len](1) }\n" 2 23 3
+    "`len` is a builtin, not a type" None;
+  semantic_pin "builtin-call-needs-target-zext" "fn f(a u32) u32 { return zext(a) }\n" 1
+    26 4 "`zext` needs a target type: `zext[T](x)`" None;
+  semantic_pin "builtin-call-needs-target-bitcast"
+    "fn f(a u32) u32 { return bitcast(a) }\n" 1 26 7
+    "`bitcast` needs a target type: `bitcast[T](x)`" None;
+  semantic_pin "builtin-call-needs-target-cvt" "fn f(a u32) f64 { return cvt(a) }\n" 1
+    26 3 "`cvt` needs a target type: `cvt[T](x)`" None;
+  semantic_pin "builtin-call-needs-type-handle-from-addr"
+    "fn f(p addr) addr { return handle_from_addr(p) }\n" 1 28 16
+    "`handle_from_addr` needs a type argument: `handle_from_addr[T](p)`" None;
+  semantic_pin "builtin-call-needs-type-gather"
+    "fn f(p addr, i vec[2,u32], m vec[2,bool], v vec[2,u32]) vec[2,u32] { return \
+     gather(p, i, m, v) }\n"
+    1 77 6 "`gather` needs a type argument: `gather[T](p, idx, m, fallback)`" None;
+  semantic_pin "builtin-takes-no-type-arguments-sqrt"
+    "fn f(a f64) f64 { return sqrt[u32](a) }\n" 1 26 4 "`sqrt` takes no type arguments"
+    None;
+  semantic_pin "builtin-takes-no-type-arguments-len"
+    "fn f(a vec[2,u32]) u32 { return len[u32](a) }\n" 1 33 3
+    "`len` takes no type arguments" None;
+  semantic_pin "builtin-value-len" "fn f(a vec[2,u32]) u32 { x u32 = len\nreturn x }\n"
+    1 34 3 "`len` is a builtin and must be called" None;
+  semantic_pin "builtin-value-cvt-type-arguments"
+    "fn f(a u32) u32 { x u32 = cvt[u32]\nreturn x }\n" 1 27 3
+    "`cvt` is a builtin and must be called" None;
+  semantic_pin "builtin-value-addr-len" "fn f(p addr) addr { y addr = len\nreturn y }\n"
+    1 30 3 "`len` is a builtin and must be called" None;
+  semantic_pin "builtin-value-const-len" "const K u32 = len\n" 1 15 3
+    "`len` is a builtin and must be called" None;
+  semantic_pin "builtin-call-const-zext" "const K u32 = zext(1)\n" 1 15 7
+    "`zext` needs a target type: `zext[T](x)`" None;
+  semantic_pin "builtin-takes-no-type-arguments-const-sqrt"
+    "const K f64 = sqrt[u32](1.0)\n" 1 15 4 "`sqrt` takes no type arguments" None;
+  semantic_accept "builtin-twin-zext-type-argument"
+    "fn f(a u8) u32 { return zext[u32](a) }\n";
+  semantic_accept "builtin-twin-cvt-type-argument"
+    "fn f(a u32) f64 { return cvt[f64](a) }\n";
+  semantic_accept "builtin-twin-sqrt-float" "fn f(x f64) f64 { return sqrt(x) }\n";
+  semantic_accept "builtin-twin-sizeof-type-argument"
+    "fn f() usize { return sizeof[u32] }\n";
   semantic_accept "float-types-and-storage-accept"
     "const Half f32 = 1.5\n\
      const Values arr[2, f32] = {Half, 0.1}\n\
@@ -5313,13 +5786,13 @@ let () =
      fn main() i32 { return read[u8](1) }\n"
   in
   semantic_accept "generic-local-index-shadow" local_index_shadow;
-  semantic_error "generic-local-raw-type-shadow"
-    "raw access on `addr` needs an element type"
+  semantic_pin "generic-local-raw-type-shadow"
     "fn load[T](p addr, runtime_index usize) T {\n\
     \ { T usize = runtime_index\n\
     \ return p[T] } }\n\
      fn main() i32 { bytes arr[2,u8] = {11,22}\n\
-    \ return zext[i32](load[u8](&bytes,1)) }\n";
+    \ return zext[i32](load[u8](&bytes,1)) }\n"
+    3 9 4 "raw access on `addr` needs an element type" None;
   let raw_shadow_source =
     "struct T { value u8 }\nfn read(T usize, p addr) u8 { return p[T] }\n"
   in
@@ -8663,10 +9136,10 @@ let () =
     (String.length "fn f(a u16, b u16) u32 { value u32 = " + 1)
     (String.length "(a + 1) * (b - 2)")
     "`(a + 1) * (b - 2)` is computed in `u16` and may wrap before it reaches `u32`"
-    (Some "widen an operand first: `zext[u32]((a + 1)) * (b - 2)`");
+    (Some "widen an operand first: `(zext[u32](a) + 1) * (zext[u32](b) - 2)`");
   conversion_help_twin "nested-arithmetic-help-compiles" nested_arithmetic_source
-    "(a + 1) * (b - 2)" "zext[u32]((a + 1)) * (b - 2)"
-    "widen an operand first: `zext[u32]((a + 1)) * (b - 2)`";
+    "(a + 1) * (b - 2)" "(zext[u32](a) + 1) * (zext[u32](b) - 2)"
+    "widen an operand first: `(zext[u32](a) + 1) * (zext[u32](b) - 2)`";
   let expression_span name text expression =
     let start = List.hd (positions text "return ") + String.length "return " in
     match semantic_diagnostics text with
@@ -8713,9 +9186,9 @@ let () =
     (String.index unary_arithmetic_source '-' + 1)
     (String.length "-(a + b)")
     "`-(a + b)` is computed in `u16` and may wrap before it reaches `u32`"
-    (Some "widen an operand first: `-zext[u32]((a + b))`");
+    (Some "widen an operand first: `-(zext[u32](a) + b)`");
   conversion_help_twin "unary-arithmetic-help-compiles" unary_arithmetic_source
-    "-(a + b)" "-zext[u32]((a + b))" "widen an operand first: `-zext[u32]((a + b))`";
+    "-(a + b)" "-(zext[u32](a) + b)" "widen an operand first: `-(zext[u32](a) + b)`";
   let call_field_arithmetic_source =
     "struct Pair { value u16 }\n\
      fn get(value u16) u16 { return value }\n\
@@ -8730,6 +9203,49 @@ let () =
   conversion_help_twin "call-field-arithmetic-help-compiles"
     call_field_arithmetic_source "get(a) * pair.value" "zext[u32](get(a)) * pair.value"
     "widen an operand first: `zext[u32](get(a)) * pair.value`";
+  let left_chain_source =
+    "fn f(a u16, b u16, c u16) u32 { value u32 = a * b * c; return value }\n"
+  in
+  semantic_pin "narrow-arithmetic-left-chain" left_chain_source 1
+    (String.length "fn f(a u16, b u16, c u16) u32 { value u32 = " + 1)
+    (String.length "a * b * c")
+    "`a * b * c` is computed in `u16` and may wrap before it reaches `u32`"
+    (Some "widen an operand first: `zext[u32](a) * b * c`");
+  conversion_help_twin "narrow-arithmetic-left-chain-help-compiles" left_chain_source
+    "a * b * c" "zext[u32](a) * b * c" "widen an operand first: `zext[u32](a) * b * c`";
+  let shift_count_source =
+    "fn f(a u16, s u16, b u16) u32 { value u32 = a << s + b; return value }\n"
+  in
+  semantic_pin "narrow-arithmetic-shift-count" shift_count_source 1
+    (String.length "fn f(a u16, s u16, b u16) u32 { value u32 = " + 1)
+    (String.length "a << s + b")
+    "`a << s + b` is computed in `u16` and may wrap before it reaches `u32`"
+    (Some "widen an operand first: `zext[u32](a) << s + b`");
+  conversion_help_twin "narrow-arithmetic-shift-count-help-compiles" shift_count_source
+    "a << s + b" "zext[u32](a) << s + b"
+    "widen an operand first: `zext[u32](a) << s + b`";
+  let right_group_source =
+    "fn f(a u16, b u16, c u16) u32 { value u32 = a - (b - c); return value }\n"
+  in
+  semantic_pin "narrow-arithmetic-right-group" right_group_source 1
+    (String.length "fn f(a u16, b u16, c u16) u32 { value u32 = " + 1)
+    (String.length "a - (b - c)")
+    "`a - (b - c)` is computed in `u16` and may wrap before it reaches `u32`"
+    (Some "widen an operand first: `zext[u32](a) - (zext[u32](b) - c)`");
+  conversion_help_twin "narrow-arithmetic-right-group-help-compiles" right_group_source
+    "a - (b - c)" "zext[u32](a) - (zext[u32](b) - c)"
+    "widen an operand first: `zext[u32](a) - (zext[u32](b) - c)`";
+  let bit_not_operand_source =
+    "fn f(a u16, b u16) u32 { value u32 = b * ~a; return value }\n"
+  in
+  semantic_pin "narrow-arithmetic-bit-not-operand" bit_not_operand_source 1
+    (String.length "fn f(a u16, b u16) u32 { value u32 = " + 1)
+    (String.length "b * ~a")
+    "`b * ~a` is computed in `u16` and may wrap before it reaches `u32`"
+    (Some "widen an operand first: `zext[u32](b) * ~zext[u32](a)`");
+  conversion_help_twin "narrow-arithmetic-bit-not-operand-help-compiles"
+    bit_not_operand_source "b * ~a" "zext[u32](b) * ~zext[u32](a)"
+    "widen an operand first: `zext[u32](b) * ~zext[u32](a)`";
   let size_expression_printer_source =
     "fn f() void { values arr[(A + 1) * (B - 2),u8] = {}; return }\n"
   in
@@ -11016,7 +11532,8 @@ let () =
     "struct S { value u32 }\nfn f(p addr) void { volatile_load[S](p)\nreturn }\n";
   semantic_error "volatile-store-expression" "`volatile_store` is statement-only"
     "fn f(p addr) u32 { return volatile_store[u32](p, 1) }\n";
-  semantic_error "volatile-load-type-argument" "expects one type argument"
+  semantic_error "volatile-load-type-argument"
+    "`volatile_load` needs a type argument: `volatile_load[T](p)`"
     "fn f(p addr) u32 { return volatile_load(p) }\n";
   semantic_error "volatile-store-arity" "expects two arguments"
     "fn f(p addr) void {\nvolatile_store[u32](p)\nreturn\n}\n";
@@ -11294,7 +11811,7 @@ let () =
      return destination.y }\n";
   semantic_error "copy-expression-is-statement-only" "copy is statement-only"
     "fn f() i32 { return copy(1, 2) }\n";
-  semantic_error "copy-generic-form-rejected" "copy takes no type arguments"
+  semantic_error "copy-generic-form-rejected" "`copy` takes no type arguments"
     "fn f(destination addr, source addr) void {\n\
      copy[arr[2,u8]](destination, source)\n\
      return }\n";
@@ -11738,11 +12255,11 @@ let () =
     "fn f(p addr, i vec[2,i8], m vec[2,bool]) void { scatter_bytes[u32](p, i, m)\n\
      return }\n";
   semantic_error "simd-memory-missing-type"
-    "builtin `masked_load` expects one type argument"
+    "`masked_load` needs a type argument: `masked_load[T](p, m, fallback)`"
     "fn f(p addr, m vec[2,bool], v vec[2,u32]) vec[2,u32] { return masked_load(p, m, \
      v) }\n";
   semantic_error "simd-memory-store-missing-type"
-    "builtin `masked_store` expects one type argument"
+    "`masked_store` needs a type argument: `masked_store[T](p, m, values)`"
     "fn f(p addr, m vec[2,bool], v vec[2,u32]) void { masked_store(p, m, v)\nreturn }\n";
   semantic_error "simd-memory-masked-store-expression" "masked_store is statement-only"
     "fn f(p addr, m vec[2,bool], v vec[2,u32]) u32 { return masked_store[u32](p, m, v) }\n";
@@ -12119,8 +12636,8 @@ let () =
         Names.operation_names)
     builtin_collision_headers;
   c_semantic_message "builtin-c-header-noncall-reserved-name"
-    "C declaration `sqrt` is not supported: name is reserved in Fas; call it through a \
-     C container function with another name"
+    "C declaration `sqrt` is not supported: name is a Fas builtin; call it through a C \
+     container function with another name"
     c_math "fn probe() f64 { return sqrt }\n";
   (match c_semantic_result c_stdlib "fn probe(x i32) f64 { return abs(x) }\n" with
   | Error [ diagnostic ]
@@ -12427,6 +12944,12 @@ let () =
     "access outside object `malloc(16)` (offset 16, size 4 bytes, object size 16)"
     c_stdlib
     "fn probe() void { p addr = malloc(16)\nview xs = p[u32, ..]\nxs[4] = 1\nreturn }\n";
+  c_semantic_pin "narrow-arithmetic-malloc-size-help"
+    "widen an operand first: `zext[usize](nres) * 140 + 16`" c_stdlib
+    "fn probe(nres u32) addr { return malloc(nres * 140 + 16) }\n" 1 41 15
+    "`nres * 140 + 16` is computed in `u32` and may wrap before it reaches `usize`";
+  c_semantic_accept "narrow-arithmetic-malloc-size-help-compiles" c_stdlib
+    "fn probe(nres u32) addr { return malloc(zext[usize](nres) * 140 + 16) }\n";
   c_semantic_message "alloc-size-calloc-past-end"
     "access outside object `calloc(4, 4)` (offset 16, size 4 bytes, object size 16)"
     c_stdlib "fn probe() void { p addr = calloc(4, 4)\np[u32, 4] = 1\nreturn }\n";
@@ -12953,6 +13476,176 @@ let () =
   c_semantic_message "c-import-cross-file-conflict"
     "C declaration `fas_i32_echo` is not supported: conflicting C declarations"
     (c_matrix_source, conflicted) "fn main() i32 { return fas_i32_echo(7) }\n";
+  let split_directory =
+    Filename.concat
+      (Filename.get_temp_dir_name ())
+      (Printf.sprintf "fas-split-regressions-%d" (Unix.getpid ()))
+  in
+  Unix.mkdir split_directory 0o700;
+  let split_path name = Filename.concat split_directory name in
+  let source_lines lines =
+    String.concat "" (List.map (fun line -> line ^ "\n") lines)
+  in
+  let split_run ~a_header ~b_header root mini =
+    let write name contents =
+      let channel = open_out_bin (split_path name) in
+      Fun.protect
+        ~finally:(fun () -> close_out_noerr channel)
+        (fun () -> output_string channel contents)
+    in
+    write "split_root.fas" root;
+    write "split_mini.fas" mini;
+    write "split_a.h" a_header;
+    write "split_b.h" b_header;
+    Driver.run (cli_run [ "--emit-llvm"; split_path "split_root.fas" ])
+  in
+  let split_expect_nonnull label function_name result =
+    let expected =
+      Printf.sprintf "null argument to nonnull parameter 1 of `%s`" function_name
+    in
+    match result with
+    | Error diagnostics ->
+        let messages =
+          List.map (fun (diagnostic : Diag.t) -> diagnostic.message) diagnostics
+        in
+        if
+          (not (List.mem expected messages))
+          || List.exists (fun message -> contains message "conflicting") messages
+        then
+          failwith
+            (label ^ ": expected the nonnull diagnostic for `" ^ function_name ^ "`")
+    | Ok _ -> failwith (label ^ ": expected the nonnull diagnostic")
+  in
+  let split_pthread_create_root =
+    source_lines
+      [
+        "fn main() i32 {";
+        "    st i32 = pthread_create(null, null, null, null)";
+        "    return st";
+        "}";
+      ]
+  in
+  let split_pthread_mutex_root =
+    source_lines
+      [
+        "fn main() i32 {"; "    st i32 = pthread_mutex_lock(null)"; "    return st"; "}";
+      ]
+  in
+  let split_union_root =
+    source_lines [ "fn main() i32 {"; "    v_ptr(1)"; "    return 0"; "}" ]
+  in
+  let split_union_a_header =
+    source_lines
+      [
+        "typedef long lng;";
+        "typedef union { lng a; char b[8]; } V;";
+        "V *v_ptr(int value);";
+      ]
+  in
+  let split_union_b_header =
+    source_lines [ "typedef long lng;"; "typedef union { lng a; char b[8]; } V;" ]
+  in
+  let split_conflict_a_header = source_lines [ "typedef struct { int x; } T;" ] in
+  let split_conflict_b_header = source_lines [ "typedef struct { long x; } T;" ] in
+  let split_conflict_root =
+    source_lines
+      [ "fn take(value T) i32 {"; "    return 0"; "}"; "fn main() i32 { return 0 }" ]
+  in
+  let split_with_include include_line root =
+    source_lines [ include_line; "use \"split_mini.fas\"" ] ^ root
+  in
+  let split_expect_anonymous label root mini =
+    match
+      split_run ~a_header:split_union_a_header ~b_header:split_union_b_header root mini
+    with
+    | Ok _ -> ()
+    | Error diagnostics ->
+        failwith (label ^ ": " ^ Diag.render_all ~source:None diagnostics)
+  in
+  let split_unused_record_root =
+    source_lines
+      [
+        "use \"C\" <pthread.h>";
+        "use \"split_mini.fas\"";
+        "fn main() i32 {";
+        "    first pthread_t";
+        "    st i32 = pthread_create(&first, null, &split_worker, null)";
+        "    return st";
+        "}";
+      ]
+  in
+  let split_unused_record_mini =
+    source_lines
+      [
+        "use \"C\" <sys/types.h>";
+        "var calls i32 = 0";
+        "extern \"C\" {";
+        "  fn split_worker(arg addr) addr {";
+        "    calls += 1";
+        "    return null";
+        "  }";
+        "}";
+        "fn split_calls() i32 {";
+        "  return calls";
+        "}";
+      ]
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun name -> try Sys.remove (split_path name) with Sys_error _ -> ())
+        [ "split_root.fas"; "split_mini.fas"; "split_a.h"; "split_b.h" ];
+      try Unix.rmdir split_directory with Unix.Unix_error _ -> ())
+    (fun () ->
+      split_expect_nonnull "split-pthread-create-root-first" "pthread_create"
+        (split_run ~a_header:"" ~b_header:""
+           (split_with_include "use \"C\" <pthread.h>" split_pthread_create_root)
+           (source_lines [ "use \"C\" <sys/types.h>" ]));
+      split_expect_nonnull "split-pthread-create-mini-first" "pthread_create"
+        (split_run ~a_header:"" ~b_header:""
+           (split_with_include "use \"C\" <sys/types.h>" split_pthread_create_root)
+           (source_lines [ "use \"C\" <pthread.h>" ]));
+      split_expect_nonnull "split-pthread-mutex-lock" "pthread_mutex_lock"
+        (split_run ~a_header:"" ~b_header:""
+           (split_with_include "use \"C\" <pthread.h>" split_pthread_mutex_root)
+           (source_lines [ "use \"C\" <sys/types.h>" ]));
+      split_expect_anonymous "split-anonymous-typedef"
+        (split_with_include "use \"C\" \"split_a.h\"" split_union_root)
+        (source_lines [ "use \"C\" \"split_b.h\"" ]);
+      split_expect_anonymous "split-anonymous-typedef-reversed"
+        (split_with_include "use \"C\" \"split_b.h\"" split_union_root)
+        (source_lines [ "use \"C\" \"split_a.h\"" ]);
+      (match
+         split_run ~a_header:"" ~b_header:"" split_unused_record_root
+           split_unused_record_mini
+       with
+      | Ok llvm ->
+          if contains llvm "%struct.__fsid_t" then
+            failwith "unused-record-fsid: `__fsid_t` is emitted without a reference";
+          if not (contains llvm "%struct.pthread_attr_t") then
+            failwith "unused-record-fsid: `pthread_attr_t` is missing from the LLVM"
+      | Error diagnostics ->
+          failwith
+            ("unused-record-fsid: unexpected rejection: "
+            ^ Diag.render_all ~source:None diagnostics));
+      let conflict_message =
+        "C declaration `T` is not supported: conflicting C declarations"
+      in
+      match
+        split_run ~a_header:split_conflict_a_header ~b_header:split_conflict_b_header
+          (split_with_include "use \"C\" \"split_a.h\"" split_conflict_root)
+          (source_lines [ "use \"C\" \"split_b.h\"" ])
+      with
+      | Error diagnostics
+        when List.exists
+               (fun (diagnostic : Diag.t) -> diagnostic.message = conflict_message)
+               diagnostics ->
+          ()
+      | Error diagnostics ->
+          failwith
+            ("split-conflict-twin: unexpected rejection: "
+            ^ Diag.render_all ~source:None diagnostics)
+      | Ok _ -> failwith "split-conflict-twin: real conflict was accepted");
   c_semantic_accept "c-import-unused-unsupported" c_matrix
     "fn main() i32 { return 0 }\n";
   c_semantic_accept "c-import-integer-alias-matrix" c_matrix
@@ -14193,7 +14886,7 @@ let () =
       | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
       | Ok _ -> failwith "incomplete array with the wrong element type was accepted");
   c_semantic_message "c-import-reserved-name"
-    "C declaration `addr` is not supported: name is reserved in Fas; call it through a \
+    "C declaration `addr` is not supported: name is a Fas type name; call it through a \
      C container function with another name"
     c_matrix "fn probe() i32 { return addr(1) }\n";
   c_semantic_message "c-import-macro-is-foreign-only" "unknown name `FAS_MACRO_ONLY`"
@@ -14321,7 +15014,7 @@ let () =
   c_semantic_accept "c-import-stdio-self-macro" c_macros
     "fn probe() i32 { return fputs(c\"hello\", stdout) }\n";
   c_semantic_message "c-import-reserved-macro"
-    "C declaration `addr` is not supported: name is reserved in Fas; call it through a \
+    "C declaration `addr` is not supported: name is a Fas type name; call it through a \
      C container function with another name"
     c_macros "fn probe() i32 { return addr(1) }\n";
   let c_from_d =
@@ -14449,7 +15142,7 @@ let () =
     "C declaration `M_PIl` is not supported: long double types are not supported"
     float_macros "fn probe() f64 { return M_PIl }\n";
   c_semantic_message "c-float-macro-reserved"
-    "`addr` is reserved and cannot be used as a name"
+    "`addr` is a type name and cannot be used as a name"
     (c_import_macro_fixture ~c_flags:[ "-D_GNU_SOURCE" ] "float_macros.h" [ "addr" ])
     "fn probe() f64 { return addr }\n";
   List.iter
@@ -15406,6 +16099,96 @@ let () =
   print_endline "C export spelling, omission, diagnostics and header pins: passed"
 
 let () =
+  let source = Filename.temp_file "fas-feature-macro-" ".fas" in
+  let block line body =
+    C_import.
+      {
+        spelling = Ast.C_fragment { tag = "C"; text = body };
+        span = Span.make ~file:source ~start_offset:0 ~end_offset:0 ~line ~column:1;
+      }
+  in
+  let system = C_import.{ spelling = Ast.C_system "stdio.h"; span = Span.synthetic } in
+  let import ?(c_flags = []) headers =
+    C_import.import ~cc:"clang-22" ~keep:false ~c_flags source headers
+  in
+  let feature_api =
+    "#include <pthread.h>\n\
+     #include <sched.h>\n\
+     static inline int feature_zero(cpu_set_t *set) { CPU_ZERO(set); return 0; }\n"
+  in
+  let expect_late name macro flag headers =
+    match import headers with
+    | Error [ diagnostic ] ->
+        let message =
+          "C block defines `" ^ macro
+          ^ "` after earlier C imports already read system headers"
+        and help =
+          "remove this line and pass `-D" ^ flag
+          ^ "` on the command line, or move this block before the other C imports"
+        in
+        if
+          diagnostic.Diag.message <> message
+          || diagnostic.help <> Some help
+          || diagnostic.primary.Span.file <> source
+          || diagnostic.primary.Span.line <> 3
+          || diagnostic.primary.Span.column <> 1
+        then
+          failwith
+            (name ^ ": unexpected diagnostic: "
+            ^ Diag.render_all ~source:None [ diagnostic ])
+    | Error diagnostics ->
+        failwith
+          (name ^ ": unexpected diagnostics: "
+          ^ Diag.render_all ~source:None diagnostics)
+    | Ok _ -> failwith (name ^ ": expected rejection")
+  in
+  Fun.protect
+    ~finally:(fun () -> try Sys.remove source with Sys_error _ -> ())
+    (fun () ->
+      expect_late "c-feature-macro-late-repro" "_GNU_SOURCE" "_GNU_SOURCE"
+        [ system; block 2 ("#define _GNU_SOURCE\n" ^ feature_api) ];
+      expect_late "c-feature-macro-late-file-offset" "_FILE_OFFSET_BITS"
+        "_FILE_OFFSET_BITS=64"
+        [ system; block 2 "#define _FILE_OFFSET_BITS 64\n" ];
+      (match
+         import ~c_flags:[ "-D_FILE_OFFSET_BITS=32" ]
+           [ system; block 2 "#define _FILE_OFFSET_BITS 64\n" ]
+       with
+      | Error [ { Diag.message; help = None; primary; _ } ]
+        when message
+             = "C block defines `_FILE_OFFSET_BITS` as `64` but the command line sets \
+                `32`"
+             && primary.Span.line = 3 && primary.Span.column = 1 ->
+          ()
+      | _ -> failwith "c-feature-macro-value-mismatch: unexpected result");
+      ignore
+        (expect_ok
+           (import ~c_flags:[ "-D_GNU_SOURCE" ] [ system; block 2 feature_api ]));
+      ignore
+        (expect_ok
+           (import ~c_flags:[ "-D_GNU_SOURCE" ]
+              [ system; block 2 ("#define _GNU_SOURCE\n" ^ feature_api) ]));
+      ignore
+        (expect_ok
+           (import ~c_flags:[ "-D_GNU_SOURCE=1" ]
+              [ system; block 2 ("#define _GNU_SOURCE\n" ^ feature_api) ]));
+      ignore
+        (expect_ok
+           (import ~c_flags:[ "-D"; "_GNU_SOURCE=1" ]
+              [ system; block 2 ("#define _GNU_SOURCE 1\n" ^ feature_api) ]));
+      ignore
+        (expect_ok (import [ block 2 ("#define _GNU_SOURCE\n" ^ feature_api); system ]));
+      ignore
+        (expect_ok
+           (import
+              [
+                system;
+                block 2
+                  "#include <stdint.h>\n\
+                   static inline int plain_value(void) { return 7; }\n";
+              ])))
+
+let () =
   let fixture =
     c_import_container "anonymous-container"
       "typedef struct { int id; union { int x; unsigned y; }; } user_t;\n\
@@ -15623,7 +16406,7 @@ let () =
   semantic_message "vector-peer-scalar-peer"
     "`splat` needs a vector destination or vector operand to determine its lane count"
     "fn f(k u32) void { add_sat(k, splat(2))\nreturn }\n";
-  semantic_message "splat-rejects-type-argument" "`splat` takes no type argument"
+  semantic_message "splat-rejects-type-argument" "`splat` takes no type arguments"
     "fn f() u8 { return splat[u8](1) }\n";
   let shift_splat_source =
     "fn f(values vec[4,u32]) vec[4,u32] { return values << splat(1) }\n"
@@ -16564,6 +17347,56 @@ let () =
     "fn f(v vec[2," 4 "vector element type must be `bool` or an integer type";
   pin "c-char-pointer-type" char_pointer 1 "fn accept(data char*" 1
     "C type `char*` is not a Fas type; use `addr`";
+  let typed_pointer = "typed pointers are not Fas types; use `addr`" in
+  pin "typed-pointer-param-u32-star" "fn accept(p u32 *) u32 { return 0 }\n" 1
+    "fn accept(p " 5 typed_pointer;
+  pin "typed-pointer-param-point-star"
+    "struct Point { x i32 }\nfn accept(p Point *) u32 { return 0 }\n" 2 "fn accept(p " 7
+    typed_pointer;
+  pin "typed-pointer-param-u8-double-star" "fn accept(p u8 **) u32 { return 0 }\n" 1
+    "fn accept(p " 5 typed_pointer;
+  pin "typed-pointer-local-u32-star" "fn f() u32 {\n    x u32 * = 0\n    return 0\n}\n"
+    2 "    x " 5 typed_pointer;
+  pin "typed-pointer-local-point-star"
+    "struct Point { x i32 }\nfn f() u32 {\n    x Point * = 0\n    return 0\n}\n" 3
+    "    x " 7 typed_pointer;
+  pin "typed-pointer-local-u8-double-star"
+    "fn f() u32 {\n    x u8 ** = 0\n    return 0\n}\n" 2 "    x " 5 typed_pointer;
+  pin "typed-pointer-field-u32-star" "struct S {\n    p u32 *\n}\n" 2 "    p " 5
+    typed_pointer;
+  pin "typed-pointer-field-point-star"
+    "struct Point { x i32 }\nstruct S {\n    p Point *\n}\n" 3 "    p " 7 typed_pointer;
+  pin "typed-pointer-field-u8-double-star" "struct S {\n    p u8 **\n}\n" 2 "    p " 5
+    typed_pointer;
+  pin "typed-pointer-param-addr-u32" "fn accept(p addr[u32]) u32 { return 0 }\n" 1
+    "fn accept(p " 9 typed_pointer;
+  pin "typed-pointer-param-addr-point"
+    "struct Point { x i32 }\nfn accept(p addr[Point]) u32 { return 0 }\n" 2
+    "fn accept(p " 11 typed_pointer;
+  pin "typed-pointer-local-addr-u32"
+    "fn f() u32 {\n    x addr[u32] = null\n    return 0\n}\n" 2 "    x " 9 typed_pointer;
+  pin "typed-pointer-local-addr-point"
+    "struct Point { x i32 }\nfn f() u32 {\n    x addr[Point] = null\n    return 0\n}\n"
+    3 "    x " 11 typed_pointer;
+  pin "typed-pointer-field-addr-u32" "struct S {\n    p addr[u32]\n}\n" 2 "    p " 9
+    typed_pointer;
+  pin "typed-pointer-field-addr-point"
+    "struct Point { x i32 }\nstruct S {\n    p addr[Point]\n}\n" 3 "    p " 11
+    typed_pointer;
+  pin "typed-pointer-generic-addr-u32"
+    "struct Box[T] { v T }\nfn accept(b Box[addr[u32]]) u32 { return 0 }\n" 2
+    "fn accept(b Box[" 9 typed_pointer;
+  pin "typed-pointer-return-u32-star" "fn f() u32 * {\n    return 0\n}\n" 1 "fn f() " 5
+    typed_pointer;
+  semantic_accept "typed-pointer-mul-decl-twin"
+    "fn f(a u32, b u32) u32 {\n    x u32 = a * b\n    return x\n}\n";
+  semantic_accept "typed-pointer-mul-no-space-twin"
+    "fn f(a u32, b u32) u32 {\n    y u32 = a *b\n    return y\n}\n";
+  semantic_accept "typed-pointer-index-mul-twin"
+    "fn f(p addr) u32 {\n    n u32 = p[u32] * 2\n    return n\n}\n";
+  semantic_accept "typed-pointer-handle-twin"
+    "opaque FILE\nfn f(h handle[FILE]) u32 { return 0 }\n";
+  semantic_accept "typed-pointer-addr-twin" "fn f(p addr) u32 { return 0 }\n";
   let arrow_record =
     "struct Pair { x i32 }\nfn read() i32 { value Pair = {1}\n return value->x }\n"
   in
@@ -16667,8 +17500,7 @@ let () =
   let constant_dereference = "var address addr = null\nconst VALUE u8 = *address\n" in
   semantic_pin "constant-c-star-dereference" constant_dereference 2
     (String.index "const VALUE u8 = *address" '*' + 1)
-    1 "Fas has no unary `*`; read through an `addr` with `p[T]`"
-    (Some "write `address[u8]`");
+    1 "Fas has no unary `*`; read through an `addr` with `p[T]`" None;
   let prefix_increment = "fn increment(value i32) i32 { return ++value }\n" in
   pin "c-prefix-increment" prefix_increment 1 "fn increment(value i32) i32 { return " 2
     "Fas has no prefix `++` operator";
@@ -17420,5 +18252,21 @@ let () =
         ("float-vector-compound-" ^ name ^ "-integer-twin")
         (Printf.sprintf "fn good(a vec[4,u32], b vec[4,u32]) void { a %s b }\n" operator))
     [ ("%=", "remainder"); ("&=", "and"); ("|=", "or"); ("^=", "xor") ]
+
+let replay_unmatched_bound = 30
+
+let () =
+  let unmatched = List.rev !replay_unmatched in
+  let failures = List.rev !replay_failures in
+  let unmatched_count = List.length unmatched in
+  Printf.printf
+    "help replay: %d replayed, %d template, %d prose, %d unmatched (bound %d)\n"
+    !replay_replayed !replay_template !replay_prose unmatched_count
+    replay_unmatched_bound;
+  if unmatched_count > replay_unmatched_bound then
+    List.iter (Printf.printf "help replay unmatched: %s\n") unmatched;
+  List.iter (Printf.printf "help replay failed: %s\n") failures;
+  if unmatched_count > replay_unmatched_bound || failures <> [] then
+    failwith "help replay failed"
 
 let () = Printf.printf "all regression checks: %d passed\n" !checks_run

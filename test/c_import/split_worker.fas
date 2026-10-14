@@ -1,0 +1,11 @@
+use "C" <sys/types.h>
+var calls i32 = 0
+extern "C" {
+  fn split_worker(arg addr) addr {
+    calls += 1
+    return null
+  }
+}
+fn split_calls() i32 {
+  return calls
+}

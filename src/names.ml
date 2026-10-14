@@ -59,20 +59,7 @@ let scalar_type_names =
 let primitive_type_names = scalar_type_names @ [ "addr"; "handle"; "arr"; "vec" ]
 let literal_names = [ "true"; "false"; "null" ]
 let reserved_float_names = [ "sqrt"; "fma"; "floor"; "ceil"; "round"; "abs"; "cvt" ]
-let reserved_float_name name = List.mem name reserved_float_names
 let reserved_float_type_names = [ "f32"; "f64" ]
-let reserved_v04_float_names = reserved_float_type_names @ reserved_float_names
-
-let reserved_float_message name =
-  if List.mem name reserved_v04_float_names then
-    Printf.sprintf "`%s` is reserved for v0.4 floating point" name
-  else Printf.sprintf "`%s` is reserved" name
-
-let reserved_binding_message name =
-  if List.mem name reserved_v04_float_names then
-    Printf.sprintf
-      "`%s` is reserved for v0.4 floating point and cannot be used as a name" name
-  else Printf.sprintf "`%s` is reserved and cannot be used as a name" name
 
 let parser_type_name name =
   List.mem name scalar_type_names
@@ -157,13 +144,74 @@ let operation_names = List.map fst operations
 let builtin_name name =
   List.mem name operation_names || List.mem name reserved_float_names
 
-let reserved_binding_name name =
-  List.mem name primitive_type_names
-  || List.mem name literal_names
-  || List.mem name [ "view"; "use"; "var" ]
-  || reserved_float_name name
-  || List.mem name reserved_float_type_names
-  || Option.is_some (List.assoc_opt name operations)
+type reserved_kind = Builtin | Type_name | Literal | Other
+
+let classify_reserved name =
+  if builtin_name name then Some Builtin
+  else if List.mem name primitive_type_names || List.mem name reserved_float_type_names
+  then Some Type_name
+  else if List.mem name literal_names then Some Literal
+  else if List.mem name [ "view"; "use"; "var" ] then Some Other
+  else None
+
+let reserved_binding_name name = Option.is_some (classify_reserved name)
+
+let reserved_binding_message name =
+  let kind =
+    match classify_reserved name with
+    | Some Builtin -> "a builtin"
+    | Some Type_name -> "a type name"
+    | Some Literal -> "a literal"
+    | Some Other | None -> "reserved"
+  in
+  Printf.sprintf "`%s` is %s and cannot be used as a name" name kind
+
+let reserved_c_name_reason name =
+  let kind =
+    match classify_reserved name with
+    | Some Builtin -> "a Fas builtin"
+    | Some Type_name -> "a Fas type name"
+    | Some Literal -> "a Fas literal"
+    | Some Other | None -> "reserved in Fas"
+  in
+  Printf.sprintf "name is %s; call it through a C container function with another name"
+    kind
+
+let type_misuse_message name =
+  match classify_reserved name with
+  | Some Builtin -> Some (Printf.sprintf "`%s` is a builtin, not a type" name)
+  | Some Literal -> Some (Printf.sprintf "`%s` is a literal, not a type" name)
+  | Some (Type_name | Other) | None -> None
+
+let value_misuse_message name =
+  if builtin_name name then
+    Some (Printf.sprintf "`%s` is a builtin and must be called" name)
+  else None
+
+let missing_type_arguments_message name =
+  let needs role form = Some (Printf.sprintf "`%s` needs %s: `%s`" name role form) in
+  match name with
+  | "zext" | "sext" | "trunc" | "bitcast" -> needs "a target type" (name ^ "[T](x)")
+  | "cvt" -> needs "a target type" "cvt[T](x)"
+  | "sizeof" -> needs "a type argument" "sizeof[T]"
+  | "alignof" -> needs "a type argument" "alignof[T]"
+  | "offsetof" -> needs "a type argument" "offsetof[T, field]"
+  | "handle_from_addr" -> needs "a type argument" "handle_from_addr[T](p)"
+  | "volatile_load" -> needs "a type argument" "volatile_load[T](p)"
+  | "volatile_store" -> needs "a type argument" "volatile_store[T](p, x)"
+  | "masked_load" -> needs "a type argument" "masked_load[T](p, m, fallback)"
+  | "masked_store" -> needs "a type argument" "masked_store[T](p, m, values)"
+  | "gather" -> needs "a type argument" "gather[T](p, idx, m, fallback)"
+  | "scatter" -> needs "a type argument" "scatter[T](p, idx, m, values)"
+  | "gather_bytes" -> needs "a type argument" "gather_bytes[T](p, off, m, fallback)"
+  | "scatter_bytes" -> needs "a type argument" "scatter_bytes[T](p, off, m, values)"
+  | "call_addr" -> needs "a result type" "call_addr[R](p, args...)"
+  | _ -> None
+
+let takes_no_type_arguments_message name =
+  if builtin_name name && Option.is_none (missing_type_arguments_message name) then
+    Some (Printf.sprintf "`%s` takes no type arguments" name)
+  else None
 
 let parser_operation name =
   match List.assoc_opt name operations with

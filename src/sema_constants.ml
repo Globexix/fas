@@ -585,7 +585,8 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
     ?(check_only = false) ?(validate_dead = true) expression =
   match expression with
   | (Ast.C_dereference _ | Ast.C_dot_star _) as expression ->
-      Error [ Sema_types.c_pointer_selection_diagnostic expected expression ]
+      Error
+        [ Sema_types.c_pointer_selection_diagnostic ~constant:true expected expression ]
   | Ast.Parenthesized (value, _) ->
       const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths ~globals
         ?resolve consts expected ~check_only ~validate_dead value
@@ -629,6 +630,8 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
       | Some (_, t, v) -> Ok (t, v)
       | None when List.mem n globals ->
           error s (Printf.sprintf "global `%s` is not a constant" n)
+      | None when Option.is_some (Names.value_misuse_message n) ->
+          error s (Option.get (Names.value_misuse_message n))
       | None -> (
           match resolve with
           | Some resolve -> resolve ~check_only n s
@@ -1378,7 +1381,9 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
                 String.sub name 0 index
             | _ -> name
           in
-          if Option.is_some (Names.value_operation name) then
+          if Option.is_some (Names.missing_type_arguments_message name) then
+            global_error s (Option.get (Names.missing_type_arguments_message name))
+          else if Option.is_some (Names.value_operation name) then
             global_error s (Printf.sprintf "invalid constant builtin call to `%s`" name)
           else
             global_error s
@@ -1481,7 +1486,8 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
   in
   match expression with
   | (Ast.C_dereference _ | Ast.C_dot_star _) as expression ->
-      Error [ Sema_types.c_pointer_selection_diagnostic expected expression ]
+      Error
+        [ Sema_types.c_pointer_selection_diagnostic ~constant:true expected expression ]
   | Ast.Parenthesized (value, _) -> evaluate expected value
   | Ast.Ident (name, span) -> (
       match lookup name arrays with

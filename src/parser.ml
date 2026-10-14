@@ -318,8 +318,22 @@ module P = struct
       result
 
   let rec ty p =
+    let start = span p in
+    let* t = ty_unchecked p in
+    if at p Token.Star then c_pointer_type p start else Ok t
+
+  and ty_unchecked p =
     within_nesting p (span p) "type nesting exceeds the configured limit" (fun () ->
         ty_inner p)
+
+  and c_pointer_type p start =
+    let rec stars finish =
+      if at p Token.Star then stars (bump p).Token.span else finish
+    in
+    let finish = stars start in
+    error
+      { start with Span.end_offset = finish.Span.end_offset }
+      "typed pointers are not Fas types; use `addr`"
 
   and ty_inner p =
     match (peek p).kind with
@@ -333,9 +347,21 @@ module P = struct
         let s = span p in
         ignore (bump p);
         Error [ Diag.error s "typed pointers are not Fas types; use `addr`" ]
-    | Token.Ident name when Names.type_constructor name = Some Names.Address ->
+    | Token.Ident name when Names.type_constructor name = Some Names.Address -> (
+        let s = span p in
         ignore (bump p);
-        Ok Ast.Addr
+        let previous = p.pos in
+        if not (at p Token.Lbracket) then Ok Ast.Addr
+        else
+          match generic_args p with
+          | Ok _ ->
+              let finish = p.tokens.(p.pos - 1).Token.span in
+              error
+                { s with Span.end_offset = finish.Span.end_offset }
+                "typed pointers are not Fas types; use `addr`"
+          | Error _ ->
+              p.pos <- previous;
+              Ok Ast.Addr)
     | Token.Ident "f32" ->
         ignore (bump p);
         Ok (Ast.Float Ast.F32)
@@ -482,7 +508,7 @@ module P = struct
         Ok (Ast.Type_arg t)
     | Token.Ident _, Token.Lbracket ->
         let previous = p.pos in
-        let* t = ty p in
+        let* t = ty_unchecked p in
         if at p Token.Comma || at p Token.Rbracket then Ok (Ast.Type_or_index t)
         else (
           p.pos <- previous;

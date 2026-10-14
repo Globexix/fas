@@ -43,7 +43,7 @@ let c_pointer_selection_help value type_hint expected =
       Some (Printf.sprintf "write `%s[%s]`" name type_name)
   | _ -> None
 
-let c_pointer_selection_diagnostic expected = function
+let c_pointer_selection_diagnostic ?(constant = false) expected = function
   | Ast.C_dereference (Ast.Ident (name, _), Some marker, span)
     when String.starts_with ~prefix:"__fas_c_pointer_cast__:" marker ->
       let cast_type =
@@ -62,11 +62,12 @@ let c_pointer_selection_diagnostic expected = function
            cast_type)
   | Ast.C_dereference (value, type_hint, span) ->
       Diag.error
-        ?help:(c_pointer_selection_help value type_hint expected)
+        ?help:
+          (if constant then None else c_pointer_selection_help value type_hint expected)
         span "Fas has no unary `*`; read through an `addr` with `p[T]`"
   | Ast.C_dot_star (value, span) ->
       Diag.error
-        ?help:(c_pointer_selection_help value None expected)
+        ?help:(if constant then None else c_pointer_selection_help value None expected)
         span "Fas has no `.*`; read through an `addr` with `p[T]`"
   | _ -> assert false
 
@@ -255,7 +256,7 @@ let unknown_type_name message =
 let raw_access_needs_type_error ?(index = "i") ?(allow_help = true) base span =
   let help =
     match (allow_help, base) with
-    | true, Ast.Ident (name, _) ->
+    | true, Ast.Ident (name, _) when index <> "T" ->
         Some
           (Printf.sprintf "write `%s[T, %s]`, e.g. `%s[u8, %s]`" name index name index)
     | _ -> None
@@ -319,8 +320,8 @@ let rec source_ty named_types = function
           | None -> Ok (Hir.Vec (n, element)))
       | result -> result)
   | Ast.Named_type ("void", _) -> Ok Hir.Void
-  | Ast.Named_type (name, _) when Names.reserved_float_name name ->
-      Error (Names.reserved_float_message name)
+  | Ast.Named_type (name, _) when Option.is_some (Names.type_misuse_message name) ->
+      Error (Option.get (Names.type_misuse_message name))
   | Ast.Named_type (name, _) -> (
       match List.assoc_opt name named_types with
       | Some Struct_name -> Ok (Hir.Struct name)
@@ -375,13 +376,14 @@ let rec named_type_span name = function
         arguments
   | _ -> None
 
-let rec reserved_float_span = function
-  | Ast.Named_type (name, span) when Names.reserved_float_name name -> Some (name, span)
-  | Ast.Handle ty | Ast.Array (_, ty) | Ast.Vec (_, ty) -> reserved_float_span ty
+let rec misused_type_span = function
+  | Ast.Named_type (name, span) when Option.is_some (Names.type_misuse_message name) ->
+      Some (name, span)
+  | Ast.Handle ty | Ast.Array (_, ty) | Ast.Vec (_, ty) -> misused_type_span ty
   | Ast.Applied_type (_, arguments, _) ->
       List.find_map
         (function
-          | Ast.Type_arg ty | Ast.Type_or_index ty -> reserved_float_span ty | _ -> None)
+          | Ast.Type_arg ty | Ast.Type_or_index ty -> misused_type_span ty | _ -> None)
         arguments
   | _ -> None
 
@@ -430,7 +432,7 @@ let rec vector_element_source_span fallback = function
 let source_ty_diag named_types span ty =
   source_ty named_types ty
   |> Result.map_error (fun message ->
-      match (unknown_type_name message, reserved_float_span ty) with
+      match (unknown_type_name message, misused_type_span ty) with
       | Some name, _ ->
           [
             unknown_type_error (List.map fst named_types)
@@ -438,7 +440,7 @@ let source_ty_diag named_types span ty =
               name;
           ]
       | None, Some (name, type_span) ->
-          [ Diag.error type_span (Names.reserved_float_message name) ]
+          [ Diag.error type_span (Option.get (Names.type_misuse_message name)) ]
       | None, None ->
           let primary =
             if
@@ -655,6 +657,60 @@ let rec integer_literal_expression = function
   | Ast.Ternary (_, yes, no, _) ->
       integer_literal_expression yes && integer_literal_expression no
   | _ -> false
+
+let rec unparenthesized = function
+  | Ast.Parenthesized (expression, _) -> unparenthesized expression
+  | expression -> expression
+
+let ast_int_kind = function
+  | Hir.U8 -> Ast.U8
+  | Hir.U16 -> Ast.U16
+  | Hir.U32 -> Ast.U32
+  | Hir.U64 -> Ast.U64
+  | Hir.I8 -> Ast.I8
+  | Hir.I16 -> Ast.I16
+  | Hir.I32 -> Ast.I32
+  | Hir.I64 -> Ast.I64
+  | Hir.Usize -> Ast.Usize
+  | Hir.Isize -> Ast.Isize
+
+let arithmetic_binop = function
+  | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Shl | Ast.Shr | Ast.Bit_and
+  | Ast.Bit_or | Ast.Bit_xor ->
+      true
+  | _ -> false
+
+let rec widened_arithmetic (extension, target) expression =
+  let widen = widened_arithmetic (extension, target) in
+  let widen_or_keep child =
+    if narrow_arithmetic_result child then widen child else Some (unparenthesized child)
+  in
+  match expression with
+  | Ast.Parenthesized (inner, _) -> widen inner
+  | Ast.Binary (((Ast.Shl | Ast.Shr) as op), left, right, span) ->
+      Option.map
+        (fun left -> Ast.Binary (op, left, unparenthesized right, span))
+        (widen left)
+  | Ast.Binary (op, left, right, span) when arithmetic_binop op ->
+      if integer_literal_expression left && not (integer_literal_expression right) then
+        Option.map
+          (fun right -> Ast.Binary (op, unparenthesized left, right, span))
+          (widen right)
+      else
+        Option.bind (widen left) (fun left ->
+            Option.map
+              (fun right -> Ast.Binary (op, left, right, span))
+              (widen_or_keep right))
+  | Ast.Unary (((Ast.Neg | Ast.Bit_not) as op), value, span) ->
+      Option.map (fun value -> Ast.Unary (op, value, span)) (widen value)
+  | Ast.Ternary (condition, yes, no, span) when narrow_arithmetic_result expression -> (
+      match (widen yes, widen no) with
+      | Some yes, Some no -> Some (Ast.Ternary (condition, yes, no, span))
+      | _ -> None)
+  | _ ->
+      if narrow_arithmetic_result expression then None
+      else if integer_literal_expression expression then Some expression
+      else Some (Ast.Cast (extension, target, expression, Ast.expr_span expression))
 
 let convert_expected_kind ?expression actual expected =
   match expression with
@@ -988,10 +1044,6 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
             reason
     in
     let operand = Option.fold ~none:"value" ~some:Ast.expr_name expression in
-    let rec unparenthesized = function
-      | Ast.Parenthesized (expression, _) -> unparenthesized expression
-      | expression -> expression
-    in
     let lane_index_help =
       match (expression, actual, expected) with
       | Some expression, Hir.Int _, Hir.Int _ when narrow_result && widening_help -> (
@@ -1067,42 +1119,19 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
       | Some expression, Hir.Int _, Hir.Float _ ->
           Some
             (Printf.sprintf "write `cvt[%s](%s)`" destination (Ast.expr_name expression))
-      | Some (Ast.Binary (operator, left, right, _)), Hir.Int _, Hir.Int _
+      | ( Some ((Ast.Binary _ | Ast.Unary (Ast.Neg, _, _)) as expression),
+          Hir.Int _,
+          Hir.Int target_kind )
         when narrow_result && widening_help ->
-          let extension = if Sema_numeric.is_unsigned actual then "zext" else "sext" in
-          let operator_text =
-            match operator with
-            | Ast.Add -> "+"
-            | Ast.Sub -> "-"
-            | Ast.Mul -> "*"
-            | Ast.Div -> "/"
-            | Ast.Rem -> "%"
-            | Ast.Shl -> "<<"
-            | Ast.Shr -> ">>"
-            | Ast.Bit_and -> "&"
-            | Ast.Bit_or -> "|"
-            | Ast.Bit_xor -> "^"
-            | _ -> assert false
+          let extension =
+            if Sema_numeric.is_unsigned actual then Ast.Zext else Ast.Sext
           in
-          let widened expression =
-            Printf.sprintf "%s[%s](%s)" extension destination (Ast.expr_name expression)
-          in
-          let left_text, right_text =
-            if integer_literal_expression left && not (integer_literal_expression right)
-            then (Ast.expr_name left, widened right)
-            else
-              ( widened left,
-                Ast.expr_name_child (Ast.binop_precedence operator) true right )
-          in
-          Some
-            (Printf.sprintf "widen an operand first: `%s %s %s`" left_text operator_text
-               right_text)
-      | Some (Ast.Unary (Ast.Neg, value, _)), Hir.Int _, Hir.Int _
-        when narrow_result && widening_help ->
-          let extension = if Sema_numeric.is_unsigned actual then "zext" else "sext" in
-          Some
-            (Printf.sprintf "widen an operand first: `-%s[%s](%s)`" extension
-               destination (Ast.expr_name value))
+          Option.map
+            (fun widened ->
+              Printf.sprintf "widen an operand first: `%s`" (Ast.expr_name widened))
+            (widened_arithmetic
+               (extension, Ast.Int (ast_int_kind target_kind))
+               expression)
       | _, Hir.Int _, Hir.Int _
         when (not (Sema_numeric.is_unsigned actual))
              && Sema_numeric.is_unsigned expected

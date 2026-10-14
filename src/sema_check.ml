@@ -34,6 +34,11 @@ let unknown_name_error visible kind span name =
     span
     ("unknown " ^ kind ^ " `" ^ name ^ "`")
 
+let unknown_value_error visible span name =
+  match Names.value_misuse_message name with
+  | Some message -> error span message
+  | None -> unknown_name_error visible "name" span name
+
 let missing_field_error ?record_name ?base c span name ty =
   let help =
     match (ty, base) with
@@ -1573,7 +1578,7 @@ let rec check_place (c : context) expr =
                   | Some (_, ty, _) ->
                       Ok { expr = Hir.Global (n, ty, s); root = None; path = None }
                   | None -> error s "internal error: global declaration is missing")
-              | None -> unknown_name_error (visible_value_names c) "name" s n)))
+              | None -> unknown_value_error (visible_value_names c) s n)))
   | Ast.Select (a, args, s) -> (
       match a with
       | Ast.Ident (name, name_span)
@@ -2013,8 +2018,8 @@ and check_expr_inner ?destination (c : context) expected expression =
                   | Some (_, (Hir.Array _ as t), _) -> Ok (Hir.Const_array (n, t, s))
                   | Some (_, (Hir.Vec _ as t), values) ->
                       Ok (Hir.EVector (values, t, s))
-                  | Some _ -> unknown_name_error (visible_value_names c) "name" s n
-                  | None -> unknown_name_error (visible_value_names c) "name" s n))))
+                  | Some _ -> unknown_value_error (visible_value_names c) s n
+                  | None -> unknown_value_error (visible_value_names c) s n))))
   | Ast.Unary (Ast.Neg, Ast.Int_lit (raw, is), s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error is m ]) in
       let t = Option.value ~default:(Hir.Int Hir.I32) expected in
@@ -3316,10 +3321,9 @@ and check_call c expected fn args s =
                (Sema_types.diagnostic_ty_name target))
   | Ast.Ident (name, _) when Option.is_some (Names.float_math name) ->
       check_float_math c expected (Option.get (Names.float_math name)) name args s
-  | Ast.Ident (name, _) when Names.reserved_float_name name ->
-      error s (Names.reserved_float_message name)
-  | Ast.Generic_args (Ast.Ident (name, _), _, _) when Names.reserved_float_name name ->
-      error s (Names.reserved_float_message name)
+  | Ast.Ident (name, name_span)
+    when Option.is_some (Names.missing_type_arguments_message name) ->
+      error name_span (Option.get (Names.missing_type_arguments_message name))
   | Ast.Generic_args (Ast.Ident (name, _), generic_args, application_span)
     when name = "handle_from_addr" -> (
       match generic_args with
@@ -3338,13 +3342,12 @@ and check_call c expected fn args s =
       | _ -> error s (Printf.sprintf "builtin `%s` expects a type argument" name))
   | Ast.Generic_args (Ast.Ident ("copy", _), _, _) ->
       error s "copy is statement-only and takes no type arguments"
-  | Ast.Ident ("call_addr", _) ->
-      error s "call_addr needs a result type: call_addr[R](...)"
   | Ast.Generic_args (Ast.Ident (name, _), _, _)
     when name = "masked_store" || name = "scatter" || name = "scatter_bytes" ->
       error s (name ^ " is statement-only")
-  | Ast.Generic_args (Ast.Ident ("splat", _), _, _) ->
-      error s "`splat` takes no type argument"
+  | Ast.Generic_args (Ast.Ident (name, name_span), _, _)
+    when Option.is_some (Names.takes_no_type_arguments_message name) ->
+      error name_span (Option.get (Names.takes_no_type_arguments_message name))
   | Ast.Generic_args (Ast.Ident (name, _), generic_args, application_span)
     when name = "masked_load" || name = "gather" || name = "gather_bytes" ->
       let* access_ty = simd_memory_access_type c name application_span generic_args in
@@ -3501,14 +3504,6 @@ and check_call c expected fn args s =
                 let* checked = check_actuals ~callee:name c Reject s ps args in
                 Ok (Hir.Call (Hir.User specialization.name, checked, rt, s))
           | Some _ -> error s "const-generic symbol is not a function"))
-  | Ast.Ident ("volatile_load", _) ->
-      error s "builtin `volatile_load` expects one type argument"
-  | Ast.Ident ("volatile_store", _) ->
-      error s "builtin `volatile_store` expects one type argument"
-  | Ast.Ident (name, _)
-    when name = "masked_load" || name = "masked_store" || name = "gather"
-         || name = "scatter" || name = "gather_bytes" || name = "scatter_bytes" ->
-      error s (Printf.sprintf "builtin `%s` expects one type argument" name)
   | Ast.Ident ("copy", _) -> error s "copy is statement-only"
   | Ast.Ident (name, _) when Names.value_operation name = Some Names.Len ->
       if List.length args <> 1 then error s "builtin `len` expects one argument"

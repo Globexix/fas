@@ -1036,8 +1036,12 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
 
 let count_expanded_nodes program = fst (fold_expanded_nodes ~limit:max_int program)
 
-let unresolved_names program =
+let used_names program =
   let identifiers = ref [] in
+  ignore (fold_expanded_nodes ~identifiers ~limit:max_int program);
+  List.sort_uniq String.compare !identifiers
+
+let unresolved_names program =
   let declaration name =
     List.exists
       (function
@@ -1050,9 +1054,7 @@ let unresolved_names program =
         | _ -> false)
       program.items
   in
-  ignore (fold_expanded_nodes ~identifiers ~limit:max_int program);
-  List.sort_uniq String.compare !identifiers
-  |> List.filter (fun name -> not (declaration name))
+  used_names program |> List.filter (fun name -> not (declaration name))
 
 let check_expanded_nodes ~limits program =
   if limits.Limits.max_ast_nodes < 0 then

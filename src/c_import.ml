@@ -651,17 +651,6 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
         | _ -> ())
     declarations;
   let roots = List.filter (fun node -> kind node = Some "RecordDecl") all_nodes in
-  let field_types =
-    List.filter_map
-      (fun node -> Option.bind (field "type" node) (string "qualType"))
-      (List.filter (fun node -> kind node = Some "FieldDecl") all_nodes)
-    |> List.sort_uniq String.compare
-  in
-  let record_names record =
-    Option.to_list (name record)
-    @ Option.value ~default:[]
-        (Option.bind (id record) (Hashtbl.find_opt alias_names_by_record))
-  in
   let probes = Hashtbl.create (List.length top_declarations + 64) in
   let add_probe target expression =
     Option.iter (fun target -> Hashtbl.replace probes target expression) target
@@ -735,32 +724,6 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
         in
         Option.iter
           (fun (base_type, root_name) ->
-            let has_type name node =
-              Option.bind (field "type" node) (string "qualType")
-              |> Option.fold ~none:false ~some:(fun ty -> find_text ty name 0 <> None)
-            in
-            let rec type_referenced seen type_name =
-              (not (List.exists (String.equal type_name) seen))
-              && (referenced type_name
-                 || List.exists (has_type type_name)
-                      (List.filter
-                         (fun node ->
-                           Option.fold ~none:false ~some:referenced (name node))
-                         top_declarations)
-                 || List.exists
-                      (fun field_type -> find_text field_type type_name 0 <> None)
-                      field_types
-                    && List.exists
-                         (fun parent ->
-                           List.exists (has_type type_name) (children parent)
-                           && List.exists
-                                (type_referenced (type_name :: seen))
-                                (record_names parent))
-                         roots)
-            in
-            let root_referenced =
-              List.exists (type_referenced []) (record_names root)
-            in
             let fields = ref [] in
             let rec collect record =
               let nested_records =
@@ -804,7 +767,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
             if duplicates <> [] then Hashtbl.replace collision_names root_name ();
             List.iter
               (fun (field_name, target, expression) ->
-                if root_referenced && not (List.mem field_name duplicates) then
+                if not (List.mem field_name duplicates) then
                   add_probe (Some target) expression)
               !fields)
           base)
@@ -1400,6 +1363,117 @@ let remove_artifact path =
   if String.starts_with ~prefix:"fas-c-unit-" (Filename.basename directory) then
     try Unix.rmdir directory with Unix.Unix_error _ -> ()
 
+let feature_test_macros =
+  String.split_on_char ' '
+    "_GNU_SOURCE _DEFAULT_SOURCE _BSD_SOURCE _SVID_SOURCE _POSIX_C_SOURCE \
+     _XOPEN_SOURCE _XOPEN_SOURCE_EXTENDED _ISOC99_SOURCE _ISOC11_SOURCE _ISOC2X_SOURCE \
+     _LARGEFILE64_SOURCE _FILE_OFFSET_BITS _TIME_BITS _REENTRANT _THREAD_SAFE \
+     _FORTIFY_SOURCE"
+
+let trace_entries trace =
+  String.split_on_char '\n' trace
+  |> List.filter_map (fun line ->
+      let depth = ref 0 in
+      while !depth < String.length line && line.[!depth] = '.' do
+        incr depth
+      done;
+      if !depth > 0 && !depth < String.length line && line.[!depth] = ' ' then
+        Some (!depth, String.sub line (!depth + 1) (String.length line - !depth - 1))
+      else None)
+
+let defined_macro line =
+  let identifier c =
+    c = '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+  in
+  let words =
+    String.map (fun c -> if c = '\t' then ' ' else c) line
+    |> String.split_on_char ' '
+    |> List.filter (( <> ) "")
+  in
+  let rec value = function
+    | [] -> []
+    | word :: _
+      when String.starts_with ~prefix:"/*" word || String.starts_with ~prefix:"//" word
+      ->
+        []
+    | word :: rest -> word :: value rest
+  in
+  match words with
+  | "#" :: "define" :: name :: rest | "#define" :: name :: rest ->
+      Some
+        ( String.of_seq (Seq.take_while identifier (String.to_seq name)),
+          String.concat " " (value rest) )
+  | _ -> None
+
+let command_line_macros c_flags =
+  let rec collect = function
+    | ("-I" | "-isystem") :: _ :: rest -> collect rest
+    | "-D" :: definition :: rest -> definition :: collect rest
+    | flag :: rest when String.starts_with ~prefix:"-D" flag ->
+        String.sub flag 2 (String.length flag - 2) :: collect rest
+    | _ :: rest -> collect rest
+    | [] -> []
+  in
+  collect c_flags
+  |> List.map (fun definition ->
+      match String.index_opt definition '=' with
+      | Some index ->
+          ( String.sub definition 0 index,
+            String.sub definition (index + 1) (String.length definition - index - 1) )
+      | None -> (definition, "1"))
+
+let feature_macro_in_block definitions (header : header) (fragment : Ast.c_fragment) =
+  String.split_on_char '\n' fragment.text
+  |> List.mapi (fun index line -> (index, line))
+  |> List.find_map (fun (index, line) ->
+      match defined_macro line with
+      | Some (name, value) when List.mem name feature_test_macros -> (
+          let span =
+            Span.make ~file:header.span.Span.file ~start_offset:0 ~end_offset:0
+              ~line:(header.span.Span.line + 1 + index)
+              ~column:(String.index line '#' + 1)
+          in
+          let written = if value = "" then "1" else value in
+          match List.assoc_opt name (List.rev definitions) with
+          | Some defined when defined = written -> None
+          | Some defined ->
+              Some
+                (Diag.error span
+                   ("C block defines `" ^ name ^ "` as `" ^ written
+                  ^ "` but the command line sets `" ^ defined ^ "`"))
+          | None ->
+              Some
+                (Diag.error
+                   ~help:
+                     ("remove this line and pass `-D" ^ name
+                     ^ (if value = "" then "" else "=" ^ value)
+                     ^ "` on the command line, or move this block before the other C \
+                        imports")
+                   span
+                   ("C block defines `" ^ name
+                  ^ "` after earlier C imports already read system headers")))
+      | _ -> None)
+
+let late_feature_macro_error ~source ~c_flags blocks trace =
+  let user_prefix = Filename.dirname source ^ "/" in
+  let definitions = command_line_macros c_flags in
+  let system_seen = ref false and error = ref None in
+  List.iter
+    (fun (_, path) ->
+      if Option.is_none !error then
+        match List.assoc_opt path blocks with
+        | Some (header, fragment) ->
+            if !system_seen then
+              error := feature_macro_in_block definitions header fragment
+        | None ->
+            if
+              not
+                (String.starts_with ~prefix:"fas-c-fragment-" (Filename.basename path)
+                || String.starts_with ~prefix:user_prefix path)
+            then system_seen := true)
+    (trace_entries trace);
+  !error
+
 let import ~cc ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
     ?(macro_names = []) ?referenced_names source headers =
   let directory = Filename.temp_dir "fas-c-unit-" "" in
@@ -1461,6 +1535,15 @@ let import ~cc ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
       if keep then
         prerr_endline
           ("fas: Clang import command: " ^ String.concat " " (Array.to_list argv));
+      let blocks =
+        List.filter_map
+          (fun header ->
+            match header.spelling with
+            | Ast.C_fragment fragment -> Some (header, fragment)
+            | Ast.C_quoted _ | Ast.C_system _ -> None)
+          headers
+        |> List.combine (List.rev !fragment_paths)
+      in
       match Process.run_to_file argv json_path with
       | Error failure ->
           Error
@@ -1469,7 +1552,9 @@ let import ~cc ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
                 (error_span headers (unit_line unit_path failure.stderr))
                 failure.stderr;
             ]
-      | Ok trace -> (
+      | Ok trace
+        when Option.is_none (late_feature_macro_error ~source ~c_flags blocks trace)
+        -> (
           try
             let channel = open_in_bin json_path in
             let layouts, raw_declarations =
@@ -1478,18 +1563,10 @@ let import ~cc ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
                 (fun () -> C_import_json.declarations_with_layout channel)
             in
             let origins = Hashtbl.create 32 and root = ref "" in
-            String.split_on_char '\n' trace
-            |> List.iter (fun line ->
-                let depth = ref 0 in
-                while !depth < String.length line && line.[!depth] = '.' do
-                  incr depth
-                done;
-                if !depth > 0 && !depth < String.length line && line.[!depth] = ' ' then (
-                  let path =
-                    String.sub line (!depth + 1) (String.length line - !depth - 1)
-                  in
-                  if !depth = 1 then root := path;
-                  Hashtbl.replace origins path !root));
+            trace_entries trace
+            |> List.iter (fun (depth, path) ->
+                if depth = 1 then root := path;
+                Hashtbl.replace origins path !root);
             let annotate_declarations declarations =
               List.map
                 (fun node ->
@@ -1614,7 +1691,10 @@ let import ~cc ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
               [
                 Diag.error (List.hd headers).span
                   ("internal error: C import JSON reader: " ^ message);
-              ]))
+              ])
+      | Ok trace ->
+          Error
+            (Option.to_list (late_feature_macro_error ~source ~c_flags blocks trace)))
 
 let get name = C_import_json.field name
 let text = function C_import_json.Str value -> Some value | _ -> None
@@ -3141,20 +3221,14 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
     (fun name result ->
       if Names.reserved_binding_name name then
         match result with
-        | Ok _ ->
-            add_unsupported name
-              "name is reserved in Fas; call it through a C container function with \
-               another name"
+        | Ok _ -> add_unsupported name (Names.reserved_c_name_reason name)
         | Error _ -> ())
     aliases;
   let add_item name spelling signature item origin obligations reason
       ?(normalize_restrict = Option.is_some (find_text spelling "restrict" 0))
       ?(entity_scope = "") ?(keep_unsupported_item = false) () =
     let reason =
-      if Names.reserved_binding_name name then
-        Some
-          "name is reserved in Fas; call it through a C container function with \
-           another name"
+      if Names.reserved_binding_name name then Some (Names.reserved_c_name_reason name)
       else reason
     in
     let item =
@@ -4517,6 +4591,54 @@ let reconcile_source ?(container_mismatch_to_clang = false) source_items importe
               (fun (name, _) -> not (List.mem name !confirmed))
               imported.incomplete_arrays;
         }
+
+let prune_unreferenced_records ~referenced_names imported =
+  let items = Hashtbl.create 256 in
+  List.iter (fun item -> Hashtbl.replace items (item_name item) item) imported.items;
+  let aliases = Hashtbl.create 64 in
+  List.iter (fun (name, ty) -> Hashtbl.replace aliases name ty) imported.aliases;
+  let reached = Hashtbl.create 256 in
+  let rec visit name =
+    if not (Hashtbl.mem reached name) then (
+      Hashtbl.replace reached name ();
+      let from_item =
+        match Hashtbl.find_opt items name with
+        | Some item -> Ast.used_names { Ast.items = [ item ] }
+        | None -> []
+      in
+      let from_alias =
+        match Hashtbl.find_opt aliases name with
+        | Some ty ->
+            Ast.used_names
+              {
+                Ast.items =
+                  [
+                    Ast.Global
+                      {
+                        name;
+                        ty_span = Span.synthetic;
+                        ty;
+                        init = None;
+                        linkage = Ast.Import_c;
+                        span = Span.synthetic;
+                      };
+                  ];
+              }
+        | None -> []
+      in
+      List.iter visit (from_item @ from_alias))
+  in
+  List.iter visit referenced_names;
+  {
+    imported with
+    items =
+      List.map
+        (function
+          | Ast.Struct { name; span; _ } when not (Hashtbl.mem reached name) ->
+              Ast.Opaque { name; span }
+          | item -> item)
+        imported.items;
+  }
 
 let manifest_text imported =
   let rows = Hashtbl.create 256 in

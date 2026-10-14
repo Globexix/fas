@@ -278,8 +278,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         validate_aggregate_length_names value_names type_names span "array" length ty
     | Ast.Vec (length, ty) ->
         validate_aggregate_length_names value_names type_names span "vector" length ty
-    | Ast.Named_type (name, type_span) when Names.reserved_float_name name ->
-        error type_span (Names.reserved_float_message name)
+    | Ast.Named_type (name, type_span)
+      when Option.is_some (Names.type_misuse_message name) ->
+        error type_span (Option.get (Names.type_misuse_message name))
     | Ast.Named_type ("void", _) -> Ok ()
     | Ast.Named_type (name, type_span) when String_set.mem name !local_values ->
         error type_span (Printf.sprintf "`%s` is a value, not a type" name)
@@ -349,7 +350,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             error span (Printf.sprintf "`%s` is a type, not a value" name)
         | Some (`Function _) ->
             error span (Printf.sprintf "`%s` is a function, not a value" name)
-        | None -> error span (Printf.sprintf "unknown name `%s`" name))
+        | None -> (
+            match Names.value_misuse_message name with
+            | Some message -> error span message
+            | None -> error span (Printf.sprintf "unknown name `%s`" name)))
     | Ast.Unary (_, expression, _)
     | Ast.C_dereference (expression, _, _)
     | Ast.C_dot_star (expression, _)
@@ -388,10 +392,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         Result_list.iter
           (validate_generic_argument_names value_names type_names span)
           arguments
-    | Ast.Generic_args (Ast.Ident ("copy", _), _, span) ->
-        error span "copy takes no type arguments"
-    | Ast.Generic_args (Ast.Ident ("splat", _), _, span) ->
-        error span "`splat` takes no type argument"
+    | Ast.Generic_args (Ast.Ident (name, name_span), _, _)
+      when Option.is_some (Names.takes_no_type_arguments_message name) ->
+        error name_span (Option.get (Names.takes_no_type_arguments_message name))
     | Ast.Generic_args (Ast.Ident (name, span), arguments, application_span) ->
         let* () =
           match nearest_kind value_names type_names name with
@@ -1991,8 +1994,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let* ty = resolve_ty ~values ~defer_const_structs substitutions depth span ty in
         Ok (Ast.Vec (length, ty))
     | Ast.Named_type ("void", type_span) -> Ok (Ast.Named_type ("void", type_span))
-    | Ast.Named_type (name, type_span) when Names.reserved_float_name name ->
-        error type_span (Names.reserved_float_message name)
+    | Ast.Named_type (name, type_span)
+      when Option.is_some (Names.type_misuse_message name) ->
+        error type_span (Option.get (Names.type_misuse_message name))
     | Ast.Named_type (name, type_span) -> (
         if String_set.mem name !local_values then
           error type_span (Printf.sprintf "`%s` is a value, not a type" name)
@@ -2357,10 +2361,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         in
         let* arguments = Result_list.map resolve_argument arguments in
         Ok (Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span))
-    | Ast.Generic_args (Ast.Ident ("copy", _), _, span) ->
-        error span "copy takes no type arguments"
-    | Ast.Generic_args (Ast.Ident ("splat", _), _, span) ->
-        error span "`splat` takes no type argument"
+    | Ast.Generic_args (Ast.Ident (name, name_span), _, _)
+      when Option.is_some (Names.takes_no_type_arguments_message name) ->
+        error name_span (Option.get (Names.takes_no_type_arguments_message name))
     | Ast.Generic_args (Ast.Ident (name, ident_span), arguments, span) -> (
         let arguments = List.map bind_argument arguments in
         match List.assoc_opt name function_templates with
