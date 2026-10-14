@@ -7,3 +7,4 @@ type failure = {
 
 val run : string array -> (string * string, failure) result
 val run_to_file : string array -> string -> (string, failure) result
+val run_program : string -> string array -> (int, string) result

@@ -1,11 +1,12 @@
 #!/bin/sh
 set -eu
+export DEBUGINFOD_URLS=
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 START_DIR=$(pwd)
-LLVM_OPT=${LLVM_OPT:-opt-22}
-LLVM_LLC=${LLVM_LLC:-llc-22}
-CC=${CC:-clang-22}
+LLVM_OPT=${FAS_OPT:-${LLVM_OPT:-opt-22}}
+LLVM_LLC=${FAS_LLC:-${LLVM_LLC:-llc-22}}
+CC=${FAS_CC:-${CC:-clang-22}}
 OCAML_FAS=${OCAML_FAS:-$ROOT/_build/default/bin/main.exe}
 
 resolve_tool_path() {
@@ -27,6 +28,7 @@ LLVM_OPT=$(resolve_tool_path "$LLVM_OPT")
 LLVM_LLC=$(resolve_tool_path "$LLVM_LLC")
 CC=$(resolve_tool_path "$CC")
 OCAML_FAS=$(resolve_tool_path "$OCAML_FAS")
+export FAS_OPT="$LLVM_OPT" FAS_LLC="$LLVM_LLC" FAS_CC="$CC"
 START_TIME=$(date +%s)
 GATE_TMP=$(mktemp -d)
 trap 'rm -rf "$GATE_TMP"' EXIT HUP INT TERM

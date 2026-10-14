@@ -45,7 +45,7 @@ esac
 exec "$REAL_CC" "$@"
 SH
 chmod +x "$C_IMPORT_TMP/count-clang"
-CC="$C_IMPORT_TMP/count-clang" REAL_CC="$REAL_CC" MACRO_LOG="$C_IMPORT_TMP/macros.log" \
+FAS_CC="$C_IMPORT_TMP/count-clang" REAL_CC="$REAL_CC" MACRO_LOG="$C_IMPORT_TMP/macros.log" \
   "$OCAML_FAS" --emit-ir "$C_IMPORT_TMP/lazy.fas" >"$C_IMPORT_TMP/lazy.ir"
 [ -f "$C_IMPORT_TMP/macros.log" ] || fail "header declaration conflict macro scan was not run"
 [ "$(wc -l <"$C_IMPORT_TMP/macros.log")" -eq 1 ] \

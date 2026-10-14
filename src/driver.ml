@@ -400,18 +400,60 @@ let emit_text config text =
             ])
   else Ok text
 
-let tool name legacy default =
-  match Sys.getenv_opt name with
-  | Some value when value <> "" -> value
-  | _ -> (
-      match Sys.getenv_opt legacy with
-      | Some value when value <> "" -> value
-      | _ -> default)
+let tool name default =
+  match Sys.getenv_opt name with Some value when value <> "" -> value | _ -> default
 
 let tools () =
-  ( tool "LLVM_OPT" "FAS_OPT" "opt-22",
-    tool "LLVM_LLC" "FAS_LLC" "llc-22",
-    tool "CC" "FAS_CC" "clang-22" )
+  (tool "FAS_OPT" "opt-22", tool "FAS_LLC" "llc-22", tool "FAS_CC" "clang-22")
+
+let version = "0.5.0-dev"
+
+let executable_path name =
+  if String.contains name '/' then name
+  else
+    let directories =
+      String.split_on_char ':' (Option.value ~default:"" (Sys.getenv_opt "PATH"))
+    in
+    let is_executable path =
+      try
+        Unix.access path [ Unix.X_OK ];
+        not (Sys.is_directory path)
+      with Unix.Unix_error _ | Sys_error _ -> false
+    in
+    let candidates =
+      List.map
+        (fun directory ->
+          Filename.concat (if directory = "" then "." else directory) name)
+        directories
+    in
+    match List.find_opt is_executable candidates with Some path -> path | None -> name
+
+let first_non_empty_line text =
+  String.split_on_char '\n' text
+  |> List.map String.trim
+  |> List.find_opt (fun line -> line <> "")
+
+let tool_version path =
+  match Process.run [| path; "--version" |] with
+  | Ok (stdout, stderr) -> (
+      match first_non_empty_line stdout with
+      | Some line -> Some line
+      | None -> first_non_empty_line stderr)
+  | Error _ -> None
+
+let version_lines () =
+  let opt, llc, cc = tools () in
+  let tool_line label name =
+    let path = executable_path name in
+    let found = Option.value ~default:"not found" (tool_version path) in
+    Printf.sprintf "%s: %s (%s)" label path found
+  in
+  [
+    Printf.sprintf "fas %s (%s)" version Build_commit.commit;
+    tool_line "opt" opt;
+    tool_line "llc" llc;
+    tool_line "cc" cc;
+  ]
 
 let status_name = function
   | Unix.WEXITED code -> Printf.sprintf "exit %d" code
@@ -498,7 +540,7 @@ let report_kept config paths opt llc cc =
     prerr_endline ("fas: kept intermediates: " ^ String.concat ", " paths);
     prerr_endline
       (Printf.sprintf
-         "fas: tools LLVM_OPT=%s LLVM_LLC=%s CC=%s; opt passes=%s; verify before and \
+         "fas: tools FAS_OPT=%s FAS_LLC=%s FAS_CC=%s; opt passes=%s; verify before and \
           after opt; llc %s"
          opt llc cc (pass_report config)
          (llc_opt config.Cli.optimization)))
@@ -536,6 +578,21 @@ let build_assembly config llc opt_path asm_path =
   in
   Ok generated
 
+let optimize_module config opt ll_path opt_path =
+  let* () = verify_llvm opt ll_path in
+  let* () =
+    let address_scope_option =
+      if List.mem "address" config.Cli.sanitizers then [ "-asan-use-after-scope" ]
+      else []
+    in
+    run_tool opt
+      (Array.of_list
+         ([ opt; "-passes=" ^ opt_pass config ]
+         @ address_scope_option
+         @ [ ll_path; "-S"; "-o"; opt_path ]))
+  in
+  verify_llvm opt opt_path
+
 let emit_tools_unprotected config program ir c_objects redirect =
   let* () = ir_budget program (Ir.check_static_data_bytes ~limits ir) in
   let* ll_text =
@@ -551,19 +608,7 @@ let emit_tools_unprotected config program ir c_objects redirect =
       write_file ll_path ll_text;
       let opt, llc, cc = tools () in
       report_kept config [ ll_path; opt_path; asm_path ] opt llc cc;
-      let* () = verify_llvm opt ll_path in
-      let* () =
-        let address_scope_option =
-          if List.mem "address" config.Cli.sanitizers then [ "-asan-use-after-scope" ]
-          else []
-        in
-        run_tool opt
-          (Array.of_list
-             ([ opt; "-passes=" ^ opt_pass config ]
-             @ address_scope_option
-             @ [ ll_path; "-S"; "-o"; opt_path ]))
-      in
-      let* () = verify_llvm opt opt_path in
+      let* () = optimize_module config opt ll_path opt_path in
       match config.emit with
       | Cli.Asm ->
           let* assembly = build_assembly config llc opt_path asm_path in
@@ -612,7 +657,7 @@ let emit_tools_unprotected config program ir c_objects redirect =
                 run_tool cc (executable_command output_config cc asm_path c_objects)
               in
               Ok "")
-      | Cli.Ir | Cli.Ir_json | Cli.Llvm | Cli.Header ->
+      | Cli.Ir | Cli.Ir_json | Cli.Llvm | Cli.Optimized_llvm | Cli.Header ->
           invalid_arg "Driver.emit_tools: non-tool emission")
 
 let emit_tools config program ir c_objects redirect =
@@ -626,6 +671,36 @@ let emit_tools config program ir c_objects redirect =
             (Printf.sprintf "backend %s(%s) failed: %s" operation argument
                (Unix.error_message code));
         ]
+
+let with_fas_module_id text =
+  if not (String.starts_with ~prefix:"; ModuleID = " text) then text
+  else
+    let rest =
+      match String.index_opt text '\n' with
+      | Some newline -> String.sub text newline (String.length text - newline)
+      | None -> ""
+    in
+    "; ModuleID = 'fas'" ^ rest
+
+let emit_optimized_llvm config program ir redirect =
+  let* () = ir_budget program (Ir.check_static_data_bytes ~limits ir) in
+  let* ll_text =
+    render_ir ~redirect ~sanitize_address:(List.mem "address" config.Cli.sanitizers) ir
+  in
+  let ll_path = Filename.temp_file "fas-module-" ".ll" in
+  let opt_path = Filename.temp_file "fas-opt-" ".ll" in
+  let cleanup () = if not config.Cli.keep then List.iter remove [ ll_path; opt_path ] in
+  Fun.protect ~finally:cleanup (fun () ->
+      write_file ll_path ll_text;
+      let opt, llc, cc = tools () in
+      report_kept config [ ll_path; opt_path ] opt llc cc;
+      let* () = optimize_module config opt ll_path opt_path in
+      let* text =
+        read_file opt_path
+        |> Result.map_error (fun message ->
+            [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ])
+      in
+      emit_text config (with_fas_module_id text))
 
 let apply_no_inline config ir =
   match config.Cli.no_inline_function with
@@ -1180,13 +1255,14 @@ let run_unprotected ?header_output config =
               if config.Cli.keep then (
                 prerr_endline ("fas: kept intermediate: " ^ path);
                 prerr_endline
-                  (Printf.sprintf "fas: tool LLVM_OPT=%s; opt passes=verify" opt));
+                  (Printf.sprintf "fas: tool FAS_OPT=%s; opt passes=verify" opt));
               Fun.protect
                 ~finally:(fun () -> if not config.Cli.keep then remove path)
                 (fun () ->
                   write_file path text;
                   let* () = verify_llvm opt path in
                   emit_text config text)
+          | Cli.Optimized_llvm -> emit_optimized_llvm config program ir redirect
           | Cli.Asm | Cli.Obj | Cli.Executable ->
               emit_tools config program ir c_objects redirect))
 

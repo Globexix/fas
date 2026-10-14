@@ -516,6 +516,8 @@ let cli_run args =
   match Cli.parse (Array.of_list ("fas" :: args)) with
   | Ok (Cli.Run config) -> config
   | Ok Cli.Help -> failwith "expected compiler invocation"
+  | Ok Cli.Version -> failwith "expected compiler invocation"
+  | Ok (Cli.Run_program _) -> failwith "expected compiler invocation"
   | Error message -> failwith message
 
 let lower_of text =
@@ -3055,7 +3057,13 @@ let () =
   cli_error "no-inline-missing-name" "requires a function name" [ "-g"; "--no-inline" ];
   cli_error "no-inline-flag-name" "requires a function name"
     [ "-g"; "--no-inline"; "-O3"; "profile.fas" ];
-  cli_error "no-inline-needs-g" "requires -g" [ "--no-inline"; "helper"; "profile.fas" ];
+  let cli_no_inline_without_g = cli_run [ "--no-inline"; "helper"; "profile.fas" ] in
+  assert (cli_no_inline_without_g.Cli.no_inline_function = Some "helper");
+  assert (cli_no_inline_without_g.Cli.optimization = 2);
+  assert (
+    (cli_run [ "--emit-llvm=optimized"; "profile.fas" ]).Cli.emit = Cli.Optimized_llvm);
+  cli_error "emit-llvm-unknown-value" "accepted value is `optimized`"
+    [ "--emit-llvm=bogus"; "profile.fas" ];
   cli_error "removed-debug-option" "unknown option `-debug`; write `-g`"
     [ "-debug"; "profile.fas" ];
   cli_error "removed-no-inline-option"

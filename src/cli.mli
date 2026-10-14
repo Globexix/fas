@@ -1,4 +1,4 @@
-type emit = Ir | Ir_json | Llvm | Asm | Obj | Header | Executable
+type emit = Ir | Ir_json | Llvm | Optimized_llvm | Asm | Obj | Header | Executable
 
 type t = {
   input : string;
@@ -14,7 +14,7 @@ type t = {
   c_flags : string list;
 }
 
-type command = Run of t | Help
+type command = Run of t | Run_program of t * string list | Help | Version
 
 val parse : string array -> (command, string) result
 val usage : string

@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+export DEBUGINFOD_URLS=
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 CC=${CC:-clang-22}
 LLVM_OPT=${LLVM_OPT:-opt-22}

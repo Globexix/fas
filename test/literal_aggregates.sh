@@ -13,5 +13,5 @@ for level in 0 2; do
   "$OCAML_FAS" -O"$level" "$ROOT/test/literal_aggregates.fas" -o "$COMPONENT_TMP/program"
   "$COMPONENT_TMP/program"
 done
-OCAML_FAS="$OCAML_FAS" LLVM_OPT="$LLVM_OPT" python3 "$ROOT/test/literal_aggregates.py"
+OCAML_FAS="$OCAML_FAS" FAS_OPT="$LLVM_OPT" LLVM_OPT="$LLVM_OPT" python3 "$ROOT/test/literal_aggregates.py"
 echo 'literal_aggregates: constants and relocations against C oracle at O0/O2: ok'

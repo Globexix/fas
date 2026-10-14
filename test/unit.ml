@@ -1311,6 +1311,8 @@ let () =
   let expect_cli = function
     | Ok (Cli.Run value) -> value
     | Ok Cli.Help -> failwith "expected compiler invocation"
+    | Ok Cli.Version -> failwith "expected compiler invocation"
+    | Ok (Cli.Run_program _) -> failwith "expected compiler invocation"
     | Error message -> failwith message
   in
   let cli = expect_cli (Cli.parse [| "fas"; "--emit-ir"; "-o"; "out"; "one.fas" |]) in
@@ -1449,7 +1451,7 @@ let () =
       assert (contains Cli.usage "--no-inline");
       assert (contains Cli.usage "-I DIR, -isystem DIR, -D NAME[=VALUE]");
       assert (contains Cli.usage "--sanitize=LIST")
-  | Ok (Cli.Run _) | Error _ -> assert false);
+  | Ok (Cli.Run _) | Ok (Cli.Run_program _) | Ok Cli.Version | Error _ -> assert false);
   let input_path = Filename.temp_file "fas-driver-" ".fas" in
   Fun.protect
     ~finally:(fun () -> Sys.remove input_path)

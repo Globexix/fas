@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+export DEBUGINFOD_URLS=
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 CC=${CC:-clang-22}
@@ -131,7 +132,7 @@ export REAL_FAS FIXTURE_LOG ASAN_OPTIONS=detect_stack_use_after_return=1:detect_
 run_fixture_component() {
   component=$1
   printf 'sanitize: running %s\n' "$component"
-  CC="$CC" LLVM_OPT="$LLVM_OPT" LLVM_LLC="$LLVM_LLC" \
+  FAS_CC="$CC" FAS_OPT="$LLVM_OPT" FAS_LLC="$LLVM_LLC" \
     OCAML_FAS="$SANITIZE_TMP/fas-wrapper" sh "$ROOT/test/$component.sh"
 }
 

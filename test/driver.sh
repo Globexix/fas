@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+export DEBUGINFOD_URLS=
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 START_DIR=$(pwd)
@@ -107,14 +108,11 @@ printf 'cc %s\n' "$*" >> "$TOOL_LOG"
 exec "$REAL_CC" "$@"
 SH
 chmod +x "$WORK/opt-wrap" "$WORK/llc-wrap" "$WORK/cc-wrap"
-LLVM_OPT=$WORK/opt-wrap
-LLVM_LLC=$WORK/llc-wrap
-CC=$WORK/cc-wrap
-FAS_OPT=$WORK/missing-old-opt
-FAS_LLC=$WORK/missing-old-llc
-FAS_CC=$WORK/missing-old-cc
+FAS_OPT=$WORK/opt-wrap
+FAS_LLC=$WORK/llc-wrap
+FAS_CC=$WORK/cc-wrap
 TOOL_LOG=$WORK/tools.log
-export LLVM_OPT LLVM_LLC CC FAS_OPT FAS_LLC FAS_CC REAL_OPT REAL_LLC REAL_CC TOOL_LOG
+export FAS_OPT FAS_LLC FAS_CC REAL_OPT REAL_LLC REAL_CC TOOL_LOG
 
 fail() {
   echo "driver: $*" >&2
@@ -135,14 +133,48 @@ temps_empty() {
 [ ! -s "$WORK/stderr" ] || fail "help wrote to stderr"
 "$OCAML_FAS" -h >"$WORK/short-help" 2>"$WORK/stderr"
 cmp "$WORK/help" "$WORK/short-help" >/dev/null || fail "-h differs from --help"
+grep -F -- "--emit-llvm[=optimized]" "$WORK/help" >/dev/null || fail "help omitted the optimized LLVM form"
 for flag in -o --emit-header --emit-ir --emit-ir-json --emit-llvm --emit-asm -S --emit-obj -c --keep \
   -O0..-O3 -g --no-inline --sanitize=LIST -I -isystem -D -h --help; do
   grep -F -- "$flag" "$WORK/help" >/dev/null || fail "help omitted $flag"
 done
 if grep -F -- "--emit-ast" "$WORK/help" >/dev/null; then fail "help advertises removed --emit-ast"; fi
-grep -F -- "LLVM_OPT, LLVM_LLC, CC" "$WORK/help" >/dev/null || fail "help omitted tool overrides"
-grep -F -- "fallback tool aliases" "$WORK/help" >/dev/null || fail "help omitted legacy tool aliases"
-grep -F -- "FAS_OPT_PASSES" "$WORK/help" >/dev/null || fail "help omitted pass override"
+for heading in build output "C inputs" debugging environment; do
+  grep -Fx -- "$heading:" "$WORK/help" >/dev/null || fail "help omitted $heading heading"
+done
+sed -n '/^debugging:$/,/^environment:$/p' "$WORK/help" >"$WORK/help-debugging"
+for flag in --emit-ir --emit-ir-json --keep -g --no-inline --sanitize=LIST; do
+  grep -F -- "  $flag" "$WORK/help-debugging" >/dev/null || fail "help placed $flag outside debugging"
+done
+sed -n '/^environment:$/,$p' "$WORK/help" >"$WORK/help-environment"
+for name in FAS_OPT FAS_LLC FAS_CC FAS_OPT_PASSES; do
+  grep -F -- "$name" "$WORK/help-environment" >/dev/null || fail "help omitted $name"
+done
+if grep -E -- 'LLVM_OPT|LLVM_LLC|(^|[^A-Za-z_])CC([^A-Za-z_]|$)' "$WORK/help-environment" >/dev/null; then
+  fail "help environment lists a generic tool name"
+fi
+"$OCAML_FAS" --version >"$WORK/version" 2>"$WORK/stderr" || fail "--version failed"
+[ ! -s "$WORK/stderr" ] || fail "--version wrote stderr"
+[ "$(wc -l <"$WORK/version")" -eq 4 ] || fail "--version line count changed"
+head -n 1 "$WORK/version" | grep -E '^fas 0\.5\.0-dev \(([0-9a-f]+|unknown)\)$' >/dev/null \
+  || fail "--version first line changed"
+grep -F -- "opt: $WORK/opt-wrap (" "$WORK/version" >/dev/null || fail "--version omitted the opt in use"
+grep -F -- "llc: $WORK/llc-wrap (" "$WORK/version" >/dev/null || fail "--version omitted the llc in use"
+grep -F -- "cc: $WORK/cc-wrap (" "$WORK/version" >/dev/null || fail "--version omitted the C compiler in use"
+if grep -F -- "not found" "$WORK/version" >/dev/null; then fail "--version could not run the selected tools"; fi
+(
+  unset FAS_OPT FAS_LLC FAS_CC
+  CC=/nonexistent LLVM_OPT=/nonexistent LLVM_LLC=/nonexistent "$OCAML_FAS" --version
+) >"$WORK/default-version" 2>"$WORK/stderr" || fail "generic tool names broke --version"
+grep -E '^opt: [^ ]*/opt-22 \(' "$WORK/default-version" >/dev/null || fail "--version omitted the default opt"
+grep -E '^llc: [^ ]*/llc-22 \(' "$WORK/default-version" >/dev/null || fail "--version omitted the default llc"
+grep -E '^cc: [^ ]*/clang-22 \(' "$WORK/default-version" >/dev/null || fail "--version omitted the default C compiler"
+expect_failure "$OCAML_FAS" --version "$WORK/good.fas"
+grep -Fx -- "--version cannot be combined with other arguments" "$WORK/stderr" >/dev/null \
+  || fail "--version with a file was not rejected"
+expect_failure "$OCAML_FAS" --help --version
+grep -Fx -- "--version cannot be combined with other arguments" "$WORK/stderr" >/dev/null \
+  || fail "--version with --help was not rejected"
 expect_failure "$OCAML_FAS" --sanitize= "$WORK/good.fas"
 grep -Fx -- "--sanitize requires a non-empty list" "$WORK/stderr" >/dev/null || fail "empty sanitizer list diagnostic changed"
 for name in memory thread foo; do
@@ -208,7 +240,7 @@ esac
 exec "$REAL_CC" "$@"
 SH
 chmod +x "$WORK/import-cc"
-CC="$WORK/import-cc" IMPORT_LOG="$WORK/import-clang.log" \
+FAS_CC="$WORK/import-cc" IMPORT_LOG="$WORK/import-clang.log" \
   "$OCAML_FAS" --keep --emit-ir "$WORK/c-import.fas" \
   >"$WORK/c-import.ir" 2>"$WORK/c-import.stderr"
 [ "$(wc -l <"$WORK/import-clang.log")" -eq 4 ] \
@@ -235,7 +267,7 @@ temps_empty
 "$WORK/link" || fail "Fas C and libm link failed"
 grep -E "^cc [^ ]*fas-module-[^ ]*\\.s $WORK/helper.c -lm -o $WORK/\\.fas-output-[^ ]+\\.tmp$" \
   "$TOOL_LOG" >/dev/null || fail "tool log omitted the exact CC argument order"
-grep -E "^fas: CC command: $CC [^ ]*fas-module-[^ ]*\\.s $WORK/helper.c -lm -o $WORK/\\.fas-output-[^ ]+\\.tmp$" \
+grep -E "^fas: CC command: $FAS_CC [^ ]*fas-module-[^ ]*\\.s $WORK/helper.c -lm -o $WORK/\\.fas-output-[^ ]+\\.tmp$" \
   "$WORK/stderr" >/dev/null || fail "debug log omitted the exact CC command"
 asm_path=$(sed -n 's/^fas: CC command: [^ ]* \([^ ]*fas-module-[^ ]*\.s\) .*/\1/p' "$WORK/stderr")
 [ -s "$asm_path" ] || fail "--keep did not retain the exact assembly input"
@@ -335,7 +367,7 @@ cp "$WORK/good.fas" "$WORK/auto.fas"
 "$OCAML_FAS" -g --keep "$WORK/good.fas" -o "$WORK/debug" >"$WORK/stdout" 2>"$WORK/stderr"
 [ ! -s "$WORK/stdout" ] || fail "--keep wrote to stdout"
 grep -F "fas: kept intermediates:" "$WORK/stderr" >/dev/null || fail "--keep omitted paths"
-grep -F "LLVM_OPT=$LLVM_OPT" "$WORK/stderr" >/dev/null || fail "--keep omitted tools"
+grep -F "FAS_OPT=$FAS_OPT" "$WORK/stderr" >/dev/null || fail "--keep omitted tools"
 grep -F "passes=default<O0>" "$WORK/stderr" >/dev/null || fail "-g did not default to O0"
 grep -F "llc -O0" "$WORK/stderr" >/dev/null || fail "-g llc level missing"
 grep -F -- "llc -O0 -relocation-model=pic" "$TOOL_LOG" >/dev/null || fail "-g llc PIC model missing"
@@ -364,20 +396,96 @@ find "$TMPDIR" -mindepth 1 -delete
 temps_empty
 
 (
-  unset LLVM_OPT LLVM_LLC CC FAS_OPT FAS_LLC FAS_CC
-  FAS_OPT="$WORK/opt-wrap" FAS_LLC="$WORK/llc-wrap" FAS_CC="$WORK/cc-wrap" \
-    "$OCAML_FAS" --keep "$WORK/good.fas" -o "$WORK/legacy-tools"
-) >"$WORK/stdout" 2>"$WORK/stderr"
-grep -F "LLVM_OPT=$WORK/opt-wrap" "$WORK/stderr" >/dev/null || fail "FAS_OPT fallback was ignored"
-grep -F "LLVM_LLC=$WORK/llc-wrap" "$WORK/stderr" >/dev/null || fail "FAS_LLC fallback was ignored"
-grep -F "CC=$WORK/cc-wrap" "$WORK/stderr" >/dev/null || fail "FAS_CC fallback was ignored"
+  unset FAS_OPT FAS_LLC FAS_CC
+  CC=/nonexistent LLVM_OPT=/nonexistent LLVM_LLC=/nonexistent \
+    "$OCAML_FAS" --keep "$WORK/good.fas" -o "$WORK/default-tools"
+) >"$WORK/stdout" 2>"$WORK/stderr" || fail "generic tool names affected a default build"
+[ ! -s "$WORK/stdout" ] || fail "default build wrote stdout"
+grep -F "tools FAS_OPT=opt-22 FAS_LLC=llc-22 FAS_CC=clang-22;" "$WORK/stderr" >/dev/null \
+  || fail "default tools were not selected without FAS_* names"
+"$WORK/default-tools" || fail "default build with generic tool names did not run"
+find "$TMPDIR" -mindepth 1 -delete
+temps_empty
+(
+  CC=/nonexistent LLVM_OPT=/nonexistent LLVM_LLC=/nonexistent \
+    "$OCAML_FAS" --keep "$WORK/good.fas" -o "$WORK/selected-tools"
+) >"$WORK/stdout" 2>"$WORK/stderr" || fail "generic tool names affected FAS_* selection"
+grep -F "tools FAS_OPT=$WORK/opt-wrap FAS_LLC=$WORK/llc-wrap FAS_CC=$WORK/cc-wrap;" "$WORK/stderr" >/dev/null \
+  || fail "FAS_* tools were not selected over generic names"
 find "$TMPDIR" -mindepth 1 -delete
 temps_empty
 
 "$OCAML_FAS" --emit-llvm -g --no-inline helper "$WORK/good.fas" >"$WORK/noinline.ll" 2>"$WORK/stderr"
 grep -F "@helper() noinline #0 {" "$WORK/noinline.ll" >/dev/null || fail "--no-inline missed selected function"
 if grep -F "@main() noinline #0 {" "$WORK/noinline.ll" >/dev/null; then fail "--no-inline marked main"; fi
-expect_failure "$OCAML_FAS" --no-inline helper "$WORK/good.fas"
+"$OCAML_FAS" --emit-llvm -O2 --no-inline helper "$WORK/good.fas" >"$WORK/noinline-o2.ll" 2>"$WORK/stderr"
+grep -F "@helper() noinline #0 {" "$WORK/noinline-o2.ll" >/dev/null || fail "--no-inline without -g missed selected function"
+if grep -F "@main() noinline #0 {" "$WORK/noinline-o2.ll" >/dev/null; then fail "--no-inline without -g marked main"; fi
+cat >"$WORK/noinline.fas" <<'FAS'
+fn helper() i32 { return 7 }
+fn main() i32 { return helper() + 3 }
+FAS
+"$OCAML_FAS" -O2 "$WORK/noinline.fas" -o "$WORK/plain-exit" >"$WORK/stdout" 2>"$WORK/stderr" || fail "plain build failed"
+"$OCAML_FAS" -O2 --no-inline helper "$WORK/noinline.fas" -o "$WORK/noinline-exit" >"$WORK/stdout" 2>"$WORK/stderr" \
+  || fail "--no-inline without -g failed to build"
+[ ! -s "$WORK/stdout" ] || fail "--no-inline build wrote stdout"
+status=0
+"$WORK/plain-exit" || status=$?
+[ "$status" -eq 10 ] || fail "plain executable exit code changed"
+status=0
+"$WORK/noinline-exit" || status=$?
+[ "$status" -eq 10 ] || fail "--no-inline executable exit code changed"
+expect_failure "$OCAML_FAS" --emit-llvm=bogus "$WORK/good.fas"
+grep -F 'unknown --emit-llvm value `bogus`; accepted value is `optimized`' "$WORK/stderr" >/dev/null \
+  || fail "--emit-llvm value error unclear"
+for level in 0 2; do
+  "$OCAML_FAS" --emit-llvm=optimized --keep "-O$level" "$WORK/good.fas" -o "$WORK/optimized-$level.ll" \
+    >"$WORK/stdout" 2>"$WORK/stderr" || fail "optimized LLVM failed at -O$level"
+  [ ! -s "$WORK/stdout" ] || fail "optimized LLVM -o wrote stdout at -O$level"
+  kept=$(grep -o '[^ ,]*fas-opt-[^ ,]*\.ll' "$WORK/stderr" || true)
+  [ -n "$kept" ] || fail "--keep omitted the optimized LLVM file at -O$level"
+  [ "$(head -n 1 "$WORK/optimized-$level.ll")" = "; ModuleID = 'fas'" ] \
+    || fail "optimized LLVM first line is not the fas module id at -O$level"
+  tail -n +2 "$kept" >"$WORK/kept-body-$level.ll"
+  tail -n +2 "$WORK/optimized-$level.ll" >"$WORK/optimized-body-$level.ll"
+  cmp "$WORK/optimized-body-$level.ll" "$WORK/kept-body-$level.ll" >/dev/null \
+    || fail "optimized LLVM differs from kept opt output at -O$level"
+  "$REAL_OPT" -passes=verify "$WORK/optimized-$level.ll" -disable-output || fail "optimized LLVM does not verify at -O$level"
+  find "$TMPDIR" -mindepth 1 -delete
+  temps_empty
+  "$OCAML_FAS" --emit-llvm=optimized "-O$level" "$WORK/good.fas" -o "$WORK/optimized-again-$level.ll" \
+    >"$WORK/stdout" 2>"$WORK/stderr" || fail "repeated optimized LLVM failed at -O$level"
+  cmp "$WORK/optimized-$level.ll" "$WORK/optimized-again-$level.ll" >/dev/null \
+    || fail "optimized LLVM differs between runs at -O$level"
+  temps_empty
+  "$OCAML_FAS" --keep "-O$level" "$WORK/good.fas" -o "$WORK/kept-exe-$level" >"$WORK/stdout" 2>"$WORK/stderr" \
+    || fail "--keep executable build failed at -O$level"
+  kept=$(grep -o '[^ ,]*fas-opt-[^ ,]*\.ll' "$WORK/stderr" || true)
+  [ -n "$kept" ] || fail "--keep omitted the opt file at -O$level"
+  tail -n +2 "$kept" >"$WORK/kept-body-$level.ll"
+  tail -n +2 "$WORK/optimized-$level.ll" >"$WORK/optimized-body-$level.ll"
+  cmp "$WORK/optimized-body-$level.ll" "$WORK/kept-body-$level.ll" >/dev/null \
+    || fail "optimized LLVM body differs from a separate --keep build at -O$level"
+  find "$TMPDIR" -mindepth 1 -delete
+  temps_empty
+done
+FAS_OPT_PASSES='default<O1>' "$OCAML_FAS" --emit-llvm=optimized --keep -O2 "$WORK/good.fas" \
+  -o "$WORK/optimized-custom.ll" >"$WORK/stdout" 2>"$WORK/stderr" || fail "optimized LLVM ignored FAS_OPT_PASSES"
+grep -F "opt passes=default<O1>" "$WORK/stderr" >/dev/null || fail "optimized LLVM did not report FAS_OPT_PASSES"
+kept=$(grep -o '[^ ,]*fas-opt-[^ ,]*\.ll' "$WORK/stderr" || true)
+[ "$(head -n 1 "$WORK/optimized-custom.ll")" = "; ModuleID = 'fas'" ] \
+  || fail "FAS_OPT_PASSES optimized LLVM first line is not the fas module id"
+tail -n +2 "$kept" >"$WORK/kept-custom-body.ll"
+tail -n +2 "$WORK/optimized-custom.ll" >"$WORK/optimized-custom-body.ll"
+cmp "$WORK/optimized-custom-body.ll" "$WORK/kept-custom-body.ll" >/dev/null \
+  || fail "FAS_OPT_PASSES optimized LLVM differs from kept opt output"
+find "$TMPDIR" -mindepth 1 -delete
+temps_empty
+"$OCAML_FAS" --emit-llvm --keep "$WORK/good.fas" -o "$WORK/keep-llvm.ll" >"$WORK/stdout" 2>"$WORK/stderr"
+grep -F "fas: tool FAS_OPT=$FAS_OPT; opt passes=verify" "$WORK/stderr" >/dev/null \
+  || fail "--emit-llvm --keep omitted the verifier tool label"
+find "$TMPDIR" -mindepth 1 -delete
+temps_empty
 cp "$WORK/good.fas" "$WORK/same-path.fas"
 expect_failure "$OCAML_FAS" "$WORK/same-path.fas" -o "$WORK/same-path.fas"
 cmp "$WORK/good.fas" "$WORK/same-path.fas" >/dev/null || fail "input/output collision changed input"
@@ -446,7 +554,7 @@ SH
 chmod +x "$WORK/fail-cc"
 printf 'stale artifact\n' >"$WORK/link-fail"
 status=0
-CC=$WORK/fail-cc "$OCAML_FAS" "$WORK/good.fas" -o "$WORK/link-fail" >"$WORK/stdout" 2>"$WORK/stderr" || status=$?
+FAS_CC=$WORK/fail-cc "$OCAML_FAS" "$WORK/good.fas" -o "$WORK/link-fail" >"$WORK/stdout" 2>"$WORK/stderr" || status=$?
 [ "$status" -ne 0 ] || fail "failed link succeeded"
 [ ! -s "$WORK/stdout" ] || fail "failed link wrote stdout"
 grep -F "link failed" "$WORK/stderr" >/dev/null || fail "link diagnostic missing"
@@ -459,12 +567,246 @@ expect_failure "$OCAML_FAS" "$WORK"
 grep -F "is a directory" "$WORK/stderr" >/dev/null || fail "directory input error unclear"
 
 status=0
-LLVM_OPT=$WORK/missing-opt "$OCAML_FAS" --emit-llvm -o "$WORK/tool-fail.ll" "$WORK/good.fas" >"$WORK/stdout" 2>"$WORK/stderr" || status=$?
-[ "$status" -ne 0 ] || fail "missing LLVM_OPT succeeded"
-[ ! -s "$WORK/stdout" ] || fail "missing LLVM_OPT wrote stdout"
+FAS_OPT=$WORK/missing-opt "$OCAML_FAS" --emit-llvm -o "$WORK/tool-fail.ll" "$WORK/good.fas" >"$WORK/stdout" 2>"$WORK/stderr" || status=$?
+[ "$status" -ne 0 ] || fail "missing FAS_OPT succeeded"
+[ ! -s "$WORK/stdout" ] || fail "missing FAS_OPT wrote stdout"
 grep -F "LLVM verification" "$WORK/stderr" >/dev/null || fail "missing tool error unclear"
 [ ! -e "$WORK/tool-fail.ll" ] || fail "tool failure left output"
 find "$TMPDIR" -mindepth 1 -delete
 temps_empty
+
+RUN_TMP=$WORK/run-tmp
+mkdir -p "$RUN_TMP"
+run_temps_empty() {
+  [ -z "$(find "$RUN_TMP" -mindepth 1 -print -quit)" ] || fail "fas run left temporary files"
+}
+cat >"$WORK/run-ret.fas" <<'FAS'
+fn main() i32 { return 42 }
+FAS
+cat >"$WORK/run.fas" <<'FAS'
+fn main() i32 { return 0 }
+FAS
+cat >"$WORK/run-args.fas" <<'FAS'
+extern "C" { fn c_dump_args() i32 }
+fn main() i32 { return c_dump_args() }
+FAS
+cat >"$WORK/run-stdin.fas" <<'FAS'
+extern "C" { fn c_read_byte() i32 }
+fn main() i32 { return c_read_byte() }
+FAS
+cat >"$WORK/run-say.fas" <<'FAS'
+extern "C" { fn c_say() i32 }
+fn main() i32 { return c_say() }
+FAS
+cat >"$WORK/run-abort.fas" <<'FAS'
+extern "C" { fn c_abort_now() i32 }
+fn main() i32 { return c_abort_now() }
+FAS
+cat >"$WORK/run-io.c" <<'C'
+#include <stdio.h>
+#include <stdlib.h>
+int c_dump_args(void) {
+  const char *path = getenv("FAS_RUN_DUMP");
+  FILE *in = fopen("/proc/self/cmdline", "rb");
+  FILE *out = path == NULL ? NULL : fopen(path, "wb");
+  int c;
+  if (in == NULL || out == NULL) return 1;
+  while ((c = fgetc(in)) != EOF) fputc(c, out);
+  fclose(in);
+  fclose(out);
+  return 0;
+}
+int c_read_byte(void) { return getchar(); }
+int c_say(void) {
+  puts("run-out");
+  fputs("run-err\n", stderr);
+  return 0;
+}
+int c_abort_now(void) { abort(); }
+C
+cat >"$WORK/noexec-cc" <<'SH'
+#!/bin/sh
+"$REAL_CC" "$@" || exit $?
+prev=
+for arg in "$@"; do
+  if [ "$prev" = "-o" ]; then chmod 0644 "$arg"; fi
+  prev=$arg
+done
+SH
+chmod +x "$WORK/noexec-cc"
+
+status=0
+env TMPDIR="$RUN_TMP" "$OCAML_FAS" run "$WORK/run-ret.fas" >"$WORK/run-stdout" 2>"$WORK/run-stderr" || status=$?
+[ "$status" -eq 42 ] || fail "fas run did not pass exit code 42 through"
+[ ! -s "$WORK/run-stdout" ] && [ ! -s "$WORK/run-stderr" ] || fail "fas run wrote output for a silent program"
+run_temps_empty
+
+env FAS_RUN_DUMP="$WORK/run-args.dump" TMPDIR="$RUN_TMP" \
+  "$OCAML_FAS" run "$WORK/run-args.fas" "$WORK/run-io.c" -- a --version -h -- b \
+  >"$WORK/run-stdout" 2>"$WORK/run-stderr" || fail "fas run rejected program arguments"
+printf '%s\n' "$WORK/run-args" a --version -h -- b >"$WORK/run-args.expected"
+tr '\0' '\n' <"$WORK/run-args.dump" >"$WORK/run-args.actual"
+cmp "$WORK/run-args.expected" "$WORK/run-args.actual" >/dev/null \
+  || fail "program arguments or argv[0] changed under fas run"
+run_temps_empty
+
+status=0
+printf 'Z' | env TMPDIR="$RUN_TMP" "$OCAML_FAS" run "$WORK/run-stdin.fas" "$WORK/run-io.c" \
+  >"$WORK/run-stdout" 2>"$WORK/run-stderr" || status=$?
+[ "$status" -eq 90 ] || fail "fas run did not pass stdin through"
+run_temps_empty
+
+env TMPDIR="$RUN_TMP" "$OCAML_FAS" run "$WORK/run-say.fas" "$WORK/run-io.c" \
+  >"$WORK/run-stdout" 2>"$WORK/run-stderr" || fail "fas run failed for the output check"
+printf 'run-out\n' >"$WORK/run-expected-stdout"
+printf 'run-err\n' >"$WORK/run-expected-stderr"
+cmp "$WORK/run-expected-stdout" "$WORK/run-stdout" >/dev/null || fail "fas run changed program stdout"
+cmp "$WORK/run-expected-stderr" "$WORK/run-stderr" >/dev/null || fail "fas run changed program stderr"
+run_temps_empty
+
+status=0
+env TMPDIR="$RUN_TMP" "$OCAML_FAS" run "$WORK/run-abort.fas" "$WORK/run-io.c" \
+  >"$WORK/run-stdout" 2>"$WORK/run-stderr" || status=$?
+[ "$status" -eq 134 ] || fail "signal exit did not report 128 plus SIGABRT"
+[ ! -s "$WORK/run-stdout" ] && [ ! -s "$WORK/run-stderr" ] || fail "signal exit printed fas output"
+run_temps_empty
+
+status=0
+env TMPDIR="$RUN_TMP" "$OCAML_FAS" run --keep "$WORK/run-ret.fas" \
+  >"$WORK/run-stdout" 2>"$WORK/run-stderr" || status=$?
+[ "$status" -eq 42 ] || fail "fas run --keep changed the exit code"
+[ -z "$(find "$RUN_TMP" -name 'fas-run-*' -print -quit)" ] || fail "fas run --keep kept the executable"
+grep -F "fas: kept intermediates:" "$WORK/run-stderr" >/dev/null || fail "fas run --keep omitted intermediates"
+find "$RUN_TMP" -mindepth 1 -delete
+run_temps_empty
+
+for flag in -c -S --emit-llvm --emit-llvm=optimized --emit-ir --emit-header; do
+  expect_failure env TMPDIR="$RUN_TMP" "$OCAML_FAS" run "$WORK/run-ret.fas" "$flag"
+  grep -Fx "fas run builds and runs an executable; \`$flag\` is not accepted" "$WORK/stderr" >/dev/null \
+    || fail "fas run accepted $flag"
+done
+expect_failure env TMPDIR="$RUN_TMP" "$OCAML_FAS" run "$WORK/run-ret.fas" -o "$WORK/run-out-file"
+grep -Fx 'fas run builds and runs an executable; `-o` is not accepted' "$WORK/stderr" >/dev/null \
+  || fail "fas run accepted -o"
+expect_failure env TMPDIR="$RUN_TMP" "$OCAML_FAS" run --version
+grep -Fx -- "--version cannot be combined with other arguments" "$WORK/stderr" >/dev/null \
+  || fail "fas run --version was not rejected"
+expect_failure env TMPDIR="$RUN_TMP" "$OCAML_FAS" run
+grep -Fx -- "no input files" "$WORK/stderr" >/dev/null || fail "fas run without a file was not rejected"
+
+status=0
+env TMPDIR="$RUN_TMP" "$OCAML_FAS" run "$WORK/bad.fas" >"$WORK/run-stdout" 2>"$WORK/run-stderr" || status=$?
+[ "$status" -eq 1 ] || fail "fas run build failure did not exit 1"
+grep -F 'unknown name `missing`' "$WORK/run-stderr" >/dev/null || fail "fas run build diagnostic changed"
+[ ! -s "$WORK/run-stdout" ] || fail "fas run build failure wrote stdout"
+run_temps_empty
+
+env TMPDIR="$RUN_TMP" "$OCAML_FAS" "$WORK/run.fas" -o "$WORK/run-file" >"$WORK/stdout" 2>"$WORK/stderr" \
+  || fail "run.fas did not build as a normal input"
+"$WORK/run-file" || fail "normal run.fas build did not run"
+status=0
+env TMPDIR="$RUN_TMP" "$OCAML_FAS" run "$WORK/run.fas" >"$WORK/run-stdout" 2>"$WORK/run-stderr" || status=$?
+[ "$status" -eq 0 ] || fail "fas run of run.fas failed"
+run_temps_empty
+for level in 0 2; do
+  status=0
+  env TMPDIR="$RUN_TMP" "$OCAML_FAS" run "-O$level" "$WORK/run-ret.fas" \
+    >"$WORK/run-stdout" 2>"$WORK/run-stderr" || status=$?
+  [ "$status" -eq 42 ] || fail "fas run -O$level did not pass exit code 42 through"
+  run_temps_empty
+done
+
+status=0
+env TMPDIR="$RUN_TMP" FAS_CC="$WORK/noexec-cc" "$OCAML_FAS" run "$WORK/run-ret.fas" \
+  >"$WORK/run-stdout" 2>"$WORK/run-stderr" || status=$?
+[ "$status" -eq 1 ] || fail "unstartable program did not exit 1"
+[ "$(wc -l <"$WORK/run-stderr")" -eq 1 ] || fail "unstartable program printed more than one line"
+grep -E '^fas: cannot run [^ ]+: Permission denied$' "$WORK/run-stderr" >/dev/null \
+  || fail "unstartable program diagnostic changed"
+[ ! -s "$WORK/run-stdout" ] || fail "unstartable program wrote stdout"
+run_temps_empty
+
+cat >"$WORK/run-sleep.fas" <<'FAS'
+extern "C" { fn c_pid_then_sleep() i32 }
+fn main() i32 { return c_pid_then_sleep() }
+FAS
+cat >"$WORK/run-sleep.c" <<'C'
+#include <stdio.h>
+#include <unistd.h>
+int c_pid_then_sleep(void) {
+  char buffer[4096];
+  size_t length, index = 0;
+  FILE *in = fopen("/proc/self/cmdline", "rb");
+  FILE *out;
+  if (in == NULL) return 1;
+  length = fread(buffer, 1, sizeof buffer - 1, in);
+  fclose(in);
+  buffer[length] = '\0';
+  while (index < length && buffer[index] != '\0') index++;
+  if (index + 1 >= length) return 1;
+  out = fopen(buffer + index + 1, "w");
+  if (out == NULL) return 1;
+  fprintf(out, "%ld\n", (long)getpid());
+  fclose(out);
+  sleep(30);
+  return 0;
+}
+C
+fas_exited() {
+  [ ! -e "/proc/$1" ] || grep -q '^State:[[:space:]]*Z' "/proc/$1/status" 2>/dev/null
+}
+stop_run_pin() {
+  [ -z "$helper_pid" ] || kill "$helper_pid" 2>/dev/null || true
+  if [ -n "$fas_pid" ]; then
+    kill "$fas_pid" 2>/dev/null || true
+    wait "$fas_pid" 2>/dev/null || true
+  fi
+}
+run_signal_pin() {
+  signal=$1
+  expected=$2
+  pid_file=$WORK/run-sleep-$signal.pid
+  fas_pid=
+  helper_pid=
+  rm -f "$pid_file"
+  env TMPDIR="$RUN_TMP" "$OCAML_FAS" run "$WORK/run-sleep.fas" "$WORK/run-sleep.c" -- "$pid_file" \
+    >"$WORK/run-stdout" 2>"$WORK/run-stderr" &
+  fas_pid=$!
+  tries=0
+  while [ ! -s "$pid_file" ]; do
+    tries=$((tries + 1))
+    if [ "$tries" -gt 100 ] || fas_exited "$fas_pid"; then
+      stop_run_pin
+      fail "fas run did not start the helper before SIG$signal"
+    fi
+    sleep 0.1
+  done
+  helper_pid=$(cat "$pid_file")
+  case "$helper_pid" in
+    '' | *[!0-9]*) stop_run_pin; fail "helper wrote a bad pid before SIG$signal" ;;
+  esac
+  kill "-$signal" "$fas_pid"
+  tries=0
+  while ! fas_exited "$fas_pid"; do
+    tries=$((tries + 1))
+    if [ "$tries" -gt 50 ]; then
+      stop_run_pin
+      fail "fas run did not exit within 5 seconds of SIG$signal"
+    fi
+    sleep 0.1
+  done
+  status=0
+  wait "$fas_pid" || status=$?
+  fas_pid=
+  if kill -0 "$helper_pid" 2>/dev/null; then
+    stop_run_pin
+    fail "helper outlived fas run after SIG$signal"
+  fi
+  helper_pid=
+  [ "$status" -eq "$expected" ] || fail "fas run exited $status after SIG$signal, expected $expected"
+  run_temps_empty
+}
+run_signal_pin TERM 143
+run_signal_pin HUP 129
 
 echo "driver: passed"

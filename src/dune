@@ -6,3 +6,12 @@
   (language c)
   (names float_parse))
  (c_library_flags -lm))
+
+(rule
+ (targets build_commit.ml)
+ (deps (universe))
+ (action
+  (with-stdout-to
+   build_commit.ml
+   (system
+    "commit=$(git rev-parse --short HEAD 2>/dev/null) || commit=unknown; printf 'let commit = \"%s\"\\n' \"$commit\""))))

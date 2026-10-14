@@ -1,4 +1,4 @@
-type emit = Ir | Ir_json | Llvm | Asm | Obj | Header | Executable
+type emit = Ir | Ir_json | Llvm | Optimized_llvm | Asm | Obj | Header | Executable
 
 type t = {
   input : string;
@@ -14,27 +14,38 @@ type t = {
   c_flags : string list;
 }
 
-type command = Run of t | Help
+type command = Run of t | Run_program of t * string list | Help | Version
 
 let usage =
   "usage: fas [options] file.fas [C inputs and link flags]\n\
+  \       fas run file.fas [options] [-- program arguments]\n\
+   commands:\n\
+  \  run FILE      build to a temporary executable, run it, delete it\n\
+   build:\n\
+  \  -O0..-O3      set opt and llc optimization levels (default -O2)\n\
+   output:\n\
   \  -o PATH       output path (default a.out, INPUT.o with -c, INPUT.s with -S)\n\
   \  --emit-header write an ABI-checked C header (stdout without -o)\n\
-  \  --emit-ir     print the compiler's custom IR dump\n\
-  \  --emit-ir-json print the custom IR as JSON\n\
-  \  --emit-llvm   print unoptimized LLVM IR after verification\n\
+  \  --emit-llvm[=optimized]  print LLVM IR before (default) or after opt, verified\n\
   \  --emit-asm, -S emit assembly\n\
   \  --emit-obj, -c emit object\n\
-  \  --keep        retain and report intermediate paths and active tool pipeline\n\
-  \  -O0..-O3      set opt and llc optimization levels (default -O2)\n\
-  \  -g            default to -O0; enables --no-inline; emits no DWARF info\n\
-  \  --no-inline NAME  add LLVM noinline to NAME (debug only)\n\
-  \  --sanitize=LIST instrument with address and/or undefined behavior sanitizers\n\
+  \  --version     print the fas version and the opt, llc and C compiler in use\n\
+  \  -h, --help    show this help\n\
+   C inputs:\n\
   \  -I DIR, -isystem DIR, -D NAME[=VALUE] (attached or separate)\n\
-  \  LLVM_OPT, LLVM_LLC, CC select tools (defaults: opt-22, llc-22, clang-22)\n\
-  \  FAS_OPT, FAS_LLC, FAS_CC are fallback tool aliases\n\
-  \  FAS_OPT_PASSES overrides opt's pipeline (default: default<Olevel>)\n\
-  \  -h, --help    show this help"
+  \  -l, -L        link flags (attached or separate)\n\
+  \  FILE.c, FILE.o, FILE.a, FILE.so  C inputs linked with the program\n\
+   debugging:\n\
+  \  --emit-ir     print the compiler's custom IR dump\n\
+  \  --emit-ir-json print the custom IR as JSON\n\
+  \  --keep        retain and report intermediate paths and active tool pipeline\n\
+  \  -g            default to -O0; emits no DWARF info\n\
+  \  --no-inline NAME  add LLVM noinline to NAME\n\
+  \  --sanitize=LIST instrument with address and/or undefined behavior sanitizers\n\
+   environment:\n\
+  \  FAS_OPT, FAS_LLC, FAS_CC select opt, llc and the C compiler (defaults: opt-22, \
+   llc-22, clang-22)\n\
+  \  FAS_OPT_PASSES overrides opt's pipeline (default: default<Olevel>)"
 
 let default_output emit input =
   let source_output extension =
@@ -42,7 +53,7 @@ let default_output emit input =
   in
   match emit with Asm -> source_output ".s" | Obj -> source_output ".o" | _ -> "a.out"
 
-let parse argv =
+let parse_invocation ~run argv =
   let n = Array.length argv in
   let header_selected = ref false and other_output = ref false in
   let link_inputs_rev = ref [] in
@@ -63,8 +74,6 @@ let parse argv =
         Error "--emit-header cannot be combined with other output modes"
       else if !link_inputs_rev <> [] && emit <> Executable then
         Error "C inputs and link flags require an executable output"
-      else if Option.is_some no_inline_function && not debug then
-        Error "--no-inline requires -g"
       else
         let input = Option.get input in
         let output_explicit = Option.is_some output in
@@ -89,6 +98,11 @@ let parse argv =
     else
       match argv.(i) with
       | "--help" | "-h" -> Ok Help
+      | flag
+        when run
+             && (List.mem flag [ "-o"; "-c"; "-S" ]
+                || String.starts_with ~prefix:"--emit-" flag) ->
+          Error ("fas run builds and runs an executable; `" ^ flag ^ "` is not accepted")
       | "-o" ->
           if i + 1 >= n then Error "-o requires an output path"
           else if argv.(i + 1) = "-" then Error "-o - is not supported"
@@ -112,6 +126,14 @@ let parse argv =
           other_output := true;
           loop (i + 1) input output Llvm keep optimization optimization_explicit debug
             no_inline_function
+      | "--emit-llvm=optimized" ->
+          other_output := true;
+          loop (i + 1) input output Optimized_llvm keep optimization
+            optimization_explicit debug no_inline_function
+      | flag when String.starts_with ~prefix:"--emit-llvm=" flag ->
+          let value = String.sub flag 12 (String.length flag - 12) in
+          Error
+            ("unknown --emit-llvm value `" ^ value ^ "`; accepted value is `optimized`")
       | "--emit-asm" | "-S" ->
           other_output := true;
           loop (i + 1) input output Asm keep optimization optimization_explicit debug
@@ -215,4 +237,19 @@ let parse argv =
                 "multiple input files are not supported; use \"path.fas\" for \
                  dependencies")
   in
-  loop 1 None None Executable false 2 false false None
+  loop (if run then 2 else 1) None None Executable false 2 false false None
+
+let parse argv =
+  let n = Array.length argv in
+  let run = n > 1 && String.equal argv.(1) "run" in
+  let rec find i = if i >= n || String.equal argv.(i) "--" then i else find (i + 1) in
+  let sep = if run then find 2 else n in
+  if n > 1 && Array.exists (String.equal "--version") (Array.sub argv 1 (sep - 1)) then
+    if n = 2 then Ok Version
+    else Error "--version cannot be combined with other arguments"
+  else
+    match parse_invocation ~run (Array.sub argv 0 sep) with
+    | Ok (Run config) when run ->
+        let program = Array.to_list (Array.sub argv sep (n - sep)) in
+        Ok (Run_program (config, match program with _ :: args -> args | [] -> []))
+    | result -> result

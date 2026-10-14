@@ -8,12 +8,12 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 fail() { echo "simd_value_builtins: $*" >&2; exit 1; }
 
-CC="$CC" "$OCAML_FAS" --emit-llvm "$ROOT/test/simd_value_builtins.fas" >"$TMP/program.ll"
+FAS_CC="$CC" FAS_OPT="$LLVM_OPT" "$OCAML_FAS" --emit-llvm "$ROOT/test/simd_value_builtins.fas" >"$TMP/program.ll"
 "$LLVM_OPT" -passes=verify "$TMP/program.ll" -disable-output
 for level in 0 2; do
   "$LLVM_OPT" -S "-passes=default<O$level>" "$TMP/program.ll" -o "$TMP/program.O$level.ll"
   "$LLVM_OPT" -passes=verify "$TMP/program.O$level.ll" -disable-output
-  CC="$CC" "$OCAML_FAS" -O"$level" "$ROOT/test/simd_value_builtins.fas" -o "$TMP/program.O$level"
+  FAS_CC="$CC" FAS_OPT="$LLVM_OPT" "$OCAML_FAS" -O"$level" "$ROOT/test/simd_value_builtins.fas" -o "$TMP/program.O$level"
   "$TMP/program.O$level" || fail "constant/runtime value builtin sweep failed at O$level"
 done
 echo "simd_value_builtins: SIMD value builtins at 1 and 256 lanes, const and runtime, O0/O2: ok"

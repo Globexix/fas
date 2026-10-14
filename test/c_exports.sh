@@ -9,6 +9,7 @@ OCAML_FAS=${OCAML_FAS:-$ROOT/_build/default/bin/main.exe}
 EXPORT_TMP=$(mktemp -d)
 trap 'rm -rf "$EXPORT_TMP"' EXIT HUP INT TERM
 export CC LLVM_OPT LLVM_LLC
+export FAS_CC="$CC" FAS_OPT="$LLVM_OPT" FAS_LLC="$LLVM_LLC"
 mkdir "$EXPORT_TMP/headers"
 "$OCAML_FAS" --emit-header -o "$EXPORT_TMP/headers/api.h" "$ROOT/test/c_exports/library.fas"
 TMPDIR="$EXPORT_TMP" "$OCAML_FAS" --emit-header --keep -o "$EXPORT_TMP/headers/kept.h" "$ROOT/test/c_exports/library.fas" >"$EXPORT_TMP/header-keep.log" 2>&1

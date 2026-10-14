@@ -11,3 +11,4 @@ val load_program :
   result
 
 val run : Cli.t -> (string, Diag.t list) result
+val version_lines : unit -> string list

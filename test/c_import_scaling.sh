@@ -36,7 +36,7 @@ PY
       start=$(date +%s%N)
       (
         ulimit -v 4194304
-        CC="$CC" LLVM_OPT="$LLVM_OPT" LLVM_LLC="$LLVM_LLC" OCAML_FAS="$OCAML_FAS" \
+        FAS_CC="$CC" FAS_OPT="$LLVM_OPT" FAS_LLC="$LLVM_LLC" OCAML_FAS="$OCAML_FAS" \
           "$OCAML_FAS" --emit-llvm -I "$CASE" "$CASE/main.fas" >/dev/null
       )
       end=$(date +%s%N)
@@ -64,7 +64,7 @@ else
   if [ -f "$WOLF3D_ROOT/src/id_pm.fas" ]; then
     cp "$WOLF3D_ROOT/src/id_pm.fas" "$TMP/id_pm.fas"
     if /usr/bin/time -f '%U' -o "$TMP/id-pm.cpu" \
-      env CC="$CC" LLVM_OPT="$LLVM_OPT" LLVM_LLC="$LLVM_LLC" OCAML_FAS="$OCAML_FAS" \
+      env FAS_CC="$CC" FAS_OPT="$LLVM_OPT" FAS_LLC="$LLVM_LLC" OCAML_FAS="$OCAML_FAS" \
       "$OCAML_FAS" -O2 -I "$WOLF3D_ROOT/reference/wolf4sdl" \
       -isystem /usr/include/SDL -D_GNU_SOURCE=1 -D_REENTRANT \
       -c "$TMP/id_pm.fas" -o "$TMP/id_pm.o" \
@@ -96,7 +96,7 @@ FAS
   /usr/bin/time -f '%U' -o "$TMP/llc.cpu" \
     "$LLVM_LLC" -O2 "$TMP/empty.opt.ll" -o "$TMP/empty.s"
   /usr/bin/time -f '%U' -o "$TMP/sdl.cpu" \
-    env CC="$CC" LLVM_OPT="$LLVM_OPT" LLVM_LLC="$LLVM_LLC" OCAML_FAS="$OCAML_FAS" \
+    env FAS_CC="$CC" FAS_OPT="$LLVM_OPT" FAS_LLC="$LLVM_LLC" OCAML_FAS="$OCAML_FAS" \
     "$OCAML_FAS" -O2 -isystem /usr/include/SDL -c "$TMP/sdl_main.fas" \
     -o "$TMP/sdl.o"
   sdl_cpu=$(cat "$TMP/sdl.cpu")
