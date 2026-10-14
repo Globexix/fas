@@ -87,6 +87,7 @@ type instr =
   | String_ptr of int * int * int
   | Global_ptr of int * string * ty
   | Trap
+  | Location of int * int
 
 type terminator =
   | Ret of (ty * value) option
@@ -106,6 +107,7 @@ type func = {
   blocks : block list;
   linkage : linkage;
   variadic : bool;
+  source : (string * int) option;
 }
 
 and block = { id : int; label : string; instrs : instr list; terminator : terminator }
@@ -134,6 +136,9 @@ type module_ = {
   funcs : func list;
   no_inline_function : string option;
 }
+
+let real_instrs block =
+  List.filter (function Location _ -> false | _ -> true) block.instrs
 
 let safe_identifier_char = function
   | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '.' | '$' -> true
@@ -267,7 +272,7 @@ let instruction_result = function
   | Store _ | Store_volatile _
   | Call (None, _, _, _, _)
   | Call_indirect (None, _, _, _, _)
-  | Trap ->
+  | Trap | Location _ ->
       None
 
 let terminator_successors = function
@@ -714,6 +719,10 @@ let validate_function struct_names globals functions (func : func) =
         | Some _ -> fail "block %d global pointer `%s` has the wrong type" block_id name
         )
     | Trap -> Ok ()
+    | Location (line, column) ->
+        if line < 0 || column < 0 then
+          fail "block %d has a negative source location" block_id
+        else Ok ()
   in
   let validate_phi_order block_id instructions =
     let rec validate seen_non_phi = function
@@ -721,6 +730,7 @@ let validate_function struct_names globals functions (func : func) =
       | Phi _ :: _ when seen_non_phi ->
           fail "block %d has a phi after a non-phi instruction" block_id
       | Phi _ :: rest -> validate false rest
+      | Location _ :: rest -> validate seen_non_phi rest
       | _ :: rest -> validate true rest
     in
     validate false instructions
@@ -929,7 +939,7 @@ let validate_function struct_names globals functions (func : func) =
       | Insert (_, _, vector, index, value) -> [ vector; index; value ]
       | Shuffle_zero (_, _, vector) -> [ vector ]
       | Shufflevector (_, _, a, b, mask) -> [ a; b; mask ]
-      | Alloca _ | Phi _ | String_ptr _ | Global_ptr _ | Trap -> []
+      | Alloca _ | Phi _ | String_ptr _ | Global_ptr _ | Trap | Location _ -> []
     in
     let rec validate_phi_uses block_id = function
       | [] -> Ok ()
@@ -979,6 +989,11 @@ let validate_function struct_names globals functions (func : func) =
   let* () =
     if valid_extension func.ret func.ret_extension then Ok ()
     else fail "has an invalid return extension"
+  in
+  let* () =
+    match func.source with
+    | Some (_, line) when line < 0 -> fail "has a negative source line"
+    | Some _ | None -> Ok ()
   in
   let* () = collect_blocks func.blocks in
   let* () = collect_parameters func.params in
@@ -1644,6 +1659,7 @@ let emit_instr variadic_signatures sink = function
       sink.text n;
       sink.text ", i64 0"
   | Trap -> sink.text "  call void @llvm.trap()"
+  | Location _ -> invalid_arg "internal error: location markers are not instructions"
 
 let instr_line variadic_signatures instr =
   let buffer = Buffer.create 64 in
@@ -1697,7 +1713,14 @@ let term_line terminator =
     terminator;
   Buffer.contents buffer
 
-let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false) ~budget m =
+let absolute_directory path =
+  match Filename.dirname path with
+  | "." -> Sys.getcwd ()
+  | dir when Filename.is_relative dir -> Filename.concat (Sys.getcwd ()) dir
+  | dir -> dir
+
+let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false)
+    ?(debug_info = false) ~budget m =
   if budget < 0 then Error "rendered LLVM text budget must not be negative"
   else
     let buffer = Buffer.create 4096 in
@@ -1770,6 +1793,47 @@ let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false) ~budget m =
             Hashtbl.add seen f.name ();
             Some f.name))
         m.funcs
+    in
+    let debug_source (f : func) =
+      if debug_info && f.blocks <> [] then f.source else None
+    in
+    let file_ids = Hashtbl.create 4 in
+    let file_order = ref [] in
+    List.iter
+      (fun f ->
+        match debug_source f with
+        | Some (path, _) when not (Hashtbl.mem file_ids path) ->
+            file_order := path :: !file_order;
+            Hashtbl.add file_ids path (Hashtbl.length file_ids + 1)
+        | Some _ | None -> ())
+      m.funcs;
+    let flags_id = Hashtbl.length file_ids + 1 in
+    let scope_base = flags_id + 2 in
+    let scopes =
+      let next = ref scope_base in
+      List.map
+        (fun f ->
+          match debug_source f with
+          | Some _ ->
+              let id = !next in
+              incr next;
+              Some id
+          | None -> None)
+        m.funcs
+    in
+    let type_id = scope_base + List.length (List.filter Option.is_some scopes) in
+    let next_location = ref (type_id + 1) in
+    let locations = Hashtbl.create 16 in
+    let location_order = ref [] in
+    let location_id line column scope =
+      match Hashtbl.find_opt locations (line, column, scope) with
+      | Some id -> id
+      | None ->
+          let id = !next_location in
+          incr next_location;
+          Hashtbl.add locations (line, column, scope) id;
+          location_order := (id, line, column, scope) :: !location_order;
+          id
     in
     try
       add "; ModuleID = 'fas'";
@@ -1900,8 +1964,8 @@ let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false) ~budget m =
                  add " }>");
               add (Printf.sprintf ", align %d\n" align))
         m.globals;
-      List.iter
-        (fun f ->
+      List.iter2
+        (fun (f : func) scope ->
           (if f.blocks = [] then (
              add "declare ";
              add (extension_name f.ret_extension);
@@ -1934,8 +1998,20 @@ let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false) ~budget m =
              add no_inline;
              add sanitize_address;
              if no_builtin_names <> [] then add " #0";
+             Option.iter (fun sp -> add (Printf.sprintf " !dbg !%d" sp)) scope;
              add " {";
              newline ();
+             let current =
+               ref (match f.source with Some (_, line) -> (line, 0) | None -> (0, 0))
+             in
+             let suffix () =
+               match scope with
+               | None -> ()
+               | Some sp ->
+                   let line, column = !current in
+                   add ", !dbg !";
+                   add (string_of_int (location_id line column sp))
+             in
              List.iteri
                (fun i b ->
                  if i > 0 then newline ();
@@ -1943,17 +2019,21 @@ let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false) ~budget m =
                  add (string_of_int b.id);
                  add ":";
                  List.iter
-                   (fun instr ->
-                     newline ();
-                     emit_instr variadic_signatures sink instr)
+                   (function
+                     | Location (line, column) -> current := (line, column)
+                     | instr ->
+                         newline ();
+                         emit_instr variadic_signatures sink instr;
+                         suffix ())
                    b.instrs;
                  newline ();
-                 emit_term sink b.terminator)
+                 emit_term sink b.terminator;
+                 suffix ())
                f.blocks;
              newline ();
              add "}");
           newline ())
-        m.funcs;
+        m.funcs scopes;
       if no_builtin_names <> [] then (
         add "attributes #0 = {";
         List.iter
@@ -1964,14 +2044,69 @@ let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false) ~budget m =
           no_builtin_names;
         add " }";
         newline ());
+      if !file_order <> [] then (
+        add "!llvm.dbg.cu = !{!0}";
+        newline ();
+        add (Printf.sprintf "!llvm.module.flags = !{!%d, !%d}" flags_id (flags_id + 1));
+        newline ();
+        add
+          "!0 = distinct !DICompileUnit(language: DW_LANG_C11, file: !1, producer: \
+           \"fas 0.5.0-dev\", isOptimized: false, runtimeVersion: 0, emissionKind: \
+           LineTablesOnly)";
+        newline ();
+        List.iter
+          (fun path ->
+            add
+              (Printf.sprintf "!%d = !DIFile(filename: \"" (Hashtbl.find file_ids path));
+            add_escaped_bytes (Filename.basename path);
+            add "\", directory: \"";
+            add_escaped_bytes (absolute_directory path);
+            add "\")";
+            newline ())
+          (List.rev !file_order);
+        add (Printf.sprintf "!%d = !{i32 7, !\"Dwarf Version\", i32 5}" flags_id);
+        newline ();
+        add
+          (Printf.sprintf "!%d = !{i32 2, !\"Debug Info Version\", i32 3}" (flags_id + 1));
+        newline ();
+        List.iter2
+          (fun (f : func) scope ->
+            match (scope, f.source) with
+            | Some sp, Some (path, line) ->
+                let file = Hashtbl.find file_ids path in
+                add (Printf.sprintf "!%d = distinct !DISubprogram(name: \"" sp);
+                add_escaped_bytes f.name;
+                add "\"";
+                let linkage_name = redirect f.name in
+                if linkage_name <> f.name then (
+                  add ", linkageName: \"";
+                  add_escaped_bytes linkage_name;
+                  add "\"");
+                add
+                  (Printf.sprintf
+                     ", scope: !%d, file: !%d, line: %d, type: !%d, scopeLine: %d, \
+                      spFlags: DISPFlagDefinition, unit: !0)"
+                     file file line type_id line);
+                newline ()
+            | Some _, None | None, _ -> ())
+          m.funcs scopes;
+        add (Printf.sprintf "!%d = !DISubroutineType(types: !{})" type_id);
+        newline ();
+        List.iter
+          (fun (id, line, column, scope) ->
+            add
+              (Printf.sprintf "!%d = !DILocation(line: %d, column: %d, scope: !%d)" id
+                 line column scope);
+            newline ())
+          (List.rev !location_order));
       Ok (Buffer.contents buffer)
     with Render_exhausted ->
       Error
         (Printf.sprintf "rendered LLVM text exceeds the configured limit of %d bytes"
            budget)
 
-let render m =
-  match render_bounded ~budget:max_int m with
+let render ?(debug_info = false) m =
+  match render_bounded ~debug_info ~budget:max_int m with
   | Ok text -> text
   | Error _ -> assert false
 
@@ -2010,7 +2145,7 @@ let render_debug_bounded ~limits m =
       List.iter
         (fun instruction ->
           line ("        " ^ String.trim (instr_line variadic_signatures instruction)))
-        b.instrs;
+        (real_instrs b);
       line "      ];";
       line ("      terminator = " ^ String.trim (term_line b.terminator));
       line "      }"
@@ -2068,7 +2203,8 @@ let count_lowered_nodes m =
     (fun total (f : func) ->
       total + 1
       + List.fold_left
-          (fun block_total (b : block) -> block_total + 1 + List.length b.instrs + 1)
+          (fun block_total (b : block) ->
+            block_total + 1 + List.length (real_instrs b) + 1)
           0 f.blocks)
     0 m.funcs
 
@@ -2087,7 +2223,7 @@ let check_lowered_nodes ~limits m =
             1
             + List.fold_left
                 (fun block_total (b : block) ->
-                  block_total + 1 + List.length b.instrs + 1)
+                  block_total + 1 + List.length (real_instrs b) + 1)
                 0 f.blocks
           in
           if func_nodes > budget - total then

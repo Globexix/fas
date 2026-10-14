@@ -186,7 +186,7 @@ int linked_c_value(void) {
   return FAS_HEADER_VALUE + FAS_SYSTEM_VALUE + CONTAINER_VALUE;
 }
 C
-"$OCAML_FAS" -O2 -g -I "$CONTAINER_TMP/include" \
+"$OCAML_FAS" --keep -O2 -g -I "$CONTAINER_TMP/include" \
   -isystem"$CONTAINER_TMP/system" -D CONTAINER_VALUE=25 \
   "$CONTAINER_TMP/preprocessor.fas" "$CONTAINER_TMP/link-input.c" \
   -o "$CONTAINER_TMP/preprocessor" >"$CONTAINER_TMP/stdout" \
@@ -300,7 +300,7 @@ bindings=$(sed -n 's/^fas: kept C bindings: //p' "$CONTAINER_TMP/stderr")
 [ -s "$bindings" ] || fail "--keep omitted the C bindings manifest"
 grep -F "adapter for fas_static_value" "$bindings" >/dev/null \
   || fail "bindings manifest omitted the static adapter"
-grep -F "fas: CC command: $CC --target=x86_64-unknown-linux-gnu -fPIC -O0 -Xclang -main-file-name -Xclang " \
+grep -F "fas: CC command: $CC --target=x86_64-unknown-linux-gnu -fPIC -O2 -Xclang -main-file-name -Xclang " \
   "$CONTAINER_TMP/stderr" | grep -E 'fas-c-import-[0-9a-f]{32}\.c -ffile-prefix-map=[^ ]+=fas-c-import-[0-9a-f]{32}\.c -c ' \
   >/dev/null || fail "-g omitted the reproducible C compile command"
 cleanup_kept "$CONTAINER_TMP/stderr"

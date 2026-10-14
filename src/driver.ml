@@ -500,9 +500,9 @@ let run_tool label argv =
 let remove path = try Sys.remove path with Sys_error _ -> ()
 let optimization_level level = max 0 (min 3 level)
 
-let render_ir ?(redirect = Fun.id) ?(sanitize_address = false) ir =
+let render_ir ?(redirect = Fun.id) ?(sanitize_address = false) ~debug_info ir =
   match
-    Ir.render_bounded ~redirect ~sanitize_address
+    Ir.render_bounded ~redirect ~sanitize_address ~debug_info
       ~budget:limits.Limits.max_rendered_ir_bytes ir
   with
   | Ok text -> Ok text
@@ -553,7 +553,7 @@ let executable_command config cc asm_path c_objects =
       :: (c_objects @ config.Cli.c_flags @ c_sanitizer_flags config
         @ config.Cli.link_inputs @ math_library @ [ "-o"; config.Cli.output ]))
   in
-  if config.Cli.debug || config.Cli.keep then
+  if config.Cli.keep then
     prerr_endline ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
   argv
 
@@ -596,7 +596,9 @@ let optimize_module config opt ll_path opt_path =
 let emit_tools_unprotected config program ir c_objects redirect =
   let* () = ir_budget program (Ir.check_static_data_bytes ~limits ir) in
   let* ll_text =
-    render_ir ~redirect ~sanitize_address:(List.mem "address" config.Cli.sanitizers) ir
+    render_ir ~redirect
+      ~sanitize_address:(List.mem "address" config.Cli.sanitizers)
+      ~debug_info:config.Cli.debug ir
   in
   let ll_path = Filename.temp_file "fas-module-" ".ll" in
   let opt_path = Filename.temp_file "fas-opt-" ".ll" in
@@ -643,7 +645,7 @@ let emit_tools_unprotected config program ir c_objects redirect =
                         Array.of_list
                           ((cc :: "-r" :: fas_object :: c_objects) @ [ "-o"; output ])
                       in
-                      if config.Cli.debug || config.Cli.keep then
+                      if config.Cli.keep then
                         prerr_endline
                           ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
                       run_tool cc argv)
@@ -685,7 +687,9 @@ let with_fas_module_id text =
 let emit_optimized_llvm config program ir redirect =
   let* () = ir_budget program (Ir.check_static_data_bytes ~limits ir) in
   let* ll_text =
-    render_ir ~redirect ~sanitize_address:(List.mem "address" config.Cli.sanitizers) ir
+    render_ir ~redirect
+      ~sanitize_address:(List.mem "address" config.Cli.sanitizers)
+      ~debug_info:config.Cli.debug ir
   in
   let ll_path = Filename.temp_file "fas-module-" ".ll" in
   let opt_path = Filename.temp_file "fas-opt-" ".ll" in
@@ -842,7 +846,7 @@ let compile_c_units config cc units adapters standard_headers declaration_header
                 ]
               else [ "-c"; unit.unit_path; "-o"; object_path ])
           in
-          if config.Cli.debug || config.Cli.keep then
+          if config.Cli.keep then
             prerr_endline ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
           match Process.run argv with
           | Ok _ when config.Cli.emit = Cli.Header && Option.is_none unit.assembly ->
@@ -955,9 +959,8 @@ let run_unprotected ?header_output config =
                   let alloc_size_parameters = ref [] in
                   let* declarations, kept, artifacts =
                     C_import.import ~alloc_size_out:alloc_size_parameters ~cc
-                      ~debug:config.Cli.debug ~keep:config.Cli.keep ~retain:true
-                      ~c_flags:config.Cli.c_flags ~macro_names ~referenced_names source
-                      headers
+                      ~keep:config.Cli.keep ~retain:true ~c_flags:config.Cli.c_flags
+                      ~macro_names ~referenced_names source headers
                   in
                   c_artifacts := artifacts @ !c_artifacts;
                   let mapped =
@@ -1248,7 +1251,7 @@ let run_unprotected ?header_output config =
               let* text =
                 render_ir ~redirect
                   ~sanitize_address:(List.mem "address" config.Cli.sanitizers)
-                  ir
+                  ~debug_info:config.Cli.debug ir
               in
               let opt, _, _ = tools () in
               let path = Filename.temp_file "fas-verify-" ".ll" in

@@ -1400,7 +1400,7 @@ let remove_artifact path =
   if String.starts_with ~prefix:"fas-c-unit-" (Filename.basename directory) then
     try Unix.rmdir directory with Unix.Unix_error _ -> ()
 
-let import ~cc ~debug ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
+let import ~cc ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
     ?(macro_names = []) ?referenced_names source headers =
   let directory = Filename.temp_dir "fas-c-unit-" "" in
   let unit_path = Filename.concat directory (stable_unit_name source headers) in
@@ -1458,7 +1458,7 @@ let import ~cc ~debug ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
           @ reproducible_flags (stable_unit_name source headers) unit_path
           @ [ "-fno-builtin"; "-iquote"; Filename.dirname source; unit_path ])
       in
-      if debug || keep then
+      if keep then
         prerr_endline
           ("fas: Clang import command: " ^ String.concat " " (Array.to_list argv));
       match Process.run_to_file argv json_path with

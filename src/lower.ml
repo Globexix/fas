@@ -32,6 +32,8 @@ type state = {
   address_taken : (int, unit) Hashtbl.t;
   sanitize_address : bool;
   mutable loops : loop list;
+  file : string option;
+  mutable location : (int * int) option;
 }
 
 let error span msg = Error [ Diag.error span msg ]
@@ -58,6 +60,18 @@ let fresh_block s =
 
 let emit s i = Queue.add i s.current.instrs
 let emit_entry s i = Queue.add i s.entry.instrs
+
+let mark s (span : Span.t) =
+  if (not (Span.is_synthetic span)) && Some span.Span.file = s.file then (
+    s.location <- Some (span.Span.line, span.Span.column);
+    emit s (Ir.Location (span.Span.line, span.Span.column)))
+
+let enter s block =
+  s.current <- block;
+  Option.iter
+    (fun (line, column) -> Queue.add (Ir.Location (line, column)) block.instrs)
+    s.location
+
 let open_block s = !(s.current.term) = None
 
 let value_ty = function
@@ -382,9 +396,9 @@ let emit_trap s =
 let guard_condition s condition =
   let trap = fresh_block s and valid = fresh_block s in
   s.current.term := Some (Ir.CondBr (condition, trap.id, valid.id));
-  s.current <- trap;
+  enter s trap;
   emit_trap s;
-  s.current <- valid
+  enter s valid
 
 let signed_type = function
   | Hir.Int (Hir.I8 | I16 | I32 | I64 | Isize)
@@ -427,7 +441,7 @@ let division_guard s span source_ty binop ir_ty lhs rhs =
       let* any_lane = reduce_any s span condition in
       let ordered = fresh_block s and proceed = fresh_block s in
       s.current.term := Some (Ir.CondBr (any_lane, ordered.id, proceed.id));
-      s.current <- ordered;
+      enter s ordered;
       let rec guard_lane lane =
         if lane >= lanes then Ok ()
         else
@@ -437,14 +451,14 @@ let division_guard s span source_ty binop ir_ty lhs rhs =
                (id, value_ty condition, condition, Ir.Const (Ir.I64, Int64.of_int lane)));
           let trap = fresh_block s and next = fresh_block s in
           s.current.term := Some (Ir.CondBr (Ir.Local (id, Ir.I1), trap.id, next.id));
-          s.current <- trap;
+          enter s trap;
           emit_trap s;
-          s.current <- next;
+          enter s next;
           guard_lane (lane + 1)
       in
       let* () = guard_lane 0 in
       emit_trap s;
-      s.current <- proceed;
+      enter s proceed;
       Ok ()
   | _ -> error span "internal error: division guard has a non-boolean condition"
 
@@ -1256,12 +1270,12 @@ and lower_short s op a b =
          ( lv,
            (if op = Ast.And then rhs.id else join.id),
            if op = Ast.And then join.id else rhs.id ));
-  s.current <- rhs;
+  enter s rhs;
   let* rv = expr s b in
   let* rv = require_bool (Hir.expr_span b) rv in
   let rp = s.current.id in
   if open_block s then s.current.term := Some (Ir.Br join.id);
-  s.current <- join;
+  enter s join;
   let id = fresh s in
   emit s
     (Ir.Phi
@@ -1278,15 +1292,15 @@ and lower_ternary s c a b t =
   let* cv = require_bool (Hir.expr_span c) cv in
   let tb = fresh_block s and eb = fresh_block s and join = fresh_block s in
   s.current.term := Some (Ir.CondBr (cv, tb.id, eb.id));
-  s.current <- tb;
+  enter s tb;
   let* tv = expr s a in
   let tp = s.current.id in
   if open_block s then s.current.term := Some (Ir.Br join.id);
-  s.current <- eb;
+  enter s eb;
   let* ev = expr s b in
   let ep = s.current.id in
   if open_block s then s.current.term := Some (Ir.Br join.id);
-  s.current <- join;
+  enter s join;
   let id = fresh s in
   emit s (Ir.Phi (id, ty t, [ (tv, tp); (ev, ep) ]));
   Ok (Ir.Local (id, ty t))
@@ -1632,7 +1646,7 @@ and simd_memory_load s span access_ty kind args values =
           let active = fresh_block s and join = fresh_block s in
           s.current.term :=
             Some (Ir.CondBr (Ir.Local (mask_id, Ir.I1), active.id, join.id));
-          s.current <- active;
+          enter s active;
           let index_value =
             match indices with
             | None -> Ir.Const (Ir.I64, Int64.of_int lane)
@@ -1649,7 +1663,7 @@ and simd_memory_load s span access_ty kind args values =
           let* loaded = simd_memory_load_lane s span access_ty pointer in
           let active_end = s.current.id in
           s.current.term := Some (Ir.Br join.id);
-          s.current <- join;
+          enter s join;
           let merged = fresh s in
           emit s
             (Ir.Phi
@@ -1699,7 +1713,7 @@ and simd_memory_store s span access_ty kind args values =
           let active = fresh_block s and join = fresh_block s in
           s.current.term :=
             Some (Ir.CondBr (Ir.Local (mask_id, Ir.I1), active.id, join.id));
-          s.current <- active;
+          enter s active;
           let index_value =
             match indices with
             | None -> Ir.Const (Ir.I64, Int64.of_int lane)
@@ -1721,7 +1735,7 @@ and simd_memory_store s span access_ty kind args values =
               pointer
           in
           s.current.term := Some (Ir.Br join.id);
-          s.current <- join;
+          enter s join;
           store_lane (lane + 1)
       in
       store_lane 0
@@ -1938,7 +1952,7 @@ and copy_array_loop s span length stride element_ty destination source =
   let index = fresh s in
   let next_index = fresh s in
   s.current.term := Some (Ir.Br head.id);
-  s.current <- head;
+  enter s head;
   emit s
     (Ir.Phi
        ( index,
@@ -1955,7 +1969,7 @@ and copy_array_loop s span length stride element_ty destination source =
          Ir.Local (index, Ir.I64),
          Ir.Const (Ir.I64, Int64.of_int length) ));
   s.current.term := Some (Ir.CondBr (Ir.Local (condition, Ir.I1), body.id, exit.id));
-  s.current <- body;
+  enter s body;
   let offset =
     if stride = 1 then Ir.Local (index, Ir.I64)
     else
@@ -1979,11 +1993,11 @@ and copy_array_loop s span length stride element_ty destination source =
       (Ir.Local (source_element, Ir.Pointer Ir.I8))
   in
   if open_block s then s.current.term := Some (Ir.Br latch.id);
-  s.current <- latch;
+  enter s latch;
   emit s
     (Ir.Bin (next_index, Ir.Add, Ir.I64, Ir.Local (index, Ir.I64), Ir.Const (Ir.I64, 1L)));
   s.current.term := Some (Ir.Br head.id);
-  s.current <- exit;
+  enter s exit;
   Ok ()
 
 let rec emit_defer_body s body =
@@ -2090,7 +2104,9 @@ and scoped s xs =
   pop_scope s;
   Ok ()
 
-and stmt s = function
+and stmt s statement =
+  mark s (Hir.stmt_span statement);
+  match statement with
   | Hir.Let (local, init, _) -> (
       let* alignment = align s local.ty in
       let id = fresh s in
@@ -2352,7 +2368,7 @@ and construct_entries ?alignment s destination = function
             and exit = fresh_block s in
             let index = fresh s and next = fresh s in
             s.current.term := Some (Ir.Br head.id);
-            s.current <- head;
+            enter s head;
             emit s
               (Ir.Phi
                  ( index,
@@ -2371,7 +2387,7 @@ and construct_entries ?alignment s destination = function
                    Ir.Const (Ir.I64, Int64.of_int size) ));
             s.current.term :=
               Some (Ir.CondBr (Ir.Local (condition, Ir.I1), body.id, exit.id));
-            s.current <- body;
+            enter s body;
             let pointer = fresh s in
             emit s
               (Ir.Gep
@@ -2383,7 +2399,7 @@ and construct_entries ?alignment s destination = function
               (Ir.Bin
                  (next, Ir.Add, Ir.I64, Ir.Local (index, Ir.I64), Ir.Const (Ir.I64, 1L)));
             s.current.term := Some (Ir.Br head.id);
-            s.current <- exit;
+            enter s exit;
             Ok ()
       | _ -> error span "internal error: zero initializer requires an array or struct")
   | Hir.Init_aggregate (Hir.Array (length, element_ty), false, elements, span) ->
@@ -2509,17 +2525,18 @@ and vector_lane s aggregate index =
   Ok (pointer, source_ty, vector_ty, iv, alignment)
 
 and lower_if s c a b =
+  mark s (Hir.expr_span c);
   let* cv = expr s c in
   let* cv = require_bool (Hir.expr_span c) cv in
   let tb = fresh_block s and eb = fresh_block s and join = fresh_block s in
   s.current.term := Some (Ir.CondBr (cv, tb.id, eb.id));
-  s.current <- tb;
+  enter s tb;
   let* () = scoped s a in
   if open_block s then s.current.term := Some (Ir.Br join.id);
-  s.current <- eb;
+  enter s eb;
   let* () = match b with None -> Ok () | Some xs -> scoped s xs in
   if open_block s then s.current.term := Some (Ir.Br join.id);
-  s.current <- join;
+  enter s join;
   let falls_through =
     (Hir.block_flow a).falls_through
     || match b with None -> true | Some body -> (Hir.block_flow body).falls_through
@@ -2535,11 +2552,12 @@ and target_loop s label =
 and lower_while s label c body =
   let head = fresh_block s and bb = fresh_block s and exit = fresh_block s in
   s.current.term := Some (Ir.Br head.id);
-  s.current <- head;
+  enter s head;
+  mark s (Hir.expr_span c);
   let* cv = expr s c in
   let* cv = require_bool (Hir.expr_span c) cv in
   s.current.term := Some (Ir.CondBr (cv, bb.id, exit.id));
-  s.current <- bb;
+  enter s bb;
   s.loops <-
     {
       label;
@@ -2551,7 +2569,7 @@ and lower_while s label c body =
   let* () = scoped s body in
   s.loops <- List.tl s.loops;
   if open_block s then s.current.term := Some (Ir.Br head.id);
-  s.current <- exit;
+  enter s exit;
   if Hir.condition_is_true c && not (Hir.loop_body_has_break label body) then
     s.current.term := Some Ir.Unreachable;
   Ok ()
@@ -2565,19 +2583,20 @@ and lower_for s label init cond step body =
     and sb = fresh_block s
     and exit = fresh_block s in
     s.current.term := Some (Ir.Br head.id);
-    s.current <- head;
+    enter s head;
     let* () =
       match cond with
       | None ->
           s.current.term := Some (Ir.Br bb.id);
           Ok ()
       | Some c ->
+          mark s (Hir.expr_span c);
           let* v = expr s c in
           let* condition = require_bool (Hir.expr_span c) v in
           s.current.term := Some (Ir.CondBr (condition, bb.id, exit.id));
           Ok ()
     in
-    s.current <- bb;
+    enter s bb;
     s.loops <-
       {
         label;
@@ -2589,10 +2608,10 @@ and lower_for s label init cond step body =
     let* () = scoped s body in
     s.loops <- List.tl s.loops;
     if open_block s then s.current.term := Some (Ir.Br sb.id);
-    s.current <- sb;
+    enter s sb;
     let* () = match step with None -> Ok () | Some x -> stmt s x in
     if open_block s then s.current.term := Some (Ir.Br head.id);
-    s.current <- exit;
+    enter s exit;
     let* () = if open_block s then emit_scope_defers s 0 else Ok () in
     let* () = if open_block s then emit_current_scope_lifetimes s else Ok () in
     let unconditional =
@@ -2606,6 +2625,7 @@ and lower_for s label init cond step body =
   lowered
 
 and lower_switch s e arms default span =
+  mark s (Hir.expr_span e);
   let* v = expr s e in
   let join = fresh_block s in
   let blocks = List.map (fun _ -> fresh_block s) arms in
@@ -2638,17 +2658,17 @@ and lower_switch s e arms default span =
     match (as_, bs) with
     | [], [] -> Ok ()
     | (_, body) :: at, b :: bt ->
-        s.current <- b;
+        enter s b;
         let* () = scoped s body in
         if open_block s then s.current.term := Some (Ir.Br join.id);
         each at bt
     | _ -> error span "internal error: switch arm/block mismatch"
   in
   let* () = each arms blocks in
-  s.current <- db;
+  enter s db;
   let* () = match default with None -> Ok () | Some xs -> scoped s xs in
   if open_block s then s.current.term := Some (Ir.Br join.id);
-  s.current <- join;
+  enter s join;
   let falls_through =
     let branches = List.map (fun (_, body) -> Hir.block_flow body) arms in
     let branches =
@@ -2764,6 +2784,10 @@ let address_taken_locals ?function_addresses body =
 let lower_func ~sanitize_address ~address_taken ~addressed_functions literal_globals
     structs strings functions f =
   let c_abi = has_c_abi f || Hashtbl.mem addressed_functions f.name in
+  let source =
+    if Span.is_synthetic f.Hir.span then None
+    else Some (f.Hir.span.Span.file, f.Hir.span.Span.line)
+  in
   let* () =
     Result_list.iter
       (fun (local : Hir.local) -> layout_ok structs local.ty)
@@ -2793,6 +2817,7 @@ let lower_func ~sanitize_address ~address_taken ~addressed_functions literal_glo
           blocks = [];
           linkage = Ir.External;
           variadic = f.variadic;
+          source;
         }
   | Hir.Statements body ->
       let* () =
@@ -2827,6 +2852,8 @@ let lower_func ~sanitize_address ~address_taken ~addressed_functions literal_glo
           address_taken;
           sanitize_address;
           loops = [];
+          file = Option.map fst source;
+          location = None;
         }
       in
       push_scope s;
@@ -2901,6 +2928,7 @@ let lower_func ~sanitize_address ~address_taken ~addressed_functions literal_glo
              else if f.linkage = Hir.Internal then Ir.Internal
              else External);
           variadic = f.variadic;
+          source;
         }
 
 let intrinsic_decls funcs =
@@ -2936,6 +2964,7 @@ let intrinsic_decls funcs =
         blocks = [];
         linkage = Ir.External;
         variadic = false;
+        source = None;
       })
   |> List.of_seq
   |> List.sort (fun (a : Ir.func) b -> String.compare a.name b.name)

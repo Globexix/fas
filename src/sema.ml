@@ -867,7 +867,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       else Ok ()
     in
     Ok
-      ({ Hir.name; params; ret; body = Hir.Statements body; linkage; variadic }
+      ({ Hir.name; params; ret; body = Hir.Statements body; linkage; variadic; span }
         : Hir.func)
   in
   let add_func func = funcs := func :: !funcs in
@@ -904,6 +904,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                    body = Hir.Declaration;
                    linkage;
                    variadic;
+                   span;
                  }
                   : Hir.func)
           | Ast.Statements stmts ->

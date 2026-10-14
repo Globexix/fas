@@ -419,6 +419,7 @@ let () =
       blocks;
       linkage = Ir.Internal;
       variadic = false;
+      source = None;
     }
   in
   let ir_block ?(instrs = []) id terminator =
@@ -889,6 +890,7 @@ let () =
                 ];
             linkage = Hir.Internal;
             variadic = false;
+            span = Span.synthetic;
           };
         ];
       strings = [];
@@ -1003,6 +1005,123 @@ let () =
       | Error failure ->
           failwith
             ("opt-22 rejected rendered multi-block LLVM: " ^ failure.Process.stderr));
+  let debug_marked = Debug_fixture.module_ ~markers:true in
+  let debug_plain = Debug_fixture.module_ ~markers:false in
+  assert (Ir.validate debug_marked = Ok ());
+  assert (Ir.render debug_marked = Ir.render debug_plain);
+  assert (Ir.render ~debug_info:false debug_marked = Ir.render debug_plain);
+  assert (Ir.render_debug debug_marked = Ir.render_debug debug_plain);
+  assert (Ir_json.render debug_marked = Ir_json.render debug_plain);
+  assert (Ir.count_lowered_nodes debug_marked = Ir.count_lowered_nodes debug_plain);
+  let nodes = Ir.count_lowered_nodes debug_plain in
+  let node_budget n = { Limits.default with max_ir_nodes = n } in
+  assert (Ir.check_lowered_nodes ~limits:(node_budget nodes) debug_marked = Ok ());
+  assert (Ir.check_lowered_nodes ~limits:(node_budget nodes) debug_plain = Ok ());
+  assert (
+    Result.is_error
+      (Ir.check_lowered_nodes ~limits:(node_budget (nodes - 1)) debug_marked));
+  let debug_expected =
+    {|; ModuleID = 'fas'
+source_filename = "fas"
+target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-linux-gnu"
+
+define i32 @main() #0 !dbg !5 {
+b0:
+  %v0 = add i32 1, 2, !dbg !8
+  %v1 = call i32 @helper(i32 %v0), !dbg !9
+  ret i32 %v1, !dbg !10
+}
+define internal i32 @helper(i32 %x) #0 !dbg !6 {
+b0:
+  %v0 = add i32 %x, 1, !dbg !11
+  %v1 = icmp slt i32 %v0, 0, !dbg !12
+  br i1 %v1, label %b1, label %b2, !dbg !12
+b1:
+  br label %b2, !dbg !13
+b2:
+  ret i32 %x, !dbg !14
+}
+define internal void @plain() #0 {
+b0:
+  ret void
+}
+attributes #0 = { "no-builtin-helper" }
+!llvm.dbg.cu = !{!0}
+!llvm.module.flags = !{!3, !4}
+!0 = distinct !DICompileUnit(language: DW_LANG_C11, file: !1, producer: "fas 0.5.0-dev", isOptimized: false, runtimeVersion: 0, emissionKind: LineTablesOnly)
+!1 = !DIFile(filename: "main.fas", directory: "/work/app")
+!2 = !DIFile(filename: "util.fas", directory: "/work/lib")
+!3 = !{i32 7, !"Dwarf Version", i32 5}
+!4 = !{i32 2, !"Debug Info Version", i32 3}
+!5 = distinct !DISubprogram(name: "main", scope: !1, file: !1, line: 3, type: !7, scopeLine: 3, spFlags: DISPFlagDefinition, unit: !0)
+!6 = distinct !DISubprogram(name: "helper", scope: !2, file: !2, line: 10, type: !7, scopeLine: 10, spFlags: DISPFlagDefinition, unit: !0)
+!7 = !DISubroutineType(types: !{})
+!8 = !DILocation(line: 3, column: 0, scope: !5)
+!9 = !DILocation(line: 4, column: 5, scope: !5)
+!10 = !DILocation(line: 6, column: 3, scope: !5)
+!11 = !DILocation(line: 11, column: 3, scope: !6)
+!12 = !DILocation(line: 12, column: 3, scope: !6)
+!13 = !DILocation(line: 13, column: 5, scope: !6)
+!14 = !DILocation(line: 14, column: 3, scope: !6)
+|}
+  in
+  assert (Ir.render ~debug_info:true debug_marked = debug_expected);
+  assert (
+    Ir.render_bounded ~debug_info:true
+      ~budget:(String.length debug_expected)
+      debug_marked
+    = Ok debug_expected);
+  (match
+     Ir.render_bounded ~debug_info:true
+       ~redirect:(fun name -> name ^ "_sym")
+       ~budget:max_int debug_marked
+   with
+  | Ok text -> assert (contains text "linkageName: \"helper_sym\"")
+  | Error _ -> assert false);
+  let relative_module =
+    ir_module
+      [
+        {
+          (ir_function [ ir_block 0 (Ir.Ret None) ]) with
+          Ir.source = Some ("rel/x.fas", 1);
+        };
+      ]
+  in
+  assert (
+    contains
+      (Ir.render ~debug_info:true relative_module)
+      (Printf.sprintf "!DIFile(filename: \"x.fas\", directory: \"%s/rel\")"
+         (Sys.getcwd ())));
+  let marked_phi =
+    ir_module
+      [
+        ir_function
+          [
+            ir_block 0 (Ir.Br 1);
+            ir_block
+              ~instrs:
+                [
+                  Ir.Location (1, 1);
+                  Ir.Phi (0, Ir.I8, [ (Ir.Const (Ir.I8, 1L), 0) ]);
+                  Ir.Location (2, 1);
+                ]
+              1 (Ir.Ret None);
+          ];
+      ]
+  in
+  assert (Ir.validate marked_phi = Ok ());
+  expect_ir_error "block 0 has a negative source location"
+    (ir_module
+       [ ir_function [ ir_block ~instrs:[ Ir.Location (-1, 0) ] 0 (Ir.Ret None) ] ]);
+  expect_ir_error "has a negative source line"
+    (ir_module
+       [
+         {
+           (ir_function [ ir_block 0 (Ir.Ret None) ]) with
+           Ir.source = Some ("a.fas", -1);
+         };
+       ]);
   let wide_module =
     let params =
       List.init 100_000 (fun i ->
@@ -1410,7 +1529,7 @@ let () =
   let header = expect_cli (Cli.parse [| "fas"; "--emit-header"; "root.fas" |]) in
   assert (header.emit = Cli.Header && not header.output_explicit);
   let debug = expect_cli (Cli.parse [| "fas"; "-g"; "root.fas" |]) in
-  assert (debug.debug && debug.optimization = 0);
+  assert (debug.debug && debug.optimization = 2);
   let debug_ordered = expect_cli (Cli.parse [| "fas"; "-O3"; "-g"; "root.fas" |]) in
   assert (debug_ordered.debug && debug_ordered.optimization = 3);
   let no_inline =

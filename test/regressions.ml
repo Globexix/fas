@@ -59,8 +59,7 @@ let c_import_fixture file =
       { spelling = Ast.C_quoted (Filename.basename header); span = Span.synthetic }
   in
   let declarations, _, _ =
-    expect_ok
-      (C_import.import ~cc:"clang-22" ~debug:false ~keep:false source [ request ])
+    expect_ok (C_import.import ~cc:"clang-22" ~keep:false source [ request ])
   in
   (source, C_import.map_declarations ~span:Span.synthetic declarations)
 
@@ -69,8 +68,8 @@ let c_import_system_fixture header =
   let alloc_size_parameters = ref [] in
   let declarations, _, _ =
     expect_ok
-      (C_import.import ~alloc_size_out:alloc_size_parameters ~cc:"clang-22" ~debug:false
-         ~keep:false source
+      (C_import.import ~alloc_size_out:alloc_size_parameters ~cc:"clang-22" ~keep:false
+         source
          [ C_import.{ spelling = Ast.C_system header; span = Span.synthetic } ])
   in
   ( source,
@@ -81,7 +80,7 @@ let c_import_system_fixtures headers =
   let source = Filename.concat (Sys.getcwd ()) "test/ir_simple.fas" in
   let declarations, _, _ =
     expect_ok
-      (C_import.import ~cc:"clang-22" ~debug:false ~keep:false source
+      (C_import.import ~cc:"clang-22" ~keep:false source
          (List.map
             (fun header ->
               C_import.{ spelling = Ast.C_system header; span = Span.synthetic })
@@ -110,8 +109,8 @@ let c_import_alloc_size_fixture file =
   in
   let declarations, _, _ =
     expect_ok
-      (C_import.import ~alloc_size_out:alloc_size_parameters ~cc:"clang-22" ~debug:false
-         ~keep:false source [ request ])
+      (C_import.import ~alloc_size_out:alloc_size_parameters ~cc:"clang-22" ~keep:false
+         source [ request ])
   in
   ( source,
     C_import.map_declarations ~alloc_size_parameters:!alloc_size_parameters
@@ -128,8 +127,7 @@ let c_import_container ?(macro_names = []) name fragment_text =
     (fun () ->
       let declarations, _, _ =
         expect_ok
-          (C_import.import ~cc:"clang-22" ~debug:false ~keep:false ~macro_names source
-             [ request ])
+          (C_import.import ~cc:"clang-22" ~keep:false ~macro_names source [ request ])
       in
       (source, C_import.map_declarations ~span declarations))
 
@@ -153,8 +151,8 @@ let c_import_macro_fixture ?(c_flags = []) file macro_names =
   in
   let declarations, _, _ =
     expect_ok
-      (C_import.import ~cc:"clang-22" ~debug:false ~keep:false ~c_flags ~macro_names
-         source [ request ])
+      (C_import.import ~cc:"clang-22" ~keep:false ~c_flags ~macro_names source
+         [ request ])
   in
   (source, C_import.map_declarations ~span:Span.synthetic declarations)
 
@@ -566,6 +564,7 @@ let lower_function_error name fragment params body =
               body = Hir.Statements body;
               linkage = Hir.Internal;
               variadic = false;
+              span = Span.synthetic;
             };
           ];
         strings = [];
@@ -3106,9 +3105,9 @@ let () =
         | Ok output -> output
         | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics)
       in
-      if not (contains profile_ir "@helper() noinline #0 {") then
+      if not (contains profile_ir "@helper() noinline #0 ") then
         failwith "no-inline: selected function missing LLVM attribute";
-      if contains profile_ir "@other() noinline #0 {" then
+      if contains profile_ir "@other() noinline #0 " then
         failwith "no-inline: attribute leaked to another function";
       let missing_config =
         cli_run [ "-g"; "--emit-llvm"; "--no-inline"; "missing"; profile_path ]
@@ -3161,7 +3160,7 @@ let () =
       if
         not
           (contains output (Ir.quote_identifier generic_profile_name)
-          && contains output "noinline #0 {")
+          && contains output "noinline #0 ")
       then failwith "no-inline: generic specialization was not selected");
   let external_profile_path = Filename.temp_file "fas-profile-external-" ".fas" in
   Fun.protect
@@ -7850,6 +7849,7 @@ let () =
                body = Hir.Statements [];
                linkage = Hir.Internal;
                variadic = false;
+               span = Span.synthetic;
              };
            ];
        }
@@ -7876,6 +7876,7 @@ let () =
                body = Hir.Statements [];
                linkage = Hir.Internal;
                variadic = false;
+               span = Span.synthetic;
              };
            ];
        }
@@ -7918,6 +7919,7 @@ let () =
                    ];
                linkage = Hir.Internal;
                variadic = false;
+               span = Span.synthetic;
              };
            ];
        }
@@ -12477,7 +12479,7 @@ let () =
   let c_nonnull_source, _ = c_import_fixture "nonnull.h" in
   let c_nonnull_declarations, _, _ =
     expect_ok
-      (C_import.import ~cc:"clang-22" ~debug:false ~keep:false c_nonnull_source
+      (C_import.import ~cc:"clang-22" ~keep:false c_nonnull_source
          [
            C_import.{ spelling = Ast.C_quoted "nonnull.h"; span = Span.synthetic };
            C_import.{ spelling = Ast.C_system "string.h"; span = Span.synthetic };
@@ -12569,7 +12571,7 @@ let () =
   let c_matrix_source, c_matrix_imported = c_matrix in
   let stdio_declarations, _, _ =
     expect_ok
-      (C_import.import ~cc:"clang-22" ~debug:false ~keep:false c_matrix_source
+      (C_import.import ~cc:"clang-22" ~keep:false c_matrix_source
          [ C_import.{ spelling = Ast.C_system "stdio.h"; span = Span.synthetic } ])
   in
   let stdio_import =
@@ -12672,8 +12674,7 @@ let () =
   in
   let provenance_declarations, _, _ =
     expect_ok
-      (C_import.import ~cc:"clang-22" ~debug:false ~keep:false c_matrix_source
-         provenance_headers)
+      (C_import.import ~cc:"clang-22" ~keep:false c_matrix_source provenance_headers)
   in
   let provenance_import =
     C_import.map_declarations ~span:Span.synthetic provenance_declarations
@@ -12746,8 +12747,7 @@ let () =
       in
       let declarations, kept, _ =
         expect_ok
-          (C_import.import ~cc:"clang-22" ~debug:false ~keep:true container_source_path
-             requests)
+          (C_import.import ~cc:"clang-22" ~keep:true container_source_path requests)
       in
       let kept = Option.value ~default:[] kept in
       Fun.protect
@@ -12880,7 +12880,7 @@ let () =
       in
       let relative_declarations, _, _ =
         expect_ok
-          (C_import.import ~cc:"clang-22" ~debug:false ~keep:false relative_source
+          (C_import.import ~cc:"clang-22" ~keep:false relative_source
              [ relative_header ])
       in
       let relative_import =
@@ -12897,8 +12897,7 @@ let () =
       in
       incr checks_run;
       match
-        C_import.import ~cc:"clang-22" ~debug:false ~keep:false relative_source
-          [ missing_header ]
+        C_import.import ~cc:"clang-22" ~keep:false relative_source [ missing_header ]
       with
       | Error [ diagnostic ]
         when diagnostic.primary = missing_span
@@ -13049,8 +13048,7 @@ let () =
     ]
   in
   let stat_declarations, _, _ =
-    expect_ok
-      (C_import.import ~cc:"clang-22" ~debug:false ~keep:false stat_source stat_headers)
+    expect_ok (C_import.import ~cc:"clang-22" ~keep:false stat_source stat_headers)
   in
   let c_stat_typedef =
     C_import.map_declarations ~span:Span.synthetic stat_declarations
@@ -13491,7 +13489,7 @@ let () =
         in
         let declarations, _, _ =
           expect_ok
-            (C_import.import ~cc:"clang-22" ~debug:false ~keep:false source
+            (C_import.import ~cc:"clang-22" ~keep:false source
                [ C_import.{ spelling = Ast.C_quoted static_collision_header; span } ])
         in
         C_import.map_declarations ~span declarations
@@ -13525,8 +13523,7 @@ let () =
   in
   let collision_declarations, _, _ =
     expect_ok
-      (C_import.import ~cc:"clang-22" ~debug:false ~keep:false collision_source
-         [ collision_request ])
+      (C_import.import ~cc:"clang-22" ~keep:false collision_source [ collision_request ])
   in
   let rec duplicate_flattened_field_name active = function
     | C_import_json.Arr values ->
@@ -14144,7 +14141,7 @@ let () =
         in
         let declarations, _, _ =
           expect_ok
-            (C_import.import ~cc:"clang-22" ~debug:false ~keep:false definition_source
+            (C_import.import ~cc:"clang-22" ~keep:false definition_source
                [ C_import.{ spelling = Ast.C_quoted definition_header; span } ])
         in
         C_import.map_declarations ~span declarations
@@ -15767,7 +15764,7 @@ let () =
       ]
   in
   let nodes, _, _ =
-    expect_ok (C_import.import ~cc:"clang-22" ~debug:false ~keep:false file requests)
+    expect_ok (C_import.import ~cc:"clang-22" ~keep:false file requests)
   in
   let fixture = (file, C_import.map_declarations ~span nodes) in
   c_semantic_accept "c-import-anonymous-header-after-container" fixture

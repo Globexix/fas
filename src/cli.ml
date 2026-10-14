@@ -45,7 +45,7 @@ let usage =
   \  --emit-ir     print the compiler's custom IR dump\n\
   \  --emit-ir-json print the custom IR as JSON\n\
   \  --keep        retain and report intermediate paths and active tool pipeline\n\
-  \  -g            default to -O0; emits no DWARF info\n\
+  \  -g            emit DWARF line tables (machine code unchanged)\n\
   \  --no-inline NAME  add LLVM noinline to NAME\n\
   \  --sanitize=LIST instrument with address and/or undefined behavior sanitizers\n\
    environment:\n\
@@ -202,9 +202,8 @@ let parse_invocation ~subcommand argv =
                     loop (i + 1) input output emit keep optimization
                       optimization_explicit debug no_inline_function))
       | "-g" ->
-          loop (i + 1) input output emit keep
-            (if optimization_explicit then optimization else 0)
-            optimization_explicit true no_inline_function
+          loop (i + 1) input output emit keep optimization optimization_explicit true
+            no_inline_function
       | "--no-inline" ->
           if i + 1 >= n then Error "--no-inline requires a function name"
           else

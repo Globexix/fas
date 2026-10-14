@@ -6,7 +6,7 @@
 (test
  (name unit)
  (modules unit)
- (libraries fas_compiler)
+ (libraries fas_compiler debug_fixture)
  (deps ir_simple.expected))
 
 (test
@@ -58,3 +58,13 @@
   (language c)
   (names float_proof_oracle)
   (flags -O0 -ffp-contract=off -fno-fast-math)))
+
+(library
+ (name debug_fixture)
+ (modules debug_fixture)
+ (libraries fas_compiler))
+
+(executable
+ (name debug_info_render)
+ (modules debug_info_render)
+ (libraries fas_compiler debug_fixture))

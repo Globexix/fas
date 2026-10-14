@@ -147,6 +147,7 @@ let instr ?(redirect = Fun.id) ~is_function instr =
   | String_ptr (d, s, n) -> arr [ str "string_ptr"; int d; int s; int n ]
   | Global_ptr (d, n, t) -> arr [ str "global_ptr"; int d; str n; ty t ]
   | Trap -> arr [ str "trap" ]
+  | Location _ -> invalid_arg "internal error: location markers are not serialized"
 
 let terminator is_function = function
   | Ret None -> arr [ str "ret" ]
@@ -233,7 +234,8 @@ let func ?(redirect = Fun.id) ~is_function (f : func) =
                obj
                  [
                    ("id", int b.id);
-                   ("instrs", arr (List.map (instr ~redirect ~is_function) b.instrs));
+                   ( "instrs",
+                     arr (List.map (instr ~redirect ~is_function) (real_instrs b)) );
                    ("term", terminator is_function b.terminator);
                  ])
              f.blocks) );

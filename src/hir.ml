@@ -158,6 +158,7 @@ type func = {
   body : func_body;
   linkage : linkage;
   variadic : bool;
+  span : Span.t;
 }
 
 type global_initializer =
@@ -272,6 +273,27 @@ let expr_span = function
   | Splat (_, _, s)
   | Ternary (_, _, _, _, s)
   | Const_array (_, _, s) ->
+      s
+
+let stmt_span = function
+  | Let (_, _, s)
+  | Let_construct (_, _, s)
+  | View (_, _, s)
+  | Copy (_, _, _, _, s)
+  | Volatile_store (_, _, _, s)
+  | Simd_store (_, _, _, s)
+  | Assign (_, _, s)
+  | Compound_assign (_, _, _, _, s)
+  | Return (_, s)
+  | If (_, _, _, s)
+  | While (_, _, _, s)
+  | For (_, _, _, _, _, s)
+  | Switch (_, _, _, s)
+  | Break (_, s)
+  | Continue (_, s)
+  | Defer (_, s)
+  | Expr (_, s)
+  | Block (_, s) ->
       s
 
 type flow_summary = {

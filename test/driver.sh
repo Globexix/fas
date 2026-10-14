@@ -331,8 +331,11 @@ defer_line=$(grep -n -F "call void @observe" "$WORK/lifetime-address.ll" | tail 
 [ ! -s "$WORK/stderr" ] || fail "custom IR emission wrote diagnostics"
 grep -F "Module {" "$WORK/custom.ir" >/dev/null || fail "custom IR emission omitted module"
 "$OCAML_FAS" --emit-llvm -g "$WORK/good.fas" >"$WORK/debug.ll" 2>"$WORK/stderr"
-if grep -E 'llvm\.dbg|!DI[A-Za-z]+' "$WORK/debug.ll" >/dev/null; then
-  fail "debug mode emitted DWARF metadata"
+grep -F '!DICompileUnit' "$WORK/debug.ll" >/dev/null || fail "-g emitted no compile unit"
+grep -F '!DILocation' "$WORK/debug.ll" >/dev/null || fail "-g emitted no line locations"
+"$OCAML_FAS" --emit-llvm "$WORK/good.fas" >"$WORK/plain.ll" 2>"$WORK/stderr"
+if grep -E 'llvm\.dbg|!DI[A-Za-z]+' "$WORK/plain.ll" >/dev/null; then
+  fail "plain --emit-llvm emitted DWARF metadata"
 fi
 
 "$OCAML_FAS" -S "$WORK/good.fas" -o "$WORK/good.s" >"$WORK/stdout" 2>"$WORK/stderr"
@@ -368,9 +371,9 @@ cp "$WORK/good.fas" "$WORK/auto.fas"
 [ ! -s "$WORK/stdout" ] || fail "--keep wrote to stdout"
 grep -F "fas: kept intermediates:" "$WORK/stderr" >/dev/null || fail "--keep omitted paths"
 grep -F "FAS_OPT=$FAS_OPT" "$WORK/stderr" >/dev/null || fail "--keep omitted tools"
-grep -F "passes=default<O0>" "$WORK/stderr" >/dev/null || fail "-g did not default to O0"
-grep -F "llc -O0" "$WORK/stderr" >/dev/null || fail "-g llc level missing"
-grep -F -- "llc -O0 -relocation-model=pic" "$TOOL_LOG" >/dev/null || fail "-g llc PIC model missing"
+grep -F "passes=default<O2>" "$WORK/stderr" >/dev/null || fail "-g changed the default optimization level"
+grep -F "llc -O2" "$WORK/stderr" >/dev/null || fail "-g llc level missing"
+grep -F -- "llc -O2 -relocation-model=pic" "$TOOL_LOG" >/dev/null || fail "-g llc PIC model missing"
 [ -n "$(find "$TMPDIR" -mindepth 1 -print -quit)" ] || fail "--keep did not retain intermediates"
 "$OCAML_FAS" -g -O3 --keep "$WORK/good.fas" -o "$WORK/debug-o3" >"$WORK/stdout" 2>"$WORK/stderr"
 grep -F "passes=default<O3>" "$WORK/stderr" >/dev/null || fail "-g overrode explicit -O3"
@@ -416,8 +419,8 @@ find "$TMPDIR" -mindepth 1 -delete
 temps_empty
 
 "$OCAML_FAS" --emit-llvm -g --no-inline helper "$WORK/good.fas" >"$WORK/noinline.ll" 2>"$WORK/stderr"
-grep -F "@helper() noinline #0 {" "$WORK/noinline.ll" >/dev/null || fail "--no-inline missed selected function"
-if grep -F "@main() noinline #0 {" "$WORK/noinline.ll" >/dev/null; then fail "--no-inline marked main"; fi
+grep -F "@helper() noinline #0 " "$WORK/noinline.ll" >/dev/null || fail "--no-inline missed selected function"
+if grep -F "@main() noinline #0 " "$WORK/noinline.ll" >/dev/null; then fail "--no-inline marked main"; fi
 "$OCAML_FAS" --emit-llvm -O2 --no-inline helper "$WORK/good.fas" >"$WORK/noinline-o2.ll" 2>"$WORK/stderr"
 grep -F "@helper() noinline #0 {" "$WORK/noinline-o2.ll" >/dev/null || fail "--no-inline without -g missed selected function"
 if grep -F "@main() noinline #0 {" "$WORK/noinline-o2.ll" >/dev/null; then fail "--no-inline without -g marked main"; fi
