@@ -1281,7 +1281,10 @@ let run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug con
             | _ -> Ok ()
           in
           let* ir =
-            Lower.lower ~sanitize_address:(List.mem "address" config.Cli.sanitizers) hir
+            Lower.lower
+              ~sanitize_address:(List.mem "address" config.Cli.sanitizers)
+              ~intrinsic_masked_loads:(config.Cli.target = Cli.Force_native)
+              hir
           in
           let* ir = apply_no_inline config ir in
           let* ir, adapters, redirect =

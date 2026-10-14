@@ -31,6 +31,7 @@ type state = {
   mutable scope_slots : local_slot list list;
   address_taken : (int, unit) Hashtbl.t;
   sanitize_address : bool;
+  intrinsic_masked_loads : bool;
   mutable loops : loop list;
   file : string option;
   mutable location : (int * int) option;
@@ -1609,100 +1610,161 @@ and simd_memory_store_lane s span access_ty value pointer =
       Ok ()
   | _ -> error span "internal error: invalid SIMD memory element type"
 
-and simd_memory_load s span access_ty kind args values =
-  let parts =
-    match (kind, args, values) with
-    | Hir.Masked, [ _; _; _ ], [ base; mask; fallback ] ->
-        Some
-          ( base,
-            None,
-            Hir.Int Hir.Usize,
-            mask,
-            fallback,
-            Some (int_ty_bytes (ty access_ty)) )
-    | ( (Hir.Gather | Hir.Gather_bytes),
-        [ _; index_expr; _; _ ],
-        [ base; indices; mask; fallback ] ) ->
-        let stride =
-          if kind = Hir.Gather then Some (int_ty_bytes (ty access_ty)) else None
-        in
-        Some (base, Some indices, Hir.expr_ty index_expr, mask, fallback, stride)
-    | _ -> None
+and masked_elem_ty access_ty =
+  match access_ty with Hir.Bool -> Ir.I8 | _ -> ty access_ty
+
+and masked_mask_lanes span mask =
+  match value_ty mask with
+  | Ir.Vector (lanes, Ir.I1) -> Ok lanes
+  | _ -> error span "internal error: masked SIMD memory mask is not a bool vector"
+
+and masked_intrinsic span direction memory_ty =
+  let* suffix =
+    match memory_ty with
+    | Ir.Vector (_, (Ir.F32 | Ir.F64)) -> float_suffix span memory_ty
+    | _ -> intrinsic_suffix span memory_ty
   in
-  match parts with
-  | None -> error span "internal error: invalid SIMD memory load"
-  | Some (base, indices, index_ty, mask, fallback, stride) ->
-      let lanes = match value_ty mask with Ir.Vector (n, Ir.I1) -> n | _ -> 0 in
-      let result_ty = Ir.Vector (lanes, ty access_ty) in
-      let rec load_lane lane result =
-        if lane = lanes then Ok result
-        else
-          let lane_index = Ir.Const (Ir.I64, Int64.of_int lane) in
-          let mask_id = fresh s in
-          emit s (Ir.Extract (mask_id, value_ty mask, mask, lane_index));
-          let fallback_id = fresh s in
-          emit s (Ir.Extract (fallback_id, value_ty fallback, fallback, lane_index));
-          let inactive = s.current.id in
-          let active = fresh_block s and join = fresh_block s in
-          s.current.term :=
-            Some (Ir.CondBr (Ir.Local (mask_id, Ir.I1), active.id, join.id));
-          enter s active;
-          let index_value =
-            match indices with
-            | None -> Ir.Const (Ir.I64, Int64.of_int lane)
-            | Some vector ->
-                let id = fresh s in
-                emit s (Ir.Extract (id, value_ty vector, vector, lane_index));
-                Ir.Local
-                  ( id,
-                    match value_ty vector with
-                    | Ir.Vector (_, elem) -> elem
-                    | _ -> Ir.I64 )
-          in
-          let* pointer = simd_memory_address s span stride base index_ty index_value in
-          let* loaded = simd_memory_load_lane s span access_ty pointer in
-          let active_end = s.current.id in
-          s.current.term := Some (Ir.Br join.id);
-          enter s join;
-          let merged = fresh s in
-          emit s
-            (Ir.Phi
-               ( merged,
-                 ty access_ty,
-                 [
-                   (loaded, active_end); (Ir.Local (fallback_id, ty access_ty), inactive);
-                 ] ));
-          let inserted = fresh s in
-          emit s
-            (Ir.Insert
-               (inserted, result_ty, result, lane_index, Ir.Local (merged, ty access_ty)));
-          load_lane (lane + 1) (Ir.Local (inserted, result_ty))
+  Ok (Printf.sprintf "llvm.masked.%s.%s.p0" direction suffix)
+
+and simd_masked_load s span access_ty base mask fallback =
+  let* lanes = masked_mask_lanes span mask in
+  let mask_ty = Ir.Vector (lanes, Ir.I1) in
+  let memory_ty = Ir.Vector (lanes, masked_elem_ty access_ty) in
+  let* name = masked_intrinsic span "load" memory_ty in
+  let passthru =
+    match access_ty with
+    | Hir.Bool ->
+        let id = fresh s in
+        emit s (Ir.Cast (id, "zext", value_ty fallback, fallback, memory_ty));
+        Ir.Local (id, memory_ty)
+    | _ -> fallback
+  in
+  let loaded = fresh s in
+  emit s
+    (Ir.Call
+       ( Some loaded,
+         Ir.No_extension,
+         memory_ty,
+         name,
+         [
+           (Ir.Pointer Ir.I8, Ir.No_extension, base);
+           (Ir.I32, Ir.No_extension, Ir.Const (Ir.I32, 1L));
+           (mask_ty, Ir.No_extension, mask);
+           (memory_ty, Ir.No_extension, passthru);
+         ] ));
+  match access_ty with
+  | Hir.Bool ->
+      let normalized = fresh s in
+      emit s
+        (Ir.Cmp
+           ( normalized,
+             Ir.Ne,
+             memory_ty,
+             Ir.Local (loaded, memory_ty),
+             Ir.Zero memory_ty ));
+      Ok (Ir.Local (normalized, mask_ty))
+  | _ -> Ok (Ir.Local (loaded, memory_ty))
+
+and simd_masked_store s span access_ty base mask stored =
+  let* lanes = masked_mask_lanes span mask in
+  let mask_ty = Ir.Vector (lanes, Ir.I1) in
+  let memory_ty = Ir.Vector (lanes, masked_elem_ty access_ty) in
+  let* name = masked_intrinsic span "store" memory_ty in
+  let value =
+    match access_ty with
+    | Hir.Bool ->
+        let id = fresh s in
+        emit s (Ir.Cast (id, "zext", value_ty stored, stored, memory_ty));
+        Ir.Local (id, memory_ty)
+    | _ -> stored
+  in
+  emit s
+    (Ir.Call
+       ( None,
+         Ir.No_extension,
+         Ir.Void,
+         name,
+         [
+           (memory_ty, Ir.No_extension, value);
+           (Ir.Pointer Ir.I8, Ir.No_extension, base);
+           (Ir.I32, Ir.No_extension, Ir.Const (Ir.I32, 1L));
+           (mask_ty, Ir.No_extension, mask);
+         ] ));
+  Ok ()
+
+and simd_memory_load s span access_ty kind args values =
+  match (kind, args, values) with
+  | Hir.Masked, [ _; _; _ ], [ base; mask; fallback ] when s.intrinsic_masked_loads ->
+      simd_masked_load s span access_ty base mask fallback
+  | Hir.Masked, [ _; _; _ ], [ base; mask; fallback ] ->
+      simd_lane_load s span access_ty None (Hir.Int Hir.Usize) base mask fallback
+        (Some (int_ty_bytes (ty access_ty)))
+  | ( (Hir.Gather | Hir.Gather_bytes),
+      [ _; index_expr; _; _ ],
+      [ base; indices; mask; fallback ] ) ->
+      let stride =
+        if kind = Hir.Gather then Some (int_ty_bytes (ty access_ty)) else None
       in
-      load_lane 0 (Ir.Zero result_ty)
+      simd_lane_load s span access_ty (Some indices) (Hir.expr_ty index_expr) base mask
+        fallback stride
+  | _ -> error span "internal error: invalid SIMD memory load"
+
+and simd_lane_load s span access_ty indices index_ty base mask fallback stride =
+  let lanes = match value_ty mask with Ir.Vector (n, Ir.I1) -> n | _ -> 0 in
+  let result_ty = Ir.Vector (lanes, ty access_ty) in
+  let rec load_lane lane result =
+    if lane = lanes then Ok result
+    else
+      let lane_index = Ir.Const (Ir.I64, Int64.of_int lane) in
+      let mask_id = fresh s in
+      emit s (Ir.Extract (mask_id, value_ty mask, mask, lane_index));
+      let fallback_id = fresh s in
+      emit s (Ir.Extract (fallback_id, value_ty fallback, fallback, lane_index));
+      let inactive = s.current.id in
+      let active = fresh_block s and join = fresh_block s in
+      s.current.term := Some (Ir.CondBr (Ir.Local (mask_id, Ir.I1), active.id, join.id));
+      enter s active;
+      let index_value =
+        match indices with
+        | None -> Ir.Const (Ir.I64, Int64.of_int lane)
+        | Some vector ->
+            let index_id = fresh s in
+            emit s (Ir.Extract (index_id, value_ty vector, vector, lane_index));
+            Ir.Local
+              ( index_id,
+                match value_ty vector with Ir.Vector (_, elem) -> elem | _ -> Ir.I64 )
+      in
+      let* pointer = simd_memory_address s span stride base index_ty index_value in
+      let* loaded = simd_memory_load_lane s span access_ty pointer in
+      let active_end = s.current.id in
+      s.current.term := Some (Ir.Br join.id);
+      enter s join;
+      let merged = fresh s in
+      emit s
+        (Ir.Phi
+           ( merged,
+             ty access_ty,
+             [ (loaded, active_end); (Ir.Local (fallback_id, ty access_ty), inactive) ]
+           ));
+      let inserted = fresh s in
+      emit s
+        (Ir.Insert
+           (inserted, result_ty, result, lane_index, Ir.Local (merged, ty access_ty)));
+      load_lane (lane + 1) (Ir.Local (inserted, result_ty))
+  in
+  load_lane 0 (Ir.Zero result_ty)
 
 and simd_memory_store s span access_ty kind args values =
-  let parts =
-    match (kind, args, values) with
-    | Hir.Masked_store, [ _; _; _ ], [ base; mask; stored ] ->
-        Some
-          ( base,
-            None,
-            Hir.Int Hir.Usize,
-            mask,
-            stored,
-            Some (int_ty_bytes (ty access_ty)) )
-    | ( (Hir.Scatter | Hir.Scatter_bytes),
-        [ _; index_expr; _; _ ],
-        [ base; indices; mask; stored ] ) ->
-        let stride =
-          if kind = Hir.Scatter then Some (int_ty_bytes (ty access_ty)) else None
-        in
-        Some (base, Some indices, Hir.expr_ty index_expr, mask, stored, stride)
-    | _ -> None
-  in
-  match parts with
-  | None -> error span "internal error: invalid SIMD memory store"
-  | Some (base, indices, index_ty, mask, stored, stride) ->
+  match (kind, args, values) with
+  | Hir.Masked_store, [ _; _; _ ], [ base; mask; stored ] ->
+      simd_masked_store s span access_ty base mask stored
+  | ( (Hir.Scatter | Hir.Scatter_bytes),
+      [ _; index_expr; _; _ ],
+      [ base; indices; mask; stored ] ) ->
+      let stride =
+        if kind = Hir.Scatter then Some (int_ty_bytes (ty access_ty)) else None
+      in
+      let index_ty = Hir.expr_ty index_expr in
       let lanes = match value_ty mask with Ir.Vector (n, Ir.I1) -> n | _ -> 0 in
       let rec store_lane lane =
         if lane = lanes then Ok ()
@@ -1714,17 +1776,12 @@ and simd_memory_store s span access_ty kind args values =
           s.current.term :=
             Some (Ir.CondBr (Ir.Local (mask_id, Ir.I1), active.id, join.id));
           enter s active;
+          let index_id = fresh s in
+          emit s (Ir.Extract (index_id, value_ty indices, indices, lane_index));
           let index_value =
-            match indices with
-            | None -> Ir.Const (Ir.I64, Int64.of_int lane)
-            | Some vector ->
-                let id = fresh s in
-                emit s (Ir.Extract (id, value_ty vector, vector, lane_index));
-                Ir.Local
-                  ( id,
-                    match value_ty vector with
-                    | Ir.Vector (_, elem) -> elem
-                    | _ -> Ir.I64 )
+            Ir.Local
+              ( index_id,
+                match value_ty indices with Ir.Vector (_, elem) -> elem | _ -> Ir.I64 )
           in
           let* pointer = simd_memory_address s span stride base index_ty index_value in
           let value_id = fresh s in
@@ -1739,6 +1796,7 @@ and simd_memory_store s span access_ty kind args values =
           store_lane (lane + 1)
       in
       store_lane 0
+  | _ -> error span "internal error: invalid SIMD memory store"
 
 and raw_load s t p =
   match t with
@@ -2787,8 +2845,8 @@ let address_taken_locals ?function_addresses body =
   collect_list body;
   addressed
 
-let lower_func ~sanitize_address ~address_taken ~addressed_functions literal_globals
-    structs strings functions f =
+let lower_func ~sanitize_address ~intrinsic_masked_loads ~address_taken
+    ~addressed_functions literal_globals structs strings functions f =
   let c_abi = has_c_abi f || Hashtbl.mem addressed_functions f.name in
   let source =
     if Span.is_synthetic f.Hir.span then None
@@ -2858,6 +2916,7 @@ let lower_func ~sanitize_address ~address_taken ~addressed_functions literal_glo
           scope_slots = [];
           address_taken;
           sanitize_address;
+          intrinsic_masked_loads;
           loops = [];
           file = Option.map fst source;
           location = None;
@@ -3085,7 +3144,8 @@ let global_storage structs (global : Hir.global) =
         error Span.synthetic
           (Printf.sprintf "internal error: global %s: %s" global.name message))
 
-let lower ?(sanitize_address = false) (p : Hir.program) =
+let lower ?(sanitize_address = false) ?(intrinsic_masked_loads = true) (p : Hir.program)
+    =
   let* () =
     match Target_layout.pointer_integer_bits Target_layout.current with
     | Ok 32 | Ok 64 -> Ok ()
@@ -3149,8 +3209,8 @@ let lower ?(sanitize_address = false) (p : Hir.program) =
           | true, Hir.Statements body -> address_taken_locals body
           | _ -> Hashtbl.create 0
         in
-        lower_func ~sanitize_address ~address_taken ~addressed_functions literal_globals
-          p.Hir.structs p.strings p.funcs f)
+        lower_func ~sanitize_address ~intrinsic_masked_loads ~address_taken
+          ~addressed_functions literal_globals p.Hir.structs p.strings p.funcs f)
       p.funcs
   in
   let* structs =

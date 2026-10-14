@@ -1,0 +1,94 @@
+fn masked_guard_hash_u8(v vec[16,u8]) u64 {
+  h u64 = 0
+  h = h * 1315423911 + zext[u64](v[0])
+  h = h * 1315423911 + zext[u64](v[1])
+  h = h * 1315423911 + zext[u64](v[2])
+  h = h * 1315423911 + zext[u64](v[3])
+  h = h * 1315423911 + zext[u64](v[4])
+  h = h * 1315423911 + zext[u64](v[5])
+  h = h * 1315423911 + zext[u64](v[6])
+  h = h * 1315423911 + zext[u64](v[7])
+  h = h * 1315423911 + zext[u64](v[8])
+  h = h * 1315423911 + zext[u64](v[9])
+  h = h * 1315423911 + zext[u64](v[10])
+  h = h * 1315423911 + zext[u64](v[11])
+  h = h * 1315423911 + zext[u64](v[12])
+  h = h * 1315423911 + zext[u64](v[13])
+  h = h * 1315423911 + zext[u64](v[14])
+  h = h * 1315423911 + zext[u64](v[15])
+  return h
+}
+
+fn masked_guard_hash_u32(v vec[8,u32]) u64 {
+  h u64 = 0
+  h = h * 1315423911 + zext[u64](v[0])
+  h = h * 1315423911 + zext[u64](v[1])
+  h = h * 1315423911 + zext[u64](v[2])
+  h = h * 1315423911 + zext[u64](v[3])
+  h = h * 1315423911 + zext[u64](v[4])
+  h = h * 1315423911 + zext[u64](v[5])
+  h = h * 1315423911 + zext[u64](v[6])
+  h = h * 1315423911 + zext[u64](v[7])
+  return h
+}
+
+fn masked_guard_hash_bool16(v vec[16,bool]) u64 {
+  h u64 = 0
+  h = h * 1315423911 + zext[u64](v[0])
+  h = h * 1315423911 + zext[u64](v[1])
+  h = h * 1315423911 + zext[u64](v[2])
+  h = h * 1315423911 + zext[u64](v[3])
+  h = h * 1315423911 + zext[u64](v[4])
+  h = h * 1315423911 + zext[u64](v[5])
+  h = h * 1315423911 + zext[u64](v[6])
+  h = h * 1315423911 + zext[u64](v[7])
+  h = h * 1315423911 + zext[u64](v[8])
+  h = h * 1315423911 + zext[u64](v[9])
+  h = h * 1315423911 + zext[u64](v[10])
+  h = h * 1315423911 + zext[u64](v[11])
+  h = h * 1315423911 + zext[u64](v[12])
+  h = h * 1315423911 + zext[u64](v[13])
+  h = h * 1315423911 + zext[u64](v[14])
+  h = h * 1315423911 + zext[u64](v[15])
+  return h
+}
+
+extern "C" {
+  fn masked_guard_u8x16_load(p addr) u64 {
+    m vec[16,bool] = {true, true, true, true, true, false, false, false, false, false, false, false, false, false, false, false}
+    f vec[16,u8] = {100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115}
+    return masked_guard_hash_u8(masked_load[u8](p, m, f))
+  }
+
+  fn masked_guard_u8x16_tail_load(p addr, n usize) u64 {
+    m vec[16,bool] = {n > 0, n > 1, n > 2, n > 3, n > 4, n > 5, n > 6, n > 7, n > 8, n > 9, n > 10, n > 11, n > 12, n > 13, n > 14, n > 15}
+    f vec[16,u8] = {100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115}
+    return masked_guard_hash_u8(masked_load[u8](p, m, f))
+  }
+
+  fn masked_guard_u8x16_store(p addr) void {
+    m vec[16,bool] = {true, true, true, true, true, false, false, false, false, false, false, false, false, false, false, false}
+    v vec[16,u8] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+    masked_store[u8](p, m, v)
+    return
+  }
+
+  fn masked_guard_u32x8_load(p addr) u64 {
+    m vec[8,bool] = {true, true, true, false, false, false, false, false}
+    f vec[8,u32] = {1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007}
+    return masked_guard_hash_u32(masked_load[u32](p, m, f))
+  }
+
+  fn masked_guard_u32x8_store(p addr) void {
+    m vec[8,bool] = {true, true, true, false, false, false, false, false}
+    v vec[8,u32] = {501, 502, 503, 504, 505, 506, 507, 508}
+    masked_store[u32](p, m, v)
+    return
+  }
+
+  fn masked_guard_bool16_load(p addr) u64 {
+    m vec[16,bool] = {true, true, true, false, false, false, false, false, false, false, false, false, false, false, false, false}
+    f vec[16,bool] = {true, false, true, true, false, false, true, false, true, true, true, false, false, true, false, true}
+    return masked_guard_hash_bool16(masked_load[bool](p, m, f))
+  }
+}
