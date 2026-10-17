@@ -3353,6 +3353,19 @@ and check_call_inner c expected fn args s =
                  && source_element <> target_element
           | _ -> false
         then Ok (Hir.Call (Hir.Builtin (Hir.Cvt target), [ checked ], target, s))
+        else if Hir.ty_equal source target then
+          let name = Sema_types.diagnostic_ty_name target in
+          let article =
+            match name.[0] with 'a' | 'e' | 'f' | 'i' | 'o' -> "an" | _ -> "a"
+          in
+          Error
+            [
+              Diag.error
+                ~help:(Printf.sprintf "write `%s`" (Ast.expr_name value))
+                s
+                (Printf.sprintf "`cvt[%s]` of %s `%s` value converts nothing" name
+                   article name);
+            ]
         else if integer source && integer target then
           let help =
             "integer width changes use `zext`, `sext`, or `trunc`; same-width values \
@@ -3364,13 +3377,6 @@ and check_call_inner c expected fn args s =
                 (Printf.sprintf "`cvt` does not convert `%s` to `%s`"
                    (Sema_types.diagnostic_ty_name source)
                    (Sema_types.diagnostic_ty_name target));
-            ]
-        else if Hir.ty_equal source target then
-          Error
-            [
-              Diag.error ~help:"remove the redundant conversion" s
-                (Printf.sprintf "`cvt` source and target are both `%s`"
-                   (Sema_types.diagnostic_ty_name source));
             ]
         else
           error s

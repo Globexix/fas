@@ -867,6 +867,23 @@ let integer_literal_vector_argument_error name expression expected =
 let integer_maximum ty =
   Sema_numeric.literal_limit ~negative:false ty |> Sema_numeric.unsigned_int64_to_string
 
+let same_width_integer_pair source destination =
+  match (source, destination) with
+  | Hir.Int Hir.Usize, Hir.Int Hir.U64
+  | Hir.Int Hir.U64, Hir.Int Hir.Usize
+  | Hir.Int Hir.Isize, Hir.Int Hir.I64
+  | Hir.Int Hir.I64, Hir.Int Hir.Isize ->
+      true
+  | _ -> false
+
+let same_width_scalar_pair source destination =
+  match
+    ( Sema_numeric.integer_value_bit_width source,
+      Sema_numeric.integer_value_bit_width destination )
+  with
+  | Some source_bits, Some destination_bits -> source_bits = destination_bits
+  | _ -> false
+
 let cast_error ?expression kind source destination span =
   let name = cast_name kind in
   let source_name, destination_name =
@@ -910,7 +927,15 @@ let cast_error ?expression kind source destination span =
         "the source and destination must be integer types"
     | (Ast.Zext | Ast.Sext | Ast.Trunc), _, _ when Hir.ty_equal source destination ->
         Printf.sprintf "the value already has type `%s`" (diagnostic_ty_name source)
-    | Ast.Zext, Hir.Int Hir.Usize, Hir.Int Hir.U64 ->
+    | (Ast.Zext | Ast.Sext | Ast.Trunc), _, _
+      when same_width_integer_pair source destination ->
+        Printf.sprintf
+          "`%s` and `%s` have the same width and convert implicitly; no conversion is \
+           needed"
+          (diagnostic_ty_name source)
+          (diagnostic_ty_name destination)
+    | (Ast.Zext | Ast.Sext | Ast.Trunc), Hir.Int _, Hir.Int _
+      when same_width_scalar_pair source destination ->
         "the source and destination have the same width; use `bitcast`"
     | (Ast.Zext | Ast.Sext), _, _ ->
         "the destination must be a wider integer type" ^ lane_clause
@@ -945,8 +970,16 @@ let cast_error ?expression kind source destination span =
           (Printf.sprintf "write `trunc[%s](%s)`"
              (diagnostic_ty_name destination)
              variable)
-    | Ast.Zext, Hir.Int Hir.Usize, Hir.Int Hir.U64, Some (Ast.Ident (variable, _)) ->
-        Some (Printf.sprintf "write `bitcast[u64](%s)`" variable)
+    | (Ast.Zext | Ast.Sext | Ast.Trunc), _, _, Some expression
+      when same_width_integer_pair source destination ->
+        Some (Printf.sprintf "write `%s`" (Ast.expr_name expression))
+    | (Ast.Zext | Ast.Sext | Ast.Trunc), Hir.Int _, Hir.Int _, Some expression
+      when same_width_scalar_pair source destination
+           && not (Hir.ty_equal source destination) ->
+        Some
+          (Printf.sprintf "write `bitcast[%s](%s)`"
+             (diagnostic_ty_name destination)
+             (Ast.expr_name expression))
     | _ -> None
   in
   Diag.error ?help span message

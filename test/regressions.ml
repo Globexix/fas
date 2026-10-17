@@ -5068,7 +5068,17 @@ let () =
        "integer width changes use `zext`, `sext`, or `trunc`; same-width values \
         already have their representation");
   semantic_pin "float-cvt-same-type" "fn bad(x f32) f32 { return cvt[f32](x) }\n" 1 28
-    11 "`cvt` source and target are both `f32`" (Some "remove the redundant conversion");
+    11 "`cvt[f32]` of an `f32` value converts nothing" (Some "write `x`");
+  semantic_accept "float-cvt-same-type-applied" "fn bad(x f32) f32 { return x }\n";
+  semantic_pin "int-cvt-same-type-i32" "fn bad(x i32) i32 { return cvt[i32](x) }\n" 1 28
+    11 "`cvt[i32]` of an `i32` value converts nothing" (Some "write `x`");
+  semantic_accept "int-cvt-same-type-i32-applied" "fn bad(x i32) i32 { return x }\n";
+  semantic_pin "int-cvt-same-type-u8" "fn bad(x u8) u8 { return cvt[u8](x) }\n" 1 26 10
+    "`cvt[u8]` of a `u8` value converts nothing" (Some "write `x`");
+  semantic_accept "int-cvt-same-type-u8-applied" "fn bad(x u8) u8 { return x }\n";
+  semantic_pin "float-cvt-same-type-f64" "fn bad(x f64) f64 { return cvt[f64](x) }\n" 1
+    28 11 "`cvt[f64]` of an `f64` value converts nothing" (Some "write `x`");
+  semantic_accept "float-cvt-same-type-f64-applied" "fn bad(x f64) f64 { return x }\n";
   semantic_message "float-cvt-bool-source"
     "`cvt` needs an integer or floating-point source and target, got `bool` to `f32`"
     "fn bad(x bool) f32 { return cvt[f32](x) }\n";
@@ -18285,9 +18295,78 @@ let () =
   semantic_pin "zext-usize-u64-help" usize_zext_u64 1
     (String.length "fn widen(value usize) u64 { return " + 1)
     4
-    "illegal `zext` from `usize` to `u64`: the source and destination have the same \
+    "illegal `zext` from `usize` to `u64`: `usize` and `u64` have the same width and \
+     convert implicitly; no conversion is needed"
+    (Some "write `value`");
+  semantic_accept "zext-usize-u64-applied"
+    "fn widen(value usize) u64 { return value }\n";
+  let same_width_pin name kind source destination =
+    let prefix = Printf.sprintf "fn widen(value %s) %s { return " source destination in
+    semantic_pin name
+      (prefix ^ Printf.sprintf "%s[%s](value) }\n" kind destination)
+      1
+      (String.length prefix + 1)
+      (String.length kind)
+      (Printf.sprintf
+         "illegal `%s` from `%s` to `%s`: `%s` and `%s` have the same width and \
+          convert implicitly; no conversion is needed"
+         kind source destination source destination)
+      (Some "write `value`");
+    semantic_accept (name ^ "-applied")
+      (Printf.sprintf "fn widen(value %s) %s { return value }\n" source destination)
+  in
+  same_width_pin "trunc-u64-usize-help" "trunc" "u64" "usize";
+  same_width_pin "zext-u64-usize-help" "zext" "u64" "usize";
+  same_width_pin "sext-isize-i64-help" "sext" "isize" "i64";
+  same_width_pin "trunc-i64-isize-help" "trunc" "i64" "isize";
+  same_width_pin "sext-i64-isize-help" "sext" "i64" "isize";
+  semantic_pin "zext-i64-usize-mixed-sign"
+    "fn widen(value i64) usize { return zext[usize](value) }\n" 1
+    (String.length "fn widen(value i64) usize { return " + 1)
+    4
+    "illegal `zext` from `i64` to `usize`: the source and destination have the same \
      width; use `bitcast`"
-    (Some "write `bitcast[u64](value)`");
+    (Some "write `bitcast[usize](value)`");
+  semantic_accept "zext-i64-usize-mixed-sign-applied"
+    "fn widen(value i64) usize { return bitcast[usize](value) }\n";
+  semantic_pin "trunc-u64-isize-mixed-sign"
+    "fn narrow(value u64) isize { return trunc[isize](value) }\n" 1
+    (String.length "fn narrow(value u64) isize { return " + 1)
+    5
+    "illegal `trunc` from `u64` to `isize`: the source and destination have the same \
+     width; use `bitcast`"
+    (Some "write `bitcast[isize](value)`");
+  semantic_accept "trunc-u64-isize-mixed-sign-applied"
+    "fn narrow(value u64) isize { return bitcast[isize](value) }\n";
+  semantic_pin "zext-i32-u32-mixed-sign"
+    "fn widen(value i32) u32 { return zext[u32](value + 1) }\n" 1
+    (String.length "fn widen(value i32) u32 { return " + 1)
+    4
+    "illegal `zext` from `i32` to `u32`: the source and destination have the same \
+     width; use `bitcast`"
+    (Some "write `bitcast[u32](value + 1)`");
+  semantic_accept "zext-i32-u32-mixed-sign-applied"
+    "fn widen(value i32) u32 { return bitcast[u32](value + 1) }\n";
+  semantic_pin "sext-i16-u16-mixed-sign"
+    "fn widen(value i16) u16 { return sext[u16](value) }\n" 1
+    (String.length "fn widen(value i16) u16 { return " + 1)
+    4
+    "illegal `sext` from `i16` to `u16`: the source and destination have the same \
+     width; use `bitcast`"
+    (Some "write `bitcast[u16](value)`");
+  semantic_accept "sext-i16-u16-mixed-sign-applied"
+    "fn widen(value i16) u16 { return bitcast[u16](value) }\n";
+  let same_width_expression =
+    "fn widen(a usize, b usize) u64 { return zext[u64](a + b) }\n"
+  in
+  semantic_pin "zext-usize-u64-expression-help" same_width_expression 1
+    (String.length "fn widen(a usize, b usize) u64 { return " + 1)
+    4
+    "illegal `zext` from `usize` to `u64`: `usize` and `u64` have the same width and \
+     convert implicitly; no conversion is needed"
+    (Some "write `a + b`");
+  semantic_accept "zext-usize-u64-expression-applied"
+    "fn widen(a usize, b usize) u64 { return a + b }\n";
   let zext_address = "fn bits(pointer addr) usize { return zext[usize](pointer) }\n" in
   semantic_pin "zext-address-help" zext_address 1
     (String.length "fn bits(pointer addr) usize { return " + 1)
