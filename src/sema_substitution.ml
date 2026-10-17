@@ -150,7 +150,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     result
   in
   let ambiguous_name = function
-    | Ast.Named_type (name, _) | Ast.Applied_type (name, _, _) -> Some name
+    | Ast.Named_type (name, _) | Ast.Applied_type (name, _, _, _) -> Some name
     | _ -> None
   in
   let is_shadowed_argument = function
@@ -162,7 +162,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | _ -> false
   in
   let bind_argument = function
-    | Ast.Type_or_index (Ast.Applied_type (name, _, _) as ty)
+    | Ast.Type_or_index (Ast.Applied_type (name, _, _, _) as ty)
       when String_set.mem name !local_values
            || not (List.mem_assoc name struct_templates) ->
         Ast.Const_arg (Ast.index_expression ty)
@@ -213,7 +213,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Array (length, ty) | Ast.Vec (length, ty) ->
         expression_mentions names length.Ast.expression || type_mentions names ty
     | Ast.Handle ty -> type_mentions names ty
-    | Ast.Applied_type (_, arguments, _) ->
+    | Ast.Applied_type (_, _, arguments, _) ->
         List.exists (generic_argument_mentions names) arguments
     | Ast.Named_type (name, _) -> List.mem name names
     | Ast.Bool | Ast.Void | Ast.Int _ | Ast.Float _ | Ast.Addr -> false
@@ -246,7 +246,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Handle_from_addr (ty, expression, _) ->
         type_mentions names ty || expression_mentions names expression
     | Ast.Sizeof_value (expression, _) -> expression_mentions names expression
-    | Ast.Sizeof (ty, _) | Ast.Alignof (ty, _) | Ast.Offsetof (ty, _, _) ->
+    | Ast.Sizeof (ty, _) | Ast.Alignof (ty, _) | Ast.Offsetof (ty, _, _, _) ->
         type_mentions names ty
     | Ast.Field (expression, _, _) | Ast.Arrow_field (expression, _, _, _) ->
         expression_mentions names expression
@@ -254,7 +254,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         expression_mentions names condition
         || expression_mentions names yes || expression_mentions names no
     | Ast.Array_lit (elements, _) -> List.exists (expression_mentions names) elements
-    | Ast.Designated_field (_, value, _) -> expression_mentions names value
+    | Ast.Designated_field (_, _, value, _) -> expression_mentions names value
     | Ast.Designated_index (index, value, _) ->
         expression_mentions names index || expression_mentions names value
     | Ast.Int_lit _ | Ast.Float_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _
@@ -298,7 +298,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                   (String_set.elements type_names @ !generic_type_names)
                   type_span name;
               ])
-    | Ast.Applied_type (name, arguments, application_span) ->
+    | Ast.Applied_type (name, _, arguments, application_span) ->
         if String_set.mem name value_names then
           error span (Printf.sprintf "`%s` is a value, not a type" name)
         else if not (String_set.mem name struct_names) then
@@ -312,7 +312,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     let* () = validate_expression_names value_names type_names length.Ast.expression in
     validate_type_names value_names type_names span ty
   and validate_generic_argument_names value_names type_names fallback_span = function
-    | Ast.Type_or_index (Ast.Applied_type (name, _, _) as ty) -> (
+    | Ast.Type_or_index (Ast.Applied_type (name, _, _, _) as ty) -> (
         match nearest_kind value_names type_names name with
         | Some (`Type _) -> validate_type_names value_names type_names fallback_span ty
         | _ ->
@@ -456,7 +456,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         validate_expression_names value_names type_names expression
     | Ast.Sizeof_value (expression, _) ->
         validate_expression_names value_names type_names expression
-    | Ast.Sizeof (ty, span) | Ast.Alignof (ty, span) | Ast.Offsetof (ty, _, span) ->
+    | Ast.Sizeof (ty, span) | Ast.Alignof (ty, span) | Ast.Offsetof (ty, _, _, span) ->
         validate_type_names value_names type_names span ty
     | Ast.Field (expression, _, _) | Ast.Arrow_field (expression, _, _, _) ->
         validate_expression_names value_names type_names expression
@@ -466,7 +466,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         validate_expression_names value_names type_names no
     | Ast.Array_lit (elements, _) ->
         Result_list.iter (validate_expression_names value_names type_names) elements
-    | Ast.Designated_field (_, value, _) ->
+    | Ast.Designated_field (_, _, value, _) ->
         validate_expression_names value_names type_names value
     | Ast.Designated_index (index, value, _) ->
         let* () = validate_expression_names value_names type_names index in
@@ -512,7 +512,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 validate_expression_names value_names type_names expression
           in
           Ok (String_set.add name value_names, String_set.add name scope_names)
-    | Ast.View { name; place; span } ->
+    | Ast.View { name; place; span; _ } ->
         let* () = validate_binding_name span name in
         if String_set.mem name scope_names then
           error span (Printf.sprintf "duplicate local `%s`" name)
@@ -687,6 +687,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       string_pool = create_string_pool limits;
       ret_ty;
       limits;
+      index = None;
     }
   in
   let specialized_args name span =
@@ -725,7 +726,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Hir.Addr -> Ast.Addr
     | Hir.Handle name -> (
         match specialized_args name span with
-        | Some (template, args) -> Ast.Handle (Ast.Applied_type (template, args, span))
+        | Some (template, args) ->
+            Ast.Handle (Ast.Applied_type (template, span, args, span))
         | None -> Ast.Handle (Ast.Named_type (name, span)))
     | Hir.Array (count, element) ->
         Ast.Array
@@ -737,7 +739,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             source_type_of_hir span element )
     | Hir.Struct name -> (
         match specialized_args name span with
-        | Some (template, args) -> Ast.Applied_type (template, args, span)
+        | Some (template, args) -> Ast.Applied_type (template, span, args, span)
         | None -> Ast.Named_type (name, span))
     | Hir.Opaque name -> Ast.Named_type (name, span)
     | Hir.Void -> Ast.Void
@@ -749,9 +751,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Array (length, ty) ->
         Ast.Array (length, substitute_field_type substitutions ty)
     | Ast.Vec (length, ty) -> Ast.Vec (length, substitute_field_type substitutions ty)
-    | Ast.Applied_type (name, arguments, span) ->
+    | Ast.Applied_type (name, name_span, arguments, span) ->
         Ast.Applied_type
           ( name,
+            name_span,
             List.map
               (function
                 | Ast.Type_arg ty ->
@@ -770,7 +773,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   let generic_field_type source_type field_name =
     let instance =
       match source_type with
-      | Ast.Applied_type (template, arguments, _) -> Some (template, arguments)
+      | Ast.Applied_type (template, _, arguments, _) -> Some (template, arguments)
       | Ast.Named_type (name, source_span) -> (
           match specialized_args name source_span with
           | Some _ as instance -> instance
@@ -897,10 +900,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       !inference_types;
     context
   in
-  let checked_view_types name place span =
+  let checked_view_types name name_span place span =
     let context = inference_context span in
     Sema_flow.push context.flow;
-    let checked = check_stmt context (Ast.View { name; place; span }) in
+    let checked = check_stmt context (Ast.View { name; name_span; place; span }) in
     let source_type, raw_type =
       match checked with
       | Ok (Hir.View (binding, _, _)) ->
@@ -1017,10 +1020,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             | _ -> Ok ()
           in
           match_type argument p a
-      | Ast.Applied_type (template, expected, _), actual -> (
+      | Ast.Applied_type (template, _, expected, _), actual -> (
           let actual =
             match actual with
-            | Ast.Applied_type (name, args, _) -> Some (name, args)
+            | Ast.Applied_type (name, _, args, _) -> Some (name, args)
             | Ast.Named_type (name, _) -> specialized_args name span
             | _ -> None
           in
@@ -1175,13 +1178,13 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         has_generic_arguments callee || List.exists has_generic_arguments arguments
     | Ast.Cast (_, ty, expression, _) | Ast.Handle_from_addr (ty, expression, _) ->
         has_generic_type ty || has_generic_arguments expression
-    | Ast.Sizeof (ty, _) | Ast.Alignof (ty, _) | Ast.Offsetof (ty, _, _) ->
+    | Ast.Sizeof (ty, _) | Ast.Alignof (ty, _) | Ast.Offsetof (ty, _, _, _) ->
         has_generic_type ty
     | Ast.Ternary (condition, yes, no, _) ->
         has_generic_arguments condition
         || has_generic_arguments yes || has_generic_arguments no
     | Ast.Array_lit (values, _) -> List.exists has_generic_arguments values
-    | Ast.Designated_field (_, value, _) -> has_generic_arguments value
+    | Ast.Designated_field (_, _, value, _) -> has_generic_arguments value
     | Ast.Designated_index (index, value, _) ->
         has_generic_arguments index || has_generic_arguments value
     | Ast.Ident _ | Ast.Int_lit _ | Ast.Float_lit _ | Ast.Bool_lit _ | Ast.Null _
@@ -1203,9 +1206,10 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         Ast.Vec
           ( substitute_validation_length type_substitutions const_substitutions length,
             substitute_validation_type type_substitutions const_substitutions ty )
-    | Ast.Applied_type (name, arguments, span) ->
+    | Ast.Applied_type (name, name_span, arguments, span) ->
         Ast.Applied_type
           ( name,
+            name_span,
             List.map
               (substitute_validation_argument type_substitutions const_substitutions)
               arguments,
@@ -1263,9 +1267,12 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Alignof (ty, s) ->
         Ast.Alignof
           (substitute_validation_type type_substitutions const_substitutions ty, s)
-    | Ast.Offsetof (ty, f, s) ->
+    | Ast.Offsetof (ty, f, field_span, s) ->
         Ast.Offsetof
-          (substitute_validation_type type_substitutions const_substitutions ty, f, s)
+          ( substitute_validation_type type_substitutions const_substitutions ty,
+            f,
+            field_span,
+            s )
     | Ast.Ternary (c, y, n, s) -> Ast.Ternary (sub c, sub y, sub n, s)
     | expression -> expression
   in
@@ -1577,7 +1584,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           validate_non_dependent_expression c dependent expected no
       | Ast.Array_lit (values, _) ->
           Result_list.iter (validate_non_dependent_expression c dependent None) values
-      | Ast.Designated_field (_, value, _) ->
+      | Ast.Designated_field (_, _, value, _) ->
           validate_non_dependent_expression c dependent expected value
       | Ast.Designated_index (index, value, _) ->
           let* () = validate_non_dependent_expression c dependent None index in
@@ -1615,7 +1622,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
   let dependent_generic_field_type source_type field_name =
     let instance =
       match source_type with
-      | Ast.Applied_type (template, arguments, _) -> Some (template, arguments)
+      | Ast.Applied_type (template, _, arguments, _) -> Some (template, arguments)
       | Ast.Named_type (name, _) -> Some (name, [])
       | _ -> None
     in
@@ -1750,7 +1757,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               (name, source_ty) :: List.remove_assoc name !dependent_local_types;
             set_inference_type name (Some source_ty);
             Ok (List.filter (fun dependent_name -> dependent_name <> name) dependent)
-    | Ast.View { name; place; _ } as statement ->
+    | Ast.View { name; name_span; place; _ } as statement ->
         dependent_local_types := List.remove_assoc name !dependent_local_types;
         if expression_mentions dependent place || has_generic_arguments place then (
           let source_type = view_place_type place in
@@ -1767,7 +1774,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             Ok ()
           in
           let source_type, raw_type =
-            checked_view_types name place (Ast.expr_span place)
+            checked_view_types name name_span place (Ast.expr_span place)
           in
           set_inference_type name source_type;
           Option.iter (set_inference_raw_view_type name) raw_type;
@@ -2021,9 +2028,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                       @ !generic_type_names @ List.map fst eval_named_types)
                       type_span name;
                   ])
-    | Ast.Applied_type (name, _, _) when String_set.mem name !local_values ->
+    | Ast.Applied_type (name, _, _, _) when String_set.mem name !local_values ->
         error span (Printf.sprintf "`%s` is a value, not a type" name)
-    | Ast.Applied_type (name, arguments, application_span) -> (
+    | Ast.Applied_type (name, name_span, arguments, application_span) -> (
         let arguments = List.map bind_argument arguments in
         match List.assoc_opt name struct_templates with
         | None ->
@@ -2066,7 +2073,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 | _ -> error span "generic argument arity mismatch"
               in
               let* arguments = resolve_arguments [] generic_params arguments in
-              Ok (Ast.Applied_type (name, arguments, application_span))
+              Ok (Ast.Applied_type (name, name_span, arguments, application_span))
             else
               let rec resolve_arguments resolved diagnostic types bindings values_out
                   source_arguments params arguments =
@@ -2146,7 +2153,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 resolve_arguments [] [] [] [] [] [] generic_params arguments
               in
               if List.exists has_unresolved_application type_arguments then
-                Ok (Ast.Applied_type (name, source_arguments, application_span))
+                Ok
+                  (Ast.Applied_type (name, name_span, source_arguments, application_span))
               else
                 let specialization_name =
                   if values = [] then mangle_type_specialization name type_arguments
@@ -2248,7 +2256,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             (match aggregate with
             | Ast.Array _ -> Ast.Array (length, ty)
             | _ -> Ast.Vec (length, ty))
-      | Ast.Applied_type (name, arguments, application_span) ->
+      | Ast.Applied_type (name, name_span, arguments, application_span) ->
           let resolve_argument = function
             | Ast.Type_arg ty | Ast.Type_or_index ty ->
                 let* ty = resolve_layout_parts span ty in
@@ -2269,7 +2277,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                     Ok (Ast.Type_arg ty))
           in
           let* arguments = Result_list.map resolve_argument arguments in
-          Ok (Ast.Applied_type (name, arguments, application_span))
+          Ok (Ast.Applied_type (name, name_span, arguments, application_span))
       | ty -> Ok ty
     in
     let resolve_layout_type span ty =
@@ -2693,17 +2701,17 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             resolve_ty ~values ~defer_const_structs substitutions depth span ty
           in
           Ok (Ast.Alignof (ty, span))
-    | Ast.Offsetof (ty, field, span) ->
+    | Ast.Offsetof (ty, field, field_span, span) ->
         if has_generic_type ty && !preserve_layout_queries then
-          Ok (Ast.Offsetof (ty, field, span))
+          Ok (Ast.Offsetof (ty, field, field_span, span))
         else if has_generic_type ty then
           let* ty = resolve_layout_type span ty in
-          Ok (Ast.Offsetof (ty, field, span))
+          Ok (Ast.Offsetof (ty, field, field_span, span))
         else
           let* ty =
             resolve_ty ~values ~defer_const_structs substitutions depth span ty
           in
-          Ok (Ast.Offsetof (ty, field, span))
+          Ok (Ast.Offsetof (ty, field, field_span, span))
     | Ast.Splat (expression, span) ->
         let* expression =
           resolve_expr ~values ~defer_const_structs substitutions depth expression
@@ -2718,11 +2726,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Array_lit (elements, span) ->
         let* elements = resolve_exprs elements in
         Ok (Ast.Array_lit (elements, span))
-    | Ast.Designated_field (name, value, span) ->
+    | Ast.Designated_field (name, name_span, value, span) ->
         let* value =
           resolve_expr ~values ~defer_const_structs substitutions depth value
         in
-        Ok (Ast.Designated_field (name, value, span))
+        Ok (Ast.Designated_field (name, name_span, value, span))
     | Ast.Designated_index (index, value, span) ->
         let resolve = resolve_expr ~values ~defer_const_structs substitutions depth in
         let* index = resolve index in
@@ -2788,16 +2796,16 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           shadowed_constants := String_set.add name !shadowed_constants;
           set_inference_type name (Some ty);
           Ok (Ast.Let { name; ty; ty_span; init; span })
-      | Ast.View { name; place; span } ->
+      | Ast.View { name; name_span; place; span } ->
           let* place =
             resolve_expr ~values ~defer_const_structs substitutions depth place
           in
-          let inference_type, raw_type = checked_view_types name place span in
+          let inference_type, raw_type = checked_view_types name name_span place span in
           local_values := String_set.add name !local_values;
           shadowed_constants := String_set.add name !shadowed_constants;
           set_inference_type name inference_type;
           Option.iter (set_inference_raw_view_type name) raw_type;
-          Ok (Ast.View { name; place; span })
+          Ok (Ast.View { name; name_span; place; span })
       | Ast.Assign (target, expression, span) ->
           let* target =
             resolve_target ~values ~defer_const_structs substitutions depth target
@@ -3215,6 +3223,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                         size;
                         is_union;
                         span;
+                        extent = span;
                       }
                   in
                   let* () =

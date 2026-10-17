@@ -1474,8 +1474,76 @@ let late_feature_macro_error ~source ~c_flags blocks trace =
     (trace_entries trace);
   !error
 
-let import ~cc ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
-    ?(macro_names = []) ?referenced_names source headers =
+let import_argv ~cc ~c_flags ~source ~headers unit_path =
+  Array.of_list
+    ([
+       cc;
+       "-x";
+       "c";
+       "-fsyntax-only";
+       "-Xclang";
+       "-ast-dump=json";
+       "-Xclang";
+       "-skip-function-bodies";
+       "-Xclang";
+       "-fdump-record-layouts-complete";
+       "-H";
+       "--target=x86_64-unknown-linux-gnu";
+     ]
+    @ c_flags
+    @ reproducible_flags (stable_unit_name source headers) unit_path
+    @ [ "-fno-builtin"; "-iquote"; Filename.dirname source; unit_path ])
+
+let header_use_files ~source headers fragment_paths trace =
+  let indexed = List.mapi (fun index header -> (index, header)) headers in
+  let fragments =
+    List.combine
+      (List.filter_map
+         (fun (index, header) ->
+           match header.spelling with Ast.C_fragment _ -> Some index | _ -> None)
+         indexed)
+      fragment_paths
+  in
+  let matches path (index, header) =
+    match header.spelling with
+    | Ast.C_quoted spelling ->
+        let written =
+          if Filename.is_relative spelling then
+            Filename.concat (Filename.dirname source) spelling
+          else spelling
+        in
+        path = written || String.ends_with ~suffix:("/" ^ spelling) path
+    | Ast.C_system spelling ->
+        path = spelling || String.ends_with ~suffix:("/" ^ spelling) path
+    | Ast.C_fragment _ -> List.assoc_opt index fragments = Some path
+  in
+  let claimed = Stdlib.Hashtbl.create 8
+  and files = Hashtbl.create 32
+  and current = ref None in
+  List.iter
+    (fun (depth, path) ->
+      if depth = 1 then (
+        let candidates = List.filter (matches path) indexed in
+        (current :=
+           match
+             List.find_opt
+               (fun (index, _) -> not (Stdlib.Hashtbl.mem claimed index))
+               candidates
+           with
+           | Some (index, _) -> Some index
+           | None -> Option.map fst (List.nth_opt candidates 0));
+        Option.iter (fun index -> Stdlib.Hashtbl.replace claimed index ()) !current);
+      match !current with
+      | Some index when not (Hashtbl.mem files path) -> Hashtbl.add files path index
+      | _ -> ())
+    (trace_entries trace);
+  Hashtbl.fold
+    (fun path index acc -> (path ^ "\t" ^ string_of_int index) :: acc)
+    files []
+  |> List.sort compare |> String.concat "\n"
+
+let import_fresh ~cc ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
+    ?(macro_names = []) ?referenced_names ?trace_out source headers =
   let directory = Filename.temp_dir "fas-c-unit-" "" in
   let unit_path = Filename.concat directory (stable_unit_name source headers) in
   let json_path = Filename.temp_file "fas-c-import-" ".json" in
@@ -1512,26 +1580,7 @@ let import ~cc ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
               in
               output_string channel (include_line source fragment_path header))
             headers);
-      let argv =
-        Array.of_list
-          ([
-             cc;
-             "-x";
-             "c";
-             "-fsyntax-only";
-             "-Xclang";
-             "-ast-dump=json";
-             "-Xclang";
-             "-skip-function-bodies";
-             "-Xclang";
-             "-fdump-record-layouts-complete";
-             "-H";
-             "--target=x86_64-unknown-linux-gnu";
-           ]
-          @ c_flags
-          @ reproducible_flags (stable_unit_name source headers) unit_path
-          @ [ "-fno-builtin"; "-iquote"; Filename.dirname source; unit_path ])
-      in
+      let argv = import_argv ~cc ~c_flags ~source ~headers unit_path in
       if keep then
         prerr_endline
           ("fas: Clang import command: " ^ String.concat " " (Array.to_list argv));
@@ -1544,7 +1593,14 @@ let import ~cc ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
           headers
         |> List.combine (List.rev !fragment_paths)
       in
-      match Process.run_to_file argv json_path with
+      let run = Process.run_to_file argv json_path in
+      Option.iter
+        (fun output ->
+          match run with
+          | Ok trace -> output := List.map snd (trace_entries trace)
+          | Error _ -> ())
+        trace_out;
+      match run with
       | Error failure ->
           Error
             [
@@ -1667,6 +1723,14 @@ let import ~cc ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
                         ("kind", C_import_json.Str "FasLayoutDump");
                         ("value", C_import_json.Str layouts);
                       ]
+                    :: C_import_json.make_obj
+                         [
+                           ("kind", C_import_json.Str "FasUseFiles");
+                           ( "value",
+                             C_import_json.Str
+                               (header_use_files ~source headers
+                                  (List.rev !fragment_paths) trace) );
+                         ]
                     :: macros,
                   alloc_size_parameters )
             in
@@ -1695,6 +1759,126 @@ let import ~cc ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
       | Ok trace ->
           Error
             (Option.to_list (late_feature_macro_error ~source ~c_flags blocks trace)))
+
+type import_entry = {
+  cache_name : string;
+  stamps : (string * (int * float) option) list;
+  unit_text : string;
+  fragments : string list;
+  payload : string;
+}
+
+type cache = import_entry Hashtbl.t
+
+let create_cache () : cache = Hashtbl.create 8
+
+let file_stamp path =
+  try
+    let stat = Unix.stat path in
+    Some (stat.Unix.st_size, stat.Unix.st_mtime)
+  with Unix.Unix_error _ -> None
+
+let entry_valid entry =
+  List.for_all Sys.file_exists entry.fragments
+  && List.for_all (fun (path, stamp) -> file_stamp path = stamp) entry.stamps
+
+let clear_cache (cache : cache) =
+  Hashtbl.iter (fun _ entry -> List.iter remove_artifact entry.fragments) cache;
+  Hashtbl.reset cache
+
+let read_text path =
+  let channel = open_in_bin path in
+  Fun.protect
+    ~finally:(fun () -> close_in_noerr channel)
+    (fun () -> really_input_string channel (in_channel_length channel))
+
+let materialize name text =
+  let directory = Filename.temp_dir "fas-c-unit-" "" in
+  let path = Filename.concat directory name in
+  let channel = open_out_bin path in
+  Fun.protect
+    ~finally:(fun () -> close_out_noerr channel)
+    (fun () -> output_string channel text);
+  path
+
+let cache_key ~cc ~c_flags ~macro_names ~referenced_names ~alloc ~retain source headers
+    =
+  let argv = import_argv ~cc ~c_flags ~source ~headers "<unit>" in
+  let unit_text =
+    List.mapi
+      (fun index header ->
+        let fragment_path =
+          match header.spelling with
+          | Ast.C_fragment _ -> Some (string_of_int index)
+          | Ast.C_quoted _ | Ast.C_system _ -> None
+        in
+        include_line source fragment_path header)
+      headers
+    |> String.concat ""
+  in
+  let fragments =
+    List.filter_map
+      (fun header ->
+        match header.spelling with
+        | Ast.C_fragment fragment -> Some (header.span.Span.line, fragment.text)
+        | Ast.C_quoted _ | Ast.C_system _ -> None)
+      headers
+  in
+  Marshal.to_string
+    (argv, unit_text, fragments, source, macro_names, referenced_names, alloc, retain)
+    []
+
+let import ~cc ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
+    ?(macro_names = []) ?referenced_names ?cache source headers =
+  let fresh trace_out =
+    import_fresh ~cc ~keep ?alloc_size_out ~retain ~c_flags ~macro_names
+      ?referenced_names ?trace_out source headers
+  in
+  match cache with
+  | Some (cache : cache) when (not keep) && retain -> (
+      let key =
+        cache_key ~cc ~c_flags ~macro_names ~referenced_names
+          ~alloc:(Option.is_some alloc_size_out)
+          ~retain source headers
+      in
+      let name = stable_unit_name source headers in
+      match Hashtbl.find_opt cache key with
+      | Some entry when entry_valid entry ->
+          let declarations, alloc_value =
+            (Marshal.from_string entry.payload 0 : _ * string option)
+          in
+          (match (alloc_size_out, alloc_value) with
+          | Some output, Some text -> output := Marshal.from_string text 0
+          | _ -> ());
+          Ok (declarations, None, [ materialize name entry.unit_text ])
+      | _ -> (
+          let trace = ref [] in
+          match fresh (Some trace) with
+          | Ok (declarations, kept, (unit :: fragments as artifacts)) ->
+              let stamps = List.map (fun path -> (path, file_stamp path)) !trace in
+              if List.for_all (fun (_, stamp) -> Option.is_some stamp) stamps then (
+                let alloc_value =
+                  Option.map (fun output -> Marshal.to_string !output []) alloc_size_out
+                in
+                Hashtbl.filter_map_inplace
+                  (fun _ entry ->
+                    if String.equal entry.cache_name name then (
+                      List.iter remove_artifact entry.fragments;
+                      None)
+                    else Some entry)
+                  cache;
+                Hashtbl.replace cache key
+                  {
+                    cache_name = name;
+                    stamps;
+                    unit_text = read_text unit;
+                    fragments;
+                    payload = Marshal.to_string (declarations, alloc_value) [];
+                  };
+                Ok (declarations, kept, [ unit ]))
+              else Ok (declarations, kept, artifacts)
+          | result -> result))
+  | _ -> fresh None
 
 let get name = C_import_json.field name
 let text = function C_import_json.Str value -> Some value | _ -> None
@@ -2005,6 +2189,7 @@ type mapped = {
   unsupported : (string * string) list;
   identities : (string * string) list;
   manifest : string list;
+  use_files : (string * Span.t) list;
   nonnull_parameters : (string * int list) list;
   c_string_parameters : (string * (int * string option) list) list;
   alloc_size_parameters : (string * int list list) list;
@@ -2256,7 +2441,29 @@ let clang_layouts text =
   groups [] [] lines
 
 let map_declarations ?(container = false) ?(alloc_size_parameters = [])
-    ?referenced_names ~span declarations =
+    ?referenced_names ?(headers = []) ~span declarations =
+  let use_files =
+    List.find_map
+      (function
+        | node
+          when C_import_json.field "kind" node = Some (C_import_json.Str "FasUseFiles")
+          ->
+            Option.bind (C_import_json.field "value" node) C_import_json.string
+        | _ -> None)
+      declarations
+    |> Option.fold ~none:[] ~some:(String.split_on_char '\n')
+    |> List.filter_map (fun line ->
+        match String.rindex_opt line '\t' with
+        | None -> None
+        | Some stop ->
+            Option.bind
+              (int_of_string_opt
+                 (String.sub line (stop + 1) (String.length line - stop - 1)))
+              (fun index ->
+                Option.map
+                  (fun (header : header) -> (String.sub line 0 stop, header.span))
+                  (List.nth_opt headers index)))
+  in
   let layout_dump =
     List.find_map
       (function
@@ -2341,6 +2548,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
           (List.mem (string "kind" node)
              [
                Some "FasLayoutDump";
+               Some "FasUseFiles";
                Some "FasTypedefLayout";
                Some "FasTypeProbe";
                Some "FasTypeCollision";
@@ -3781,6 +3989,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
                   size = Option.map (fun layout -> layout.size) c_layout;
                   is_union;
                   span;
+                  extent = span;
                 },
               kind ^ " " ^ name
               ^ (if is_union then
@@ -3817,7 +4026,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
                      fields)
               ^ "}" )
         | None ->
-            ( Ast.Opaque { name; span },
+            ( Ast.Opaque { name; name_span = span; span; extent = span },
               if blocked then "opaque " ^ name ^ " (const fields are not supported)"
               else "opaque " ^ name )
       in
@@ -3836,7 +4045,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
         match first_record_node name with
         | None -> ()
         | Some node ->
-            let item = Ast.Opaque { name; span } in
+            let item = Ast.Opaque { name; name_span = span; span; extent = span } in
             add_item name
               (declaration_spelling node name)
               ("opaque " ^ name) (Some item) (origin node) [] None ())
@@ -4225,6 +4434,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
                        variadic;
                        generic_params = [];
                        span;
+                       extent = span;
                      })
             | _ -> None
           in
@@ -4290,6 +4500,8 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
                          (if top_level_const_node node then Ast.Import_const_c
                           else Ast.Import_c);
                        span;
+                       name_span = span;
+                       extent = span;
                      })
             | _ -> None
           in
@@ -4378,6 +4590,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
     identities;
     manifest =
       Hashtbl.fold (fun _ line acc -> line :: acc) manifest [] |> List.sort compare;
+    use_files;
     nonnull_parameters =
       Hashtbl.fold
         (fun name positions acc -> (name, positions) :: acc)
@@ -4448,6 +4661,7 @@ let merge_imports mappings =
     unsupported;
     identities = [];
     manifest = List.concat_map (fun mapping -> mapping.manifest) mappings;
+    use_files = List.concat_map (fun mapping -> mapping.use_files) mappings;
     nonnull_parameters =
       List.concat_map (fun mapping -> mapping.nonnull_parameters) mappings
       |> List.filter (fun (name, _) -> not (bad name))
@@ -4634,6 +4848,8 @@ let prune_unreferenced_records ~referenced_names imported =
                         init = None;
                         linkage = Ast.Import_c;
                         span = Span.synthetic;
+                        name_span = Span.synthetic;
+                        extent = Span.synthetic;
                       };
                   ];
               }
@@ -4648,7 +4864,7 @@ let prune_unreferenced_records ~referenced_names imported =
       List.map
         (function
           | Ast.Struct { name; span; _ } when not (Hashtbl.mem reached name) ->
-              Ast.Opaque { name; span }
+              Ast.Opaque { name; name_span = span; span; extent = span }
           | item -> item)
         imported.items;
   }

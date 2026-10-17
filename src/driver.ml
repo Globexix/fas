@@ -158,7 +158,7 @@ let c_export_diagnostic (program : Ast.program) message =
                       List.find_map
                         (fun (field : Ast.field) -> find (name :: visited) field.Ast.ty)
                         fields)
-          | Ast.Applied_type (name, args, _) -> (
+          | Ast.Applied_type (name, _, args, _) -> (
               let from_fields = find visited (Ast.Named_type (name, Span.synthetic)) in
               match
                 List.find_map
@@ -179,7 +179,29 @@ let c_export_diagnostic (program : Ast.program) message =
   in
   Diag.error ?notes:(Option.map (fun note -> [ note ]) field_note) primary message
 
-let load_program ~limits root =
+let stat_for overlay canonical =
+  match overlay canonical with
+  | Some text ->
+      {
+        Unix.st_dev = 0;
+        st_ino = 0;
+        st_kind = Unix.S_REG;
+        st_perm = 0o644;
+        st_nlink = 1;
+        st_uid = 0;
+        st_gid = 0;
+        st_rdev = 0;
+        st_size = String.length text;
+        st_atime = 0.0;
+        st_mtime = 0.0;
+        st_ctime = 0.0;
+      }
+  | None -> Unix.stat canonical
+
+let read_for overlay canonical =
+  match overlay canonical with Some text -> Ok text | None -> read_file canonical
+
+let load_program ?(overlay = fun _ -> None) ~limits root =
   let loaded = Hashtbl.create 16 in
   let chains = Hashtbl.create 16 in
   let load_order = ref [] in
@@ -220,7 +242,7 @@ let load_program ~limits root =
                  (Limits.budget_profile_name limits));
           ]
       else
-        match Unix.stat canonical with
+        match stat_for overlay canonical with
         | stats when stats.Unix.st_kind = Unix.S_DIR ->
             let diagnostics =
               [
@@ -233,7 +255,7 @@ let load_program ~limits root =
         | stats when stats.Unix.st_size > limits.Limits.max_use_bytes - !total_bytes ->
             budget_error primary "max_use_bytes" limits.Limits.max_use_bytes
         | _ -> (
-            match read_file canonical with
+            match read_for overlay canonical with
             | Error message ->
                 let message = path_error_detail canonical message in
                 let diagnostics =
@@ -1021,15 +1043,57 @@ let add_static_adapters units referenced_names ir =
   | Ok () -> Ok (ir, adapters, redirect)
   | Error message -> Error [ Diag.error Span.synthetic ("internal error: " ^ message) ]
 
-let run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug config =
+type checked = {
+  program : Ast.program;
+  ir : Ir.module_;
+  redirect : string -> string;
+  adapters : C_import.adapter list;
+  c_objects : string list;
+  declaration_headers : string list;
+  declarations : string;
+  artifacts : string list;
+  keep : bool;
+}
+
+let release checked =
+  if not checked.keep then List.iter C_import.remove_artifact checked.artifacts
+
+let manifest_origin line =
+  match String.split_on_char '\t' line with
+  | name :: _ :: _ :: _ :: location :: _ -> (
+      let marker = " unsupported=" in
+      let rec find index =
+        if index + String.length marker > String.length location then None
+        else if String.sub location index (String.length marker) = marker then
+          Some index
+        else find (index + 1)
+      in
+      let location =
+        match find 0 with Some stop -> String.sub location 0 stop | None -> location
+      in
+      match String.rindex_opt location ':' with
+      | Some colon -> (
+          let file = String.sub location 0 colon in
+          match
+            int_of_string_opt
+              (String.sub location (colon + 1) (String.length location - colon - 1))
+          with
+          | Some line -> Some (name, (file, line))
+          | None -> None)
+      | None -> None)
+  | _ -> None
+
+let analyze_resolved ?overlay ?cache ?index config =
   let c_artifacts = ref [] in
+  let succeeded = ref false in
   Fun.protect
     ~finally:(fun () ->
-      if not config.Cli.keep then List.iter C_import.remove_artifact !c_artifacts)
+      if not (!succeeded || config.Cli.keep) then
+        List.iter C_import.remove_artifact !c_artifacts)
     (fun () ->
-      match load_program ~limits config.Cli.input with
+      match load_program ?overlay ~limits config.Cli.input with
       | Error diagnostics -> Error diagnostics
-      | Ok (program, chains, c_imports, assembly_imports) -> (
+      | Ok (program, chains, c_imports, assembly_imports) ->
           let _, _, cc = tools () in
           let imported = ref [] in
           let c_units = ref [] in
@@ -1059,11 +1123,11 @@ let run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug con
                   let* declarations, kept, artifacts =
                     C_import.import ~alloc_size_out:alloc_size_parameters ~cc
                       ~keep:config.Cli.keep ~retain:true ~c_flags:config.Cli.c_flags
-                      ~macro_names ~referenced_names source headers
+                      ?cache ~macro_names ~referenced_names source headers
                   in
                   c_artifacts := artifacts @ !c_artifacts;
                   let mapped =
-                    C_import.map_declarations ~referenced_names
+                    C_import.map_declarations ~referenced_names ~headers
                       ~span:(List.hd headers).C_import.span
                       ~alloc_size_parameters:!alloc_size_parameters
                       ~container:
@@ -1192,12 +1256,32 @@ let run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug con
           let imported =
             C_import.prune_unreferenced_records ~referenced_names imported
           in
+          Option.iter
+            (fun index ->
+              let origins = List.filter_map manifest_origin imported.manifest in
+              Sema_index.set_c_origins index origins;
+              Sema_index.set_c_spans index
+                (List.filter_map
+                   (fun (name, (file, _)) ->
+                     Option.map
+                       (fun span -> (name, span))
+                       (List.assoc_opt file imported.use_files))
+                   origins);
+              Sema_index.set_c_import index ~unsupported:imported.unsupported
+                ~aliases:
+                  (List.map
+                     (fun (name, ty) -> (name, Ast.type_name ty))
+                     imported.aliases)
+                ~nonnull:imported.nonnull_parameters
+                ~strings:imported.c_string_parameters
+                ~alloc:imported.alloc_size_parameters)
+            index;
           let program = { Ast.items = program.items @ imported.items } in
           let* () = ast_budget (Ast.check_expanded_nodes ~limits program) in
           let specializations = Sema_specialization.create () in
           let* hir =
             match
-              Sema.check ~limits ~c_aliases:imported.aliases
+              Sema.check ?index ~limits ~c_aliases:imported.aliases
                 ~c_unsupported:imported.unsupported
                 ~c_nonnull_parameters:imported.nonnull_parameters
                 ~c_string_parameters:imported.c_string_parameters
@@ -1318,6 +1402,66 @@ let run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug con
               (C_exports.includes declarations)
               declaration_headers declarations c_artifacts
           in
+          succeeded := true;
+          Ok
+            {
+              program;
+              ir;
+              redirect;
+              adapters;
+              c_objects;
+              declaration_headers;
+              declarations;
+              artifacts = !c_artifacts;
+              keep = config.Cli.keep;
+            })
+
+let analyze ?overlay ?cache ?index config =
+  let* config = resolve_target config in
+  try analyze_resolved ?overlay ?cache ?index config with
+  | Sys_error message ->
+      Error [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ]
+  | Unix.Unix_error (code, operation, argument) ->
+      Error
+        [
+          Diag.error Span.synthetic
+            (Printf.sprintf "backend %s(%s) failed: %s" operation argument
+               (Unix.error_message code));
+        ]
+
+let check ?overlay ?cache ?index config =
+  match analyze ?overlay ?cache ?index config with
+  | Error diagnostics -> Error diagnostics
+  | Ok checked ->
+      let kept = ref false in
+      Fun.protect
+        ~finally:(fun () -> if not !kept then release checked)
+        (fun () ->
+          match Ir.render_debug_bounded ~limits checked.ir with
+          | Ok _ ->
+              kept := true;
+              Ok checked
+          | Error message -> Error [ Diag.error Span.synthetic message ])
+
+let run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug config =
+  match analyze_resolved config with
+  | Error diagnostics -> Error diagnostics
+  | Ok checked ->
+      Fun.protect
+        ~finally:(fun () -> release checked)
+        (fun () ->
+          let {
+            program;
+            ir;
+            redirect;
+            adapters;
+            c_objects;
+            declaration_headers;
+            declarations;
+            _;
+          } =
+            checked
+          in
           match config.emit with
           | Cli.Header ->
               let output = Option.value ~default:config.Cli.output header_output in
@@ -1373,7 +1517,7 @@ let run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug con
           | Cli.Optimized_llvm -> emit_optimized_llvm config program ir redirect
           | Cli.Asm | Cli.Obj | Cli.Executable ->
               emit_tools ?remarks ?llc_remarks ?llvm_text ?c_debug config program ir
-                c_objects redirect))
+                c_objects redirect)
 
 let run_unstaged ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug config =
   try

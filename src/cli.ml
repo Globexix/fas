@@ -29,11 +29,14 @@ type perf_options = {
   compare : string option;
 }
 
+type lsp_options = { lsp_c_flags : string list; lsp_target : target }
+
 type command =
   | Run of t
   | Run_program of t * string list
   | Check of t
   | Perf of t * perf_options * string list
+  | Lsp of lsp_options
   | Help
   | Version
 
@@ -52,6 +55,7 @@ let usage =
   \  run FILE      build to a temporary executable, run it, delete it\n\
   \  check FILE    check without building (no LLVM, no linking)\n\
   \  perf FILE     profile: hot loops by Fas line (needs perf)\n\
+  \  lsp           language server over stdio (for editors)\n\
    build:\n\
   \  -O0..-O3      set opt and llc optimization levels (default -O2)\n\
   \  --target=portable  baseline x86-64, runs on any x86-64 CPU (default)\n\
@@ -87,6 +91,15 @@ let default_output emit input =
     Filename.remove_extension (Filename.basename input) ^ extension
   in
   match emit with Asm -> source_output ".s" | Obj -> source_output ".o" | _ -> "a.out"
+
+let target_of_value value =
+  match value with
+  | "portable" -> Ok Portable
+  | "force-native" -> Ok Force_native
+  | _ ->
+      Error
+        ("unknown --target value `" ^ value
+       ^ "`; accepted values are `portable` and `force-native`")
 
 let parse_invocation ~subcommand argv =
   let n = Array.length argv in
@@ -223,13 +236,9 @@ let parse_invocation ~subcommand argv =
             loop (i + 1) input output emit keep optimization optimization_explicit debug
               no_inline_function
           in
-          match value with
-          | "portable" -> select Portable
-          | "force-native" -> select Force_native
-          | _ ->
-              Error
-                ("unknown --target value `" ^ value
-               ^ "`; accepted values are `portable` and `force-native`"))
+          match target_of_value value with
+          | Ok selected -> select selected
+          | Error message -> Error message)
       | "--keep" ->
           loop (i + 1) input output emit true optimization optimization_explicit debug
             no_inline_function
@@ -395,36 +404,79 @@ let perf_command config options args =
     Error "fas perf --static does not run the program; `--` arguments are not accepted"
   else Ok (Perf (config, options, args))
 
+let parse_lsp argv =
+  let n = Array.length argv in
+  let c_flags_rev = ref [] and target = ref Portable in
+  let rec loop i =
+    if i >= n then
+      Ok (Lsp { lsp_c_flags = List.rev !c_flags_rev; lsp_target = !target })
+    else
+      match argv.(i) with
+      | "--help" | "-h" -> Ok Help
+      | ("-I" | "-isystem" | "-D") as flag ->
+          if i + 1 >= n || argv.(i + 1) = "" then Error (flag ^ " requires an argument")
+          else (
+            c_flags_rev := argv.(i + 1) :: flag :: !c_flags_rev;
+            loop (i + 2))
+      | flag
+        when List.exists
+               (fun prefix ->
+                 String.starts_with ~prefix flag
+                 && String.length flag > String.length prefix)
+               [ "-I"; "-isystem"; "-D" ] ->
+          c_flags_rev := flag :: !c_flags_rev;
+          loop (i + 1)
+      | flag when String.starts_with ~prefix:"--target=" flag -> (
+          let value = String.sub flag 9 (String.length flag - 9) in
+          match target_of_value value with
+          | Ok selected ->
+              target := selected;
+              loop (i + 1)
+          | Error message -> Error message)
+      | flag when String.length flag > 0 && flag.[0] = '-' ->
+          Error ("unknown option: " ^ flag)
+      | file ->
+          Error
+            ("fas lsp takes no input file; the editor opens files, `" ^ file
+           ^ "` is not accepted")
+  in
+  loop 2
+
 let parse argv =
   let n = Array.length argv in
-  let subcommand =
-    if n > 1 && String.equal argv.(1) "run" then Run_subcommand
-    else if n > 1 && String.equal argv.(1) "check" then Check_subcommand
-    else if n > 1 && String.equal argv.(1) "perf" then Perf_subcommand
-    else Build
-  in
-  let rec find i = if i >= n || String.equal argv.(i) "--" then i else find (i + 1) in
-  let sep = if subcommand = Build || subcommand = Check_subcommand then n else find 2 in
-  if n > 1 && Array.exists (String.equal "--version") (Array.sub argv 1 (sep - 1)) then
-    if n = 2 then Ok Version
-    else Error "--version cannot be combined with other arguments"
+  if n > 1 && String.equal argv.(1) "lsp" then parse_lsp argv
   else
-    let args =
-      match Array.to_list (Array.sub argv sep (n - sep)) with
-      | _ :: args -> args
-      | [] -> []
+    let subcommand =
+      if n > 1 && String.equal argv.(1) "run" then Run_subcommand
+      else if n > 1 && String.equal argv.(1) "check" then Check_subcommand
+      else if n > 1 && String.equal argv.(1) "perf" then Perf_subcommand
+      else Build
     in
-    let build_argv = Array.sub argv 0 sep in
-    let invocation =
-      if subcommand = Perf_subcommand then split_perf_options build_argv
-      else Ok (build_argv, default_perf)
+    let rec find i = if i >= n || String.equal argv.(i) "--" then i else find (i + 1) in
+    let sep =
+      if subcommand = Build || subcommand = Check_subcommand then n else find 2
     in
-    match invocation with
-    | Error _ as error -> error
-    | Ok (build_argv, options) -> (
-        match parse_invocation ~subcommand build_argv with
-        | Ok (Run config) when subcommand = Run_subcommand ->
-            Ok (Run_program (config, args))
-        | Ok (Run config) when subcommand = Perf_subcommand ->
-            perf_command config options args
-        | result -> result)
+    if n > 1 && Array.exists (String.equal "--version") (Array.sub argv 1 (sep - 1))
+    then
+      if n = 2 then Ok Version
+      else Error "--version cannot be combined with other arguments"
+    else
+      let args =
+        match Array.to_list (Array.sub argv sep (n - sep)) with
+        | _ :: args -> args
+        | [] -> []
+      in
+      let build_argv = Array.sub argv 0 sep in
+      let invocation =
+        if subcommand = Perf_subcommand then split_perf_options build_argv
+        else Ok (build_argv, default_perf)
+      in
+      match invocation with
+      | Error _ as error -> error
+      | Ok (build_argv, options) -> (
+          match parse_invocation ~subcommand build_argv with
+          | Ok (Run config) when subcommand = Run_subcommand ->
+              Ok (Run_program (config, args))
+          | Ok (Run config) when subcommand = Perf_subcommand ->
+              perf_command config options args
+          | result -> result)

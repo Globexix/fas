@@ -184,13 +184,15 @@ let () =
           report config diagnostics;
           exit 1)
   | Ok (Cli.Check config) -> (
-      match Driver.run config with
-      | Ok _ ->
+      match Driver.check config with
+      | Ok checked ->
+          Driver.release checked;
           if config.diagnostics = Cli.Json then prerr_endline (Diag.render_json []);
           exit 0
       | Error diagnostics ->
           report config diagnostics;
           exit 1)
+  | Ok (Cli.Lsp options) -> exit (Lsp.run options)
   | Ok (Cli.Run_program (config, args)) -> exit (run_program config args)
   | Ok (Cli.Perf (config, options, args)) -> (
       match load_baseline options with

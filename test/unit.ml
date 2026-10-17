@@ -35,7 +35,7 @@ let () =
     Sema_substitution.view_source_type (Some handle_view_type) = Some handle_view_type);
   assert (Target_layout.pointer_integer_bits Target_layout.current = Ok 64);
   assert (
-    Sema_types.source_ty [] (Ast.Applied_type ("G", [], Span.synthetic))
+    Sema_types.source_ty [] (Ast.Applied_type ("G", Span.synthetic, [], Span.synthetic))
     = Error "internal error: generic type application reached ordinary type checking");
   assert (
     Target_layout.pointer_integer_bits
@@ -1436,6 +1436,7 @@ attributes #0 = { "no-builtin-helper" }
     | Ok (Cli.Run_program _) -> failwith "expected compiler invocation"
     | Ok (Cli.Check _) -> failwith "expected compiler invocation"
     | Ok (Cli.Perf _) -> failwith "expected compiler invocation"
+    | Ok (Cli.Lsp _) -> failwith "expected compiler invocation"
     | Error message -> failwith message
   in
   let cli = expect_cli (Cli.parse [| "fas"; "--emit-ir"; "-o"; "out"; "one.fas" |]) in
@@ -1595,6 +1596,7 @@ attributes #0 = { "no-builtin-helper" }
   | Ok (Cli.Run_program _)
   | Ok (Cli.Check _)
   | Ok (Cli.Perf _)
+  | Ok (Cli.Lsp _)
   | Ok Cli.Version
   | Error _ ->
       assert false);
@@ -4008,3 +4010,407 @@ let () =
   assert (
     Perf_report.row_change (unknown ~shown:"a") (unknown ~shown:"b")
     = Some (Perf_report.Changed { items = [ "a \u{2192} b" ]; raw = [] }))
+
+let () =
+  let text = "a\u{e9}\u{1F600}\nb" in
+  let position = Lsp_position.position_of_offset text in
+  let offset = Lsp_position.offset_of_position text in
+  assert (position 0 = (0, 0));
+  assert (position 1 = (0, 1));
+  assert (position 3 = (0, 2));
+  assert (position 7 = (0, 4));
+  assert (position 8 = (1, 0));
+  assert (position 9 = (1, 1));
+  assert (position 100 = (1, 1));
+  assert (offset (0, 2) = 3);
+  assert (offset (0, 3) = 3);
+  assert (offset (0, 4) = 7);
+  assert (offset (0, 100) = 7);
+  assert (offset (1, 0) = 8);
+  assert (offset (1, 9) = 9);
+  assert (offset (2, 0) = 9);
+  assert (offset (-1, 0) = 9);
+  List.iter (fun o -> assert (offset (position o) = o)) [ 0; 1; 3; 7; 8; 9 ];
+  let crlf = "a\r\nb" in
+  assert (Lsp_position.offset_of_position crlf (0, 5) = 1);
+  assert (Lsp_position.position_of_offset crlf 3 = (1, 0));
+  assert (Lsp_position.offset_of_position crlf (1, 0) = 3);
+  assert (Lsp_position.position_of_offset "\xffa" 2 = (0, 2));
+  assert (Lsp_position.offset_of_position "\xffa" (0, 1) = 1);
+  let malformed = "missing or invalid Content-Length header" in
+  assert (Lsp_frame.take_message "" = Lsp_frame.Incomplete);
+  assert (Lsp_frame.take_message "Content-Length: 2\r\n\r" = Lsp_frame.Incomplete);
+  assert (Lsp_frame.take_message "Content-Length: 5\r\n\r\nab" = Lsp_frame.Incomplete);
+  assert (
+    Lsp_frame.take_message "Content-Length: 2\r\n\r\nabcd"
+    = Lsp_frame.Message ("ab", "cd"));
+  assert (
+    Lsp_frame.take_message "content-length:  3 \r\n\r\nxyzW"
+    = Lsp_frame.Message ("xyz", "W"));
+  assert (
+    Lsp_frame.take_message "Content-Length: 2\r\nContent-Type: x\r\n\r\nok"
+    = Lsp_frame.Message ("ok", ""));
+  assert (
+    Lsp_frame.take_message "X-Other: 1\r\n\r\nrest"
+    = Lsp_frame.Malformed (malformed, "rest"));
+  assert (
+    Lsp_frame.take_message "Content-Length: -1\r\n\r\n"
+    = Lsp_frame.Malformed (malformed, ""));
+  assert (
+    Lsp_frame.take_message "Content-Length: 1234567890\r\n\r\n"
+    = Lsp_frame.Malformed (malformed, ""));
+  assert (
+    Lsp_frame.take_message "Content-Length: 1x\r\n\r\n"
+    = Lsp_frame.Malformed (malformed, ""));
+  let pair = "Content-Length: 1\r\n\r\na" ^ "Content-Length: 2\r\n\r\nbc" in
+  assert (
+    Lsp_frame.take_message pair = Lsp_frame.Message ("a", "Content-Length: 2\r\n\r\nbc"));
+  assert (
+    Lsp_frame.take_message "Content-Length: 2\r\n\r\nbc" = Lsp_frame.Message ("bc", ""));
+  let split = "Content-Length: 3\r\n\r\nab" in
+  assert (Lsp_frame.take_message split = Lsp_frame.Incomplete);
+  assert (Lsp_frame.take_message (split ^ "c") = Lsp_frame.Message ("abc", ""))
+
+let () =
+  let directory = Filename.temp_dir "fas-index-" "" in
+  let files = [ "probe.h"; "extra.h"; "shapes.fas"; "main.fas" ] in
+  let cleanup () =
+    List.iter
+      (fun name ->
+        let path = Filename.concat directory name in
+        if Sys.file_exists path then Sys.remove path)
+      files;
+    Sys.rmdir directory
+  in
+  Fun.protect ~finally:cleanup @@ fun () ->
+  let write name text =
+    let channel = open_out_bin (Filename.concat directory name) in
+    output_string channel text;
+    close_out channel
+  in
+  write "probe.h"
+    "#ifndef PROBE_H\n\
+     #define PROBE_H\n\
+     #define PROBE_WIDTH 3\n\
+     typedef unsigned int probe_word;\n\
+     struct probe_box { int count; };\n\
+     int probe_add(int a, int b);\n\
+     extern int probe_count;\n\
+     #endif\n";
+  write "extra.h"
+    "#include \"probe.h\"\ntypedef int extra_word;\nint extra_twice(int value);\n";
+  write "shapes.fas"
+    "const SCALE u32 = 4\n\
+     const LIMIT u32 = SCALE * 2\n\n\
+     struct Point {\n\
+    \  x i32\n\
+    \  y i32\n\
+     }\n\n\
+     struct Pair[T] {\n\
+    \  left T\n\
+    \  right T\n\
+     }\n\n\
+     fn twice[T](value T) T { return value + value }\n\
+     fn scaled[N const u32](value u32) u32 { return value * N }\n\
+     fn unused[T](value T) T {\n\
+    \  copy T = value\n\
+    \  return copy\n\
+     }\n\n\
+     const GAP usize = offsetof[Point, y]\n";
+  write "main.fas"
+    "use \"shapes.fas\"\n\
+     use \"C\" \"probe.h\"\n\
+     use \"C\" \"extra.h\"\n\n\
+     var total u32 = LIMIT\n\
+     const TABLE arr[2, u8] = {7, 9}\n\n\
+     fn helper() i32 { return 0 }\n\n\
+     fn main() i32 {\n\
+    \  point Point = {. x = 1, .y = 2}\n\
+    \  view p = point\n\
+    \  p.x = probe_add(p.y, PROBE_WIDTH)\n\
+    \  small u8 = 3\n\
+    \  wide u32 = 5\n\
+    \  pair Pair [u8] = {small, twice(small)}\n\
+    \  word probe_word = twice[u32](wide)\n\
+    \  total = scaled[2](word) + SCALE\n\
+    \  view q = pair\n\
+    \  q.left = TABLE[1]\n\
+    \  where addr = &helper\n\
+    \  box probe_box = {probe_count}\n\
+    \  box.count = 2\n\
+    \  doubled extra_word = extra_twice(box.count)\n\
+    \  offset usize = offsetof[Point, x] + GAP\n\
+    \  return p.x\n\
+     }\n";
+  let main = Filename.concat directory "main.fas" in
+  let config =
+    match Cli.parse [| "fas"; "check"; main |] with
+    | Ok (Cli.Check config) -> config
+    | _ -> failwith "expected check invocation"
+  in
+  let index = Sema_index.create () in
+  (match Driver.check ~index config with
+  | Ok checked -> Driver.release checked
+  | Error diagnostics -> failwith (Diag.render_all ~source:None diagnostics));
+  let span (s : Span.t) =
+    Printf.sprintf "%s:%d:%d-%d" (Filename.basename s.file) s.line s.column
+      (s.column + s.end_offset - s.start_offset)
+  in
+  let declaration (d : Sema_index.declaration) =
+    Printf.sprintf "%s %s %s [%s] %s %s" (Sema_index.kind_name d.kind) d.name
+      (span d.name_span) (span d.item_span)
+      (Option.value ~default:"-" d.container)
+      (match d.c_origin with
+      | Some (file, line) -> Printf.sprintf "%s:%d" (Filename.basename file) line
+      | None -> "-")
+  in
+  let expect label expected actual =
+    if actual <> expected then (
+      List.iter (fun line -> prerr_endline (label ^ " " ^ line)) actual;
+      failwith ("semantic index " ^ label ^ " records differ"))
+  in
+  expect "declaration"
+    [
+      "const PROBE_WIDTH main.fas:2:9-18 [main.fas:2:9-18] - <unknown>:0";
+      "field count main.fas:2:9-18 [main.fas:2:9-18] probe_box probe.h:5";
+      "function probe_add main.fas:2:9-18 [main.fas:2:9-18] - probe.h:6";
+      "struct probe_box main.fas:2:9-18 [main.fas:2:9-18] - probe.h:5";
+      "global probe_count main.fas:2:9-18 [main.fas:2:9-18] - probe.h:7";
+      "type alias probe_word main.fas:2:9-18 [main.fas:2:9-18] - probe.h:4";
+      "function extra_twice main.fas:3:9-18 [main.fas:3:9-18] - extra.h:3";
+      "type alias extra_word main.fas:3:9-18 [main.fas:3:9-18] - extra.h:2";
+      "global total main.fas:5:5-10 [main.fas:5:1-22] - -";
+      "const array TABLE main.fas:6:7-12 [main.fas:6:1-32] - -";
+      "function helper main.fas:8:4-10 [main.fas:8:1-29] - -";
+      "function main main.fas:10:4-8 [main.fas:10:1-455] - -";
+      "local point main.fas:11:3-8 [main.fas:10:1-455] main -";
+      "view p main.fas:12:8-9 [main.fas:10:1-455] main -";
+      "local small main.fas:14:3-8 [main.fas:10:1-455] main -";
+      "local wide main.fas:15:3-7 [main.fas:10:1-455] main -";
+      "local pair main.fas:16:3-7 [main.fas:10:1-455] main -";
+      "local word main.fas:17:3-7 [main.fas:10:1-455] main -";
+      "view q main.fas:19:8-9 [main.fas:10:1-455] main -";
+      "local where main.fas:21:3-8 [main.fas:10:1-455] main -";
+      "local box main.fas:22:3-6 [main.fas:10:1-455] main -";
+      "local doubled main.fas:24:3-10 [main.fas:10:1-455] main -";
+      "local offset main.fas:25:3-9 [main.fas:10:1-455] main -";
+      "const SCALE shapes.fas:1:7-12 [shapes.fas:1:1-20] - -";
+      "const LIMIT shapes.fas:2:7-12 [shapes.fas:2:1-28] - -";
+      "struct Point shapes.fas:4:8-13 [shapes.fas:4:1-33] - -";
+      "field x shapes.fas:5:3-4 [shapes.fas:4:1-33] Point -";
+      "field y shapes.fas:6:3-4 [shapes.fas:4:1-33] Point -";
+      "struct Pair shapes.fas:9:8-12 [shapes.fas:9:1-38] - -";
+      "type parameter T shapes.fas:9:13-14 [shapes.fas:9:1-38] Pair -";
+      "field left shapes.fas:10:3-7 [shapes.fas:9:1-38] Pair -";
+      "field right shapes.fas:11:3-8 [shapes.fas:9:1-38] Pair -";
+      "function twice shapes.fas:14:4-9 [shapes.fas:14:1-48] - -";
+      "type parameter T shapes.fas:14:10-11 [shapes.fas:14:1-48] twice -";
+      "parameter value shapes.fas:14:13-18 [shapes.fas:14:1-48] twice -";
+      "function scaled shapes.fas:15:4-10 [shapes.fas:15:1-59] - -";
+      "const parameter N shapes.fas:15:11-12 [shapes.fas:15:1-59] scaled -";
+      "parameter value shapes.fas:15:24-29 [shapes.fas:15:1-59] scaled -";
+      "function unused shapes.fas:16:4-10 [shapes.fas:16:1-59] - -";
+      "type parameter T shapes.fas:16:11-12 [shapes.fas:16:1-59] unused -";
+      "parameter value shapes.fas:16:14-19 [shapes.fas:16:1-59] unused -";
+      "local copy shapes.fas:17:3-7 [shapes.fas:16:1-59] unused -";
+      "const GAP shapes.fas:21:7-10 [shapes.fas:21:1-37] - -";
+    ]
+    (List.map declaration (Sema_index.declarations index));
+  expect "reference"
+    [
+      "main.fas:5:17-22 -> const LIMIT shapes.fas:2:7-12 [shapes.fas:2:1-28] - -";
+      "main.fas:11:9-14 -> struct Point shapes.fas:4:8-13 [shapes.fas:4:1-33] - -";
+      "main.fas:11:20-21 -> field x shapes.fas:5:3-4 [shapes.fas:4:1-33] Point -";
+      "main.fas:11:28-29 -> field y shapes.fas:6:3-4 [shapes.fas:4:1-33] Point -";
+      "main.fas:12:12-17 -> local point main.fas:11:3-8 [main.fas:10:1-455] main -";
+      "main.fas:13:3-4 -> view p main.fas:12:8-9 [main.fas:10:1-455] main -";
+      "main.fas:13:5-6 -> field x shapes.fas:5:3-4 [shapes.fas:4:1-33] Point -";
+      "main.fas:13:9-18 -> function probe_add main.fas:2:9-18 [main.fas:2:9-18] - \
+       probe.h:6";
+      "main.fas:13:19-20 -> view p main.fas:12:8-9 [main.fas:10:1-455] main -";
+      "main.fas:13:21-22 -> field y shapes.fas:6:3-4 [shapes.fas:4:1-33] Point -";
+      "main.fas:13:24-35 -> const PROBE_WIDTH main.fas:2:9-18 [main.fas:2:9-18] - \
+       <unknown>:0";
+      "main.fas:16:8-12 -> struct Pair shapes.fas:9:8-12 [shapes.fas:9:1-38] - -";
+      "main.fas:16:21-26 -> local small main.fas:14:3-8 [main.fas:10:1-455] main -";
+      "main.fas:16:28-33 -> function twice shapes.fas:14:4-9 [shapes.fas:14:1-48] - -";
+      "main.fas:16:34-39 -> local small main.fas:14:3-8 [main.fas:10:1-455] main -";
+      "main.fas:17:8-18 -> type alias probe_word main.fas:2:9-18 [main.fas:2:9-18] - \
+       probe.h:4";
+      "main.fas:17:21-26 -> function twice shapes.fas:14:4-9 [shapes.fas:14:1-48] - -";
+      "main.fas:17:32-36 -> local wide main.fas:15:3-7 [main.fas:10:1-455] main -";
+      "main.fas:18:3-8 -> global total main.fas:5:5-10 [main.fas:5:1-22] - -";
+      "main.fas:18:11-17 -> function scaled shapes.fas:15:4-10 [shapes.fas:15:1-59] - -";
+      "main.fas:18:21-25 -> local word main.fas:17:3-7 [main.fas:10:1-455] main -";
+      "main.fas:18:29-34 -> const SCALE shapes.fas:1:7-12 [shapes.fas:1:1-20] - -";
+      "main.fas:19:12-16 -> local pair main.fas:16:3-7 [main.fas:10:1-455] main -";
+      "main.fas:20:3-4 -> view q main.fas:19:8-9 [main.fas:10:1-455] main -";
+      "main.fas:20:5-9 -> field left shapes.fas:10:3-7 [shapes.fas:9:1-38] Pair -";
+      "main.fas:20:12-17 -> const array TABLE main.fas:6:7-12 [main.fas:6:1-32] - -";
+      "main.fas:21:17-23 -> function helper main.fas:8:4-10 [main.fas:8:1-29] - -";
+      "main.fas:22:7-16 -> struct probe_box main.fas:2:9-18 [main.fas:2:9-18] - \
+       probe.h:5";
+      "main.fas:22:20-31 -> global probe_count main.fas:2:9-18 [main.fas:2:9-18] - \
+       probe.h:7";
+      "main.fas:23:3-6 -> local box main.fas:22:3-6 [main.fas:10:1-455] main -";
+      "main.fas:23:7-12 -> field count main.fas:2:9-18 [main.fas:2:9-18] probe_box \
+       probe.h:5";
+      "main.fas:24:11-21 -> type alias extra_word main.fas:3:9-18 [main.fas:3:9-18] - \
+       extra.h:2";
+      "main.fas:24:24-35 -> function extra_twice main.fas:3:9-18 [main.fas:3:9-18] - \
+       extra.h:3";
+      "main.fas:24:36-39 -> local box main.fas:22:3-6 [main.fas:10:1-455] main -";
+      "main.fas:24:40-45 -> field count main.fas:2:9-18 [main.fas:2:9-18] probe_box \
+       probe.h:5";
+      "main.fas:25:27-32 -> struct Point shapes.fas:4:8-13 [shapes.fas:4:1-33] - -";
+      "main.fas:25:34-35 -> field x shapes.fas:5:3-4 [shapes.fas:4:1-33] Point -";
+      "main.fas:25:39-42 -> const GAP shapes.fas:21:7-10 [shapes.fas:21:1-37] - -";
+      "main.fas:26:10-11 -> view p main.fas:12:8-9 [main.fas:10:1-455] main -";
+      "main.fas:26:12-13 -> field x shapes.fas:5:3-4 [shapes.fas:4:1-33] Point -";
+      "shapes.fas:2:19-24 -> const SCALE shapes.fas:1:7-12 [shapes.fas:1:1-20] - -";
+      "shapes.fas:10:8-9 -> type parameter T shapes.fas:9:13-14 [shapes.fas:9:1-38] \
+       Pair -";
+      "shapes.fas:11:9-10 -> type parameter T shapes.fas:9:13-14 [shapes.fas:9:1-38] \
+       Pair -";
+      "shapes.fas:14:19-20 -> type parameter T shapes.fas:14:10-11 \
+       [shapes.fas:14:1-48] twice -";
+      "shapes.fas:14:22-23 -> type parameter T shapes.fas:14:10-11 \
+       [shapes.fas:14:1-48] twice -";
+      "shapes.fas:14:33-38 -> parameter value shapes.fas:14:13-18 [shapes.fas:14:1-48] \
+       twice -";
+      "shapes.fas:14:41-46 -> parameter value shapes.fas:14:13-18 [shapes.fas:14:1-48] \
+       twice -";
+      "shapes.fas:15:48-53 -> parameter value shapes.fas:15:24-29 [shapes.fas:15:1-59] \
+       scaled -";
+      "shapes.fas:15:56-57 -> const parameter N shapes.fas:15:11-12 \
+       [shapes.fas:15:1-59] scaled -";
+      "shapes.fas:21:28-33 -> struct Point shapes.fas:4:8-13 [shapes.fas:4:1-33] - -";
+      "shapes.fas:21:35-36 -> field y shapes.fas:6:3-4 [shapes.fas:4:1-33] Point -";
+    ]
+    (List.map
+       (fun (r : Sema_index.reference) ->
+         span r.use_span ^ " -> " ^ declaration r.declaration)
+       (Sema_index.references index));
+  expect "type"
+    [
+      "main.fas:5:17-22 [] u32 8";
+      "main.fas:6:17-18 [] usize 2";
+      "main.fas:6:27-28 [] u8 7";
+      "main.fas:6:30-31 [] u8 9";
+      "main.fas:8:26-27 [] i32 -";
+      "main.fas:11:17-18 [] Point -";
+      "main.fas:11:24-25 [] i32 -";
+      "main.fas:11:32-33 [] i32 -";
+      "main.fas:12:12-17 [] Point -";
+      "main.fas:13:3-4 [] Point -";
+      "main.fas:13:3-6 [] i32 -";
+      "main.fas:13:9-36 [] i32 -";
+      "main.fas:13:19-20 [] Point -";
+      "main.fas:13:19-22 [] i32 -";
+      "main.fas:13:24-35 [] i32 3";
+      "main.fas:14:14-15 [] u8 -";
+      "main.fas:15:14-15 [] u32 -";
+      "main.fas:16:20-21 [] Pair[u8] -";
+      "main.fas:16:21-26 [] u8 -";
+      "main.fas:16:28-40 [] u8 -";
+      "main.fas:16:34-39 [] u8 -";
+      "main.fas:17:21-37 [] u32 -";
+      "main.fas:17:32-36 [] u32 -";
+      "main.fas:18:11-26 [] u32 -";
+      "main.fas:18:11-34 [] u32 -";
+      "main.fas:18:18-19 [] u32 2";
+      "main.fas:18:21-25 [] u32 -";
+      "main.fas:18:29-34 [] u32 4";
+      "main.fas:19:12-16 [] Pair[u8] -";
+      "main.fas:20:3-4 [] Pair[u8] -";
+      "main.fas:20:3-9 [] u8 -";
+      "main.fas:20:12-17 [] arr[2, u8] -";
+      "main.fas:20:12-20 [] u8 -";
+      "main.fas:20:18-19 [] i32 -";
+      "main.fas:21:16-17 [] addr -";
+      "main.fas:22:19-20 [] probe_box -";
+      "main.fas:22:20-31 [] i32 -";
+      "main.fas:23:3-6 [] probe_box -";
+      "main.fas:23:3-12 [] i32 -";
+      "main.fas:23:15-16 [] i32 -";
+      "main.fas:24:24-46 [] i32 -";
+      "main.fas:24:36-39 [] probe_box -";
+      "main.fas:24:36-45 [] i32 -";
+      "main.fas:25:18-26 [] usize -";
+      "main.fas:25:18-42 [] usize -";
+      "main.fas:25:39-42 [] usize 4";
+      "main.fas:26:10-11 [] Point -";
+      "main.fas:26:10-13 [] i32 -";
+      "shapes.fas:1:19-20 [] u32 4";
+      "shapes.fas:2:19-24 [] u32 4";
+      "shapes.fas:2:19-28 [] u32 8";
+      "shapes.fas:2:27-28 [] u32 2";
+      "shapes.fas:14:33-38 [u32] u32 -";
+      "shapes.fas:14:33-38 [u8] u8 -";
+      "shapes.fas:14:33-46 [u32] u32 -";
+      "shapes.fas:14:33-46 [u8] u8 -";
+      "shapes.fas:14:41-46 [u32] u32 -";
+      "shapes.fas:14:41-46 [u8] u8 -";
+      "shapes.fas:15:48-53 [2] u32 -";
+      "shapes.fas:15:48-57 [2] u32 -";
+      "shapes.fas:15:56-57 [2] u32 2";
+      "shapes.fas:21:19-27 [] usize 4";
+    ]
+    (List.map
+       (fun (t : Sema_index.expression_type) ->
+         Printf.sprintf "%s [%s] %s %s" (span t.span)
+           (String.concat "," t.instance)
+           t.ty
+           (Option.value ~default:"-" t.value))
+       (Sema_index.expression_types index));
+  expect "generic call"
+    [
+      "main.fas:16:28-33 [] u8 false";
+      "main.fas:17:21-26 [] u32 true";
+      "main.fas:18:11-17 [] 2 true";
+    ]
+    (List.map
+       (fun (g : Sema_index.generic_call) ->
+         Printf.sprintf "%s [%s] %s %b" (span g.callee_span)
+           (String.concat "," g.instance)
+           (String.concat "," g.arguments)
+           g.explicit)
+       (Sema_index.generic_calls index))
+
+let () =
+  let base = "a\nb\nc" in
+  assert (Lsp_map.to_current (Lsp_map.create ~analyzed:base ~current:base) 1 = Some 1);
+  assert (Lsp_map.to_analyzed (Lsp_map.create ~analyzed:base ~current:base) 2 = Some 2);
+  let inserted = "x\ny\na\nb\nc" in
+  let above = Lsp_map.create ~analyzed:base ~current:inserted in
+  assert (Lsp_map.to_current above 0 = Some 2);
+  assert (Lsp_map.to_current above 1 = Some 3);
+  assert (Lsp_map.to_analyzed above 3 = Some 1);
+  assert (Lsp_map.to_analyzed above 1 = None);
+  let deleted = "a\nb" in
+  let removed = "x\na\nb" in
+  let above_delete = Lsp_map.create ~analyzed:removed ~current:deleted in
+  assert (Lsp_map.to_current above_delete 1 = Some 0);
+  assert (Lsp_map.to_current above_delete 2 = Some 1);
+  assert (Lsp_map.to_current above_delete 0 = None);
+  let edited = "a\nB\nc" in
+  let region = Lsp_map.create ~analyzed:base ~current:edited in
+  assert (Lsp_map.to_current region 1 = None);
+  assert (Lsp_map.to_current region 0 = Some 0);
+  assert (Lsp_map.to_current region 2 = Some 2);
+  assert (Lsp_map.to_analyzed region 1 = None);
+  let below = "a\nb\nc\nd\ne" in
+  let broken = "a\nB\nC\nd\ne" in
+  let below_region = Lsp_map.create ~analyzed:below ~current:broken in
+  assert (Lsp_map.to_current below_region 1 = None);
+  assert (Lsp_map.to_current below_region 2 = None);
+  assert (Lsp_map.to_current below_region 3 = Some 3);
+  assert (Lsp_map.to_current below_region 4 = Some 4);
+  assert (Lsp_map.to_analyzed below_region 2 = None);
+  assert (Lsp_map.to_analyzed below_region 3 = Some 3);
+  assert (Lsp_map.to_analyzed below_region 4 = Some 4);
+  let shifted = "x\ny\nalpha\nb\nc\nd\ne" in
+  let shifted_map = Lsp_map.create ~analyzed:below ~current:shifted in
+  assert (Lsp_map.to_current shifted_map 1 = Some 3);
+  assert (Lsp_map.to_current shifted_map 4 = Some 6);
+  assert (Lsp_map.to_current shifted_map 9 = None)

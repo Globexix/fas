@@ -29,11 +29,14 @@ type perf_options = {
   compare : string option;
 }
 
+type lsp_options = { lsp_c_flags : string list; lsp_target : target }
+
 type command =
   | Run of t
   | Run_program of t * string list
   | Check of t
   | Perf of t * perf_options * string list
+  | Lsp of lsp_options
   | Help
   | Version
 

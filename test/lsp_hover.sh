@@ -1,0 +1,627 @@
+#!/bin/sh
+set -eu
+export DEBUGINFOD_URLS=
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+START_DIR=$(pwd)
+CC=$(printenv CC || printf 'clang-22')
+LLVM_OPT=$(printenv LLVM_OPT || printf 'opt-22')
+LLVM_LLC=$(printenv LLVM_LLC || printf 'llc-22')
+OCAML_FAS=$(printenv OCAML_FAS || printf '%s/_build/default/bin/main.exe' "$ROOT")
+
+resolve_tool_path() {
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    */*) printf '%s/%s\n' "$START_DIR" "$1" ;;
+    *)
+      resolved=$(command -v "$1" 2>/dev/null || true)
+      case "$resolved" in
+        /*) printf '%s\n' "$resolved" ;;
+        */*) printf '%s/%s\n' "$START_DIR" "$resolved" ;;
+        *) printf '%s\n' "$1" ;;
+      esac
+      ;;
+  esac
+}
+
+CC=$(resolve_tool_path "$CC")
+LLVM_OPT=$(resolve_tool_path "$LLVM_OPT")
+LLVM_LLC=$(resolve_tool_path "$LLVM_LLC")
+OCAML_FAS=$(resolve_tool_path "$OCAML_FAS")
+REAL_CC=$(command -v "$CC")
+REAL_OPT=$(command -v "$LLVM_OPT")
+REAL_LLC=$(command -v "$LLVM_LLC")
+
+LSP_TMP=$(mktemp -d)
+TMPDIR=$LSP_TMP/tmp
+mkdir -p "$LSP_TMP/work" "$TMPDIR"
+WORK=$(cd "$LSP_TMP/work" && pwd -P)
+export TMPDIR
+trap 'rm -rf "$LSP_TMP"' EXIT HUP INT TERM
+
+cat >"$WORK/opt-wrap" <<'SH'
+#!/bin/sh
+exec "$REAL_OPT" "$@"
+SH
+cat >"$WORK/llc-wrap" <<'SH'
+#!/bin/sh
+exec "$REAL_LLC" "$@"
+SH
+cat >"$WORK/cc-wrap" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >>"$CLANG_LOG"
+exec "$REAL_CC" "$@"
+SH
+chmod +x "$WORK/opt-wrap" "$WORK/llc-wrap" "$WORK/cc-wrap"
+: >"$WORK/clang.log"
+
+CLANG_LOG=$WORK/clang.log
+FAS_OPT=$WORK/opt-wrap
+FAS_LLC=$WORK/llc-wrap
+FAS_CC=$WORK/cc-wrap
+export CLANG_LOG REAL_OPT REAL_LLC REAL_CC FAS_OPT FAS_LLC FAS_CC
+
+python3 -I - "$OCAML_FAS" "$WORK" <<'PY'
+import json
+import os
+import re
+import select
+import subprocess
+import sys
+import time
+import urllib.parse
+
+exe = sys.argv[1]
+work = sys.argv[2]
+TIMEOUT = 60
+servers = []
+
+HOVER = [
+    'use "C" <string.h>',
+    "",
+    "const LIMIT i32 = 4",
+    "const MASK u32 = 4294967295",
+    "const SMALL u8 = 200",
+    "const WIDE u16 = 65535",
+    "const NEGATIVE i32 = -5",
+    "var GLOBAL i32 = 5",
+    "",
+    "struct Point { x i32 y i32 }",
+    "struct Packet @align(16) { tag u8 length u32 body arr[3, u16] pointer addr count u64 }",
+    "struct Box[T] { value T }",
+    "",
+    "fn identity[T](value T) T {",
+    "    return value",
+    "}",
+    "",
+    "fn lanes[T, N const usize](value T) usize {",
+    "    return N",
+    "}",
+    "",
+    "fn pick[A, B](first A, second B) B {",
+    "    return second",
+    "}",
+    "",
+    "fn sum[T](left T, right T) T {",
+    "    held T = left + right",
+    "    return held",
+    "}",
+    "",
+    "fn read_window[T](source addr) T {",
+    "    view window = source[T]",
+    "    return window",
+    "}",
+    "",
+    "fn first_byte(pointer addr) u8 {",
+    "    view first = pointer[u8]",
+    "    return first",
+    "}",
+    "",
+    "fn main() i32 {",
+    "    point Point = {.x = 1, .y = 2}",
+    "    local i32 = point.x + GLOBAL + LIMIT + NEGATIVE",
+    "    tiny u8 = identity[u8](7)",
+    "    small i32 = identity[i32](local)",
+    "    width usize = lanes[u8, 16](1) + lanes[u32, 4](2)",
+    "    chosen u32 = pick[u8, u32](1, 2)",
+    "    total u8 = sum[u8](1, 2)",
+    "    wider u32 = sum[u32](1, 2)",
+    '    seen u8 = read_window[u8](c"abc")',
+    '    later u32 = read_window[u32](c"abc")',
+    "    box Box[i32] = {7}",
+    '    count usize = strlen(c"abc")',
+    "    return small + box.value + point.y + LIMIT",
+    "}",
+]
+
+C_LAYOUT = """#include <stdalign.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+
+struct Point {
+    int32_t x;
+    int32_t y;
+};
+
+struct Packet {
+    uint8_t tag;
+    uint32_t length;
+    uint16_t body[3];
+    void *pointer;
+    uint64_t count;
+} __attribute__((aligned(16)));
+
+struct BoxI32 {
+    int32_t value;
+};
+
+int main(void) {
+    printf("Point %zu %zu %zu %zu\\n", sizeof(struct Point), alignof(struct Point),
+           offsetof(struct Point, x), offsetof(struct Point, y));
+    printf("Packet %zu %zu %zu %zu %zu %zu %zu\\n", sizeof(struct Packet), alignof(struct Packet),
+           offsetof(struct Packet, tag), offsetof(struct Packet, length), offsetof(struct Packet, body),
+           offsetof(struct Packet, pointer), offsetof(struct Packet, count));
+    printf("Box %zu %zu %zu\\n", sizeof(struct BoxI32), alignof(struct BoxI32), offsetof(struct BoxI32, value));
+    printf("hex %#lx %#x\\n", (unsigned long)4294967295UL, (unsigned)65535u);
+    return 0;
+}
+"""
+
+FENCE = "```fas\n"
+LIMIT_T = FENCE + "const LIMIT i32 = 4\n```"
+MASK_T = FENCE + "const MASK u32 = 4294967295 (0xffffffff)\n```"
+SMALL_T = FENCE + "const SMALL u8 = 200\n```"
+WIDE_T = FENCE + "const WIDE u16 = 65535 (0xffff)\n```"
+NEGATIVE_T = FENCE + "const NEGATIVE i32 = -5\n```"
+GLOBAL_T = FENCE + "GLOBAL i32\n```"
+POINT_T = FENCE + "struct Point\n```\n\nsize 8, align 4\n\nx i32 at offset 0\n\ny i32 at offset 4"
+PACKET_T = (
+    FENCE
+    + "struct Packet @align(16)\n```\n\nsize 32, align 16\n\ntag u8 at offset 0\n\nlength u32 at offset 4"
+    + "\n\nbody arr[3, u16] at offset 8\n\npointer addr at offset 16\n\ncount u64 at offset 24"
+)
+BOX_T = FENCE + "struct Box[T]\n```\n\nvalue T\n\nBox[i32]: size 4, align 4\n\nvalue i32 at offset 0"
+BOX_VALUE_T = FENCE + "value T\n```\n\nBox[i32]: value i32 at offset 0"
+X_T = FENCE + "x i32 at offset 0\n```"
+Y_T = FENCE + "y i32 at offset 4\n```"
+TAG_T = FENCE + "tag u8 at offset 0\n```"
+BODY_T = FENCE + "body arr[3, u16] at offset 8\n```"
+POINTER_FIELD_T = FENCE + "pointer addr at offset 16\n```"
+IDENTITY_SIG = FENCE + "fn identity[T](value T) T\n```"
+LANES_SIG = FENCE + "fn lanes[T, N const usize](value T) usize\n```"
+PICK_SIG = FENCE + "fn pick[A, B](first A, second B) B\n```"
+MAIN_SIG = FENCE + "fn main() i32\n```"
+IDENTITY_U8 = IDENTITY_SIG + "\n\nT = u8"
+IDENTITY_I32 = IDENTITY_SIG + "\n\nT = i32"
+LANES_U8 = LANES_SIG + "\n\nT = u8, N = 16"
+LANES_U32 = LANES_SIG + "\n\nT = u32, N = 4"
+PICK_U8 = PICK_SIG + "\n\nA = u8, B = u32"
+POINT_LOCAL_T = FENCE + "point Point\n```"
+TINY_T = FENCE + "tiny u8\n```"
+WIDTH_T = FENCE + "width usize\n```"
+CHOSEN_T = FENCE + "chosen u32\n```"
+BOX_LOCAL_T = FENCE + "box Box[i32]\n```"
+COUNT_T = FENCE + "count usize\n```"
+SMALL_LOCAL_T = FENCE + "small i32\n```"
+LOCAL_USE_T = FENCE + "local i32\n```"
+VIEW_T = FENCE + "view first u8\n```"
+POINTER_PARAM_T = FENCE + "pointer addr\n```"
+U32_LIT_T = FENCE + "u32\n```"
+I32_LIT_T = FENCE + "i32\n```"
+VALUE_BODY_T = FENCE + "value T\n```\n\nT = u8\n\nT = i32"
+TYPE_IDENTITY_T = FENCE + "T\n```\n\nT = u8\n\nT = i32"
+N_LANES_T = FENCE + "N usize\n```\n\nN = 16\n\nN = 4"
+LEFT_T = FENCE + "left T\n```\n\nT = u8\n\nT = u32"
+HELD_T = FENCE + "held T\n```\n\nT = u8\n\nT = u32"
+SUM_EXPR_T = FENCE + "u8 | u32\n```"
+WINDOW_T = FENCE + "view window u8 | u32\n```\n\nT = u8\n\nT = u32"
+
+PINS = [
+    ("const LIMIT", 6, LIMIT_T),
+    ("+ LIMIT + NEGATIVE", 2, LIMIT_T),
+    ("const MASK", 6, MASK_T),
+    ("const SMALL", 6, SMALL_T),
+    ("const WIDE", 6, WIDE_T),
+    ("const NEGATIVE", 6, NEGATIVE_T),
+    ("+ LIMIT + NEGATIVE", 12, NEGATIVE_T),
+    ("var GLOBAL", 4, GLOBAL_T),
+    ("struct Point", 7, POINT_T),
+    ("struct Packet", 7, PACKET_T),
+    ("struct Box", 7, BOX_T),
+    ("{ x i32", 2, X_T),
+    ("y i32 }", 0, Y_T),
+    ("tag u8 length", 0, TAG_T),
+    ("body arr[3, u16]", 0, BODY_T),
+    ("pointer addr count", 0, POINTER_FIELD_T),
+    ("point.y", 6, Y_T),
+    ("fn identity", 3, IDENTITY_SIG),
+    ("fn lanes", 3, LANES_SIG),
+    ("fn pick", 3, PICK_SIG),
+    ("fn main", 3, MAIN_SIG),
+    ("identity[u8", 2, IDENTITY_U8),
+    ("identity[i32", 2, IDENTITY_I32),
+    ("lanes[u8", 2, LANES_U8),
+    ("lanes[u32", 2, LANES_U32),
+    ("pick[u8", 2, PICK_U8),
+    ("point Point", 0, POINT_LOCAL_T),
+    ("tiny u8", 0, TINY_T),
+    ("width usize", 0, WIDTH_T),
+    ("chosen u32", 0, CHOSEN_T),
+    ("box Box[i32]", 0, BOX_LOCAL_T),
+    ("count usize", 0, COUNT_T),
+    ("small i32", 0, SMALL_LOCAL_T),
+    ("(local)", 1, LOCAL_USE_T),
+    ("return small", 7, SMALL_LOCAL_T),
+    ("view first", 5, VIEW_T),
+    ("return first", 7, VIEW_T),
+    ("(pointer addr", 1, POINTER_PARAM_T),
+    ("pointer[u8]", 0, POINTER_PARAM_T),
+    ("pick[u8, u32](1, 2)", 17, U32_LIT_T),
+    ("{.x = 1", 6, I32_LIT_T),
+    ("return value", 7, VALUE_BODY_T),
+    ("(value T) T", 1, VALUE_BODY_T),
+    ("identity[T", 9, TYPE_IDENTITY_T),
+    ("N const usize", 0, N_LANES_T),
+    ("return N", 7, N_LANES_T),
+    ("left T", 0, LEFT_T),
+    ("held T", 0, HELD_T),
+    ("return held", 7, HELD_T),
+    ("left + right", 5, SUM_EXPR_T),
+    ("view window", 5, WINDOW_T),
+    ("return window", 7, WINDOW_T),
+    ("{ value", 2, BOX_VALUE_T),
+    ("box.value", 4, BOX_VALUE_T),
+    ("fn main", 0, None),
+]
+
+def fail(message):
+    for server in servers:
+        server.proc.kill()
+    sys.stderr.write("lsp_hover: %s\n" % message)
+    sys.exit(1)
+
+
+def expect(condition, message):
+    if not condition:
+        fail(message)
+
+
+def join_lines(lines):
+    return "\n".join(lines) + "\n"
+
+
+def raw_frame(body):
+    return b"Content-Length: %d\r\n\r\n" % len(body) + body
+
+
+def frame_of(message):
+    return raw_frame(json.dumps(message).encode("utf-8"))
+
+
+def uri_of(path):
+    return "file://" + urllib.parse.quote(path, safe="/")
+
+
+def write_file(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        handle.write(text)
+
+
+def utf16_units(text):
+    return len(text.encode("utf-16-le")) // 2
+
+
+def position_of(text, anchor, offset):
+    count = text.count(anchor)
+    expect(count == 1, "anchor %r occurs %d times" % (anchor, count))
+    prefix = text[: text.index(anchor) + offset]
+    return prefix.count("\n"), utf16_units(prefix.rsplit("\n", 1)[-1])
+
+
+def rng(start_line, start_char, end_line, end_char):
+    return {
+        "start": {"line": start_line, "character": start_char},
+        "end": {"line": end_line, "character": end_char},
+    }
+
+
+def loc(path, line, start, end):
+    return {"uri": uri_of(path), "range": rng(line, start, line, end)}
+
+
+def at(path, source, anchor, offset=0):
+    line, character = position_of(source, anchor, offset)
+    return {
+        "textDocument": {"uri": uri_of(path)},
+        "position": {"line": line, "character": character},
+    }
+
+
+def with_context(params, include_declaration):
+    result = dict(params)
+    result["context"] = {"includeDeclaration": include_declaration}
+    return result
+
+
+def node(name, kind, span, selection, children=()):
+    return {
+        "name": name,
+        "detail": "",
+        "kind": kind,
+        "range": rng(*span),
+        "selectionRange": rng(*selection),
+        "children": list(children),
+    }
+
+
+def error_code(reply):
+    return reply.get("error", {}).get("code")
+
+
+def published(publishes, path):
+    found = None
+    for uri, diagnostics in publishes:
+        if uri == uri_of(path):
+            found = diagnostics
+    expect(found is not None, "no publishDiagnostics for %s" % path)
+    return found
+
+
+class Server:
+    def __init__(self, name):
+        self.name = name
+        self.stderr = open(os.path.join(work, name + ".err"), "wb")
+        self.proc = subprocess.Popen(
+            [exe, "lsp"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=self.stderr,
+        )
+        self.buffer = b""
+        self.next_id = 100
+        self.replies = []
+        self.publishes = []
+        servers.append(self)
+
+    def write(self, data):
+        self.proc.stdin.write(data)
+        self.proc.stdin.flush()
+
+    def read_message(self):
+        while True:
+            end = self.buffer.find(b"\r\n\r\n")
+            if end >= 0:
+                length = None
+                for line in self.buffer[:end].split(b"\r\n"):
+                    key, _, value = line.partition(b":")
+                    if key.strip().lower() == b"content-length":
+                        length = int(value.strip())
+                expect(length is not None, "%s: output without Content-Length" % self.name)
+                start = end + 4
+                if len(self.buffer) >= start + length:
+                    body = self.buffer[start : start + length]
+                    self.buffer = self.buffer[start + length :]
+                    return json.loads(body.decode("utf-8"))
+            ready, _, _ = select.select([self.proc.stdout], [], [], TIMEOUT)
+            expect(ready, "%s: no output within %d seconds" % (self.name, TIMEOUT))
+            chunk = os.read(self.proc.stdout.fileno(), 65536)
+            expect(chunk, "%s: server closed stdout" % self.name)
+            self.buffer += chunk
+
+    def pump(self):
+        message = self.read_message()
+        if "method" in message:
+            if message["method"] == "textDocument/publishDiagnostics":
+                params = message["params"]
+                self.publishes.append((params["uri"], params["diagnostics"]))
+        else:
+            self.replies.append(message)
+
+    def wait_reply(self, ident):
+        while True:
+            for index, reply in enumerate(self.replies):
+                if reply.get("id") == ident:
+                    return self.replies.pop(index)
+            self.pump()
+
+    def next_reply(self):
+        while not self.replies:
+            self.pump()
+        return self.replies.pop(0)
+
+    def request(self, method, params=None):
+        self.next_id += 1
+        ident = self.next_id
+        message = {"jsonrpc": "2.0", "id": ident, "method": method}
+        if params is not None:
+            message["params"] = params
+        self.write(frame_of(message))
+        return self.wait_reply(ident)
+
+    def result(self, method, params=None):
+        reply = self.request(method, params)
+        expect("result" in reply, "%s: %s failed: %r" % (self.name, method, reply))
+        return reply["result"]
+
+    def expect_invalid(self, method, params, label):
+        reply = self.request(method, params)
+        expect(error_code(reply) == -32602, "%s: got %r" % (label, reply))
+        message = reply["error"].get("message")
+        expect(isinstance(message, str) and message != "", "%s: no message in %r" % (label, reply))
+
+    def notify(self, method, params=None):
+        message = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            message["params"] = params
+        self.write(frame_of(message))
+
+    def settle(self):
+        reply = self.request("fas/settle")
+        expect(error_code(reply) == -32601, "%s: settle got %r" % (self.name, reply))
+        expect(not self.replies, "%s: unexpected replies %r" % (self.name, self.replies))
+        publishes = self.publishes
+        self.publishes = []
+        return publishes
+
+    def finish(self, code):
+        self.notify("exit")
+        status = self.proc.wait(timeout=TIMEOUT)
+        expect(status == code, "%s: exit status %d, expected %d" % (self.name, status, code))
+
+
+def initialize(server):
+    reply = server.request(
+        "initialize", {"processId": None, "rootUri": None, "capabilities": {}}
+    )
+    expect("result" in reply, "%s: initialize failed: %r" % (server.name, reply))
+    result = reply["result"]
+    expect(result["capabilities"]["textDocumentSync"] == 1, "%s: textDocumentSync" % server.name)
+    expect(result["serverInfo"]["name"] == "fas", "%s: serverInfo name" % server.name)
+    expect(
+        re.match(r"^\d+\.\d+\.\d+", result["serverInfo"]["version"]),
+        "%s: serverInfo version" % server.name,
+    )
+    server.notify("initialized", {})
+    return result
+
+
+def shutdown(server):
+    reply = server.request("shutdown")
+    expect("result" in reply and reply["result"] is None, "%s: shutdown %r" % (server.name, reply))
+
+
+def did_open(server, path, text, version):
+    server.notify(
+        "textDocument/didOpen",
+        {"textDocument": {"uri": uri_of(path), "languageId": "fas", "version": version, "text": text}},
+    )
+
+
+def did_change(server, path, text, version):
+    server.notify(
+        "textDocument/didChange",
+        {"textDocument": {"uri": uri_of(path), "version": version}, "contentChanges": [{"text": text}]},
+    )
+
+
+def did_close(server, path):
+    server.notify("textDocument/didClose", {"textDocument": {"uri": uri_of(path)}})
+
+
+def expect_published(publishes, path, expected, label):
+    found = published(publishes, path)
+    expect(found == expected, "%s: got %r, expected %r" % (label, found, expected))
+
+
+
+def valid_range(value):
+    expect(isinstance(value, dict) and set(value) == {"start", "end"}, "range shape: %r" % (value,))
+    for point in (value["start"], value["end"]):
+        expect(isinstance(point, dict) and set(point) == {"line", "character"}, "position shape: %r" % (value,))
+        expect(type(point["line"]) is int and type(point["character"]) is int, "position type: %r" % (value,))
+    start = (value["start"]["line"], value["start"]["character"])
+    end = (value["end"]["line"], value["end"]["character"])
+    expect(start <= end, "range order: %r" % (value,))
+
+
+def hover_text(result):
+    if result is None:
+        return None
+    expect(set(result) == {"contents", "range"}, "hover keys: %r" % (result,))
+    valid_range(result["range"])
+    expect(set(result["contents"]) == {"kind", "value"}, "hover contents keys: %r" % (result,))
+    expect(result["contents"]["kind"] == "markdown", "hover kind: %r" % (result,))
+    return result["contents"]["value"]
+
+
+def expect_hover(s, path, source, anchor, offset, expected, label):
+    got = hover_text(s.result("textDocument/hover", at(path, source, anchor, offset)))
+    expect(got == expected, "%s: hover at %r+%d: got %r, expected %r" % (label, anchor, offset, got, expected))
+
+
+def c_oracle():
+    source = os.path.join(work, "layout.c")
+    binary = os.path.join(work, "layout")
+    write_file(source, C_LAYOUT)
+    subprocess.run([os.environ["REAL_CC"], "-std=c11", "-o", binary, source], check=True, timeout=TIMEOUT)
+    output = subprocess.run([binary], check=True, capture_output=True, text=True, timeout=TIMEOUT).stdout
+    rows = {}
+    for line in output.splitlines():
+        name, *values = line.split()
+        rows[name] = [int(value, 0) for value in values]
+    return rows
+
+
+def run_hover():
+    s = Server("hover")
+    result = initialize(s)
+    expect(result["capabilities"].get("hoverProvider") is True, "capability hoverProvider is not true")
+    folder = os.path.join(work, "hover")
+    main = os.path.join(folder, "main.fas")
+    text = join_lines(HOVER)
+    write_file(main, text)
+    did_open(s, main, text, 1)
+    expect_published(s.settle(), main, [], "open main")
+
+    oracle = c_oracle()
+    expect(oracle.get("Point") == [8, 4, 0, 4], "C layout of Point: %r" % (oracle.get("Point"),))
+    expect(oracle.get("Packet") == [32, 16, 0, 4, 8, 16, 24], "C layout of Packet: %r" % (oracle.get("Packet"),))
+    expect(oracle.get("Box") == [4, 4, 0], "C layout of Box: %r" % (oracle.get("Box"),))
+    expect(oracle.get("hex") == [0xFFFFFFFF, 0xFFFF], "C hex values: %r" % (oracle.get("hex"),))
+
+    for anchor, offset, expected in PINS:
+        expect_hover(s, main, text, anchor, offset, expected, "open")
+    strlen = hover_text(s.result("textDocument/hover", at(main, text, "strlen(c", 1)))
+    expect(
+        strlen is not None
+        and strlen.startswith(
+            "```fas\nextern fn strlen(arg0 addr) usize\n```\n\nnonnull: arg0; C string: arg0\n\n```c\nextern size_t strlen"
+        )
+        and re.search(r"\n\n[^\n]+:[0-9]+$", strlen) is not None,
+        "imported C name hover for strlen: %r" % (strlen,),
+    )
+
+    name = s.result("textDocument/hover", at(main, text, "return value", 7))
+    line, character = position_of(text, "return value", 7)
+    expect(name["range"] == rng(line, character, line, character + 5), "name range: %r" % (name,))
+    expression = s.result("textDocument/hover", at(main, text, "left + right", 5))
+    line, character = position_of(text, "left + right", 0)
+    expect(
+        expression["range"] == rng(line, character, line, character + 12),
+        "expression range: %r" % (expression,),
+    )
+
+    broken = list(HOVER)
+    row = next(index for index, line in enumerate(HOVER) if line.startswith("    width usize"))
+    broken[row] = "    width usize = lanes[u8, 16](1) +"
+    broken_text = join_lines(broken)
+    did_change(s, main, broken_text, 2)
+    expect(published(s.settle(), main) != [], "broken edit has no diagnostics")
+    expect_hover(s, main, broken_text, "width usize", 0, None, "broken edit")
+    expect_hover(s, main, broken_text, "chosen u32", 0, CHOSEN_T, "broken edit below")
+    expect_hover(s, main, broken_text, "const LIMIT", 6, LIMIT_T, "broken edit above")
+    expect_hover(s, main, broken_text, "+ LIMIT + NEGATIVE", 2, LIMIT_T, "broken edit above use")
+
+    inserted_text = join_lines(["broken one ("] + HOVER)
+    did_change(s, main, inserted_text, 3)
+    expect(published(s.settle(), main) != [], "inserted broken line has no diagnostics")
+    expect_hover(s, main, inserted_text, "broken one", 0, None, "inserted broken line")
+    expect_hover(s, main, inserted_text, "const LIMIT", 6, LIMIT_T, "shifted const")
+    expect_hover(s, main, inserted_text, "chosen u32", 0, CHOSEN_T, "shifted local")
+
+    did_change(s, main, text, 4)
+    expect_published(s.settle(), main, [], "fixed main")
+    expect_hover(s, main, text, "const LIMIT", 6, LIMIT_T, "fixed")
+
+    did_close(s, main)
+    s.settle()
+    shutdown(s)
+    s.finish(0)
+
+
+run_hover()
+PY
+
+echo "lsp_hover: hover kinds, layouts, and broken-edit mapping: ok"

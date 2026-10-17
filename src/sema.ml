@@ -126,7 +126,7 @@ let always_aggregate_type named_types generic_params ty =
         | Some Struct_name | Some (C_record_name (_, None)) -> true
         | Some (Alias_name ty) -> is_aggregate ty
         | _ -> false)
-    | Ast.Applied_type (name, _, _) ->
+    | Ast.Applied_type (name, _, _, _) ->
         List.assoc_opt name named_types = Some Generic_struct_name
     | _ -> false
   in
@@ -183,9 +183,9 @@ let validate_extern_c_signature ~named_types ~ret_source ~bodyless span params c
       (Printf.sprintf "extern \"C\" cannot return `%s` by value; use an output pointer"
          (Hir.ty_name ret))
 
-let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
+let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
     ?(c_nonnull_parameters = []) ?(c_string_parameters = [])
-    ?(c_alloc_size_parameters = []) ?(c_records = []) ?specializations program =
+    ?(c_alloc_size_parameters = []) ?(c_records = []) ?specializations ?index program =
   let global_names =
     List.filter_map
       (function Ast.Global { name; _ } -> Some name | _ -> None)
@@ -204,7 +204,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
   in
   let declaration = function
     | Ast.Use _ -> None
-    | Ast.Opaque { name; span } -> Some (name, Top_type, span)
+    | Ast.Opaque { name; span; _ } -> Some (name, Top_type, span)
     | Ast.Struct { name; name_span; _ } -> Some (name, Top_type, name_span)
     | Ast.Const { name; name_span; _ } -> Some (name, Top_const, name_span)
     | Ast.Global { name; span; _ } -> Some (name, Top_global, span)
@@ -255,6 +255,14 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
   let* top_level_bindings =
     validate_declarations 0 String_map.empty [] program.Ast.items
   in
+  Option.iter
+    (fun index ->
+      Sema_index.set_struct_source index
+        (Sema_specialization.specialization_source_name specializations
+           Struct_specialization);
+      Sema_index.declare_program index ~c_aliases:(List.map fst c_aliases) program)
+    index;
+  let source_program = program in
   let* () =
     Sema_invariants.check_declarations
       (List.map
@@ -264,7 +272,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
   in
   let rec collect_named_types seen acc = function
     | [] -> Ok (List.rev acc)
-    | Ast.Opaque { name; span } :: rest ->
+    | Ast.Opaque { name; span; _ } :: rest ->
         if String_set.mem name seen then
           error span (Printf.sprintf "duplicate type `%s`" name)
         else
@@ -468,7 +476,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
     let rec mentions_type target = function
       | Ast.Named_type (name, _) -> name = target
       | Ast.Handle ty | Ast.Array (_, ty) | Ast.Vec (_, ty) -> mentions_type target ty
-      | Ast.Applied_type (_, arguments, _) ->
+      | Ast.Applied_type (_, _, arguments, _) ->
           List.exists
             (function
               | Ast.Type_arg ty | Ast.Type_or_index ty -> mentions_type target ty
@@ -670,6 +678,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       string_pool = program_strings;
       ret_ty = Hir.Void;
       limits;
+      index = None;
     }
   in
   let* globals =
@@ -820,6 +829,7 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       string_pool = program_strings;
       ret_ty;
       limits;
+      index;
     }
   in
   let hir_params params =
@@ -850,19 +860,34 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
       Function_specialization name
   in
   let check_function_body ~name ~diagnostic_name ~description ~span ~diagnostic_span
-      ~params ~ret ~stmts ~linkage ~variadic ~extra_consts ~spec_depth ~spec_trace
-      ~require_return =
+      ~params ~param_spans ~ret ~stmts ~linkage ~variadic ~extra_consts ~spec_depth
+      ~spec_trace ~require_return =
     let context = make_context ~extra_consts ~spec_depth ~spec_trace ~ret_ty:ret in
+    Option.iter
+      (fun index ->
+        let template, instance =
+          match Sema_specialization.current_instantiation_frame spec_trace with
+          | Some frame ->
+              ( frame.template_name,
+                List.map Sema_specialization.render_diagnostic_argument frame.arguments
+              )
+          | None -> (name, [])
+        in
+        Sema_index.enter_body index ~template:(Some template) ~instance)
+      index;
     Sema_flow.set_loop_labels context.flow (loop_labels_in_block stmts);
     let* params =
       Result_list.map
-        (fun (param_name, param_ty) ->
+        (fun ((param_name, param_ty), param_span) ->
           let* binding = add_local param_name param_ty context span in
+          index_local context binding param_span;
           mark_init binding context;
           Ok binding)
-        params
+        (List.combine params param_spans)
     in
-    let* body = Sema_check.check_block context stmts in
+    let body = Sema_check.check_block context stmts in
+    Option.iter Sema_index.leave_body index;
+    let* body = body in
     let* () =
       if require_return && ret <> Hir.Void && (Hir.block_flow body).falls_through then
         error diagnostic_span
@@ -923,8 +948,11 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                   : Hir.func)
           | Ast.Statements stmts ->
               check_function_body ~name ~diagnostic_name ~description ~span
-                ~diagnostic_span:name_span ~params ~ret ~stmts ~linkage ~variadic
-                ~extra_consts:[] ~spec_depth ~spec_trace:trace ~require_return:true
+                ~diagnostic_span:name_span ~params
+                ~param_spans:
+                  (List.map (fun (param : Ast.param) -> param.span) func.params)
+                ~ret ~stmts ~linkage ~variadic ~extra_consts:[] ~spec_depth
+                ~spec_trace:trace ~require_return:true
         in
         let* func = result |> trace_result specializations trace in
         add_func func;
@@ -980,9 +1008,12 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
                   (specialization_source_name specializations Function_specialization
                      sp.name)
                 ~description:"specialized function" ~span
-                ~diagnostic_span:func.name_span ~params ~ret ~stmts
-                ~linkage:(hir_linkage linkage) ~variadic ~extra_consts:values
-                ~spec_depth:(sp.depth + 1) ~spec_trace:sp.trace ~require_return:true
+                ~diagnostic_span:func.name_span ~params
+                ~param_spans:
+                  (List.map (fun (param : Ast.param) -> param.span) source_params)
+                ~ret ~stmts ~linkage:(hir_linkage linkage) ~variadic
+                ~extra_consts:values ~spec_depth:(sp.depth + 1) ~spec_trace:sp.trace
+                ~require_return:true
             in
             let* func = result |> trace_result specializations sp.trace in
             add_func func;
@@ -1012,6 +1043,48 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
         | _ -> None)
       arrays_ordered
   in
+  Option.iter
+    (fun index ->
+      let instantiated =
+        Sema_specialization.fold_by_name
+          (fun _ specialization names ->
+            match
+              Sema_specialization.current_instantiation_frame specialization.trace
+            with
+            | Some frame -> String_set.add frame.template_name names
+            | None -> names)
+          specializations String_set.empty
+      in
+      Sema_index.reference_program index
+        ~instantiated:(fun name -> String_set.mem name instantiated)
+        source_program;
+      let struct_specializations =
+        Sema_specialization.fold_by_name
+          (fun (kind, generated) specialization acc ->
+            match kind with
+            | Sema_specialization.Struct_specialization ->
+                (generated, specialization) :: acc
+            | Sema_specialization.Function_specialization -> acc)
+          specializations []
+        |> List.sort (fun (a, _) (b, _) -> String.compare a b)
+      in
+      List.iter
+        (fun (generated, (specialization : Sema_specialization.specialization)) ->
+          match
+            Sema_specialization.current_instantiation_frame specialization.trace
+          with
+          | Some frame ->
+              Sema_index.record_struct_instance index ~generated
+                ~template:frame.template_name
+                ~args:
+                  (List.map Sema_specialization.render_diagnostic_argument
+                     frame.arguments)
+          | None -> ())
+        struct_specializations;
+      Sema_index.record_program index ~structs ~consts:hconsts ~globals;
+      Sema_index.finish index
+        ~render:(Sema_specialization.source_facing_text specializations))
+    index;
   Ok
     ({
        Hir.structs;
@@ -1022,3 +1095,16 @@ let check ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
        strings = List.rev program_strings.reversed;
      }
       : Hir.program)
+
+let check ?limits ?c_aliases ?c_unsupported ?c_nonnull_parameters ?c_string_parameters
+    ?c_alloc_size_parameters ?c_records ?specializations ?index program =
+  let run () =
+    check_program ?limits ?c_aliases ?c_unsupported ?c_nonnull_parameters
+      ?c_string_parameters ?c_alloc_size_parameters ?c_records ?specializations ?index
+      program
+  in
+  match index with
+  | None -> run ()
+  | Some _ ->
+      Sema_constants.index := index;
+      Fun.protect ~finally:(fun () -> Sema_constants.index := None) run

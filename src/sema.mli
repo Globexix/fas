@@ -7,5 +7,6 @@ val check :
   ?c_alloc_size_parameters:(string * int list list) list ->
   ?c_records:(string * string * string option) list ->
   ?specializations:Sema_specialization.t ->
+  ?index:Sema_index.t ->
   Ast.program ->
   (Hir.program, Diag.t list) result

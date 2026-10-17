@@ -316,7 +316,7 @@ let replay_nodes index (program : Ast.program) =
       | Sizeof_value (operand, _)
       | Cast (_, _, operand, _)
       | Handle_from_addr (_, operand, _)
-      | Designated_field (_, operand, _) ->
+      | Designated_field (_, _, operand, _) ->
           [ expr operand ]
       | Binary (_, left, right, _) | Designated_index (left, right, _) ->
           [ expr left; expr right ]
@@ -901,6 +901,7 @@ let cli_run args =
   | Ok (Cli.Run_program _) -> failwith "expected compiler invocation"
   | Ok (Cli.Check _) -> failwith "expected compiler invocation"
   | Ok (Cli.Perf _) -> failwith "expected compiler invocation"
+  | Ok (Cli.Lsp _) -> failwith "expected compiler invocation"
   | Error message -> failwith message
 
 let lower_of text =
@@ -5598,6 +5599,7 @@ let () =
              ty =
                Ast.Applied_type
                  ( "Mixed",
+                   _,
                    [
                      Ast.Name_arg ("T", _);
                      Ast.Type_arg Ast.Addr;

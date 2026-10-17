@@ -78,6 +78,7 @@ type context = {
   string_pool : string_pool;
   ret_ty : Hir.ty;
   limits : Limits.t;
+  index : Sema_index.t option;
 }
 
 let lookup_top_level name bindings =
@@ -138,7 +139,7 @@ let rec count_expanded_type_nodes ty cap total =
         total
     | Ast.Handle element | Ast.Array (_, element) | Ast.Vec (_, element) ->
         count_expanded_type_nodes element cap total
-    | Ast.Applied_type (_, arguments, _) ->
+    | Ast.Applied_type (_, _, arguments, _) ->
         List.fold_left
           (fun total argument ->
             if total >= cap then cap
@@ -190,7 +191,7 @@ let rec count_expanded_expr_type_nodes expr cap total =
     | Ast.Handle_from_addr (ty, value, _) ->
         count_expanded_expr_type_nodes value cap
           (count_expanded_type_nodes ty cap total)
-    | Ast.Sizeof (ty, _) | Ast.Alignof (ty, _) | Ast.Offsetof (ty, _, _) ->
+    | Ast.Sizeof (ty, _) | Ast.Alignof (ty, _) | Ast.Offsetof (ty, _, _, _) ->
         count_expanded_type_nodes ty cap total
     | Ast.Ternary (condition, yes, no, _) ->
         count_expanded_expr_type_nodes no cap
@@ -200,7 +201,7 @@ let rec count_expanded_expr_type_nodes expr cap total =
         List.fold_left
           (fun total element -> count_expanded_expr_type_nodes element cap total)
           total elements
-    | Ast.Designated_field (_, value, _) ->
+    | Ast.Designated_field (_, _, value, _) ->
         count_expanded_expr_type_nodes value cap total
     | Ast.Designated_index (index, value, _) ->
         count_expanded_expr_type_nodes value cap
@@ -442,3 +443,84 @@ let static_array_lengths bindings declarations =
                 Span.synthetic )
       | _ -> None)
     declarations
+
+let index_ident c name span =
+  match c.index with
+  | None -> ()
+  | Some index -> (
+      match lookup_local name c with
+      | Some (binding : binding) -> Sema_index.refer_local index span binding.id
+      | None -> Sema_index.refer_name index span name)
+
+let index_field c record field span =
+  match c.index with
+  | None -> ()
+  | Some index ->
+      Sema_index.refer_field index span
+        (specialization_source_name c.specializations Struct_specialization record)
+        field
+
+let index_designated_fields c record entries =
+  match c.index with
+  | None -> ()
+  | Some index ->
+      let record =
+        specialization_source_name c.specializations Struct_specialization record
+      in
+      List.iter
+        (function
+          | Ast.Designated_field (field, name_span, _, _) ->
+              Sema_index.refer_field index name_span record field
+          | _ -> ())
+        entries
+
+let index_type c span ty value =
+  match c.index with
+  | None -> ()
+  | Some index -> Sema_index.record_type index span (Hir.ty_name ty) value
+
+let index_expression c expression result =
+  match (c.index, result) with
+  | None, _ | _, Error _ -> ()
+  | Some _, Ok value -> (
+      let value_text =
+        match (expression, value) with
+        | Ast.Ident _, (Hir.EInt (v, ty, _) | Hir.EFloat (v, ty, _)) ->
+            Some (Sema_index.render_value ty v)
+        | Ast.Ident _, Hir.Null _ -> Some "null"
+        | _ -> None
+      in
+      index_type c (Ast.expr_span expression) (Hir.expr_ty value) value_text;
+      match expression with
+      | Ast.Ident (name, span) -> index_ident c name span
+      | Ast.Addr_of (Ast.Ident (name, span), _) -> (
+          match value with Hir.Function_address _ -> index_ident c name span | _ -> ())
+      | _ -> ())
+
+let index_local c (binding : binding) span =
+  match c.index with
+  | None -> ()
+  | Some index -> Sema_index.bind_local index binding.id binding.ty span
+
+let index_call c callee result =
+  match (c.index, callee, result) with
+  | ( Some index,
+      (Ast.Ident (name, span) | Ast.Generic_args (Ast.Ident (name, span), _, _)),
+      Ok value )
+    when Option.is_none (lookup_local name c) -> (
+      let specialization =
+        match value with
+        | Hir.Call (Hir.User symbol, _, _, _) ->
+            Option.bind (find_by_name c.specializations Function_specialization symbol)
+              (fun specialization -> current_instantiation_frame specialization.trace)
+        | _ -> None
+      in
+      match specialization with
+      | Some frame ->
+          Sema_index.refer_name index span frame.template_name;
+          Sema_index.record_generic_call index span
+            (List.map render_diagnostic_argument frame.arguments)
+      | None ->
+          Sema_index.refer_name index span
+            (specialization_source_name c.specializations Function_specialization name))
+  | _ -> ()

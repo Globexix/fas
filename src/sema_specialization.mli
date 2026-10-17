@@ -84,6 +84,10 @@ val pending_count : t -> int
 val requeue_materialized : t -> specialization -> unit
 val update_materialized : t -> specialization -> unit
 val diagnostic_type_of_ast : t -> Ast.ty -> diagnostic_type
+val current_instantiation_frame : instantiation_frame list -> instantiation_frame option
+val render_diagnostic_const : Hir.ty -> int64 -> string
+val render_diagnostic_argument : diagnostic_argument -> string
+val source_facing_text : t -> string -> string
 
 val trace_result :
   t -> instantiation_frame list -> ('a, Diag.t list) result -> ('a, Diag.t list) result

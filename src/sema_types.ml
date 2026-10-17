@@ -162,7 +162,8 @@ let similar_name_help visible_names name =
 
 let designated_record_entries record_name is_union fields entries span =
   let designator_span = function
-    | Ast.Designated_field (_, _, span) | Ast.Designated_index (_, _, span) -> Some span
+    | Ast.Designated_field (_, _, _, span) | Ast.Designated_index (_, _, span) ->
+        Some span
     | _ -> None
   in
   let designators = List.filter_map designator_span entries in
@@ -190,7 +191,7 @@ let designated_record_entries record_name is_union fields entries span =
                   (fun (field : Hir.field) ->
                     (field, List.assoc_opt field.name assigned))
                   fields))
-      | Ast.Designated_field (name, value, at) :: rest -> (
+      | Ast.Designated_field (name, _, value, at) :: rest -> (
           match List.find_opt (fun (field : Hir.field) -> field.name = name) fields with
           | None ->
               Error
@@ -228,7 +229,7 @@ let designated_record_entries record_name is_union fields entries span =
 let invalid_designator_error ty expression =
   let help, message, span =
     match expression with
-    | Ast.Designated_field (name, _, span) ->
+    | Ast.Designated_field (name, _, _, span) ->
         ( (match ty with
           | Hir.Array _ ->
               Some "initialize an array with positional entries `{a, b, ...}`"
@@ -368,7 +369,7 @@ and source_aggregate named_types kind make raw element =
 let rec named_type_span name = function
   | Ast.Named_type (candidate, span) when candidate = name -> Some span
   | Ast.Handle ty | Ast.Array (_, ty) | Ast.Vec (_, ty) -> named_type_span name ty
-  | Ast.Applied_type (_, arguments, _) ->
+  | Ast.Applied_type (_, _, arguments, _) ->
       List.find_map
         (function
           | Ast.Type_arg ty | Ast.Type_or_index ty -> named_type_span name ty
@@ -380,7 +381,7 @@ let rec misused_type_span = function
   | Ast.Named_type (name, span) when Option.is_some (Names.type_misuse_message name) ->
       Some (name, span)
   | Ast.Handle ty | Ast.Array (_, ty) | Ast.Vec (_, ty) -> misused_type_span ty
-  | Ast.Applied_type (_, arguments, _) ->
+  | Ast.Applied_type (_, _, arguments, _) ->
       List.find_map
         (function
           | Ast.Type_arg ty | Ast.Type_or_index ty -> misused_type_span ty | _ -> None)
@@ -388,7 +389,7 @@ let rec misused_type_span = function
   | _ -> None
 
 let rec source_type_span_opt = function
-  | Ast.Named_type (_, span) | Ast.Applied_type (_, _, span) -> Some span
+  | Ast.Named_type (_, span) | Ast.Applied_type (_, _, _, span) -> Some span
   | Ast.Handle ty -> source_type_span_opt ty
   | Ast.Array (length, ty) | Ast.Vec (length, ty) -> (
       match source_type_span_opt ty with
@@ -407,7 +408,7 @@ let rec opaque_source_span named_types seen = function
           Option.map (fun _ -> span) (opaque_source_span named_types (name :: seen) ty)
       | _ -> None)
   | Ast.Array (_, ty) | Ast.Vec (_, ty) -> opaque_source_span named_types seen ty
-  | Ast.Applied_type (_, arguments, _) ->
+  | Ast.Applied_type (_, _, arguments, _) ->
       List.find_map
         (function
           | Ast.Type_arg ty | Ast.Type_or_index ty ->
@@ -420,7 +421,7 @@ let rec vector_element_source_span fallback = function
   | Ast.Vec (_, (Ast.Vec _ as inner)) -> vector_element_source_span fallback inner
   | Ast.Vec (_, inner) -> Some (source_type_span fallback inner)
   | Ast.Array (_, inner) | Ast.Handle inner -> vector_element_source_span fallback inner
-  | Ast.Applied_type (_, arguments, _) ->
+  | Ast.Applied_type (_, _, arguments, _) ->
       List.find_map
         (function
           | Ast.Type_arg ty | Ast.Type_or_index ty ->
@@ -453,7 +454,7 @@ let source_ty_diag named_types span ty =
                     | Some value when value >= 0 -> bad_length_span element
                     | Some _ | None -> Some length.span)
                 | Ast.Handle inner -> bad_length_span inner
-                | Ast.Applied_type (_, arguments, _) ->
+                | Ast.Applied_type (_, _, arguments, _) ->
                     List.find_map
                       (function
                         | Ast.Type_arg ty | Ast.Type_or_index ty -> bad_length_span ty

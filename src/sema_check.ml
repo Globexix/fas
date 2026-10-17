@@ -1506,7 +1506,7 @@ let query_layout_in_context (c : context) span ty =
   query_layout ~structs:c.structs ~named_types:c.named_types
     ~generic_structs:c.generic_structs ~globals ~evaluate c.consts span ty
 
-let rec check_place (c : context) expr =
+let rec check_place_inner (c : context) expr =
   let visible_consts =
     List.filter (fun (name, _, _) -> Option.is_none (lookup_local name c)) c.consts
   in
@@ -1788,6 +1788,7 @@ let rec check_place (c : context) expr =
           match field_info c.structs sn n with
           | Some { unsupported_reason = Some reason; _ } -> error s reason
           | Some f ->
+              index_field c sn n s;
               Ok
                 {
                   expr =
@@ -1813,6 +1814,7 @@ let rec check_place (c : context) expr =
               match field_info c.structs sn n with
               | Some { unsupported_reason = Some reason; _ } -> error s reason
               | Some f ->
+                  index_field c sn n s;
                   Ok
                     {
                       expr = Hir.Field (base.expr, n, f.ty, f.offset, s);
@@ -1859,6 +1861,17 @@ let rec check_place (c : context) expr =
       let* checked = check_expr c None e in
       Ok { expr = checked; root = None; path = None }
 
+and check_place (c : context) expr =
+  let result = check_place_inner c expr in
+  (match (c.index, expr, result) with
+  | Some _, Ast.Ident (name, span), Ok place ->
+      index_ident c name span;
+      index_type c span (Hir.expr_ty place.expr) None
+  | Some _, _, Ok place ->
+      index_type c (Ast.expr_span expr) (Hir.expr_ty place.expr) None
+  | _ -> ());
+  result
+
 and raw_offset_expr c s access_ty index_payload =
   match index_payload with
   | None -> Ok (Hir.EInt (0L, Hir.Int Hir.Usize, s))
@@ -1888,6 +1901,7 @@ and check_expr ?destination ?(allow_widen = true) (c : context) expected express
   c.expression_depth <- previous_depth + 1;
   let result = check_expr_inner ?destination c expected expression in
   c.expression_depth <- previous_depth;
+  index_expression c expression result;
   let result =
     match (allow_widen, expected, result) with
     | true, Some target, Ok value -> (
@@ -2507,13 +2521,15 @@ and check_expr_inner ?destination (c : context) expected expression =
       in
       let* _, a = layout_diag type_span structs t in
       Ok (Hir.Alignof (t, a, s))
-  | Ast.Offsetof (source_ty, n, s) -> (
+  | Ast.Offsetof (source_ty, n, field_span, s) -> (
       let* t, structs = query_layout_in_context c s source_ty in
       match t with
       | Hir.Struct sn -> (
           match field_info structs sn n with
           | Some { unsupported_reason = Some reason; _ } -> error s reason
-          | Some f -> Ok (Hir.Offsetof (t, n, f.offset, s))
+          | Some f ->
+              index_field c (Sema_constants.layout_source sn) n field_span;
+              Ok (Hir.Offsetof (t, n, f.offset, s))
           | None ->
               missing_field_error ~record_name:(Ast.type_name source_ty) c s n
                 (Hir.Struct sn))
@@ -2803,6 +2819,8 @@ and check_initializer ?(constant = false) ?destination c expected expression =
                     Sema_types.designated_record_entries name definition.is_union
                       definition.fields entries span
                   in
+                  if Option.is_some designated then
+                    index_designated_fields c name entries;
                   match designated with
                   | Some fields -> (
                       match
@@ -2980,7 +2998,7 @@ and generic_const_argument span = function
   | Ast.Const_arg expression -> Ok expression
   | Ast.Name_arg (name, span) -> Ok (Ast.Ident (name, span))
   | Ast.Type_or_index ty -> Ok (Ast.index_expression ty)
-  | Ast.Type_arg (Ast.Applied_type (name, [ argument ], _)) ->
+  | Ast.Type_arg (Ast.Applied_type (name, _, [ argument ], _)) ->
       let* index = generic_const_argument span argument in
       Ok (Ast.Select (Ast.Ident (name, span), [ Ast.Const_arg index ], span))
   | Ast.Type_arg _ -> error span "expected a const argument"
@@ -3228,6 +3246,11 @@ and check_float_math c expected operation name args s =
         Ok (Hir.Call (Hir.Builtin (Hir.Float_math builtin), checked, operand_ty, s))
 
 and check_call c expected fn args s =
+  let result = check_call_inner c expected fn args s in
+  index_call c fn result;
+  result
+
+and check_call_inner c expected fn args s =
   match fn with
   | Ast.Generic_args (Ast.Ident ("call_addr", _), generic_args, application_span) -> (
       let* result_ty =
@@ -4187,7 +4210,14 @@ and check_actuals ?callee c policy span formals actuals =
   in
   loop 1 [] formals actuals
 
-let check_target (c : context) = function
+let rec check_target (c : context) target =
+  let result = check_target_inner c target in
+  (match (target, result) with
+  | Ast.Target_ident (name, span), Ok _ -> index_ident c name span
+  | _ -> ());
+  result
+
+and check_target_inner (c : context) = function
   | Ast.Target_ident (n, span) -> (
       match lookup_local n c with
       | Some b when Option.is_some (Sema_flow.raw_view_type c.flow b) ->
@@ -4389,7 +4419,7 @@ let rec expression_mentions_name name = function
       || expression_mentions_name name yes
       || expression_mentions_name name no
   | Ast.Array_lit (values, _) -> List.exists (expression_mentions_name name) values
-  | Ast.Designated_field (_, value, _) -> expression_mentions_name name value
+  | Ast.Designated_field (_, _, value, _) -> expression_mentions_name name value
   | Ast.Designated_index (index, value, _) ->
       expression_mentions_name name index || expression_mentions_name name value
   | Ast.Int_lit _ | Ast.Float_lit _ | Ast.Bool_lit _ | Ast.Null _ | Ast.String_lit _
@@ -4430,7 +4460,7 @@ let rec expression_takes_name_address name = function
       || expression_takes_name_address name yes
       || expression_takes_name_address name no
   | Ast.Array_lit (values, _) -> List.exists (expression_takes_name_address name) values
-  | Ast.Designated_field (_, value, _) -> expression_takes_name_address name value
+  | Ast.Designated_field (_, _, value, _) -> expression_takes_name_address name value
   | Ast.Designated_index (index, value, _) ->
       expression_takes_name_address name index
       || expression_takes_name_address name value
@@ -4756,6 +4786,11 @@ and check_stmt (c : context) = function
             Ok (Some initialized)
       in
       let* binding = add_local name t c span in
+      index_local c binding span;
+      (match (init, x) with
+      | Some e, Some (`Aggregate (ty, _, _, _)) ->
+          index_type c (Ast.expr_span e) ty None
+      | _ -> ());
       (match x with
       | Some (`Value value) ->
           mark_init binding c;
@@ -4773,7 +4808,7 @@ and check_stmt (c : context) = function
                ( binding,
                  aggregate_construction ~zero_padding ty entries construction_span,
                  span )))
-  | Ast.View { name; place; span } -> (
+  | Ast.View { name; name_span; place; span } -> (
       let* () = ensure_new_local name c span in
       match place with
       | Ast.Select (base, [ type_payload; Ast.Name_arg ("..", _) ], select_span) ->
@@ -4793,6 +4828,7 @@ and check_stmt (c : context) = function
             let access = view_access_of_expr c pointer in
             let readonly_name = readonly_storage_name c pointer in
             let* binding = add_local name Hir.Addr c span in
+            index_local c binding name_span;
             mark_init binding c;
             Sema_flow.set_address c.flow binding address;
             Sema_flow.bind_raw_view c.flow binding element access readonly_name;
@@ -4841,6 +4877,7 @@ and check_stmt (c : context) = function
             in
             let* () = check_place_access c span ~write:false place_info.expr in
             let* binding = add_local name (Hir.expr_ty place_info.expr) c span in
+            index_local c binding name_span;
             let readonly_name = readonly_storage_name c place_info.expr in
             let root, path =
               match place_info.expr with

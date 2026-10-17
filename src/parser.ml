@@ -279,6 +279,18 @@ module P = struct
   let ( let* ) = bind
   let span p = (peek p).Token.span
 
+  let extent p (start : Span.t) =
+    let rec last i =
+      if i < 0 then start
+      else
+        match p.tokens.(i).Token.kind with
+        | Token.Newline | Token.Semi | Token.Eof -> last (i - 1)
+        | _ -> p.tokens.(i).Token.span
+    in
+    let stop = last (p.pos - 1) in
+    if stop.Span.end_offset < start.Span.start_offset then start
+    else { start with Span.end_offset = stop.Span.end_offset }
+
   let c_type_word = function
     | "char" | "int" | "short" | "long" | "unsigned" | "signed" | "float" | "double"
     | "void" ->
@@ -431,7 +443,7 @@ module P = struct
         if at p Token.Lbracket then
           let span = span p in
           let* args = generic_args p in
-          Ok (Ast.Applied_type (s, args, span))
+          Ok (Ast.Applied_type (s, token.span, args, span))
         else Ok (Ast.Named_type (s, token.span))
     | t -> Error [ Diag.error (span p) ("expected a type, found " ^ Token.show t) ]
 
@@ -635,21 +647,26 @@ module P = struct
           let* () = end_stmt p in
           Ok [ Ast.Use { path; c_header = None; span = path_span } ]
     | Token.Kw_const ->
+        let start = span p in
         let* x = const_item p in
-        Ok [ x ]
+        Ok [ Ast.with_extent (extent p start) x ]
     | Token.Kw_var ->
+        let start = span p in
         let* x = global_item p Ast.Internal_global in
-        Ok [ x ]
+        Ok [ Ast.with_extent (extent p start) x ]
     | Token.Kw_struct ->
+        let start = span p in
         let* x = struct_item p in
-        Ok [ x ]
+        Ok [ Ast.with_extent (extent p start) x ]
     | Token.Kw_opaque ->
+        let start = span p in
         let* x = opaque_item p in
-        Ok [ x ]
+        Ok [ Ast.with_extent (extent p start) x ]
     | Token.Kw_extern -> extern_block p
     | Token.Kw_fn ->
+        let start = span p in
         let* x = fn_item p false in
-        Ok [ x ]
+        Ok [ Ast.with_extent (extent p start) x ]
     | Token.Ident "static" ->
         error (span p)
           "C `static` is not a Fas keyword; use `fn` for a function or `var` for a \
@@ -709,11 +726,12 @@ module P = struct
           else expr p
         in
         let* () = end_stmt p in
-        Ok (Ast.Const { name; name_span; ty_span; ty; value; span = s })
+        Ok (Ast.Const { name; name_span; ty_span; ty; value; span = s; extent = s })
 
   and global_item p linkage =
     let s = span p in
     let* () = expected p Token.Kw_var in
+    let name_span = span p in
     let* name = ident p in
     let* () =
       if at p Token.Assign then
@@ -736,7 +754,8 @@ module P = struct
       | (Ast.Export_c | Ast.Import_c | Ast.Import_const_c), None -> Ast.Import_c
     in
     let* () = end_stmt p in
-    Ok (Ast.Global { name; ty_span; ty; init; linkage; span = s })
+    Ok
+      (Ast.Global { name; name_span; ty_span; ty; init; linkage; span = s; extent = s })
 
   and struct_item p =
     let s = span p in
@@ -817,14 +836,16 @@ module P = struct
            size = None;
            is_union = false;
            span = s;
+           extent = s;
          })
 
   and opaque_item p =
     let s = span p in
     let* () = expected p Token.Kw_opaque in
+    let name_span = span p in
     let* name = ident p in
     let* () = end_stmt p in
-    Ok (Ast.Opaque { name; span = s })
+    Ok (Ast.Opaque { name; name_span; span = s; extent = s })
 
   and generic_params p =
     if not (at p Token.Lbracket) then Ok []
@@ -939,12 +960,17 @@ module P = struct
           let* () = end_stmt p in
           Ok (List.rev acc)
         else if at p Token.Kw_var then
+          let start = span p in
           let* global = global_item p Ast.Export_c in
-          ds (global :: acc)
+          ds (Ast.with_extent (extent p start) global :: acc)
         else
+          let start = span p in
           let* x = fn_item p true in
           match x with
-          | Ast.Func f -> ds (Ast.Func { f with linkage = Ast.External_c } :: acc)
+          | Ast.Func f ->
+              ds
+                (Ast.Func { f with linkage = Ast.External_c; extent = extent p start }
+                :: acc)
           | _ -> Error [ Diag.error s "invalid extern declaration" ]
       in
       ds []
@@ -989,6 +1015,7 @@ module P = struct
                  variadic = false;
                  generic_params;
                  span = s;
+                 extent = s;
                })
       else
         let* () = end_stmt p in
@@ -1005,6 +1032,7 @@ module P = struct
                variadic = var;
                generic_params;
                span = s;
+               extent = s;
              })
     else
       let* body = block p in
@@ -1021,6 +1049,7 @@ module P = struct
              variadic = var;
              generic_params;
              span = s;
+             extent = s;
            })
 
   and block p =
@@ -1229,11 +1258,12 @@ module P = struct
   and view_statement p consume_end =
     let s = span p in
     ignore (bump p);
+    let name_span = span p in
     let* name = ident p in
     let* () = expected p Token.Assign in
     let* place = expr p in
     let* () = finish_statement p consume_end in
-    Ok (Ast.View { name; place; span = s })
+    Ok (Ast.View { name; name_span; place; span = s })
 
   and declaration_with_end p consume_end =
     let s = span p in
@@ -1705,10 +1735,10 @@ module P = struct
               if at p Token.Dot then
                 let designator_span = span p in
                 let* () = expected p Token.Dot in
-                let* name, _ = field_ident p in
+                let* name, name_span = field_ident p in
                 let* () = expected p Token.Assign in
                 let* value = expr p in
-                Ok (Ast.Designated_field (name, value, designator_span))
+                Ok (Ast.Designated_field (name, name_span, value, designator_span))
               else if at p Token.Lbracket then
                 let designator_span = span p in
                 let* () = expected p Token.Lbracket in
@@ -1898,9 +1928,10 @@ module P = struct
                     let* t = ty p in
                     if operation = Names.Offsetof then
                       let* () = expected p Token.Comma in
+                      let field_span = (peek p).span in
                       let* f = ident p in
                       let* () = expected p Token.Rbracket in
-                      Ok (Ast.Offsetof (t, f, sp))
+                      Ok (Ast.Offsetof (t, f, field_span, sp))
                     else
                       let* () = expected p Token.Rbracket in
                       Ok

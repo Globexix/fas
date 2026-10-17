@@ -239,6 +239,10 @@ type layout_query_state = {
 }
 
 let active_layout_query_state = ref None
+let layout_sources : (string, string) Stdlib.Hashtbl.t = Stdlib.Hashtbl.create 16
+
+let layout_source name =
+  Option.value ~default:name (Stdlib.Hashtbl.find_opt layout_sources name)
 
 let rec query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate consts
     span ty =
@@ -254,7 +258,9 @@ let rec query_layout ~structs ~named_types ~generic_structs ~globals ~evaluate c
             active = ref [];
           } )
   in
-  if owns_state then active_layout_query_state := Some state;
+  if owns_state then (
+    active_layout_query_state := Some state;
+    Stdlib.Hashtbl.reset layout_sources);
   Fun.protect
     ~finally:(fun () -> if owns_state then active_layout_query_state := None)
     (fun () ->
@@ -327,7 +333,7 @@ and query_layout_in_state state ~named_types ~generic_structs ~globals ~evaluate
             | _ ->
                 source_ty_with_values ~globals named_types (const_bindings @ consts) at
                   (Ast.Named_type (name, type_span))))
-    | Ast.Applied_type (name, arguments, application_span) ->
+    | Ast.Applied_type (name, _, arguments, application_span) ->
         let* structure =
           instantiate type_bindings const_bindings name application_span arguments
         in
@@ -475,6 +481,7 @@ and query_layout_in_state state ~named_types ~generic_structs ~globals ~evaluate
               let instance = Printf.sprintf "__const_layout_%d" !next_instance in
               incr next_instance;
               Hashtbl.add instances key instance;
+              Stdlib.Hashtbl.replace layout_sources instance name;
               let previous_active = !active in
               active := (instance, name) :: previous_active;
               let fields =
@@ -551,9 +558,25 @@ and query_layout_in_state state ~named_types ~generic_structs ~globals ~evaluate
   let* ty = resolve_type !active_layout_type_bindings [] span ty in
   Ok (ty, !definitions)
 
+let index : Sema_index.t option ref = ref None
+
 let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
     ?(arrays = []) ?(array_lengths = []) ?(globals = []) ?resolve consts expected
     ?(check_only = false) ?(validate_dead = true) ?(allow_widen = true) expression =
+  let result =
+    const_expr_widened ~structs ~named_types ~generic_structs ~arrays ~array_lengths
+      ~globals ?resolve consts expected ~check_only ~validate_dead ~allow_widen
+      expression
+  in
+  (match (!index, result) with
+  | Some index, Ok (ty, value) ->
+      Sema_index.record_const index (Ast.expr_span expression) ty value
+  | _ -> ());
+  result
+
+and const_expr_widened ~structs ~named_types ~generic_structs ~arrays ~array_lengths
+    ~globals ?resolve consts expected ~check_only ~validate_dead ~allow_widen expression
+    =
   let result =
     const_expr_inner ~structs ~named_types ~generic_structs ~arrays ~array_lengths
       ~globals ?resolve consts expected ~check_only ~validate_dead expression
@@ -1418,7 +1441,7 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
       in
       let* _, n = layout_diag type_span layout_structs t in
       Ok (Hir.Int Hir.Usize, Int64.of_int n)
-  | Ast.Offsetof (source_ty, n, s) -> (
+  | Ast.Offsetof (source_ty, n, field_span, s) -> (
       let evaluate values expression expected =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
           ~globals ?resolve values expected ~check_only ~validate_dead expression
@@ -1431,7 +1454,12 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
       | Hir.Struct sn -> (
           match field_info layout_structs sn n with
           | Some { unsupported_reason = Some reason; _ } -> error s reason
-          | Some f -> Ok (Hir.Int Hir.Usize, Int64.of_int f.offset)
+          | Some f ->
+              Option.iter
+                (fun index ->
+                  Sema_index.refer_field index field_span (layout_source sn) n)
+                !index;
+              Ok (Hir.Int Hir.Usize, Int64.of_int f.offset)
           | None ->
               error s
                 (Sema_types.missing_field_message ~record_name:(Ast.type_name source_ty)

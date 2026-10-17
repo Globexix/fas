@@ -143,7 +143,7 @@ let rec diagnostic_type_of_ast specializations = function
           | Some frame -> Diagnostic_applied (frame.template_name, frame.arguments)
           | None -> Diagnostic_named name)
       | None -> Diagnostic_named name)
-  | Ast.Applied_type (name, arguments, _) ->
+  | Ast.Applied_type (name, _, arguments, _) ->
       let arguments =
         List.map
           (function
@@ -405,7 +405,7 @@ let rec specialization_type_key = function
       "vec" ^ length ^ "_" ^ string_of_int (String.length key) ^ "_" ^ key
   | Ast.Named_type (name, _) ->
       "named" ^ string_of_int (String.length name) ^ "_" ^ name
-  | Ast.Applied_type (name, _, _) ->
+  | Ast.Applied_type (name, _, _, _) ->
       "applied" ^ string_of_int (String.length name) ^ "_" ^ name
 
 let mangle_type_specialization base arguments =

@@ -9,7 +9,7 @@ and ty =
   | Array of aggregate_length * ty
   | Vec of aggregate_length * ty
   | Named_type of string * Span.t
-  | Applied_type of string * generic_arg list * Span.t
+  | Applied_type of string * Span.t * generic_arg list * Span.t
   | Void
 
 and int_kind = U8 | U16 | U32 | U64 | I8 | I16 | I32 | I64 | Usize | Isize
@@ -44,11 +44,11 @@ and expr =
   | Sizeof of ty * Span.t
   | Sizeof_value of expr * Span.t
   | Alignof of ty * Span.t
-  | Offsetof of ty * string * Span.t
+  | Offsetof of ty * string * Span.t * Span.t
   | Splat of expr * Span.t
   | Ternary of expr * expr * expr * Span.t
   | Array_lit of expr list * Span.t
-  | Designated_field of string * expr * Span.t
+  | Designated_field of string * Span.t * expr * Span.t
   | Designated_index of expr * expr * Span.t
 
 and unop = Neg | Not | Bit_not
@@ -83,7 +83,7 @@ and stmt =
       init : expr option;
       span : Span.t;
     }
-  | View of { name : string; place : expr; span : Span.t }
+  | View of { name : string; name_span : Span.t; place : expr; span : Span.t }
   | Assign of assign_target * expr * Span.t
   | Compound_assign of assign_target * binop * expr * Span.t * Span.t
   | Return of expr option * Span.t
@@ -136,14 +136,17 @@ and item =
       ty : ty;
       value : expr;
       span : Span.t;
+      extent : Span.t;
     }
   | Global of {
       name : string;
+      name_span : Span.t;
       ty_span : Span.t;
       ty : ty;
       init : expr option;
       linkage : global_linkage;
       span : Span.t;
+      extent : Span.t;
     }
   | Struct of {
       name : string;
@@ -154,8 +157,9 @@ and item =
       size : int option;
       is_union : bool;
       span : Span.t;
+      extent : Span.t;
     }
-  | Opaque of { name : string; span : Span.t }
+  | Opaque of { name : string; name_span : Span.t; span : Span.t; extent : Span.t }
   | Func of {
       name : string;
       name_span : Span.t;
@@ -167,12 +171,21 @@ and item =
       variadic : bool;
       generic_params : generic_param list;
       span : Span.t;
+      extent : Span.t;
     }
 
 type program = { items : item list }
 
 let const_item name name_span ty value span =
-  Const { name; name_span; ty_span = name_span; ty; value; span }
+  Const { name; name_span; ty_span = name_span; ty; value; span; extent = span }
+
+let with_extent extent = function
+  | Const c -> Const { c with extent }
+  | Global g -> Global { g with extent }
+  | Struct s -> Struct { s with extent }
+  | Opaque o -> Opaque { o with extent }
+  | Func f -> Func { f with extent }
+  | Use _ as item -> item
 
 let stored_expr_span = function
   | Int_lit (_, s)
@@ -190,11 +203,11 @@ let stored_expr_span = function
   | Sizeof (_, s)
   | Sizeof_value (_, s)
   | Alignof (_, s)
-  | Offsetof (_, _, s)
+  | Offsetof (_, _, _, s)
   | Splat (_, s)
   | Ternary (_, _, _, s)
   | Array_lit (_, s)
-  | Designated_field (_, _, s)
+  | Designated_field (_, _, _, s)
   | Designated_index (_, _, s) ->
       s
   | C_dereference (_, _, s) | C_dot_star (_, s) -> s
@@ -240,7 +253,7 @@ let rec expr_leading_operator = function
 
 let rec index_expression = function
   | Named_type (name, span) -> Ident (name, span)
-  | Applied_type (name, arguments, span) ->
+  | Applied_type (name, _, arguments, span) ->
       Select (Ident (name, span), List.map index_argument arguments, span)
   | _ -> failwith "internal error: ambiguous index requires a named type application"
 
@@ -300,7 +313,7 @@ let rec type_name = function
   | Array (n, t) -> "arr[" ^ n.text ^ ", " ^ type_name t ^ "]"
   | Vec (n, t) -> "vec[" ^ n.text ^ ", " ^ type_name t ^ "]"
   | Named_type (s, _) -> s
-  | Applied_type (name, args, _) ->
+  | Applied_type (name, _, args, _) ->
       name ^ "[" ^ String.concat ", " (List.map generic_arg_name args) ^ "]"
   | Void -> "void"
 
@@ -411,12 +424,12 @@ and expr_name = function
   | Sizeof (t, _) -> "sizeof[" ^ type_name t ^ "]"
   | Sizeof_value (e, _) -> "sizeof " ^ expr_name_child 11 false e
   | Alignof (t, _) -> "alignof[" ^ type_name t ^ "]"
-  | Offsetof (t, f, _) -> "offsetof[" ^ type_name t ^ ", " ^ f ^ "]"
+  | Offsetof (t, f, _, _) -> "offsetof[" ^ type_name t ^ ", " ^ f ^ "]"
   | Splat (e, _) -> "splat(" ^ expr_name e ^ ")"
   | Ternary (c, a, b, _) ->
       "if " ^ expr_name c ^ " { " ^ expr_name a ^ " } else { " ^ expr_name b ^ " }"
   | Array_lit (xs, _) -> "{" ^ String.concat ", " (List.map expr_name xs) ^ "}"
-  | Designated_field (name, value, _) -> "." ^ name ^ " = " ^ expr_name value
+  | Designated_field (name, _, value, _) -> "." ^ name ^ " = " ^ expr_name value
   | Designated_index (index, value, _) ->
       "[" ^ expr_name index ^ "] = " ^ expr_name value
 
@@ -489,7 +502,7 @@ let render_program program =
         emit_ty inner;
         text "]"
     | Named_type (name, _) -> add_name name
-    | Applied_type (name, args, _) ->
+    | Applied_type (name, _, args, _) ->
         add_name name;
         text "[";
         emit_comma_list emit_generic_arg args;
@@ -623,7 +636,7 @@ let render_program program =
         text "alignof[";
         emit_ty ty;
         text "]"
-    | Offsetof (ty, name, _) ->
+    | Offsetof (ty, name, _, _) ->
         text "offsetof[";
         emit_ty ty;
         text ", ";
@@ -643,7 +656,7 @@ let render_program program =
         text "{";
         emit_comma_list emit_expr xs;
         text "}"
-    | Designated_field (name, value, _) ->
+    | Designated_field (name, _, value, _) ->
         text ".";
         add_name name;
         text " = ";
@@ -897,7 +910,7 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
           count at;
           go_expr length.expression;
           go_ty at inner
-      | Applied_type (_, args, span) ->
+      | Applied_type (_, _, args, span) ->
           count span;
           List.iter (go_generic_arg span) args
   and go_generic_arg at = function
@@ -941,14 +954,14 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
           go_expr x
       | Sizeof (ty, _) | Alignof (ty, _) -> go_ty at ty
       | Sizeof_value (expression, _) -> go_expr expression
-      | Offsetof (ty, _, _) -> go_ty at ty
+      | Offsetof (ty, _, _, _) -> go_ty at ty
       | Splat (x, _) -> go_expr x
       | Ternary (c, a, b, _) ->
           go_expr c;
           go_expr a;
           go_expr b
       | Array_lit (xs, _) -> List.iter go_expr xs
-      | Designated_field (_, value, _) -> go_expr value
+      | Designated_field (_, _, value, _) -> go_expr value
       | Designated_index (index, value, _) ->
           go_expr index;
           go_expr value)

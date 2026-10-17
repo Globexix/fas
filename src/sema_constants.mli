@@ -5,6 +5,8 @@ type unresolved_shape =
   | Unresolved_null
 
 val unresolved_shape_of : Ast.expr -> unresolved_shape option
+val index : Sema_index.t option ref
+val layout_source : string -> string
 
 val const_expr :
   ?structs:Hir.struct_def list ->
