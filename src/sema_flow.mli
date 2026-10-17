@@ -90,7 +90,10 @@ val finish_block_scope : t -> (unit, Diag.t list) result
 val finish_statement : t -> before:snapshot -> terminates:bool -> unit
 val validate_return : t -> Span.t -> (unit, Diag.t list) result
 val check_loop_label : t -> string * Span.t -> (unit, Diag.t list) result
-val begin_loop : ?label:string -> ?induction_binding:int -> t -> loop
+
+val begin_loop :
+  ?label:string -> ?induction_binding:int -> ?induction_grid:int64 * int64 -> t -> loop
+
 val end_loop : t -> unit
 
 val finish_while :
@@ -113,6 +116,7 @@ val record_continue :
 
 val invalidate_induction_on_return : t -> unit
 val induction_valid : t -> int -> bool
+val induction_grid : t -> int -> (int64 * int64) option
 val begin_defer : t -> Span.t -> (defer_capture, Diag.t list) result
 
 val finish_defer :

@@ -43,6 +43,7 @@ type loop_init_flow = {
   mutable break_states : snapshot list;
   mutable continue_states : snapshot list;
   induction_binding : int option;
+  induction_grid : (int64 * int64) option;
   mutable induction_valid : bool;
   mutable stepping : bool;
 }
@@ -847,7 +848,7 @@ let check_loop_label flow (name, span) =
     error span (Printf.sprintf "loop label `%s` shadows an enclosing loop label" name)
   else Ok ()
 
-let begin_loop ?label ?induction_binding flow =
+let begin_loop ?label ?induction_binding ?induction_grid flow =
   let loop =
     {
       keep_defer_depth = List.length flow.defer_scopes;
@@ -857,6 +858,7 @@ let begin_loop ?label ?induction_binding flow =
       break_states = [];
       continue_states = [];
       induction_binding;
+      induction_grid;
       induction_valid = Option.is_some induction_binding;
       stepping = false;
     }
@@ -977,6 +979,15 @@ let note_binding_write flow id =
 let induction_valid flow id =
   List.exists
     (fun loop -> loop.induction_binding = Some id && loop.induction_valid)
+    flow.loop_init_flows
+
+let induction_grid flow id =
+  List.find_map
+    (fun loop ->
+      match loop.induction_grid with
+      | Some grid when loop.induction_binding = Some id && loop.induction_valid ->
+          Some grid
+      | _ -> None)
     flow.loop_init_flows
 
 let begin_defer flow span =

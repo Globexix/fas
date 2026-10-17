@@ -1,0 +1,152 @@
+extern "C" {
+  fn printf(fmt addr, ...) i32
+}
+
+const T arr[5, i32] = {10, 20, 30, 40, 50}
+var G arr[5, i32] = {3, 1, 4, 1, 5}
+struct P { x i32, y i32, z i32 }
+var POS arr[8, P]
+
+fn main() i32 {
+  k i32 = 0
+  while T[k] != 40 {
+    k += 1
+    if k > 4 {
+      break
+    }
+  }
+  printf(c"while-const %d\n", k)
+
+  g usize = 0
+  while G[g] != 5 {
+    g += 1
+  }
+  printf(c"while-global %lu\n", g)
+
+  loc arr[5, i32]
+  loc[0] = 7
+  loc[1] = 8
+  loc[2] = 9
+  loc[3] = 10
+  loc[4] = 11
+  j i32 = 0
+  while loc[j] != 10 {
+    j += 1
+  }
+  printf(c"while-local %d\n", j)
+
+  u usize = 0
+  while T[u] != 30 {
+    u += 1
+  }
+  printf(c"while-usize %lu\n", u)
+
+  s i32 = 0
+  while T[s + 0] != 50 {
+    s += 1
+  }
+  printf(c"while-plus-zero %d\n", s)
+
+  hits i32 = 0
+  for f i32 = 0; f < 5 && T[f] != 40; f += 1 {
+    hits += 1
+  }
+  printf(c"for-cond %d\n", hits)
+
+  n usize = 5
+  m usize = 0
+  while m < n && T[m] != 30 {
+    m += 1
+  }
+  printf(c"bound-match %lu\n", m)
+
+  b usize = 0
+  while b < n && T[b] != 99 {
+    b += 1
+  }
+  printf(c"bound-miss %lu\n", b)
+
+  i i32 = 0
+  while i < 3 {
+    p i32 = 0
+    while p < 5 && T[p] != 20 * (i + 1) {
+      p += 1
+    }
+    printf(c"nested %d\n", p)
+    i += 1
+  }
+
+  k2 i32 = 0
+  w i32 = 0
+  while k2 < 5 && T[k2] != 50 {
+    k2 += 1
+    if k2 == 2 {
+      continue
+    }
+    w += 1
+  }
+  printf(c"while-continue %d %d\n", k2, w)
+
+  c i32 = 0
+  for q i32 = 0; q < 5 && T[q] != 40; q += 1 {
+    if q == 1 {
+      continue
+    }
+    c += 1
+  }
+  printf(c"for-continue %d\n", c)
+
+  acc i32 = 0
+  for x usize = 0; x < 5; x += 1 {
+    acc += T[x]
+  }
+  printf(c"for-induction %d\n", acc)
+
+  acc2 i32 = 0
+  for y usize = 0; y < 5 && T[y] != 40; y += 1 {
+    acc2 += T[y]
+  }
+  printf(c"for-induction-cond %d\n", acc2)
+
+  one i32 = 0
+  for z usize = 0; z < 1; z += 1 {
+    one += T[z]
+  }
+  printf(c"single-iteration %d\n", one)
+
+  once i32 = 0
+  for r i32 = 2; r < 3 && T[r] == 30; r += 1 {
+    once += 1
+  }
+  printf(c"single-cond %d\n", once)
+
+  lanes vec[4, i32] = {10, 20, 30, 40}
+  e usize = 0
+  while e < 4 && lanes[e] != 30 {
+    e += 1
+  }
+  printf(c"lane-match %lu\n", e)
+
+  f2 usize = 0
+  while f2 < 4 && lanes[f2] != 99 {
+    f2 += 1
+  }
+  printf(c"lane-miss %lu\n", f2)
+
+  lsum i32 = 0
+  for li usize = 0; li < 4; li += 1 {
+    lsum += lanes[li]
+  }
+  printf(c"lane-sum %d\n", lsum)
+
+  channel i32 = G[0]
+  if channel < 1 {
+    return 1
+  }
+  view row = POS[channel - 1]
+  row.x = 5
+  view tail = POS[2]
+  printf(c"view-range %d\n", tail.x)
+
+  return 0
+}

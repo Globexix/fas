@@ -352,10 +352,11 @@ let exact_address_offset c expression =
                 if is_unsigned ty && result < 0L then None
                 else Some (sign_extend_value ty result))
         | _ -> None)
-    | Hir.Local (binding, _) ->
-        Option.map
-          (fun fact -> sign_extend_value binding.ty fact.low)
-          (Sema_flow.value_of c.flow binding)
+    | Hir.Local (binding, _) -> (
+        match Sema_flow.value_of c.flow binding with
+        | Some fact when fact_single binding.ty fact ->
+            Some (sign_extend_value binding.ty fact.low)
+        | _ -> None)
     | _ -> None
   in
   match exact expression with
@@ -853,7 +854,29 @@ let reverse_comparison = function
   | Ast.Ge -> Ast.Le
   | op -> op
 
-let constrain_fact ty fact op constant truth =
+let grid_residue ty stride value =
+  if is_unsigned ty then Int64.unsigned_rem value stride
+  else
+    let residue = Int64.rem value stride in
+    if residue < 0L then Int64.add residue stride else residue
+
+let grid_ge ty left right =
+  if is_unsigned ty then Int64.unsigned_compare left right >= 0
+  else Int64.compare left right >= 0
+
+let snap_low ty (start, stride) low =
+  let p = grid_residue ty stride start and q = grid_residue ty stride low in
+  let up = if grid_ge ty p q then Int64.sub p q else Int64.sub stride (Int64.sub q p) in
+  fact_add ty low up
+
+let snap_high ty (start, stride) high =
+  let p = grid_residue ty stride start and q = grid_residue ty stride high in
+  let down =
+    if grid_ge ty q p then Int64.sub q p else Int64.sub stride (Int64.sub p q)
+  in
+  fact_sub ty high down
+
+let constrain_fact ?grid ty fact op constant truth =
   let low, high = (fact.low, fact.high) in
   let lower_bound value = fact_max ty low value
   and upper_bound value = fact_min ty high value in
@@ -873,9 +896,20 @@ let constrain_fact ty fact op constant truth =
     | Ast.Eq, false | Ast.Ne, true -> Some (low, high)
     | _ -> None
   in
+  let interval =
+    match (grid, fact.induction, interval) with
+    | Some grid, Some _, Some (low, high) ->
+        Option.bind (snap_low ty grid low) (fun low ->
+            Option.map (fun high -> (low, high)) (snap_high ty grid high))
+    | _, _, interval -> interval
+  in
   match interval with
   | Some (low, high) when fact_order ty low high <= 0 ->
-      Some { low; high; induction = fact.induction }
+      let induction =
+        if grid <> None || (low, high) = (fact.low, fact.high) then fact.induction
+        else None
+      in
+      Some { low; high; induction }
   | _ -> None
 
 let refine_condition (c : context) expression truth =
@@ -892,8 +926,13 @@ let refine_condition (c : context) expression truth =
       when Sema_flow.induction_valid c.flow id && (op = Ast.Eq || op = Ast.Ne) ->
         ()
     | fact ->
+        let grid =
+          match fact.induction with
+          | Some id when id = binding.id -> Sema_flow.induction_grid c.flow id
+          | _ -> None
+        in
         Sema_flow.set_value c.flow binding
-          (constrain_fact binding.ty fact op constant truth)
+          (constrain_fact ?grid binding.ty fact op constant truth)
   in
   let rec apply expression truth =
     match expression with
@@ -1701,13 +1740,6 @@ let rec check_place_inner (c : context) expr =
                         (Printf.sprintf "array index is out of bounds for length %d"
                            length)
                     else
-                      let index_expr =
-                        match fact with
-                        | Some fact when fact_single (Hir.expr_ty checked_index) fact ->
-                            Hir.EInt
-                              (fact.low, Hir.expr_ty checked_index, Ast.expr_span i)
-                        | _ -> checked_index
-                      in
                       let known =
                         match fact with
                         | Some fact when fact_single (Hir.expr_ty checked_index) fact ->
@@ -1728,7 +1760,7 @@ let rec check_place_inner (c : context) expr =
                       in
                       Ok
                         {
-                          expr = Hir.Index (base.expr, index_expr, e, s);
+                          expr = Hir.Index (base.expr, checked_index, e, s);
                           root = base.root;
                           path = value_path;
                         })
@@ -4618,7 +4650,8 @@ let loop_induction c init condition step body =
                             low = fact_min binding.ty start.low last;
                             high = fact_max binding.ty start.low last;
                             induction = Some binding.id;
-                          } )
+                          },
+                          (start.low, stride) )
                   | _ -> None)
               | _ -> None)
           | _ -> None)
@@ -5335,12 +5368,14 @@ and check_stmt (c : context) = function
         let loop =
           Sema_flow.begin_loop
             ?label:(Option.map (fun (label : Ast.loop_label) -> label.name) label)
-            ?induction_binding:(Option.map (fun (binding, _) -> binding.id) induction)
+            ?induction_binding:
+              (Option.map (fun (binding, _, _) -> binding.id) induction)
+            ?induction_grid:(Option.map (fun (_, _, grid) -> grid) induction)
             c.flow
         in
         Sema_flow.forget_all_values c.flow;
         Option.iter
-          (fun (binding, fact) -> Sema_flow.set_value c.flow binding (Some fact))
+          (fun (binding, fact, _) -> Sema_flow.set_value c.flow binding (Some fact))
           induction;
         let init_condition =
           match tq with
@@ -5348,7 +5383,9 @@ and check_stmt (c : context) = function
           | Some condition -> literal_condition_truth condition
         in
         let single_iteration =
-          match induction with Some (_, fact) -> fact.low = fact.high | None -> false
+          match induction with
+          | Some (_, fact, _) -> fact.low = fact.high
+          | None -> false
         in
         (match (tq, induction) with
         | Some condition_expr, None when condition <> Some false ->

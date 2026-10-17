@@ -17272,6 +17272,72 @@ let () =
     "fn f() i32 { value i32 = -2147483648\ndivisor i32 = -2\nreturn value / divisor }"
 
 let () =
+  semantic_message "value-fact-proven-index-out-of-range"
+    "array index is out of bounds for length 5"
+    "fn f() i32 { values arr[5,i32] = {1,2,3,4,5}\nk i32 = 5\nreturn values[k] }";
+  semantic_message "value-fact-loop-condition-proven-index"
+    "array index is out of bounds for length 5"
+    "fn f() i32 { values arr[5,i32] = {1,2,3,4,5}\n\
+     k i32 = 5\n\
+     while values[k] != 0 { k += 1 }\n\
+     return k }";
+  semantic_accept "value-fact-loop-condition-advancing-index"
+    "fn f() i32 { values arr[5,i32] = {1,2,3,4,5}\n\
+     k i32 = 0\n\
+     while values[k] != 3 { k += 1 }\n\
+     return k }";
+  semantic_accept "value-fact-view-range-index-accepted"
+    "struct P { x i32, y i32, z i32 }\n\
+     var POS arr[8, P]\n\
+     fn pick() i32 { return 3 }\n\
+     fn f() i32 { channel i32 = pick()\n\
+     if channel < 0 { return 0 }\n\
+     view p = POS[channel - 1]\n\
+     p.x = 5\n\
+     return p.x }";
+  semantic_accept "value-fact-view-joined-index-accepted"
+    "struct P { x i32, y i32, z i32 }\n\
+     var POS arr[8, P]\n\
+     fn pick() i32 { return 3 }\n\
+     fn f() i32 { channel i32 = pick()\n\
+     if channel == 0 { channel = 1 }\n\
+     view p = POS[channel - 1]\n\
+     p.x = 5\n\
+     return p.x }";
+  semantic_accept "value-fact-raw-range-index-accepted"
+    "struct P { x i32, y i32, z i32 }\n\
+     var POS arr[8, P]\n\
+     fn pick() i32 { return 3 }\n\
+     fn f() i32 { channel i32 = pick()\n\
+     if channel < 0 { return 0 }\n\
+     p addr = &POS\n\
+     p[i32, channel - 1] = 5\n\
+     return 0 }";
+  semantic_accept "value-fact-addr-offset-range-accepted"
+    "struct P { x i32, y i32, z i32 }\n\
+     var POS arr[8, P]\n\
+     fn pick() i32 { return 3 }\n\
+     fn f() i32 { channel i32 = pick()\n\
+     if channel < 0 { return 0 }\n\
+     q addr = &POS + (channel - 1)\n\
+     q[i32] = 5\n\
+     return 0 }";
+  semantic_message "value-fact-view-exact-index-past-end"
+    "array index is out of bounds for length 8"
+    "struct P { x i32, y i32, z i32 }\n\
+     var POS arr[8, P]\n\
+     fn f() i32 { k i32 = 9\n\
+     view p = POS[k]\n\
+     p.x = 5\n\
+     return p.x }";
+  semantic_message "value-fact-raw-exact-offset-past-end"
+    "access outside object `x` (offset 16, size 4 bytes, object size 4)"
+    "fn f() i32 { x u32 = 1\nk i32 = 0\np addr = &x\np[u32, k + 4] = 2\nreturn 0 }";
+  semantic_message "value-fact-addr-exact-offset-past-end"
+    "access outside object `x` (offset 4, size 4 bytes, object size 4)"
+    "fn f() i32 { x u32 = 1\nk i32 = 4\np addr = &x + k\np[u32] = 2\nreturn 0 }"
+
+let () =
   semantic_accept "value-fact-init-return-before-divide"
     "fn main() i32 { divisor i32 = 7\n\
      if divisor == 7 { divisor = 0 }\n\
@@ -17399,7 +17465,147 @@ let () =
      step = 3\n\
      values[index] = 1\n\
      }\n\
-     return values[3] - 1 }"
+     return values[3] - 1 }";
+  semantic_accept "value-fact-stride-u32-up-lt6"
+    "fn f() i32 { t arr[5,u32] = {1, 2, 3, 4, 5}\n\
+     sum u32 = 0\n\
+     for i u32 = 0; i < 10; i += 2 {\n\
+     if i < 6 {\n\
+     sum = sum + t[i]\n\
+     }\n\
+     }\n\
+     if sum == 9 { return 0 }\n\
+     return 1 }";
+  semantic_accept "value-fact-stride-u32-up-le5"
+    "fn f() i32 { t arr[5,u32] = {1, 2, 3, 4, 5}\n\
+     sum u32 = 0\n\
+     for i u32 = 0; i < 10; i += 2 {\n\
+     if i <= 5 {\n\
+     sum = sum + t[i]\n\
+     }\n\
+     }\n\
+     if sum == 9 { return 0 }\n\
+     return 1 }";
+  semantic_accept "value-fact-stride-i32-up-lt6"
+    "fn f() i32 { t arr[5,u32] = {1, 2, 3, 4, 5}\n\
+     sum u32 = 0\n\
+     for i i32 = 0; i < 10; i += 2 {\n\
+     if i < 6 {\n\
+     sum = sum + t[i]\n\
+     }\n\
+     }\n\
+     if sum == 9 { return 0 }\n\
+     return 1 }";
+  semantic_accept "value-fact-stride-i32-up-le5"
+    "fn f() i32 { t arr[5,u32] = {1, 2, 3, 4, 5}\n\
+     sum u32 = 0\n\
+     for i i32 = 0; i < 10; i += 2 {\n\
+     if i <= 5 {\n\
+     sum = sum + t[i]\n\
+     }\n\
+     }\n\
+     if sum == 9 { return 0 }\n\
+     return 1 }";
+  semantic_accept "value-fact-stride-u32-down-lt6"
+    "fn f() i32 { t arr[5,u32] = {1, 2, 3, 4, 5}\n\
+     sum u32 = 0\n\
+     for i u32 = 8; i > 0; i -= 2 {\n\
+     if i < 6 {\n\
+     sum = sum + t[i]\n\
+     }\n\
+     }\n\
+     if sum == 8 { return 0 }\n\
+     return 1 }";
+  semantic_accept "value-fact-stride-i32-down-lt6"
+    "fn f() i32 { t arr[5,u32] = {1, 2, 3, 4, 5}\n\
+     sum u32 = 0\n\
+     for i i32 = 8; i > 0; i -= 2 {\n\
+     if i < 6 {\n\
+     sum = sum + t[i]\n\
+     }\n\
+     }\n\
+     if sum == 8 { return 0 }\n\
+     return 1 }";
+  semantic_accept "value-fact-stride-i32-low-snap"
+    "fn f() i32 { t arr[5,u32] = {1, 2, 3, 4, 5}\n\
+     sum u32 = 0\n\
+     for i i32 = 0; i < 10; i += 2 {\n\
+     if i > -1 {\n\
+     if i < 6 {\n\
+     sum = sum + t[i]\n\
+     }\n\
+     }\n\
+     }\n\
+     if sum == 9 { return 0 }\n\
+     return 1 }";
+  semantic_message "value-fact-stride-u32-up-lt7"
+    "array index is out of bounds for length 5"
+    "fn f() i32 { t arr[5,u32] = {1, 2, 3, 4, 5}\n\
+     sum u32 = 0\n\
+     for i u32 = 0; i < 10; i += 2 {\n\
+     if i < 7 {\n\
+     sum = sum + t[i]\n\
+     }\n\
+     }\n\
+     return 1 }";
+  semantic_message "value-fact-stride-u32-up-le6"
+    "array index is out of bounds for length 5"
+    "fn f() i32 { t arr[5,u32] = {1, 2, 3, 4, 5}\n\
+     sum u32 = 0\n\
+     for i u32 = 0; i < 10; i += 2 {\n\
+     if i <= 6 {\n\
+     sum = sum + t[i]\n\
+     }\n\
+     }\n\
+     return 1 }";
+  semantic_message "value-fact-stride-i32-up-lt7"
+    "array index is out of bounds for length 5"
+    "fn f() i32 { t arr[5,u32] = {1, 2, 3, 4, 5}\n\
+     sum u32 = 0\n\
+     for i i32 = 0; i < 10; i += 2 {\n\
+     if i < 7 {\n\
+     sum = sum + t[i]\n\
+     }\n\
+     }\n\
+     return 1 }";
+  semantic_message "value-fact-stride-u32-step1-lt6"
+    "array index is out of bounds for length 5"
+    "fn f() i32 { t arr[5,u32] = {1, 2, 3, 4, 5}\n\
+     sum u32 = 0\n\
+     for i u32 = 0; i < 6; i += 1 {\n\
+     sum = sum + t[i]\n\
+     }\n\
+     return 1 }";
+  semantic_message "value-fact-stride-u32-step1-cond-lt6"
+    "array index is out of bounds for length 5"
+    "fn f() i32 { t arr[5,u32] = {1, 2, 3, 4, 5}\n\
+     sum u32 = 0\n\
+     for i u32 = 0; i < 10; i += 1 {\n\
+     if i < 6 {\n\
+     sum = sum + t[i]\n\
+     }\n\
+     }\n\
+     return 1 }";
+  semantic_message "value-fact-stride-u32-down-odd-lt6"
+    "array index is out of bounds for length 5"
+    "fn f() i32 { t arr[5,u32] = {1, 2, 3, 4, 5}\n\
+     sum u32 = 0\n\
+     for i u32 = 9; i > 1; i -= 2 {\n\
+     if i < 6 {\n\
+     sum = sum + t[i]\n\
+     }\n\
+     }\n\
+     return 1 }";
+  semantic_message "value-fact-stride-i32-down-odd-lt6"
+    "array index is out of bounds for length 5"
+    "fn f() i32 { t arr[5,u32] = {1, 2, 3, 4, 5}\n\
+     sum u32 = 0\n\
+     for i i32 = 9; i > 1; i -= 2 {\n\
+     if i < 6 {\n\
+     sum = sum + t[i]\n\
+     }\n\
+     }\n\
+     return 1 }"
 
 let () =
   semantic_message "null-raw-write" "access through null address"
