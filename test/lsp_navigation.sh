@@ -380,6 +380,48 @@ def definitions(s, path, source):
         expect(got == expected, "definition %r+%d: got %r, expected %r" % (anchor, offset, got, expected))
 
 
+C_HEADER = "int nav_add(int left, int right);\n"
+
+C_USER = [
+    'use "C" "nav_c.h"',
+    "fn main() i32 {",
+    "    total i32 = nav_add(1, 2)",
+    "    return total + nav_add(total, 3)",
+    "}",
+]
+
+
+def c_header_navigation(s, folder):
+    header = os.path.realpath(os.path.join(folder, "nav_c.h"))
+    user = os.path.join(folder, "cnav.fas")
+    write_file(header, C_HEADER)
+    user_text = join_lines(C_USER)
+    write_file(user, user_text)
+    did_open(s, user, user_text, 1)
+    expect_published(s.settle(), user, [], "open C header user")
+    use_line = at(user, user_text, '"nav_c.h"', 1)
+    expect(
+        s.result("textDocument/definition", use_line) is None,
+        "definition on the C use line is not null",
+    )
+    expect(
+        s.result("textDocument/references", with_context(use_line, True)) is None,
+        "references on the C use line are not null",
+    )
+    declared = loc(header, 0, 0, 0)
+    uses = [loc(user, 2, 16, 23), loc(user, 3, 19, 26)]
+    for anchor in ("nav_add(1", "nav_add(total"):
+        call = at(user, user_text, anchor, 0)
+        got = s.result("textDocument/definition", call)
+        expect(got == declared, "C definition %r: got %r, expected %r" % (anchor, got, declared))
+        got = s.result("textDocument/references", with_context(call, True))
+        expect(got == [declared] + uses, "C references %r with declaration: got %r" % (anchor, got))
+        got = s.result("textDocument/references", with_context(call, False))
+        expect(got == uses, "C references %r without declaration: got %r" % (anchor, got))
+    did_close(s, user)
+    s.settle()
+
+
 def run_navigation():
     s = Server("navigation")
     result = initialize(s)
@@ -583,6 +625,7 @@ def run_navigation():
         s.result("textDocument/definition", at(lib, lib_text, "fn helper", 3)) is None,
         "definition in lib after closing its root is not null",
     )
+    c_header_navigation(s, folder)
     shutdown(s)
     s.finish(0)
 

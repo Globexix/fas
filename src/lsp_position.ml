@@ -25,43 +25,50 @@ let char_at text i =
   then (4, 2)
   else (1, 1)
 
-let position_of_offset text offset =
-  let offset = max 0 (min offset (String.length text)) in
-  let rec line_start i line start =
-    if i >= offset then (line, start)
-    else if text.[i] = '\n' then line_start (i + 1) (line + 1) (i + 1)
-    else line_start (i + 1) line start
+type t = { text : string; starts : int array }
+
+let index text =
+  let starts = ref [ 0 ] in
+  String.iteri (fun i c -> if c = '\n' then starts := (i + 1) :: !starts) text;
+  { text; starts = Array.of_list (List.rev !starts) }
+
+let line_of starts offset =
+  let rec search low high =
+    if low >= high then low
+    else
+      let mid = (low + high + 1) / 2 in
+      if starts.(mid) <= offset then search mid high else search low (mid - 1)
   in
-  let line, start = line_start 0 0 0 in
+  search 0 (Array.length starts - 1)
+
+let position idx offset =
+  let offset = max 0 (min offset (String.length idx.text)) in
+  let line = line_of idx.starts offset in
   let rec units i acc =
     if i >= offset then acc
     else
-      let width, size = char_at text i in
+      let width, size = char_at idx.text i in
       units (i + width) (acc + size)
   in
-  (line, units start 0)
+  (line, units idx.starts.(line) 0)
 
-let offset_of_position text (line, character) =
+let offset idx (line, character) =
+  let text = idx.text in
   let length = String.length text in
-  let rec find_line i current =
-    if current = line then Some i
-    else
-      match String.index_from_opt text i '\n' with
-      | None -> None
-      | Some j -> find_line (j + 1) (current + 1)
-  in
-  match if line < 0 then None else find_line 0 0 with
-  | None -> length
-  | Some start ->
-      let at_break i =
-        i >= length
-        || text.[i] = '\n'
-        || (text.[i] = '\r' && i + 1 < length && text.[i + 1] = '\n')
-      in
-      let rec walk i units =
-        if at_break i then i
-        else
-          let width, size = char_at text i in
-          if units + size > character then i else walk (i + width) (units + size)
-      in
-      walk start 0
+  if line < 0 || line >= Array.length idx.starts then length
+  else
+    let at_break i =
+      i >= length
+      || text.[i] = '\n'
+      || (text.[i] = '\r' && i + 1 < length && text.[i + 1] = '\n')
+    in
+    let rec walk i units =
+      if at_break i then i
+      else
+        let width, size = char_at text i in
+        if units + size > character then i else walk (i + width) (units + size)
+    in
+    walk idx.starts.(line) 0
+
+let position_of_offset text offset = position (index text) offset
+let offset_of_position text point = offset (index text) point

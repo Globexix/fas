@@ -1675,13 +1675,6 @@ let analyze_resolved ?overlay ?cache ?index ?recovery ?(edits = []) config =
             (fun index ->
               let origins = List.filter_map manifest_origin imported.manifest in
               Sema_index.set_c_origins index origins;
-              Sema_index.set_c_spans index
-                (List.filter_map
-                   (fun (name, (file, _)) ->
-                     Option.map
-                       (fun span -> (name, span))
-                       (List.assoc_opt file imported.use_files))
-                   origins);
               Sema_index.set_c_import index ~unsupported:imported.unsupported
                 ~aliases:
                   (List.map
@@ -1689,7 +1682,8 @@ let analyze_resolved ?overlay ?cache ?index ?recovery ?(edits = []) config =
                      imported.aliases)
                 ~nonnull:imported.nonnull_parameters
                 ~strings:imported.c_string_parameters
-                ~alloc:imported.alloc_size_parameters)
+                ~alloc:imported.alloc_size_parameters
+                ~parameter_names:imported.parameter_names)
             index;
           let program = { Ast.items = program.items @ imported.items } in
           let* () = ast_budget (Ast.check_expanded_nodes ~limits program) in

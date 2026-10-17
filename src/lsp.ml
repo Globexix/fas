@@ -27,6 +27,9 @@ type state = {
   mutable initialized : bool;
   mutable shut_down : bool;
   mutable exit_code : int option;
+  mutable due : bool;
+  mutable dirty : string list;
+  mutable clear : string list;
 }
 
 let create options =
@@ -47,6 +50,9 @@ let create options =
     initialized = false;
     shut_down = false;
     exit_code = None;
+    due = false;
+    dirty = [];
+    clear = [];
   }
 
 let send json = Lsp_frame.write_message stdout (Json.to_string json)
@@ -389,6 +395,7 @@ let analyze_root state key =
       drop_root state key;
       uri_of_key state key :: previous
   | Some text ->
+      if Sys.getenv_opt "FAS_LSP_TRACE" = Some "1" then log ("analyse " ^ key);
       let root_uri = uri_of_key state key in
       let previous = previous_uris state key in
       let loaded = ref [ key ] in
@@ -480,6 +487,19 @@ let refresh state clear dirty =
   let moved_uris = List.map (uri_of_key state) moved in
   publish state clear (changed @ stale_uris @ moved_uris @ uris)
 
+let defer state clear dirty =
+  state.due <- true;
+  state.clear <- clear @ state.clear;
+  state.dirty <- dirty @ state.dirty
+
+let flush state =
+  if state.due then (
+    let clear = state.clear and dirty = state.dirty in
+    state.due <- false;
+    state.clear <- [];
+    state.dirty <- [];
+    try refresh state clear dirty with exn -> log (Printexc.to_string exn))
+
 let open_document state params =
   let document = child "textDocument" params in
   match (string_member "uri" document, string_member "text" document) with
@@ -488,7 +508,7 @@ let open_document state params =
       | Some key ->
           Hashtbl.replace state.documents key { uri; text };
           Hashtbl.replace state.open_summaries key (summarise key text);
-          refresh state [] (dependants state key)
+          defer state [] (dependants state key)
       | None -> ())
   | _ -> ()
 
@@ -519,7 +539,7 @@ let change_document state params =
           let summary = summarise key text in
           Hashtbl.replace state.open_summaries key summary;
           if uses_before <> Some summary.uses then scan state;
-          refresh state [] dirty
+          defer state [] dirty
       | _ -> ())
   | _ -> ()
 
@@ -527,7 +547,7 @@ let save_document state params =
   match string_member "uri" (child "textDocument" params) with
   | Some uri -> (
       match key_of_uri uri with
-      | Some key -> refresh state [] (dependants state key)
+      | Some key -> defer state [] (dependants state key)
       | None -> ())
   | None -> ()
 
@@ -546,7 +566,7 @@ let close_document state params =
                  match disk_text key with
                  | Some text -> Hashtbl.replace state.scanned key (summarise key text)
                  | None -> Hashtbl.remove state.scanned key);
-              refresh state [ document.uri ] dirty)
+              defer state [ document.uri ] dirty)
       | None -> ())
   | None -> ()
 
@@ -603,7 +623,7 @@ let on_initialized state =
 
 let on_watched_files state =
   scan state;
-  refresh state [] (Hashtbl.fold (fun key _ acc -> key :: acc) state.contributions [])
+  defer state [] (Hashtbl.fold (fun key _ acc -> key :: acc) state.contributions [])
 
 let invalid message = raise (Invalid message)
 
@@ -637,8 +657,9 @@ let mapped state snapshot (span : Span.t) =
   match (Hashtbl.find_opt snapshot.texts key, current_text state key) with
   | Some analyzed, Some current -> (
       let map = Lsp_map.create ~analyzed ~current in
-      let first = Lsp_position.position_of_offset analyzed span.start_offset in
-      let last = Lsp_position.position_of_offset analyzed span.end_offset in
+      let positions = Lsp_position.index analyzed in
+      let first = Lsp_position.position positions span.start_offset in
+      let last = Lsp_position.position positions span.end_offset in
       match (Lsp_map.to_current map (fst first), Lsp_map.to_current map (fst last)) with
       | Some first_line, Some last_line ->
           Some (key, (first_line, snd first), (last_line, snd last))
@@ -834,6 +855,44 @@ let c_line_of (declaration : Sema_index.declaration) text origin =
   | Sema_index.Field, Some text -> c_field_line text origin declaration.Sema_index.name
   | _ -> origin
 
+let c_define_column text line name =
+  let length = String.length text in
+  let start = line_start text line in
+  let stop =
+    match String.index_from_opt text start '\n' with Some j -> j | None -> length
+  in
+  let row = String.sub text start (stop - start) in
+  let size = String.length row in
+  let blank i = i < size && (row.[i] = ' ' || row.[i] = '\t') in
+  let rec skip i = if blank i then skip (i + 1) else i in
+  let word_at i word =
+    let n = String.length word in
+    i + n <= size && String.sub row i n = word
+  in
+  let hash = skip 0 in
+  let keyword = skip (hash + 1) in
+  if hash < size && row.[hash] = '#' && word_at keyword "define" && blank (keyword + 6)
+  then
+    let at = skip (keyword + 6) in
+    let after = at + String.length name in
+    if word_at at name && (after >= size || not (is_word_char row.[after])) then Some at
+    else None
+  else None
+
+let c_macro_text text start =
+  let length = String.length text in
+  let rec logical_end i =
+    if i >= length then length
+    else if text.[i] = '\n' then
+      if i > start && text.[i - 1] = '\\' then logical_end (i + 1) else i
+    else logical_end (i + 1)
+  in
+  String.sub text start (logical_end start - start)
+  |> String.map (fun c -> if c = '\t' || c = '\r' || c = '\n' then ' ' else c)
+  |> String.split_on_char ' '
+  |> List.filter (fun word -> word <> "" && word <> "\\")
+  |> String.concat " "
+
 let c_parts (declaration : Sema_index.declaration) =
   match declaration.Sema_index.c_origin with
   | None | Some ("<unknown>", _) -> []
@@ -843,21 +902,35 @@ let c_parts (declaration : Sema_index.declaration) =
       let fence =
         match text with
         | None -> []
-        | Some text ->
-            let code = c_declaration_text text (line_start text line) in
-            if code = "" then [] else [ "```c\n" ^ code ^ "\n```" ]
+        | Some text -> (
+            match c_define_column text line declaration.Sema_index.name with
+            | Some _ ->
+                [ "```c\n" ^ c_macro_text text (line_start text line) ^ "\n```" ]
+            | None ->
+                let code = c_declaration_text text (line_start text line) in
+                if code = "" then [] else [ "```c\n" ^ code ^ "\n```" ])
       in
       fence @ [ Printf.sprintf "%s:%d" header line ]
 
-let c_location header line =
+let c_location header line column =
   if header = "<unknown>" then Json.Null
   else
     let row = max 0 (line - 1) in
     Json.Obj
       [
         ("uri", Json.Str (path_to_uri (Driver.canonical_path header)));
-        ("range", range_json (row, 0) (row, 0));
+        ("range", range_json (row, column) (row, column));
       ]
+
+let c_declaration_location (declaration : Sema_index.declaration) header origin =
+  let text = disk_text header in
+  let line = c_line_of declaration text origin in
+  let column =
+    Option.value ~default:0
+      (Option.bind text (fun text ->
+           c_define_column text line declaration.Sema_index.name))
+  in
+  c_location header line column
 
 let definition state params =
   let uri, line, character = request_point params in
@@ -867,7 +940,7 @@ let definition state params =
       match target snapshot key offset with
       | None -> Json.Null
       | Some ({ Sema_index.c_origin = Some (header, origin); _ } as declaration) ->
-          c_location header (c_line_of declaration (disk_text header) origin)
+          c_declaration_location declaration header origin
       | Some declaration -> (
           match mapped state snapshot declaration.Sema_index.name_span with
           | Some (file, first, last) ->
@@ -895,6 +968,7 @@ let references state params =
           let same (other : Sema_index.declaration) =
             other.Sema_index.name = declaration.Sema_index.name
             && other.Sema_index.kind = declaration.Sema_index.kind
+            && other.Sema_index.c_origin = declaration.Sema_index.c_origin
             && same_span other.Sema_index.name_span declaration.Sema_index.name_span
           in
           let uses =
@@ -903,6 +977,12 @@ let references state params =
                 if same r.Sema_index.declaration then Some r.Sema_index.use_span
                 else None)
               (Sema_index.references snapshot.index)
+          in
+          let declared =
+            match declaration.Sema_index.c_origin with
+            | Some (header, origin) when with_declaration && header <> "<unknown>" ->
+                [ c_declaration_location declaration header origin ]
+            | _ -> []
           in
           let spans =
             if with_declaration then declaration.Sema_index.name_span :: uses else uses
@@ -917,14 +997,15 @@ let references state params =
               spans
           in
           Json.Arr
-            (List.map
-               (fun (location_uri, l1, c1, l2, c2) ->
-                 Json.Obj
-                   [
-                     ("uri", Json.Str location_uri);
-                     ("range", range_json (l1, c1) (l2, c2));
-                   ])
-               (List.sort_uniq compare keyed)))
+            (declared
+            @ List.map
+                (fun (location_uri, l1, c1, l2, c2) ->
+                  Json.Obj
+                    [
+                      ("uri", Json.Str location_uri);
+                      ("range", range_json (l1, c1) (l2, c2));
+                    ])
+                (List.sort_uniq compare keyed)))
 
 let symbol_kind kind =
   Sema_index.(
@@ -936,10 +1017,10 @@ let symbol_kind kind =
     | Field -> 8
     | Type_parameter | Const_parameter -> 26)
 
-let span_range text (span : Span.t) =
+let span_range positions (span : Span.t) =
   range_json
-    (Lsp_position.position_of_offset text span.start_offset)
-    (Lsp_position.position_of_offset text span.end_offset)
+    (Lsp_position.position positions span.start_offset)
+    (Lsp_position.position positions span.end_offset)
 
 let symbol_json place (d : Sema_index.declaration) children =
   match (place (outline_range d), place d.Sema_index.name_span) with
@@ -980,11 +1061,18 @@ let mapped_entries state source declarations =
 
 let outline_symbols entries =
   let by_position (a, _, _) (b, _, _) = compare a b in
+  let children = Hashtbl.create 64 in
+  List.iter
+    (fun ((_, _, (c : Sema_index.declaration)) as entry) ->
+      Option.iter
+        (fun parent ->
+          Hashtbl.replace children parent
+            (entry :: Option.value ~default:[] (Hashtbl.find_opt children parent)))
+        c.Sema_index.container)
+    (List.rev entries);
   let child_symbols parent wanted =
-    List.filter
-      (fun (_, _, (c : Sema_index.declaration)) ->
-        c.Sema_index.container = Some parent && wanted c)
-      entries
+    Option.value ~default:[] (Hashtbl.find_opt children parent)
+    |> List.filter (fun (_, _, (c : Sema_index.declaration)) -> wanted c)
     |> List.sort by_position
     |> List.filter_map (fun (_, place, c) -> symbol_json place c [])
   in
@@ -1008,6 +1096,7 @@ let outline_symbols entries =
   Json.Arr (List.filter_map symbol roots)
 
 let kept_entries state snapshot key text good declarations =
+  let positions = Lsp_position.index text in
   List.filter_map
     (fun (d : Sema_index.declaration) ->
       match
@@ -1017,8 +1106,8 @@ let kept_entries state snapshot key text good declarations =
       | Some (gap : Driver.gap), Some (_, start, _) ->
           let fallback =
             range_json
-              (Lsp_position.position_of_offset text gap.Driver.start_offset)
-              (Lsp_position.position_of_offset text gap.Driver.end_offset)
+              (Lsp_position.position positions gap.Driver.start_offset)
+              (Lsp_position.position positions gap.Driver.end_offset)
           in
           let place span =
             match mapped state good span with
@@ -1041,12 +1130,13 @@ let document_symbols state params =
           | Ok program ->
               let index = Sema_index.create () in
               Sema_index.declare_program index ~c_aliases:[] program;
+              let positions = Lsp_position.index text in
               outline_symbols
                 (List.map
                    (fun (d : Sema_index.declaration) ->
-                     ( Lsp_position.position_of_offset text
+                     ( Lsp_position.position positions
                          d.Sema_index.name_span.Span.start_offset,
-                       (fun span -> Some (span_range text span)),
+                       (fun span -> Some (span_range positions span)),
                        d ))
                    (outline_declarations index key))
           | Error _ -> (
@@ -1457,7 +1547,8 @@ let handle_request state id meth params =
   if state.shut_down then fail id (-32600) "server is shutting down"
   else if (not state.initialized) && meth <> "initialize" then
     fail id (-32002) "server not initialized"
-  else
+  else (
+    flush state;
     match meth with
     | "initialize" ->
         if state.initialized then fail id (-32600) "server already initialized"
@@ -1475,7 +1566,7 @@ let handle_request state id meth params =
     | "textDocument/inlayHint" -> answer id (fun () -> inlay_hints state params)
     | "textDocument/documentSymbol" ->
         answer id (fun () -> document_symbols state params)
-    | _ -> fail id (-32601) ("method not found: " ^ meth)
+    | _ -> fail id (-32601) ("method not found: " ^ meth))
 
 let handle_notification state meth params =
   match meth with
@@ -1501,34 +1592,58 @@ let handle_body state body =
       | Some meth, None -> (
           try handle_notification state meth params
           with exn -> log (Printexc.to_string exn))
-      | None, Some (Json.Str id) when id = registration_id -> ()
-      | None, Some id -> fail id (-32600) "invalid request"
+      | None, Some _ -> ()
       | None, None -> fail Json.Null (-32600) "invalid request")
   | Ok _ -> fail Json.Null (-32600) "invalid request"
+
+let rec readable timeout =
+  match Unix.select [ Unix.stdin ] [] [] timeout with
+  | ready, _, _ -> ready <> []
+  | exception Unix.Unix_error (Unix.EINTR, _, _) -> readable timeout
+  | exception Unix.Unix_error _ -> true
+
+let rec read_input chunk =
+  match Unix.read Unix.stdin chunk 0 (Bytes.length chunk) with
+  | count -> count
+  | exception Unix.Unix_error (Unix.EINTR, _, _) -> read_input chunk
+  | exception Unix.Unix_error _ -> 0
+
+let await state =
+  if not (readable (if state.due then 0.02 else -1.0)) then (
+    flush state;
+    ignore (readable (-1.0)))
 
 let run options =
   set_binary_mode_in stdin true;
   set_binary_mode_out stdout true;
   let state = create options in
   let chunk = Bytes.create 65536 in
-  let finish () = if state.shut_down then 0 else 1 in
-  let rec loop pending =
+  let finish code =
+    flush state;
+    code
+  in
+  let rec loop skipping pending =
     match state.exit_code with
-    | Some code -> code
+    | Some code -> finish code
     | None -> (
-        match Lsp_frame.take_message pending with
+        let synced, pending =
+          if skipping then Lsp_frame.resynchronise pending else (true, pending)
+        in
+        match
+          if synced then Lsp_frame.take_message pending else Lsp_frame.Incomplete
+        with
         | Lsp_frame.Message (body, rest) ->
             (try handle_body state body with exn -> log (Printexc.to_string exn));
-            loop rest
+            loop false rest
         | Malformed (reason, rest) ->
             fail Json.Null (-32700) reason;
-            loop rest
+            loop true rest
         | Incomplete -> (
-            match input stdin chunk 0 (Bytes.length chunk) with
-            | 0 -> finish ()
-            | n -> loop (pending ^ Bytes.sub_string chunk 0 n)
-            | exception Sys_error _ -> finish ()))
+            await state;
+            match read_input chunk with
+            | 0 -> finish (if state.shut_down then 0 else 1)
+            | n -> loop skipping (pending ^ Bytes.sub_string chunk 0 n)))
   in
-  let code = loop "" in
+  let code = loop false "" in
   C_import.clear_cache state.cache;
   code

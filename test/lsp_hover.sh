@@ -78,6 +78,8 @@ servers = []
 
 HOVER = [
     'use "C" <string.h>',
+    'use "C" "mixed.h"',
+    'use "C" "layouts.h"',
     "",
     "const LIMIT i32 = 4",
     "const MASK u32 = 4294967295",
@@ -85,10 +87,15 @@ HOVER = [
     "const WIDE u16 = 65535",
     "const NEGATIVE i32 = -5",
     "var GLOBAL i32 = 5",
+    "const GLYPHS arr[3, i32] = {1, 2, 3}",
+    "var TABLE arr[2, u8] = {4, 5}",
     "",
     "struct Point { x i32 y i32 }",
     "struct Packet @align(16) { tag u8 length u32 body arr[3, u16] pointer addr count u64 }",
     "struct Box[T] { value T }",
+    "struct Tagged[N const usize] { tag u8 wide u64 data arr[N, u8] }",
+    "struct Blend[T, N const usize] { head T tail arr[N, u8] }",
+    "opaque Ctx",
     "",
     "fn identity[T](value T) T {",
     "    return value",
@@ -117,6 +124,14 @@ HOVER = [
     "    return first",
     "}",
     "",
+    "fn take_ctx(ctx handle[Ctx]) usize {",
+    "    return 0",
+    "}",
+    "",
+    'extern "C" {',
+    "    fn emit_line(fmt addr, ...) i32",
+    "}",
+    "",
     "fn main() i32 {",
     "    point Point = {.x = 1, .y = 2}",
     "    local i32 = point.x + GLOBAL + LIMIT + NEGATIVE",
@@ -129,7 +144,21 @@ HOVER = [
     '    seen u8 = read_window[u8](c"abc")',
     '    later u32 = read_window[u32](c"abc")',
     "    box Box[i32] = {7}",
+    "    slots usize = len(GLYPHS)",
+    "    element i32 = GLYPHS[1]",
+    "    table_head u8 = TABLE[1]",
+    "    small_tag Tagged[3]",
+    "    big_tag Tagged[10]",
+    "    blend Blend[u32, 3]",
+    "    padded CPad = {}",
+    "    nested CNest = {}",
+    "    filled CArr = {}",
+    "    narrow CPacked = {}",
+    "    aligned_c CAligned = {}",
+    "    mixed FasMixed = {0}",
+    "    mixed_word u32 = mixed.word",
     '    count usize = strlen(c"abc")',
+    '    logged i32 = emit_line(c"abc")',
     "    return small + box.value + point.y + LIMIT",
     "}",
 ]
@@ -138,6 +167,25 @@ C_LAYOUT = """#include <stdalign.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "mixed.h"
+#include "layouts.h"
+
+struct Tagged3 {
+    uint8_t tag;
+    uint64_t wide;
+    uint8_t data[3];
+};
+
+struct Tagged10 {
+    uint8_t tag;
+    uint64_t wide;
+    uint8_t data[10];
+};
+
+struct Blend3 {
+    uint32_t head;
+    uint8_t tail[3];
+};
 
 struct Point {
     int32_t x;
@@ -163,6 +211,23 @@ int main(void) {
            offsetof(struct Packet, tag), offsetof(struct Packet, length), offsetof(struct Packet, body),
            offsetof(struct Packet, pointer), offsetof(struct Packet, count));
     printf("Box %zu %zu %zu\\n", sizeof(struct BoxI32), alignof(struct BoxI32), offsetof(struct BoxI32, value));
+    printf("FasMixed %zu %zu %zu %zu %zu\\n", sizeof(union FasMixed), alignof(union FasMixed),
+           offsetof(union FasMixed, word), offsetof(union FasMixed, pair), offsetof(union FasMixed, bytes));
+    printf("Tagged3 %zu %zu %zu %zu %zu\\n", sizeof(struct Tagged3), alignof(struct Tagged3),
+           offsetof(struct Tagged3, tag), offsetof(struct Tagged3, wide), offsetof(struct Tagged3, data));
+    printf("Tagged10 %zu %zu %zu %zu %zu\\n", sizeof(struct Tagged10), alignof(struct Tagged10),
+           offsetof(struct Tagged10, tag), offsetof(struct Tagged10, wide), offsetof(struct Tagged10, data));
+    printf("Blend3 %zu %zu %zu %zu\\n", sizeof(struct Blend3), alignof(struct Blend3),
+           offsetof(struct Blend3, head), offsetof(struct Blend3, tail));
+    printf("CPad %zu %zu %zu %zu %zu\\n", sizeof(struct CPad), alignof(struct CPad),
+           offsetof(struct CPad, a), offsetof(struct CPad, b), offsetof(struct CPad, c));
+    printf("CNest %zu %zu %zu %zu %zu\\n", sizeof(struct CNest), alignof(struct CNest),
+           offsetof(struct CNest, inner), offsetof(struct CNest, tag), offsetof(struct CNest, big));
+    printf("CArr %zu %zu %zu %zu\\n", sizeof(struct CArr), alignof(struct CArr),
+           offsetof(struct CArr, bytes), offsetof(struct CArr, w));
+    printf("CPacked %zu %zu %zu %zu\\n", sizeof(struct CPacked), alignof(struct CPacked),
+           offsetof(struct CPacked, a), offsetof(struct CPacked, b));
+    printf("CAligned %zu %zu\\n", sizeof(struct CAligned), alignof(struct CAligned));
     printf("hex %#lx %#x\\n", (unsigned long)4294967295UL, (unsigned)65535u);
     return 0;
 }
@@ -175,13 +240,12 @@ SMALL_T = FENCE + "const SMALL u8 = 200\n```"
 WIDE_T = FENCE + "const WIDE u16 = 65535 (0xffff)\n```"
 NEGATIVE_T = FENCE + "const NEGATIVE i32 = -5\n```"
 GLOBAL_T = FENCE + "GLOBAL i32\n```"
-POINT_T = FENCE + "struct Point\n```\n\nsize 8, align 4\n\nx i32 at offset 0\n\ny i32 at offset 4"
+POINT_T = FENCE + "struct Point\n```\n\n```text\nsize 8, align 4\nx  i32  at offset 0\ny  i32  at offset 4\n```"
 PACKET_T = (
     FENCE
-    + "struct Packet @align(16)\n```\n\nsize 32, align 16\n\ntag u8 at offset 0\n\nlength u32 at offset 4"
-    + "\n\nbody arr[3, u16] at offset 8\n\npointer addr at offset 16\n\ncount u64 at offset 24"
+    + "struct Packet @align(16)\n```\n\n```text\nsize 32, align 16\ntag      u8           at offset 0\nlength   u32          at offset 4\nbody     arr[3, u16]  at offset 8\npointer  addr         at offset 16\ncount    u64          at offset 24\n```"
 )
-BOX_T = FENCE + "struct Box[T]\n```\n\nvalue T\n\nBox[i32]: size 4, align 4\n\nvalue i32 at offset 0"
+BOX_T = FENCE + "struct Box[T]\n```\n\nvalue T\n\n```text\nBox[i32]: size 4, align 4\nvalue  i32  at offset 0\n```"
 BOX_VALUE_T = FENCE + "value T\n```\n\nBox[i32]: value i32 at offset 0"
 X_T = FENCE + "x i32 at offset 0\n```"
 Y_T = FENCE + "y i32 at offset 4\n```"
@@ -189,6 +253,7 @@ TAG_T = FENCE + "tag u8 at offset 0\n```"
 BODY_T = FENCE + "body arr[3, u16] at offset 8\n```"
 POINTER_FIELD_T = FENCE + "pointer addr at offset 16\n```"
 IDENTITY_SIG = FENCE + "fn identity[T](value T) T\n```"
+EMIT_SIG = FENCE + "extern fn emit_line(fmt addr, ...) i32\n```"
 LANES_SIG = FENCE + "fn lanes[T, N const usize](value T) usize\n```"
 PICK_SIG = FENCE + "fn pick[A, B](first A, second B) B\n```"
 MAIN_SIG = FENCE + "fn main() i32\n```"
@@ -217,6 +282,107 @@ HELD_T = FENCE + "held T\n```\n\nT = u8\n\nT = u32"
 SUM_EXPR_T = FENCE + "u8 | u32\n```"
 WINDOW_T = FENCE + "view window u8 | u32\n```\n\nT = u8\n\nT = u32"
 
+MIXED_LINE = 3
+MIXED_HEADER = """#include <stdint.h>
+
+union FasMixed {
+  uint32_t word;
+  uint16_t pair[3];
+  uint8_t bytes[5];
+};
+"""
+LAYOUTS_HEADER = """#include <stdint.h>
+
+struct CPad {
+  uint8_t a;
+  uint32_t b;
+  uint8_t c;
+};
+
+struct CInner {
+  uint16_t x;
+  uint8_t y;
+};
+
+struct CNest {
+  struct CInner inner;
+  uint8_t tag;
+  uint64_t big;
+};
+
+struct CArr {
+  uint8_t bytes[5];
+  uint16_t w;
+};
+
+struct CPacked {
+  uint8_t a;
+  uint32_t b;
+} __attribute__((packed));
+
+struct CAligned {
+  uint8_t a;
+} __attribute__((aligned(8)));
+"""
+MIXED_C ="```c\nunion FasMixed {\nuint32_t word;\nuint16_t pair[3];\nuint8_t bytes[5];\n}\n```"
+UNION_T_FORMAT = (
+    FENCE
+    + "union FasMixed @align(4)\n```\n\n```text\nsize 8, align 4\nword   u32          at offset 0\npair   arr[3, u16]  at offset 0\nbytes  arr[5, u8]   at offset 0\n```"
+    + "\n\n"
+    + MIXED_C
+    + "\n\n%s:%d"
+)
+MIXED_WORD_LINE = 4
+WORD_T_FORMAT = (
+    FENCE
+    + "word u32 at offset 0\n```\n\n```c\nuint32_t word;\n```"
+    + "\n\n%s:%d"
+)
+GLYPHS_T = FENCE + "const GLYPHS arr[3, i32]\n```\n\n3 elements"
+TABLE_T = FENCE + "TABLE arr[2, u8]\n```\n\n2 elements"
+OPAQUE_T = FENCE + "opaque Ctx\n```\n\nno layout"
+TAGGED_T = (
+    FENCE
+    + "struct Tagged[N const usize]\n```\n\ntag u8\n\nwide u64\n\ndata arr[N, u8]"
+    + "\n\n```text\nTagged[3]: size 24, align 8\ntag   u8          at offset 0\nwide  u64         at offset 8\ndata  arr[3, u8]  at offset 16\n```"
+    + "\n\n```text\nTagged[10]: size 32, align 8\ntag   u8           at offset 0\nwide  u64          at offset 8\ndata  arr[10, u8]  at offset 16\n```"
+)
+TAGGED_TAG_T = FENCE + "tag u8\n```\n\nTagged[3]: tag u8 at offset 0\n\nTagged[10]: tag u8 at offset 0"
+TAGGED_DATA_T = (
+    FENCE
+    + "data arr[N, u8]\n```\n\nTagged[3]: data arr[3, u8] at offset 16"
+    + "\n\nTagged[10]: data arr[10, u8] at offset 16"
+)
+BLEND_T = (
+    FENCE
+    + "struct Blend[T, N const usize]\n```\n\nhead T\n\ntail arr[N, u8]"
+    + "\n\n```text\nBlend[u32, 3]: size 8, align 4\nhead  u32         at offset 0\ntail  arr[3, u8]  at offset 4\n```"
+)
+CPAD_T = (
+    FENCE
+    + "struct CPad @align(4)\n```\n\n```text\nsize 12, align 4\na  u8   at offset 0\nb  u32  at offset 4\nc  u8   at offset 8\n```"
+    + "\n\n```c\nstruct CPad {\nuint8_t a;\nuint32_t b;\nuint8_t c;\n}\n```\n\n%s:%d"
+)
+CNEST_T = (
+    FENCE
+    + "struct CNest @align(8)\n```\n\n```text\nsize 16, align 8\ninner  CInner  at offset 0\ntag    u8      at offset 4\nbig    u64     at offset 8\n```"
+    + "\n\n```c\nstruct CNest {\nstruct CInner inner;\nuint8_t tag;\nuint64_t big;\n}\n```\n\n%s:%d"
+)
+CARR_T = (
+    FENCE
+    + "struct CArr @align(2)\n```\n\n```text\nsize 8, align 2\nbytes  arr[5, u8]  at offset 0\nw      u16         at offset 6\n```"
+    + "\n\n```c\nstruct CArr {\nuint8_t bytes[5];\nuint16_t w;\n}\n```\n\n%s:%d"
+)
+CPACKED_T = (
+    FENCE
+    + "struct CPacked @align(1)\n```\n\n```text\nsize 5, align 1\na  u8   at offset 0\nb  u32  at offset 1\n```"
+    + "\n\n```c\nstruct CPacked {\nuint8_t a;\nuint32_t b;\n}\n```\n\n%s:%d"
+)
+CALIGNED_T = (
+    FENCE
+    + "struct CAligned @align(8)\n```\n\n```text\nsize 8, align 8\na  u8  at offset 0\n```"
+    + "\n\n```c\nstruct CAligned {\nuint8_t a;\n}\n```\n\n%s:%d"
+)
 PINS = [
     ("const LIMIT", 6, LIMIT_T),
     ("+ LIMIT + NEGATIVE", 2, LIMIT_T),
@@ -262,7 +428,7 @@ PINS = [
     ("return value", 7, VALUE_BODY_T),
     ("(value T) T", 1, VALUE_BODY_T),
     ("identity[T", 9, TYPE_IDENTITY_T),
-    ("N const usize", 0, N_LANES_T),
+    ("lanes[T, N const usize]", 9, N_LANES_T),
     ("return N", 7, N_LANES_T),
     ("left T", 0, LEFT_T),
     ("held T", 0, HELD_T),
@@ -272,6 +438,22 @@ PINS = [
     ("return window", 7, WINDOW_T),
     ("{ value", 2, BOX_VALUE_T),
     ("box.value", 4, BOX_VALUE_T),
+    ("const GLYPHS", 6, GLYPHS_T),
+    ("GLYPHS[1", 0, GLYPHS_T),
+    ("len(GLYPHS", 4, GLYPHS_T),
+    ("var TABLE", 4, TABLE_T),
+    ("TABLE[1", 0, TABLE_T),
+    ("opaque Ctx", 7, OPAQUE_T),
+    ("Ctx]) usize", 0, OPAQUE_T),
+    ("struct Tagged", 7, TAGGED_T),
+    ("small_tag Tagged", 10, TAGGED_T),
+    ("big_tag Tagged", 8, TAGGED_T),
+    ("tag u8 wide", 0, TAGGED_TAG_T),
+    ("data arr[N", 0, TAGGED_DATA_T),
+    ("struct Blend", 7, BLEND_T),
+    ("blend Blend", 6, BLEND_T),
+    ("fn emit_line", 3, EMIT_SIG),
+    ("emit_line(c", 0, EMIT_SIG),
     ("fn main", 0, None),
 ]
 
@@ -544,6 +726,8 @@ def expect_hover(s, path, source, anchor, offset, expected, label):
 def c_oracle():
     source = os.path.join(work, "layout.c")
     binary = os.path.join(work, "layout")
+    write_file(os.path.join(work, "mixed.h"), MIXED_HEADER)
+    write_file(os.path.join(work, "layouts.h"), LAYOUTS_HEADER)
     write_file(source, C_LAYOUT)
     subprocess.run([os.environ["REAL_CC"], "-std=c11", "-o", binary, source], check=True, timeout=TIMEOUT)
     output = subprocess.run([binary], check=True, capture_output=True, text=True, timeout=TIMEOUT).stdout
@@ -560,6 +744,11 @@ def run_hover():
     expect(result["capabilities"].get("hoverProvider") is True, "capability hoverProvider is not true")
     folder = os.path.join(work, "hover")
     main = os.path.join(folder, "main.fas")
+    mixed_h = os.path.realpath(os.path.join(folder, "mixed.h"))
+    write_file(mixed_h, MIXED_HEADER)
+    layouts_h = os.path.realpath(os.path.join(folder, "layouts.h"))
+    write_file(layouts_h, LAYOUTS_HEADER)
+    expect(MIXED_HEADER.split("\n")[MIXED_LINE - 1].startswith("union FasMixed"), "mixed.h line")
     text = join_lines(HOVER)
     write_file(main, text)
     did_open(s, main, text, 1)
@@ -570,14 +759,33 @@ def run_hover():
     expect(oracle.get("Packet") == [32, 16, 0, 4, 8, 16, 24], "C layout of Packet: %r" % (oracle.get("Packet"),))
     expect(oracle.get("Box") == [4, 4, 0], "C layout of Box: %r" % (oracle.get("Box"),))
     expect(oracle.get("hex") == [0xFFFFFFFF, 0xFFFF], "C hex values: %r" % (oracle.get("hex"),))
+    expect(oracle.get("FasMixed") == [8, 4, 0, 0, 0], "C layout of FasMixed: %r" % (oracle.get("FasMixed"),))
+    expect(oracle.get("Tagged3") == [24, 8, 0, 8, 16], "C layout of Tagged3: %r" % (oracle.get("Tagged3"),))
+    expect(oracle.get("Tagged10") == [32, 8, 0, 8, 16], "C layout of Tagged10: %r" % (oracle.get("Tagged10"),))
+    expect(oracle.get("Blend3") == [8, 4, 0, 4], "C layout of Blend3: %r" % (oracle.get("Blend3"),))
+    expect(oracle.get("CPad") == [12, 4, 0, 4, 8], "C layout of CPad: %r" % (oracle.get("CPad"),))
+    expect(oracle.get("CNest") == [16, 8, 0, 4, 8], "C layout of CNest: %r" % (oracle.get("CNest"),))
+    expect(oracle.get("CArr") == [8, 2, 0, 6], "C layout of CArr: %r" % (oracle.get("CArr"),))
+    expect(oracle.get("CPacked") == [5, 1, 0, 1], "C layout of CPacked: %r" % (oracle.get("CPacked"),))
+    expect(oracle.get("CAligned") == [8, 8], "C layout of CAligned: %r" % (oracle.get("CAligned"),))
 
-    for anchor, offset, expected in PINS:
+    union_text = UNION_T_FORMAT % (mixed_h, MIXED_LINE)
+    word_text = WORD_T_FORMAT % (mixed_h, MIXED_WORD_LINE)
+    for anchor, offset, expected in PINS + [
+        ("FasMixed = {0}", 0, union_text),
+        ("mixed.word", 6, word_text),
+        ("padded CPad", 7, CPAD_T % (layouts_h, 3)),
+        ("nested CNest", 7, CNEST_T % (layouts_h, 14)),
+        ("filled CArr", 7, CARR_T % (layouts_h, 20)),
+        ("narrow CPacked", 7, CPACKED_T % (layouts_h, 25)),
+        ("aligned_c CAligned", 10, CALIGNED_T % (layouts_h, 30)),
+    ]:
         expect_hover(s, main, text, anchor, offset, expected, "open")
     strlen = hover_text(s.result("textDocument/hover", at(main, text, "strlen(c", 1)))
     expect(
         strlen is not None
         and strlen.startswith(
-            "```fas\nextern fn strlen(arg0 addr) usize\n```\n\nnonnull: arg0; C string: arg0\n\n```c\nextern size_t strlen"
+            "```fas\nextern fn strlen(__s addr) usize\n```\n\nnonnull: __s; C string: __s\n\n```c\nextern size_t strlen"
         )
         and re.search(r"\n\n[^\n]+:[0-9]+$", strlen) is not None,
         "imported C name hover for strlen: %r" % (strlen,),

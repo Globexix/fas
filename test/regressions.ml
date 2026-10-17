@@ -852,6 +852,17 @@ let syntax_pin name text line column width message =
         (name ^ ": unexpected diagnostic: "
         ^ Diag.render_all ~source:(Some (source text)) diagnostics)
 
+let caret_render_pin name text start_offset end_offset expected =
+  let span =
+    Span.make ~file:"regression.fas" ~start_offset ~end_offset ~line:1
+      ~column:(start_offset + 1)
+  in
+  let rendered =
+    Diag.render_all ~source:(Some (source text)) [ Diag.error span "caret probe" ]
+  in
+  if rendered <> expected then
+    failwith (name ^ ": unexpected caret rendering\n" ^ rendered)
+
 let parse_pin name text line column width message help =
   match parse_diagnostics name text with
   | [ diagnostic ]
@@ -4271,6 +4282,10 @@ let () =
         ("use-keyword-rejection: unexpected diagnostics " ^ String.concat "; " messages));
   syntax_pin "keyword-identifier-caret" "fn use() i32 { return 0 }\n" 1 4 3
     "expected identifier, found `use`";
+  caret_render_pin "non-ascii-caret-after-tab" "\t\"\xc3\xa9\" bad\n" 6 9
+    "regression.fas:1:7: error: caret probe\n  \t\"\xc3\xa9\" bad\n  \t    ^~~\n";
+  caret_render_pin "non-ascii-caret-multibyte-width" "\t\"\xc3\xa9\" bad\n" 1 5
+    "regression.fas:1:2: error: caret probe\n  \t\"\xc3\xa9\" bad\n  \t^~~\n";
   if not (Names.reserved_binding_name "use") then
     failwith "use-keyword: use is not registered as a reserved binding";
   (match Driver.use_path_error "/opt/lib.fas" with
@@ -15283,9 +15298,13 @@ let () =
     ];
   if
     not
-      (contains
-         (C_import.manifest_text (snd float_macros))
-         "FAS_FLOAT_F_SUFFIX\tmacro FAS_FLOAT_F_SUFFIX\tmacro f32 2.0\t\t<unknown>:0")
+      (List.exists
+         (fun line ->
+           String.starts_with
+             ~prefix:"FAS_FLOAT_F_SUFFIX\tmacro FAS_FLOAT_F_SUFFIX\tmacro f32 2.0\t\t"
+             line
+           && String.ends_with ~suffix:"test/c_import/float_macros.h:3" line)
+         (String.split_on_char '\n' (C_import.manifest_text (snd float_macros))))
   then failwith "C float macro manifest line changed";
   c_semantic_message "c-float-macro-long-double"
     "C declaration `FAS_FLOAT_LONG_DOUBLE` is not supported: long double types are not \

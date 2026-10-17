@@ -50,7 +50,6 @@ val expression_types : t -> expression_type list
 val generic_calls : t -> generic_call list
 val kind_name : kind -> string
 val set_c_origins : t -> (string * (string * int)) list -> unit
-val set_c_spans : t -> (string * Span.t) list -> unit
 
 val set_c_import :
   t ->
@@ -59,6 +58,7 @@ val set_c_import :
   nonnull:(string * int list) list ->
   strings:(string * (int * string option) list) list ->
   alloc:(string * int list list) list ->
+  parameter_names:(string * string option list) list ->
   unit
 
 val has_c_import : t -> bool
@@ -86,6 +86,7 @@ val record_program :
   t ->
   structs:Hir.struct_def list ->
   consts:Hir.const_def list ->
+  arrays:Hir.const_arr_def list ->
   globals:Hir.global list ->
   unit
 

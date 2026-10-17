@@ -132,19 +132,25 @@ def error_code(reply):
 
 
 class Server:
-    def __init__(self, name):
+    def __init__(self, name, trace=False):
         self.name = name
         self.stderr = open(os.path.join(work, name + ".err"), "wb")
+        env = dict(os.environ)
+        env.pop("FAS_LSP_TRACE", None)
+        if trace:
+            env["FAS_LSP_TRACE"] = "1"
         self.proc = subprocess.Popen(
             [exe, "lsp"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=self.stderr,
+            env=env,
         )
         self.buffer = b""
         self.next_id = 100
         self.replies = []
         self.publishes = []
+        self.logs = []
         servers.append(self)
 
     def write(self, data):
@@ -175,9 +181,12 @@ class Server:
     def pump(self):
         message = self.read_message()
         if "method" in message:
-            if message["method"] == "textDocument/publishDiagnostics":
+            method = message["method"]
+            if method == "textDocument/publishDiagnostics":
                 params = message["params"]
                 self.publishes.append((params["uri"], params["diagnostics"]))
+            elif method == "window/logMessage":
+                self.logs.append(message["params"]["message"])
         else:
             self.replies.append(message)
 
@@ -193,13 +202,17 @@ class Server:
             self.pump()
         return self.replies.pop(0)
 
-    def request(self, method, params=None):
+    def frame_request(self, method, params=None):
         self.next_id += 1
         ident = self.next_id
         message = {"jsonrpc": "2.0", "id": ident, "method": method}
         if params is not None:
             message["params"] = params
-        self.write(frame_of(message))
+        return ident, frame_of(message)
+
+    def request(self, method, params=None):
+        ident, data = self.frame_request(method, params)
+        self.write(data)
         return self.wait_reply(ident)
 
     def notify(self, method, params=None):
@@ -264,6 +277,34 @@ def did_close(server, path):
     server.notify("textDocument/didClose", {"textDocument": {"uri": uri_of(path)}})
 
 
+def change_frame(path, text, version):
+    return frame_of(
+        {
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": uri_of(path), "version": version},
+                "contentChanges": [{"text": text}],
+            },
+        }
+    )
+
+
+def hover_params(path, line, character):
+    return {
+        "textDocument": {"uri": uri_of(path)},
+        "position": {"line": line, "character": character},
+    }
+
+
+def analyses_of(server, path):
+    return [
+        line
+        for line in server.logs
+        if line.startswith("analyse ") and line.endswith(os.path.basename(path))
+    ]
+
+
 def expect_published(publishes, path, expected, label):
     found = None
     for uri, diagnostics in publishes:
@@ -316,6 +357,49 @@ def framing():
     expect(reply.get("id") == 34 and error_code(reply) == -32601, "after malformed frame: %r" % reply)
     s.notify("$/cancelRequest", {"id": 34})
     expect(s.settle() == [], "cancelRequest produced publishes")
+    shutdown(s)
+    s.finish(0)
+
+
+def framing_resync():
+    s = Server("framing-resync")
+    initialize(s)
+    glued = b"Content-Length: abc\r\n\r\n{}" + frame_of({"jsonrpc": "2.0", "id": 41, "method": "fas/one"})
+    s.write(glued)
+    reply = s.next_reply()
+    expect(reply.get("id") is None and error_code(reply) == -32700, "bad length resync: %r" % reply)
+    reply = s.next_reply()
+    expect(reply.get("id") == 41 and error_code(reply) == -32601, "bad length frame: %r" % reply)
+
+    s.write(b"Content-Length: abc\r\n\r\n")
+    reply = s.next_reply()
+    expect(reply.get("id") is None and error_code(reply) == -32700, "bad length alone: %r" % reply)
+    time.sleep(0.05)
+    s.write(b"{}")
+    time.sleep(0.05)
+    s.write(frame_of({"jsonrpc": "2.0", "id": 42, "method": "fas/two"}))
+    reply = s.next_reply()
+    expect(reply.get("id") == 42 and error_code(reply) == -32601, "bad body split from frame: %r" % reply)
+
+    split = frame_of({"jsonrpc": "2.0", "id": 43, "method": "fas/three"})
+    cut = split.index(b"gth")
+    s.write(b"X-Other: 1\r\n\r\n{}" + split[:cut])
+    reply = s.next_reply()
+    expect(reply.get("id") is None and error_code(reply) == -32700, "split keyword block: %r" % reply)
+    time.sleep(0.05)
+    s.write(split[cut:])
+    reply = s.next_reply()
+    expect(reply.get("id") == 43 and error_code(reply) == -32601, "split keyword frame: %r" % reply)
+
+    s.write(frame_of({"jsonrpc": "2.0", "id": 99, "result": None}))
+    s.write(frame_of({"jsonrpc": "2.0", "id": 98, "error": {"code": -32000, "message": "client"}}))
+    s.write(frame_of({"jsonrpc": "2.0"}))
+    s.write(frame_of({"jsonrpc": "2.0", "id": 44, "method": "fas/four"}))
+    reply = s.next_reply()
+    expect(reply.get("id") is None and error_code(reply) == -32600, "no id and no method: %r" % reply)
+    reply = s.next_reply()
+    expect(reply.get("id") == 44 and error_code(reply) == -32601, "responses ignored: %r" % reply)
+    expect(s.settle() == [], "resync produced publishes")
     shutdown(s)
     s.finish(0)
 
@@ -454,12 +538,177 @@ def c_cache():
     c.finish(0)
 
 
+def burst_text(index):
+    body = "fn main() i32 { return 0 }\n"
+    if index == 50:
+        body += "fn only_in_fifty() i32 { return 50 }\n"
+    return body + "// change %d\n" % index
+
+
+def burst():
+    b = Server("burst", trace=True)
+    initialize(b)
+    folder = os.path.join(work, "burst")
+    main = os.path.join(folder, "main.fas")
+    write_file(main, burst_text(0))
+    did_open(b, main, burst_text(0), 1)
+    b.settle()
+    b.logs = []
+    changes = b"".join(change_frame(main, burst_text(index), index + 1) for index in range(1, 51))
+    ident, hover = b.frame_request("textDocument/hover", hover_params(main, 1, 4))
+    b.write(changes + hover)
+    reply = b.wait_reply(ident)
+    expect("only_in_fifty" in json.dumps(reply.get("result")), "burst hover: %r" % reply)
+    count = len(analyses_of(b, main))
+    expect(count == 1, "50 didChange messages analysed %d times" % count)
+    expect_published(b.settle(), main, [], "burst")
+
+    quiet = Server("burst-quiet")
+    initialize(quiet)
+    did_open(quiet, main, burst_text(0), 1)
+    quiet.settle()
+    expect(not [line for line in quiet.logs if line.startswith("analyse ")], "analysis traced without FAS_LSP_TRACE")
+    shutdown(quiet)
+    quiet.finish(0)
+    shutdown(b)
+    b.finish(0)
+
+
+def split_frame():
+    s = Server("split-frame")
+    initialize(s)
+    folder = os.path.join(work, "split-frame")
+    main = os.path.join(folder, "main.fas")
+    base = "fn main() i32 { return 0 }\n"
+    write_file(main, base)
+    did_open(s, main, base, 1)
+    s.settle()
+    first = change_frame(main, base + "// first\n", 2)
+    second = change_frame(main, base + "fn split_b() i32 { return 2 }\n", 3)
+    cut = len(second) // 2
+    s.write(first + second[:cut])
+    time.sleep(0.05)
+    s.write(second[cut:])
+    ident, hover = s.frame_request("textDocument/hover", hover_params(main, 1, 4))
+    s.write(hover)
+    reply = s.wait_reply(ident)
+    expect("split_b" in json.dumps(reply.get("result")), "split frame hover: %r" % reply)
+    shutdown(s)
+    s.finish(0)
+
+
+def ordered_replies():
+    o = Server("ordered")
+    initialize(o)
+    folder = os.path.join(work, "ordered")
+    main = os.path.join(folder, "main.fas")
+    alpha = "fn main() i32 { return 0 }\nfn alpha() i32 { return 1 }\n"
+    beta = "fn main() i32 { return 0 }\nfn beta() i32 { return 1 }\n"
+    write_file(main, alpha)
+    did_open(o, main, alpha, 1)
+    o.settle()
+    before_id, before = o.frame_request("textDocument/hover", hover_params(main, 1, 4))
+    after_id, after = o.frame_request("textDocument/hover", hover_params(main, 1, 4))
+    o.write(before + change_frame(main, beta, 2) + after)
+    first = o.next_reply()
+    second = o.next_reply()
+    expect(
+        first.get("id") == before_id and "alpha" in json.dumps(first.get("result")),
+        "hover before change: %r" % first,
+    )
+    shown = json.dumps(second.get("result"))
+    expect(
+        second.get("id") == after_id and "beta" in shown and "alpha" not in shown,
+        "hover after change: %r" % second,
+    )
+    shutdown(o)
+    o.finish(0)
+
+
+def close_cases():
+    c = Server("close-cases")
+    initialize(c)
+    folder = os.path.join(work, "close-cases")
+    root = os.path.join(folder, "main.fas")
+    lib = os.path.join(folder, "lib.fas")
+    root_text = 'use "lib.fas"\nfn main() i32 { return 0 }\n'
+    lib_text = "fn helper() i32 { return nope }\n"
+    lib_message = "unknown name `nope`\nnote: include chain: %s -> %s" % (root, lib)
+    write_file(root, root_text)
+    write_file(lib, lib_text)
+    did_open(c, root, root_text, 1)
+    expect_published(c.settle(), root, [], "open root")
+    did_open(c, lib, lib_text, 1)
+    publishes = c.settle()
+    expect_published(publishes, lib, [diagnostic(lib_text, "nope", lib_message)], "open use file with error")
+    expect_published(publishes, root, [], "root with open use file error")
+    did_close(c, lib)
+    publishes = c.settle()
+    expect_published(publishes, lib, [diagnostic(lib_text, "nope", lib_message)], "close use file keeps diagnostics")
+    expect_published(publishes, root, [], "root after use file close")
+    did_close(c, root)
+    publishes = c.settle()
+    expect_published(publishes, root, [], "close root clears root")
+    expect_published(publishes, lib, [], "close root clears use file")
+    shutdown(c)
+    c.finish(0)
+
+
+def batch_exit():
+    e = Server("batch-exit")
+    initialize(e)
+    folder = os.path.join(work, "batch-exit")
+    main = os.path.join(folder, "main.fas")
+    base = "fn main() i32 { return 0 }\nfn alpha() i32 { return 1 }\n"
+    gamma = "fn main() i32 { return 0 }\nfn gamma() i32 { return 1 }\n"
+    write_file(main, base)
+    did_open(e, main, base, 1)
+    e.settle()
+    ident, hover = e.frame_request("textDocument/hover", hover_params(main, 1, 4))
+    cancel = frame_of({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": ident}})
+    shut_id, shut = e.frame_request("shutdown")
+    exit_frame = frame_of({"jsonrpc": "2.0", "method": "exit"})
+    e.write(
+        change_frame(main, gamma, 2)
+        + change_frame(main, gamma + "// two\n", 3)
+        + hover
+        + cancel
+        + shut
+        + exit_frame
+    )
+    reply = e.wait_reply(ident)
+    expect("gamma" in json.dumps(reply.get("result")), "batch hover: %r" % reply)
+    reply = e.wait_reply(shut_id)
+    expect("result" in reply and reply["result"] is None, "batch shutdown: %r" % reply)
+    status = e.proc.wait(timeout=TIMEOUT)
+    expect(status == 0, "batch exit status %d, expected 0" % status)
+
+    x = Server("batch-exit-error")
+    initialize(x)
+    write_file(main, base)
+    did_open(x, main, base, 1)
+    x.settle()
+    early_id, early = x.frame_request("textDocument/hover", hover_params(main, 1, 4))
+    late_id, late = x.frame_request("textDocument/hover", hover_params(main, 1, 4))
+    x.write(change_frame(main, gamma, 2) + early + exit_frame + late)
+    reply = x.wait_reply(early_id)
+    expect("gamma" in json.dumps(reply.get("result")), "batch hover before exit: %r" % reply)
+    status = x.proc.wait(timeout=TIMEOUT)
+    expect(status == 1, "batch exit without shutdown status %d, expected 1" % status)
+
+
 lifecycle()
 exit_without_shutdown()
 framing()
+framing_resync()
 diagnostics()
 dependant_roots()
 c_cache()
+burst()
+split_frame()
+ordered_replies()
+close_cases()
+batch_exit()
 PY
 
-echo "lsp_protocol: lifecycle, framing, diagnostics, and C import cache: ok"
+echo "lsp_protocol: lifecycle, framing, framing resync, batching, diagnostics, close, and C import cache: ok"

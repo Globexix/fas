@@ -198,7 +198,7 @@ let normalize_import_failure ~unit_path paths output =
 let macro_definitions text names =
   let wanted = Hashtbl.create 16 and definitions = Hashtbl.create 16 in
   List.iter (fun name -> Hashtbl.replace wanted name ()) names;
-  let real_file = ref false in
+  let real_file = ref false and file_name = ref "" and line_number = ref 0 in
   let take prefix line =
     if not (String.starts_with ~prefix line) then None
     else
@@ -219,31 +219,45 @@ let macro_definitions text names =
             !stop < String.length line && line.[!stop] = '(',
             String.trim (String.sub line !stop (String.length line - !stop)) <> "" )
   in
+  let marker line =
+    match String.index_opt line '"' with
+    | None -> None
+    | Some first -> (
+        match String.index_from_opt line (first + 1) '"' with
+        | None -> None
+        | Some last ->
+            Option.map
+              (fun number -> (String.sub line (first + 1) (last - first - 1), number))
+              (int_of_string_opt (String.trim (String.sub line 2 (first - 2)))))
+  in
   String.split_on_char '\n' text
   |> List.iter (fun line ->
       if String.starts_with ~prefix:"# " line then
-        real_file :=
-          match String.index_opt line '"' with
-          | None -> false
-          | Some first -> (
-              match String.index_from_opt line (first + 1) '"' with
-              | Some last ->
-                  not
-                    (String.starts_with ~prefix:"<"
-                       (String.sub line (first + 1) (last - first - 1)))
-              | None -> false)
-      else if !real_file then
-        match take "#define " line with
-        | Some (name, function_like, has_value) when Hashtbl.mem wanted name ->
-            Hashtbl.replace definitions name (function_like, has_value)
-        | _ -> (
-            match take "#undef " line with
-            | Some (name, _, _) -> Hashtbl.remove definitions name
-            | None -> ()));
+        begin match marker line with
+        | Some (name, number) when not (String.starts_with ~prefix:"<" name) ->
+            real_file := true;
+            file_name := name;
+            line_number := number
+        | _ -> real_file := false
+        end
+      else begin
+        if !real_file then
+          begin match take "#define " line with
+          | Some (name, function_like, has_value) when Hashtbl.mem wanted name ->
+              Hashtbl.replace definitions name
+                (function_like, has_value, (!file_name, !line_number))
+          | _ -> (
+              match take "#undef " line with
+              | Some (name, _, _) -> Hashtbl.remove definitions name
+              | None -> ())
+          end;
+        incr line_number
+      end);
   List.filter_map
     (fun name ->
       Option.map
-        (fun (function_like, has_value) -> (name, function_like, has_value))
+        (fun (function_like, has_value, origin) ->
+          (name, function_like, has_value, origin))
         (Hashtbl.find_opt definitions name))
     names
 
@@ -388,7 +402,7 @@ let imported_macro_expansions ~cc ~c_flags ~source ~unit_path ~paths candidates 
     let output = open_out_bin probe in
     Printf.fprintf output "#include %S\n" unit_path;
     List.iteri
-      (fun index (name, _, _) ->
+      (fun index (name, _, _, _) ->
         Printf.fprintf output "%s %s %s\n" (marker index "b") name (marker index "e"))
       candidates;
     close_out output;
@@ -401,7 +415,7 @@ let imported_macro_expansions ~cc ~c_flags ~source ~unit_path ~paths candidates 
         let lines = String.split_on_char '\n' text in
         Ok
           (List.mapi
-             (fun index (name, _, _) ->
+             (fun index (name, _, _, _) ->
                let first = marker index "b" and last = marker index "e" in
                let prefix = first ^ " " and suffix = " " ^ last in
                let expansion =
@@ -459,18 +473,18 @@ let macro_float_literal expansion =
                  type_name,
                  negative )))
 
-let float_macro_node name result =
+let float_macro_node name origin result =
   let fields =
-    ("name", C_import_json.Str name)
-    ::
-    (match result with
+    (("name", C_import_json.Str name) :: origin)
+    @
+    match result with
     | Error reason -> [ ("reason", C_import_json.Str reason) ]
     | Ok (literal, type_name, negative) ->
         [
           ("type", C_import_json.Str type_name);
           ("literal", C_import_json.Str literal);
           ("negative", C_import_json.Bool negative);
-        ])
+        ]
   in
   C_import_json.make_obj (("kind", C_import_json.Str "FasFloatMacro") :: fields)
 
@@ -796,7 +810,7 @@ let imported_structured_type_nodes ~cc ~c_flags ~source ~unit_path ~paths
             Printf.fprintf out "typedef __typeof__(%s) %s%d;\n" expression prefix index)
           indexed;
         List.iteri
-          (fun index (name, _, _) ->
+          (fun index (name, _, _, _) ->
             Printf.fprintf out "typedef __typeof__((%s)) %s%d;\n" name macro_prefix
               index)
           macro_candidates)
@@ -1039,11 +1053,26 @@ let imported_probe_nodes ~cc ~c_flags ~source ~unit_path ~paths ~definitions
   let object_of_kind kind fields =
     C_import_json.make_obj (("kind", C_import_json.Str kind) :: fields)
   in
+  let origins = Hashtbl.create 64 in
+  List.iter
+    (fun (name, _, _, (file, line)) -> Hashtbl.replace origins name (file, line))
+    definitions;
+  let macro_origin_fields name =
+    match Hashtbl.find_opt origins name with
+    | Some (file, line) ->
+        [
+          ("declarationFile", C_import_json.Str file);
+          ("declarationLine", C_import_json.Str (string_of_int line));
+        ]
+    | None -> []
+  in
   let float_macros =
     List.filter_map
       (fun (name, expansion) ->
         Option.bind expansion (fun expansion ->
-            Option.map (float_macro_node name) (macro_float_literal expansion)))
+            Option.map
+              (float_macro_node name (macro_origin_fields name))
+              (macro_float_literal expansion)))
       macro_expansions
   in
   let rec flatten node = node :: List.concat_map flatten (children node) in
@@ -1132,7 +1161,7 @@ let imported_probe_nodes ~cc ~c_flags ~source ~unit_path ~paths ~definitions
   in
   let indexed_macros =
     List.mapi
-      (fun index ((name, _, _), (type_name, alias, valid)) ->
+      (fun index ((name, _, _, _), (type_name, alias, valid)) ->
         (index, name, type_name, alias, valid))
       (List.combine macro_candidates macro_infos)
     |> List.filter_map (fun (index, name, type_name, alias, valid) ->
@@ -1320,7 +1349,8 @@ let imported_probe_nodes ~cc ~c_flags ~source ~unit_path ~paths ~definitions
                                 in
                                 let node =
                                   object_of_kind "FasIntegerMacro"
-                                    (("name", C_import_json.Str name) :: extras)
+                                    (("name", C_import_json.Str name)
+                                    :: (macro_origin_fields name @ extras))
                                 in
                                 Some node)))
               | _ -> None)
@@ -1331,7 +1361,7 @@ let imported_probe_nodes ~cc ~c_flags ~source ~unit_path ~paths ~definitions
         let macros =
           imported_macros @ float_macros
           @ List.filter_map
-              (fun (name, _, _) ->
+              (fun (name, _, _, _) ->
                 if List.mem name imported_names then None
                 else
                   Some
@@ -1677,7 +1707,7 @@ let import_fresh ~cc ~keep ?alloc_size_out ?(retain = false) ?(c_flags = [])
               in
               let macro_candidates =
                 List.filter
-                  (fun (_, function_like, has_value) ->
+                  (fun (_, function_like, has_value, _) ->
                     (not function_like) && has_value)
                   definitions
               in
@@ -2193,6 +2223,7 @@ type mapped = {
   nonnull_parameters : (string * int list) list;
   c_string_parameters : (string * (int * string option) list) list;
   alloc_size_parameters : (string * int list list) list;
+  parameter_names : (string * string option list) list;
   static_functions : static_function list;
   records : (string * string * string option) list;
   record_types : (string * string * string option) list;
@@ -3266,6 +3297,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
   and c_string_parameters = Hashtbl.create 32
   and incomplete_arrays = Hashtbl.create 16
   and static_functions = Hashtbl.create 32
+  and header_parameter_names = Hashtbl.create 64
   and items = ref [] in
   let source_cache = Hashtbl.create 16 in
   let source_text path =
@@ -3447,7 +3479,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
     aliases;
   let add_item name spelling signature item origin obligations reason
       ?(normalize_restrict = Option.is_some (find_text spelling "restrict" 0))
-      ?(entity_scope = "") ?(keep_unsupported_item = false) () =
+      ?(entity_scope = "") ?(keep_unsupported_item = false) ?(parameter_names = []) () =
     let reason =
       if Names.reserved_binding_name name then Some (Names.reserved_c_name_reason name)
       else reason
@@ -3487,6 +3519,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
         add_unsupported name "conflicting C declarations"
     | None ->
         Hashtbl.add entities name identity;
+        Hashtbl.replace header_parameter_names name parameter_names;
         Option.iter (fun item -> items := item :: !items) item
   in
   let origin node =
@@ -4133,6 +4166,14 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
         string "kind" node = Some "EnumDecl"
         && not (Hashtbl.mem top_enum_ids (Option.value ~default:"" (string "id" node))))
   in
+  let macro_origin node =
+    match
+      ( string "declarationFile" node,
+        Option.bind (string "declarationLine" node) int_of_string_opt )
+    with
+    | Some file, Some line -> (Some file, Some line)
+    | _ -> (None, None)
+  in
   List.iter
     (fun node ->
       let name = Option.value ~default:"" (string "name" node) in
@@ -4182,7 +4223,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
                   add_item name ("macro " ^ name)
                     ("macro " ^ Ast.type_name ty ^ " " ^ value)
                     (Some (Ast.const_item name macro_span ty expression macro_span))
-                    (None, None) [] None ())
+                    (macro_origin node) [] None ())
                 ty
           | _ -> ())
       | Some "FasFloatMacro", name when name <> "" ->
@@ -4212,8 +4253,8 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
           in
           Option.iter
             (fun (item, signature, reason) ->
-              add_item name ("macro " ^ name) signature item (None, None) [] reason
-                ~keep_unsupported_item:true ())
+              add_item name ("macro " ^ name) signature item (macro_origin node) []
+                reason ~keep_unsupported_item:true ())
             record
       | Some "RecordDecl", _ -> ()
       | Some "EnumDecl", _ ->
@@ -4447,6 +4488,13 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
             reason
             ~normalize_restrict:(function_spells_restrict node)
             ~entity_scope:(if is_static then span.Span.file else "")
+            ~parameter_names:
+              (List.map
+                 (fun parameter ->
+                   match string "name" parameter with
+                   | Some "" | None -> None
+                   | Some name -> Some name)
+                 parameter_nodes)
             ()
       | Some "VarDecl", _ ->
           let ty =
@@ -4603,6 +4651,11 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
         c_string_parameters []
       |> List.sort compare;
     alloc_size_parameters;
+    parameter_names =
+      Hashtbl.fold
+        (fun name names acc -> (name, names) :: acc)
+        header_parameter_names []
+      |> List.sort compare;
     static_functions =
       Hashtbl.fold (fun _ static acc -> static :: acc) static_functions []
       |> List.sort (fun a b -> String.compare a.name b.name);
@@ -4661,6 +4714,14 @@ let merge_imports mappings =
       |> List.sort_uniq String.compare;
     unsupported;
     identities = [];
+    parameter_names =
+      List.concat_map (fun mapping -> mapping.parameter_names) mappings
+      |> List.filter (fun (name, _) -> not (bad name))
+      |> List.fold_left
+           (fun merged (name, names) ->
+             if List.mem_assoc name merged then merged else (name, names) :: merged)
+           []
+      |> List.sort compare;
     manifest = List.concat_map (fun mapping -> mapping.manifest) mappings;
     use_files = List.concat_map (fun mapping -> mapping.use_files) mappings;
     nonnull_parameters =
@@ -4818,6 +4879,10 @@ let reconcile_source ?(container_mismatch_to_clang = false) source_items importe
             List.filter
               (fun (name, _) -> not (List.mem name !confirmed))
               imported.incomplete_arrays;
+          parameter_names =
+            List.filter
+              (fun (name, _) -> not (List.mem name !confirmed))
+              imported.parameter_names;
         }
 
 let prune_unreferenced_records ~referenced_names imported =

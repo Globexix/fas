@@ -41,6 +41,31 @@ let content_length header =
       in
       if digits && String.length value <= 9 then int_of_string_opt value else None
 
+let header_pattern = "content-length:"
+let lowered text i k = String.lowercase_ascii (String.sub text i k)
+
+let find_header text =
+  let n = String.length text and m = String.length header_pattern in
+  let rec find i =
+    if i + m > n then None
+    else if lowered text i m = header_pattern then Some i
+    else find (i + 1)
+  in
+  find 0
+
+let resynchronise text =
+  let n = String.length text in
+  match find_header text with
+  | Some i -> (true, String.sub text i (n - i))
+  | None ->
+      let rec partial k =
+        if k = 0 then ""
+        else if lowered text (n - k) k = String.sub header_pattern 0 k then
+          String.sub text (n - k) k
+        else partial (k - 1)
+      in
+      (false, partial (min (String.length header_pattern - 1) n))
+
 let take_message text =
   match index_of text "\r\n\r\n" with
   | None -> Incomplete

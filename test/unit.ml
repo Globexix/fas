@@ -4012,6 +4012,130 @@ let () =
     = Some (Perf_report.Changed { items = [ "a \u{2192} b" ]; raw = [] }))
 
 let () =
+  let char_at text i =
+    let length = String.length text in
+    let byte k = Char.code text.[k] in
+    let within lo hi k = k < length && byte k >= lo && byte k <= hi in
+    let tail k = within 0x80 0xBF k in
+    let lead = byte i in
+    if lead < 0x80 then (1, 1)
+    else if lead >= 0xC2 && lead <= 0xDF && tail (i + 1) then (2, 1)
+    else if
+      lead >= 0xE0 && lead <= 0xEF
+      && within
+           (if lead = 0xE0 then 0xA0 else 0x80)
+           (if lead = 0xED then 0x9F else 0xBF)
+           (i + 1)
+      && tail (i + 2)
+    then (3, 1)
+    else if
+      lead >= 0xF0 && lead <= 0xF4
+      && within
+           (if lead = 0xF0 then 0x90 else 0x80)
+           (if lead = 0xF4 then 0x8F else 0xBF)
+           (i + 1)
+      && tail (i + 2)
+      && tail (i + 3)
+    then (4, 2)
+    else (1, 1)
+  in
+  let scan_position text offset =
+    let offset = max 0 (min offset (String.length text)) in
+    let rec line_start i line start =
+      if i >= offset then (line, start)
+      else if text.[i] = '\n' then line_start (i + 1) (line + 1) (i + 1)
+      else line_start (i + 1) line start
+    in
+    let line, start = line_start 0 0 0 in
+    let rec units i acc =
+      if i >= offset then acc
+      else
+        let width, size = char_at text i in
+        units (i + width) (acc + size)
+    in
+    (line, units start 0)
+  in
+  let scan_offset text (line, character) =
+    let length = String.length text in
+    let rec find_line i current =
+      if current = line then Some i
+      else
+        match String.index_from_opt text i '\n' with
+        | None -> None
+        | Some j -> find_line (j + 1) (current + 1)
+    in
+    match if line < 0 then None else find_line 0 0 with
+    | None -> length
+    | Some start ->
+        let at_break i =
+          i >= length
+          || text.[i] = '\n'
+          || (text.[i] = '\r' && i + 1 < length && text.[i + 1] = '\n')
+        in
+        let rec walk i units =
+          if at_break i then i
+          else
+            let width, size = char_at text i in
+            if units + size > character then i else walk (i + width) (units + size)
+        in
+        walk start 0
+  in
+  let pieces =
+    [|
+      "a";
+      "bc";
+      "\t";
+      "\n";
+      "\r\n";
+      "\r";
+      "\xc3\xa9";
+      "\xe2\x82\xac";
+      "\xf0\x9f\x98\x80";
+      "\xff";
+      "\x80";
+      "\xed\xa0\x80";
+      "\xc3";
+      "\xf4\x90\x80\x80";
+      "\xe0\x80\x80";
+      "\xe0\xa0\x80";
+    |]
+  in
+  let state = Random.State.make [| 20261017; 7 |] in
+  for _ = 1 to 400 do
+    let count = Random.State.int state 48 in
+    let text =
+      String.concat ""
+        (List.init count (fun _ ->
+             pieces.(Random.State.int state (Array.length pieces))))
+    in
+    let index = Lsp_position.index text in
+    for offset = -2 to String.length text + 2 do
+      let expected = scan_position text offset in
+      assert (Lsp_position.position index offset = expected);
+      assert (Lsp_position.position_of_offset text offset = expected)
+    done;
+    let lines = List.length (String.split_on_char '\n' text) in
+    for line = -1 to lines + 1 do
+      for character = -1 to 12 do
+        let expected = scan_offset text (line, character) in
+        assert (Lsp_position.offset index (line, character) = expected);
+        assert (Lsp_position.offset_of_position text (line, character) = expected)
+      done
+    done
+  done;
+  let sample = "x\r\n\t\"\xc3\xa9\"\n\xf0\x9f\x98\x80z" in
+  let indexed = Lsp_position.index sample in
+  assert (Lsp_position.position indexed 0 = (0, 0));
+  assert (Lsp_position.position indexed 3 = (1, 0));
+  assert (Lsp_position.position indexed 8 = (1, 4));
+  assert (Lsp_position.position indexed 9 = (2, 0));
+  assert (Lsp_position.offset indexed (1, 5) = 8);
+  assert (Lsp_position.offset indexed (0, 2) = 1);
+  assert (Lsp_position.offset indexed (2, 0) = 9);
+  assert (Lsp_position.offset indexed (2, 2) = 13);
+  assert (Lsp_position.offset indexed (3, 0) = String.length sample)
+
+let () =
   let text = "a\u{e9}\u{1F600}\nb" in
   let position = Lsp_position.position_of_offset text in
   let offset = Lsp_position.offset_of_position text in
@@ -4069,7 +4193,15 @@ let () =
     Lsp_frame.take_message "Content-Length: 2\r\n\r\nbc" = Lsp_frame.Message ("bc", ""));
   let split = "Content-Length: 3\r\n\r\nab" in
   assert (Lsp_frame.take_message split = Lsp_frame.Incomplete);
-  assert (Lsp_frame.take_message (split ^ "c") = Lsp_frame.Message ("abc", ""))
+  assert (Lsp_frame.take_message (split ^ "c") = Lsp_frame.Message ("abc", ""));
+  assert (
+    Lsp_frame.resynchronise "{}Content-Length: 2\r\n\r\nok"
+    = (true, "Content-Length: 2\r\n\r\nok"));
+  assert (Lsp_frame.resynchronise "CONTENT-LENGTH:1" = (true, "CONTENT-LENGTH:1"));
+  assert (Lsp_frame.resynchronise "{}" = (false, ""));
+  assert (Lsp_frame.resynchronise "xxConte" = (false, "Conte"));
+  assert (Lsp_frame.resynchronise "Content-Length" = (false, "Content-Length"));
+  assert (Lsp_frame.resynchronise "" = (false, ""))
 
 let () =
   let directory = Filename.temp_dir "fas-index-" "" in
@@ -4171,14 +4303,6 @@ let () =
   in
   expect "declaration"
     [
-      "const PROBE_WIDTH main.fas:2:9-18 [main.fas:2:9-18] - <unknown>:0";
-      "field count main.fas:2:9-18 [main.fas:2:9-18] probe_box probe.h:5";
-      "function probe_add main.fas:2:9-18 [main.fas:2:9-18] - probe.h:6";
-      "struct probe_box main.fas:2:9-18 [main.fas:2:9-18] - probe.h:5";
-      "global probe_count main.fas:2:9-18 [main.fas:2:9-18] - probe.h:7";
-      "type alias probe_word main.fas:2:9-18 [main.fas:2:9-18] - probe.h:4";
-      "function extra_twice main.fas:3:9-18 [main.fas:3:9-18] - extra.h:3";
-      "type alias extra_word main.fas:3:9-18 [main.fas:3:9-18] - extra.h:2";
       "global total main.fas:5:5-10 [main.fas:5:1-22] - -";
       "const array TABLE main.fas:6:7-12 [main.fas:6:1-32] - -";
       "function helper main.fas:8:4-10 [main.fas:8:1-29] - -";
@@ -4214,6 +4338,14 @@ let () =
       "parameter value shapes.fas:16:14-19 [shapes.fas:16:1-59] unused -";
       "local copy shapes.fas:17:3-7 [shapes.fas:16:1-59] unused -";
       "const GAP shapes.fas:21:7-10 [shapes.fas:21:1-37] - -";
+      "const PROBE_WIDTH <generated>:1:1-1 [<generated>:1:1-1] - probe.h:3";
+      "field count <generated>:1:1-1 [<generated>:1:1-1] probe_box probe.h:5";
+      "function extra_twice <generated>:1:1-1 [<generated>:1:1-1] - extra.h:3";
+      "type alias extra_word <generated>:1:1-1 [<generated>:1:1-1] - extra.h:2";
+      "function probe_add <generated>:1:1-1 [<generated>:1:1-1] - probe.h:6";
+      "struct probe_box <generated>:1:1-1 [<generated>:1:1-1] - probe.h:5";
+      "global probe_count <generated>:1:1-1 [<generated>:1:1-1] - probe.h:7";
+      "type alias probe_word <generated>:1:1-1 [<generated>:1:1-1] - probe.h:4";
     ]
     (List.map declaration (Sema_index.declarations index));
   expect "reference"
@@ -4225,18 +4357,18 @@ let () =
       "main.fas:12:12-17 -> local point main.fas:11:3-8 [main.fas:10:1-455] main -";
       "main.fas:13:3-4 -> view p main.fas:12:8-9 [main.fas:10:1-455] main -";
       "main.fas:13:5-6 -> field x shapes.fas:5:3-4 [shapes.fas:4:1-33] Point -";
-      "main.fas:13:9-18 -> function probe_add main.fas:2:9-18 [main.fas:2:9-18] - \
+      "main.fas:13:9-18 -> function probe_add <generated>:1:1-1 [<generated>:1:1-1] - \
        probe.h:6";
       "main.fas:13:19-20 -> view p main.fas:12:8-9 [main.fas:10:1-455] main -";
       "main.fas:13:21-22 -> field y shapes.fas:6:3-4 [shapes.fas:4:1-33] Point -";
-      "main.fas:13:24-35 -> const PROBE_WIDTH main.fas:2:9-18 [main.fas:2:9-18] - \
-       <unknown>:0";
+      "main.fas:13:24-35 -> const PROBE_WIDTH <generated>:1:1-1 [<generated>:1:1-1] - \
+       probe.h:3";
       "main.fas:16:8-12 -> struct Pair shapes.fas:9:8-12 [shapes.fas:9:1-38] - -";
       "main.fas:16:21-26 -> local small main.fas:14:3-8 [main.fas:10:1-455] main -";
       "main.fas:16:28-33 -> function twice shapes.fas:14:4-9 [shapes.fas:14:1-48] - -";
       "main.fas:16:34-39 -> local small main.fas:14:3-8 [main.fas:10:1-455] main -";
-      "main.fas:17:8-18 -> type alias probe_word main.fas:2:9-18 [main.fas:2:9-18] - \
-       probe.h:4";
+      "main.fas:17:8-18 -> type alias probe_word <generated>:1:1-1 [<generated>:1:1-1] \
+       - probe.h:4";
       "main.fas:17:21-26 -> function twice shapes.fas:14:4-9 [shapes.fas:14:1-48] - -";
       "main.fas:17:32-36 -> local wide main.fas:15:3-7 [main.fas:10:1-455] main -";
       "main.fas:18:3-8 -> global total main.fas:5:5-10 [main.fas:5:1-22] - -";
@@ -4248,20 +4380,20 @@ let () =
       "main.fas:20:5-9 -> field left shapes.fas:10:3-7 [shapes.fas:9:1-38] Pair -";
       "main.fas:20:12-17 -> const array TABLE main.fas:6:7-12 [main.fas:6:1-32] - -";
       "main.fas:21:17-23 -> function helper main.fas:8:4-10 [main.fas:8:1-29] - -";
-      "main.fas:22:7-16 -> struct probe_box main.fas:2:9-18 [main.fas:2:9-18] - \
+      "main.fas:22:7-16 -> struct probe_box <generated>:1:1-1 [<generated>:1:1-1] - \
        probe.h:5";
-      "main.fas:22:20-31 -> global probe_count main.fas:2:9-18 [main.fas:2:9-18] - \
+      "main.fas:22:20-31 -> global probe_count <generated>:1:1-1 [<generated>:1:1-1] - \
        probe.h:7";
       "main.fas:23:3-6 -> local box main.fas:22:3-6 [main.fas:10:1-455] main -";
-      "main.fas:23:7-12 -> field count main.fas:2:9-18 [main.fas:2:9-18] probe_box \
+      "main.fas:23:7-12 -> field count <generated>:1:1-1 [<generated>:1:1-1] probe_box \
        probe.h:5";
-      "main.fas:24:11-21 -> type alias extra_word main.fas:3:9-18 [main.fas:3:9-18] - \
-       extra.h:2";
-      "main.fas:24:24-35 -> function extra_twice main.fas:3:9-18 [main.fas:3:9-18] - \
-       extra.h:3";
+      "main.fas:24:11-21 -> type alias extra_word <generated>:1:1-1 \
+       [<generated>:1:1-1] - extra.h:2";
+      "main.fas:24:24-35 -> function extra_twice <generated>:1:1-1 [<generated>:1:1-1] \
+       - extra.h:3";
       "main.fas:24:36-39 -> local box main.fas:22:3-6 [main.fas:10:1-455] main -";
-      "main.fas:24:40-45 -> field count main.fas:2:9-18 [main.fas:2:9-18] probe_box \
-       probe.h:5";
+      "main.fas:24:40-45 -> field count <generated>:1:1-1 [<generated>:1:1-1] \
+       probe_box probe.h:5";
       "main.fas:25:27-32 -> struct Point shapes.fas:4:8-13 [shapes.fas:4:1-33] - -";
       "main.fas:25:34-35 -> field x shapes.fas:5:3-4 [shapes.fas:4:1-33] Point -";
       "main.fas:25:39-42 -> const GAP shapes.fas:21:7-10 [shapes.fas:21:1-37] - -";

@@ -1088,7 +1088,7 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
                      frame.arguments)
           | None -> ())
         struct_specializations;
-      Sema_index.record_program index ~structs ~consts:hconsts ~globals;
+      Sema_index.record_program index ~structs ~consts:hconsts ~arrays:harrays ~globals;
       Sema_index.finish index
         ~render:(Sema_specialization.source_facing_text specializations))
     index;

@@ -55,16 +55,16 @@ type t = {
   bindings : (Span.t, declaration) Hashtbl.t;
   locals : (int, declaration) Hashtbl.t;
   explicit_calls : (Span.t, unit) Hashtbl.t;
+  c_import_spans : (Span.t, unit) Hashtbl.t;
   origins : (string, string * int) Hashtbl.t;
-  c_spans : (string, Span.t) Hashtbl.t;
   mutable c_imported : bool;
   c_unsupported : (string, string) Hashtbl.t;
   c_aliases : (string, string) Hashtbl.t;
   c_params : (string, string list) Hashtbl.t;
+  c_names : (string, string option list) Hashtbl.t;
   c_nonnull : (string, int list) Hashtbl.t;
   c_strings : (string, int list) Hashtbl.t;
   c_alloc : (string, int list list) Hashtbl.t;
-  synthesized : (Span.t, unit) Hashtbl.t;
   referenced : (Span.t * string * Span.t * kind, reference) Hashtbl.t;
   types : (Span.t * string list, expression_type) Hashtbl.t;
   calls : (Span.t * string list, generic_call) Hashtbl.t;
@@ -77,6 +77,7 @@ type t = {
   local_types : (Span.t * string list, int * string) Hashtbl.t;
   declared_types : (Span.t, string) Hashtbl.t;
   global_types : (string, string) Hashtbl.t;
+  array_decls : (string, string * int) Hashtbl.t;
   layouts : (string, layout) Hashtbl.t;
   consts_text : (string, string) Hashtbl.t;
   source_types : (Span.t, string) Hashtbl.t;
@@ -97,16 +98,16 @@ let create () =
     bindings = Hashtbl.create 64;
     locals = Hashtbl.create 32;
     explicit_calls = Hashtbl.create 16;
+    c_import_spans = Hashtbl.create 16;
     origins = Hashtbl.create 64;
-    c_spans = Hashtbl.create 64;
     c_imported = false;
     c_unsupported = Hashtbl.create 16;
     c_aliases = Hashtbl.create 16;
     c_params = Hashtbl.create 64;
+    c_names = Hashtbl.create 64;
     c_nonnull = Hashtbl.create 16;
     c_strings = Hashtbl.create 16;
     c_alloc = Hashtbl.create 16;
-    synthesized = Hashtbl.create 8;
     referenced = Hashtbl.create 256;
     types = Hashtbl.create 256;
     calls = Hashtbl.create 16;
@@ -119,6 +120,7 @@ let create () =
     local_types = Hashtbl.create 64;
     declared_types = Hashtbl.create 64;
     global_types = Hashtbl.create 16;
+    array_decls = Hashtbl.create 16;
     layouts = Hashtbl.create 16;
     consts_text = Hashtbl.create 16;
     source_types = Hashtbl.create 64;
@@ -187,8 +189,11 @@ let generic_calls index =
 let set_c_origins index origins =
   List.iter (fun (name, origin) -> Hashtbl.replace index.origins name origin) origins
 
-let set_c_import index ~unsupported ~aliases ~nonnull ~strings ~alloc =
+let set_c_import index ~unsupported ~aliases ~nonnull ~strings ~alloc ~parameter_names =
   index.c_imported <- true;
+  List.iter
+    (fun (name, names) -> Hashtbl.replace index.c_names name names)
+    parameter_names;
   List.iter
     (fun (name, reason) -> Hashtbl.replace index.c_unsupported name reason)
     unsupported;
@@ -208,13 +213,6 @@ let c_unsupported index =
   Hashtbl.fold (fun name reason acc -> (name, reason) :: acc) index.c_unsupported []
 
 let c_origin_named index name = Hashtbl.find_opt index.origins name
-
-let set_c_spans index spans =
-  List.iter
-    (fun (name, span) ->
-      if not (Hashtbl.mem index.c_spans name) then Hashtbl.add index.c_spans name span)
-    spans
-
 let declare index declaration = index.declared <- declaration :: index.declared
 
 let refer index use_span (declaration : declaration) =
@@ -320,17 +318,28 @@ let generic_param_names parameters =
     (function Ast.Type_param { name; _ } | Ast.Const_param { name; _ } -> name)
     parameters
 
-let signature_text name ~linkage ~generic_params ~params ~ret =
+let c_display_params index name params =
+  let names = Option.value ~default:[] (Hashtbl.find_opt index.c_names name) in
+  List.mapi
+    (fun position (parameter : Ast.param) ->
+      match Option.join (List.nth_opt names position) with
+      | Some header -> { parameter with Ast.name = header }
+      | None -> parameter)
+    params
+
+let signature_text name ~linkage ~generic_params ~params ~variadic ~ret =
   let keyword =
     match linkage with Ast.Internal -> "fn " | Ast.External_c -> "extern fn "
   in
+  let shown =
+    List.map (fun (p : Ast.param) -> p.name ^ " " ^ Ast.type_name p.ty) params
+    @ if variadic then [ "..." ] else []
+  in
   Printf.sprintf "%s%s%s(%s) %s" keyword name (generic_text generic_params)
-    (String.concat ", "
-       (List.map (fun (p : Ast.param) -> p.name ^ " " ^ Ast.type_name p.ty) params))
-    (Ast.type_name ret)
+    (String.concat ", " shown) (Ast.type_name ret)
 
-let struct_header name generic_params align =
-  "struct " ^ name ^ generic_text generic_params
+let struct_header keyword name generic_params align =
+  keyword ^ " " ^ name ^ generic_text generic_params
   ^ match align with None -> "" | Some n -> Printf.sprintf " @align(%d)" n
 
 let declare_program index ~c_aliases (program : Ast.program) =
@@ -340,15 +349,12 @@ let declare_program index ~c_aliases (program : Ast.program) =
     declare index declaration;
     declaration
   in
-  let imported name fallback =
-    Option.value ~default:fallback (Hashtbl.find_opt index.c_spans name)
-  in
   let top ?c_origin name kind name_span item_span =
     let name_span, item_span =
       match c_origin with
       | Some _ ->
-          Hashtbl.replace index.synthesized item_span ();
-          (imported name name_span, imported name item_span)
+          Hashtbl.replace index.c_import_spans item_span ();
+          (Span.synthetic, Span.synthetic)
       | None -> (name_span, item_span)
     in
     let declaration = add ?c_origin name kind name_span item_span in
@@ -387,8 +393,9 @@ let declare_program index ~c_aliases (program : Ast.program) =
       | Ast.Struct
           { name; name_span; generic_params; fields; is_union; extent; align; _ } ->
           let c_origin = origin name in
+          let keyword = if is_union then "union" else "struct" in
           Hashtbl.replace index.struct_headers name
-            (struct_header name generic_params align);
+            (struct_header keyword name generic_params align);
           Hashtbl.replace index.generic_names name (generic_param_names generic_params);
           if generic_params <> [] then
             Hashtbl.replace index.written_fields name
@@ -401,7 +408,7 @@ let declare_program index ~c_aliases (program : Ast.program) =
             (fun (field : Ast.field) ->
               let field_span, field_extent =
                 match c_origin with
-                | Some _ -> (imported name field.span, imported name extent)
+                | Some _ -> (Span.synthetic, Span.synthetic)
                 | None -> (field.span, extent)
               in
               let declaration =
@@ -410,16 +417,31 @@ let declare_program index ~c_aliases (program : Ast.program) =
               Hashtbl.replace index.fields (name, field.name) declaration)
             fields
       | Ast.Func
-          { name; name_span; params; body; generic_params; extent; linkage; ret; _ }
-        -> (
+          {
+            name;
+            name_span;
+            params;
+            body;
+            generic_params;
+            extent;
+            linkage;
+            ret;
+            variadic;
+            _;
+          } -> (
           let c_origin = origin name in
+          let shown_params =
+            if Option.is_some c_origin then c_display_params index name params
+            else params
+          in
           top ?c_origin name Function name_span extent;
           Hashtbl.replace index.signatures name
-            (signature_text name ~linkage ~generic_params ~params ~ret);
+            (signature_text name ~linkage ~generic_params ~params:shown_params ~variadic
+               ~ret);
           Hashtbl.replace index.generic_names name (generic_param_names generic_params);
           if Option.is_some c_origin then
             Hashtbl.replace index.c_params name
-              (List.map (fun (parameter : Ast.param) -> parameter.name) params);
+              (List.map (fun (parameter : Ast.param) -> parameter.name) shown_params);
           generics name extent generic_params;
           if Option.is_none c_origin then
             List.iter
@@ -612,7 +634,7 @@ let refer_field index span record field =
   Option.iter (refer index span) declaration
 
 let record_type index span ty value =
-  if not (Span.is_synthetic span) then
+  if not (Span.is_synthetic span || Hashtbl.mem index.c_import_spans span) then
     let key = (span, index.instance) in
     let value =
       match (value, Hashtbl.find_opt index.types key) with
@@ -638,7 +660,7 @@ let record_const index span ty value =
   if
     not
       (Span.is_synthetic span
-      || Hashtbl.mem index.synthesized span
+      || Hashtbl.mem index.c_import_spans span
       || Hashtbl.mem index.types (span, index.instance))
   then record_type index span (Hir.ty_name ty) (Some (render_value ty value))
 
@@ -761,43 +783,50 @@ let const_text (c : Hir.const_def) =
   in
   Printf.sprintf "const %s %s = %s%s" c.Hir.name (Hir.ty_name c.Hir.ty) value hex
 
+let record_array index name (ty : Hir.ty) =
+  match ty with
+  | Hir.Array (count, _) ->
+      Hashtbl.replace index.array_decls name (Hir.ty_name ty, count)
+  | _ -> ()
+
 let record_program index ~(structs : Hir.struct_def list) ~(consts : Hir.const_def list)
-    ~(globals : Hir.global list) =
+    ~(arrays : Hir.const_arr_def list) ~(globals : Hir.global list) =
   List.iter
     (fun (s : Hir.struct_def) ->
-      if not s.Hir.is_union then
-        let layout =
-          {
-            layout_size = s.Hir.size;
-            layout_align = s.Hir.align;
-            layout_fields =
-              List.map
-                (fun (f : Hir.field) ->
-                  (f.Hir.name, Hir.ty_name f.Hir.ty, f.Hir.offset))
-                s.Hir.fields;
-          }
-        in
-        match Hashtbl.find_opt index.struct_instances s.Hir.name with
-        | None -> Hashtbl.replace index.layouts s.Hir.name layout
-        | Some (template, args) ->
-            let rank =
-              Option.value ~default:0
-                (Hashtbl.find_opt index.instance_order (template, args))
-            in
-            let previous =
-              Option.value ~default:[]
-                (Hashtbl.find_opt index.instance_layouts template)
-            in
-            Hashtbl.replace index.instance_layouts template
-              ((rank, args, layout) :: previous))
+      let layout =
+        {
+          layout_size = s.Hir.size;
+          layout_align = s.Hir.align;
+          layout_fields =
+            List.map
+              (fun (f : Hir.field) -> (f.Hir.name, Hir.ty_name f.Hir.ty, f.Hir.offset))
+              s.Hir.fields;
+        }
+      in
+      match Hashtbl.find_opt index.struct_instances s.Hir.name with
+      | None -> Hashtbl.replace index.layouts s.Hir.name layout
+      | Some (template, args) ->
+          let rank =
+            Option.value ~default:0
+              (Hashtbl.find_opt index.instance_order (template, args))
+          in
+          let previous =
+            Option.value ~default:[] (Hashtbl.find_opt index.instance_layouts template)
+          in
+          Hashtbl.replace index.instance_layouts template
+            ((rank, args, layout) :: previous))
     structs;
   List.iter
     (fun (c : Hir.const_def) ->
       Hashtbl.replace index.consts_text c.Hir.name (const_text c))
     consts;
   List.iter
+    (fun (a : Hir.const_arr_def) -> record_array index a.Hir.name a.Hir.ty)
+    arrays;
+  List.iter
     (fun (g : Hir.global) ->
-      Hashtbl.replace index.global_types g.Hir.name (Hir.ty_name g.Hir.ty))
+      Hashtbl.replace index.global_types g.Hir.name (Hir.ty_name g.Hir.ty);
+      record_array index g.Hir.name g.Hir.ty)
     globals
 
 let record_struct_instance index ~generated ~template ~args =
@@ -824,6 +853,32 @@ let instantiation_lines index callee names =
 
 let field_text field ty offset = Printf.sprintf "%s %s at offset %d" field ty offset
 let instance_text template args = template ^ "[" ^ String.concat ", " args ^ "]"
+
+let layout_block label (layout : layout) =
+  let rows =
+    List.map
+      (fun (field, ty, offset) -> (field, ty, Printf.sprintf "at offset %d" offset))
+      layout.layout_fields
+  in
+  let column select =
+    2
+    + List.fold_left
+        (fun longest row -> max longest (String.length (select row)))
+        0 rows
+  in
+  let name_width = column (fun (field, _, _) -> field) in
+  let type_width = column (fun (_, ty, _) -> ty) in
+  let size =
+    Printf.sprintf "size %d, align %d" layout.layout_size layout.layout_align
+  in
+  let heading = match label with None -> size | Some label -> label ^ ": " ^ size in
+  let lines =
+    List.map
+      (fun (field, ty, place) ->
+        Printf.sprintf "%-*s%-*s%s" name_width field type_width ty place)
+      rows
+  in
+  "```text\n" ^ String.concat "\n" (heading :: lines) ^ "\n```"
 
 let is_generic index owner =
   match Hashtbl.find_opt index.generic_names owner with
@@ -857,13 +912,8 @@ let generic_layouts index owner =
   let entries =
     Option.value ~default:[] (Hashtbl.find_opt index.instance_layouts owner)
   in
-  List.concat_map
-    (fun (_, args, (layout : layout)) ->
-      Printf.sprintf "%s: size %d, align %d" (instance_text owner args)
-        layout.layout_size layout.layout_align
-      :: List.map
-           (fun (field, ty, offset) -> field_text field ty offset)
-           layout.layout_fields)
+  List.map
+    (fun (_, args, layout) -> layout_block (Some (instance_text owner args)) layout)
     entries
 
 let generic_field_facts index owner name =
@@ -908,8 +958,8 @@ let c_fact_text index name =
       | [] -> []
       | facts -> [ String.concat "; " facts ])
 
-let c_fields_text (layout : layout) =
-  List.map (fun (field, ty, offset) -> field_text field ty offset) layout.layout_fields
+let elements_text count =
+  if count = 1 then "1 element" else Printf.sprintf "%d elements" count
 
 let describe index ?use (declaration : declaration) =
   let name = declaration.name in
@@ -918,12 +968,6 @@ let describe index ?use (declaration : declaration) =
     match declaration.container with
     | Some owner when is_generic index owner -> Some owner
     | Some _ | None -> None
-  in
-  let facts (layout : layout) =
-    Printf.sprintf "size %d, align %d" layout.layout_size layout.layout_align
-    :: List.map
-         (fun (field, ty, offset) -> field_text field ty offset)
-         layout.layout_fields
   in
   match declaration.kind with
   | Local | Parameter -> (
@@ -944,12 +988,28 @@ let describe index ?use (declaration : declaration) =
             (fun ty -> (header ty, instance_facts index owner))
             (declared_type ())
       | None -> Option.map (fun ty -> (header ty, [])) (declared_type ()))
-  | Global ->
-      Option.map
-        (fun ty -> (name ^ " " ^ ty, []))
-        (Hashtbl.find_opt index.global_types name)
+  | Global -> (
+      match Hashtbl.find_opt index.array_decls name with
+      | Some (ty, count) -> Some (name ^ " " ^ ty, [ elements_text count ])
+      | None ->
+          Option.map
+            (fun ty -> (name ^ " " ^ ty, []))
+            (Hashtbl.find_opt index.global_types name))
   | Const ->
       Option.map (fun text -> (text, [])) (Hashtbl.find_opt index.consts_text name)
+  | Const_array ->
+      Option.map
+        (fun (ty, count) -> ("const " ^ name ^ " " ^ ty, [ elements_text count ]))
+        (Hashtbl.find_opt index.array_decls name)
+  | Opaque -> Some ("opaque " ^ name, [ "no layout" ])
+  | Union ->
+      Option.map
+        (fun header ->
+          ( header,
+            match Hashtbl.find_opt index.layouts name with
+            | None -> []
+            | Some layout -> [ layout_block None layout ] ))
+        (Hashtbl.find_opt index.struct_headers name)
   | Function ->
       Option.map
         (fun signature ->
@@ -988,9 +1048,7 @@ let describe index ?use (declaration : declaration) =
             ( header,
               match Hashtbl.find_opt index.layouts name with
               | None -> []
-              | Some layout when Option.is_some declaration.c_origin ->
-                  c_fields_text layout
-              | Some layout -> facts layout ))
+              | Some layout -> [ layout_block None layout ] ))
         (Hashtbl.find_opt index.struct_headers name)
   | Field -> (
       match declaration.container with
@@ -1014,4 +1072,3 @@ let describe index ?use (declaration : declaration) =
       match (declaration.c_origin, Hashtbl.find_opt index.c_aliases name) with
       | Some _, Some target -> Some ("type " ^ name ^ " = " ^ target, [])
       | _ -> None)
-  | _ -> None

@@ -60,6 +60,25 @@ let local_type_error ?span name result =
            { diagnostic with primary; message }))
     result
 
+let is_continuation byte = Char.code byte land 0xC0 = 0x80
+
+let code_points text from upto =
+  let count = ref 0 in
+  for i = from to upto - 1 do
+    if not (is_continuation text.[i]) then incr count
+  done;
+  !count
+
+let caret_padding line bytes =
+  let padding = Buffer.create bytes in
+  for i = 0 to bytes - 1 do
+    match line.[i] with
+    | '\t' -> Buffer.add_char padding '\t'
+    | byte when is_continuation byte -> ()
+    | _ -> Buffer.add_char padding ' '
+  done;
+  Buffer.contents padding
+
 let render_one ~source diagnostic =
   let level = if diagnostic.severity = Warning then "warning" else "error" in
   let location = Span.to_string diagnostic.primary in
@@ -106,9 +125,9 @@ let render_one ~source diagnostic =
               if offset_only then min line_stop (start + 1)
               else max start (min line_stop diagnostic.primary.Span.end_offset)
             in
-            let width = max 1 (stop - start) in
+            let width = max 1 (code_points text start stop) in
             let prefix_length = max 0 (min (String.length line) (start - line_start)) in
-            let prefix = String.make prefix_length ' ' in
+            let prefix = caret_padding line prefix_length in
             Printf.sprintf "\n  %s\n  %s^%s\n" line prefix (String.make (width - 1) '~')
         )
     | Some _ -> ""
