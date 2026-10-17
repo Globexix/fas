@@ -1,0 +1,66 @@
+================================================================================
+raw C block
+================================================================================
+use "C" <<C
+static unsigned oracle(unsigned lane) { return lane + 1; }
+C
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (use_declaration
+    path: (string)
+    (raw_c_open)
+    (raw_c_body)))
+
+================================================================================
+raw asm block
+================================================================================
+use "asm" <<ASSEMBLY
+asm_echo_bool:
+  ret
+ASSEMBLY
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (use_declaration
+    path: (string)
+    (raw_c_open)
+    (raw_c_body)))
+
+================================================================================
+raw block with tag containing digits
+================================================================================
+use "C" <<_RAW2
+int x = 1;
+_RAW2
+fn after() void {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (use_declaration
+    path: (string)
+    (raw_c_open)
+    (raw_c_body))
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    result: (primitive_type)
+    body: (block)))
+
+================================================================================
+raw block whose body mentions the tag inside a line
+================================================================================
+use "C" <<END
+const char *text = "END is not a terminator here";
+END
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (use_declaration
+    path: (string)
+    (raw_c_open)
+    (raw_c_body)))

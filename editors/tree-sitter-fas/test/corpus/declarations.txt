@@ -1,0 +1,199 @@
+================================================================================
+use headers and file paths
+================================================================================
+use "C" <stdio.h>
+use "C" "bool_memory.h"
+use "C" "c_unions.h"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (use_declaration
+    path: (string)
+    (system_header))
+  (use_declaration
+    path: (string)
+    (string))
+  (use_declaration
+    path: (string)
+    (string)))
+
+================================================================================
+const global and struct declarations
+================================================================================
+const LIMIT u32 = 16
+const MASK u64 = 0xFF_FF
+var counter i64 = 0
+var table arr[3, u8] = {1, 2, 3}
+var pending handle[Token]
+struct Pair { left u32  right u32 }
+struct Ring[N const usize] {
+  head u32
+  data arr[N, u8]
+}
+struct Aligned @align(16) {
+  value u8
+}
+struct Empty {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    name: (identifier)
+    type: (primitive_type)
+    value: (integer))
+  (const_declaration
+    name: (identifier)
+    type: (primitive_type)
+    value: (integer))
+  (global_declaration
+    name: (identifier)
+    type: (primitive_type)
+    value: (integer))
+  (global_declaration
+    name: (identifier)
+    type: (array_type
+      (integer)
+      (primitive_type))
+    value: (array_literal
+      (integer)
+      (integer)
+      (integer)))
+  (global_declaration
+    name: (identifier)
+    type: (handle_type
+      (named_type
+        name: (type_identifier))))
+  (struct_declaration
+    name: (identifier)
+    (struct_body
+      (field_declaration
+        name: (identifier)
+        type: (primitive_type))
+      (field_declaration
+        name: (identifier)
+        type: (primitive_type))))
+  (struct_declaration
+    name: (identifier)
+    (generic_params
+      (generic_param
+        name: (identifier)
+        type: (primitive_type)))
+    (struct_body
+      (field_declaration
+        name: (identifier)
+        type: (primitive_type))
+      (field_declaration
+        name: (identifier)
+        type: (array_type
+          (identifier)
+          (primitive_type)))))
+  (struct_declaration
+    name: (identifier)
+    (attribute
+      name: (identifier)
+      (integer))
+    (struct_body
+      (field_declaration
+        name: (identifier)
+        type: (primitive_type))))
+  (struct_declaration
+    name: (identifier)
+    (struct_body)))
+
+================================================================================
+opaque and extern blocks
+================================================================================
+opaque Token
+extern "C" {
+  var screens arr[5, addr] = {}
+  fn puts(text addr) i32
+  fn printf(fmt addr, ...) i32
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (opaque_declaration
+    name: (identifier))
+  (extern_declaration
+    abi: (string)
+    (global_declaration
+      name: (identifier)
+      type: (array_type
+        (integer)
+        (address_type))
+      value: (array_literal))
+    (function_declaration
+      name: (identifier)
+      parameters: (parameter_list
+        name: (identifier)
+        type: (address_type))
+      result: (primitive_type))
+    (function_declaration
+      name: (identifier)
+      parameters: (parameter_list
+        name: (identifier)
+        type: (address_type)
+        (variadic_parameter))
+      result: (primitive_type))))
+
+================================================================================
+functions with variadic and generic parameters
+================================================================================
+fn add(a i32, b i32) i32 { return a + b }
+fn id[T](value T) T { return value }
+fn sized[N const usize](values arr[N, u8]) usize { return N }
+fn nothing() void {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      name: (identifier)
+      type: (primitive_type)
+      name: (identifier)
+      type: (primitive_type))
+    result: (primitive_type)
+    body: (block
+      (return_statement
+        (binary_expression
+          left: (identifier)
+          right: (identifier)))))
+  (function_declaration
+    name: (identifier)
+    (generic_params
+      (generic_param
+        name: (identifier)))
+    parameters: (parameter_list
+      name: (identifier)
+      type: (named_type
+        name: (type_identifier)))
+    result: (named_type
+      name: (type_identifier))
+    body: (block
+      (return_statement
+        (identifier))))
+  (function_declaration
+    name: (identifier)
+    (generic_params
+      (generic_param
+        name: (identifier)
+        type: (primitive_type)))
+    parameters: (parameter_list
+      name: (identifier)
+      type: (array_type
+        (identifier)
+        (primitive_type)))
+    result: (primitive_type)
+    body: (block
+      (return_statement
+        (identifier))))
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    result: (primitive_type)
+    body: (block)))

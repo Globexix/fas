@@ -1,0 +1,14 @@
+{
+  "name": "tree-sitter-fas",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Fas language",
+  "keywords": ["tree-sitter", "parser", "fas"],
+  "files": ["grammar.js", "src", "queries", "tree-sitter.json"],
+  "tree-sitter": [
+    {
+      "scope": "source.fas",
+      "file-types": ["fas"],
+      "highlights": "queries/highlights.scm"
+    }
+  ]
+}

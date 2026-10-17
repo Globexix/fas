@@ -1,0 +1,346 @@
+================================================================================
+declarations assignments and views
+================================================================================
+fn main() i32 {
+  x i32 = 1
+  y u8
+  x += 2
+  x <<= 1
+  x >>= 1
+  x |= 4
+  view v = data
+  view s = bytes[u8, ..]
+  return x
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    result: (primitive_type)
+    body: (block
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (integer))
+      (declaration
+        name: (identifier)
+        type: (primitive_type))
+      (assignment
+        target: (identifier)
+        value: (integer))
+      (assignment
+        target: (identifier)
+        value: (integer))
+      (assignment
+        target: (identifier)
+        value: (integer))
+      (assignment
+        target: (identifier)
+        value: (integer))
+      (view_statement
+        name: (identifier)
+        place: (identifier))
+      (view_statement
+        name: (identifier)
+        place: (index_expression
+          value: (identifier)
+          arguments: (bracket_arguments
+            (primitive_type)
+            (range_argument))))
+      (return_statement
+        (identifier)))))
+
+================================================================================
+if while and for
+================================================================================
+fn loops(x i32) i32 {
+  if x == 0 { return 1 }
+  if x == 1 { return 2 } else { return 3 }
+  if x == 2 { return 4 } else if x == 3 { return 5 } else { return 6 }
+  while x > 0 { x -= 1 }
+  for i usize = 0; i < 10; i += 1 { x += 1 }
+  for ; ; { break }
+  for i usize = 0; ; i = i + 1 { continue }
+  return x
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      name: (identifier)
+      type: (primitive_type))
+    result: (primitive_type)
+    body: (block
+      (if_statement
+        condition: (binary_expression
+          left: (identifier)
+          right: (integer))
+        (block
+          (return_statement
+            (integer))))
+      (if_statement
+        condition: (binary_expression
+          left: (identifier)
+          right: (integer))
+        (block
+          (return_statement
+            (integer)))
+        (block
+          (return_statement
+            (integer))))
+      (if_statement
+        condition: (binary_expression
+          left: (identifier)
+          right: (integer))
+        (block
+          (return_statement
+            (integer)))
+        (if_statement
+          condition: (binary_expression
+            left: (identifier)
+            right: (integer))
+          (block
+            (return_statement
+              (integer)))
+          (block
+            (return_statement
+              (integer)))))
+      (while_statement
+        condition: (binary_expression
+          left: (identifier)
+          right: (integer))
+        (block
+          (assignment
+            target: (identifier)
+            value: (integer))))
+      (for_statement
+        init: (declaration
+          name: (identifier)
+          type: (primitive_type)
+          value: (integer))
+        condition: (binary_expression
+          left: (identifier)
+          right: (integer))
+        step: (assignment
+          target: (identifier)
+          value: (integer))
+        (block
+          (assignment
+            target: (identifier)
+            value: (integer))))
+      (for_statement
+        (block
+          (break_statement)))
+      (for_statement
+        init: (declaration
+          name: (identifier)
+          type: (primitive_type)
+          value: (integer))
+        step: (assignment
+          target: (identifier)
+          value: (binary_expression
+            left: (identifier)
+            right: (integer)))
+        (block
+          (continue_statement)))
+      (return_statement
+        (identifier)))))
+
+================================================================================
+labeled loops with break and continue
+================================================================================
+fn nested() void {
+  outer: for i usize = 0; i < 4; i += 1 {
+    inner: while true {
+      if i == 2 { break outer }
+      continue inner
+    }
+  }
+  loop: while false { break loop }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    result: (primitive_type)
+    body: (block
+      (labeled_statement
+        label: (identifier)
+        (for_statement
+          init: (declaration
+            name: (identifier)
+            type: (primitive_type)
+            value: (integer))
+          condition: (binary_expression
+            left: (identifier)
+            right: (integer))
+          step: (assignment
+            target: (identifier)
+            value: (integer))
+          (block
+            (labeled_statement
+              label: (identifier)
+              (while_statement
+                condition: (boolean)
+                (block
+                  (if_statement
+                    condition: (binary_expression
+                      left: (identifier)
+                      right: (integer))
+                    (block
+                      (break_statement
+                        label: (identifier))))
+                  (continue_statement
+                    label: (identifier))))))))
+      (labeled_statement
+        label: (identifier)
+        (while_statement
+          condition: (boolean)
+          (block
+            (break_statement
+              label: (identifier))))))))
+
+================================================================================
+switch with cases and default
+================================================================================
+fn pick(x u32) u32 {
+  switch x {
+    case 1, 2:
+      return 4
+    case 3:
+      x = 5
+    default:
+      return 6
+  }
+  switch x {
+  }
+  return 0
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      name: (identifier)
+      type: (primitive_type))
+    result: (primitive_type)
+    body: (block
+      (switch_statement
+        value: (identifier)
+        (case_clause
+          (integer)
+          (integer)
+          (return_statement
+            (integer)))
+        (case_clause
+          (integer)
+          (assignment
+            target: (identifier)
+            value: (integer)))
+        (default_clause
+          (return_statement
+            (integer))))
+      (switch_statement
+        value: (identifier))
+      (return_statement
+        (integer)))))
+
+================================================================================
+defer and nested blocks
+================================================================================
+fn cleanup(x u32) void {
+  defer { x = 0 }
+  {
+    x = 1
+  }
+  defer {
+    x += 1
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      name: (identifier)
+      type: (primitive_type))
+    result: (primitive_type)
+    body: (block
+      (defer_statement
+        (block
+          (assignment
+            target: (identifier)
+            value: (integer))))
+      (block
+        (assignment
+          target: (identifier)
+          value: (integer)))
+      (defer_statement
+        (block
+          (assignment
+            target: (identifier)
+            value: (integer)))))))
+
+================================================================================
+comments are extras
+================================================================================
+// leading line comment
+fn commented(x u32) u32 { /* inline block */ return x // trailing
+}
+/* block
+   comment */
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (comment)
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      name: (identifier)
+      type: (primitive_type))
+    result: (primitive_type)
+    body: (block
+      (comment)
+      (return_statement
+        (identifier))
+      (comment)))
+  (comment))
+
+================================================================================
+return forms
+================================================================================
+fn bare() void { return }
+fn value() u32 { return 1 + 2 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    result: (primitive_type)
+    body: (block
+      (return_statement)))
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    result: (primitive_type)
+    body: (block
+      (return_statement
+        (binary_expression
+          left: (integer)
+          right: (integer))))))

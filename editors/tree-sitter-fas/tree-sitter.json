@@ -1,0 +1,17 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "fas",
+      "camelcase": "Fas",
+      "scope": "source.fas",
+      "path": ".",
+      "file-types": ["fas"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "description": "Tree-sitter grammar for the Fas language"
+  }
+}

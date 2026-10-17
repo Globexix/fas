@@ -1,0 +1,23 @@
+================================================================================
+ternary operator is an error
+================================================================================
+fn bad(a bool) u32 {
+  return a ? 1 : 2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list
+      (identifier)
+      (primitive_type))
+    (primitive_type)
+    (block
+      (return_statement
+        (identifier))
+      (ERROR
+        (UNEXPECTED '?')
+        (integer)
+        (integer)))))

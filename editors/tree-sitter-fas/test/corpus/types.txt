@@ -1,0 +1,69 @@
+================================================================================
+primitive and constructor types
+================================================================================
+fn types(a bool, b u8, c i64, d usize, e f32, f addr, g handle[Token], h arr[3, u8], i vec[4, f32], j Pair) void {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      name: (identifier)
+      type: (primitive_type)
+      name: (identifier)
+      type: (primitive_type)
+      name: (identifier)
+      type: (primitive_type)
+      name: (identifier)
+      type: (primitive_type)
+      name: (identifier)
+      type: (primitive_type)
+      name: (identifier)
+      type: (address_type)
+      name: (identifier)
+      type: (handle_type
+        (named_type
+          name: (type_identifier)))
+      name: (identifier)
+      type: (array_type
+        (integer)
+        (primitive_type))
+      name: (identifier)
+      type: (vector_type
+        (integer)
+        (primitive_type))
+      name: (identifier)
+      type: (named_type
+        name: (type_identifier)))
+    result: (primitive_type)
+    body: (block)))
+
+================================================================================
+generic type arguments
+================================================================================
+fn generic(r Ring[4], x vec[2, u16]) Sized[u8, 2] { return r }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      name: (identifier)
+      type: (named_type
+        name: (type_identifier)
+        (bracket_arguments
+          (integer)))
+      name: (identifier)
+      type: (vector_type
+        (integer)
+        (primitive_type)))
+    result: (named_type
+      name: (type_identifier)
+      (bracket_arguments
+        (primitive_type)
+        (integer)))
+    body: (block
+      (return_statement
+        (identifier)))))

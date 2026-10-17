@@ -1,0 +1,588 @@
+================================================================================
+binary precedence
+================================================================================
+fn ops(a u32, b u32) bool {
+  c u32 = a + b * 2 - a % b / 3
+  d bool = a < b && !(a == b) || a >= 1
+  e u32 = a | b ^ a & b
+  f u32 = a << 2 >> 1
+  return c != 0 && e <= f
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      name: (identifier)
+      type: (primitive_type)
+      name: (identifier)
+      type: (primitive_type))
+    result: (primitive_type)
+    body: (block
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (binary_expression
+          left: (binary_expression
+            left: (identifier)
+            right: (binary_expression
+              left: (identifier)
+              right: (integer)))
+          right: (binary_expression
+            left: (binary_expression
+              left: (identifier)
+              right: (identifier))
+            right: (integer))))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (binary_expression
+          left: (binary_expression
+            left: (binary_expression
+              left: (identifier)
+              right: (identifier))
+            right: (unary_expression
+              operand: (parenthesized_expression
+                (binary_expression
+                  left: (identifier)
+                  right: (identifier)))))
+          right: (binary_expression
+            left: (identifier)
+            right: (integer))))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (binary_expression
+          left: (identifier)
+          right: (binary_expression
+            left: (identifier)
+            right: (binary_expression
+              left: (identifier)
+              right: (identifier)))))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (binary_expression
+          left: (binary_expression
+            left: (identifier)
+            right: (integer))
+          right: (integer)))
+      (return_statement
+        (binary_expression
+          left: (binary_expression
+            left: (identifier)
+            right: (integer))
+          right: (binary_expression
+            left: (identifier)
+            right: (identifier)))))))
+
+================================================================================
+unary postfix and calls
+================================================================================
+fn calls(p addr, values arr[4, u8]) u8 {
+  a u8 = values[1]
+  b u8 = values[u8, ..][0]
+  c u32 = len(values)
+  d u32 = trunc[u32](a)
+  e u32 = sizeof[u32]
+  f u8 = add(1, 2)
+  g u8 = -a + ~a
+  h addr = &values
+  return a
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      name: (identifier)
+      type: (address_type)
+      name: (identifier)
+      type: (array_type
+        (integer)
+        (primitive_type)))
+    result: (primitive_type)
+    body: (block
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (index_expression
+          value: (identifier)
+          arguments: (bracket_arguments
+            (integer))))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (index_expression
+          value: (index_expression
+            value: (identifier)
+            arguments: (bracket_arguments
+              (primitive_type)
+              (range_argument)))
+          arguments: (bracket_arguments
+            (integer))))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (call_expression
+          function: (identifier)
+          arguments: (argument_list
+            (identifier))))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (call_expression
+          function: (index_expression
+            value: (identifier)
+            arguments: (bracket_arguments
+              (primitive_type)))
+          arguments: (argument_list
+            (identifier))))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (index_expression
+          value: (identifier)
+          arguments: (bracket_arguments
+            (primitive_type))))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (call_expression
+          function: (identifier)
+          arguments: (argument_list
+            (integer)
+            (integer))))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (binary_expression
+          left: (unary_expression
+            operand: (identifier))
+          right: (unary_expression
+            operand: (identifier))))
+      (declaration
+        name: (identifier)
+        type: (address_type)
+        value: (unary_expression
+          operand: (identifier)))
+      (return_statement
+        (identifier)))))
+
+================================================================================
+if expressions and else chains
+================================================================================
+fn choose(a i32, b bool) f32 {
+  left f32 = if b { 0.2 } else if !b { 0.5 } else { 0.3 }
+  right f32 = if b { 0.2 } else { 0.3 }
+  return if a == 0 { left } else { right }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      name: (identifier)
+      type: (primitive_type)
+      name: (identifier)
+      type: (primitive_type))
+    result: (primitive_type)
+    body: (block
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (if_expression
+          condition: (identifier)
+          consequence: (float)
+          alternative: (if_expression
+            condition: (unary_expression
+              operand: (identifier))
+            consequence: (float)
+            alternative: (float))))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (if_expression
+          condition: (identifier)
+          consequence: (float)
+          alternative: (float)))
+      (return_statement
+        (if_expression
+          condition: (binary_expression
+            left: (identifier)
+            right: (integer))
+          consequence: (identifier)
+          alternative: (identifier))))))
+
+================================================================================
+newline before else in if expression
+================================================================================
+fn pick(a i32) i32 {
+  return if a == 0 {
+    1
+  }
+  else {
+    2
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      name: (identifier)
+      type: (primitive_type))
+    result: (primitive_type)
+    body: (block
+      (return_statement
+        (if_expression
+          condition: (binary_expression
+            left: (identifier)
+            right: (integer))
+          consequence: (integer)
+          alternative: (integer))))))
+
+================================================================================
+newline before else in if statement
+================================================================================
+fn choose(x i32) i32 {
+  if x == 0 {
+    return 1
+  }
+  else {
+    return 2
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      name: (identifier)
+      type: (primitive_type))
+    result: (primitive_type)
+    body: (block
+      (if_statement
+        condition: (binary_expression
+          left: (identifier)
+          right: (integer))
+        (block
+          (return_statement
+            (integer)))
+        (block
+          (return_statement
+            (integer)))))))
+
+================================================================================
+array literals
+================================================================================
+fn arrays() void {
+  a arr[3, u8] = {1, 2, 3}
+  b arr[2, Pair] = {.left = 1, .right = 2}
+  c arr[4, u8] = {[0] = 1, [3] = 4}
+  d arr[2, u8] = {
+    1,
+    2,
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    result: (primitive_type)
+    body: (block
+      (declaration
+        name: (identifier)
+        type: (array_type
+          (integer)
+          (primitive_type))
+        value: (array_literal
+          (integer)
+          (integer)
+          (integer)))
+      (declaration
+        name: (identifier)
+        type: (array_type
+          (integer)
+          (named_type
+            name: (type_identifier)))
+        value: (array_literal
+          name: (identifier)
+          (integer)
+          name: (identifier)
+          (integer)))
+      (declaration
+        name: (identifier)
+        type: (array_type
+          (integer)
+          (primitive_type))
+        value: (array_literal
+          (integer)
+          (integer)
+          (integer)
+          (integer)))
+      (declaration
+        name: (identifier)
+        type: (array_type
+          (integer)
+          (primitive_type))
+        value: (array_literal
+          (integer)
+          (integer))))))
+
+================================================================================
+literals
+================================================================================
+fn literals() void {
+  a u64 = 0x1F
+  b u64 = 0b1010
+  c u64 = 0o17
+  d u64 = 1_000_000
+  e f64 = 1.5
+  f f64 = 2.0e3
+  g f64 = 1e-3
+  h u8 = 'a'
+  i u8 = '"'
+  j u8 = '\n'
+  k u8 = '\x41'
+  l addr = "tab\tquote\"back\\slash"
+  m addr = c"zero\t"
+  n bool = true
+  o addr = null
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    result: (primitive_type)
+    body: (block
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (integer))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (integer))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (integer))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (integer))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (float))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (float))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (float))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (character))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (character))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (character))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (character))
+      (declaration
+        name: (identifier)
+        type: (address_type)
+        value: (string))
+      (declaration
+        name: (identifier)
+        type: (address_type)
+        value: (cstring))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (boolean))
+      (declaration
+        name: (identifier)
+        type: (address_type)
+        value: (null)))))
+
+================================================================================
+pointer casts
+================================================================================
+fn casts(p addr) u32 {
+  a u32 = *(u32*)p
+  b u8 = *(addr)p
+  c addr = (u8*)p
+  d u8 = *(u8*)(p + 4)
+  return a
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      name: (identifier)
+      type: (address_type))
+    result: (primitive_type)
+    body: (block
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (c_dereference
+          type: (pointer_type
+            pointee: (primitive_type))
+          operand: (identifier)))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (c_dereference
+          type: (address_type)
+          operand: (identifier)))
+      (declaration
+        name: (identifier)
+        type: (address_type)
+        value: (c_pointer_cast
+          type: (pointer_type
+            pointee: (primitive_type))
+          operand: (identifier)))
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (c_dereference
+          type: (pointer_type
+            pointee: (primitive_type))
+          operand: (parenthesized_expression
+            (binary_expression
+              left: (identifier)
+              right: (integer)))))
+      (return_statement
+        (identifier)))))
+
+================================================================================
+arrow field access
+================================================================================
+fn arrow(value Pair) u32 {
+  return value->left
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      name: (identifier)
+      type: (named_type
+        name: (type_identifier)))
+    result: (primitive_type)
+    body: (block
+      (return_statement
+        (binary_expression
+          left: (identifier)
+          field: (identifier))))))
+
+================================================================================
+dereference and field access
+================================================================================
+fn fields(p handle[Pair]) u32 {
+  a u32 = p.*.left
+  p.right = a
+  return p.*.right
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      name: (identifier)
+      type: (handle_type
+        (named_type
+          name: (type_identifier))))
+    result: (primitive_type)
+    body: (block
+      (declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (field_expression
+          value: (dereference_field
+            value: (identifier))
+          field: (identifier)))
+      (assignment
+        target: (field_expression
+          value: (identifier)
+          field: (identifier))
+        value: (identifier))
+      (return_statement
+        (field_expression
+          value: (dereference_field
+            value: (identifier))
+          field: (identifier))))))
+
+================================================================================
+view and index with range
+================================================================================
+fn slices(source arr[8, u8]) void {
+  view head = source[u8, ..]
+  view samples = (base + 16)[f32, ..]
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      name: (identifier)
+      type: (array_type
+        (integer)
+        (primitive_type)))
+    result: (primitive_type)
+    body: (block
+      (view_statement
+        name: (identifier)
+        place: (index_expression
+          value: (identifier)
+          arguments: (bracket_arguments
+            (primitive_type)
+            (range_argument))))
+      (view_statement
+        name: (identifier)
+        place: (index_expression
+          value: (parenthesized_expression
+            (binary_expression
+              left: (identifier)
+              right: (integer)))
+          arguments: (bracket_arguments
+            (primitive_type)
+            (range_argument)))))))

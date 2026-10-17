@@ -1,0 +1,20 @@
+id = "fas"
+name = "Fas"
+version = "0.1.0"
+schema_version = 1
+authors = ["Globex"]
+description = "Fas language support with tree-sitter highlighting and the fas language server."
+repository = "https://github.com/Globexix/fas"
+
+[lib]
+kind = "Rust"
+version = "0.7.0"
+
+[grammars.fas]
+repository = "https://github.com/Globexix/fas"
+rev = "fb83c992e6f0310422e9b1699d6ccdba22a69e2f"
+path = "editors/tree-sitter-fas"
+
+[language_servers.fas]
+name = "fas lsp"
+languages = ["Fas"]
