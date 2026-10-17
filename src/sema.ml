@@ -412,7 +412,7 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
         | Error _ -> None)
       base_structs_src
   in
-  let symbolic_names = Sema_static_env.names program.Ast.items in
+  let symbolic_names = Sema_static_env.names ~named_types program.Ast.items in
   let ordinary_program = Sema_static_env.ordinary_program symbolic_names program in
   let* early_consts =
     Sema_constants.resolve_scalar_declarations
@@ -591,7 +591,7 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
         Ok (param.name, ty))
       params
   in
-  let symbolic_names = Sema_static_env.names program.Ast.items in
+  let symbolic_names = Sema_static_env.names ~named_types program.Ast.items in
   let ordinary_program = Sema_static_env.ordinary_program symbolic_names program in
   let* scalar_consts =
     Sema_constants.resolve_scalar_declarations

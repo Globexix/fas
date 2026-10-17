@@ -27,7 +27,7 @@ let rec symbolic_expression names = function
   | Ast.Ternary (x, y, z, _) -> List.exists (symbolic_expression names) [ x; y; z ]
   | _ -> false
 
-let names items =
+let names ~named_types items =
   let rec address_type seen = function
     | Ast.Addr | Ast.Handle _ | Ast.Vec _ -> true
     | Ast.Array (_, element) -> address_type seen element
@@ -47,12 +47,35 @@ let names items =
     | (Ast.Array _ | Ast.Named_type _) as ty -> address_type [] ty
     | _ -> false
   in
+  let rec resolve seen = function
+    | Ast.Named_type (name, _) as ty when not (List.mem name seen) -> (
+        match List.assoc_opt name named_types with
+        | Some (Alias_name aliased) -> resolve (name :: seen) aliased
+        | _ -> ty)
+    | ty -> ty
+  in
+  let record ty =
+    match resolve [] ty with
+    | Ast.Applied_type _ -> true
+    | Ast.Named_type (name, _) -> (
+        match List.assoc_opt name named_types with
+        | Some (Struct_name | C_record_name (_, None)) -> true
+        | _ -> false)
+    | _ -> false
+  in
+  let aggregate ty =
+    match resolve [] ty with
+    | Ast.Array (_, element) -> (
+        match resolve [] element with Ast.Array _ -> true | element -> record element)
+    | ty -> record ty
+  in
   let rec collect known =
     let next =
       List.filter_map
         (function
           | Ast.Const { name; ty; value; _ }
-            when address_aggregate ty || symbolic_expression known value ->
+            when address_aggregate ty || aggregate ty || symbolic_expression known value
+            ->
               Some name
           | _ -> None)
         items

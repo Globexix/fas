@@ -64,26 +64,6 @@ let collect ?(global_names = []) ?(array_lengths = []) ?(generic_structs = [])
                   arrays := (name, t, vs) :: !arrays;
                   arrays_names := String_set.add name !arrays_names;
                   Ok ()
-            | Hir.Struct record, Ast.Array_lit (xs, _) -> (
-                match
-                  List.find_opt
-                    (fun (definition : Hir.struct_def) -> definition.name = record)
-                    structs
-                with
-                | Some definition ->
-                    let expected =
-                      if definition.is_union then min 1 (List.length definition.fields)
-                      else List.length definition.fields
-                    in
-                    if List.length xs <> expected then
-                      error
-                        (Sema_types.aggregate_count_error_span (Ast.expr_span value)
-                           expected xs)
-                        (Sema_types.record_field_count_message (Ast.type_name ty)
-                           expected (List.length xs))
-                    else error (Ast.expr_span value) "brace-list requires an array type"
-                | None ->
-                    error (Ast.expr_span value) "brace-list requires an array type")
             | Hir.Array _, _ ->
                 error (Ast.expr_span value) "const array needs a brace-list initializer"
             | (Hir.Vec _ as vector_ty), _ ->
@@ -99,8 +79,6 @@ let collect ?(global_names = []) ?(array_lengths = []) ?(generic_structs = [])
                 else
                   error (Ast.expr_span value)
                     (constant_initializer_type_message actual_ty vector_ty)
-            | _, Ast.Array_lit _ ->
-                error (Ast.expr_span value) "brace-list requires an array type"
             | _, _ ->
                 let* vt, v =
                   const_value name value

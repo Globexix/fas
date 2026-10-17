@@ -3715,6 +3715,90 @@ let () =
      fn test() void { view values = K\n\
     \ values[0] = 8\n\
     \ return }\n";
+  let number_head =
+    "struct Cell { tag u8, weight u32 }\nconst CELLS arr[2, Cell] = {{1, 2}, {3, 4}}\n"
+  in
+  let number_tables_source =
+    "struct Cell { tag u8, weight u32, scale f64, live bool, step u16 }\n\
+     struct Row { id u8, cells arr[2, Cell] }\n\
+     const CELLS arr[3, Cell] = {{1, 100, 1.5, true, 7}, {2, 200, 2.25, false, 9}, \
+     {255, 4000000000, -0.5, true, 65535}}\n\
+     const Grid arr[2, arr[3, i32]] = {{1, -2, 3}, {4, 5, -6}}\n\
+     const Cube arr[2, arr[2, arr[2, u16]]] = {{{1, 2}, {3, 4}}, {{5, 6}, {7, 65535}}}\n\
+     const Rows arr[2, Row] = {{9, {{1, 11, 2.0, true, 10}, {3, 33, 4.0, false, 20}}}, \
+     {8, {{5, 55, 6.0, true, 30}, {7, 77, 8.0, true, 40}}}}\n\
+     const One Cell = {42, 4242, 0.25, false, 1}\n\
+     const Empty arr[3, Cell] = {}\n\
+     const Named Cell = {.step = 3, .tag = 4, .weight = 5, .scale = 1.0, .live = true}\n\
+     fn main() i32 { view row = Grid[1]\n\
+     return row[2] }\n"
+  in
+  semantic_accept "const-number-tables-accept" number_tables_source;
+  let number_llvm = llvm_of number_tables_source in
+  if
+    (not (contains number_llvm "@CELLS = private constant [72 x i8] c"))
+    || not (contains number_llvm "@Grid = private constant [24 x i8] c")
+  then failwith "const-number-tables-accept: storage is not static and readonly";
+  semantic_accept "const-number-tables-len-const"
+    (number_head ^ "const N usize = len(CELLS)\nfn main() i32 { return 0 }\n");
+  semantic_accept "const-number-tables-len-var"
+    (number_head ^ "var M usize = len(CELLS)\nfn main() i32 { return 0 }\n");
+  semantic_accept "const-number-tables-len-size"
+    (number_head ^ "fn main() i32 { buf arr[len(CELLS), i32] = {}\n return 0 }\n");
+  semantic_accept "const-number-tables-view-bitcast"
+    (number_head
+   ^ "fn main() i32 { view c = CELLS[1]\n return bitcast[i32](c.weight) }\n");
+  semantic_pin "const-number-tables-write"
+    (number_head ^ "fn main() i32 { CELLS[0] = {1, 2}\n return 0 }\n")
+    3 17 5 "cannot modify constant `CELLS`" None;
+  semantic_pin "const-number-tables-write-field"
+    (number_head ^ "fn main() i32 { CELLS[0].weight = 5\n return 0 }\n")
+    3 17 8 "cannot modify constant `CELLS`" None;
+  semantic_pin "const-number-tables-view-write"
+    (number_head ^ "fn main() i32 { view c = CELLS[1]\n c.weight = 3\n return 0 }\n")
+    4 2 1 "cannot modify constant `CELLS`" None;
+  semantic_pin "const-number-tables-count"
+    "struct Cell { tag u8, weight u32 }\n\
+     const CELLS arr[3, Cell] = {{1, 2}, {3, 4}}\n\
+     fn main() i32 { return 0 }\n"
+    2 28 1 "array of 3 elements, got 2" None;
+  semantic_pin "const-number-tables-range"
+    "struct Cell { tag u8, weight u32 }\n\
+     const CELLS arr[2, Cell] = {{1, 2}, {300, 4}}\n\
+     fn main() i32 { return 0 }\n"
+    2 38 3 "integer literal is out of range for u8: `300`" None;
+  semantic_pin "const-number-tables-nonconstant"
+    "struct Cell { tag u8, weight u32 }\n\
+     var V u32 = 4\n\
+     const CELLS arr[2, Cell] = {{1, 2}, {3, V}}\n\
+     fn main() i32 { return 0 }\n"
+    3 41 1 "global `V` is not a constant" None;
+  semantic_pin "const-number-tables-slot-read"
+    (number_head ^ "const X u32 = CELLS[0].weight\nfn main() i32 { return 0 }\n")
+    3 15 15
+    "global initializer must be a constant expression for `X`; `CELLS[0].weight` is \
+     not constant"
+    None;
+  semantic_pin "const-number-tables-size-read"
+    (number_head ^ "fn main() i32 { buf arr[CELLS[0].weight, i32] = {}\n return 0 }\n")
+    3 25 15 "expression is not compile-time constant" None;
+  semantic_pin "const-number-tables-whole-element"
+    (number_head ^ "const ONE Cell = CELLS[0]\nfn main() i32 { return 0 }\n")
+    3 18 8 "global initializer must be a constant expression" None;
+  parse_error_message "const-number-tables-bare-slot" "expected a type, found `=`"
+    (number_head ^ "const X = CELLS[0].weight\nfn main() i32 { return 0 }\n");
+  let menu_head =
+    "fn hit() i32 { return 1 }\n\
+     struct Item { name addr, weight u32 }\n\
+     const MENU arr[2, Item] = {{&hit, 2}, {&hit, 4}}\n"
+  in
+  semantic_message "const-number-tables-menu-slot-read"
+    "global initializer must be a constant expression for `X`; `MENU[0].weight` is not \
+     constant"
+    (menu_head ^ "const X u32 = MENU[0].weight\nfn main() i32 { return 0 }\n");
+  semantic_message "const-number-tables-menu-size-read"
+    "expression is not compile-time constant"
+    (menu_head ^ "fn main() i32 { buf arr[MENU[0].weight, i32] = {}\n return 0 }\n");
   semantic_error "scalar-constant-address" "constant `K` cannot be addressed"
     "const K u32 = 4\nfn test() addr { return &K }\n";
   semantic_error "fas-029-string-literal-index" "cannot modify string literal `\"x\"`"
@@ -3984,8 +4068,10 @@ let () =
     "const A arr[2, i64] = {1, true}\n";
   semantic_error "const-env-array-needs-brace-list"
     "const array needs a brace-list initializer" "const A arr[2, i64] = 5\n";
-  semantic_error "const-env-brace-list-requires-array"
-    "brace-list requires an array type" "struct S { x i64 y i64 }\nconst C S = {1, 2}\n";
+  semantic_error "const-env-brace-list-scalar-rejected"
+    "expression is not compile-time constant" "const C i64 = {1, 2}\n";
+  semantic_accept "const-env-struct-brace-list-storage"
+    "struct S { x i64 y i64 }\nconst C S = {1, 2}\nfn main() i32 { return 0 }\n";
 
   semantic_error "fas-021-local-aggregate-limit"
     "aggregate element count exceeds the configured limit"
@@ -9962,10 +10048,12 @@ let () =
   semantic_pin "constant-record-count-caret" constant_record_count 2
     (String.index "const CELL Cell = {1, 2}" '2' + 1)
     1 "record `Cell` has 1 field, got 2" None;
-  let constant_brace_list = "struct Entry { value u8 }\nconst ITEM Entry = {7}\n" in
-  semantic_pin "constant-brace-list-caret" constant_brace_list 2
-    (String.index "const ITEM Entry = {7}" '{' + 1)
-    1 "brace-list requires an array type" None;
+  let constant_brace_list = "const ITEM u8 = {7}\n" in
+  semantic_pin "constant-brace-list-caret" constant_brace_list 1
+    (String.index constant_brace_list '{' + 1)
+    1 "expression is not compile-time constant" None;
+  semantic_accept "constant-brace-list-struct-storage"
+    "struct Entry { value u8 }\nconst ITEM Entry = {7}\nfn main() i32 { return 0 }\n";
   let global_opaque_type = "opaque Token\nvar ITEM Token\n" in
   semantic_pin "global-opaque-type-caret" global_opaque_type 2
     (String.length "var ITEM " + 1)

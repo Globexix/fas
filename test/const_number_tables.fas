@@ -1,0 +1,77 @@
+use "C" <<C
+extern void dump_i64(long value);
+extern void dump_u64(unsigned long value);
+extern void dump_f64(double value);
+extern void dump_bytes(int label, const void *bytes, unsigned long count);
+C
+struct Cell { tag u8, weight u32, scale f64, live bool, step u16 }
+struct Row { id u8, cells arr[2, Cell] }
+struct Pair { lo u8, hi u16 }
+const CELLS arr[3, Cell] = {{1, 100, 1.5, true, 7}, {2, 200, 2.25, false, 9}, {255, 4000000000, -0.5, true, 65535}}
+const Grid arr[2, arr[3, i32]] = {{1, -2, 3}, {4, 5, -6}}
+const Cube arr[2, arr[2, arr[2, u16]]] = {{{1, 2}, {3, 4}}, {{5, 6}, {7, 65535}}}
+const Rows arr[2, Row] = {{9, {{1, 11, 2.0, true, 10}, {3, 33, 4.0, false, 20}}}, {8, {{5, 55, 6.0, true, 30}, {7, 77, 8.0, true, 40}}}}
+const Pairs arr[3, Pair] = {{1, 2}, {3, 4}, {5, 65535}}
+const Empty arr[3, Cell] = {}
+const One Cell = {42, 4242, 0.25, false, 1}
+const Named Cell = {.step = 3, .tag = 4, .weight = 5, .scale = 1.0, .live = true}
+fn dump_cell(tag u8, weight u32, scale f64, live bool, step u16) i32 {
+    dump_i64(zext[i64](tag))
+    dump_i64(zext[i64](weight))
+    dump_f64(scale)
+    dump_i64(zext[i64](live))
+    dump_i64(zext[i64](step))
+    return 0
+}
+extern "C" {
+fn fas_run() i32 {
+    total u64 = 0
+    for i usize = 0; i < len(CELLS); i += 1 {
+        if dump_cell(CELLS[i].tag, CELLS[i].weight, CELLS[i].scale, CELLS[i].live, CELLS[i].step) != 0 { return 1 }
+        total += zext[u64](CELLS[i].weight)
+    }
+    dump_u64(total)
+    for r usize = 0; r < len(Grid); r += 1 {
+        for c usize = 0; c < len(Grid[0]); c += 1 {
+            dump_i64(sext[i64](Grid[r][c]))
+        }
+    }
+    for a usize = 0; a < len(Cube); a += 1 {
+        for b usize = 0; b < len(Cube[0]); b += 1 {
+            for c usize = 0; c < len(Cube[0][0]); c += 1 {
+                dump_i64(zext[i64](Cube[a][b][c]))
+            }
+        }
+    }
+    for r usize = 0; r < len(Rows); r += 1 {
+        dump_i64(zext[i64](Rows[r].id))
+        for k usize = 0; k < len(Rows[0].cells); k += 1 {
+            if dump_cell(Rows[r].cells[k].tag, Rows[r].cells[k].weight, Rows[r].cells[k].scale, Rows[r].cells[k].live, Rows[r].cells[k].step) != 0 { return 2 }
+        }
+    }
+    view row = Grid[1]
+    dump_i64(sext[i64](row[2]))
+    view rows_view = Rows[1]
+    if dump_cell(rows_view.cells[1].tag, rows_view.cells[1].weight, rows_view.cells[1].scale, rows_view.cells[1].live, rows_view.cells[1].step) != 0 { return 3 }
+    for p usize = 0; p < len(Pairs); p += 1 {
+        dump_i64(zext[i64](Pairs[p].lo))
+        dump_i64(zext[i64](Pairs[p].hi))
+    }
+    if dump_cell(One.tag, One.weight, One.scale, One.live, One.step) != 0 { return 4 }
+    if dump_cell(Named.tag, Named.weight, Named.scale, Named.live, Named.step) != 0 { return 5 }
+    total = 0
+    for e usize = 0; e < len(Empty); e += 1 {
+        total += zext[u64](Empty[e].weight)
+    }
+    dump_u64(total)
+    dump_bytes(0, &CELLS, sizeof[arr[3, Cell]])
+    dump_bytes(1, &Grid, sizeof[arr[2, arr[3, i32]]])
+    dump_bytes(2, &Cube, sizeof[arr[2, arr[2, arr[2, u16]]]])
+    dump_bytes(3, &Rows, sizeof[arr[2, Row]])
+    dump_bytes(4, &Pairs, sizeof[arr[3, Pair]])
+    dump_bytes(5, &Empty, sizeof[arr[3, Cell]])
+    dump_bytes(6, &One, sizeof[Cell])
+    dump_bytes(7, &Named, sizeof[Cell])
+    return 0
+}
+}
