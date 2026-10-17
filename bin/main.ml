@@ -64,14 +64,14 @@ let print_report (options : Cli.perf_options) baseline result =
       else List.iter prerr_endline (Perf_report.text_lines ?diff result);
       Ok ()
 
-let native_rows (config : Cli.t) names dir =
+let native_rows ~link_cache (config : Cli.t) names dir =
   if not (Perf_tools.mca_available ()) then None
   else
     let exe = Filename.concat dir "native" in
     let remarks = Filename.concat dir "native-remarks.yaml" in
     let regalloc = Filename.concat dir "native-regalloc.yaml" in
     match
-      Driver.run ~remarks ~llc_remarks:regalloc ~c_debug:true
+      Driver.run ~remarks ~llc_remarks:regalloc ~c_debug:true ~link_cache
         {
           config with
           Cli.debug = true;
@@ -104,10 +104,12 @@ let perf_command (config : Cli.t) (options : Cli.perf_options) baseline args =
       let remarks = Filename.concat dir "remarks.yaml" in
       let regalloc = Filename.concat dir "regalloc.yaml" in
       let data = Filename.concat dir "perf.data" in
+      let link_cache = Driver.new_link_cache () in
       let llvm = ref "" in
       let build =
         Driver.run ~remarks ~llc_remarks:regalloc ~c_debug:true
           ~llvm_text:(fun text -> llvm := text)
+          ~link_cache
           { config with Cli.debug = true; output = exe; output_explicit = true }
       in
       let status =
@@ -138,7 +140,7 @@ let perf_command (config : Cli.t) (options : Cli.perf_options) baseline args =
                         notes;
                         rows;
                         starts;
-                        target = native_rows config names dir;
+                        target = native_rows ~link_cache config names dir;
                       }
                     in
                     let show result =

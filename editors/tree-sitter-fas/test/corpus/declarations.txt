@@ -19,6 +19,24 @@ use "C" "c_unions.h"
     (string)))
 
 ================================================================================
+use pkg declarations
+================================================================================
+use pkg "sdl2"
+use "C" <stdio.h>
+use pkg "zlib libpng"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (pkg_declaration
+    modules: (string))
+  (use_declaration
+    path: (string)
+    (system_header))
+  (pkg_declaration
+    modules: (string)))
+
+================================================================================
 const global and struct declarations
 ================================================================================
 const LIMIT u32 = 16

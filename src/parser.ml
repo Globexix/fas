@@ -55,7 +55,8 @@ let extract_containers source =
     let stop =
       if end_pos > i && text.[end_pos - 1] = '\r' then end_pos - 1 else end_pos
     in
-    let j = skip_while stop (fun c -> c = ' ' || c = '\t') (i + 3) in
+    let blank c = c = ' ' || c = '\t' in
+    let j = skip_while stop blank (i + 3) in
     let width =
       if j + 3 <= stop && String.sub text j 3 = "\"C\"" then 3
       else if j + 5 <= stop && String.sub text j 5 = "\"asm\"" then 5
@@ -63,7 +64,7 @@ let extract_containers source =
     in
     if width = 0 then None
     else
-      let j = skip_while stop (fun c -> c = ' ' || c = '\t') (j + width) in
+      let j = skip_while stop blank (j + width) in
       if j + 2 > stop || String.sub text j 2 <> "<<" then None
       else
         let tag_start = j + 2 in
@@ -575,6 +576,17 @@ module P = struct
 
   and finish_statement p consume_end = if consume_end then end_stmt p else Ok ()
 
+  and pkg_line p =
+    ignore (bump p);
+    match (peek p).kind with
+    | Token.String modules ->
+        let modules_span = span p in
+        ignore (bump p);
+        Ok Ast.{ modules; modules_span }
+    | _ ->
+        error (peek p).span
+          "`pkg` must be followed by a module string, e.g. `use pkg \"sdl2\"`"
+
   and c_header p use_span =
     match (peek p).kind with
     | Token.String header ->
@@ -631,21 +643,29 @@ module P = struct
     | Token.Kw_use ->
         let s = span p in
         ignore (bump p);
-        let path_span = span p in
-        let* path = string p in
-        if path = "C" || path = "asm" then
-          let header_start = span p in
-          let* header = c_header p s in
+        if (peek p).kind = Token.Ident "pkg" then
+          let* pkg = pkg_line p in
+          let span = extent p s in
           let* () = end_stmt p in
-          let span =
-            match header with
-            | Ast.C_quoted _ | Ast.C_system _ -> header_start
-            | Ast.C_fragment _ -> s
-          in
-          Ok [ Ast.Use { path; c_header = Some header; span } ]
+          Ok [ Ast.Pkg { pkg; span } ]
         else
-          let* () = end_stmt p in
-          Ok [ Ast.Use { path; c_header = None; span = path_span } ]
+          let path_span = span p in
+          let* path = string p in
+          if path = "C" && (peek p).kind = Token.Ident "pkg" then
+            error (span p) "`pkg` goes on its own line: `use pkg \"MODULES\"`"
+          else if path = "C" || path = "asm" then
+            let header_start = span p in
+            let* header = c_header p s in
+            let* () = end_stmt p in
+            let span =
+              match header with
+              | Ast.C_quoted _ | Ast.C_system _ -> header_start
+              | Ast.C_fragment _ -> s
+            in
+            Ok [ Ast.Use { path; c_header = Some header; span } ]
+          else
+            let* () = end_stmt p in
+            Ok [ Ast.Use { path; c_header = None; span = path_span } ]
     | Token.Kw_const ->
         let start = span p in
         let* x = const_item p in

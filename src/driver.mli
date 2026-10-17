@@ -8,8 +8,8 @@ val load_program :
   string ->
   ( Ast.program
     * (string * string list) list
-    * (string * C_import.header list) list
-    * (string * C_import.header list) list,
+    * (string * C_import.header list * Ast.pkg list) list
+    * (string * C_import.header list * Ast.pkg list) list,
     Diag.t list )
   result
 
@@ -22,6 +22,7 @@ type checked = {
   declaration_headers : string list;
   declarations : string;
   artifacts : string list;
+  link_pkgs : Ast.pkg list;
   keep : bool;
 }
 
@@ -50,14 +51,20 @@ val check :
   Cli.t ->
   (checked, Diag.t list) result
 
+type link_cache
+
+val new_link_cache : unit -> link_cache
+
 val run :
   ?remarks:string ->
   ?llc_remarks:string ->
   ?llvm_text:(string -> unit) ->
   ?c_debug:bool ->
+  ?link_cache:link_cache ->
   Cli.t ->
   (string, Diag.t list) result
 
+val pkg_cflags_message : string -> (string list, string) result
 val tool : string -> string -> string
 val executable_path : string -> string
 val version : string

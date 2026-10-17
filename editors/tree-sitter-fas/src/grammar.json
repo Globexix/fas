@@ -41,6 +41,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "pkg_declaration"
+        },
+        {
+          "type": "SYMBOL",
           "name": "const_declaration"
         },
         {
@@ -117,6 +121,27 @@
               "type": "BLANK"
             }
           ]
+        }
+      ]
+    },
+    "pkg_declaration": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "use"
+        },
+        {
+          "type": "STRING",
+          "value": "pkg"
+        },
+        {
+          "type": "FIELD",
+          "name": "modules",
+          "content": {
+            "type": "SYMBOL",
+            "name": "string"
+          }
         }
       ]
     },

@@ -374,7 +374,7 @@ let declare_program index ~c_aliases (program : Ast.program) =
   in
   List.iter
     (function
-      | Ast.Use _ -> ()
+      | Ast.Use _ | Ast.Pkg _ -> ()
       | Ast.Const { name; name_span; ty; extent; _ } ->
           let kind =
             match ty with Ast.Array _ | Ast.Vec _ -> Const_array | _ -> Const
@@ -527,7 +527,7 @@ let reference_program index ~instantiated (program : Ast.program) =
   in
   List.iter
     (function
-      | Ast.Use _ -> ()
+      | Ast.Use _ | Ast.Pkg _ -> ()
       | Ast.Const { ty = const_ty; value; _ } ->
           ty None [] const_ty;
           static_expression None [] value

@@ -126,9 +126,11 @@ and linkage = Internal | External_c
 and global_linkage = Internal_global | Export_c | Import_c | Import_const_c
 and c_fragment = { tag : string; text : string }
 and c_header = C_quoted of string | C_system of string | C_fragment of c_fragment
+and pkg = { modules : string; modules_span : Span.t }
 
 and item =
   | Use of { path : string; c_header : c_header option; span : Span.t }
+  | Pkg of { pkg : pkg; span : Span.t }
   | Const of {
       name : string;
       name_span : Span.t;
@@ -186,7 +188,7 @@ let with_extent extent = function
   | Struct s -> Struct { s with extent }
   | Opaque o -> Opaque { o with extent }
   | Func f -> Func { f with extent }
-  | Use _ as item -> item
+  | (Use _ | Pkg _) as item -> item
 
 let stored_expr_span = function
   | Int_lit (_, s)
@@ -441,6 +443,7 @@ let int_aggregate_length length span =
 
 let item_span = function
   | Use { span; _ }
+  | Pkg { span; _ }
   | Const { span; _ }
   | Global { span; _ }
   | Struct { span; _ }
@@ -806,6 +809,10 @@ let render_program program =
   in
   let emit_item item =
     match item with
+    | Pkg { pkg = { modules; _ }; _ } ->
+        text "use pkg \"";
+        add_escaped modules;
+        text "\""
     | Use { path; c_header; _ } -> (
         match c_header with
         | None ->
@@ -813,17 +820,19 @@ let render_program program =
             add_escaped path;
             text "\""
         | Some (C_quoted header) ->
-            text "use \"C\" \"";
+            text "use \"C\"";
+            text " \"";
             add_escaped header;
             text "\""
         | Some (C_system header) ->
-            text "use \"C\" <";
+            text "use \"C\"";
+            text " <";
             text header;
             text ">"
         | Some (C_fragment fragment) ->
+            text "use \"C\"";
             text
-              (Printf.sprintf "use \"C\" <<%s\n%s\n%s" fragment.tag fragment.text
-                 fragment.tag))
+              (Printf.sprintf " <<%s\n%s\n%s" fragment.tag fragment.text fragment.tag))
     | Const { name; ty; value; _ } ->
         text "const ";
         add_name name;
@@ -1032,7 +1041,7 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
       let at = item_span item in
       count at;
       match item with
-      | Use _ -> ()
+      | Use _ | Pkg _ -> ()
       | Const { ty; value; span; _ } ->
           go_ty span ty;
           go_expr value

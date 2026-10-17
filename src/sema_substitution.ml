@@ -3092,7 +3092,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                  }))
     | _ -> error Span.synthetic "internal error: function specialization is malformed"
   and resolve_item = function
-    | Ast.Use _ as item -> Ok item
+    | (Ast.Use _ | Ast.Pkg _) as item -> Ok item
     | Ast.Struct { generic_params = _ :: _; _ } as item -> Ok item
     | Ast.Struct ({ fields; _ } as item) ->
         let* fields =

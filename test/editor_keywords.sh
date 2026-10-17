@@ -91,5 +91,6 @@ same_set "$GATE_TMP/highlight_builtins" "$GATE_TMP/expected_builtins" "highlight
 
 grep -q '^(boolean) @' "$HIGHLIGHTS" || fail "highlights lack a (boolean) capture"
 grep -q '^(null) @' "$HIGHLIGHTS" || fail "highlights lack a (null) capture"
+grep -q '^(pkg_declaration "pkg" @keyword)$' "$HIGHLIGHTS" || fail "highlights lack the pkg declaration keyword"
 
 echo "editor keywords: $(wc -l < "$GATE_TMP/lexer_keywords" | tr -d ' ') lexer keywords, $(wc -l < "$GATE_TMP/expected_builtins.sorted" | tr -d ' ') builtins agree with the compiler"

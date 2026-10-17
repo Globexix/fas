@@ -3387,6 +3387,22 @@
     }
   },
   {
+    "type": "pkg_declaration",
+    "named": true,
+    "fields": {
+      "modules": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "pointer_type",
     "named": true,
     "fields": {
@@ -3530,6 +3546,10 @@
         },
         {
           "type": "opaque_declaration",
+          "named": true
+        },
+        {
+          "type": "pkg_declaration",
           "named": true
         },
         {
@@ -4404,6 +4424,10 @@
   },
   {
     "type": "opaque",
+    "named": false
+  },
+  {
+    "type": "pkg",
     "named": false
   },
   {

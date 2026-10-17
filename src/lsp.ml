@@ -1220,6 +1220,82 @@ let unsupported_hover state params =
                            (Lsp_position.position_of_offset current last) );
                      ])))
 
+let pkg_strings text offset =
+  let length = String.length text in
+  let offset = min offset length in
+  let rec line_start i =
+    if i > 0 && text.[i - 1] <> '\n' then line_start (i - 1) else i
+  in
+  let rec line_stop i =
+    if i < length && text.[i] <> '\n' then line_stop (i + 1) else i
+  in
+  let first = line_start offset in
+  let line = String.sub text first (line_stop offset - first) in
+  let width = String.length line in
+  let rec skip_spaces i =
+    if i < width && (line.[i] = ' ' || line.[i] = '\t') then skip_spaces (i + 1) else i
+  in
+  let use_before index = String.trim (String.sub line 0 index) = "use" in
+  let candidate index =
+    if
+      String.sub line index 3 = "pkg"
+      && (index = 0 || not (is_word_char line.[index - 1]))
+      && use_before index
+    then
+      let quote = skip_spaces (index + 3) in
+      if quote > index + 3 && quote < width && line.[quote] = '"' then
+        Option.map
+          (fun close ->
+            ( first + quote,
+              first + close,
+              String.sub line (quote + 1) (close - quote - 1) ))
+          (String.index_from_opt line (quote + 1) '"')
+      else None
+    else None
+  in
+  List.filter_map candidate (List.init (max 0 (width - 2)) Fun.id)
+
+let pkg_hover_markdown modules result =
+  let command = Printf.sprintf "```sh\npkg-config --cflags \"%s\"\n```" modules in
+  let body =
+    match result with
+    | Ok [] -> "(none)"
+    | Ok flags -> "```text\n" ^ String.concat "\n" flags ^ "\n```"
+    | Error message -> message
+  in
+  command ^ "\n\n" ^ body
+
+let pkg_hover state params =
+  let uri, line, character = request_point params in
+  match key_of_uri uri with
+  | None -> None
+  | Some key -> (
+      match current_text state key with
+      | None -> None
+      | Some current -> (
+          let offset = Lsp_position.offset_of_position current (line, character) in
+          match
+            List.find_opt
+              (fun (first, close, _) -> first <= offset && offset <= close)
+              (pkg_strings current offset)
+          with
+          | None -> None
+          | Some (first, close, modules) ->
+              let value =
+                pkg_hover_markdown modules (Driver.pkg_cflags_message modules)
+              in
+              Some
+                (Json.Obj
+                   [
+                     ( "contents",
+                       Json.Obj
+                         [ ("kind", Json.Str "markdown"); ("value", Json.Str value) ] );
+                     ( "range",
+                       range_json
+                         (Lsp_position.position_of_offset current first)
+                         (Lsp_position.position_of_offset current (close + 1)) );
+                   ])))
+
 let hover_result state params =
   let uri, line, character = request_point params in
   match resolve state uri line character with
@@ -1266,9 +1342,12 @@ let hover_result state params =
                    ])))
 
 let hover state params =
-  match hover_result state params with
+  match pkg_hover state params with
   | Some result -> result
-  | None -> Option.value ~default:Json.Null (unsupported_hover state params)
+  | None -> (
+      match hover_result state params with
+      | Some result -> result
+      | None -> Option.value ~default:Json.Null (unsupported_hover state params))
 
 let inlay_range params =
   let range = child "range" params in

@@ -4139,6 +4139,102 @@ let () =
   (match (parse_file "keyword-angle-use.fas" "use \"C\" <net/if.h>\n").Ast.items with
   | [ Ast.Use { path = "C"; c_header = Some (Ast.C_system "net/if.h"); _ } ] -> ()
   | _ -> failwith "use-c-keyword-angle: parser did not preserve the system header");
+  incr checks_run;
+  (match
+     (parse_file "pkg-line-before-header.fas"
+        "use pkg \"sdl2 >= 2.26\"\nuse \"C\" <system.h>\n")
+       .Ast.items
+   with
+  | [
+   Ast.Pkg { pkg = { Ast.modules = "sdl2 >= 2.26"; _ }; _ };
+   Ast.Use { path = "C"; c_header = Some (Ast.C_system "system.h"); _ };
+  ] ->
+      ()
+  | _ -> failwith "use-pkg-before-header: parser did not keep the pkg line and header");
+  incr checks_run;
+  (match
+     (parse_file "pkg-line-after-header.fas" "use \"C\" \"local.h\"\nuse pkg \"sdl2\"\n")
+       .Ast.items
+   with
+  | [
+   Ast.Use { path = "C"; c_header = Some (Ast.C_quoted "local.h"); _ };
+   Ast.Pkg { pkg = { Ast.modules = "sdl2"; _ }; _ };
+  ] ->
+      ()
+  | _ -> failwith "use-pkg-after-header: parser did not keep the pkg line and header");
+  incr checks_run;
+  (match
+     (parse_file "pkg-line-container.fas"
+        "use pkg \"sdl2\"\nuse \"C\" <<END\nint pkg_fragment;\nEND\n")
+       .Ast.items
+   with
+  | [
+   Ast.Pkg { pkg = { Ast.modules = "sdl2"; _ }; _ };
+   Ast.Use { c_header = Some (Ast.C_fragment fragment); _ };
+  ]
+    when fragment.text = "int pkg_fragment;\n" ->
+      ()
+  | _ ->
+      failwith "use-pkg-container: parser did not keep the pkg line and raw container");
+  parse_message "use-pkg-missing-string"
+    "`pkg` must be followed by a module string, e.g. `use pkg \"sdl2\"`"
+    "use pkg <stdio.h>\n";
+  parse_message "use-pkg-missing-string-eol"
+    "`pkg` must be followed by a module string, e.g. `use pkg \"sdl2\"`" "use pkg\n";
+  parse_message "use-pkg-non-string"
+    "`pkg` must be followed by a module string, e.g. `use pkg \"sdl2\"`" "use pkg 42\n";
+  parse_message "use-c-inline-pkg" "`pkg` goes on its own line: `use pkg \"MODULES\"`"
+    "use \"C\" pkg \"sdl2\" <stdio.h>\n";
+  parse_message "use-c-inline-pkg-no-header"
+    "`pkg` goes on its own line: `use pkg \"MODULES\"`" "use \"C\" pkg \"sdl2\"\n";
+  parse_error_message "use-c-inline-pkg-location"
+    "regression.fas:1:9: error: `pkg` goes on" "use \"C\" pkg \"sdl2\" <stdio.h>\n";
+  parse_error_message "use-file-pkg"
+    "regression.fas:1:17: error: expected end of statement"
+    "use \"other.fas\" pkg \"sdl2\"\n";
+  (match
+     check_files
+       [
+         ( "pkg-identifier.fas",
+           "fn pkg() i32 { return 1 }\n\
+            var pkg_value i32 = 3\n\
+            fn main() i32 { return pkg() + pkg_value }\n" );
+       ]
+   with
+  | Ok _ -> ()
+  | Error diagnostics ->
+      failwith
+        ("pkg-identifier: unexpected diagnostics "
+        ^ String.concat "; "
+            (List.map (fun (diagnostic : Diag.t) -> diagnostic.message) diagnostics)));
+  (match
+     check_files
+       [
+         ( "pkg-identifier-after-c.fas",
+           "use \"C\" <stdio.h>\n\
+            fn pkg() i32 { return 1 }\n\
+            fn main() i32 { return pkg() }\n" );
+       ]
+   with
+  | Ok _ -> ()
+  | Error diagnostics ->
+      failwith
+        ("pkg-identifier-after-c: unexpected diagnostics "
+        ^ String.concat "; "
+            (List.map (fun (diagnostic : Diag.t) -> diagnostic.message) diagnostics)));
+  (match
+     check_files
+       [
+         ( "pkg-local-identifier.fas",
+           "use pkg \"sdl2\"\nfn main() i32 {\npkg i32 = 2\nreturn pkg\n}\n" );
+       ]
+   with
+  | Ok _ -> ()
+  | Error diagnostics ->
+      failwith
+        ("pkg-local-identifier: unexpected diagnostics "
+        ^ String.concat "; "
+            (List.map (fun (diagnostic : Diag.t) -> diagnostic.message) diagnostics)));
   let raw_container =
     parse_file "raw-container.fas"
       "  use \"C\" <<END\n/* } { */\nconst char *s = \"# Fas text\";\nEND\n"

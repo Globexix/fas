@@ -228,7 +228,7 @@ type recovered = { recovered_index : Sema_index.t; gaps : gap list }
 type recovery = {
   mutable files : (string * string * Ast.item list) list;
   mutable failures : failure list;
-  mutable c_units : (string * C_import.header list) list;
+  mutable c_units : (string * C_import.header list * Ast.pkg list) list;
   mutable original_items : Ast.item list;
   mutable blank_errors : bool;
   mutable blanked : gap list;
@@ -245,7 +245,7 @@ let new_recovery () =
   }
 
 let item_extent = function
-  | Ast.Use { span; _ } -> span
+  | Ast.Use { span; _ } | Ast.Pkg { span; _ } -> span
   | Ast.Const { extent; _ }
   | Ast.Global { extent; _ }
   | Ast.Struct { extent; _ }
@@ -270,7 +270,8 @@ let apply_edits edits canonical items =
             items
       | Drop_c_unit file when file = canonical ->
           List.filter
-            (function Ast.Use { c_header = Some _; _ } -> false | _ -> true)
+            (function
+              | Ast.Use { c_header = Some _; _ } | Ast.Pkg _ -> false | _ -> true)
             items
       | Remove_item (file, span) when file = canonical ->
           List.filter (fun item -> item_extent item <> span) items
@@ -394,8 +395,8 @@ let load_program_with ?(overlay = fun _ -> None) ?recovery ?(edits = []) ~limits
                       in
                       let rec dependencies = function
                         | [] -> Ok ()
-                        | Ast.Use { path = dependency; c_header = None; span } :: rest
-                          -> (
+                        | Ast.Use { path = dependency; c_header = None; span; _ }
+                          :: rest -> (
                             match use_path_error dependency with
                             | Some message ->
                                 note_failure None span;
@@ -444,7 +445,9 @@ let load_program_with ?(overlay = fun _ -> None) ?recovery ?(edits = []) ~limits
       let items =
         List.concat_map
           (fun (_, program) ->
-            List.filter (function Ast.Use _ -> false | _ -> true) program.Ast.items)
+            List.filter
+              (function Ast.Use _ | Ast.Pkg _ -> false | _ -> true)
+              program.Ast.items)
           files
       in
       let imports language =
@@ -453,13 +456,20 @@ let load_program_with ?(overlay = fun _ -> None) ?recovery ?(edits = []) ~limits
             let headers =
               List.filter_map
                 (function
-                  | Ast.Use { path = language_name; c_header = Some spelling; span }
+                  | Ast.Use { path = language_name; c_header = Some spelling; span; _ }
                     when language_name = language ->
                       Some C_import.{ spelling; span }
                   | _ -> None)
                 program.Ast.items
             in
-            if headers = [] then None else Some (path, headers))
+            let pkgs =
+              if language <> "C" then []
+              else
+                List.filter_map
+                  (function Ast.Pkg { pkg; _ } -> Some pkg | _ -> None)
+                  program.Ast.items
+            in
+            if headers = [] && pkgs = [] then None else Some (path, headers, pkgs))
           ordered_files
       in
       let c_units = imports "C" in
@@ -542,17 +552,17 @@ let tools () =
 
 let version = "0.5.0"
 
-let executable_path name =
-  if String.contains name '/' then name
+let find_executable name =
+  let is_executable path =
+    try
+      Unix.access path [ Unix.X_OK ];
+      not (Sys.is_directory path)
+    with Unix.Unix_error _ | Sys_error _ -> false
+  in
+  if String.contains name '/' then if is_executable name then Some name else None
   else
     let directories =
       String.split_on_char ':' (Option.value ~default:"" (Sys.getenv_opt "PATH"))
-    in
-    let is_executable path =
-      try
-        Unix.access path [ Unix.X_OK ];
-        not (Sys.is_directory path)
-      with Unix.Unix_error _ | Sys_error _ -> false
     in
     let candidates =
       List.map
@@ -560,7 +570,10 @@ let executable_path name =
           Filename.concat (if directory = "" then "." else directory) name)
         directories
     in
-    match List.find_opt is_executable candidates with Some path -> path | None -> name
+    List.find_opt is_executable candidates
+
+let executable_path name =
+  match find_executable name with Some path -> path | None -> name
 
 let first_non_empty_line text =
   String.split_on_char '\n' text
@@ -610,6 +623,275 @@ let tool_error label failure =
 
 let ( let* ) result next =
   match result with Ok value -> next value | Error diagnostics -> Error diagnostics
+
+let pkg_config_words text =
+  let words = ref [] and current = Buffer.create 16 in
+  let flush () =
+    if Buffer.length current > 0 then (
+      words := Buffer.contents current :: !words;
+      Buffer.clear current)
+  in
+  let length = String.length text in
+  let rec scan index =
+    if index < length then
+      match text.[index] with
+      | ' ' | '\t' | '\n' | '\r' ->
+          flush ();
+          scan (index + 1)
+      | '\\' when index + 1 < length ->
+          Buffer.add_char current text.[index + 1];
+          scan (index + 2)
+      | character ->
+          Buffer.add_char current character;
+          scan (index + 1)
+  in
+  scan 0;
+  flush ();
+  List.rev !words
+
+let accepted_pkg_flags words =
+  let flag_prefixes = [ "-I"; "-isystem"; "-D"; "-U" ] in
+  let rec loop accepted = function
+    | [] -> Ok (List.rev accepted)
+    | (("-I" | "-isystem" | "-D" | "-U") as flag) :: value :: rest ->
+        loop ((flag ^ value) :: accepted) rest
+    | "-pthread" :: rest -> loop ("-pthread" :: accepted) rest
+    | token :: rest
+      when List.exists
+             (fun prefix ->
+               String.starts_with ~prefix token
+               && String.length token > String.length prefix)
+             flag_prefixes ->
+        loop (token :: accepted) rest
+    | token :: _ -> Error token
+  in
+  loop [] words
+
+let flags_text = function [] -> "(none)" | flags -> String.concat " " flags
+
+let edit_distance a b =
+  let n = String.length a and m = String.length b in
+  let previous = Array.init (m + 1) Fun.id in
+  for i = 1 to n do
+    let current = Array.make (m + 1) i in
+    for j = 1 to m do
+      let cost = if a.[i - 1] = b.[j - 1] then 0 else 1 in
+      current.(j) <-
+        min (min (previous.(j) + 1) (current.(j - 1) + 1)) (previous.(j - 1) + cost)
+    done;
+    Array.blit current 0 previous 0 (m + 1)
+  done;
+  previous.(m)
+
+let common_prefix a b =
+  let limit = min (String.length a) (String.length b) in
+  let rec go index =
+    if index < limit && a.[index] = b.[index] then go (index + 1) else index
+  in
+  go 0
+
+let rec dedupe_first = function
+  | [] -> []
+  | x :: rest -> x :: dedupe_first (List.filter (fun y -> y <> x) rest)
+
+let rec dedupe_last = function
+  | [] -> []
+  | x :: rest -> if List.mem x rest then dedupe_last rest else x :: dedupe_last rest
+
+let pkg_module_names modules =
+  let is_operator word = List.mem word [ "="; "=="; "!="; "<"; "<="; ">"; ">=" ] in
+  let strip_comma word =
+    if String.ends_with ~suffix:"," word then String.sub word 0 (String.length word - 1)
+    else word
+  in
+  let rec loop after_operator = function
+    | [] -> []
+    | word :: rest when is_operator word -> loop true rest
+    | _ :: rest when after_operator -> loop false rest
+    | word :: rest -> (
+        match strip_comma word with
+        | "" -> loop false rest
+        | name -> name :: loop false rest)
+  in
+  loop false (pkg_config_words modules)
+
+let similar_packages_help path modules =
+  match Process.run [| path; "--list-all" |] with
+  | Error _ -> None
+  | Ok (stdout, _) -> (
+      let requested = pkg_module_names modules in
+      let names =
+        String.split_on_char '\n' stdout
+        |> List.filter_map (fun line ->
+            match pkg_config_words line with name :: _ -> Some name | [] -> None)
+        |> List.filter (fun name -> not (List.mem name requested))
+      in
+      let words = List.map String.lowercase_ascii requested in
+      let similar name =
+        let lower = String.lowercase_ascii name in
+        List.exists
+          (fun word -> edit_distance lower word <= 2 || common_prefix lower word >= 3)
+          words
+      in
+      let rank name =
+        let lower = String.lowercase_ascii name in
+        let distance =
+          List.fold_left
+            (fun best word -> min best (edit_distance lower word))
+            max_int words
+        in
+        let prefix =
+          List.fold_left (fun best word -> max best (common_prefix lower word)) 0 words
+        in
+        (distance, -prefix, lower, name)
+      in
+      let matches =
+        dedupe_first (List.filter similar names)
+        |> List.sort (fun a b -> compare (rank a) (rank b))
+        |> List.filteri (fun index _ -> index < 3)
+      in
+      match matches with
+      | [] -> None
+      | _ ->
+          Some ("installed packages with a similar name: " ^ String.concat ", " matches)
+      )
+
+let pkg_flags ~keep ~option ~accept ~kind ~help (pkg : Ast.pkg) =
+  let modules = pkg.Ast.modules and span = pkg.Ast.modules_span in
+  let configured = tool "FAS_PKG_CONFIG" "pkg-config" in
+  match find_executable configured with
+  | None ->
+      Error
+        [
+          Diag.error span
+            (Printf.sprintf "`%s` not found; set FAS_PKG_CONFIG or install pkg-config"
+               configured);
+        ]
+  | Some path -> (
+      match Process.run [| path; option; modules |] with
+      | Error failure ->
+          let message =
+            match first_non_empty_line failure.Process.stderr with
+            | Some line -> line
+            | None ->
+                Printf.sprintf "`%s %s %s` failed (%s)" configured option modules
+                  (status_name failure.status)
+          in
+          Error [ Diag.error ?help:(similar_packages_help path modules) span message ]
+      | Ok (stdout, _) -> (
+          match accept (pkg_config_words stdout) with
+          | Error token ->
+              Error
+                [
+                  Diag.error ~help span
+                    (Printf.sprintf
+                       "pkg-config %s `%s` from pkg \"%s\" is not supported" kind token
+                       modules);
+                ]
+          | Ok flags ->
+              if keep then
+                prerr_endline
+                  (Printf.sprintf "fas: pkg-config: %s %s %s -> %s" configured option
+                     modules (flags_text flags));
+              Ok flags))
+
+let pkg_cflags ~keep (pkg : Ast.pkg) =
+  pkg_flags ~keep ~option:"--cflags" ~accept:accepted_pkg_flags ~kind:"flag"
+    ~help:"pass the flags you need with -I or -D" pkg
+
+let combined_c_flags command_flags accepted =
+  let defined flag =
+    String.starts_with ~prefix:"-D" flag || String.starts_with ~prefix:"-U" flag
+  in
+  let rec joined = function
+    | (("-I" | "-isystem" | "-D") as flag) :: value :: rest ->
+        (flag ^ value) :: joined rest
+    | flag :: rest -> flag :: joined rest
+    | [] -> []
+  in
+  let present = joined command_flags in
+  let fresh flag = not (List.mem flag present) in
+  let all = List.concat accepted in
+  let defines = List.filter defined all |> dedupe_last |> List.filter fresh in
+  let includes =
+    List.filter (fun flag -> not (defined flag)) all
+    |> dedupe_first |> List.filter fresh
+  in
+  defines @ command_flags @ includes
+
+let pkg_cflags_message modules =
+  let pkg = { Ast.modules; modules_span = Span.synthetic } in
+  match pkg_cflags ~keep:false pkg with
+  | Ok flags -> Ok flags
+  | Error diagnostics ->
+      Error
+        (String.concat "\n"
+           (List.map (fun (diag : Diag.t) -> diag.message) diagnostics))
+
+let pkg_c_flags ~keep command_flags packages =
+  let rec collect accepted notes = function
+    | [] -> Ok (combined_c_flags command_flags (List.rev accepted), List.rev notes)
+    | (pkg : Ast.pkg) :: rest ->
+        let* flags = pkg_cflags ~keep pkg in
+        let note =
+          Printf.sprintf "flags from pkg \"%s\": %s" pkg.Ast.modules (flags_text flags)
+        in
+        collect (flags :: accepted) (note :: notes) rest
+  in
+  collect [] [] packages
+
+let accepted_link_flags words =
+  let joined_prefixes = [ "-L"; "-l"; "-Wl,-rpath," ] in
+  let rec loop accepted = function
+    | [] -> Ok (List.rev accepted)
+    | (("-L" | "-l") as flag) :: value :: rest
+      when not (String.starts_with ~prefix:"-" value) ->
+        loop ((flag ^ value) :: accepted) rest
+    | "-pthread" :: rest -> loop ("-pthread" :: accepted) rest
+    | token :: rest
+      when List.exists
+             (fun prefix ->
+               String.starts_with ~prefix token
+               && String.length token > String.length prefix)
+             joined_prefixes ->
+        loop (token :: accepted) rest
+    | token :: _ -> Error token
+  in
+  loop [] words
+
+type link_cache = (string, (string list, Diag.t list) result) Hashtbl.t
+
+let new_link_cache () : link_cache = Hashtbl.create 4
+
+let pkg_link_flags ~keep ~cache packages =
+  let distinct =
+    List.fold_left
+      (fun seen (pkg : Ast.pkg) ->
+        if
+          List.exists
+            (fun (earlier : Ast.pkg) -> earlier.Ast.modules = pkg.Ast.modules)
+            seen
+        then seen
+        else seen @ [ pkg ])
+      [] packages
+  in
+  let rec collect accepted = function
+    | [] -> Ok (dedupe_last (List.concat (List.rev accepted)))
+    | (pkg : Ast.pkg) :: rest ->
+        let* flags =
+          match Hashtbl.find_opt cache pkg.Ast.modules with
+          | Some known -> known
+          | None ->
+              let found =
+                pkg_flags ~keep ~option:"--libs" ~accept:accepted_link_flags
+                  ~kind:"link flag" ~help:"pass the flags you need with -l or -L" pkg
+              in
+              Hashtbl.replace cache pkg.Ast.modules found;
+              found
+        in
+        collect (flags :: accepted) rest
+  in
+  collect [] distinct
 
 let limits = Limits.default
 
@@ -757,13 +1039,14 @@ let with_debug_c_inputs ~enabled config cc f =
         in
         compile [] config.Cli.link_inputs)
 
-let executable_command config cc asm_path c_objects =
+let executable_command config cc asm_path c_objects link_flags =
   let math_library = if List.mem "-lm" config.Cli.link_inputs then [] else [ "-lm" ] in
   let argv =
     Array.of_list
       (cc :: asm_path
       :: (c_objects @ host_march config @ config.Cli.c_flags @ c_sanitizer_flags config
-        @ config.Cli.link_inputs @ math_library @ [ "-o"; config.Cli.output ]))
+        @ config.Cli.link_inputs @ link_flags @ math_library
+        @ [ "-o"; config.Cli.output ]))
   in
   if config.Cli.keep then
     prerr_endline ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
@@ -815,7 +1098,7 @@ let optimize_module ?remarks config opt ll_path opt_path =
   verify_llvm opt opt_path
 
 let emit_tools_unprotected ?remarks ?llc_remarks ?llvm_text ?(c_debug = false) config
-    program ir c_objects redirect =
+    program ir c_objects link_flags redirect =
   let* () = ir_budget program (Ir.check_static_data_bytes ~limits ir) in
   let* ll_text =
     render_ir ~redirect
@@ -885,17 +1168,17 @@ let emit_tools_unprotected ?remarks ?llc_remarks ?llvm_text ?(c_debug = false) c
                     run_tool cc
                       (executable_command
                          { output_config with Cli.link_inputs }
-                         cc asm_path c_objects))
+                         cc asm_path c_objects link_flags))
               in
               Ok "")
       | Cli.Ir | Cli.Ir_json | Cli.Llvm | Cli.Optimized_llvm | Cli.Header ->
           invalid_arg "Driver.emit_tools: non-tool emission")
 
 let emit_tools ?remarks ?llc_remarks ?llvm_text ?c_debug config program ir c_objects
-    redirect =
+    link_flags redirect =
   try
     emit_tools_unprotected ?remarks ?llc_remarks ?llvm_text ?c_debug config program ir
-      c_objects redirect
+      c_objects link_flags redirect
   with
   | Sys_error message ->
       Error [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ]
@@ -968,6 +1251,7 @@ type imported_c_unit = {
   assembly : string option;
   static_functions : C_import.static_function list;
   c_names : string list;
+  c_flags : string list;
 }
 
 let compile_c_units config cc units adapters standard_headers declaration_headers
@@ -1055,7 +1339,7 @@ let compile_c_units config cc units adapters standard_headers declaration_header
                  "-fPIC";
                  llc_opt config.Cli.optimization;
                ]
-              @ host_march config @ config.Cli.c_flags
+              @ host_march config @ unit.c_flags
               @ (if Option.is_none unit.assembly then
                    C_import.reproducible_flags unit.stable_name unit.unit_path
                  else [])
@@ -1164,6 +1448,7 @@ type checked = {
   declaration_headers : string list;
   declarations : string;
   artifacts : string list;
+  link_pkgs : Ast.pkg list;
   keep : bool;
 }
 
@@ -1226,7 +1511,7 @@ let analyze_resolved ?overlay ?cache ?index ?recovery ?(edits = []) config =
                 | Ast.Opaque { name; _ }
                 | Ast.Func { name; _ } ->
                     Some name
-                | Ast.Use _ -> None)
+                | Ast.Use _ | Ast.Pkg _ -> None)
               program.Ast.items
           in
           let macro_names =
@@ -1237,12 +1522,21 @@ let analyze_resolved ?overlay ?cache ?index ?recovery ?(edits = []) config =
           let* () =
             let rec import = function
               | [] -> Ok ()
-              | (source, headers) :: rest ->
+              | (_, [], pkgs) :: rest ->
+                  let* _ = pkg_c_flags ~keep:config.Cli.keep config.Cli.c_flags pkgs in
+                  import rest
+              | (source, headers, pkgs) :: rest ->
+                  let* unit_c_flags, pkg_notes =
+                    pkg_c_flags ~keep:config.Cli.keep config.Cli.c_flags pkgs
+                  in
                   let alloc_size_parameters = ref [] in
                   let* declarations, kept, artifacts =
                     C_import.import ~alloc_size_out:alloc_size_parameters ~cc
-                      ~keep:config.Cli.keep ~retain:true ~c_flags:config.Cli.c_flags
-                      ?cache ~macro_names ~referenced_names source headers
+                      ~keep:config.Cli.keep ~retain:true ~c_flags:unit_c_flags ?cache
+                      ~macro_names ~referenced_names source headers
+                    |> Result.map_error
+                         (List.map (fun (diagnostic : Diag.t) ->
+                              { diagnostic with notes = diagnostic.notes @ pkg_notes }))
                   in
                   c_artifacts := artifacts @ !c_artifacts;
                   let mapped =
@@ -1273,6 +1567,7 @@ let analyze_resolved ?overlay ?cache ?index ?recovery ?(edits = []) config =
                             | Ast.C_quoted _ | Ast.C_system _ -> false)
                           headers;
                       static_functions = mapped.static_functions;
+                      c_flags = unit_c_flags;
                       c_names =
                         List.filter_map
                           (fun line ->
@@ -1299,7 +1594,7 @@ let analyze_resolved ?overlay ?cache ?index ?recovery ?(edits = []) config =
           in
           let* () =
             Result_list.iter
-              (fun (source, headers) ->
+              (fun (source, headers, _) ->
                 let unit_path = Filename.temp_file "fas-assembly-unit-" ".S" in
                 c_artifacts := unit_path :: !c_artifacts;
                 let* texts =
@@ -1361,6 +1656,7 @@ let analyze_resolved ?overlay ?cache ?index ?recovery ?(edits = []) config =
                     has_fragments = true;
                     static_functions = [];
                     c_names = [];
+                    c_flags = config.Cli.c_flags;
                   }
                   :: !c_units;
                 Ok ())
@@ -1418,7 +1714,7 @@ let analyze_resolved ?overlay ?cache ?index ?recovery ?(edits = []) config =
                   (fun (name, spelling, origin) ->
                     let required_header =
                       List.find_map
-                        (fun (source, headers) ->
+                        (fun (source, headers, _) ->
                           List.find_map
                             (fun (h : C_import.header) ->
                               match h.spelling with
@@ -1454,7 +1750,7 @@ let analyze_resolved ?overlay ?cache ?index ?recovery ?(edits = []) config =
               let declaration_headers =
                 let candidates =
                   List.concat_map
-                    (fun (source, headers) ->
+                    (fun (source, headers, _) ->
                       List.filter_map
                         (fun (header : C_import.header) ->
                           match header.spelling with
@@ -1542,6 +1838,7 @@ let analyze_resolved ?overlay ?cache ?index ?recovery ?(edits = []) config =
                      declaration_headers;
                      declarations;
                      artifacts = !c_artifacts;
+                     link_pkgs = List.concat_map (fun (_, _, pkgs) -> pkgs) c_imports;
                      keep = config.Cli.keep;
                    })))
 
@@ -1592,6 +1889,7 @@ let mentions needle text =
 let names_header file name = file = name || String.ends_with ~suffix:("/" ^ name) file
 
 let culprit_item canonical primary = function
+  | Ast.Pkg { span; _ } when within span primary -> Some (Drop_c_unit canonical)
   | Ast.Use { c_header = Some _; span; _ } when within span primary ->
       Some (Drop_c_unit canonical)
   | Ast.Use _ -> None
@@ -1646,7 +1944,7 @@ let culprit recovery diagnostics =
             | Some _ -> in_file
             | None ->
                 List.find_map
-                  (fun (canonical, headers) ->
+                  (fun (canonical, headers, _) ->
                     let named (header : C_import.header) =
                       match header.C_import.spelling with
                       | Ast.C_quoted name | Ast.C_system name -> names_header file name
@@ -1693,7 +1991,8 @@ let recover ?overlay ?cache config =
   in
   attempt 0 []
 
-let run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug config =
+let run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug
+    ?(link_cache = new_link_cache ()) config =
   match complete (analyze_resolved config) with
   | Error diagnostics -> Error diagnostics
   | Ok checked ->
@@ -1708,6 +2007,7 @@ let run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug con
             c_objects;
             declaration_headers;
             declarations;
+            link_pkgs;
             _;
           } =
             checked
@@ -1765,13 +2065,21 @@ let run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug con
                   let* () = verify_llvm opt path in
                   emit_text config text)
           | Cli.Optimized_llvm -> emit_optimized_llvm config program ir redirect
-          | Cli.Asm | Cli.Obj | Cli.Executable ->
+          | Cli.Asm | Cli.Obj ->
               emit_tools ?remarks ?llc_remarks ?llvm_text ?c_debug config program ir
-                c_objects redirect)
+                c_objects [] redirect
+          | Cli.Executable ->
+              let* link_flags =
+                pkg_link_flags ~keep:config.Cli.keep ~cache:link_cache link_pkgs
+              in
+              emit_tools ?remarks ?llc_remarks ?llvm_text ?c_debug config program ir
+                c_objects link_flags redirect)
 
-let run_unstaged ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug config =
+let run_unstaged ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache
+    config =
   try
-    run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug config
+    run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache
+      config
   with
   | Sys_error message ->
       Error [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ]
@@ -1786,18 +2094,18 @@ let run_unstaged ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug config
 let same_as_input config =
   canonical_path config.Cli.input = canonical_path config.Cli.output
 
-let run_resolved ?remarks ?llc_remarks ?llvm_text ?c_debug config =
+let run_resolved ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache config =
   if not config.Cli.output_explicit then
-    run_unstaged ?remarks ?llc_remarks ?llvm_text ?c_debug config
+    run_unstaged ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache config
   else if same_as_input config then
     Error [ Diag.error Span.synthetic "output path must differ from the input file" ]
   else
-    match run_unstaged ?remarks ?llc_remarks ?llvm_text ?c_debug config with
+    match run_unstaged ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache config with
     | Ok _ as result -> result
     | Error _ as result ->
         if not (is_non_regular_output config.Cli.output) then remove config.Cli.output;
         result
 
-let run ?remarks ?llc_remarks ?llvm_text ?c_debug config =
+let run ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache config =
   let* config = resolve_target config in
-  run_resolved ?remarks ?llc_remarks ?llvm_text ?c_debug config
+  run_resolved ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache config

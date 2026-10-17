@@ -115,6 +115,7 @@ module.exports = grammar({
     _item: ($) =>
       choice(
         $.use_declaration,
+        $.pkg_declaration,
         $.const_declaration,
         $.global_declaration,
         $.struct_declaration,
@@ -135,6 +136,8 @@ module.exports = grammar({
           ),
         ),
       ),
+
+    pkg_declaration: ($) => seq('use', 'pkg', field('modules', $.string)),
 
     system_header: (_) => token(seq('<', /[A-Za-z0-9_.\/+-]+/, '>')),
 

@@ -61,6 +61,33 @@ FAS_LLC=$WORK/llc-wrap
 FAS_CC=$WORK/cc-wrap
 export CLANG_LOG REAL_OPT REAL_LLC REAL_CC FAS_OPT FAS_LLC FAS_CC
 
+cat >"$WORK/fake-pkg-config" <<'SH'
+#!/bin/sh
+case "$1" in
+  --list-all) printf '%s\n' 'zlib zlib' ;;
+  --cflags)
+    printf '%s\n' "$2" >>"$LSP_PKG_LOG"
+    case "$2" in
+      good) printf '%s\n' '-DLSP_PKG=1 -pthread' ;;
+      bare) printf '\n' ;;
+      *)
+        printf 'Package %s was not found in the pkg-config search path.\n' "$2" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  --libs) printf '%s\n' "$2" >>"$LSP_LIBS_LOG" ;;
+  *) exit 2 ;;
+esac
+SH
+chmod +x "$WORK/fake-pkg-config"
+: >"$WORK/pkg.log"
+: >"$WORK/libs.log"
+LSP_PKG_LOG=$WORK/pkg.log
+LSP_LIBS_LOG=$WORK/libs.log
+FAS_PKG_CONFIG=$WORK/fake-pkg-config
+export LSP_PKG_LOG LSP_LIBS_LOG FAS_PKG_CONFIG
+
 python3 -I - "$OCAML_FAS" "$WORK" <<'PY'
 import json
 import os
@@ -637,7 +664,59 @@ def run_c_names():
     s.finish(0)
 
 
+PKG_GOOD_HOVER = '```sh\npkg-config --cflags "good"\n```\n\n```text\n-DLSP_PKG=1\n-pthread\n```'
+PKG_BARE_HOVER = '```sh\npkg-config --cflags "bare"\n```\n\n(none)'
+PKG_BROKEN_HOVER = (
+    '```sh\npkg-config --cflags "broken"\n```\n\n'
+    "Package broken was not found in the pkg-config search path."
+)
+
+
+def pkg_source(modules):
+    return 'use pkg "%s"\nuse "C" <pkg_hover.h>\n\nfn main() i32 {\n    return 0\n}\n' % modules
+
+
+def pkg_calls():
+    return len(read_text(os.path.join(work, "pkg.log")).splitlines())
+
+
+def expect_pkg_hover(s, name, modules, expected):
+    path = os.path.join(work, "pkg", name + ".fas")
+    source = pkg_source(modules)
+    write_file(path, source)
+    did_open(s, path, source, 1)
+    expect(bool(published(s.settle(), path)), "%s: unresolved header has no diagnostics" % name)
+    anchor = '"%s"' % modules
+    start = position_of(source, anchor, 0)
+    end = position_of(source, anchor, len(anchor))
+    for offset in (1, len(modules)):
+        before = pkg_calls()
+        result = s.result("textDocument/hover", at(path, source, anchor, offset))
+        expect(pkg_calls() == before + 1, "%s: hover ran pkg-config %d times" % (name, pkg_calls() - before))
+        expect(result is not None, "%s: pkg hover is null" % name)
+        value = hover_text(result)
+        expect(value == expected, "%s: pkg hover %r, expected %r" % (name, value, expected))
+        expect(
+            result["range"] == rng(start[0], start[1], end[0], end[1]),
+            "%s: pkg hover range %r" % (name, result["range"]),
+        )
+    did_close(s, path)
+    s.settle()
+
+
+def run_pkg_hover():
+    s = Server("pkg_hover")
+    initialize(s)
+    expect_pkg_hover(s, "good", "good", PKG_GOOD_HOVER)
+    expect_pkg_hover(s, "bare", "bare", PKG_BARE_HOVER)
+    expect_pkg_hover(s, "broken", "broken", PKG_BROKEN_HOVER)
+    expect(read_text(os.path.join(work, "libs.log")) == "", "pkg hover ran pkg-config --libs")
+    shutdown(s)
+    s.finish(0)
+
+
 run_c_names()
+run_pkg_hover()
 PY
 
-echo "lsp_c_names: imported C name hovers, unsupported names, and definitions: ok"
+echo "lsp_c_names: imported C name hovers, unsupported names, definitions, and pkg flag hovers: ok"

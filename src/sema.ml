@@ -203,7 +203,7 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
     Option.value specializations ~default:(Sema_specialization.create ())
   in
   let declaration = function
-    | Ast.Use _ -> None
+    | Ast.Use _ | Ast.Pkg _ -> None
     | Ast.Opaque { name; span; _ } -> Some (name, Top_type, span)
     | Ast.Struct { name; name_span; _ } -> Some (name, Top_type, name_span)
     | Ast.Const { name; name_span; _ } -> Some (name, Top_const, name_span)

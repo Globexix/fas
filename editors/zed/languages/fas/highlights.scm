@@ -11,6 +11,7 @@
 
 (raw_c_open) @keyword
 (raw_c_body) @embedded
+(pkg_declaration "pkg" @keyword)
 
 [
   "fn"
