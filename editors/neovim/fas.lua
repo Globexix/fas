@@ -22,7 +22,7 @@ vim.api.nvim_create_autocmd("User", {
         url = "https://github.com/Globexix/fas",
         location = "editors/tree-sitter-fas",
         files = { "src/parser.c", "src/scanner.c" },
-        revision = "e4221917cf767d27e1b9d6ca14310c783cd0220e",
+        revision = "b251583a6f12bb14dbe20baed061bfa03223d954",
       },
       filetype = "fas",
     }
