@@ -1,0 +1,52 @@
+use "C" <stdio.h>
+
+const N usize = 262144
+
+var src arr[262144, u64] = {}
+var dst arr[262144, u64] = {}
+
+fn fill(seed u64) void {
+    x u64 = seed
+    for i usize = 0; i < N; i += 1 {
+        x ^= x << 13
+        x ^= x >> 7
+        x ^= x << 17
+        src[i] = x
+    }
+}
+
+fn spread(shift u64) void {
+    counts arr[256, usize] = {}
+    for i usize = 0; i < N; i += 1 {
+        d usize = bitcast[usize]((src[i] >> shift) & 0xFF)
+        counts[d] += 1
+    }
+    start usize = 0
+    for b usize = 0; b < 256; b += 1 {
+        n usize = counts[b]
+        counts[b] = start
+        start += n
+    }
+    for i usize = 0; i < N; i += 1 {
+        v u64 = src[i]
+        d usize = bitcast[usize]((v >> shift) & 0xFF)
+        dst[counts[d]] = v
+        counts[d] += 1
+    }
+}
+
+fn checksum() u64 {
+    acc u64 = 0
+    for i usize = 0; i < N; i += 1 {
+        acc = (acc ^ dst[i]) * 0x100000001b3
+    }
+    return acc
+}
+
+fn main() i32 {
+    fill(0x9e3779b97f4a7c15)
+    spread(8)
+    printed i32 = printf(c"checksum %lu\n", checksum())
+    if printed <= 0 { return 1 }
+    return 0
+}

@@ -962,8 +962,16 @@ let resolve_target config =
             ])
 
 let target_attributes config =
-  match (config.Cli.target_cpu, config.Cli.target_features) with
-  | Some cpu, Some features -> Some (cpu, features)
+  match (config.Cli.target, config.Cli.target_cpu, config.Cli.target_features) with
+  | Cli.Portable, None, None ->
+      Some
+        {
+          Ir.target_cpu = "x86-64";
+          target_tune = Some "generic";
+          target_features = None;
+        }
+  | Cli.Force_native, Some cpu, Some features ->
+      Some { Ir.target_cpu = cpu; target_tune = None; target_features = Some features }
   | _ -> None
 
 let host_march config =
@@ -1057,7 +1065,10 @@ let remark_option = function
   | None -> []
 
 let target_cpu_option config =
-  match config.Cli.target_cpu with Some cpu -> [ "-mcpu=" ^ cpu ] | None -> []
+  match (config.Cli.target, config.Cli.target_cpu) with
+  | _, Some cpu -> [ "-mcpu=" ^ cpu ]
+  | Cli.Portable, None -> [ "-mcpu=x86-64" ]
+  | Cli.Force_native, None -> []
 
 let run_llc ?llc_remarks config llc ~filetype ~input ~output =
   run_tool llc

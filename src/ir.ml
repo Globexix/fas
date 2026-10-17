@@ -1720,6 +1720,12 @@ let absolute_directory path =
   | dir when Filename.is_relative dir -> Filename.concat (Sys.getcwd ()) dir
   | dir -> dir
 
+type target_group = {
+  target_cpu : string;
+  target_tune : string option;
+  target_features : string option;
+}
+
 let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false)
     ?(debug_info = false) ?target ~budget m =
   if budget < 0 then Error "rendered LLVM text budget must not be negative"
@@ -2047,12 +2053,23 @@ let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false)
         add " }";
         newline ());
       Option.iter
-        (fun (cpu, features) ->
+        (fun group ->
           add "attributes #1 = { \"target-cpu\"=\"";
-          add_escaped_bytes cpu;
-          add "\" \"target-features\"=\"";
-          add_escaped_bytes features;
-          add "\" }";
+          add_escaped_bytes group.target_cpu;
+          add "\"";
+          Option.iter
+            (fun tune ->
+              add " \"tune-cpu\"=\"";
+              add_escaped_bytes tune;
+              add "\"")
+            group.target_tune;
+          Option.iter
+            (fun features ->
+              add " \"target-features\"=\"";
+              add_escaped_bytes features;
+              add "\"")
+            group.target_features;
+          add " }";
           newline ())
         target;
       if !file_order <> [] then (

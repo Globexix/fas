@@ -313,7 +313,7 @@ grep -E '^cc [^ ]*fas-module-[^ ]*\.s .* -fsanitize=address,undefined (-lm )?-o 
 grep -F "define i32 @main" "$WORK/raw.ll" >/dev/null || fail "LLVM emission omitted main"
 grep -F "call i32 @helper" "$WORK/raw.ll" >/dev/null || fail "-O2 changed unoptimized LLVM emission"
 "$OCAML_FAS" --sanitize=address --emit-llvm "$WORK/link.fas" >"$WORK/address.ll" 2>"$WORK/stderr"
-grep -F "define i32 @main() sanitize_address {" "$WORK/address.ll" >/dev/null || fail "address sanitizer missed Fas definition"
+grep -F "define i32 @main() sanitize_address #1 {" "$WORK/address.ll" >/dev/null || fail "address sanitizer missed Fas definition"
 grep -F "declare i32 @c_link_probe(i32)" "$WORK/address.ll" >/dev/null || fail "address sanitizer changed external declaration"
 if grep -F "declare i32 @c_link_probe(i32) sanitize_address" "$WORK/address.ll" >/dev/null; then
   fail "address sanitizer marked external declaration"
@@ -426,8 +426,8 @@ temps_empty
 grep -F "@helper() noinline #0 " "$WORK/noinline.ll" >/dev/null || fail "--no-inline missed selected function"
 if grep -F "@main() noinline #0 " "$WORK/noinline.ll" >/dev/null; then fail "--no-inline marked main"; fi
 "$OCAML_FAS" --emit-llvm -O2 --no-inline helper "$WORK/good.fas" >"$WORK/noinline-o2.ll" 2>"$WORK/stderr"
-grep -F "@helper() noinline #0 {" "$WORK/noinline-o2.ll" >/dev/null || fail "--no-inline without -g missed selected function"
-if grep -F "@main() noinline #0 {" "$WORK/noinline-o2.ll" >/dev/null; then fail "--no-inline without -g marked main"; fi
+grep -F "@helper() noinline #0 #1 {" "$WORK/noinline-o2.ll" >/dev/null || fail "--no-inline without -g missed selected function"
+if grep -F "@main() noinline" "$WORK/noinline-o2.ll" >/dev/null; then fail "--no-inline without -g marked main"; fi
 cat >"$WORK/noinline.fas" <<'FAS'
 fn helper() i32 { return 7 }
 fn main() i32 { return helper() + 3 }

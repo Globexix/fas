@@ -18,8 +18,20 @@ fail() {
 "$OCAML_FAS" --target=portable --emit-llvm "$FIXTURES/program.fas" >"$TARGET_TMP/portable.ll"
 cmp -s "$TARGET_TMP/default.ll" "$TARGET_TMP/portable.ll" \
   || fail "portable output differs from the default target"
-if grep -q 'target-cpu' "$TARGET_TMP/portable.ll"; then
-  fail "portable output carries a host CPU attribute"
+grep -q '^define' "$TARGET_TMP/portable.ll" || fail "portable IR has no definitions"
+if grep '^define' "$TARGET_TMP/portable.ll" | grep -qv ' #1 {$'; then
+  fail "a portable definition lacks the baseline CPU attributes"
+fi
+if grep '^declare' "$TARGET_TMP/portable.ll" | grep -q '#1'; then
+  fail "a portable declaration carries CPU attributes"
+fi
+grep -qxF 'attributes #1 = { "target-cpu"="x86-64" "tune-cpu"="generic" }' "$TARGET_TMP/portable.ll" \
+  || fail "portable IR has no baseline CPU attribute group"
+if [ "$(grep -c '^attributes #1 = ' "$TARGET_TMP/portable.ll")" -ne 1 ]; then
+  fail "portable IR does not have exactly one CPU attribute group"
+fi
+if grep -q 'target-features' "$TARGET_TMP/portable.ll"; then
+  fail "portable IR names target features"
 fi
 
 "$OCAML_FAS" --target=force-native --emit-llvm "$FIXTURES/program.fas" >"$TARGET_TMP/native.ll"
@@ -94,4 +106,52 @@ fi
 grep -qF -- '--target=force-native: cannot determine the host CPU (/bin/false failed (exit 1))' \
   "$TARGET_TMP/probe.err" || fail "host CPU probe failure message changed"
 
-echo "target_flag: portable identity, force-native attributes, O0/O2 execution, intrinsics, asm, and diagnostics verified: ok"
+"$OCAML_FAS" --target=portable --no-inline spread --emit-llvm "$FIXTURES/radix_scatter.fas" \
+  >"$TARGET_TMP/radix.ll"
+"$LLVM_OPT" -passes=verify "$TARGET_TMP/radix.ll" -disable-output
+"$LLVM_OPT" -S "-passes=default<O2>" "$TARGET_TMP/radix.ll" -o "$TARGET_TMP/radix.O2.ll"
+"$LLVM_OPT" -passes=verify "$TARGET_TMP/radix.O2.ll" -disable-output
+"$LLVM_OPT" "-passes=default<O2>" -pass-remarks=loop-unroll \
+  -pass-remarks-output="$TARGET_TMP/radix.yaml" -disable-output "$TARGET_TMP/radix.ll" \
+  2>"$TARGET_TMP/radix.remarks.err"
+awk '
+  /^--- / { name = ""; fn = "" }
+  /^Name: / { name = $2 }
+  /^Function: / { fn = $2 }
+  /UnrollCount: / { if (name == "PartialUnrolled" && fn == "spread") found = 1 }
+  END { exit (found ? 0 : 1) }
+' "$TARGET_TMP/radix.yaml" \
+  || fail "portable radix scatter loop in spread was not partially unrolled"
+
+cat >"$TARGET_TMP/opt-wrap.sh" <<EOF
+#!/bin/sh
+printf '%s\n' "\$@" >>"$TARGET_TMP/opt.args"
+exec "$LLVM_OPT" "\$@"
+EOF
+cat >"$TARGET_TMP/llc-wrap.sh" <<EOF
+#!/bin/sh
+printf '%s\n' "\$@" >>"$TARGET_TMP/llc.args"
+exec "$LLVM_LLC" "\$@"
+EOF
+chmod +x "$TARGET_TMP/opt-wrap.sh" "$TARGET_TMP/llc-wrap.sh"
+FAS_OPT="$TARGET_TMP/opt-wrap.sh" FAS_LLC="$TARGET_TMP/llc-wrap.sh" FAS_CC="$CC" \
+  "$OCAML_FAS" --target=portable -O2 -o "$TARGET_TMP/radix.wrapped" "$FIXTURES/radix_scatter.fas"
+grep -qxF -- '-mcpu=x86-64' "$TARGET_TMP/opt.args" || fail "portable opt call lacks -mcpu=x86-64"
+grep -qxF -- '-mcpu=x86-64' "$TARGET_TMP/llc.args" || fail "portable llc call lacks -mcpu=x86-64"
+
+"$CC" -Werror -std=c17 -O2 "$FIXTURES/radix_scatter.c" -o "$TARGET_TMP/radix_oracle"
+"$TARGET_TMP/radix_oracle" >"$TARGET_TMP/radix_oracle.out"
+for target in portable force-native; do
+  for level in 0 2; do
+    exe="$TARGET_TMP/radix.$target.O$level"
+    "$OCAML_FAS" --target="$target" "-O$level" -o "$exe" "$FIXTURES/radix_scatter.fas" \
+      2>"$TARGET_TMP/radix.$target.O$level.err"
+    [ ! -s "$TARGET_TMP/radix.$target.O$level.err" ] \
+      || fail "$target -O$level radix build wrote diagnostics"
+    timeout 30 "$exe" >"$exe.out" || fail "$target -O$level radix program failed"
+    cmp -s "$exe.out" "$TARGET_TMP/radix_oracle.out" \
+      || fail "$target -O$level radix output differs from the C oracle"
+  done
+done
+
+echo "target_flag: portable identity, force-native attributes, O0/O2 execution, intrinsics, asm, diagnostics, and radix unroll verified: ok"

@@ -239,7 +239,13 @@ let native_of p target (r : row) =
           else None
         in
         Some (Predicted { cycles; here; there })
-    | _ -> None
+    | _ -> (
+        match
+          native_win ~portable:(wins p.notes mine)
+            ~native:(wins target.other_notes theirs)
+        with
+        | Some _ as vector -> Some (Differs { vector })
+        | None -> None)
 
 let because text =
   let key = " because " in

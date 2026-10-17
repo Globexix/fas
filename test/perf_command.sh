@@ -135,34 +135,38 @@ EXPECTED
 cat >"$WORK/perf_generic_names.expected" <<'EXPECTED'
 perf_generic_names.fas  static (no run)
 perf_generic_names.fas:5 for i usize = 0; i < n; i += 1 {         sum[u32], sum[u64], inlined into main:12, main:13
-      2 instr/iter   loads 0 stores 0 /iter   1.0 cycles/iter   bound: register dependency
+      unrolled x16   2 instr/iter   loads 0 stores 0 /iter   1.0 cycles/iter   bound: register dependency
 EXPECTED
 cat >"$WORK/nest-default.expected" <<'EXPECTED'
 nest.fas  static (no run)
 nest.fas:9    for r usize = 0; r < rows; r += 1 {      tile, inlined into main:37
-      19 instr/iter   loads 2 stores 0 /iter
+      27 instr/iter   loads 4 stores 0 /iter
 nest.fas:10   for c usize = 0; c < cols; c += 1 {      tile, inlined into main:37
-      vectorized x2 interleave 2   8 instr/iter (4 elements)   loads 2 stores 0 /iter   2.1 cycles/iter
+      vectorized x2 interleave 2   unrolled x2   15 instr/iter (4 elements)   loads 4 stores 0 /iter   3.9 cycles/iter
 nest.fas:23   for i u64 = 0; i < n; i += 1 {           divide, inlined into main:40
-      not vectorized: Cannot vectorize early exit loop with reductions or recurrences   16 instr/iter   loads 0 stores 0 /iter   41.1 cycles/iter   bound: register dependency   trap check
+      not vectorized: Cannot vectorize early exit loop with reductions or recurrences   loads 0 stores 0 /iter   trap check
+      in main:40 (copy 1): 19 instr/iter   41.3 cycles/iter   bound: register dependency
+      in main:40 (copy 2): 20 instr/iter
 nest.fas:31   for i u64 = 0; i < 65536; i += 1 {       main
-      not vectorized: value that could not be identified as reduction is used outside the loop   10 instr/iter   loads 0 stores 1 /iter   8.0 cycles/iter   bound: register dependency
+      not vectorized: value that could not be identified as reduction is used outside the loop   unrolled x2   16 instr/iter   loads 0 stores 2 /iter   17.0 cycles/iter   bound: register dependency
 nest.fas:36   for pass usize = 0; pass < 3000; pass +… main
-      32 instr/iter   loads 2 stores 0 /iter
+      41 instr/iter   loads 4 stores 0 /iter
 EXPECTED
 
 cat >"$WORK/nest-no-inline.expected" <<'EXPECTED'
 nest.fas  static (no run)
 nest.fas:9    for r usize = 0; r < rows; r += 1 {      tile, inlined into main:37
-      19 instr/iter   loads 2 stores 0 /iter
+      27 instr/iter   loads 4 stores 0 /iter
 nest.fas:10   for c usize = 0; c < cols; c += 1 {      tile, inlined into main:37
-      vectorized x2 interleave 2   8 instr/iter (4 elements)   loads 2 stores 0 /iter   2.1 cycles/iter
+      vectorized x2 interleave 2   unrolled x2   15 instr/iter (4 elements)   loads 4 stores 0 /iter   3.9 cycles/iter
 nest.fas:23   for i u64 = 0; i < n; i += 1 {           divide, inlined into main:40
-      not vectorized: Cannot vectorize early exit loop with reductions or recurrences   16 instr/iter   loads 0 stores 0 /iter   41.1 cycles/iter   bound: register dependency   trap check
+      not vectorized: Cannot vectorize early exit loop with reductions or recurrences   loads 0 stores 0 /iter   trap check
+      in main:40 (copy 1): 19 instr/iter   41.3 cycles/iter   bound: register dependency
+      in main:40 (copy 2): 20 instr/iter
 nest.fas:31   for i u64 = 0; i < 65536; i += 1 {       main
-      not vectorized: value that could not be identified as reduction is used outside the loop   10 instr/iter   loads 0 stores 1 /iter   8.0 cycles/iter   bound: register dependency
+      not vectorized: value that could not be identified as reduction is used outside the loop   unrolled x2   16 instr/iter   loads 0 stores 2 /iter   17.0 cycles/iter   bound: register dependency
 nest.fas:36   for pass usize = 0; pass < 3000; pass +… main
-      31 instr/iter   loads 2 stores 0 /iter   call kept: helper (it should never be inlined (cost=never): noinline function attribute)
+      40 instr/iter   loads 4 stores 0 /iter   call kept: helper (it should never be inlined (cost=never): noinline function attribute)
 EXPECTED
 
 cat >"$WORK/flat.expected" <<'EXPECTED'
@@ -172,13 +176,17 @@ EXPECTED
 cat >"$WORK/loop_climb.expected" <<'EXPECTED'
 loop_climb.fas  static (no run)
 loop_climb.fas:7 while ip > 0 {                           put, inlined into main:25
-      not vectorized: value that could not be identified as reduction is used outside the loop   13 instr/iter   loads 0 stores 1 /iter   7.1 cycles/iter   bound: register dependency
+      not vectorized: value that could not be identified as reduction is used outside the loop   15 instr/iter   loads 0 stores 1 /iter   8.0 cycles/iter   bound: register dependency
 loop_climb.fas:12 while n > 0 {                            put, inlined into main:25
-      not vectorized: value that could not be identified as reduction is used outside the loop   5 instr/iter   loads 1 stores 1 /iter   1.3 cycles/iter
+      not vectorized: value that could not be identified as reduction is used outside the loop   unrolled x4
+      in main:25 (copy 1): 6 instr/iter   loads 1 stores 1 /iter   1.6 cycles/iter
+      in main:25 (copy 2): 11 instr/iter   loads 4 stores 4 /iter   4.1 cycles/iter   bound: ZnAGU0
 loop_climb.fas:24 for r u64 = 0; r < 3000; r += 1 {        main
       in main (copy 1): 11 instr/iter   loads 1 stores 3 /iter   2.8 cycles/iter
-      in main (copy 2): 30 instr/iter   loads 1 stores 4 /iter
-      in main (copy 3): 38 instr/iter   loads 2 stores 5 /iter
+      in main (copy 2): 34 instr/iter   loads 1 stores 4 /iter
+      in main (copy 3): 49 instr/iter   loads 2 stores 5 /iter
+      in main (copy 4): 52 instr/iter   loads 2 stores 5 /iter
+      in main (copy 5): 65 instr/iter   loads 6 stores 9 /iter
 EXPECTED
 cat >"$WORK/loop_siblings.expected" <<'EXPECTED'
 loop_siblings.fas  static (no run)
@@ -196,11 +204,11 @@ loop_continue.fas:4 while v < limit {                        scan, inlined into 
       in main:17 (copy 1): 9 instr/iter
       in main:17 (copy 2): 13 instr/iter
 loop_continue.fas:16 for r u64 = 0; r < 3000; r += 1 {        main
-      16 instr/iter   loads 0 stores 0 /iter   4.1 cycles/iter
+      19 instr/iter   loads 0 stores 0 /iter   4.9 cycles/iter
 EXPECTED
 
 strip_native() {
-  sed -E -e '/^native target /d' -e 's/   native: vectorized x[0-9]+( interleave [0-9]+)?, loop shape differs//' -e 's/   native: ((vectorized x[0-9]+( interleave [0-9]+)?|not vectorized) \([^)]*\), )?([0-9.]+ cycles\/iter \([^)]*\)|loop shape differs)//' "$1" >"$1.portable"
+  sed -E -e '/^native target /d' -e '/^    change: /s/   native: ([^ ]| [^ ])*//' -e '/^ *native: loop shape differs$/d' -e 's/   native: vectorized x[0-9]+( interleave [0-9]+)?, loop shape differs//' -e 's/   native: ((vectorized x[0-9]+( interleave [0-9]+)?|not vectorized) \([^)]*\), )?([0-9.]+ cycles\/iter \([^)]*\)|loop shape differs)//' "$1" >"$1.portable"
   mv "$1.portable" "$1"
 }
 
@@ -319,7 +327,7 @@ expect_exit 0 "static nest"
 [ ! -s "$WORK/stdout" ] || fail "static nest wrote to stdout"
 diff "$WORK/nest-default.expected" "$WORK/stderr" >/dev/null ||
   fail "static nest output differs: $(diff "$WORK/nest-default.expected" "$WORK/stderr")"
-grep -q '^      vectorized x2 interleave 2   8 instr/iter (4 elements)   loads 2 stores 0 /iter   2.1 cycles/iter$' "$WORK/stderr" ||
+grep -q '^      vectorized x2 interleave 2   unrolled x2   15 instr/iter (4 elements)   loads 4 stores 0 /iter   3.9 cycles/iter$' "$WORK/stderr" ||
   fail "innermost static loop row has no cycles/iter"
 expect_empty_temp "static nest"
 
@@ -332,7 +340,7 @@ status=0
 FAS_MCA=/nonexistent "$OCAML_FAS" perf "$WORK/nest.fas" --static >"$WORK/stdout" 2>"$WORK/stderr" || status=$?
 expect_exit 0 "missing mca"
 [ ! -s "$WORK/stdout" ] || fail "missing mca wrote to stdout"
-grep -qx '      19 instr/iter   loads 2 stores 0 /iter' "$WORK/stderr" || fail "missing mca changed the loop row: $(cat "$WORK/stderr")"
+grep -qx '      27 instr/iter   loads 4 stores 0 /iter' "$WORK/stderr" || fail "missing mca changed the loop row: $(cat "$WORK/stderr")"
 ! grep -q 'cycles/iter\|bound:' "$WORK/stderr" || fail "missing mca still shows cycle facts"
 ! grep -q 'native' "$WORK/stderr" || fail "missing mca still shows native facts"
 expect_empty_temp "missing mca"
@@ -388,8 +396,8 @@ FAS
     status=0
     FAS_MCA="$MCA_BIN" "$OCAML_FAS" perf "$WORK/avx_sum.fas" --static >"$WORK/stdout" 2>"$WORK/stderr" || status=$?
     expect_exit 0 "native avx2 static"
-    sed -n '/^avx_sum\.fas:5 /{n;p;}' "$WORK/stderr" | grep -Eq 'native: vectorized x(8|16)( interleave [0-9]+)? \([0-9]+ elements\), [0-9.]+ cycles/iter \(−[0-9]+% per element\)' ||
-      fail "native avx2 loop has no faster per-element native vector form: $(cat "$WORK/stderr")"
+    sed -n '/^avx_sum\.fas:5 /{n;p;}' "$WORK/stderr" | grep -Eq 'vectorized x4 interleave 2   unrolled x4   [0-9]+ instr/iter \(8 elements\)   loads [0-9]+ stores 0 /iter   [0-9.]+ cycles/iter   native: [0-9.]+ cycles/iter \(−[0-9]+%\)$' ||
+      fail "native avx2 loop is not predicted faster at equal element counts: $(cat "$WORK/stderr")"
     expect_empty_temp "native avx2 static"
 
     cat >"$WORK/shape_store.fas" <<'FAS'
@@ -422,11 +430,13 @@ FAS
     status=0
     FAS_MCA="$MCA_BIN" "$OCAML_FAS" perf "$WORK/shape_store.fas" --no-inline fill --static >"$WORK/stdout" 2>"$WORK/stderr" || status=$?
     expect_exit 0 "native avx2 shape differs static"
-    shape_row=$(sed -n '/^shape_store\.fas:9 /{n;p;}' "$WORK/stderr")
-    printf '%s\n' "$shape_row" | grep -Fq '   native: vectorized x8, loop shape differs' ||
-      fail "native avx2 shape row lacks the vector form: $shape_row"
-    if printf '%s\n' "$shape_row" | sed 's/   native: .*//' | grep -q vectorized; then
-      fail "portable row of native shape differs is vectorized: $shape_row"
+    shape_block=$(awk '/^shape_store\.fas:9 /{p=1; print; next} p && /^[^ ]/{exit} p{print}' "$WORK/stderr")
+    printf '%s\n' "$shape_block" | grep -qx '      unrolled x4   native: vectorized x8, loop shape differs' ||
+      fail "native avx2 shape row lacks the vector form: $shape_block"
+    printf '%s\n' "$shape_block" | grep -q '^      in fill (copy 2): ' ||
+      fail "portable shape_store loop has no remainder copy: $shape_block"
+    if printf '%s\n' "$shape_block" | sed 's/   native: .*//' | grep -q vectorized; then
+      fail "portable shape_store loop is vectorized: $shape_block"
     fi
     expect_empty_temp "native avx2 shape differs static"
   else
@@ -529,7 +539,7 @@ python3 -c 'import json, sys; doc = json.load(open(sys.argv[1])); rows = doc["ro
   fail "generic names json copies are not sum[u32] and sum[u64]"
 expect_empty_temp "generic names json"
 cat >"$WORK/perf_generic_names.json.expected" <<'EXPECTED'
-{"format":"fas-perf","version":1,"file":"perf_generic_names.fas","run":null,"rows":[{"share":null,"kind":"loop","file":"perf_generic_names.fas","line":5,"source":"for i usize = 0; i < n; i += 1 {","function":"sum[u32]","inlined_into":{"function":"main","line":12},"symbol":null,"dso":null,"places":null,"facts":{"instrs":2,"loads":0,"stores":0,"spills":null,"reloads":null,"vectorized":null,"not_vectorized":null,"unroll":null,"cycles_per_iter":1.04,"bound":"register dependency","calls":[],"calls_kept":[],"trap":false},"shown":{"vector":["","not vectorized"],"unroll":["","none"],"instrs":["instr/iter","2"],"loads":["loads","0"],"stores":["stores","0"],"spills":["spills","none"],"reloads":["reloads","none"],"cycles":["cycles/iter","1.0"],"native":["native:","none"],"bound":["bound:","register dependency"],"calls":["calls:","none"],"call_kept":["call kept:","none"],"trap":["","none"]},"copies":[{"share":null,"kind":"loop","file":"perf_generic_names.fas","line":5,"source":"for i usize = 0; i < n; i += 1 {","function":"sum[u32]","inlined_into":{"function":"main","line":12},"symbol":null,"dso":null,"places":null,"facts":{"instrs":2,"loads":0,"stores":0,"spills":null,"reloads":null,"vectorized":null,"not_vectorized":null,"unroll":null,"cycles_per_iter":1.04,"bound":"register dependency","calls":[],"calls_kept":[],"trap":false},"shown":{"vector":["","not vectorized"],"unroll":["","none"],"instrs":["instr/iter","2"],"loads":["loads","0"],"stores":["stores","0"],"spills":["spills","none"],"reloads":["reloads","none"],"cycles":["cycles/iter","1.0"],"native":["native:","none"],"bound":["bound:","register dependency"],"calls":["calls:","none"],"call_kept":["call kept:","none"],"trap":["","none"]}},{"share":null,"kind":"loop","file":"perf_generic_names.fas","line":5,"source":"for i usize = 0; i < n; i += 1 {","function":"sum[u64]","inlined_into":{"function":"main","line":13},"symbol":null,"dso":null,"places":null,"facts":{"instrs":2,"loads":0,"stores":0,"spills":null,"reloads":null,"vectorized":null,"not_vectorized":null,"unroll":null,"cycles_per_iter":1.04,"bound":"register dependency","calls":[],"calls_kept":[],"trap":false},"shown":{"vector":["","not vectorized"],"unroll":["","none"],"instrs":["instr/iter","2"],"loads":["loads","0"],"stores":["stores","0"],"spills":["spills","none"],"reloads":["reloads","none"],"cycles":["cycles/iter","1.0"],"native":["native:","none"],"bound":["bound:","register dependency"],"calls":["calls:","none"],"call_kept":["call kept:","none"],"trap":["","none"]}}],"change":null}],"gone":[]}
+{"format":"fas-perf","version":1,"file":"perf_generic_names.fas","run":null,"rows":[{"share":null,"kind":"loop","file":"perf_generic_names.fas","line":5,"source":"for i usize = 0; i < n; i += 1 {","function":"sum[u32]","inlined_into":{"function":"main","line":12},"symbol":null,"dso":null,"places":null,"facts":{"instrs":2,"loads":0,"stores":0,"spills":null,"reloads":null,"vectorized":null,"not_vectorized":null,"unroll":"unrolled x16","cycles_per_iter":1.04,"bound":"register dependency","calls":[],"calls_kept":[],"trap":false},"shown":{"vector":["","not vectorized"],"unroll":["","unrolled x16"],"instrs":["instr/iter","2"],"loads":["loads","0"],"stores":["stores","0"],"spills":["spills","none"],"reloads":["reloads","none"],"cycles":["cycles/iter","1.0"],"native":["native:","none"],"bound":["bound:","register dependency"],"calls":["calls:","none"],"call_kept":["call kept:","none"],"trap":["","none"]},"copies":[{"share":null,"kind":"loop","file":"perf_generic_names.fas","line":5,"source":"for i usize = 0; i < n; i += 1 {","function":"sum[u32]","inlined_into":{"function":"main","line":12},"symbol":null,"dso":null,"places":null,"facts":{"instrs":2,"loads":0,"stores":0,"spills":null,"reloads":null,"vectorized":null,"not_vectorized":null,"unroll":"unrolled x16","cycles_per_iter":1.04,"bound":"register dependency","calls":[],"calls_kept":[],"trap":false},"shown":{"vector":["","not vectorized"],"unroll":["","unrolled x16"],"instrs":["instr/iter","2"],"loads":["loads","0"],"stores":["stores","0"],"spills":["spills","none"],"reloads":["reloads","none"],"cycles":["cycles/iter","1.0"],"native":["native:","none"],"bound":["bound:","register dependency"],"calls":["calls:","none"],"call_kept":["call kept:","none"],"trap":["","none"]}},{"share":null,"kind":"loop","file":"perf_generic_names.fas","line":5,"source":"for i usize = 0; i < n; i += 1 {","function":"sum[u64]","inlined_into":{"function":"main","line":13},"symbol":null,"dso":null,"places":null,"facts":{"instrs":2,"loads":0,"stores":0,"spills":null,"reloads":null,"vectorized":null,"not_vectorized":null,"unroll":"unrolled x16","cycles_per_iter":1.04,"bound":"register dependency","calls":[],"calls_kept":[],"trap":false},"shown":{"vector":["","not vectorized"],"unroll":["","unrolled x16"],"instrs":["instr/iter","2"],"loads":["loads","0"],"stores":["stores","0"],"spills":["spills","none"],"reloads":["reloads","none"],"cycles":["cycles/iter","1.0"],"native":["native:","none"],"bound":["bound:","register dependency"],"calls":["calls:","none"],"call_kept":["call kept:","none"],"trap":["","none"]}}],"change":null}],"gone":[]}
 EXPECTED
 diff "$WORK/perf_generic_names.json.expected" "$WORK/stdout" >/dev/null ||
   fail "generic names json bytes differ: $(diff "$WORK/perf_generic_names.json.expected" "$WORK/stdout")"
@@ -554,7 +564,7 @@ FAS
 cat >"$WORK/identical_copies.expected" <<'EXPECTED'
 identical_copies.fas  static (no run)
 identical_copies.fas:5 for i usize = 0; i < n; i += 1 {         sum[u32], inlined into main:12, main:13
-      vectorized x4 interleave 2   2 instr/iter (8 elements)   loads 0 stores 0 /iter   1.0 cycles/iter   bound: register dependency
+      vectorized x4 interleave 2   unrolled x16   2 instr/iter (8 elements)   loads 0 stores 0 /iter   1.0 cycles/iter   bound: register dependency
 EXPECTED
 run_perf "$WORK/identical_copies.fas" --static
 expect_exit 0 "identical copies static"
@@ -641,9 +651,9 @@ FAS
 cat >"$WORK/sum_counts.expected" <<'EXPECTED'
 sum_counts.fas  static (no run)
 sum_counts.fas:5 for i usize = 0; i < 65536; i += 1 {     main
-      not vectorized: value that could not be identified as reduction is used outside the loop   6 instr/iter   loads 0 stores 1 /iter   4.0 cycles/iter   bound: register dependency
+      not vectorized: value that could not be identified as reduction is used outside the loop   unrolled x4   15 instr/iter   loads 0 stores 4 /iter   7.0 cycles/iter   bound: register dependency
 sum_counts.fas:10 for i usize = 0; i < 65536; i += 1 {     main
-      vectorized x4 interleave 2   6 instr/iter (8 elements)   loads 2 stores 0 /iter   1.6 cycles/iter
+      vectorized x4 interleave 2   unrolled x4   19 instr/iter (8 elements)   loads 8 stores 0 /iter   4.9 cycles/iter
 EXPECTED
 run_perf "$WORK/sum_counts.fas" --static
 expect_exit 0 "sum counts static"
@@ -663,7 +673,7 @@ FAS
 cat >"$WORK/rmw_counts.expected" <<'EXPECTED'
 rmw_counts.fas  static (no run)
 rmw_counts.fas:4 for i usize = 0; i < 65535; i += 1 {     main
-      4 instr/iter   loads 1 stores 1 /iter   1.4 cycles/iter
+      unrolled x5   13 instr/iter   loads 5 stores 5 /iter   5.1 cycles/iter
 EXPECTED
 run_perf "$WORK/rmw_counts.fas" --static
 expect_exit 0 "rmw counts static"
@@ -1088,8 +1098,8 @@ expect_exit 0 "compare changed text"
 cat >"$WORK/cmp/b.expected" <<'EXPECTED'
 cmp.fas  static (no run)  compared with a.json
 cmp.fas:4     for i u64 = 1; i < 65536; i += 1 {       main
-    change: not vectorized → x4 interleave 2   fully unrolled (new)   instr/iter 4 → 8   loads 0 → 2   stores 1 → 2   cycles/iter 1.0 → 2.1
-      vectorized x4 interleave 2   fully unrolled   8 instr/iter (8 elements)   loads 2 stores 2 /iter   2.1 cycles/iter
+    change: not vectorized → x4 interleave 2   unrolled x5 → unrolled x2   instr/iter 14 → 16   loads 0 → 4   stores 5 → 4   cycles/iter 3.5 → 4.1
+      vectorized x4 interleave 2   unrolled x2   16 instr/iter (8 elements)   loads 4 stores 4 /iter   4.1 cycles/iter
 EXPECTED
 diff "$WORK/cmp/b.expected" "$WORK/stderr" || fail "compare changed text: $(cat "$WORK/stderr")"
 expect_empty_temp "compare changed text"
@@ -1106,14 +1116,15 @@ rows = doc["rows"]
 if len(rows) != 1 or rows[0]["line"] != 4:
     sys.exit("expected one loop row at line 4")
 expected = {
-    "instrs": [4, 8],
-    "loads": [0, 2],
-    "stores": [1, 2],
+    "instrs": [14, 16],
+    "loads": [0, 4],
+    "stores": [5, 4],
     "vectorized": [None, {"factor": 4, "interleave": 2}],
-    "unroll": [None, "fully unrolled"],
-    "cycles_per_iter": [1.04, 2.11],
+    "unroll": ["unrolled x5", "unrolled x2"],
+    "cycles_per_iter": [3.55, 4.11],
 }
-if rows[0]["change"] != expected:
+change = {k: v for k, v in rows[0]["change"].items() if not k.startswith("native_")}
+if change != expected:
     sys.exit("change is " + json.dumps(rows[0]["change"]))
 ' "$WORK/stdout" || fail "compare changed json fields"
 expect_empty_temp "compare changed json"
@@ -1168,7 +1179,7 @@ fn main() i32 {
 FAS
 run_perf "$WORK/cmp/d/cmp.fas" --static --compare "$WORK/cmp/b.json"
 expect_exit 0 "compare vector width change"
-grep -Fxq '    change: x4 interleave 2 → x8 interleave 2' "$WORK/stderr" ||
+grep -Fxq '    change: x4 interleave 2 → x8 interleave 2   unrolled x2 → unrolled x3   instr/iter 16 → 21   loads 4 → 6   stores 4 → 6   cycles/iter 4.1 → 6.1   bound: register dependency (new)' "$WORK/stderr" ||
   fail "compare vector width change: $(cat "$WORK/stderr")"
 expect_empty_temp "compare vector width change"
 
@@ -1178,8 +1189,17 @@ check_json "$WORK/stdout" static "compare vector width change json"
 python3 -c '
 import json, sys
 doc = json.load(open(sys.argv[1]))
-changes = [row["change"] for row in doc["rows"]]
-if changes != [{"vectorized": [{"factor": 4, "interleave": 2}, {"factor": 8, "interleave": 2}]}]:
+changes = [{k: v for k, v in row["change"].items() if not k.startswith("native_")} if isinstance(row["change"], dict) else row["change"] for row in doc["rows"]]
+expected = {
+    "vectorized": [{"factor": 4, "interleave": 2}, {"factor": 8, "interleave": 2}],
+    "unroll": ["unrolled x2", "unrolled x3"],
+    "instrs": [16, 21],
+    "loads": [4, 6],
+    "stores": [4, 6],
+    "cycles_per_iter": [4.11, 6.1],
+    "bound": [None, "register dependency"],
+}
+if changes != [expected]:
     sys.exit("changes are " + json.dumps(changes))
 ' "$WORK/stdout" || fail "compare vector width change json fields"
 expect_empty_temp "compare vector width change json"
@@ -1247,8 +1267,8 @@ expect_empty_temp "compare vector baseline json"
 cat >"$WORK/cmp/m.expected" <<'EXPECTED'
 cmp.fas  static (no run)  compared with k.json
 cmp.fas:10    for i u64 = 1; i < 65536; i += 1 {       main
-    change: not vectorized → x4 interleave 2   fully unrolled (new)   instr/iter 6 → 8   loads 0 → 2   stores 0 → 2   cycles/iter 2.1 (new)   call kept: c_step (its definition is unavailable) (gone)
-      vectorized x4 interleave 2   fully unrolled   8 instr/iter (8 elements)   loads 2 stores 2 /iter   2.1 cycles/iter
+    change: not vectorized → x4 interleave 2   unrolled x2 (new)   instr/iter 6 → 16   loads 0 → 4   stores 0 → 4   cycles/iter 4.1 (new)   call kept: c_step (its definition is unavailable) (gone)
+      vectorized x4 interleave 2   unrolled x2   16 instr/iter (8 elements)   loads 4 stores 4 /iter   4.1 cycles/iter
 EXPECTED
 run_perf "$WORK/cmp/m/cmp.fas" --static --compare "$WORK/cmp/k.json"
 expect_exit 0 "compare scalar to vector change"
@@ -1258,7 +1278,7 @@ expect_empty_temp "compare scalar to vector change"
 cat >"$WORK/cmp/k.expected" <<'EXPECTED'
 cmp.fas  static (no run)  compared with m.json
 cmp.fas:10    for i u64 = 1; i < 65536; i += 1 {       main
-    change: x4 interleave 2 → not vectorized   fully unrolled (gone)   instr/iter 8 → 6   loads 2 → 0   stores 2 → 0   cycles/iter 2.1 (gone)   call kept: c_step (its definition is unavailable) (new)
+    change: x4 interleave 2 → not vectorized   unrolled x2 (gone)   instr/iter 16 → 6   loads 4 → 0   stores 4 → 0   cycles/iter 4.1 (gone)   call kept: c_step (its definition is unavailable) (new)
       not vectorized: value that could not be identified as reduction is used outside the loop   6 instr/iter   loads 0 stores 0 /iter   call kept: c_step (its definition is unavailable)
 EXPECTED
 run_perf "$WORK/cmp/k/cmp.fas" --static --compare "$WORK/cmp/m.json"
@@ -1314,7 +1334,7 @@ expect_empty_temp "compare reason baseline json"
 cat >"$WORK/cmp/n.expected" <<'EXPECTED'
 cmp.fas  static (no run)  compared with p.json
 cmp.fas:10    for i u64 = 1; i < 65536; i += 1 {       main
-    change: not vectorized: Early exit loop with store but no supported condition load → value that could not be identified as reduction is used outside the loop   instr/iter 7 → 6   loads 1 → 0   stores 1 → 0   call kept: c_step (its definition is unavailable) (new)
+    change: not vectorized: Early exit loop with store but no supported condition load → value that could not be identified as reduction is used outside the loop   unrolled x3 (gone)   instr/iter 18 → 6   loads 3 → 0   stores 3 → 0   call kept: c_step (its definition is unavailable) (new)
       not vectorized: value that could not be identified as reduction is used outside the loop   6 instr/iter   loads 0 stores 0 /iter   call kept: c_step (its definition is unavailable)
 EXPECTED
 status=0
