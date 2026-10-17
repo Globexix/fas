@@ -626,19 +626,21 @@ let common_numeric_type left right =
        else left)
   else None
 
-let rec narrow_arithmetic_result = function
-  | Ast.Parenthesized (expression, _) -> narrow_arithmetic_result expression
-  | Ast.Select (expression, [ _ ], _) -> narrow_arithmetic_result expression
+let rec narrow_arithmetic_result ~unsigned = function
+  | Ast.Parenthesized (expression, _) -> narrow_arithmetic_result ~unsigned expression
+  | Ast.Select (expression, [ _ ], _) -> narrow_arithmetic_result ~unsigned expression
   | Ast.Unary ((Ast.Neg | Ast.Bit_not), _, _) -> true
-  | Ast.Binary
-      ( ( Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Shl | Ast.Shr
-        | Ast.Bit_and | Ast.Bit_or | Ast.Bit_xor ),
-        _,
-        _,
-        _ ) ->
-      true
+  | Ast.Binary ((Ast.Add | Ast.Sub | Ast.Mul | Ast.Shl), _, _, _) -> true
+  | Ast.Binary ((Ast.Div | Ast.Rem), left, right, _) ->
+      (not unsigned)
+      || narrow_arithmetic_result ~unsigned left
+      || narrow_arithmetic_result ~unsigned right
+  | Ast.Binary (Ast.Shr, left, _, _) -> narrow_arithmetic_result ~unsigned left
+  | Ast.Binary ((Ast.Bit_and | Ast.Bit_or | Ast.Bit_xor), left, right, _) ->
+      narrow_arithmetic_result ~unsigned left
+      || narrow_arithmetic_result ~unsigned right
   | Ast.Ternary (_, yes, no, _) ->
-      narrow_arithmetic_result yes || narrow_arithmetic_result no
+      narrow_arithmetic_result ~unsigned yes || narrow_arithmetic_result ~unsigned no
   | _ -> false
 
 let rec narrow_float_result expression =
@@ -651,6 +653,12 @@ let rec narrow_float_result expression =
       true
   | Ast.Ternary (_, yes, no, _) -> narrow_float_result yes || narrow_float_result no
   | _ -> false
+
+let narrow_value_result actual expression =
+  if Sema_numeric.is_float actual then
+    narrow_arithmetic_result ~unsigned:false expression
+    || narrow_float_result expression
+  else narrow_arithmetic_result ~unsigned:(Sema_numeric.is_unsigned actual) expression
 
 let rec float_literal_expression = function
   | Ast.Float_lit _ -> true
@@ -696,10 +704,11 @@ let arithmetic_binop = function
       true
   | _ -> false
 
-let rec widened_arithmetic (extension, target) expression =
-  let widen = widened_arithmetic (extension, target) in
+let rec widened_arithmetic ~unsigned (extension, target) expression =
+  let widen = widened_arithmetic ~unsigned (extension, target) in
   let widen_or_keep child =
-    if narrow_arithmetic_result child then widen child else Some (unparenthesized child)
+    if narrow_arithmetic_result ~unsigned child then widen child
+    else Some (unparenthesized child)
   in
   match expression with
   | Ast.Parenthesized (inner, _) -> widen inner
@@ -719,19 +728,20 @@ let rec widened_arithmetic (extension, target) expression =
               (widen_or_keep right))
   | Ast.Unary (((Ast.Neg | Ast.Bit_not) as op), value, span) ->
       Option.map (fun value -> Ast.Unary (op, value, span)) (widen value)
-  | Ast.Ternary (condition, yes, no, span) when narrow_arithmetic_result expression -> (
+  | Ast.Ternary (condition, yes, no, span)
+    when narrow_arithmetic_result ~unsigned expression -> (
       match (widen yes, widen no) with
       | Some yes, Some no -> Some (Ast.Ternary (condition, yes, no, span))
       | _ -> None)
   | _ ->
-      if narrow_arithmetic_result expression then None
+      if narrow_arithmetic_result ~unsigned expression then None
       else if integer_literal_expression expression then Some expression
       else Some (Ast.Cast (extension, target, expression, Ast.expr_span expression))
 
 let convert_expected_kind ?expression actual expected =
   match expression with
   | Some expression
-    when (narrow_arithmetic_result expression || narrow_float_result expression)
+    when narrow_value_result actual expression
          && not (equal_range_integers actual expected) ->
       None
   | _ -> implicit_numeric_widen actual expected
@@ -1011,7 +1021,8 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
     let narrow_result =
       match (expression, source_bits, destination_bits, actual, expected) with
       | Some source, Some from_bits, Some to_bits, Hir.Int _, Hir.Int _ ->
-          narrow_arithmetic_result source && from_bits < to_bits
+          narrow_arithmetic_result ~unsigned:(Sema_numeric.is_unsigned actual) source
+          && from_bits < to_bits
       | _ -> false
     in
     let narrow_float =
@@ -1136,7 +1147,7 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
       | Some expression, Hir.Int _, Hir.Float _ ->
           Some
             (Printf.sprintf "write `cvt[%s](%s)`" destination (Ast.expr_name expression))
-      | ( Some ((Ast.Binary _ | Ast.Unary (Ast.Neg, _, _)) as expression),
+      | ( Some ((Ast.Binary _ | Ast.Unary ((Ast.Neg | Ast.Bit_not), _, _)) as expression),
           Hir.Int _,
           Hir.Int target_kind )
         when narrow_result && widening_help ->
@@ -1147,6 +1158,7 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
             (fun widened ->
               Printf.sprintf "widen an operand first: `%s`" (Ast.expr_name widened))
             (widened_arithmetic
+               ~unsigned:(Sema_numeric.is_unsigned actual)
                (extension, Ast.Int (ast_int_kind target_kind))
                expression)
       | _, Hir.Int _, Hir.Int _
@@ -1271,8 +1283,7 @@ let unify_if_branches left_expression left_type right_expression right_type =
       if
         Option.is_some left_widen
         && (not (equal_range_integers left_type result_type))
-        && (narrow_arithmetic_result left_expression
-           || narrow_float_result left_expression)
+        && narrow_value_result left_type left_expression
       then
         Error
           (narrow_error left_expression left_type result_type
@@ -1280,8 +1291,7 @@ let unify_if_branches left_expression left_type right_expression right_type =
       else if
         Option.is_some right_widen
         && (not (equal_range_integers right_type result_type))
-        && (narrow_arithmetic_result right_expression
-           || narrow_float_result right_expression)
+        && narrow_value_result right_type right_expression
       then
         Error
           (narrow_error right_expression right_type result_type
@@ -1503,16 +1513,14 @@ let binary_result_type ?left_expression ?right_expression ?result_expected
         match expression with
         | Some expression
           when Option.is_some (implicit_integer_widen actual common)
-               && narrow_arithmetic_result expression ->
+               && narrow_arithmetic_result
+                    ~unsigned:(Sema_numeric.is_unsigned actual)
+                    expression ->
             ensure_expected ~expression actual common (Ast.expr_span expression)
         | _ -> Ok ()
       in
-      let* () =
-        if is_comparison operation then
-          let* () = check_narrow left_expression left in
-          check_narrow right_expression right
-        else Ok ()
-      in
+      let* () = check_narrow left_expression left in
+      let* () = check_narrow right_expression right in
       match operation with
       | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> Ok Hir.Bool
       | _ -> Ok common)

@@ -9420,6 +9420,39 @@ let () =
     (Some "widen an operand first: `-(zext[u32](a) + b)`");
   conversion_help_twin "unary-arithmetic-help-compiles" unary_arithmetic_source
     "-(a + b)" "-(zext[u32](a) + b)" "widen an operand first: `-(zext[u32](a) + b)`";
+  let bit_not_signed_source = "fn f(s i8) i32 { value i32 = ~s; return value }\n" in
+  semantic_pin "narrow-bit-not-signed" bit_not_signed_source 1
+    (String.index bit_not_signed_source '~' + 1)
+    (String.length "~s") "`~s` is computed in `i8` and may wrap before it reaches `i32`"
+    (Some "widen an operand first: `~sext[i32](s)`");
+  conversion_help_twin "narrow-bit-not-signed-help-compiles" bit_not_signed_source "~s"
+    "~sext[i32](s)" "widen an operand first: `~sext[i32](s)`";
+  let bit_not_mask_source =
+    "fn f(s i8) i32 { value i32 = ~(s & 0x7f); return value }\n"
+  in
+  semantic_pin "narrow-bit-not-mask" bit_not_mask_source 1
+    (String.index bit_not_mask_source '~' + 1)
+    (String.length "~(s & 0x7f)")
+    "`~(s & 0x7f)` is computed in `i8` and may wrap before it reaches `i32`"
+    (Some "widen an operand first: `~(sext[i32](s) & 0x7f)`");
+  conversion_help_twin "narrow-bit-not-mask-help-compiles" bit_not_mask_source
+    "~(s & 0x7f)" "~(sext[i32](s) & 0x7f)"
+    "widen an operand first: `~(sext[i32](s) & 0x7f)`";
+  let bit_not_sum_source = "fn f(s i8) i32 { value i32 = ~(s + 1); return value }\n" in
+  semantic_pin "narrow-bit-not-sum" bit_not_sum_source 1
+    (String.index bit_not_sum_source '~' + 1)
+    (String.length "~(s + 1)")
+    "`~(s + 1)` is computed in `i8` and may wrap before it reaches `i32`"
+    (Some "widen an operand first: `~(sext[i32](s) + 1)`");
+  conversion_help_twin "narrow-bit-not-sum-help-compiles" bit_not_sum_source "~(s + 1)"
+    "~(sext[i32](s) + 1)" "widen an operand first: `~(sext[i32](s) + 1)`";
+  let bit_not_unsigned_source = "fn f(u u8) u32 { value u32 = ~u; return value }\n" in
+  semantic_pin "narrow-bit-not-unsigned" bit_not_unsigned_source 1
+    (String.index bit_not_unsigned_source '~' + 1)
+    (String.length "~u") "`~u` is computed in `u8` and may wrap before it reaches `u32`"
+    (Some "widen an operand first: `~zext[u32](u)`");
+  conversion_help_twin "narrow-bit-not-unsigned-help-compiles" bit_not_unsigned_source
+    "~u" "~zext[u32](u)" "widen an operand first: `~zext[u32](u)`";
   let call_field_arithmetic_source =
     "struct Pair { value u16 }\n\
      fn get(value u16) u16 { return value }\n\
@@ -9493,6 +9526,120 @@ let () =
   | _ -> failwith "size-expression-printer: grouping was lost");
   semantic_accept "widening-narrow-arithmetic-explicit-twin"
     "fn f(a u16, b u16) u32 { value u32 = zext[u32](a) * b; return value }\n";
+  semantic_accept "bit-result-widen-shift-right-unsigned"
+    "fn f(a u16) i32 { x i32 = a >> 1; return x }\n";
+  semantic_accept "bit-result-widen-and-literal"
+    "fn f(b u8) i32 { x i32 = b & 0x7f; return x }\n";
+  semantic_accept "bit-result-widen-masked-shift"
+    "fn f(a u16) u32 { x u32 = (a >> 4) & 0xf; return x }\n";
+  semantic_accept "bit-result-widen-unsigned-division"
+    "fn f(a u32) u64 { x u64 = a / 3; return x }\n";
+  semantic_accept "bit-result-widen-unsigned-remainder"
+    "fn f(c u8) u32 { x u32 = c % 10; return x }\n";
+  semantic_accept "bit-result-widen-signed-shift-right"
+    "fn f(s i16) i32 { y i32 = s >> 2; return y }\n";
+  semantic_accept "bit-result-widen-signed-and"
+    "fn f(s i16, t i16) i32 { y i32 = s & t; return y }\n";
+  semantic_accept "bit-result-widen-comparison-operand"
+    "fn f(b u8, w u32) i32 {\n\
+    \  if (b & 0x7f) == w {\n\
+    \    return 1\n\
+    \  }\n\
+    \  return 0\n\
+     }\n";
+  semantic_accept "bit-result-widen-or-unsigned-division"
+    "fn f(a u16, w u32) u32 { x u32 = (a / 3) | w; return x }\n";
+  semantic_accept "bit-result-widen-unsigned-division-shift"
+    "fn f(a u32) u64 { y u64 = (a / 3) >> 1; return y }\n";
+  semantic_message "bit-result-reject-multiply"
+    "`a * b` is computed in `u8` and may wrap before it reaches `u32`"
+    "fn f(a u8, b u8) u32 { x u32 = a * b; return x }\n";
+  semantic_message "bit-result-reject-add"
+    "`a + 1` is computed in `u8` and may wrap before it reaches `u32`"
+    "fn f(a u8) u32 { x u32 = a + 1; return x }\n";
+  semantic_message "bit-result-reject-shift-left"
+    "`a << 1` is computed in `u8` and may wrap before it reaches `u32`"
+    "fn f(a u8) u32 { x u32 = a << 1; return x }\n";
+  semantic_message "bit-result-reject-bit-not"
+    "`~a` is computed in `u8` and may wrap before it reaches `u32`"
+    "fn f(a u8) u32 { x u32 = ~a; return x }\n";
+  semantic_message "bit-result-reject-signed-negate"
+    "`-s` is computed in `i16` and may wrap before it reaches `i32`"
+    "fn f(s i16) i32 { y i32 = -s; return y }\n";
+  semantic_message "bit-result-reject-signed-division"
+    "`s / t` is computed in `i16` and may wrap before it reaches `i32`"
+    "fn f(s i16, t i16) i32 { y i32 = s / t; return y }\n";
+  semantic_message "bit-result-reject-signed-remainder"
+    "`s % t` is computed in `i16` and may wrap before it reaches `i32`"
+    "fn f(s i16, t i16) i32 { y i32 = s % t; return y }\n";
+  semantic_message "bit-result-reject-add-under-shift"
+    "`(a + b) >> 1` is computed in `u8` and may wrap before it reaches `u32`"
+    "fn f(a u8, b u8) u32 { x u32 = (a + b) >> 1; return x }\n";
+  semantic_message "bit-result-reject-multiply-under-mask"
+    "`(a * 3) & 0xff` is computed in `u8` and may wrap before it reaches `u32`"
+    "fn f(a u8) u32 { x u32 = (a * 3) & 0xff; return x }\n";
+  semantic_message "widen-nested-unsigned-division-under-signed-root"
+    "`(a / 3) & s` is computed in `i32` and may wrap before it reaches `i64`"
+    "fn f(a u16, s i32) i64 { y i64 = (a / 3) & s; return y }\n";
+  semantic_message "bit-result-reject-signed-division-and-unsigned"
+    "cannot apply `&` to `i16` and `u16`: no type holds both"
+    "fn f(s i16, t i16, a u16) i64 { y i64 = (s / t) & a; return y }\n";
+  semantic_message "bit-result-reject-signed-division-or-unsigned-root"
+    "cannot apply `|` to `i16` and `u32`: no type holds both"
+    "fn f(s i16, t i16, w u32) u64 { y u64 = (s / t) | w; return y }\n";
+  semantic_message "bit-result-reject-signed-division-and-unsigned-root"
+    "cannot apply `&` to `i16` and `u32`: no type holds both"
+    "fn f(s i16, t i16, w u32) u32 { y u32 = (s / t) & w; return y }\n";
+  semantic_message "bit-result-reject-signed-division-or-signed-root"
+    "`(s / t)` is computed in `i16` and may wrap before it reaches `i32`"
+    "fn f(s i16, t i16, k i32) i64 { y i64 = (s / t) | k; return y }\n";
+  List.iter
+    (fun (name, text, message) -> semantic_message name message text)
+    [
+      ( "mixed-operand-reject-add-product",
+        "fn f(w u32, b u8) u32 { x u32 = w + (b * 3); return x }\n",
+        "`(b * 3)` is computed in `u8` and may wrap before it reaches `u32`" );
+      ( "mixed-operand-reject-product-and",
+        "fn f(w u32, b u8) u32 { x u32 = (b * 3) & w; return x }\n",
+        "`(b * 3)` is computed in `u8` and may wrap before it reaches `u32`" );
+      ( "mixed-operand-reject-subtract-sum",
+        "fn f(w u32, b u8) u32 { x u32 = w - (b + 1); return x }\n",
+        "`(b + 1)` is computed in `u8` and may wrap before it reaches `u32`" );
+      ( "mixed-operand-reject-shift-or",
+        "fn f(w u32, b u8) u32 { x u32 = (b << 1) | w; return x }\n",
+        "`(b << 1)` is computed in `u8` and may wrap before it reaches `u32`" );
+      ( "mixed-operand-reject-if-expression",
+        "fn f(c bool, w u32, b u8) u32 { x u32 = w + (if c { b * 3 } else { b }); \
+         return x }\n",
+        "`(if c { b * 3 } else { b })` is computed in `u8` and may wrap before it \
+         reaches `u32`" );
+      ( "mixed-operand-reject-const-initializer",
+        "const W u32 = 7\n\
+         const B u8 = 9\n\
+         const K u32 = W + (B * 3)\n\
+         fn f() u32 { return K }\n",
+        "`B * 3` is computed in `u8` and may wrap before it reaches `u32`" );
+    ];
+  semantic_pin "mixed-operand-reject-negated-signed"
+    "fn f(w i32, s i16) i32 { x i32 = w * -s; return x }\n" 1
+    (String.length "fn f(w i32, s i16) i32 { x i32 = w * " + 1)
+    (String.length "-s")
+    "`-s` is computed in `i16` and may wrap before it reaches `i32`"
+    (Some "widen an operand first: `-sext[i32](s)`");
+  List.iter
+    (fun (name, text) -> semantic_accept name text)
+    [
+      ( "mixed-operand-accept-shift-right",
+        "fn f(w u32, b u8) u32 { x u32 = w + (b >> 1); return x }\n" );
+      ( "mixed-operand-accept-mask",
+        "fn f(w u32, b u8) u32 { x u32 = w | (b & 0x7f); return x }\n" );
+      ( "mixed-operand-accept-unsigned-division",
+        "fn f(w u32, c u8) u32 { x u32 = w + (c / 3); return x }\n" );
+      ( "mixed-operand-accept-plain-peer",
+        "fn f(w u32, b u8) u32 { x u32 = w + b; return x }\n" );
+      ( "mixed-operand-accept-explicit-widening",
+        "fn f(w u32, b u8) u32 { x u32 = zext[u32](b) * 3 + w; return x }\n" );
+    ];
   let widening_compound_source =
     "fn f(pos u32, size u64) void { pos += size; return }\n"
   in

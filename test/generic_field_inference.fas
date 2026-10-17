@@ -39,7 +39,8 @@ fn pick[T](a T, b T, choose bool) T { return if choose { a } else { b } }
 fn id[T](value T) T { return value }
 fn outer[T](x T) T {
   gn.inner.v = 200
-  return id(gn.inner.v) + id(gn.inner.v) + x
+  doubled u8 = id(gn.inner.v) + id(gn.inner.v)
+  return doubled + x
 }
 fn outer_signed[T](x T) T {
   gn_signed.inner.v = -3

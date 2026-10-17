@@ -62,6 +62,20 @@ cases = [
         "4294967294",
     ),
 ]
+for value in ["-128", "-1", "0", "127"]:
+    signed = int(value)
+    cases.append(([("s", "i8", value)], "i32", "~s", str(~signed)))
+    cases.append(([("s", "i8", value)], "i32", "~(s & 0x7f)", str(~(signed & 0x7F))))
+    cases.append(([("s", "i8", value)], "i32", "~(s + 1)", str(~(signed + 1))))
+for value in ["0", "1", "127", "255"]:
+    unsigned = int(value)
+    cases.append(([("u", "u8", value)], "u32", "~u", str(~unsigned & 0xFFFFFFFF)))
+    cases.append(
+        ([("u", "u8", value)], "u32", "~(u & 0x7f)", str(~(unsigned & 0x7F) & 0xFFFFFFFF))
+    )
+    cases.append(
+        ([("u", "u8", value)], "u32", "~(u + 1)", str(~(unsigned + 1) & 0xFFFFFFFF))
+    )
 functions = []
 for index, (decls, dest, expression, expected) in enumerate(cases):
     params = ", ".join(f"{name} {ty}" for name, ty, _ in decls)
