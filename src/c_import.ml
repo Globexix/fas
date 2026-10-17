@@ -2589,6 +2589,12 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
   in
   let rec flatten node = node :: List.concat_map flatten (children node) in
   let all_nodes = List.concat_map flatten nodes in
+  let rec record_scope_records node =
+    if string "kind" node = Some "RecordDecl" then
+      node :: List.concat_map record_scope_records (children node)
+    else []
+  in
+  let scope_records = List.concat_map record_scope_records nodes in
   let enum_probe_types = Hashtbl.create 32 in
   List.iter
     (fun node ->
@@ -2732,6 +2738,12 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
                  (Option.value ~default:"" (record_name node))
                  macro_shadow_names))
       nodes
+  in
+  let visible_records =
+    List.filter
+      (fun node ->
+        not (List.mem (Option.value ~default:"" (record_name node)) macro_shadow_names))
+      scope_records
   in
   let records = Hashtbl.create 64
   and record_ids = Hashtbl.create 64
@@ -2889,10 +2901,8 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
     if Hashtbl.mem record_ids id then Hashtbl.replace visible_record_ids id ()
   in
   List.iter
-    (fun node ->
-      if string "kind" node = Some "RecordDecl" then
-        Option.iter add_visible_record (string "id" node))
-    nodes;
+    (fun node -> Option.iter add_visible_record (string "id" node))
+    visible_records;
   List.iter
     (fun node ->
       if string "kind" node = Some "TypedefDecl" then
@@ -3552,7 +3562,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
               (fun name -> Hashtbl.replace record_definitions name node)
               (Hashtbl.find_opt record_ids id)
         | None -> ())
-    nodes;
+    visible_records;
   let anonymous_record_layout node =
     let loc =
       Option.map
@@ -3969,7 +3979,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
              (Option.bind (get "id" node) C_import_json.string)
              (fun id -> Hashtbl.find_opt record_ids id)
            = Some name)
-      nodes
+      visible_records
     |> List.sort (fun left right ->
         compare (declaration_location left) (declaration_location right))
     |> function

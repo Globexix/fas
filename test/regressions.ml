@@ -16624,6 +16624,36 @@ let () =
     "fn f() i32 { u user_t = {}\nreturn u.missing }\n"
 
 let () =
+  let nested_container =
+    c_import_container "nested-tag-container"
+      "struct NestedOuter { struct NestedInner { int x; } pos; int tag; };\n\
+       union NestedUnion { struct NestedRec { short s; char c; } rec; unsigned word; };\n\
+       struct NestedDeep { struct NestedMid { struct NestedLeaf { int v; } leaf; int \
+       m; } mid; int d; };\n\
+       int nested_read_inner(struct NestedInner *value);\n\
+       int nested_local_probe(void) { struct NestedLocal { int w; } v; v.w = 3; return \
+       v.w; }\n"
+  in
+  c_semantic_accept "c-import-nested-tag-records" nested_container
+    "fn g(p handle[NestedInner]) i32 { return nested_read_inner(p) }\n\
+     fn f() i32 { o NestedOuter = {}\n\
+     o.pos.x = 5\n\
+     o.tag = 7\n\
+     u NestedUnion = {}\n\
+     u.rec.s = 3\n\
+     d NestedDeep = {}\n\
+     d.mid.leaf.v = 11\n\
+     i NestedInner = {}\n\
+     r NestedRec = {}\n\
+     m NestedMid = {}\n\
+     l NestedLeaf = {}\n\
+     l.v = 2\n\
+     return o.pos.x + o.tag + u.rec.s + d.mid.leaf.v + i.x + r.s + m.m + l.v }\n";
+  c_semantic_message "c-import-nested-tag-function-local-invisible"
+    "unknown type `NestedLocal`" nested_container
+    "fn f() i32 { u NestedLocal = {}\nreturn 0 }\n"
+
+let () =
   let fixture =
     c_import_container ~macro_names:[ "counter" ] "stdio-self-macro"
       "extern int counter;\n#define counter counter\n"
