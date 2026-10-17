@@ -579,12 +579,15 @@ let enter_body index ~template ~instance =
   index.template <- template;
   index.instance <- instance
 
+let record_local_type index span (ty : Hir.ty) =
+  Hashtbl.replace index.local_types (span, index.instance)
+    (instance_rank index, Hir.ty_name ty)
+
 let bind_local index id (ty : Hir.ty) span =
   match Hashtbl.find_opt index.bindings span with
   | Some declaration ->
       Hashtbl.replace index.locals id declaration;
-      Hashtbl.replace index.local_types (span, index.instance)
-        (instance_rank index, Hir.ty_name ty)
+      record_local_type index span ty
   | None -> Hashtbl.remove index.locals id
 
 let refer_local index span id =
@@ -643,6 +646,16 @@ let leave_body index =
   Hashtbl.reset index.locals;
   index.template <- None;
   index.instance <- []
+
+let bind_signature index ~name params =
+  enter_body index ~template:(Some name) ~instance:[];
+  List.iter
+    (fun (span, ty) ->
+      match Hashtbl.find_opt index.bindings span with
+      | Some { kind = Parameter; _ } -> record_local_type index span ty
+      | Some _ | None -> ())
+    params;
+  leave_body index
 
 let record_generic_call index span arguments =
   if not (Span.is_synthetic span) then

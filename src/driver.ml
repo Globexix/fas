@@ -64,6 +64,14 @@ let use_path_error path =
     Some (Printf.sprintf "Fas dependency path `%s` must end in lowercase `.fas`" path)
   else None
 
+let display_dependency_path importer dependency =
+  let directory = Filename.dirname importer in
+  if directory = "." then dependency else Filename.concat directory dependency
+
+let use_target importer_display importer_canonical dependency =
+  let target = Filename.concat (Filename.dirname importer_canonical) dependency in
+  (display_dependency_path importer_display dependency, canonical_path target)
+
 let include_chain_note paths = "include chain: " ^ String.concat " -> " paths
 
 let with_chain diagnostics paths =
@@ -201,7 +209,83 @@ let stat_for overlay canonical =
 let read_for overlay canonical =
   match overlay canonical with Some text -> Ok text | None -> read_file canonical
 
-let load_program ?(overlay = fun _ -> None) ~limits root =
+type edit =
+  | Drop_use of string * Span.t
+  | Drop_c_unit of string
+  | Remove_item of string * Span.t
+  | Stub_fn of string * Span.t
+
+type failure = {
+  target : string option;
+  use_span : Span.t;
+  parent_display : string;
+  parent_canonical : string;
+}
+
+type gap = { file : string; start_offset : int; end_offset : int }
+type recovered = { recovered_index : Sema_index.t; gaps : gap list }
+
+type recovery = {
+  mutable files : (string * string * Ast.item list) list;
+  mutable failures : failure list;
+  mutable c_units : (string * C_import.header list) list;
+  mutable original_items : Ast.item list;
+  mutable blank_errors : bool;
+  mutable blanked : gap list;
+}
+
+let new_recovery () =
+  {
+    files = [];
+    failures = [];
+    c_units = [];
+    original_items = [];
+    blank_errors = false;
+    blanked = [];
+  }
+
+let item_extent = function
+  | Ast.Use { span; _ } -> span
+  | Ast.Const { extent; _ }
+  | Ast.Global { extent; _ }
+  | Ast.Struct { extent; _ }
+  | Ast.Opaque { extent; _ }
+  | Ast.Func { extent; _ } ->
+      extent
+
+let within outer inner =
+  outer.Span.file = inner.Span.file
+  && outer.Span.start_offset <= inner.Span.start_offset
+  && inner.Span.end_offset <= outer.Span.end_offset
+
+let apply_edits edits canonical items =
+  List.fold_left
+    (fun items edit ->
+      match edit with
+      | Drop_use (file, span) when file = canonical ->
+          List.filter
+            (function
+              | Ast.Use { span = use_span; c_header = None; _ } -> use_span <> span
+              | _ -> true)
+            items
+      | Drop_c_unit file when file = canonical ->
+          List.filter
+            (function Ast.Use { c_header = Some _; _ } -> false | _ -> true)
+            items
+      | Remove_item (file, span) when file = canonical ->
+          List.filter (fun item -> item_extent item <> span) items
+      | Stub_fn (file, span) when file = canonical ->
+          List.map
+            (function
+              | Ast.Func fn when fn.body_span = span ->
+                  Ast.Func { fn with body = Ast.Declaration }
+              | item -> item)
+            items
+      | _ -> items)
+    items edits
+
+let load_program_with ?(overlay = fun _ -> None) ?recovery ?(edits = []) ~limits root =
+  let recovery = Option.value recovery ~default:(new_recovery ()) in
   let loaded = Hashtbl.create 16 in
   let chains = Hashtbl.create 16 in
   let load_order = ref [] in
@@ -214,10 +298,6 @@ let load_program ?(overlay = fun _ -> None) ~limits root =
              value
              (Limits.budget_profile_name limits));
       ]
-  in
-  let display_dependency_path importer dependency =
-    let directory = Filename.dirname importer in
-    if directory = "." then dependency else Filename.concat directory dependency
   in
   let rec visit chain display_path spelling path use_span =
     let canonical = canonical_path path in
@@ -273,35 +353,65 @@ let load_program ?(overlay = fun _ -> None) ~limits root =
                   budget_error primary "max_use_bytes" limits.Limits.max_use_bytes
                 else
                   let source = Source.create ~file:display_path ~text in
-                  match Parser.parse ~limits source with
+                  let outcome =
+                    if recovery.blank_errors then Parser.parse_blanking ~limits source
+                    else
+                      Result.map
+                        (fun parsed -> (parsed, []))
+                        (Parser.parse ~limits source)
+                  in
+                  match outcome with
                   | Error diagnostics -> Error (with_chain diagnostics file_chain)
-                  | Ok program ->
+                  | Ok (parsed, blanked) ->
+                      recovery.blanked <-
+                        recovery.blanked
+                        @ List.map
+                            (fun (start_offset, end_offset) ->
+                              { file = canonical; start_offset; end_offset })
+                            blanked;
+                      recovery.original_items <-
+                        parsed.Ast.items @ recovery.original_items;
+                      let program =
+                        { Ast.items = apply_edits edits canonical parsed.Ast.items }
+                      in
                       total_bytes := !total_bytes + String.length text;
                       Hashtbl.add loaded canonical program;
                       load_order := canonical :: !load_order;
                       Hashtbl.add chains display_path file_chain;
+                      recovery.files <-
+                        (display_path, canonical, program.Ast.items) :: recovery.files;
+                      let note_failure target span =
+                        recovery.failures <-
+                          recovery.failures
+                          @ [
+                              {
+                                target;
+                                use_span = span;
+                                parent_display = display_path;
+                                parent_canonical = canonical;
+                              };
+                            ]
+                      in
                       let rec dependencies = function
                         | [] -> Ok ()
                         | Ast.Use { path = dependency; c_header = None; span } :: rest
                           -> (
                             match use_path_error dependency with
                             | Some message ->
+                                note_failure None span;
                                 Error
                                   (with_chain [ Diag.error span message ] file_chain)
                             | None -> (
-                                let target =
-                                  Filename.concat (Filename.dirname canonical)
-                                    dependency
+                                let target_display, target_canonical =
+                                  use_target display_path canonical dependency
                                 in
-                                let target_display =
-                                  display_dependency_path display_path dependency
-                                in
-                                let target_canonical = canonical_path target in
                                 match
                                   visit file_chain target_display dependency
                                     target_canonical (Some span)
                                 with
-                                | Error diagnostics -> Error diagnostics
+                                | Error diagnostics ->
+                                    note_failure (Some target_display) span;
+                                    Error diagnostics
                                 | Ok () -> dependencies rest))
                         | Ast.Use { c_header = Some _; _ } :: rest -> dependencies rest
                         | _ :: rest -> dependencies rest
@@ -352,13 +462,15 @@ let load_program ?(overlay = fun _ -> None) ~limits root =
             if headers = [] then None else Some (path, headers))
           ordered_files
       in
+      let c_units = imports "C" in
+      recovery.c_units <- c_units;
       let chains =
         Hashtbl.fold (fun path chain acc -> (path, chain) :: acc) chains []
       in
       Ok
         ( { Ast.items },
           List.map (fun (path, chain) -> (path, chain)) chains,
-          imports "C",
+          c_units,
           imports "asm" )
 
 let write_file path text =
@@ -1083,7 +1195,9 @@ let manifest_origin line =
       | None -> None)
   | _ -> None
 
-let analyze_resolved ?overlay ?cache ?index config =
+let load_program ?overlay ~limits root = load_program_with ?overlay ~limits root
+
+let analyze_resolved ?overlay ?cache ?index ?recovery ?(edits = []) config =
   let c_artifacts = ref [] in
   let succeeded = ref false in
   Fun.protect
@@ -1091,13 +1205,18 @@ let analyze_resolved ?overlay ?cache ?index config =
       if not (!succeeded || config.Cli.keep) then
         List.iter C_import.remove_artifact !c_artifacts)
     (fun () ->
-      match load_program ?overlay ~limits config.Cli.input with
+      match load_program_with ?overlay ?recovery ~edits ~limits config.Cli.input with
       | Error diagnostics -> Error diagnostics
-      | Ok (program, chains, c_imports, assembly_imports) ->
+      | Ok (program, chains, c_imports, assembly_imports) -> (
           let _, _, cc = tools () in
           let imported = ref [] in
           let c_units = ref [] in
-          let referenced_names = Ast.unresolved_names program in
+          let referenced_program =
+            match recovery with
+            | Some recovery -> { Ast.items = recovery.original_items }
+            | None -> program
+          in
+          let referenced_names = Ast.unresolved_names referenced_program in
           let declared_names =
             List.filter_map
               (function
@@ -1291,134 +1410,144 @@ let analyze_resolved ?overlay ?cache ?index config =
             | Ok hir -> Ok hir
             | Error diagnostics -> Error (add_include_chains chains diagnostics)
           in
-          let records =
-            List.map
-              (fun (name, spelling, origin) ->
-                let required_header =
-                  List.find_map
-                    (fun (source, headers) ->
+          match recovery with
+          | Some _ -> Ok None
+          | None ->
+              let records =
+                List.map
+                  (fun (name, spelling, origin) ->
+                    let required_header =
                       List.find_map
-                        (fun (h : C_import.header) ->
-                          match h.spelling with
+                        (fun (source, headers) ->
+                          List.find_map
+                            (fun (h : C_import.header) ->
+                              match h.spelling with
+                              | Ast.C_quoted path ->
+                                  let path =
+                                    if Filename.is_relative path then
+                                      Filename.concat (Filename.dirname source) path
+                                    else path
+                                  in
+                                  if origin = Some path then
+                                    Some (Printf.sprintf "#include %S\n" path)
+                                  else None
+                              | Ast.C_system path ->
+                                  if
+                                    Option.fold ~none:false
+                                      ~some:(fun file ->
+                                        String.ends_with ~suffix:path file)
+                                      origin
+                                  then Some ("#include <" ^ path ^ ">\n")
+                                  else None
+                              | Ast.C_fragment _ -> None)
+                            headers)
+                        c_imports
+                    in
+                    C_exports.{ name; spelling; header = required_header })
+                  imported.records
+              in
+              let declarations, declaration_headers, declaration_errors =
+                C_exports.declarations
+                  ~reserved:(List.concat_map (fun unit -> unit.c_names) !c_units)
+                  ~specializations records hir
+              in
+              let declaration_headers =
+                let candidates =
+                  List.concat_map
+                    (fun (source, headers) ->
+                      List.filter_map
+                        (fun (header : C_import.header) ->
+                          match header.spelling with
                           | Ast.C_quoted path ->
                               let path =
                                 if Filename.is_relative path then
                                   Filename.concat (Filename.dirname source) path
                                 else path
                               in
-                              if origin = Some path then
-                                Some (Printf.sprintf "#include %S\n" path)
-                              else None
-                          | Ast.C_system path ->
-                              if
-                                Option.fold ~none:false
-                                  ~some:(fun file -> String.ends_with ~suffix:path file)
-                                  origin
-                              then Some ("#include <" ^ path ^ ">\n")
-                              else None
+                              Some (Printf.sprintf "#include %S\n" path)
+                          | Ast.C_system path -> Some ("#include <" ^ path ^ ">\n")
                           | Ast.C_fragment _ -> None)
                         headers)
                     c_imports
                 in
-                C_exports.{ name; spelling; header = required_header })
-              imported.records
-          in
-          let declarations, declaration_headers, declaration_errors =
-            C_exports.declarations
-              ~reserved:(List.concat_map (fun unit -> unit.c_names) !c_units)
-              ~specializations records hir
-          in
-          let declaration_headers =
-            let candidates =
-              List.concat_map
-                (fun (source, headers) ->
-                  List.filter_map
-                    (fun (header : C_import.header) ->
-                      match header.spelling with
-                      | Ast.C_quoted path ->
-                          let path =
-                            if Filename.is_relative path then
-                              Filename.concat (Filename.dirname source) path
-                            else path
-                          in
-                          Some (Printf.sprintf "#include %S\n" path)
-                      | Ast.C_system path -> Some ("#include <" ^ path ^ ">\n")
-                      | Ast.C_fragment _ -> None)
-                    headers)
-                c_imports
-            in
-            let ordered =
-              List.filter (fun header -> List.mem header candidates) declaration_headers
-              |> List.fold_left
-                   (fun ordered header ->
-                     if List.mem header ordered then ordered else ordered @ [ header ])
-                   []
-            in
-            ordered
-            @ List.filter
-                (fun header -> not (List.mem header ordered))
-                declaration_headers
-          in
-          let* () =
-            match (config.Cli.emit, declaration_errors) with
-            | Cli.Header, message :: _ -> Error [ c_export_diagnostic program message ]
-            | _ -> Ok ()
-          in
-          let* ir =
-            Lower.lower
-              ~sanitize_address:(List.mem "address" config.Cli.sanitizers)
-              ~intrinsic_masked_loads:(config.Cli.target = Cli.Force_native)
-              hir
-          in
-          let* ir = apply_no_inline config ir in
-          let* ir, adapters, redirect =
-            add_static_adapters (List.rev !c_units) referenced_names ir
-          in
-          let imported =
-            {
-              imported with
-              manifest = imported.manifest @ List.map C_import.adapter_manifest adapters;
-            }
-          in
-          let* () =
-            if config.Cli.keep && c_imports <> [] then (
-              let base = Filename.basename config.Cli.input in
-              let name =
-                try Filename.chop_extension base with Invalid_argument _ -> base
+                let ordered =
+                  List.filter
+                    (fun header -> List.mem header candidates)
+                    declaration_headers
+                  |> List.fold_left
+                       (fun ordered header ->
+                         if List.mem header ordered then ordered
+                         else ordered @ [ header ])
+                       []
+                in
+                ordered
+                @ List.filter
+                    (fun header -> not (List.mem header ordered))
+                    declaration_headers
               in
-              let path =
-                Filename.temp_file
-                  ~temp_dir:(Filename.get_temp_dir_name ())
-                  (name ^ ".bindings-") ".txt"
+              let* () =
+                match (config.Cli.emit, declaration_errors) with
+                | Cli.Header, message :: _ ->
+                    Error [ c_export_diagnostic program message ]
+                | _ -> Ok ()
               in
-              write_file path (C_import.manifest_text imported);
-              prerr_endline ("fas: kept C bindings: " ^ path));
-            Ok ()
-          in
-          let* () = ir_budget program (Ir.check_lowered_nodes ~limits ir) in
-          let* () = ir_budget program (Ir.check_stack_scratch_bytes ~limits ir) in
-          let* c_objects =
-            compile_c_units config cc (List.rev !c_units) adapters
-              (C_exports.includes declarations)
-              declaration_headers declarations c_artifacts
-          in
-          succeeded := true;
-          Ok
-            {
-              program;
-              ir;
-              redirect;
-              adapters;
-              c_objects;
-              declaration_headers;
-              declarations;
-              artifacts = !c_artifacts;
-              keep = config.Cli.keep;
-            })
+              let* ir =
+                Lower.lower
+                  ~sanitize_address:(List.mem "address" config.Cli.sanitizers)
+                  ~intrinsic_masked_loads:(config.Cli.target = Cli.Force_native)
+                  hir
+              in
+              let* ir = apply_no_inline config ir in
+              let* ir, adapters, redirect =
+                add_static_adapters (List.rev !c_units) referenced_names ir
+              in
+              let imported =
+                {
+                  imported with
+                  manifest =
+                    imported.manifest @ List.map C_import.adapter_manifest adapters;
+                }
+              in
+              let* () =
+                if config.Cli.keep && c_imports <> [] then (
+                  let base = Filename.basename config.Cli.input in
+                  let name =
+                    try Filename.chop_extension base with Invalid_argument _ -> base
+                  in
+                  let path =
+                    Filename.temp_file
+                      ~temp_dir:(Filename.get_temp_dir_name ())
+                      (name ^ ".bindings-") ".txt"
+                  in
+                  write_file path (C_import.manifest_text imported);
+                  prerr_endline ("fas: kept C bindings: " ^ path));
+                Ok ()
+              in
+              let* () = ir_budget program (Ir.check_lowered_nodes ~limits ir) in
+              let* () = ir_budget program (Ir.check_stack_scratch_bytes ~limits ir) in
+              let* c_objects =
+                compile_c_units config cc (List.rev !c_units) adapters
+                  (C_exports.includes declarations)
+                  declaration_headers declarations c_artifacts
+              in
+              succeeded := true;
+              Ok
+                (Some
+                   {
+                     program;
+                     ir;
+                     redirect;
+                     adapters;
+                     c_objects;
+                     declaration_headers;
+                     declarations;
+                     artifacts = !c_artifacts;
+                     keep = config.Cli.keep;
+                   })))
 
-let analyze ?overlay ?cache ?index config =
+let analyze_with ?overlay ?cache ?index ?recovery ?edits config =
   let* config = resolve_target config in
-  try analyze_resolved ?overlay ?cache ?index config with
+  try analyze_resolved ?overlay ?cache ?index ?recovery ?edits config with
   | Sys_error message ->
       Error [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ]
   | Unix.Unix_error (code, operation, argument) ->
@@ -1428,6 +1557,16 @@ let analyze ?overlay ?cache ?index config =
             (Printf.sprintf "backend %s(%s) failed: %s" operation argument
                (Unix.error_message code));
         ]
+
+let complete = function
+  | Ok (Some checked) -> Ok checked
+  | Ok None ->
+      Error
+        [ Diag.error Span.synthetic "internal error: analysis stopped before lowering" ]
+  | Error diagnostics -> Error diagnostics
+
+let analyze ?overlay ?cache ?index config =
+  complete (analyze_with ?overlay ?cache ?index config)
 
 let check ?overlay ?cache ?index config =
   match analyze ?overlay ?cache ?index config with
@@ -1443,8 +1582,119 @@ let check ?overlay ?cache ?index config =
               Ok checked
           | Error message -> Error [ Diag.error Span.synthetic message ])
 
+let mentions needle text =
+  let size = String.length needle and total = String.length text in
+  let rec at index =
+    index + size <= total && (String.sub text index size = needle || at (index + 1))
+  in
+  at 0
+
+let names_header file name = file = name || String.ends_with ~suffix:("/" ^ name) file
+
+let culprit_item canonical primary = function
+  | Ast.Use { c_header = Some _; span; _ } when within span primary ->
+      Some (Drop_c_unit canonical)
+  | Ast.Use _ -> None
+  | Ast.Func
+      {
+        body = Ast.Statements _;
+        linkage = Ast.Internal;
+        generic_params = [];
+        extent;
+        body_span;
+        _;
+      }
+    when within extent primary ->
+      Some (Stub_fn (canonical, body_span))
+  | item when within (item_extent item) primary ->
+      Some (Remove_item (canonical, item_extent item))
+  | _ -> None
+
+let culprit recovery diagnostics =
+  match List.find_opt (fun d -> d.Diag.severity = Diag.Error) diagnostics with
+  | None -> None
+  | Some { Diag.primary; message; _ } -> (
+      if
+        Span.is_synthetic primary
+        || mentions "internal error:" message
+        || mentions "budget" message
+      then None
+      else
+        let file = primary.Span.file in
+        let failed =
+          List.find_map
+            (fun failure ->
+              if
+                failure.target = Some file
+                || (failure.use_span = primary && failure.parent_display = file)
+              then Some (Drop_use (failure.parent_canonical, failure.use_span))
+              else None)
+            recovery.failures
+        in
+        match failed with
+        | Some _ -> failed
+        | None -> (
+            let in_file =
+              match
+                List.find_opt (fun (display, _, _) -> display = file) recovery.files
+              with
+              | None -> None
+              | Some (_, canonical, items) ->
+                  List.find_map (culprit_item canonical primary) items
+            in
+            match in_file with
+            | Some _ -> in_file
+            | None ->
+                List.find_map
+                  (fun (canonical, headers) ->
+                    let named (header : C_import.header) =
+                      match header.C_import.spelling with
+                      | Ast.C_quoted name | Ast.C_system name -> names_header file name
+                      | Ast.C_fragment _ -> false
+                    in
+                    if List.exists named headers then Some (Drop_c_unit canonical)
+                    else None)
+                  recovery.c_units))
+
+let gaps_of edits =
+  List.filter_map
+    (function
+      | Remove_item (file, span) | Stub_fn (file, span) ->
+          Some
+            {
+              file;
+              start_offset = span.Span.start_offset;
+              end_offset = span.Span.end_offset;
+            }
+      | Drop_use _ | Drop_c_unit _ -> None)
+    edits
+
+let recovery_runs = 64
+let recovery_seconds = 2.0
+
+let recover ?overlay ?cache config =
+  let started = Unix.gettimeofday () in
+  let rec attempt runs edits =
+    let recovery = new_recovery () in
+    recovery.blank_errors <- true;
+    let index = Sema_index.create () in
+    match analyze_with ?overlay ?cache ~index ~recovery ~edits config with
+    | Ok _ -> Ok { recovered_index = index; gaps = gaps_of edits @ recovery.blanked }
+    | Error diagnostics -> (
+        if
+          runs + 1 >= recovery_runs
+          || Unix.gettimeofday () -. started >= recovery_seconds
+        then Error diagnostics
+        else
+          match culprit recovery diagnostics with
+          | Some edit when not (List.mem edit edits) ->
+              attempt (runs + 1) (edits @ [ edit ])
+          | _ -> Error diagnostics)
+  in
+  attempt 0 []
+
 let run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug config =
-  match analyze_resolved config with
+  match complete (analyze_resolved config) with
   | Error diagnostics -> Error diagnostics
   | Ok checked ->
       Fun.protect

@@ -1,5 +1,12 @@
 type document = { uri : string; text : string }
-type snapshot = { index : Sema_index.t; texts : (string, string) Hashtbl.t }
+
+type snapshot = {
+  index : Sema_index.t;
+  texts : (string, string) Hashtbl.t;
+  gaps : Driver.gap list;
+}
+
+type summary = { uses : string list; has_main : bool }
 
 exception Invalid of string
 
@@ -7,10 +14,16 @@ type state = {
   options : Cli.lsp_options;
   cache : C_import.cache;
   documents : (string, document) Hashtbl.t;
-  contributions : (string, (string * Json.t) list) Hashtbl.t;
+  contributions : (string, (string * string * Json.t) list) Hashtbl.t;
   loads : (string, string list) Hashtbl.t;
   snapshots : (string, snapshot) Hashtbl.t;
+  good : (string, snapshot) Hashtbl.t;
   c_roots : (string, Sema_index.t) Hashtbl.t;
+  mutable folders : string list;
+  mutable dynamic_watch : bool;
+  scanned : (string, summary) Hashtbl.t;
+  open_summaries : (string, summary) Hashtbl.t;
+  routes : (string, string) Hashtbl.t;
   mutable initialized : bool;
   mutable shut_down : bool;
   mutable exit_code : int option;
@@ -24,7 +37,13 @@ let create options =
     contributions = Hashtbl.create 8;
     loads = Hashtbl.create 8;
     snapshots = Hashtbl.create 8;
+    good = Hashtbl.create 8;
     c_roots = Hashtbl.create 8;
+    folders = [];
+    dynamic_watch = false;
+    scanned = Hashtbl.create 64;
+    open_summaries = Hashtbl.create 8;
+    routes = Hashtbl.create 8;
     initialized = false;
     shut_down = false;
     exit_code = None;
@@ -176,57 +195,201 @@ let diagnostic_json text (span : Span.t) message =
       ("message", Json.Str message);
     ]
 
-let target state (root : document) (span : Span.t) =
-  if Span.is_synthetic span then (root.uri, "")
+let uri_of_key state key =
+  match Hashtbl.find_opt state.documents key with
+  | Some document -> document.uri
+  | None -> path_to_uri key
+
+let registration_id = "fas-roots-watch"
+let workspace_limit = 2000
+let route_of state key = Option.value ~default:key (Hashtbl.find_opt state.routes key)
+
+let summarise key text =
+  match Parser.parse ~limits:Limits.default (Source.create ~file:key ~text) with
+  | Error _ -> { uses = []; has_main = false }
+  | Ok program ->
+      let uses, has_main =
+        List.fold_left
+          (fun (uses, has_main) item ->
+            match item with
+            | Ast.Use { path; c_header = None; _ }
+              when Driver.use_path_error path = None ->
+                (snd (Driver.use_target key key path) :: uses, has_main)
+            | Ast.Func { name = "main"; _ } -> (uses, true)
+            | _ -> (uses, has_main))
+          ([], false) program.Ast.items
+      in
+      { uses = List.sort_uniq String.compare uses; has_main }
+
+let skipped_directory name =
+  name.[0] = '.' || List.mem name [ "build"; "target"; "node_modules" ]
+
+let workspace_files folders =
+  let found = ref [] in
+  let seen = Hashtbl.create 64 in
+  let rec walk dir =
+    let entries = try Sys.readdir dir with Sys_error _ -> [||] in
+    Array.sort String.compare entries;
+    Array.iter
+      (fun name ->
+        let path = Filename.concat dir name in
+        if Hashtbl.length seen < workspace_limit then
+          match Unix.lstat path with
+          | { Unix.st_kind = Unix.S_DIR; _ } ->
+              if not (skipped_directory name) then walk path
+          | { Unix.st_kind = Unix.S_REG; _ }
+            when Filename.check_suffix name ".fas" && not (Hashtbl.mem seen path) ->
+              Hashtbl.replace seen path ();
+              found := path :: !found
+          | _ -> ()
+          | exception Unix.Unix_error _ -> ())
+      entries
+  in
+  List.iter walk folders;
+  List.rev !found
+
+let scan state =
+  Hashtbl.reset state.scanned;
+  let folders =
+    List.sort_uniq String.compare (List.map Driver.canonical_path state.folders)
+  in
+  List.iter
+    (fun path ->
+      let key = Driver.canonical_path path in
+      match disk_text key with
+      | Some text -> Hashtbl.replace state.scanned key (summarise key text)
+      | None -> ())
+    (workspace_files folders)
+
+let summary_of state key =
+  match Hashtbl.find_opt state.open_summaries key with
+  | Some summary -> Some summary
+  | None -> (
+      match Hashtbl.find_opt state.scanned key with
+      | Some summary -> Some summary
+      | None -> Option.map (summarise key) (disk_text key))
+
+let candidates state =
+  let keys table acc = Hashtbl.fold (fun key _ acc -> key :: acc) table acc in
+  List.sort_uniq String.compare (keys state.scanned (keys state.documents []))
+
+let reach state start =
+  let seen = Hashtbl.create 16 in
+  let rec visit = function
+    | [] -> ()
+    | key :: rest when Hashtbl.mem seen key -> visit rest
+    | key :: rest ->
+        Hashtbl.replace seen key ();
+        let next = match summary_of state key with Some s -> s.uses | None -> [] in
+        visit (next @ rest)
+  in
+  visit [ start ];
+  Hashtbl.fold (fun key () acc -> key :: acc) seen []
+
+let rank state root =
+  let has_main =
+    match summary_of state root with Some s -> s.has_main | None -> false
+  in
+  (not has_main, String.length root, root)
+
+let compute_routes state =
+  let keys = candidates state in
+  let loaders = Hashtbl.create 16 in
+  List.iter
+    (fun root ->
+      List.iter
+        (fun key ->
+          if key <> root then
+            Hashtbl.replace loaders key
+              (root :: Option.value ~default:[] (Hashtbl.find_opt loaders key)))
+        (reach state root))
+    keys;
+  let keys =
+    List.sort_uniq String.compare
+      (Hashtbl.fold (fun key _ acc -> key :: acc) loaders keys)
+  in
+  Hashtbl.reset state.routes;
+  List.iter
+    (fun key ->
+      let root =
+        match Hashtbl.find_opt loaders key with
+        | None | Some [] -> key
+        | Some roots ->
+            List.hd (List.sort (fun a b -> compare (rank state a) (rank state b)) roots)
+      in
+      Hashtbl.replace state.routes key root)
+    keys
+
+let drop_root state key =
+  Hashtbl.remove state.contributions key;
+  Hashtbl.remove state.loads key;
+  Hashtbl.remove state.snapshots key;
+  Hashtbl.remove state.good key;
+  Hashtbl.remove state.c_roots key
+
+let diagnostic_target state root_key root_uri (span : Span.t) =
+  if Span.is_synthetic span then (root_key, root_uri, "")
   else
     let canonical = Driver.canonical_path span.file in
     match Hashtbl.find_opt state.documents canonical with
-    | Some document -> (document.uri, document.text)
+    | Some document -> (canonical, document.uri, document.text)
     | None ->
         if Sys.file_exists canonical && not (Sys.is_directory canonical) then
-          (path_to_uri canonical, read_text canonical)
-        else (root.uri, "")
+          (canonical, path_to_uri canonical, read_text canonical)
+        else (root_key, root_uri, "")
 
-let contributions_of state root diags =
+let contributions_of state root_key root_uri diags =
   List.map
     (fun (diag : Diag.t) ->
-      let uri, text = target state root diag.primary in
-      (uri, diagnostic_json text diag.primary (lsp_message diag)))
+      let key, uri, text = diagnostic_target state root_key root_uri diag.primary in
+      (key, uri, diagnostic_json text diag.primary (lsp_message diag)))
     diags
 
-let publish state uris =
+let visible_to state root key =
+  match Hashtbl.find_opt state.routes key with
+  | Some owner -> owner = root
+  | None -> true
+
+let publish state clear uris =
   let roots =
     List.sort
       (fun (a, _) (b, _) -> String.compare a b)
       (Hashtbl.fold (fun key value acc -> (key, value) :: acc) state.contributions [])
   in
+  let diagnostics_for uri =
+    List.fold_left
+      (fun acc (root, fresh) ->
+        List.fold_left
+          (fun acc (key, target_uri, diagnostic) ->
+            if
+              target_uri = uri && visible_to state root key
+              && not (List.mem diagnostic acc)
+            then diagnostic :: acc
+            else acc)
+          acc fresh)
+      [] roots
+    |> List.rev
+  in
   List.iter
     (fun uri ->
-      let diagnostics =
-        List.fold_left
-          (fun acc (_, fresh) ->
-            List.fold_left
-              (fun acc (target_uri, diagnostic) ->
-                if target_uri = uri && not (List.mem diagnostic acc) then
-                  diagnostic :: acc
-                else acc)
-              acc fresh)
-          [] roots
-      in
       notify "textDocument/publishDiagnostics"
         (Json.Obj
-           [ ("uri", Json.Str uri); ("diagnostics", Json.Arr (List.rev diagnostics)) ]))
-    (List.sort_uniq String.compare uris)
+           [ ("uri", Json.Str uri); ("diagnostics", Json.Arr (diagnostics_for uri)) ]))
+    (List.sort_uniq String.compare (clear @ uris))
 
 let previous_uris state key =
   match Hashtbl.find_opt state.contributions key with
-  | Some fresh -> List.map fst fresh
+  | Some fresh -> List.map (fun (_, uri, _) -> uri) fresh
   | None -> []
 
 let analyze_root state key =
-  match Hashtbl.find_opt state.documents key with
-  | None -> []
-  | Some root ->
+  match current_text state key with
+  | None ->
+      let previous = previous_uris state key in
+      drop_root state key;
+      uri_of_key state key :: previous
+  | Some text ->
+      let root_uri = uri_of_key state key in
       let previous = previous_uris state key in
       let loaded = ref [ key ] in
       let texts = Hashtbl.create 8 in
@@ -244,34 +407,78 @@ let analyze_root state key =
             text
       in
       let index = Sema_index.create () in
-      let diags =
+      let diags, index =
         match
           Driver.check ~overlay:observe ~cache:state.cache ~index (config_for state key)
         with
         | Ok checked ->
             Driver.release checked;
-            Hashtbl.replace texts key root.text;
-            Hashtbl.replace state.snapshots key { index; texts };
-            []
-        | Error diags -> diags
+            Hashtbl.replace texts key text;
+            let snapshot = { index; texts; gaps = [] } in
+            Hashtbl.replace state.good key snapshot;
+            Hashtbl.replace state.snapshots key snapshot;
+            ([], index)
+        | Error diags -> (
+            match
+              Driver.recover ~overlay:observe ~cache:state.cache (config_for state key)
+            with
+            | Ok recovered ->
+                Hashtbl.replace texts key text;
+                let index = recovered.Driver.recovered_index in
+                Hashtbl.replace state.snapshots key
+                  { index; texts; gaps = recovered.Driver.gaps };
+                (diags, index)
+            | Error _ -> (diags, index))
       in
       if Sema_index.has_c_import index then Hashtbl.replace state.c_roots key index
       else Hashtbl.remove state.c_roots key;
-      let fresh = contributions_of state root diags in
+      let fresh = contributions_of state key root_uri diags in
       Hashtbl.replace state.contributions key fresh;
       Hashtbl.replace state.loads key (List.sort_uniq String.compare !loaded);
-      (root.uri :: previous) @ List.map fst fresh
+      (root_uri :: previous) @ List.map (fun (_, uri, _) -> uri) fresh
 
 let dependants state path =
-  Hashtbl.fold
-    (fun key _ acc ->
-      let loaded = Option.value ~default:[] (Hashtbl.find_opt state.loads key) in
-      if key = path || List.mem path loaded then key :: acc else acc)
-    state.documents []
+  let roots =
+    Hashtbl.fold
+      (fun root loaded acc ->
+        if root = path || List.mem path loaded then root :: acc else acc)
+      state.loads []
+  in
+  if Hashtbl.mem state.documents path then path :: roots else roots
 
-let refresh state extra keys =
-  let uris = List.concat_map (analyze_root state) (List.sort String.compare keys) in
-  publish state (extra @ uris)
+let refresh state clear dirty =
+  let changed =
+    List.filter_map
+      (fun key ->
+        Option.map
+          (fun (document : document) -> document.uri)
+          (Hashtbl.find_opt state.documents key))
+      dirty
+  in
+  let before = Hashtbl.copy state.routes in
+  compute_routes state;
+  let moved =
+    Hashtbl.fold
+      (fun key root acc ->
+        if Hashtbl.find_opt before key <> Some root then key :: acc else acc)
+      state.routes []
+  in
+  let needed =
+    List.sort_uniq String.compare
+      (Hashtbl.fold (fun key _ acc -> route_of state key :: acc) state.documents [])
+  in
+  let analysed = Hashtbl.fold (fun key _ acc -> key :: acc) state.contributions [] in
+  let stale = List.filter (fun key -> not (List.mem key needed)) analysed in
+  let stale_uris = List.concat_map (previous_uris state) stale in
+  List.iter (drop_root state) stale;
+  let pending =
+    List.filter
+      (fun key -> (not (Hashtbl.mem state.contributions key)) || List.mem key dirty)
+      needed
+  in
+  let uris = List.concat_map (analyze_root state) pending in
+  let moved_uris = List.map (uri_of_key state) moved in
+  publish state clear (changed @ stale_uris @ moved_uris @ uris)
 
 let open_document state params =
   let document = child "textDocument" params in
@@ -280,6 +487,7 @@ let open_document state params =
       match key_of_uri uri with
       | Some key ->
           Hashtbl.replace state.documents key { uri; text };
+          Hashtbl.replace state.open_summaries key (summarise key text);
           refresh state [] (dependants state key)
       | None -> ())
   | _ -> ()
@@ -302,7 +510,16 @@ let change_document state params =
       | Some key when Hashtbl.mem state.documents key ->
           let document = Hashtbl.find state.documents key in
           Hashtbl.replace state.documents key { document with text };
-          refresh state [] (dependants state key)
+          let dirty = dependants state key in
+          let uses_before =
+            Option.map
+              (fun (summary : summary) -> summary.uses)
+              (Hashtbl.find_opt state.open_summaries key)
+          in
+          let summary = summarise key text in
+          Hashtbl.replace state.open_summaries key summary;
+          if uses_before <> Some summary.uses then scan state;
+          refresh state [] dirty
       | _ -> ())
   | _ -> ()
 
@@ -322,15 +539,71 @@ let close_document state params =
           match Hashtbl.find_opt state.documents key with
           | None -> ()
           | Some document ->
-              let previous = previous_uris state key in
+              let dirty = dependants state key in
               Hashtbl.remove state.documents key;
-              Hashtbl.remove state.contributions key;
-              Hashtbl.remove state.loads key;
-              Hashtbl.remove state.snapshots key;
-              Hashtbl.remove state.c_roots key;
-              refresh state (document.uri :: previous) (dependants state key))
+              Hashtbl.remove state.open_summaries key;
+              (if Hashtbl.mem state.scanned key then
+                 match disk_text key with
+                 | Some text -> Hashtbl.replace state.scanned key (summarise key text)
+                 | None -> Hashtbl.remove state.scanned key);
+              refresh state [ document.uri ] dirty)
       | None -> ())
   | None -> ()
+
+let workspace_folders params =
+  let from_uri uri = match uri_to_path uri with Some path -> [ path ] | None -> [] in
+  match member "workspaceFolders" params with
+  | Some (Json.Arr (_ :: _ as folders)) ->
+      List.concat_map
+        (fun folder ->
+          match string_member "uri" folder with Some uri -> from_uri uri | None -> [])
+        folders
+  | _ -> (
+      match string_member "rootUri" params with Some uri -> from_uri uri | None -> [])
+
+let dynamic_watch params =
+  member "dynamicRegistration"
+    (child "didChangeWatchedFiles" (child "workspace" (child "capabilities" params)))
+  = Some (Json.Bool true)
+
+let register_watchers state =
+  if state.dynamic_watch then
+    send
+      (envelope
+         [
+           ("id", Json.Str registration_id);
+           ("method", Json.Str "client/registerCapability");
+           ( "params",
+             Json.Obj
+               [
+                 ( "registrations",
+                   Json.Arr
+                     [
+                       Json.Obj
+                         [
+                           ("id", Json.Str registration_id);
+                           ("method", Json.Str "workspace/didChangeWatchedFiles");
+                           ( "registerOptions",
+                             Json.Obj
+                               [
+                                 ( "watchers",
+                                   Json.Arr
+                                     [
+                                       Json.Obj [ ("globPattern", Json.Str "**/*.fas") ];
+                                     ] );
+                               ] );
+                         ];
+                     ] );
+               ] );
+         ])
+
+let on_initialized state =
+  scan state;
+  register_watchers state
+
+let on_watched_files state =
+  scan state;
+  refresh state [] (Hashtbl.fold (fun key _ acc -> key :: acc) state.contributions [])
 
 let invalid message = raise (Invalid message)
 
@@ -357,16 +630,7 @@ let include_declaration params =
   | Some (Json.Bool flag) -> flag
   | _ -> invalid "params.context.includeDeclaration must be a boolean"
 
-let snapshot_for state key =
-  match Hashtbl.find_opt state.snapshots key with
-  | Some snapshot -> Some snapshot
-  | None ->
-      let roots = Hashtbl.fold (fun root _ acc -> root :: acc) state.snapshots [] in
-      List.find_map
-        (fun root ->
-          let snapshot = Hashtbl.find state.snapshots root in
-          if Hashtbl.mem snapshot.texts key then Some snapshot else None)
-        (List.sort String.compare roots)
+let snapshot_for state key = Hashtbl.find_opt state.snapshots (route_of state key)
 
 let mapped state snapshot (span : Span.t) =
   let key = Driver.canonical_path span.file in
@@ -381,13 +645,53 @@ let mapped state snapshot (span : Span.t) =
       | _ -> None)
   | _ -> None
 
-let uri_of_key state key =
-  match Hashtbl.find_opt state.documents key with
-  | Some document -> document.uri
-  | None -> path_to_uri key
-
 let range_json first last =
   Json.Obj [ ("start", position_json first); ("end", position_json last) ]
+
+let locate (snapshot : snapshot) key current line character =
+  match Hashtbl.find_opt snapshot.texts key with
+  | None -> None
+  | Some analyzed -> (
+      let map = Lsp_map.create ~analyzed ~current in
+      match Lsp_map.to_analyzed map line with
+      | None -> None
+      | Some analyzed_line ->
+          Some (Lsp_position.offset_of_position analyzed (analyzed_line, character)))
+
+let gap_at (snapshot : snapshot) key offset =
+  List.find_opt
+    (fun (gap : Driver.gap) ->
+      gap.Driver.start_offset <= offset
+      && offset < gap.Driver.end_offset
+      && gap.Driver.file = key)
+    snapshot.gaps
+
+let in_gap snapshot key offset = Option.is_some (gap_at snapshot key offset)
+
+let outline_range (d : Sema_index.declaration) =
+  match d.Sema_index.kind with
+  | Parameter | Local | View | Field | Type_parameter | Const_parameter ->
+      d.Sema_index.name_span
+  | _ ->
+      if Span.is_synthetic d.Sema_index.item_span then d.Sema_index.name_span
+      else d.Sema_index.item_span
+
+let gap_of_declaration state snapshot key text source (d : Sema_index.declaration) =
+  let gap_of_span span =
+    match mapped state source span with
+    | Some (_, (line, character), _) -> (
+        match locate snapshot key text line character with
+        | Some offset -> gap_at snapshot key offset
+        | None -> None)
+    | None -> None
+  in
+  let outline = outline_range d in
+  let last_byte =
+    { outline with Span.start_offset = max 0 (outline.Span.end_offset - 1) }
+  in
+  match gap_of_span last_byte with
+  | Some gap -> Some gap
+  | None -> gap_of_span d.Sema_index.name_span
 
 let resolve state uri line character =
   match key_of_uri uri with
@@ -395,18 +699,16 @@ let resolve state uri line character =
   | Some key -> (
       match (snapshot_for state key, current_text state key) with
       | Some snapshot, Some current -> (
-          match Hashtbl.find_opt snapshot.texts key with
+          match locate snapshot key current line character with
           | None -> None
-          | Some analyzed -> (
-              let map = Lsp_map.create ~analyzed ~current in
-              match Lsp_map.to_analyzed map line with
+          | Some offset when in_gap snapshot key offset -> (
+              match Hashtbl.find_opt state.good (route_of state key) with
               | None -> None
-              | Some analyzed_line ->
-                  Some
-                    ( snapshot,
-                      key,
-                      Lsp_position.offset_of_position analyzed (analyzed_line, character)
-                    )))
+              | Some good -> (
+                  match locate good key current line character with
+                  | None -> None
+                  | Some offset -> Some (good, key, offset)))
+          | Some offset -> Some (snapshot, key, offset))
       | _ -> None)
 
 let target (snapshot : snapshot) key offset =
@@ -639,14 +941,6 @@ let span_range text (span : Span.t) =
     (Lsp_position.position_of_offset text span.start_offset)
     (Lsp_position.position_of_offset text span.end_offset)
 
-let outline_range (d : Sema_index.declaration) =
-  match d.Sema_index.kind with
-  | Parameter | Local | View | Field | Type_parameter | Const_parameter ->
-      d.Sema_index.name_span
-  | _ ->
-      if Span.is_synthetic d.Sema_index.item_span then d.Sema_index.name_span
-      else d.Sema_index.item_span
-
 let symbol_json place (d : Sema_index.declaration) children =
   match (place (outline_range d), place d.Sema_index.name_span) with
   | Some range, Some selection ->
@@ -662,47 +956,78 @@ let symbol_json place (d : Sema_index.declaration) children =
            ])
   | _ -> None
 
-let outline_symbols place index key =
-  let declarations =
+let outline_declarations index key =
+  List.filter
+    (fun (d : Sema_index.declaration) ->
+      d.Sema_index.c_origin = None
+      && (not (Span.is_synthetic d.Sema_index.name_span))
+      && Driver.canonical_path d.Sema_index.name_span.Span.file = key)
+    (Sema_index.declarations index)
+
+let mapped_entries state source declarations =
+  List.filter_map
+    (fun (d : Sema_index.declaration) ->
+      match mapped state source d.Sema_index.name_span with
+      | Some (_, start, _) ->
+          let place span =
+            Option.map
+              (fun (_, first, last) -> range_json first last)
+              (mapped state source span)
+          in
+          Some (start, place, d)
+      | None -> None)
+    declarations
+
+let outline_symbols entries =
+  let by_position (a, _, _) (b, _, _) = compare a b in
+  let child_symbols parent wanted =
     List.filter
-      (fun (d : Sema_index.declaration) ->
-        d.Sema_index.c_origin = None
-        && (not (Span.is_synthetic d.Sema_index.name_span))
-        && Driver.canonical_path d.Sema_index.name_span.Span.file = key)
-      (Sema_index.declarations index)
-  in
-  let by_position (a : Sema_index.declaration) (b : Sema_index.declaration) =
-    compare a.Sema_index.name_span.Span.start_offset
-      b.Sema_index.name_span.Span.start_offset
-  in
-  let children parent =
-    List.filter
-      (fun (d : Sema_index.declaration) -> d.Sema_index.container = Some parent)
-      declarations
+      (fun (_, _, (c : Sema_index.declaration)) ->
+        c.Sema_index.container = Some parent && wanted c)
+      entries
     |> List.sort by_position
+    |> List.filter_map (fun (_, place, c) -> symbol_json place c [])
   in
-  let symbol (d : Sema_index.declaration) =
+  let symbol (_, place, (d : Sema_index.declaration)) =
     let nested =
       match d.Sema_index.kind with
-      | Sema_index.Function ->
-          List.filter_map (fun c -> symbol_json place c []) (children d.Sema_index.name)
+      | Sema_index.Function -> child_symbols d.Sema_index.name (fun _ -> true)
       | Sema_index.Struct | Sema_index.Union ->
-          List.filter_map
-            (fun (c : Sema_index.declaration) ->
-              if c.Sema_index.kind = Sema_index.Field then symbol_json place c []
-              else None)
-            (children d.Sema_index.name)
+          child_symbols d.Sema_index.name (fun (c : Sema_index.declaration) ->
+              c.Sema_index.kind = Sema_index.Field)
       | _ -> []
     in
     symbol_json place d nested
   in
   let roots =
     List.filter
-      (fun (d : Sema_index.declaration) -> d.Sema_index.container = None)
-      declarations
+      (fun (_, _, (d : Sema_index.declaration)) -> d.Sema_index.container = None)
+      entries
     |> List.sort by_position
   in
   Json.Arr (List.filter_map symbol roots)
+
+let kept_entries state snapshot key text good declarations =
+  List.filter_map
+    (fun (d : Sema_index.declaration) ->
+      match
+        ( gap_of_declaration state snapshot key text good d,
+          mapped state good d.Sema_index.name_span )
+      with
+      | Some (gap : Driver.gap), Some (_, start, _) ->
+          let fallback =
+            range_json
+              (Lsp_position.position_of_offset text gap.Driver.start_offset)
+              (Lsp_position.position_of_offset text gap.Driver.end_offset)
+          in
+          let place span =
+            match mapped state good span with
+            | Some (_, first, last) -> Some (range_json first last)
+            | None -> Some fallback
+          in
+          Some (start, place, d)
+      | _ -> None)
+    declarations
 
 let document_symbols state params =
   let uri = document_uri params in
@@ -716,17 +1041,34 @@ let document_symbols state params =
           | Ok program ->
               let index = Sema_index.create () in
               Sema_index.declare_program index ~c_aliases:[] program;
-              outline_symbols (fun span -> Some (span_range text span)) index key
+              outline_symbols
+                (List.map
+                   (fun (d : Sema_index.declaration) ->
+                     ( Lsp_position.position_of_offset text
+                         d.Sema_index.name_span.Span.start_offset,
+                       (fun span -> Some (span_range text span)),
+                       d ))
+                   (outline_declarations index key))
           | Error _ -> (
               match snapshot_for state key with
               | None -> Json.Arr []
               | Some snapshot ->
-                  let place (span : Span.t) =
-                    match mapped state snapshot span with
-                    | Some (_, first, last) -> Some (range_json first last)
-                    | None -> None
+                  let kept =
+                    match Hashtbl.find_opt state.good (route_of state key) with
+                    | None -> []
+                    | Some good ->
+                        kept_entries state snapshot key text good
+                          (outline_declarations good.index key)
                   in
-                  outline_symbols place snapshot.index key)))
+                  let shadowed (start, _, _) =
+                    List.exists (fun (kept_start, _, _) -> kept_start = start) kept
+                  in
+                  outline_symbols
+                    (List.filter
+                       (fun entry -> not (shadowed entry))
+                       (mapped_entries state snapshot
+                          (outline_declarations snapshot.index key))
+                    @ kept))))
 
 let identifier_span text (declaration : Sema_index.declaration) =
   let span = declaration.Sema_index.name_span in
@@ -844,24 +1186,13 @@ let unsupported_hover state params =
           if first >= last then None
           else
             let name = String.sub current first (last - first) in
-            let closure root =
-              List.mem key
-                (Option.value ~default:[] (Hashtbl.find_opt state.loads root))
-            in
-            let roots =
-              Hashtbl.fold
-                (fun root index acc ->
-                  if closure root then (root, index) :: acc else acc)
-                state.c_roots []
-              |> List.sort (fun (a, _) (b, _) -> String.compare a b)
-            in
             match
-              List.find_map
-                (fun (_, index) ->
+              Option.bind
+                (Hashtbl.find_opt state.c_roots (route_of state key))
+                (fun index ->
                   Option.map
                     (fun reason -> (index, reason))
                     (List.assoc_opt name (Sema_index.c_unsupported index)))
-                roots
             with
             | None -> None
             | Some (index, reason) ->
@@ -962,13 +1293,19 @@ let inlay_label instances =
   in
   String.concat " | " distinct
 
+let inlay_snapshot state key =
+  match snapshot_for state key with
+  | Some snapshot when snapshot.gaps = [] -> Some snapshot
+  | Some _ -> Hashtbl.find_opt state.good (route_of state key)
+  | None -> None
+
 let inlay_hints state params =
   let uri = document_uri params in
   let first, last = inlay_range params in
   match key_of_uri uri with
   | None -> Json.Arr []
   | Some key -> (
-      match snapshot_for state key with
+      match inlay_snapshot state key with
       | None -> Json.Arr []
       | Some snapshot ->
           let groups = Hashtbl.create 16 in
@@ -1047,6 +1384,8 @@ let handle_request state id meth params =
         if state.initialized then fail id (-32600) "server already initialized"
         else (
           state.initialized <- true;
+          state.folders <- workspace_folders params;
+          state.dynamic_watch <- dynamic_watch params;
           respond id initialize_result)
     | "shutdown" ->
         state.shut_down <- true;
@@ -1063,6 +1402,8 @@ let handle_notification state meth params =
   match meth with
   | "exit" -> state.exit_code <- Some (if state.shut_down then 0 else 1)
   | _ when (not state.initialized) || state.shut_down -> ()
+  | "initialized" -> on_initialized state
+  | "workspace/didChangeWatchedFiles" -> on_watched_files state
   | "textDocument/didOpen" -> open_document state params
   | "textDocument/didChange" -> change_document state params
   | "textDocument/didSave" -> save_document state params
@@ -1081,6 +1422,7 @@ let handle_body state body =
       | Some meth, None -> (
           try handle_notification state meth params
           with exn -> log (Printexc.to_string exn))
+      | None, Some (Json.Str id) when id = registration_id -> ()
       | None, Some id -> fail id (-32600) "invalid request"
       | None, None -> fail Json.Null (-32600) "invalid request")
   | Ok _ -> fail Json.Null (-32600) "invalid request"

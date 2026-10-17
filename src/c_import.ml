@@ -4435,6 +4435,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
                        generic_params = [];
                        span;
                        extent = span;
+                       body_span = span;
                      })
             | _ -> None
           in

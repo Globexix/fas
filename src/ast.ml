@@ -172,6 +172,7 @@ and item =
       generic_params : generic_param list;
       span : Span.t;
       extent : Span.t;
+      body_span : Span.t;
     }
 
 type program = { items : item list }

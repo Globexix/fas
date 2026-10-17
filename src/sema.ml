@@ -934,6 +934,13 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
           let linkage = hir_linkage linkage in
           match body with
           | Ast.Declaration ->
+              Option.iter
+                (fun index ->
+                  Sema_index.bind_signature index ~name
+                    (List.map2
+                       (fun (param : Ast.param) (_, ty) -> (param.span, ty))
+                       func.params params))
+                index;
               Ok
                 ({
                    Hir.name;

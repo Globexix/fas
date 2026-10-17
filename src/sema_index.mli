@@ -76,6 +76,7 @@ val record_type : t -> Span.t -> string -> string option -> unit
 val render_value : Hir.ty -> int64 -> string
 val record_const : t -> Span.t -> Hir.ty -> int64 -> unit
 val leave_body : t -> unit
+val bind_signature : t -> name:string -> (Span.t * Hir.ty) list -> unit
 val record_generic_call : t -> Span.t -> string list -> unit
 
 val record_struct_instance :

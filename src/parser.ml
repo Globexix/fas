@@ -1000,7 +1000,9 @@ module P = struct
               Diag.error (span p) "extern \"C\" function definitions cannot be variadic";
             ]
         else
+          let bstart = span p in
           let* body = block p in
+          let body_span = extent p bstart in
           let* () = end_stmt p in
           Ok
             (Ast.Func
@@ -1016,6 +1018,7 @@ module P = struct
                  generic_params;
                  span = s;
                  extent = s;
+                 body_span;
                })
       else
         let* () = end_stmt p in
@@ -1033,9 +1036,12 @@ module P = struct
                generic_params;
                span = s;
                extent = s;
+               body_span = s;
              })
     else
+      let bstart = span p in
       let* body = block p in
+      let body_span = extent p bstart in
       Ok
         (Ast.Func
            {
@@ -1050,6 +1056,7 @@ module P = struct
              generic_params;
              span = s;
              extent = s;
+             body_span;
            })
 
   and block p =
@@ -1952,6 +1959,46 @@ module P = struct
         Error [ Diag.error (span p) ("expected an expression, found " ^ Token.show t) ]
 end
 
+let item_keywords = [ "const"; "var"; "struct"; "opaque"; "extern"; "fn"; "use" ]
+
+let item_starts text =
+  let n = String.length text in
+  let rec loop i acc =
+    if i >= n then List.rev acc
+    else
+      let starts_item =
+        (i = 0 || text.[i - 1] = '\n')
+        && (text.[i] = '@' || List.exists (word_at text i) item_keywords)
+      in
+      loop (i + 1) (if starts_item then i :: acc else acc)
+  in
+  loop 0 []
+
+let recovery_candidates text error =
+  let n = String.length text in
+  let starts = item_starts text in
+  let next_after x = Option.value (List.find_opt (fun s -> s > x) starts) ~default:n in
+  let containing =
+    List.fold_left (fun acc s -> if s <= error then Some s else acc) None starts
+  in
+  let previous =
+    List.fold_left (fun acc s -> if s < error then Some s else acc) None starts
+  in
+  if List.mem error starts then
+    (match previous with Some p -> [ (p, error) ] | None -> [])
+    @ [ (error, next_after error) ]
+  else
+    match containing with
+    | Some c -> [ (c, next_after c) ]
+    | None -> ( match starts with [] -> [] | _ -> [ (0, next_after error) ])
+
+let blank_text text (start, stop) =
+  let buffer = Bytes.of_string text in
+  blank_range buffer text start stop;
+  Bytes.to_string buffer
+
+let blanking_runs = 16
+
 let parse ?(limits = Limits.default) source =
   match extract_containers source with
   | Error e -> Error e
@@ -1979,3 +2026,109 @@ let parse ?(limits = Limits.default) source =
               | Ok () -> Ok program
               | Error diagnostic -> Error [ diagnostic ])
           | Error e -> Error e))
+
+let body_opening text start stop =
+  let rec ident_end i =
+    if i < stop && ident_char text.[i] then ident_end (i + 1) else i
+  in
+  let name_end = ident_end (skip_space_comments text (start + 2)) in
+  let after = skip_space_comments text name_end in
+  if after >= stop || text.[after] = '[' then None
+  else
+    let rec find i depth =
+      if i >= stop then None
+      else
+        let j = skip_space_comments text i in
+        if j > i then find j depth
+        else
+          match text.[i] with
+          | '(' | '[' -> find (i + 1) (depth + 1)
+          | ')' | ']' -> find (i + 1) (depth - 1)
+          | '{' when depth = 0 -> Some i
+          | _ -> find (i + 1) depth
+    in
+    find after 0
+
+let keep_header text clean (start, stop) =
+  if not (word_at clean start "fn") then None
+  else
+    match body_opening clean start stop with
+    | None -> None
+    | Some opening ->
+        let body = opening + 1 in
+        let rec closing i =
+          if i < body then None
+          else if clean.[i] <> '\n' then Some i
+          else closing (i - 1)
+        in
+        Option.map
+          (fun close ->
+            let buffer = Bytes.of_string text in
+            blank_range buffer clean body stop;
+            Bytes.set buffer close '}';
+            (Bytes.to_string buffer, (body, stop), opening))
+          (closing (stop - 1))
+
+type attempt = { blanked_text : string; gap : int * int; header_end : int option }
+
+let attempts text clean candidate =
+  let whole =
+    { blanked_text = blank_text text candidate; gap = candidate; header_end = None }
+  in
+  match keep_header text clean candidate with
+  | Some (blanked_text, gap, opening) ->
+      [ { blanked_text; gap; header_end = Some opening }; whole ]
+  | None -> [ whole ]
+
+let fails_in_header attempt offset =
+  match attempt.header_end with Some opening -> offset <= opening | None -> false
+
+let parse_blanking ?(limits = Limits.default) source =
+  match parse ~limits source with
+  | Ok program -> Ok (program, [])
+  | Error diagnostics -> (
+      let file = Source.file source in
+      let parses = ref 0 in
+      let rec search text error ranges =
+        match extract_containers (Source.create ~file ~text) with
+        | Error _ -> None
+        | Ok (clean, _) ->
+            let rec try_all = function
+              | [] -> None
+              | candidate :: rest ->
+                  let rec try_attempts = function
+                    | [] -> try_all rest
+                    | attempt :: others ->
+                        if !parses >= blanking_runs then None
+                        else (
+                          incr parses;
+                          let ranges = ranges @ [ attempt.gap ] in
+                          match
+                            parse ~limits
+                              (Source.create ~file ~text:attempt.blanked_text)
+                          with
+                          | Ok program -> Some (program, ranges)
+                          | Error ({ Diag.primary; _ } :: _)
+                            when (not (Span.is_synthetic primary))
+                                 && primary.Span.start_offset <> error
+                                 && not
+                                      (fails_in_header attempt primary.Span.start_offset)
+                            -> (
+                              match
+                                search attempt.blanked_text primary.Span.start_offset
+                                  ranges
+                              with
+                              | Some found -> Some found
+                              | None -> try_attempts others)
+                          | Error _ -> try_attempts others)
+                  in
+                  try_attempts (attempts text clean candidate)
+            in
+            try_all (recovery_candidates clean error)
+      in
+      match diagnostics with
+      | { Diag.primary; _ } :: _ when not (Span.is_synthetic primary) -> (
+          match search (Source.text source) primary.Span.start_offset [] with
+          | Some found -> Ok found
+          | None -> Error diagnostics)
+      | _ -> Error diagnostics)
