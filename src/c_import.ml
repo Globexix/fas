@@ -2219,7 +2219,7 @@ type mapped = {
   unsupported : (string * string) list;
   identities : (string * string) list;
   manifest : string list;
-  use_files : (string * Span.t) list;
+  use_files : (string * header) list;
   nonnull_parameters : (string * int list) list;
   c_string_parameters : (string * (int * string option) list) list;
   alloc_size_parameters : (string * int list list) list;
@@ -2492,7 +2492,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
                  (String.sub line (stop + 1) (String.length line - stop - 1)))
               (fun index ->
                 Option.map
-                  (fun (header : header) -> (String.sub line 0 stop, header.span))
+                  (fun (header : header) -> (String.sub line 0 stop, header))
                   (List.nth_opt headers index)))
   in
   let layout_dump =
@@ -4801,6 +4801,72 @@ let source_signature aliases = function
       Some (c_signature aliases item)
   | _ -> None
 
+let strip_unsupported_reason location =
+  let marker = " unsupported=" in
+  let length = String.length marker in
+  let rec find index =
+    if index + length > String.length location then location
+    else if String.sub location index length = marker then String.sub location 0 index
+    else find (index + 1)
+  in
+  find 0
+
+let declared_at imported name =
+  List.find_map
+    (fun line ->
+      match String.split_on_char '\t' line with
+      | first :: _ :: _ :: _ :: location :: _ when first = name -> (
+          let location = strip_unsupported_reason location in
+          match String.rindex_opt location ':' with
+          | Some colon ->
+              Option.map
+                (fun number -> (String.sub location 0 colon, number))
+                (int_of_string_opt
+                   (String.sub location (colon + 1)
+                      (String.length location - colon - 1)))
+          | None -> None)
+      | _ -> None)
+    imported.manifest
+
+let c_declaration_note imported name =
+  let located =
+    Option.bind (declared_at imported name) (fun (file, number) ->
+        Option.map
+          (fun (header : header) -> (header, Printf.sprintf "%s:%d" file number))
+          (List.assoc_opt file imported.use_files))
+  in
+  let chosen =
+    match located with
+    | Some (header, location) -> Some (header, Some location)
+    | None -> (
+        match
+          List.sort_uniq
+            (fun (a : header) (b : header) -> compare a.spelling b.spelling)
+            (List.map snd imported.use_files)
+        with
+        | [ header ] -> Some (header, None)
+        | _ -> None)
+  in
+  match chosen with
+  | None -> None
+  | Some (header, location) -> (
+      match (header.spelling, location) with
+      | Ast.C_fragment _, _ ->
+          Some
+            (Printf.sprintf "`%s` is also declared by the C block at %s" name
+               (Span.to_string header.span))
+      | (Ast.C_quoted path | Ast.C_system path), location -> (
+          let text =
+            match header.spelling with
+            | Ast.C_quoted _ -> Printf.sprintf "\"%s\"" path
+            | _ -> Printf.sprintf "<%s>" path
+          in
+          match location with
+          | Some location ->
+              Some
+                (Printf.sprintf "`%s` is also declared by `%s` at %s" name text location)
+          | None -> Some (Printf.sprintf "`%s` is also declared by `%s`" name text)))
+
 let reconcile_source ?(container_mismatch_to_clang = false) source_items imported =
   let confirmed = ref [] in
   let bindings = List.map (fun item -> (item_name item, item)) imported.items in
@@ -4816,7 +4882,9 @@ let reconcile_source ?(container_mismatch_to_clang = false) source_items importe
     then None
     else
       let duplicate () =
-        Diag.error (Ast.item_span item)
+        Diag.error
+          ?notes:(Option.map (fun note -> [ note ]) (c_declaration_note imported name))
+          (Ast.item_span item)
           (Printf.sprintf "duplicate declaration `%s`" name)
       in
       match (item, binding, source_signature imported.aliases item) with

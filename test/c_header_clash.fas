@@ -1,0 +1,9 @@
+use "C" <stdio.h>
+
+fn remove(x u64) u64 {
+    return x + 1
+}
+
+fn main(argc i32, argv addr) i32 {
+    return trunc[i32](remove(41))
+}
