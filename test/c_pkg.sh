@@ -329,7 +329,7 @@ run_diag 0 "$OCAML_FAS" check only-pkg.fas
 grep -Fxq -- good "$FAKE_PKG_LOG" || fail "a file with only use pkg did not run pkg-config --cflags"
 
 run_diag 1 "$OCAML_FAS" check only-nope.fas
-expect_lines 'only-nope.fas:1:9: error: Package nope was not found in the pkg-config search path.'
+expect_lines 'only-nope.fas:1:9: error: pkg-config exited with status 1: Package nope was not found in the pkg-config search path.'
 
 run_diag 1 "$OCAML_FAS" check plain.fas
 grep -Fq -- 'pkgonly.h' "$C_PKG_TMP/diag.out" || fail "plain header without pkg flags was not reported"
@@ -368,23 +368,23 @@ run_diag 1 "$OCAML_FAS" check inline.fas
 expect_lines 'inline.fas:1:9: error: `pkg` goes on its own line: `use pkg "MODULES"`'
 
 run_diag 1 "$OCAML_FAS" check sdl3.fas
-expect_lines 'sdl3.fas:1:9: error: Package sdl3 was not found in the pkg-config search path.' \
+expect_lines 'sdl3.fas:1:9: error: pkg-config exited with status 1: Package sdl3 was not found in the pkg-config search path.' \
   'help: installed packages with a similar name: sdl, sdl2'
 
 run_diag 1 "$OCAML_FAS" check nope.fas
-expect_lines 'nope.fas:1:9: error: Package nope was not found in the pkg-config search path.'
+expect_lines 'nope.fas:1:9: error: pkg-config exited with status 1: Package nope was not found in the pkg-config search path.'
 ! grep -Fq 'help: installed' "$C_PKG_TMP/diag.out" || fail "unexpected similar-package help"
 
 run_diag 1 "$OCAML_FAS" check sdl.fas
-expect_lines 'sdl.fas:1:9: error: Package sdl was not found in the pkg-config search path.' \
+expect_lines 'sdl.fas:1:9: error: pkg-config exited with status 1: Package sdl was not found in the pkg-config search path.' \
   'help: installed packages with a similar name: sdl2'
 
 run_diag 1 "$OCAML_FAS" check zlib.fas
-expect_lines 'zlib.fas:1:9: error: Package zlib was not found in the pkg-config search path.'
+expect_lines 'zlib.fas:1:9: error: pkg-config exited with status 1: Package zlib was not found in the pkg-config search path.'
 ! grep -Fq 'help: installed' "$C_PKG_TMP/diag.out" || fail "requested package was suggested for itself"
 
 run_diag 1 "$OCAML_FAS" check zlibb.fas
-expect_lines 'zlibb.fas:1:9: error: Package zlibb was not found in the pkg-config search path.' \
+expect_lines 'zlibb.fas:1:9: error: pkg-config exited with status 1: Package zlibb was not found in the pkg-config search path.' \
   'help: installed packages with a similar name: zlib'
 
 run_diag 1 "$OCAML_FAS" check weird.fas
@@ -398,7 +398,7 @@ run_diag 1 "$OCAML_FAS" check bare.fas
 expect_lines 'note: flags from pkg "bare": (none)'
 
 run_diag 0 "$OCAML_FAS" check value.fas --keep
-expect_lines "fas: pkg-config: $C_PKG_TMP/fake-pkg-config --cflags good -> -I$INC -DPKG_MACRO=42 -pthread"
+expect_lines "fas: pkg-config: $C_PKG_TMP/fake-pkg-config --cflags \"good\" -> -I$INC -DPKG_MACRO=42 -pthread"
 
 cat >"$PROG/smoke.fas" <<'FAS'
 use pkg "smoke"
@@ -519,11 +519,22 @@ expect_lines 'linkbad.fas:1:9: error: pkg-config link flag `-fopenmp` from pkg "
   'help: pass the flags you need with -l or -L'
 
 run_diag 1 "$OCAML_FAS" -o "$C_PKG_TMP/sdl5" sdl5.fas
-expect_lines 'sdl5.fas:1:9: error: Package sdl5 was not found in the pkg-config search path.' \
+expect_lines 'sdl5.fas:1:9: error: pkg-config exited with status 1: Package sdl5 was not found in the pkg-config search path.' \
   'help: installed packages with a similar name: sdl, sdl2'
 
+cat >"$C_PKG_TMP/vanish-pkg-config" <<SH
+#!/bin/sh
+"$C_PKG_TMP/fake-pkg-config" "\$@" || exit \$?
+[ "\$1" = --cflags ] && rm -f "\$0"
+exit 0
+SH
+chmod +x "$C_PKG_TMP/vanish-pkg-config"
+run_diag 1 env FAS_PKG_CONFIG="$C_PKG_TMP/vanish-pkg-config" "$OCAML_FAS" -o "$C_PKG_TMP/libs-vanish" value.fas
+expect_lines "value.fas:1:9: error: \`$C_PKG_TMP/vanish-pkg-config\` not found; set FAS_PKG_CONFIG or install pkg-config"
+[ ! -e "$C_PKG_TMP/libs-vanish" ] || fail "missing --libs tool left an executable"
+
 run_diag 0 "$OCAML_FAS" -o "$C_PKG_TMP/smoke-keep" smoke.fas --keep
-expect_lines "fas: pkg-config: $C_PKG_TMP/fake-pkg-config --libs smoke -> -L$SMOKE_LIB -lsmoke -pthread -Wl,-rpath,$SMOKE_LIB"
+expect_lines "fas: pkg-config: $C_PKG_TMP/fake-pkg-config --libs \"smoke\" -> -L$SMOKE_LIB -lsmoke -pthread -Wl,-rpath,$SMOKE_LIB"
 
 cat >"$C_PKG_TMP/log-perf" <<'SH'
 #!/bin/sh

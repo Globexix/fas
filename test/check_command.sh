@@ -219,7 +219,7 @@ for diagnostic in document["diagnostics"]:
     if diagnostic["file"] is None:
         if [diagnostic[key] for key in keys[2:6]] != [None, None, None, None]:
             fail("synthetic diagnostic has numeric fields")
-        header = "<generated>:1:1: %s: %s" % (severity, message)
+        header = "%s: %s" % (severity, message)
     else:
         header = "%s:%d:%d: %s: %s" % (
             diagnostic["file"],

@@ -81,7 +81,10 @@ let caret_padding line bytes =
 
 let render_one ~source diagnostic =
   let level = if diagnostic.severity = Warning then "warning" else "error" in
-  let location = Span.to_string diagnostic.primary in
+  let heading =
+    if Span.is_synthetic diagnostic.primary then level
+    else Span.to_string diagnostic.primary ^ ": " ^ level
+  in
   let excerpt =
     match source with
     | None -> ""
@@ -142,7 +145,7 @@ let render_one ~source diagnostic =
   let notes =
     if excerpt = "" && help = "" && notes <> [] then "\n" :: notes else notes
   in
-  Printf.sprintf "%s: %s: %s%s%s%s" location level diagnostic.message excerpt help
+  Printf.sprintf "%s: %s%s%s%s" heading diagnostic.message excerpt help
     (String.concat "" notes)
 
 let render ~source diagnostic = render_one ~source diagnostic

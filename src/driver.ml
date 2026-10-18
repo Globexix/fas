@@ -756,7 +756,16 @@ let similar_packages_help path modules =
           Some ("installed packages with a similar name: " ^ String.concat ", " matches)
       )
 
-let pkg_flags ~keep ~option ~accept ~kind ~help (pkg : Ast.pkg) =
+let pkg_failure_text ~exit_status status line =
+  match status with
+  | Unix.WEXITED code when exit_status ->
+      Printf.sprintf "pkg-config exited with status %d: %s" code line
+  | Unix.WEXITED _ -> line
+  | status when exit_status ->
+      Printf.sprintf "pkg-config failed (%s): %s" (status_name status) line
+  | _ -> line
+
+let pkg_flags ?(exit_status = true) ~keep ~option ~accept ~kind ~help (pkg : Ast.pkg) =
   let modules = pkg.Ast.modules and span = pkg.Ast.modules_span in
   let configured = tool "FAS_PKG_CONFIG" "pkg-config" in
   match find_executable configured with
@@ -772,7 +781,7 @@ let pkg_flags ~keep ~option ~accept ~kind ~help (pkg : Ast.pkg) =
       | Error failure ->
           let message =
             match first_non_empty_line failure.Process.stderr with
-            | Some line -> line
+            | Some line -> pkg_failure_text ~exit_status failure.status line
             | None ->
                 Printf.sprintf "`%s %s %s` failed (%s)" configured option modules
                   (status_name failure.status)
@@ -791,13 +800,13 @@ let pkg_flags ~keep ~option ~accept ~kind ~help (pkg : Ast.pkg) =
           | Ok flags ->
               if keep then
                 prerr_endline
-                  (Printf.sprintf "fas: pkg-config: %s %s %s -> %s" configured option
+                  (Printf.sprintf "fas: pkg-config: %s %s %S -> %s" configured option
                      modules (flags_text flags));
               Ok flags))
 
-let pkg_cflags ~keep (pkg : Ast.pkg) =
-  pkg_flags ~keep ~option:"--cflags" ~accept:accepted_pkg_flags ~kind:"flag"
-    ~help:"pass the flags you need with -I or -D" pkg
+let pkg_cflags ?(exit_status = true) ~keep (pkg : Ast.pkg) =
+  pkg_flags ~exit_status ~keep ~option:"--cflags" ~accept:accepted_pkg_flags
+    ~kind:"flag" ~help:"pass the flags you need with -I or -D" pkg
 
 let combined_c_flags command_flags accepted =
   let defined flag =
@@ -821,7 +830,7 @@ let combined_c_flags command_flags accepted =
 
 let pkg_cflags_message modules =
   let pkg = { Ast.modules; modules_span = Span.synthetic } in
-  match pkg_cflags ~keep:false pkg with
+  match pkg_cflags ~exit_status:false ~keep:false pkg with
   | Ok flags -> Ok flags
   | Error diagnostics ->
       Error
@@ -2111,6 +2120,18 @@ let run_resolved ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache config =
         if not (is_non_regular_output config.Cli.output) then remove config.Cli.output;
         result
 
+let output_is_directory config =
+  config.Cli.output_explicit
+  && Sys.file_exists config.Cli.output
+  && Sys.is_directory config.Cli.output
+
 let run ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache config =
-  let* config = resolve_target config in
-  run_resolved ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache config
+  if output_is_directory config then
+    Error
+      [
+        Diag.error Span.synthetic
+          (Printf.sprintf "output path `%s` is a directory" config.Cli.output);
+      ]
+  else
+    let* config = resolve_target config in
+    run_resolved ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache config

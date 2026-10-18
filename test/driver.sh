@@ -518,6 +518,24 @@ fi
 [ ! -e "$WORK/missing-output-directory" ] || fail "compile failure created an output directory"
 temps_empty
 
+mkdir "$WORK/output-directory"
+output_directory_check() {
+  rm -f "$TOOL_LOG"
+  expect_failure "$@" -o "$WORK/output-directory"
+  grep -Fxq -- "error: output path \`$WORK/output-directory\` is a directory" "$WORK/stderr" \
+    || fail "directory output error unclear: $*"
+  [ ! -e "$TOOL_LOG" ] || fail "a tool ran before the directory output check: $*"
+  [ -d "$WORK/output-directory" ] || fail "directory output was removed: $*"
+  [ -z "$(find "$WORK/output-directory" -mindepth 1 -print -quit)" ] \
+    || fail "directory output received files: $*"
+}
+output_directory_check "$OCAML_FAS" "$WORK/good.fas"
+output_directory_check "$OCAML_FAS" --emit-llvm "$WORK/good.fas"
+output_directory_check "$OCAML_FAS" --emit-ir "$WORK/good.fas"
+output_directory_check "$OCAML_FAS" --emit-asm "$WORK/good.fas"
+output_directory_check "$OCAML_FAS" -c "$WORK/good.fas"
+temps_empty
+
 ir_status=0
 "$OCAML_FAS" --emit-ir "$WORK/bad.fas" >"$WORK/ir-failure-stdout" \
   2>"$WORK/ir-failure-stderr" || ir_status=$?
@@ -565,11 +583,23 @@ FAS_CC=$WORK/fail-cc "$OCAML_FAS" "$WORK/good.fas" -o "$WORK/link-fail" >"$WORK/
 [ "$status" -ne 0 ] || fail "failed link succeeded"
 [ ! -s "$WORK/stdout" ] || fail "failed link wrote stdout"
 grep -F "link failed" "$WORK/stderr" >/dev/null || fail "link diagnostic missing"
+grep -Fxq -- "error: $WORK/fail-cc failed (exit 19): link failed" "$WORK/stderr" \
+  || fail "link failure rendered with a fake location"
 [ ! -e "$WORK/link-fail" ] || fail "link failure left output"
 temps_empty
 
 expect_failure "$OCAML_FAS" "$WORK/missing.fas"
 grep -F "cannot read" "$WORK/stderr" >/dev/null || fail "missing input error unclear"
+grep -Fxq -- "error: cannot read Fas dependency path \`$WORK/missing.fas\`: No such file or directory" "$WORK/stderr" \
+  || fail "missing input rendered with a fake location"
+if grep -F '<generated>' "$WORK/stderr" >/dev/null; then
+  fail "missing input exposed the synthetic location"
+fi
+status=0
+"$OCAML_FAS" check --diagnostics=json "$WORK/missing.fas" >"$WORK/json-stdout" 2>"$WORK/json-stderr" || status=$?
+[ "$status" -ne 0 ] || fail "missing JSON input check succeeded"
+grep -Fq -- '{"diagnostics":[{"severity":"error","file":null,"line":null,"column":null,"start_offset":null,"end_offset":null,"message":"cannot read Fas dependency path' "$WORK/json-stderr" \
+  || fail "missing input JSON kept a fake location"
 expect_failure "$OCAML_FAS" "$WORK"
 grep -F "is a directory" "$WORK/stderr" >/dev/null || fail "directory input error unclear"
 
