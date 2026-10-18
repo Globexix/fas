@@ -143,6 +143,41 @@ let address_value c ty expression =
     in
     Error [ Diag.error ?help span "address constants require a C string literal" ]
   in
+  let rec address_constant_read = function
+    | Ast.Ident (name, span) -> (
+        match
+          List.find_map
+            (function
+              | Ast.Const { name = constant; value; _ } when constant = name ->
+                  Some value
+              | _ -> None)
+            c.Sema_context.generic_structs
+        with
+        | Some value -> Some (name, span, value)
+        | None -> None)
+    | Ast.Handle_from_addr (_, value, _) -> address_constant_read value
+    | _ -> None
+  in
+  let address_constant_error (name, span, value) =
+    let rec plain = function
+      | Ast.Ident _ -> true
+      | Ast.Field (base, _, _) | Ast.Select (base, [ Ast.Const_arg _ ], _) -> plain base
+      | _ -> false
+    in
+    let help =
+      match value with
+      | Ast.Addr_of (target, _) when plain target ->
+          Some (Printf.sprintf "write `%s`" (Ast.expr_name value))
+      | _ -> None
+    in
+    Error
+      [
+        Diag.error ?help span
+          (Printf.sprintf
+             "`%s` is an address constant; another constant initializer cannot read it"
+             name);
+      ]
+  in
   let rec place = function
     | Ast.Ident (name, span) -> (
         match Sema_context.lookup_global name c.Sema_context.globals with
@@ -215,9 +250,13 @@ let address_value c ty expression =
           | Ast.Addr_of (base, _) -> place base
           | Ast.Handle_from_addr (_, value, _) -> target value
           | Ast.Call (_, [ value ], _) -> target value
-          | value ->
-              error (Ast.expr_span value)
-                "address constants can only be stored in `addr` or `handle[T]` slots"
+          | value -> (
+              match address_constant_read value with
+              | Some read -> address_constant_error read
+              | None ->
+                  error (Ast.expr_span value)
+                    "address constants can only be stored in `addr` or `handle[T]` \
+                     slots")
         in
         let* name, _, offset = target expression in
         Ok (Hir.Global_address (name, offset))
@@ -255,9 +294,13 @@ let address_value c ty expression =
                  "`%s` is not an address constant; write `&G`, `&G.field`, `&G[k]`, \
                   `c\"...\"` or `null`"
                  (Ast.expr_name expression))
-        | _ ->
-            error (Hir.expr_span value)
-              "address constants can only be stored in `addr` or `handle[T]` slots")
+        | _ -> (
+            match address_constant_read expression with
+            | Some read -> address_constant_error read
+            | None ->
+                error (Hir.expr_span value)
+                  "address constants can only be stored in `addr` or `handle[T]` slots")
+        )
   in
   let* () =
     match expression with

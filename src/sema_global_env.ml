@@ -69,7 +69,7 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~generic_structs ~c
               (Sema_types.aggregate_count_error_span (Ast.expr_span expression) length
                  items)
               (Sema_types.array_element_count_message length (List.length items))
-        | None -> error span "global initializer must be a constant expression")
+        | None -> global_error span "global initializer must be a constant expression")
     | Hir.Struct name -> (
         let items = match struct_items with Some items -> Some items | _ -> None in
         match
@@ -150,7 +150,7 @@ let collect ~array_lengths ~source_obj ~structs ~named_types ~generic_structs ~c
                   (Sema_types.record_field_count_message name expected
                      (List.length items)))
         | _, None -> error span (Printf.sprintf "unknown struct `%s`" name)
-        | _ -> error span "global initializer must be a constant expression")
+        | _ -> global_error span "global initializer must be a constant expression")
     | Hir.Opaque _ | Hir.Void ->
         error span "global type does not have a supported object initializer"
   in

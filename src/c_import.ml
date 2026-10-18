@@ -2050,6 +2050,17 @@ let add_one_decimal value =
     if String.for_all (( = ) '0') next then "0" else "-" ^ next
   else adjust 1
 
+let anonymous_record_reason = "anonymous records are not supported"
+
+let anonymous_field_reason ~field_name record =
+  let kind = if string "tagUsed" record = Some "union" then "union" else "struct" in
+  match record_name record with
+  | Some tag ->
+      Printf.sprintf "anonymous record type of field `%s` in `%s %s` is not supported"
+        field_name kind tag
+  | None ->
+      Printf.sprintf "anonymous record type of field `%s` is not supported" field_name
+
 let type_result ?(allow_arrays = false) ~alias_name ~alias_type_node ~resolve_alias
     ~record_ids ~visible_record_ids ~enum_types ~allow_record ctype =
   let child_type node =
@@ -2131,10 +2142,10 @@ let type_result ?(allow_arrays = false) ~alias_name ~alias_type_node ~resolve_al
       | Some "RecordType" -> (
           match type_node_id node with
           | Some id ->
-              Option.fold ~none:(Error "anonymous records are not supported")
+              Option.fold ~none:(Error anonymous_record_reason)
                 ~some:(fun name -> Ok (Ast.Named_type (name, Span.synthetic)))
                 (Hashtbl.find_opt record_ids id)
-          | None -> Error "anonymous records are not supported")
+          | None -> Error anonymous_record_reason)
       | Some ("PointerType" | "BlockPointerType" | "ObjCObjectPointerType") -> (
           let pointee = child_type node in
           match pointee with
@@ -3763,6 +3774,8 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
                               (Some "flexible array members are not supported", None)
                           | Error "function pointers are not supported" ->
                               (Some "function-pointer fields are not supported", None)
+                          | Error reason when reason = anonymous_record_reason ->
+                              (Some (anonymous_field_reason ~field_name record), None)
                           | Error reason -> (Some reason, None))
                     in
                     Option.iter reject reason;
@@ -4509,7 +4522,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
       | Some "VarDecl", _ ->
           let ty =
             match as_type ~allow_arrays:true ~allow_record:true node with
-            | Error "anonymous records are not supported" ->
+            | Error reason when reason = anonymous_record_reason ->
                 Error "struct and union values are not supported"
             | result -> result
           in

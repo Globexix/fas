@@ -281,6 +281,10 @@ let replay_target text tokens nodes (primary : Span.t) message names =
     && inner.Span.end_offset <= outer.Span.end_offset
   in
   let size (span : Span.t) = span.Span.end_offset - span.Span.start_offset in
+  let same (node : Span.t) =
+    node.Span.start_offset = primary.Span.start_offset
+    && node.Span.end_offset = primary.Span.end_offset
+  in
   match
     nodes
     |> List.filter (fun node -> inside node primary)
@@ -288,7 +292,10 @@ let replay_target text tokens nodes (primary : Span.t) message names =
     |> List.stable_sort (fun left right -> compare (size right) (size left))
   with
   | node :: _ -> Some node
-  | [] -> replay_unknown_token tokens primary message
+  | [] -> (
+      match List.find_opt same nodes with
+      | Some node -> Some node
+      | None -> replay_unknown_token tokens primary message)
 
 let replay_nodes index (program : Ast.program) =
   let spans = ref [] in
@@ -3784,7 +3791,10 @@ let () =
     3 25 15 "expression is not compile-time constant" None;
   semantic_pin "const-number-tables-whole-element"
     (number_head ^ "const ONE Cell = CELLS[0]\nfn main() i32 { return 0 }\n")
-    3 18 8 "global initializer must be a constant expression" None;
+    3 18 8
+    "global initializer must be a constant expression for `ONE`; `CELLS[0]` is not \
+     constant"
+    None;
   parse_error_message "const-number-tables-bare-slot" "expected a type, found `=`"
     (number_head ^ "const X = CELLS[0].weight\nfn main() i32 { return 0 }\n");
   let menu_head =
@@ -12865,6 +12875,41 @@ let () =
     "`P[0]` is not an address constant; write `&G`, `&G.field`, `&G[k]`, `c\"...\"` or \
      `null`"
     None;
+  semantic_pin "address-constants-read-address-constant"
+    "var G i32\nconst A addr = &G\nconst B addr = A\n" 3 16 1
+    "`A` is an address constant; another constant initializer cannot read it"
+    (Some "write `&G`");
+  semantic_pin "address-constants-read-address-constant-var"
+    "var G i32\nconst A addr = &G\nvar B addr = A\n" 3 14 1
+    "`A` is an address constant; another constant initializer cannot read it"
+    (Some "write `&G`");
+  semantic_pin "address-constants-read-address-field"
+    "struct Point { x i32 y i32 }\nvar G Point\nconst A addr = &G.y\nconst B addr = A\n"
+    4 16 1 "`A` is an address constant; another constant initializer cannot read it"
+    (Some "write `&G.y`");
+  semantic_pin "address-constants-read-address-element"
+    "var G arr[2,i32]\nconst A addr = &G[1]\nconst B addr = A\n" 3 16 1
+    "`A` is an address constant; another constant initializer cannot read it"
+    (Some "write `&G[1]`");
+  semantic_pin "address-constants-read-address-function"
+    "fn f() void { return }\nconst A addr = &f\nconst B addr = A\n" 3 16 1
+    "`A` is an address constant; another constant initializer cannot read it"
+    (Some "write `&f`");
+  semantic_pin "address-constants-read-address-table-element"
+    "var G i32\nconst A addr = &G\nconst Q arr[1,addr] = {A}\n" 3 24 1
+    "`A` is an address constant; another constant initializer cannot read it"
+    (Some "write `&G`");
+  semantic_pin "address-constants-read-address-arithmetic"
+    "var G i32\nconst A addr = &G\nconst B addr = A + 1\n" 3 18 1
+    "address constants can only be stored in `addr` or `handle[T]` slots" None;
+  semantic_accept "address-constants-read-address-help-applied"
+    "var G i32\nconst B addr = &G\n";
+  semantic_accept "address-constants-read-address-field-help-applied"
+    "struct Point { x i32 y i32 }\nvar G Point\nconst B addr = &G.y\n";
+  semantic_accept "address-constants-read-address-element-help-applied"
+    "var G arr[2,i32]\nconst B addr = &G[1]\n";
+  semantic_accept "address-constants-read-address-function-help-applied"
+    "fn f() void { return }\nconst B addr = &f\n";
   semantic_accept "address-constants-function-target"
     "fn f() void { return }\nvar P addr = &f\n";
   semantic_accept "address-constants-native-function-local-address"
@@ -16632,6 +16677,45 @@ let () =
   c_semantic_message "c-import-container-anonymous-typedef-field-error"
     "record `user_t` has no field `missing`" fixture
     "fn f() i32 { u user_t = {}\nreturn u.missing }\n"
+
+let () =
+  let anonymous_field_container =
+    c_import_container "anonymous-field-container"
+      "struct FasAnonField { struct { int x; } inner; int tail; };\n\
+       union FasAnonUnionField { struct { short s; } inner; int word; };\n\
+       struct FasAnonArrayField { struct { int w; } items[2]; int tail; };\n\
+       struct FasAnonDeepField { struct { struct { int y; } deep; }; int tail; };\n\
+       typedef struct { struct { int y; } inner; int tail; } FasAnonTypedefField;\n"
+  in
+  c_semantic_message "c-import-anonymous-record-field"
+    "C declaration `FasAnonField` is not supported: anonymous record type of field \
+     `inner` in `struct FasAnonField` is not supported"
+    anonymous_field_container "fn f() i32 { a FasAnonField = {}\nreturn a.tail }\n";
+  c_semantic_message "c-import-anonymous-union-record-field"
+    "C declaration `FasAnonUnionField` is not supported: anonymous record type of \
+     field `inner` in `union FasAnonUnionField` is not supported"
+    anonymous_field_container "fn f() i32 { a FasAnonUnionField = {}\nreturn a.word }\n";
+  c_semantic_message "c-import-anonymous-array-record-field"
+    "C declaration `FasAnonArrayField` is not supported: anonymous record type of \
+     field `items` in `struct FasAnonArrayField` is not supported"
+    anonymous_field_container "fn f() i32 { a FasAnonArrayField = {}\nreturn a.tail }\n";
+  c_semantic_message "c-import-anonymous-deep-record-field"
+    "C declaration `FasAnonDeepField` is not supported: anonymous record type of field \
+     `deep` is not supported"
+    anonymous_field_container "fn f() i32 { a FasAnonDeepField = {}\nreturn a.tail }\n";
+  c_semantic_message "c-import-anonymous-typedef-record-field"
+    "C declaration `FasAnonTypedefField` is not supported: anonymous record type of \
+     field `inner` is not supported"
+    anonymous_field_container
+    "fn f() i32 { a FasAnonTypedefField = {}\nreturn a.tail }\n";
+  let anonymous_variable_container =
+    c_import_container "anonymous-variable-container"
+      "struct { int x; } fas_anon_variable;\n"
+  in
+  c_semantic_message "c-import-anonymous-record-variable"
+    "C declaration `fas_anon_variable` is not supported: struct and union values are \
+     not supported"
+    anonymous_variable_container "fn f() i32 { return fas_anon_variable }\n"
 
 let () =
   let nested_container =

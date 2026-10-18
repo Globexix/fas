@@ -7,6 +7,7 @@ type unresolved_shape =
 val unresolved_shape_of : Ast.expr -> unresolved_shape option
 val index : Sema_index.t option ref
 val layout_source : string -> string
+val global_error : Span.t -> string -> ('a, Diag.t list) result
 
 val const_expr :
   ?structs:Hir.struct_def list ->
