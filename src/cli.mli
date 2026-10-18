@@ -18,6 +18,7 @@ type t = {
   target_cpu : string option;
   target : target;
   target_features : string option;
+  profile : string option;
 }
 
 type perf_options = {

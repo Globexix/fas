@@ -170,6 +170,7 @@ let config_for state key : Cli.t =
     target_cpu = None;
     target = state.options.lsp_target;
     target_features = None;
+    profile = None;
   }
 
 let lsp_message (diag : Diag.t) =

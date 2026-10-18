@@ -18,6 +18,7 @@ type t = {
   target_cpu : string option;
   target : target;
   target_features : string option;
+  profile : string option;
 }
 
 type perf_options = {
@@ -80,10 +81,11 @@ let usage =
   \  --keep        retain and report intermediate paths and active tool pipeline\n\
   \  -g            emit DWARF line tables (machine code unchanged)\n\
   \  --no-inline NAME  add LLVM noinline to NAME\n\
+  \  --profile FILE  optimize with a fas profile file (format: fas profile 1)\n\
   \  --sanitize=LIST instrument with address and/or undefined behavior sanitizers\n\
    environment:\n\
-  \  FAS_OPT, FAS_LLC, FAS_CC select opt, llc and the C compiler (defaults: opt-22, \
-   llc-22, clang-22)\n\
+  \  FAS_OPT, FAS_LLC, FAS_CC, FAS_PROFDATA select opt, llc, the C compiler and \
+   llvm-profdata (defaults: opt-22, llc-22, clang-22, llvm-profdata-22)\n\
   \  FAS_OPT_PASSES overrides opt's pipeline (default: default<Olevel>)"
 
 let default_output emit input =
@@ -109,6 +111,17 @@ let parse_invocation ~subcommand argv =
   let sanitizers = ref None in
   let diagnostics = ref Text in
   let target = ref Portable in
+  let profile = ref None in
+  let profile_conflict emit =
+    match (!profile, emit) with
+    | None, _ | Some _, (Optimized_llvm | Asm | Obj | Executable) -> None
+    | Some _, Header -> Some "`--profile` has no effect with `--emit-header`"
+    | Some _, Ir -> Some "`--profile` has no effect with `--emit-ir`"
+    | Some _, Ir_json -> Some "`--profile` has no effect with `--emit-ir-json`"
+    | Some _, Llvm ->
+        Some
+          "`--profile` has no effect with `--emit-llvm`; write `--emit-llvm=optimized`"
+  in
   let add_link_inputs values =
     link_inputs_rev := List.rev_append values !link_inputs_rev
   in
@@ -137,31 +150,35 @@ let parse_invocation ~subcommand argv =
       else if !link_inputs_rev <> [] && emit <> Executable then
         Error "C inputs and link flags require an executable output"
       else
-        let input = Option.get input in
-        let output_explicit = Option.is_some output in
-        let output =
-          match output with Some path -> path | None -> default_output emit input
-        in
-        let config =
-          {
-            input;
-            output;
-            output_explicit;
-            emit;
-            keep;
-            optimization;
-            debug;
-            no_inline_function;
-            sanitizers = Option.value ~default:[] !sanitizers;
-            link_inputs = List.rev !link_inputs_rev;
-            c_flags = List.rev !c_flags_rev;
-            diagnostics = !diagnostics;
-            target_cpu = None;
-            target = !target;
-            target_features = None;
-          }
-        in
-        Ok (if subcommand = Check_subcommand then Check config else Run config)
+        match profile_conflict emit with
+        | Some message -> Error message
+        | None ->
+            let input = Option.get input in
+            let output_explicit = Option.is_some output in
+            let output =
+              match output with Some path -> path | None -> default_output emit input
+            in
+            let config =
+              {
+                input;
+                output;
+                output_explicit;
+                emit;
+                keep;
+                optimization;
+                debug;
+                no_inline_function;
+                sanitizers = Option.value ~default:[] !sanitizers;
+                link_inputs = List.rev !link_inputs_rev;
+                c_flags = List.rev !c_flags_rev;
+                diagnostics = !diagnostics;
+                target_cpu = None;
+                target = !target;
+                target_features = None;
+                profile = !profile;
+              }
+            in
+            Ok (if subcommand = Check_subcommand then Check config else Run config)
     else
       match argv.(i) with
       | "--help" | "-h" -> Ok Help
@@ -242,6 +259,16 @@ let parse_invocation ~subcommand argv =
       | "--keep" ->
           loop (i + 1) input output emit true optimization optimization_explicit debug
             no_inline_function
+      | "--profile" ->
+          if subcommand = Check_subcommand then
+            Error "`--profile` has no effect with `fas check`"
+          else if i + 1 >= n || argv.(i + 1) = "" || argv.(i + 1).[0] = '-' then
+            Error "--profile requires a profile file"
+          else if Option.is_some !profile then Error "duplicate --profile option"
+          else (
+            profile := Some argv.(i + 1);
+            loop (i + 2) input output emit keep optimization optimization_explicit debug
+              no_inline_function)
       | flag when String.starts_with ~prefix:"--sanitize=" flag -> (
           let value = String.sub flag 11 (String.length flag - 11) in
           let names = String.split_on_char ',' value in
@@ -413,6 +440,7 @@ let parse_lsp argv =
     else
       match argv.(i) with
       | "--help" | "-h" -> Ok Help
+      | "--profile" -> Error "`--profile` has no effect with `fas lsp`"
       | ("-I" | "-isystem" | "-D") as flag ->
           if i + 1 >= n || argv.(i + 1) = "" then Error (flag ^ " requires an argument")
           else (

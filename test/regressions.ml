@@ -3470,6 +3470,71 @@ let () =
     [ "-no-inline"; "helper"; "profile.fas" ];
   cli_error "no-inline-duplicate" "duplicate --no-inline"
     [ "-g"; "--no-inline"; "helper"; "--no-inline"; "other"; "profile.fas" ];
+  assert (
+    (cli_run [ "--emit-llvm=optimized"; "--profile"; "profile.fasprof"; "profile.fas" ])
+      .Cli.profile = Some "profile.fasprof");
+  assert (
+    (cli_run [ "--profile"; "profile.fasprof"; "profile.fas" ]).Cli.profile
+    = Some "profile.fasprof");
+  cli_error "profile-emit-llvm"
+    "`--profile` has no effect with `--emit-llvm`; write `--emit-llvm=optimized`"
+    [ "--emit-llvm"; "--profile"; "profile.fasprof"; "profile.fas" ];
+  cli_error "profile-emit-header" "`--profile` has no effect with `--emit-header`"
+    [ "--emit-header"; "--profile"; "profile.fasprof"; "profile.fas" ];
+  cli_error "profile-emit-ir" "`--profile` has no effect with `--emit-ir`"
+    [ "--emit-ir"; "--profile"; "profile.fasprof"; "profile.fas" ];
+  cli_error "profile-emit-ir-json" "`--profile` has no effect with `--emit-ir-json`"
+    [ "--emit-ir-json"; "--profile"; "profile.fasprof"; "profile.fas" ];
+  cli_error "profile-check" "`--profile` has no effect with `fas check`"
+    [ "check"; "--profile"; "profile.fasprof"; "profile.fas" ];
+  cli_error "profile-lsp" "`--profile` has no effect with `fas lsp`"
+    [ "lsp"; "--profile"; "profile.fasprof" ];
+  cli_error "profile-duplicate" "duplicate --profile option"
+    [ "--profile"; "a.fasprof"; "--profile"; "b.fasprof"; "profile.fas" ];
+  cli_error "profile-missing-value" "--profile requires a profile file" [ "--profile" ];
+  (match
+     Cli.parse [| "fas"; "run"; "--profile"; "profile.fasprof"; "profile.fas" |]
+   with
+  | Ok (Cli.Run_program (config, _)) ->
+      assert (config.Cli.profile = Some "profile.fasprof")
+  | _ -> failwith "run-profile: expected program invocation");
+  (match
+     Cli.parse [| "fas"; "perf"; "--profile"; "profile.fasprof"; "profile.fas" |]
+   with
+  | Ok (Cli.Perf (config, _, _)) -> assert (config.Cli.profile = Some "profile.fasprof")
+  | _ -> failwith "perf-profile: expected perf invocation");
+  let profile_source = Filename.temp_file "fas-profile-pin-" ".fas" in
+  let profile_file = Filename.temp_file "fas-profile-pin-" ".fasprof" in
+  Fun.protect
+    ~finally:(fun () ->
+      Sys.remove profile_source;
+      Sys.remove profile_file)
+    (fun () ->
+      let write path text =
+        let channel = open_out_bin path in
+        Fun.protect
+          ~finally:(fun () -> close_out channel)
+          (fun () -> output_string channel text)
+      in
+      write profile_source "fn main() i32 { return 0 }\n";
+      let profile_rejection name path fragment =
+        incr checks_run;
+        match Driver.run (cli_run [ "--profile"; path; profile_source ]) with
+        | Error diagnostics ->
+            let rendered = Diag.render_all ~source:None diagnostics in
+            if not (contains rendered fragment) then
+              failwith (name ^ ": unexpected diagnostic: " ^ rendered)
+        | Ok _ -> failwith (name ^ ": expected profile rejection")
+      in
+      profile_rejection "profile-unreadable" (profile_file ^ ".missing")
+        "cannot read profile";
+      write profile_file "fas profile 2\nfas 0.5.2\nllvm x\ncpu x\ncounts\n";
+      profile_rejection "profile-bad-header" profile_file
+        "is not a fas profile (expected `fas profile 1` on line 1)";
+      write profile_file "fas profile 1\nfas 0.5.2\nllvm x\ncpu x\nno counts here\n";
+      profile_rejection "profile-no-counts" profile_file "has no `counts` section";
+      write profile_file "fas profile 1\ncounts\n";
+      profile_rejection "profile-early-counts" profile_file "has no `counts` section");
   cli_error "sanitize-empty-list" "--sanitize requires a non-empty list"
     [ "--sanitize="; "profile.fas" ];
   cli_error "sanitize-unknown-name" "unknown sanitizer `memory`"
