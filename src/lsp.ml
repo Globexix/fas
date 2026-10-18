@@ -893,7 +893,7 @@ let c_macro_text text start =
   |> List.filter (fun word -> word <> "" && word <> "\\")
   |> String.concat " "
 
-let c_parts (declaration : Sema_index.declaration) =
+let c_parts ~enumerator (declaration : Sema_index.declaration) =
   match declaration.Sema_index.c_origin with
   | None | Some ("<unknown>", _) -> []
   | Some (header, origin) ->
@@ -902,6 +902,7 @@ let c_parts (declaration : Sema_index.declaration) =
       let fence =
         match text with
         | None -> []
+        | Some _ when enumerator -> []
         | Some text -> (
             match c_define_column text line declaration.Sema_index.name with
             | Some _ ->
@@ -1406,7 +1407,12 @@ let hover_result state params =
                          identifier_span text declaration))
             in
             Option.map
-              (fun content -> (content, c_parts declaration, span))
+              (fun content ->
+                ( content,
+                  c_parts
+                    ~enumerator:(Sema_index.is_enumerator snapshot.index declaration)
+                    declaration,
+                  span ))
               (Sema_index.describe snapshot.index ?use declaration)
         | None ->
             Option.map

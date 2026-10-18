@@ -1695,6 +1695,7 @@ let analyze_resolved ?overlay ?cache ?index ?recovery ?(edits = []) config =
             (fun index ->
               let origins = List.filter_map manifest_origin imported.manifest in
               Sema_index.set_c_origins index origins;
+              Sema_index.set_c_enum_owners index imported.enum_owners;
               Sema_index.set_c_import index ~unsupported:imported.unsupported
                 ~aliases:
                   (List.map

@@ -50,6 +50,8 @@ val expression_types : t -> expression_type list
 val generic_calls : t -> generic_call list
 val kind_name : kind -> string
 val set_c_origins : t -> (string * (string * int)) list -> unit
+val set_c_enum_owners : t -> (string * string option) list -> unit
+val is_enumerator : t -> declaration -> bool
 
 val set_c_import :
   t ->

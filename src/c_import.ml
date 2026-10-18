@@ -2240,6 +2240,7 @@ type mapped = {
   record_types : (string * string * string option) list;
   incomplete_arrays : (string * Ast.ty) list;
   container_names : string list;
+  enum_owners : (string * string option) list;
 }
 
 let adapter_symbol source name =
@@ -3319,6 +3320,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
   and incomplete_arrays = Hashtbl.create 16
   and static_functions = Hashtbl.create 32
   and header_parameter_names = Hashtbl.create 64
+  and enum_owners = Hashtbl.create 64
   and items = ref [] in
   let source_cache = Hashtbl.create 16 in
   let source_text path =
@@ -4314,6 +4316,7 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
                     previous_value := value;
                     match (constant_type, value) with
                     | Ok (Ast.Int _ as ty), Some value ->
+                        Hashtbl.replace enum_owners constant (record_name node);
                         let expression =
                           if String.starts_with ~prefix:"-" value then
                             Ast.Unary
@@ -4643,6 +4646,9 @@ let map_declarations ?(container = false) ?(alloc_size_parameters = [])
         records []
       |> List.sort compare;
     record_types;
+    enum_owners =
+      Hashtbl.fold (fun name owner acc -> (name, owner) :: acc) enum_owners []
+      |> List.sort compare;
     incomplete_arrays =
       Hashtbl.fold (fun name ty acc -> (name, ty) :: acc) incomplete_arrays [];
     container_names =
@@ -4735,6 +4741,10 @@ let merge_imports mappings =
     container_names =
       List.concat_map (fun mapping -> mapping.container_names) mappings
       |> List.sort_uniq String.compare;
+    enum_owners =
+      List.concat_map (fun mapping -> mapping.enum_owners) mappings
+      |> List.filter (fun (name, _) -> not (bad name))
+      |> List.sort_uniq compare;
     unsupported;
     identities = [];
     parameter_names =

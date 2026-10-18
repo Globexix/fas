@@ -87,6 +87,8 @@ type t = {
   template_instances : (string, string list list) Hashtbl.t;
   struct_instances : (string, string * string list) Hashtbl.t;
   instance_layouts : (string, (int * string list * layout) list) Hashtbl.t;
+  enum_owners : (string, string option) Hashtbl.t;
+  storage_consts : (string, Ast.ty * Ast.expr) Hashtbl.t;
 }
 
 let create () =
@@ -130,6 +132,8 @@ let create () =
     template_instances = Hashtbl.create 16;
     struct_instances = Hashtbl.create 16;
     instance_layouts = Hashtbl.create 16;
+    enum_owners = Hashtbl.create 64;
+    storage_consts = Hashtbl.create 16;
   }
 
 let kind_name = function
@@ -188,6 +192,12 @@ let generic_calls index =
 
 let set_c_origins index origins =
   List.iter (fun (name, origin) -> Hashtbl.replace index.origins name origin) origins
+
+let set_c_enum_owners index owners =
+  List.iter (fun (name, owner) -> Hashtbl.replace index.enum_owners name owner) owners
+
+let is_enumerator index (declaration : declaration) =
+  declaration.kind = Const && Hashtbl.mem index.enum_owners declaration.name
 
 let set_c_import index ~unsupported ~aliases ~nonnull ~strings ~alloc ~parameter_names =
   index.c_imported <- true;
@@ -381,10 +391,11 @@ let declare_program index ~c_aliases (program : Ast.program) =
   List.iter
     (function
       | Ast.Use _ | Ast.Pkg _ -> ()
-      | Ast.Const { name; name_span; ty; extent; _ } ->
+      | Ast.Const { name; name_span; ty; value; extent; _ } ->
           let kind =
             match ty with Ast.Array _ | Ast.Vec _ -> Const_array | _ -> Const
           in
+          Hashtbl.replace index.storage_consts name (ty, value);
           top ?c_origin:(origin name) name kind name_span extent
       | Ast.Global { name; name_span; extent; _ } ->
           top ?c_origin:(origin name) name Global name_span extent
@@ -880,6 +891,32 @@ let layout_block label (layout : layout) =
   in
   "```text\n" ^ String.concat "\n" (heading :: lines) ^ "\n```"
 
+let rec plain_address_path = function
+  | Ast.Ident _ -> true
+  | Ast.Field (base, _, _) -> plain_address_path base
+  | Ast.Select (base, [ Ast.Const_arg (Ast.Int_lit _ | Ast.Ident _) ], _) ->
+      plain_address_path base
+  | _ -> false
+
+let storage_const_describe index name =
+  match Hashtbl.find_opt index.storage_consts name with
+  | Some (Ast.Named_type (ty, _), _) ->
+      Option.map
+        (fun layout -> ("const " ^ name ^ " " ^ ty, [ layout_block None layout ]))
+        (Hashtbl.find_opt index.layouts ty)
+  | Some (Ast.Addr, (Ast.Addr_of (target, _) as value)) when plain_address_path target
+    ->
+      Some ("const " ^ name ^ " addr = " ^ Ast.expr_name value, [])
+  | Some (Ast.Addr, _) -> Some ("const " ^ name ^ " addr", [])
+  | Some _ | None -> None
+
+let enumerator_facts index (declaration : declaration) =
+  if not (is_enumerator index declaration) then []
+  else
+    match Hashtbl.find index.enum_owners declaration.name with
+    | None -> [ "from anonymous enum" ]
+    | Some owner -> [ "from enum " ^ owner ]
+
 let is_generic index owner =
   match Hashtbl.find_opt index.generic_names owner with
   | Some (_ :: _) -> true
@@ -995,8 +1032,10 @@ let describe index ?use (declaration : declaration) =
           Option.map
             (fun ty -> (name ^ " " ^ ty, []))
             (Hashtbl.find_opt index.global_types name))
-  | Const ->
-      Option.map (fun text -> (text, [])) (Hashtbl.find_opt index.consts_text name)
+  | Const -> (
+      match Hashtbl.find_opt index.consts_text name with
+      | Some text -> Some (text, enumerator_facts index declaration)
+      | None -> storage_const_describe index name)
   | Const_array ->
       Option.map
         (fun (ty, count) -> ("const " ^ name ^ " " ^ ty, [ elements_text count ]))

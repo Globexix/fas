@@ -80,6 +80,7 @@ HOVER = [
     'use "C" <string.h>',
     'use "C" "mixed.h"',
     'use "C" "layouts.h"',
+    'use "C" "colors.h"',
     "",
     "const LIMIT i32 = 4",
     "const MASK u32 = 4294967295",
@@ -89,6 +90,12 @@ HOVER = [
     "var GLOBAL i32 = 5",
     "const GLYPHS arr[3, i32] = {1, 2, 3}",
     "var TABLE arr[2, u8] = {4, 5}",
+    "const ORIGIN Point = {.x = 7, .y = 8}",
+    "const PAIR Point = {3, 4}",
+    "const ORIGIN_X addr = &GLOBAL",
+    "const ELEMENT addr = &TABLE[0]",
+    "const ORIGIN_FIELD addr = &ORIGIN.x",
+    "const SHIFTED addr = &TABLE[LIMIT - 3]",
     "",
     "struct Point { x i32 y i32 }",
     "struct Packet @align(16) { tag u8 length u32 body arr[3, u16] pointer addr count u64 }",
@@ -159,6 +166,7 @@ HOVER = [
     "    mixed_word u32 = mixed.word",
     '    count usize = strlen(c"abc")',
     '    logged i32 = emit_line(c"abc")',
+    "    palette i32 = RED + GREEN + BLUE + LOW + HIGH",
     "    return small + box.value + point.y + LIMIT",
     "}",
 ]
@@ -169,6 +177,7 @@ C_LAYOUT = """#include <stdalign.h>
 #include <stdio.h>
 #include "mixed.h"
 #include "layouts.h"
+#include "colors.h"
 
 struct Tagged3 {
     uint8_t tag;
@@ -228,6 +237,7 @@ int main(void) {
     printf("CPacked %zu %zu %zu %zu\\n", sizeof(struct CPacked), alignof(struct CPacked),
            offsetof(struct CPacked, a), offsetof(struct CPacked, b));
     printf("CAligned %zu %zu\\n", sizeof(struct CAligned), alignof(struct CAligned));
+    printf("colors %d %d %d %d %d\\n", RED, GREEN, BLUE, LOW, HIGH);
     printf("hex %#lx %#x\\n", (unsigned long)4294967295UL, (unsigned)65535u);
     return 0;
 }
@@ -383,6 +393,26 @@ CALIGNED_T = (
     + "struct CAligned @align(8)\n```\n\n```text\nsize 8, align 8\na  u8  at offset 0\n```"
     + "\n\n```c\nstruct CAligned {\nuint8_t a;\n}\n```\n\n%s:%d"
 )
+COLORS_HEADER = """enum color { RED, GREEN = 5, BLUE };
+typedef enum { LOW, HIGH } level;
+"""
+ENUM_RED_T = FENCE + "const RED i32 = 0\n```\n\nfrom enum color\n\n%s:1"
+ENUM_GREEN_T = FENCE + "const GREEN i32 = 5\n```\n\nfrom enum color\n\n%s:1"
+ENUM_BLUE_T = FENCE + "const BLUE i32 = 6\n```\n\nfrom enum color\n\n%s:1"
+ANON_LOW_T = FENCE + "const LOW i32 = 0\n```\n\nfrom anonymous enum\n\n%s:2"
+ANON_HIGH_T = FENCE + "const HIGH i32 = 1\n```\n\nfrom anonymous enum\n\n%s:2"
+ORIGIN_T = (
+    FENCE
+    + "const ORIGIN Point\n```\n\n```text\nsize 8, align 4\nx  i32  at offset 0\ny  i32  at offset 4\n```"
+)
+PAIR_T = (
+    FENCE
+    + "const PAIR Point\n```\n\n```text\nsize 8, align 4\nx  i32  at offset 0\ny  i32  at offset 4\n```"
+)
+ORIGIN_X_T = FENCE + "const ORIGIN_X addr = &GLOBAL\n```"
+ELEMENT_T = FENCE + "const ELEMENT addr = &TABLE[0]\n```"
+ORIGIN_FIELD_T = FENCE + "const ORIGIN_FIELD addr = &ORIGIN.x\n```"
+SHIFTED_T = FENCE + "const SHIFTED addr\n```"
 PINS = [
     ("const LIMIT", 6, LIMIT_T),
     ("+ LIMIT + NEGATIVE", 2, LIMIT_T),
@@ -452,6 +482,12 @@ PINS = [
     ("data arr[N", 0, TAGGED_DATA_T),
     ("struct Blend", 7, BLEND_T),
     ("blend Blend", 6, BLEND_T),
+    ("const ORIGIN Point", 6, ORIGIN_T),
+    ("const PAIR Point", 6, PAIR_T),
+    ("const ORIGIN_X addr", 6, ORIGIN_X_T),
+    ("const ELEMENT addr", 6, ELEMENT_T),
+    ("const ORIGIN_FIELD addr", 6, ORIGIN_FIELD_T),
+    ("const SHIFTED addr", 6, SHIFTED_T),
     ("fn emit_line", 3, EMIT_SIG),
     ("emit_line(c", 0, EMIT_SIG),
     ("fn main", 0, None),
@@ -728,6 +764,7 @@ def c_oracle():
     binary = os.path.join(work, "layout")
     write_file(os.path.join(work, "mixed.h"), MIXED_HEADER)
     write_file(os.path.join(work, "layouts.h"), LAYOUTS_HEADER)
+    write_file(os.path.join(work, "colors.h"), COLORS_HEADER)
     write_file(source, C_LAYOUT)
     subprocess.run([os.environ["REAL_CC"], "-std=c11", "-o", binary, source], check=True, timeout=TIMEOUT)
     output = subprocess.run([binary], check=True, capture_output=True, text=True, timeout=TIMEOUT).stdout
@@ -748,6 +785,8 @@ def run_hover():
     write_file(mixed_h, MIXED_HEADER)
     layouts_h = os.path.realpath(os.path.join(folder, "layouts.h"))
     write_file(layouts_h, LAYOUTS_HEADER)
+    colors_h = os.path.realpath(os.path.join(folder, "colors.h"))
+    write_file(colors_h, COLORS_HEADER)
     expect(MIXED_HEADER.split("\n")[MIXED_LINE - 1].startswith("union FasMixed"), "mixed.h line")
     text = join_lines(HOVER)
     write_file(main, text)
@@ -768,6 +807,7 @@ def run_hover():
     expect(oracle.get("CArr") == [8, 2, 0, 6], "C layout of CArr: %r" % (oracle.get("CArr"),))
     expect(oracle.get("CPacked") == [5, 1, 0, 1], "C layout of CPacked: %r" % (oracle.get("CPacked"),))
     expect(oracle.get("CAligned") == [8, 8], "C layout of CAligned: %r" % (oracle.get("CAligned"),))
+    expect(oracle.get("colors") == [0, 5, 6, 0, 1], "C enum values: %r" % (oracle.get("colors"),))
 
     union_text = UNION_T_FORMAT % (mixed_h, MIXED_LINE)
     word_text = WORD_T_FORMAT % (mixed_h, MIXED_WORD_LINE)
@@ -779,6 +819,11 @@ def run_hover():
         ("filled CArr", 7, CARR_T % (layouts_h, 20)),
         ("narrow CPacked", 7, CPACKED_T % (layouts_h, 25)),
         ("aligned_c CAligned", 10, CALIGNED_T % (layouts_h, 30)),
+        ("RED + GREEN", 0, ENUM_RED_T % colors_h),
+        ("GREEN + BLUE", 0, ENUM_GREEN_T % colors_h),
+        ("BLUE + LOW", 0, ENUM_BLUE_T % colors_h),
+        ("+ LOW + HIGH", 2, ANON_LOW_T % colors_h),
+        ("LOW + HIGH", 6, ANON_HIGH_T % colors_h),
     ]:
         expect_hover(s, main, text, anchor, offset, expected, "open")
     strlen = hover_text(s.result("textDocument/hover", at(main, text, "strlen(c", 1)))
