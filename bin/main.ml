@@ -94,6 +94,95 @@ let native_rows ~link_cache (config : Cli.t) names dir =
               }
         | Error _ -> None)
 
+let program_name (config : Cli.t) =
+  Option.value ~default:config.input
+    (Filename.chop_suffix_opt ~suffix:".fas" config.input)
+
+let tune_environment dir =
+  let profile = "LLVM_PROFILE_FILE=" ^ Filename.concat dir "fas-%p-%m.profraw" in
+  let inherited =
+    Array.to_list (Unix.environment ())
+    |> List.filter (fun entry ->
+        not (String.starts_with ~prefix:"LLVM_PROFILE_FILE=" entry))
+  in
+  Array.of_list (profile :: inherited)
+
+let tune_exit_message = function
+  | Unix.WEXITED status ->
+      Printf.sprintf "error: the program exited with status %d; no profile written"
+        status
+  | Unix.WSIGNALED signal ->
+      Printf.sprintf "error: the program was killed by signal %s; no profile written"
+        (Process.signal_name signal)
+  | Unix.WSTOPPED signal ->
+      Printf.sprintf "error: the program was stopped by signal %s; no profile written"
+        (Process.signal_name signal)
+
+let write_tune_result (config : Cli.t) output dir =
+  let profraw =
+    Sys.readdir dir |> Array.to_list
+    |> List.filter (fun name -> Filename.check_suffix name ".profraw")
+    |> List.sort String.compare
+    |> List.map (Filename.concat dir)
+  in
+  match profraw with
+  | [] ->
+      prerr_endline
+        "error: the program wrote no profile (it must return from `main` or call \
+         `exit`)";
+      1
+  | _ -> (
+      let header = Driver.tune_header () in
+      match Driver.write_tune_profile ~output ~scratch:dir ~profraw ~header with
+      | Error diagnostics ->
+          report config diagnostics;
+          1
+      | Ok functions ->
+          Printf.eprintf "fas perf: wrote %s (%d functions)\n%!" output functions;
+          0)
+
+let tune_command (config : Cli.t) output args =
+  match Driver.check_clang () with
+  | Error diagnostics ->
+      report config diagnostics;
+      1
+  | Ok () -> (
+      match Filename.temp_dir "fas-tune-" "" with
+      | exception Sys_error message ->
+          prerr_endline ("fas: " ^ message);
+          1
+      | dir ->
+          let exe = Filename.concat dir "program" in
+          let status =
+            match
+              Driver.run ~instrument:true
+                { config with Cli.output = exe; output_explicit = true }
+            with
+            | Error diagnostics ->
+                report config diagnostics;
+                1
+            | Ok _ -> (
+                match
+                  Process.run_inherited ~env:(tune_environment dir) exe
+                    (Array.of_list (program_name config :: args))
+                with
+                | Error message ->
+                    prerr_endline ("fas: cannot run " ^ exe ^ ": " ^ message);
+                    1
+                | Ok (Unix.WEXITED 0) -> write_tune_result config output dir
+                | Ok ended ->
+                    prerr_endline (tune_exit_message ended);
+                    1)
+          in
+          (if not config.keep then
+             try
+               Array.iter
+                 (fun name -> Sys.remove (Filename.concat dir name))
+                 (Sys.readdir dir);
+               Sys.rmdir dir
+             with Sys_error _ -> ());
+          status)
+
 let perf_command (config : Cli.t) (options : Cli.perf_options) baseline args =
   match Filename.temp_dir "fas-perf-" "" with
   | exception Sys_error message ->
@@ -161,7 +250,9 @@ let perf_command (config : Cli.t) (options : Cli.perf_options) baseline args =
                       | Ok (status, text) -> (
                           match
                             show
-                              (Perf.profile program view ~top:options.top ~status text)
+                              (Perf.profile program view
+                                 ~top:(Option.value options.top ~default:5)
+                                 ~status text)
                           with
                           | 0 -> status
                           | failed -> failed))))
@@ -197,11 +288,19 @@ let () =
   | Ok (Cli.Lsp options) -> exit (Lsp.run options)
   | Ok (Cli.Run_program (config, args)) -> exit (run_program config args)
   | Ok (Cli.Perf (config, options, args)) -> (
-      match load_baseline options with
-      | Ok baseline -> exit (perf_command config options baseline args)
-      | Error message ->
-          prerr_endline message;
-          exit 1)
+      match options.mode with
+      | Cli.Tune output ->
+          let output =
+            Option.value output
+              ~default:(Filename.remove_extension config.Cli.input ^ ".fasprof")
+          in
+          exit (tune_command config output args)
+      | Cli.Measure -> (
+          match load_baseline options with
+          | Ok baseline -> exit (perf_command config options baseline args)
+          | Error message ->
+              prerr_endline message;
+              exit 1))
   | Error message ->
       prerr_endline message;
       exit 2

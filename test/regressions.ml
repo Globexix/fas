@@ -3503,6 +3503,35 @@ let () =
    with
   | Ok (Cli.Perf (config, _, _)) -> assert (config.Cli.profile = Some "profile.fasprof")
   | _ -> failwith "perf-profile: expected perf invocation");
+  (match Cli.parse [| "fas"; "perf"; "--tune"; "profile.fas" |] with
+  | Ok (Cli.Perf (_, options, _)) -> assert (options.Cli.mode = Cli.Tune None)
+  | _ -> failwith "perf-tune: expected perf invocation");
+  (match
+     Cli.parse
+       [| "fas"; "perf"; "--tune"; "profile.fas"; "-o"; "out.fasprof"; "--"; "x" |]
+   with
+  | Ok (Cli.Perf (_, options, args)) ->
+      assert (options.Cli.mode = Cli.Tune (Some "out.fasprof"));
+      assert (args = [ "x" ])
+  | _ -> failwith "perf-tune-output: expected perf invocation");
+  cli_error "tune-static" "`--tune` cannot be combined with `--static`"
+    [ "perf"; "--tune"; "--static"; "profile.fas" ];
+  cli_error "tune-json" "`--tune` cannot be combined with `--json`"
+    [ "perf"; "--tune"; "--json"; "profile.fas" ];
+  cli_error "tune-compare" "`--tune` cannot be combined with `--compare`"
+    [ "perf"; "--tune"; "--compare"; "a.fasprof"; "profile.fas" ];
+  cli_error "tune-top" "`--tune` cannot be combined with `--top`"
+    [ "perf"; "--tune"; "--top"; "3"; "profile.fas" ];
+  cli_error "tune-asm" "`--tune` cannot be combined with `--asm`"
+    [ "perf"; "--tune"; "--asm"; "profile.fas:1"; "profile.fas" ];
+  cli_error "tune-profile" "`--tune` cannot be combined with `--profile`"
+    [ "perf"; "--tune"; "--profile"; "a.fasprof"; "profile.fas" ];
+  cli_error "tune-duplicate-output" "duplicate -o option"
+    [ "perf"; "--tune"; "-o"; "a.fasprof"; "-o"; "b.fasprof"; "profile.fas" ];
+  cli_error "tune-stdout-output" "-o - is not supported"
+    [ "perf"; "--tune"; "-o"; "-"; "profile.fas" ];
+  cli_error "tune-missing-output" "-o requires an output path"
+    [ "perf"; "--tune"; "profile.fas"; "-o" ];
   let profile_source = Filename.temp_file "fas-profile-pin-" ".fas" in
   let profile_file = Filename.temp_file "fas-profile-pin-" ".fasprof" in
   Fun.protect

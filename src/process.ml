@@ -142,3 +142,41 @@ let run_program path argv =
                 | Unix.WEXITED code -> code
                 | Unix.WSIGNALED s | Unix.WSTOPPED s -> 128 + posix_signal s)
       with Unix.Unix_error (code, _, _) -> Error (Unix.error_message code))
+
+let signal_names =
+  [
+    (Sys.sighup, "SIGHUP");
+    (Sys.sigint, "SIGINT");
+    (Sys.sigquit, "SIGQUIT");
+    (Sys.sigill, "SIGILL");
+    (Sys.sigtrap, "SIGTRAP");
+    (Sys.sigabrt, "SIGABRT");
+    (Sys.sigbus, "SIGBUS");
+    (Sys.sigfpe, "SIGFPE");
+    (Sys.sigkill, "SIGKILL");
+    (Sys.sigusr1, "SIGUSR1");
+    (Sys.sigsegv, "SIGSEGV");
+    (Sys.sigusr2, "SIGUSR2");
+    (Sys.sigpipe, "SIGPIPE");
+    (Sys.sigalrm, "SIGALRM");
+    (Sys.sigterm, "SIGTERM");
+    (Sys.sigxcpu, "SIGXCPU");
+    (Sys.sigxfsz, "SIGXFSZ");
+    (Sys.sigvtalrm, "SIGVTALRM");
+    (Sys.sigprof, "SIGPROF");
+    (Sys.sigpoll, "SIGPOLL");
+    (Sys.sigsys, "SIGSYS");
+  ]
+
+let signal_name signal =
+  Option.value ~default:(string_of_int signal) (List.assoc_opt signal signal_names)
+
+let run_inherited ~env path argv =
+  flush stdout;
+  flush stderr;
+  try
+    let pid =
+      Unix.create_process_env path argv env Unix.stdin Unix.stdout Unix.stderr
+    in
+    Ok (snd (retry_interrupted (fun () -> Unix.waitpid [] pid)))
+  with Unix.Unix_error (code, _, _) -> Error (Unix.error_message code)

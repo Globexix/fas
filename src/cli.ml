@@ -21,13 +21,16 @@ type t = {
   profile : string option;
 }
 
+type perf_mode = Measure | Tune of string option
+
 type perf_options = {
-  top : int;
+  top : int option;
   static : bool;
   json : bool;
   asm : (string * int) option;
   copy : int option;
   compare : string option;
+  mode : perf_mode;
 }
 
 type lsp_options = { lsp_c_flags : string list; lsp_target : target }
@@ -44,7 +47,15 @@ type command =
 type subcommand = Build | Run_subcommand | Check_subcommand | Perf_subcommand
 
 let default_perf =
-  { top = 5; static = false; json = false; asm = None; copy = None; compare = None }
+  {
+    top = None;
+    static = false;
+    json = false;
+    asm = None;
+    copy = None;
+    compare = None;
+    mode = Measure;
+  }
 
 let usage =
   "usage: fas [options] file.fas [C inputs and link flags]\n\
@@ -52,10 +63,12 @@ let usage =
   \       fas check file.fas [options]\n\
   \       fas perf file.fas [options] [--top N] [--static] [--compare FILE] [-- \
    program arguments]\n\
+  \       fas perf --tune file.fas [build options] [-o PROFILE] [-- program arguments]\n\
    commands:\n\
   \  run FILE      build to a temporary executable, run it, delete it\n\
   \  check FILE    check without building (no LLVM, no linking)\n\
   \  perf FILE     profile: hot loops by Fas line (needs perf)\n\
+  \  perf --tune FILE  run the program and write a profile for --profile\n\
   \  lsp           language server over stdio (for editors)\n\
    build:\n\
   \  -O0..-O3      set opt and llc optimization levels (default -O2)\n\
@@ -368,6 +381,7 @@ let parse_invocation ~subcommand argv =
 
 let split_perf_options argv =
   let n = Array.length argv in
+  let tuning = Array.exists (String.equal "--tune") argv in
   let rec scan i kept options =
     if i >= n then Ok (Array.of_list (List.rev kept), options)
     else
@@ -379,6 +393,19 @@ let split_perf_options argv =
           | None -> Error error
       in
       match argv.(i) with
+      | "--tune" ->
+          let mode =
+            match options.mode with Measure -> Tune None | Tune _ as mode -> mode
+          in
+          scan (i + 1) kept { options with mode }
+      | "-o" when tuning -> (
+          if i + 1 >= n then Error "-o requires an output path"
+          else if argv.(i + 1) = "-" then Error "-o - is not supported"
+          else
+            match options.mode with
+            | Tune (Some _) -> Error "duplicate -o option"
+            | Measure | Tune None ->
+                scan (i + 2) kept { options with mode = Tune (Some argv.(i + 1)) })
       | "--static" -> scan (i + 1) kept { options with static = true }
       | "--json" -> scan (i + 1) kept { options with json = true }
       | "--compare" ->
@@ -387,7 +414,8 @@ let split_perf_options argv =
       | "--top" ->
           with_value "--top requires a number from 1 to 50" (fun text ->
               match int_of_string_opt text with
-              | Some top when top >= 1 && top <= 50 -> Some { options with top }
+              | Some top when top >= 1 && top <= 50 ->
+                  Some { options with top = Some top }
               | _ -> None)
       | "--asm" ->
           with_value "--asm requires FILE:LINE or FILE:LINE@N" (fun text ->
@@ -425,11 +453,23 @@ let split_perf_options argv =
   scan 0 [] default_perf
 
 let perf_command config options args =
-  if options.json && Option.is_some options.asm then
-    Error "fas perf: --json and --asm cannot be combined"
-  else if options.static && args <> [] then
-    Error "fas perf --static does not run the program; `--` arguments are not accepted"
-  else Ok (Perf (config, options, args))
+  match options.mode with
+  | Tune _ ->
+      let rejected flag = Error ("`--tune` cannot be combined with `" ^ flag ^ "`") in
+      if options.static then rejected "--static"
+      else if options.json then rejected "--json"
+      else if Option.is_some options.compare then rejected "--compare"
+      else if Option.is_some options.top then rejected "--top"
+      else if Option.is_some options.asm then rejected "--asm"
+      else if Option.is_some config.profile then rejected "--profile"
+      else Ok (Perf (config, options, args))
+  | Measure ->
+      if options.json && Option.is_some options.asm then
+        Error "fas perf: --json and --asm cannot be combined"
+      else if options.static && args <> [] then
+        Error
+          "fas perf --static does not run the program; `--` arguments are not accepted"
+      else Ok (Perf (config, options, args))
 
 let parse_lsp argv =
   let n = Array.length argv in

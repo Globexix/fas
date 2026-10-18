@@ -61,8 +61,19 @@ val run :
   ?llvm_text:(string -> unit) ->
   ?c_debug:bool ->
   ?link_cache:link_cache ->
+  ?instrument:bool ->
   Cli.t ->
   (string, Diag.t list) result
+
+val check_clang : unit -> (unit, Diag.t list) result
+val tune_header : unit -> string list
+
+val write_tune_profile :
+  output:string ->
+  scratch:string ->
+  profraw:string list ->
+  header:string list ->
+  (int, Diag.t list) result
 
 val pkg_cflags_message : string -> (string list, string) result
 val tool : string -> string -> string

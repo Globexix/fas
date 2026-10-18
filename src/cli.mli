@@ -21,13 +21,16 @@ type t = {
   profile : string option;
 }
 
+type perf_mode = Measure | Tune of string option
+
 type perf_options = {
-  top : int;
+  top : int option;
   static : bool;
   json : bool;
   asm : (string * int) option;
   copy : int option;
   compare : string option;
+  mode : perf_mode;
 }
 
 type lsp_options = { lsp_c_flags : string list; lsp_target : target }

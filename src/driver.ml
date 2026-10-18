@@ -1026,6 +1026,7 @@ let verify_llvm opt file =
 let pass_report config = opt_pass config
 
 type profile = { indexed_path : string; temp_paths : string list }
+type pgo = Instrument | Use of profile
 
 let profile_format = "fas profile 1"
 let profile_error message = Error [ Diag.error Span.synthetic message ]
@@ -1065,6 +1066,92 @@ let merge_profile path counts temps =
       in
       profile_error (Printf.sprintf "profile `%s` has invalid counts: %s" path reason)
 
+let contains_text needle haystack =
+  let needle_length = String.length needle and length = String.length haystack in
+  let rec from index =
+    index + needle_length <= length
+    && (String.sub haystack index needle_length = needle || from (index + 1))
+  in
+  from 0
+
+let check_clang () =
+  let _, _, cc = tools () in
+  let rejected () =
+    Error
+      [
+        Diag.error Span.synthetic
+          (Printf.sprintf
+             "`fas perf --tune` needs Clang as the C compiler; FAS_CC is `%s`" cc);
+      ]
+  in
+  match Process.run [| cc; "--version" |] with
+  | Ok (stdout, stderr) when contains_text "clang" (stdout ^ stderr) -> Ok ()
+  | Ok _ | Error _ -> rejected ()
+
+let tool_output_lines path =
+  match Process.run [| path; "--version" |] with
+  | Ok (stdout, _) -> List.map String.trim (String.split_on_char '\n' stdout)
+  | Error _ -> []
+
+let tune_header () =
+  let opt, llc, _ = tools () in
+  let llvm =
+    tool_output_lines opt
+    |> List.find_opt (contains_text "LLVM version")
+    |> Option.value ~default:"unknown"
+  in
+  let host_prefix = "Host CPU:" in
+  let cpu =
+    tool_output_lines llc
+    |> List.find_map (fun line ->
+        if String.starts_with ~prefix:host_prefix line then
+          let rest = String.length host_prefix in
+          Some (String.trim (String.sub line rest (String.length line - rest)))
+        else None)
+    |> Option.value ~default:"unknown"
+  in
+  [ profile_format; "fas " ^ version; "llvm " ^ llvm; "cpu " ^ cpu ]
+
+let count_profile_functions text =
+  String.split_on_char '\n' text
+  |> List.filter (String.starts_with ~prefix:"# Func Hash:")
+  |> List.length
+
+let write_atomically path text =
+  let temp = Filename.temp_file ~temp_dir:(Filename.dirname path) "fas-tune-" ".tmp" in
+  try
+    write_file temp text;
+    Unix.chmod temp 0o644;
+    Sys.rename temp path
+  with (Sys_error _ | Unix.Unix_error _) as error ->
+    remove temp;
+    raise error
+
+let write_tune_profile ~output ~scratch ~profraw ~header =
+  let merged = Filename.concat scratch "merged.proftext" in
+  let tool_path = profdata () in
+  let argv = Array.of_list ([ tool_path; "merge"; "--text"; "-o"; merged ] @ profraw) in
+  match Process.run argv with
+  | Error failure -> Error [ tool_error ("profile merge with " ^ tool_path) failure ]
+  | Ok _ -> (
+      match read_file merged with
+      | Error message ->
+          Error [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ]
+      | Ok text -> (
+          let body = String.concat "\n" header ^ "\ncounts\n" ^ text in
+          try
+            write_atomically output body;
+            Ok (count_profile_functions text)
+          with
+          | Sys_error message ->
+              Error [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ]
+          | Unix.Unix_error (code, _, _) ->
+              Error
+                [
+                  Diag.error Span.synthetic
+                    ("backend I/O failed: " ^ Unix.error_message code);
+                ]))
+
 let with_profile config f =
   match config.Cli.profile with
   | None -> f None
@@ -1082,17 +1169,19 @@ let with_profile config f =
           in
           let* counts = profile_counts path text in
           let* indexed_path = profile_io (fun () -> merge_profile path counts temps) in
-          f (Some { indexed_path; temp_paths = !temps }))
+          f (Some (Use { indexed_path; temp_paths = !temps })))
 
-let pgo_opt_flags config profile =
-  match profile with
-  | Some p when optimization_level config.Cli.optimization > 0 ->
+let pgo_opt_flags config pgo =
+  match pgo with
+  | Some Instrument -> [ "--pgo-kind=pgo-instr-gen-pipeline" ]
+  | Some (Use p) when optimization_level config.Cli.optimization > 0 ->
       [ "--pgo-kind=pgo-instr-use-pipeline"; "--profile-file=" ^ p.indexed_path ]
   | _ -> []
 
-let pgo_c_flags config profile =
-  match profile with
-  | Some p when optimization_level config.Cli.optimization > 0 ->
+let pgo_c_flags config pgo =
+  match pgo with
+  | Some Instrument -> [ "-fprofile-generate" ]
+  | Some (Use p) when optimization_level config.Cli.optimization > 0 ->
       [
         "-fprofile-use=" ^ p.indexed_path;
         "-Wno-profile-instr-out-of-date";
@@ -1101,9 +1190,11 @@ let pgo_c_flags config profile =
       ]
   | _ -> []
 
-let report_kept config profile paths opt llc cc =
+let report_kept config pgo paths opt llc cc =
   if config.Cli.keep then (
-    let temps = match profile with Some p -> p.temp_paths | None -> [] in
+    let temps =
+      match pgo with Some (Use p) -> p.temp_paths | Some Instrument | None -> []
+    in
     prerr_endline ("fas: kept intermediates: " ^ String.concat ", " (paths @ temps));
     prerr_endline
       (Printf.sprintf
@@ -1112,8 +1203,8 @@ let report_kept config profile paths opt llc cc =
          opt llc cc (profdata ()) (pass_report config)
          (llc_opt config.Cli.optimization)))
 
-let with_debug_c_inputs ~enabled ~pgo config cc f =
-  if not (enabled || pgo <> []) then f config.Cli.link_inputs
+let with_debug_c_inputs ~enabled ~pgo_flags config cc f =
+  if not (enabled || pgo_flags <> []) then f config.Cli.link_inputs
   else
     let objects = ref [] in
     let cleanup () = if not config.Cli.keep then List.iter remove !objects in
@@ -1130,7 +1221,7 @@ let with_debug_c_inputs ~enabled ~pgo config cc f =
                      ([ cc ] @ debug
                      @ [ "-c"; path; "-o"; object_path ]
                      @ host_march config @ config.Cli.c_flags @ c_sanitizer_flags config
-                     @ pgo))
+                     @ pgo_flags))
               in
               compile (object_path :: acc) rest
           | path :: rest -> compile (path :: acc) rest
@@ -1183,7 +1274,7 @@ let build_assembly ?llc_remarks config llc opt_path asm_path =
   in
   Ok generated
 
-let optimize_module ?remarks ~profile config opt ll_path opt_path =
+let optimize_module ?remarks ~pgo config opt ll_path opt_path =
   let* () = verify_llvm opt ll_path in
   let* () =
     let address_scope_option =
@@ -1194,12 +1285,12 @@ let optimize_module ?remarks ~profile config opt ll_path opt_path =
       (Array.of_list
          ([ opt; "-passes=" ^ opt_pass config ]
          @ target_cpu_option config @ remark_option remarks @ address_scope_option
-         @ pgo_opt_flags config profile
+         @ pgo_opt_flags config pgo
          @ [ ll_path; "-S"; "-o"; opt_path ]))
   in
   verify_llvm opt opt_path
 
-let emit_tools_unprotected ?remarks ?llc_remarks ?llvm_text ?(c_debug = false) ~profile
+let emit_tools_unprotected ?remarks ?llc_remarks ?llvm_text ?(c_debug = false) ~pgo
     config program ir c_objects link_flags redirect =
   let* () = ir_budget program (Ir.check_static_data_bytes ~limits ir) in
   let* ll_text =
@@ -1217,8 +1308,8 @@ let emit_tools_unprotected ?remarks ?llc_remarks ?llvm_text ?(c_debug = false) ~
   Fun.protect ~finally:cleanup (fun () ->
       write_file ll_path ll_text;
       let opt, llc, cc = tools () in
-      report_kept config profile [ ll_path; opt_path; asm_path ] opt llc cc;
-      let* () = optimize_module ?remarks ~profile config opt ll_path opt_path in
+      report_kept config pgo [ ll_path; opt_path; asm_path ] opt llc cc;
+      let* () = optimize_module ?remarks ~pgo config opt ll_path opt_path in
       match config.emit with
       | Cli.Asm ->
           let* assembly = build_assembly ?llc_remarks config llc opt_path asm_path in
@@ -1262,10 +1353,15 @@ let emit_tools_unprotected ?remarks ?llc_remarks ?llvm_text ?(c_debug = false) ~
               Ok "")
       | Cli.Executable ->
           let* _ = build_assembly ?llc_remarks config llc opt_path asm_path in
+          let link_flags =
+            match pgo with
+            | Some Instrument -> "-fprofile-generate" :: link_flags
+            | _ -> link_flags
+          in
           with_staged_output config (fun output ->
               let output_config = { config with Cli.output } in
               let* () =
-                with_debug_c_inputs ~enabled:c_debug ~pgo:(pgo_c_flags config profile)
+                with_debug_c_inputs ~enabled:c_debug ~pgo_flags:(pgo_c_flags config pgo)
                   output_config cc (fun link_inputs ->
                     run_tool cc
                       (executable_command
@@ -1276,11 +1372,11 @@ let emit_tools_unprotected ?remarks ?llc_remarks ?llvm_text ?(c_debug = false) ~
       | Cli.Ir | Cli.Ir_json | Cli.Llvm | Cli.Optimized_llvm | Cli.Header ->
           invalid_arg "Driver.emit_tools: non-tool emission")
 
-let emit_tools ?remarks ?llc_remarks ?llvm_text ?c_debug ~profile config program ir
+let emit_tools ?remarks ?llc_remarks ?llvm_text ?c_debug ~pgo config program ir
     c_objects link_flags redirect =
   try
-    emit_tools_unprotected ?remarks ?llc_remarks ?llvm_text ?c_debug ~profile config
-      program ir c_objects link_flags redirect
+    emit_tools_unprotected ?remarks ?llc_remarks ?llvm_text ?c_debug ~pgo config program
+      ir c_objects link_flags redirect
   with
   | Sys_error message ->
       Error [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ]
@@ -1302,7 +1398,7 @@ let with_fas_module_id text =
     in
     "; ModuleID = 'fas'" ^ rest
 
-let emit_optimized_llvm ~profile config program ir redirect =
+let emit_optimized_llvm ~pgo config program ir redirect =
   let* () = ir_budget program (Ir.check_static_data_bytes ~limits ir) in
   let* ll_text =
     render_ir ~redirect
@@ -1315,8 +1411,8 @@ let emit_optimized_llvm ~profile config program ir redirect =
   Fun.protect ~finally:cleanup (fun () ->
       write_file ll_path ll_text;
       let opt, llc, cc = tools () in
-      report_kept config profile [ ll_path; opt_path ] opt llc cc;
-      let* () = optimize_module ~profile config opt ll_path opt_path in
+      report_kept config pgo [ ll_path; opt_path ] opt llc cc;
+      let* () = optimize_module ~pgo config opt ll_path opt_path in
       let* text =
         read_file opt_path
         |> Result.map_error (fun message ->
@@ -1356,8 +1452,8 @@ type imported_c_unit = {
   c_flags : string list;
 }
 
-let compile_c_units ~profile config cc units adapters standard_headers
-    declaration_headers declarations artifacts =
+let compile_c_units ~pgo config cc units adapters standard_headers declaration_headers
+    declarations artifacts =
   let rec compile acc = function
     | [] -> Ok (List.rev acc)
     | unit :: rest -> (
@@ -1448,7 +1544,7 @@ let compile_c_units ~profile config cc units adapters standard_headers
               @ (if Option.is_none unit.assembly && config.Cli.emit <> Cli.Header then
                    c_sanitizer_flags config
                  else [])
-              @ (if Option.is_none unit.assembly then pgo_c_flags config profile else [])
+              @ (if Option.is_none unit.assembly then pgo_c_flags config pgo else [])
               @ (if Option.is_some unit.assembly then
                    [ "-iquote"; Filename.dirname unit.source ]
                  else [])
@@ -1585,7 +1681,7 @@ let manifest_origin line =
 
 let load_program ?overlay ~limits root = load_program_with ?overlay ~limits root
 
-let analyze_resolved ?overlay ?cache ?index ?recovery ?(edits = []) ?profile config =
+let analyze_resolved ?overlay ?cache ?index ?recovery ?(edits = []) ?pgo config =
   let c_artifacts = ref [] in
   let succeeded = ref false in
   Fun.protect
@@ -1920,7 +2016,7 @@ let analyze_resolved ?overlay ?cache ?index ?recovery ?(edits = []) ?profile con
               let* () = ir_budget program (Ir.check_lowered_nodes ~limits ir) in
               let* () = ir_budget program (Ir.check_stack_scratch_bytes ~limits ir) in
               let* c_objects =
-                compile_c_units ~profile config cc (List.rev !c_units) adapters
+                compile_c_units ~pgo config cc (List.rev !c_units) adapters
                   (C_exports.includes declarations)
                   declaration_headers declarations c_artifacts
               in
@@ -2090,8 +2186,8 @@ let recover ?overlay ?cache config =
   attempt 0 []
 
 let run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug
-    ?(link_cache = new_link_cache ()) ~profile config =
-  match complete (analyze_resolved ?profile config) with
+    ?(link_cache = new_link_cache ()) ~pgo config =
+  match complete (analyze_resolved ?pgo config) with
   | Error diagnostics -> Error diagnostics
   | Ok checked ->
       Fun.protect
@@ -2162,23 +2258,22 @@ let run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug
                   write_file path text;
                   let* () = verify_llvm opt path in
                   emit_text config text)
-          | Cli.Optimized_llvm ->
-              emit_optimized_llvm ~profile config program ir redirect
+          | Cli.Optimized_llvm -> emit_optimized_llvm ~pgo config program ir redirect
           | Cli.Asm | Cli.Obj ->
-              emit_tools ?remarks ?llc_remarks ?llvm_text ?c_debug ~profile config
-                program ir c_objects [] redirect
+              emit_tools ?remarks ?llc_remarks ?llvm_text ?c_debug ~pgo config program
+                ir c_objects [] redirect
           | Cli.Executable ->
               let* link_flags =
                 pkg_link_flags ~keep:config.Cli.keep ~cache:link_cache link_pkgs
               in
-              emit_tools ?remarks ?llc_remarks ?llvm_text ?c_debug ~profile config
-                program ir c_objects link_flags redirect)
+              emit_tools ?remarks ?llc_remarks ?llvm_text ?c_debug ~pgo config program
+                ir c_objects link_flags redirect)
 
 let run_unstaged ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache
-    ~profile config =
+    ~pgo config =
   try
     run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache
-      ~profile config
+      ~pgo config
   with
   | Sys_error message ->
       Error [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ]
@@ -2193,14 +2288,14 @@ let run_unstaged ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_
 let same_as_input config =
   canonical_path config.Cli.input = canonical_path config.Cli.output
 
-let run_resolved ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache ~profile config =
+let run_resolved ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache ~pgo config =
   if not config.Cli.output_explicit then
-    run_unstaged ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache ~profile config
+    run_unstaged ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache ~pgo config
   else if same_as_input config then
     Error [ Diag.error Span.synthetic "output path must differ from the input file" ]
   else
     match
-      run_unstaged ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache ~profile config
+      run_unstaged ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache ~pgo config
     with
     | Ok _ as result -> result
     | Error _ as result ->
@@ -2212,7 +2307,8 @@ let output_is_directory config =
   && Sys.file_exists config.Cli.output
   && Sys.is_directory config.Cli.output
 
-let run ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache config =
+let run ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache ?(instrument = false)
+    config =
   if output_is_directory config then
     Error
       [
@@ -2220,7 +2316,9 @@ let run ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache config =
           (Printf.sprintf "output path `%s` is a directory" config.Cli.output);
       ]
   else
-    with_profile config (fun profile ->
+    let with_pgo f =
+      if instrument then f (Some Instrument) else with_profile config f
+    in
+    with_pgo (fun pgo ->
         let* config = resolve_target config in
-        run_resolved ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache ~profile
-          config)
+        run_resolved ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache ~pgo config)
