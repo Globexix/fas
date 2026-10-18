@@ -698,6 +698,13 @@ let ast_int_kind = function
   | Hir.Usize -> Ast.Usize
   | Hir.Isize -> Ast.Isize
 
+let signed_counterpart = function
+  | Hir.U8 | Hir.I8 -> Hir.I8
+  | Hir.U16 | Hir.I16 -> Hir.I16
+  | Hir.U32 | Hir.I32 -> Hir.I32
+  | Hir.U64 | Hir.I64 -> Hir.I64
+  | Hir.Usize | Hir.Isize -> Hir.Isize
+
 let arithmetic_binop = function
   | Ast.Add | Ast.Sub | Ast.Mul | Ast.Div | Ast.Rem | Ast.Shl | Ast.Shr | Ast.Bit_and
   | Ast.Bit_or | Ast.Bit_xor ->
@@ -1062,6 +1069,9 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
       actual = Hir.Float Hir.F32 && expected = Hir.Float Hir.F64
       && Option.fold ~none:false ~some:narrow_float_result expression
     in
+    let signed_to_unsigned =
+      (not (Sema_numeric.is_unsigned actual)) && Sema_numeric.is_unsigned expected
+    in
     let reason =
       match (actual, expected) with
       | Hir.Int _, Hir.Int _
@@ -1107,7 +1117,8 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
     let operand = Option.fold ~none:"value" ~some:Ast.expr_name expression in
     let lane_index_help =
       match (expression, actual, expected) with
-      | Some expression, Hir.Int _, Hir.Int _ when narrow_result && widening_help -> (
+      | Some expression, Hir.Int _, Hir.Int target_kind
+        when narrow_result && widening_help -> (
           match unparenthesized expression with
           | Ast.Select (base_expression, [ Ast.Const_arg index ], _) -> (
               match (unparenthesized base_expression, checked_expression) with
@@ -1119,7 +1130,13 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
                   Some (Hir.Index (base, _, _, _)) ) -> (
                   match Hir.expr_ty base with
                   | Hir.Vec (lanes, Hir.Int _) ->
-                      let vector_ty = diagnostic_ty_name (Hir.Vec (lanes, expected)) in
+                      let element_kind =
+                        if signed_to_unsigned then signed_counterpart target_kind
+                        else target_kind
+                      in
+                      let vector_ty =
+                        diagnostic_ty_name (Hir.Vec (lanes, Hir.Int element_kind))
+                      in
                       let extension =
                         if Sema_numeric.is_unsigned actual then "zext" else "sext"
                       in
@@ -1137,10 +1154,16 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
                       and widened_right =
                         Printf.sprintf "%s[%s](%s)" extension vector_ty right
                       in
-                      Some
-                        (Printf.sprintf "widen vector operands first: `(%s %s %s)[%s]`"
-                           widened_left operator_text widened_right
-                           (Ast.expr_name index))
+                      let widened =
+                        Printf.sprintf "(%s %s %s)[%s]" widened_left operator_text
+                          widened_right (Ast.expr_name index)
+                      in
+                      let widened =
+                        if signed_to_unsigned then
+                          Printf.sprintf "bitcast[%s](%s)" destination widened
+                        else widened
+                      in
+                      Some (Printf.sprintf "widen vector operands first: `%s`" widened)
                   | _ -> None)
               | _ -> None)
           | _ -> None)
@@ -1187,12 +1210,24 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
           let extension =
             if Sema_numeric.is_unsigned actual then Ast.Zext else Ast.Sext
           in
+          let widening_kind =
+            if signed_to_unsigned then signed_counterpart target_kind else target_kind
+          in
           Option.map
             (fun widened ->
+              let widened =
+                if signed_to_unsigned then
+                  Ast.Cast
+                    ( Ast.Bitcast,
+                      Ast.Int (ast_int_kind target_kind),
+                      widened,
+                      Ast.expr_span widened )
+                else widened
+              in
               Printf.sprintf "widen an operand first: `%s`" (Ast.expr_name widened))
             (widened_arithmetic
                ~unsigned:(Sema_numeric.is_unsigned actual)
-               (extension, Ast.Int (ast_int_kind target_kind))
+               (extension, Ast.Int (ast_int_kind widening_kind))
                expression)
       | _, Hir.Int _, Hir.Int _
         when (not (Sema_numeric.is_unsigned actual))

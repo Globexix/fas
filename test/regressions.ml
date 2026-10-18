@@ -19133,6 +19133,108 @@ let () =
     "fn f(value u32) u32 {\n  for i u32 = 0; i < 4; (value) {\n  }\n  return 0\n}\n" 2
     25 7 "`(value)` is not used" None
 
+let widening_help_destinations = [ "i32"; "u32"; "i64"; "u64" ]
+let widening_help_operands = [ "i8"; "i16"; "u8"; "u16" ]
+
+let widening_help_operators =
+  [ "+"; "-"; "*"; "/"; "%"; "<<"; ">>"; "&"; "|"; "^"; "unary -"; "unary ~" ]
+
+let widening_help_cases =
+  [
+    ("+", "s", "t", "s + t");
+    ("-", "s", "t", "s - t");
+    ("*", "s", "t", "s * t");
+    ("/", "s", "t", "s / t");
+    ("%", "s", "t", "s % t");
+    ("<<", "s", "t", "s << t");
+    (">>", "s", "t", "s >> t");
+    ("&", "s", "t", "s & t");
+    ("|", "s", "t", "s | t");
+    ("^", "s", "t", "s ^ t");
+    ("unary -", "s", "t", "-s");
+    ("unary ~", "s", "t", "~s");
+    (">>", "s", "t", "(s / t) >> 1");
+    (">>", "a", "b", "(a + b) >> 1");
+    ("&", "a", "b", "(a + b) & 1");
+    ("|", "a", "b", "(a + b) | 1");
+    ("^", "a", "b", "(a + b) ^ 1");
+  ]
+
+let widening_help_program first second operand destination expression =
+  Printf.sprintf "fn f(%s %s, %s %s) %s {\n  y %s = %s\n  return y\n}\n" first operand
+    second operand destination destination expression
+
+let widening_help_replacement help =
+  match positions help ": `" with
+  | index :: _
+    when String.length help > index + 4 && help.[String.length help - 1] = '`' ->
+      let start = index + 3 in
+      Some (String.sub help start (String.length help - start - 1))
+  | _ -> None
+
+let () =
+  let helped = Hashtbl.create 16 in
+  List.iter
+    (fun (label, first, second, expression) ->
+      List.iter
+        (fun operand ->
+          List.iter
+            (fun destination ->
+              let text =
+                widening_help_program first second operand destination expression
+              in
+              incr checks_run;
+              match Sema.check (expect_ok (Parser.parse (source text))) with
+              | Ok _ -> ()
+              | Error [ { Diag.help = Some help; _ } ] -> (
+                  match widening_help_replacement help with
+                  | None -> ()
+                  | Some replacement -> (
+                      Hashtbl.replace helped label ();
+                      let fixed =
+                        widening_help_program first second operand destination
+                          replacement
+                      in
+                      match Sema.check (expect_ok (Parser.parse (source fixed))) with
+                      | Ok _ -> ()
+                      | Error diagnostics ->
+                          failwith
+                            ("widening help does not compile: " ^ replacement ^ "\n"
+                            ^ Diag.render_all ~source:(Some (source fixed)) diagnostics
+                            )))
+              | Error _ -> ())
+            widening_help_destinations)
+        widening_help_operands)
+    widening_help_cases;
+  List.iter
+    (fun label ->
+      if not (Hashtbl.mem helped label) then
+        failwith ("no widening help produced for operator " ^ label))
+    widening_help_operators
+
+let () =
+  let signed_narrow_source =
+    "fn f(s i16, t i16) u32 {\n  y u32 = (s / t) >> 1\n  return y\n}\n"
+  in
+  semantic_pin "widening-help-signed-narrow-shift" signed_narrow_source 2 11 12
+    "`(s / t) >> 1` is computed in `i16` and may wrap before it reaches `u32`"
+    (Some "widen an operand first: `bitcast[u32](sext[i32](s) / t >> 1)`");
+  conversion_help_twin "widening-help-signed-narrow-shift-compiles" signed_narrow_source
+    "(s / t) >> 1" "bitcast[u32](sext[i32](s) / t >> 1)"
+    "widen an operand first: `bitcast[u32](sext[i32](s) / t >> 1)`";
+  let vector_lane_source =
+    "fn f(v vec[4, i16]) u32 {\n  y u32 = (v * v)[0]\n  return y\n}\n"
+  in
+  semantic_pin "widening-help-vector-lane" vector_lane_source 2 11 10
+    "`(v * v)[0]` is computed in `i16` and may wrap before it reaches `u32`"
+    (Some
+       "widen vector operands first: `bitcast[u32]((sext[vec[4, i32]](v) * sext[vec[4, \
+        i32]](v))[0])`");
+  conversion_help_twin "widening-help-vector-lane-compiles" vector_lane_source
+    "(v * v)[0]" "bitcast[u32]((sext[vec[4, i32]](v) * sext[vec[4, i32]](v))[0])"
+    "widen vector operands first: `bitcast[u32]((sext[vec[4, i32]](v) * sext[vec[4, \
+     i32]](v))[0])`"
+
 let replay_unmatched_bound = 30
 
 let () =
