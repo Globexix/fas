@@ -1,5 +1,6 @@
 import os
 import pathlib
+import resource
 import subprocess
 import tempfile
 import time
@@ -22,9 +23,12 @@ with tempfile.TemporaryDirectory() as directory:
             subprocess.run([opt, '-S', f'-passes=default<O{level}>', str(ir), '-o', str(optimized)], check=True, timeout=5)
             subprocess.run([opt, '-passes=verify', str(optimized), '-disable-output'], check=True)
             start = time.monotonic()
+            before = resource.getrusage(resource.RUSAGE_CHILDREN)
             subprocess.run([compiler, f'-O{level}', str(source), '-o', str(root / 'large')], check=True, timeout=5)
+            after = resource.getrusage(resource.RUSAGE_CHILDREN)
             elapsed = time.monotonic() - start
-            print(f'literal_aggregates: {size} entries O{level}: {elapsed:.3f}s', flush=True)
-            assert elapsed < 1, elapsed
+            cpu = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
+            print(f'literal_aggregates: {size} entries O{level}: {elapsed:.3f}s wall, {cpu:.3f}s cpu', flush=True)
+            assert cpu < 1, cpu
             subprocess.run([str(root / 'large')], check=True)
         assert b'@.literal.' in ir.read_bytes()
