@@ -283,6 +283,39 @@ status=0
 grep -F '"file":null,"line":null,"column":null,"start_offset":null,"end_offset":null' \
   "$WORK/stderr" >/dev/null || fail "synthetic diagnostic fields are not null"
 
+mkdir -p "$WORK/all"
+cat >"$WORK/all/lib.fas" <<'FAS'
+fn lib_bad(p u64) u8 {
+    return p
+}
+FAS
+cat >"$WORK/all/main.fas" <<'FAS'
+use "lib.fas"
+fn f(a u64) u32 {
+    x u32 = a
+    return x
+}
+fn main() i32 {
+    return 0
+}
+FAS
+status=0
+"$OCAML_FAS" check --all-errors "$WORK/all/main.fas" >"$WORK/stdout" 2>"$WORK/stderr" \
+  || status=$?
+[ "$status" -eq 1 ] || fail "--all-errors check exited $status"
+[ "$(grep -c ': error: ' "$WORK/stderr")" -eq 2 ] || fail "--all-errors did not report both errors"
+grep -F '      return p' "$WORK/stderr" >/dev/null || fail "--all-errors lost the use file excerpt"
+grep -F '      x u32 = a' "$WORK/stderr" >/dev/null || fail "--all-errors lost the root file excerpt"
+status=0
+"$OCAML_FAS" check "$WORK/all/main.fas" >"$WORK/stdout" 2>"$WORK/stderr" || status=$?
+[ "$status" -eq 1 ] || fail "check without --all-errors exited $status"
+[ "$(grep -c ': error: ' "$WORK/stderr")" -eq 1 ] || fail "check without --all-errors reported more than one error"
+status=0
+"$OCAML_FAS" -O0 --all-errors "$WORK/all/main.fas" -o "$WORK/all/a.out" >"$WORK/stdout" 2>"$WORK/stderr" \
+  || status=$?
+[ "$status" -eq 1 ] && [ ! -e "$WORK/all/a.out" ] || fail "--all-errors build produced output"
+[ "$(grep -c ': error: ' "$WORK/stderr")" -eq 2 ] || fail "--all-errors build did not report both errors"
+
 best_ms() {
   best=
   for _ in 1 2 3; do

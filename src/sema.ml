@@ -185,7 +185,8 @@ let validate_extern_c_signature ~named_types ~ret_source ~bodyless span params c
 
 let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
     ?(c_nonnull_parameters = []) ?(c_string_parameters = [])
-    ?(c_alloc_size_parameters = []) ?(c_records = []) ?specializations ?index program =
+    ?(c_alloc_size_parameters = []) ?(c_records = []) ?(all_errors = false)
+    ?specializations ?index program =
   let global_names =
     List.filter_map
       (function Ast.Global { name; _ } -> Some name | _ -> None)
@@ -199,6 +200,7 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
            (Limits.budget_profile_name limits))
   in
   let type_node_account = create_type_node_account limits in
+  let recovered = if all_errors then Some (ref []) else None in
   let specializations =
     Option.value specializations ~default:(Sema_specialization.create ())
   in
@@ -430,7 +432,7 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
       ~array_lengths:(Sema_static_env.source_array_lengths program.Ast.items)
       ~eval_context:(base_structs, named_types, early_consts, [])
       ~c_aliases ~c_unsupported ~c_nonnull_parameters ~c_alloc_size_parameters
-      ~c_string_parameters ~top_level_bindings ~limits ~type_node_account
+      ~c_string_parameters ~top_level_bindings ?recovered ~limits ~type_node_account
       specializations program
   in
   let* named_types = collect_named_types String_set.empty [] program.Ast.items in
@@ -628,7 +630,7 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
       ~eval_context:(structs, named_types, consts_ordered, arrays_ordered)
       ~eval_globals ~c_aliases ~c_unsupported ~c_nonnull_parameters
       ~c_alloc_size_parameters ~c_string_parameters ~eager_functions:true
-      ~top_level_bindings ~limits ~type_node_account specializations program
+      ~top_level_bindings ?recovered ~limits ~type_node_account specializations program
   in
   let* named_types = collect_named_types String_set.empty [] program.Ast.items in
   let named_types = add_c_records (add_c_types named_types) in
@@ -821,7 +823,7 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
       specializations;
       spec_depth;
       spec_trace;
-      flow = Sema_flow.create ~initial_scope:false structs;
+      flow = Sema_flow.create ~recover:all_errors ~initial_scope:false structs;
       handle_view_expansion = false;
       expression_depth = 0;
       unresolved_shapes = Hashtbl.create 0;
@@ -887,7 +889,12 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
     in
     let body = Sema_check.check_block context stmts in
     Option.iter Sema_index.leave_body index;
-    let* body = body in
+    let* body =
+      match (body, Sema_flow.recovered context.flow) with
+      | Ok body, [] -> Ok body
+      | Ok _, recorded -> Error recorded
+      | Error diagnostics, recorded -> Error (recorded @ diagnostics)
+    in
     let* () =
       if require_return && ret <> Hir.Void && (Hir.block_flow body).falls_through then
         error diagnostic_span
@@ -966,7 +973,18 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
         Ok ()
     | _ -> Ok ()
   in
-  let* () = Result_list.iter check_func program.items in
+  let collected =
+    ref (match recovered with Some recorded -> !recorded | None -> [])
+  in
+  let continuing result =
+    match result with
+    | Error diagnostics
+      when all_errors && List.for_all Sema_flow.recoverable diagnostics ->
+        collected := List.rev_append diagnostics !collected;
+        Ok ()
+    | result -> result
+  in
+  let* () = Result_list.iter (fun item -> continuing (check_func item)) program.items in
   let rec materialize () =
     match Sema_specialization.take_pending specializations with
     | None -> Ok ()
@@ -1022,8 +1040,12 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
                 ~extra_consts:values ~spec_depth:(sp.depth + 1) ~spec_trace:sp.trace
                 ~require_return:true
             in
-            let* func = result |> trace_result specializations sp.trace in
-            add_func func;
+            let* () =
+              continuing
+                (let* func = result |> trace_result specializations sp.trace in
+                 add_func func;
+                 Ok ())
+            in
             materialize ()
         | Function_payload _ -> materialize ()
         | Struct_payload _ ->
@@ -1031,6 +1053,46 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
               "internal error: struct specialization was queued too late")
   in
   let* () = materialize () in
+  let* () =
+    match !collected with
+    | [] -> Ok ()
+    | collected ->
+        let kept =
+          List.fold_left
+            (fun kept (diagnostic : Diag.t) ->
+              if
+                List.exists
+                  (fun (seen : Diag.t) ->
+                    seen.primary = diagnostic.primary
+                    && seen.message = diagnostic.message)
+                  kept
+              then kept
+              else diagnostic :: kept)
+            [] (List.rev collected)
+          |> List.rev
+        in
+        let files =
+          List.fold_left
+            (fun files (diagnostic : Diag.t) ->
+              if List.mem diagnostic.primary.Span.file files then files
+              else files @ [ diagnostic.primary.Span.file ])
+            [] kept
+        in
+        let rank file =
+          let rec find index = function
+            | [] -> index
+            | name :: rest -> if name = file then index else find (index + 1) rest
+          in
+          find 0 files
+        in
+        Error
+          (List.stable_sort
+             (fun (left : Diag.t) (right : Diag.t) ->
+               compare
+                 (rank left.primary.Span.file, left.primary.Span.start_offset)
+                 (rank right.primary.Span.file, right.primary.Span.start_offset))
+             kept)
+  in
   let* () =
     Sema_invariants.check_materialization
       ~pending:(Sema_specialization.pending_count specializations)
@@ -1104,11 +1166,11 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
       : Hir.program)
 
 let check ?limits ?c_aliases ?c_unsupported ?c_nonnull_parameters ?c_string_parameters
-    ?c_alloc_size_parameters ?c_records ?specializations ?index program =
+    ?c_alloc_size_parameters ?c_records ?all_errors ?specializations ?index program =
   let run () =
     check_program ?limits ?c_aliases ?c_unsupported ?c_nonnull_parameters
-      ?c_string_parameters ?c_alloc_size_parameters ?c_records ?specializations ?index
-      program
+      ?c_string_parameters ?c_alloc_size_parameters ?c_records ?all_errors
+      ?specializations ?index program
   in
   match index with
   | None -> run ()

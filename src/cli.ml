@@ -19,6 +19,7 @@ type t = {
   target : target;
   target_features : string option;
   profile : string option;
+  all_errors : bool;
 }
 
 type perf_mode = Measure | Tune of string option
@@ -82,6 +83,8 @@ let usage =
   \  --emit-asm, -S emit assembly\n\
   \  --emit-obj, -c emit object\n\
   \  --diagnostics=text|json  print diagnostics as text (default) or one JSON line\n\
+  \  --all-errors  report every error in function bodies instead of stopping at the \
+   first\n\
   \  --version     print the fas version and the opt, llc and C compiler in use\n\
   \  -h, --help    show this help\n\
    C inputs:\n\
@@ -125,6 +128,7 @@ let parse_invocation ~subcommand argv =
   let diagnostics = ref Text in
   let target = ref Portable in
   let profile = ref None in
+  let all_errors = ref false in
   let profile_conflict emit =
     match (!profile, emit) with
     | None, _ | Some _, (Optimized_llvm | Asm | Obj | Executable) -> None
@@ -189,6 +193,7 @@ let parse_invocation ~subcommand argv =
                 target = !target;
                 target_features = None;
                 profile = !profile;
+                all_errors = !all_errors;
               }
             in
             Ok (if subcommand = Check_subcommand then Check config else Run config)
@@ -271,6 +276,10 @@ let parse_invocation ~subcommand argv =
           | Error message -> Error message)
       | "--keep" ->
           loop (i + 1) input output emit true optimization optimization_explicit debug
+            no_inline_function
+      | "--all-errors" ->
+          all_errors := true;
+          loop (i + 1) input output emit keep optimization optimization_explicit debug
             no_inline_function
       | "--profile" ->
           if subcommand = Check_subcommand then

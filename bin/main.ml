@@ -9,15 +9,24 @@ let load_source path =
     Some (Source.create ~file:path ~text)
   with Sys_error _ -> None
 
-let diagnostic_source _config = function
-  | diagnostic :: _ -> load_source diagnostic.Diag.primary.Span.file
-  | _ -> None
-
 let report (config : Cli.t) diagnostics =
   match config.diagnostics with
   | Cli.Text ->
-      let source = diagnostic_source config diagnostics in
-      prerr_endline (Diag.render_all ~source diagnostics)
+      let sources = Hashtbl.create 4 in
+      let source (diagnostic : Diag.t) =
+        let file = diagnostic.primary.Span.file in
+        match Hashtbl.find_opt sources file with
+        | Some source -> source
+        | None ->
+            let source = load_source file in
+            Hashtbl.add sources file source;
+            source
+      in
+      prerr_endline
+        (String.concat "\n"
+           (List.map
+              (fun diagnostic -> Diag.render ~source:(source diagnostic) diagnostic)
+              diagnostics))
   | Cli.Json -> prerr_endline (Diag.render_json diagnostics)
 
 let run_program (config : Cli.t) args =

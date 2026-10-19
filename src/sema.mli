@@ -6,6 +6,7 @@ val check :
   ?c_string_parameters:(string * (int * string option) list) list ->
   ?c_alloc_size_parameters:(string * int list list) list ->
   ?c_records:(string * string * string option) list ->
+  ?all_errors:bool ->
   ?specializations:Sema_specialization.t ->
   ?index:Sema_index.t ->
   Ast.program ->

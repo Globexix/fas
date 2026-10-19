@@ -33,7 +33,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     ~generic_const_argument ?eval_context ?(eval_globals = []) ?(array_lengths = [])
     ?(c_aliases = []) ?(c_unsupported = []) ?(c_nonnull_parameters = [])
     ?(c_string_parameters = []) ?(c_alloc_size_parameters = [])
-    ?(eager_functions = false) ~top_level_bindings ~limits ~type_node_account
+    ?(eager_functions = false) ?recovered ~top_level_bindings ~limits ~type_node_account
     specializations program =
   let eval_structs, eval_named_types, eval_consts, eval_arrays =
     match eval_context with
@@ -3164,23 +3164,31 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let* body =
           match body with
           | Ast.Declaration -> Ok Ast.Declaration
-          | Ast.Statements statements ->
-              let body_value_names =
-                List.map (fun (parameter : Ast.param) -> parameter.name) params
-                |> String_set.of_list
+          | Ast.Statements statements -> (
+              let resolved =
+                let body_value_names =
+                  List.map (fun (parameter : Ast.param) -> parameter.name) params
+                  |> String_set.of_list
+                in
+                let* () =
+                  validate_statement_block_duplicates ~scope_names:body_value_names
+                    statements
+                in
+                let* statements =
+                  with_local_values body_value_names (fun () ->
+                      shadowed_constants := body_value_names;
+                      resolve_statements
+                        (resolve_stmt ~defer_const_structs [] 0)
+                        statements)
+                in
+                Ok (Ast.Statements statements)
               in
-              let* () =
-                validate_statement_block_duplicates ~scope_names:body_value_names
-                  statements
-              in
-              let* statements =
-                with_local_values body_value_names (fun () ->
-                    shadowed_constants := body_value_names;
-                    resolve_statements
-                      (resolve_stmt ~defer_const_structs [] 0)
-                      statements)
-              in
-              Ok (Ast.Statements statements)
+              match (resolved, recovered) with
+              | Error diagnostics, Some recorded
+                when List.for_all Sema_flow.recoverable diagnostics ->
+                  recorded := List.rev_append diagnostics !recorded;
+                  Ok Ast.Declaration
+              | resolved, _ -> resolved)
         in
         inference_types := [];
         inference_raw_view_types := [];

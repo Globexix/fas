@@ -900,7 +900,7 @@ let render_program program =
   text "\n";
   Buffer.contents buffer
 
-let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
+let expanded_walker ~identifiers ~limit =
   let total = ref 0 in
   let failed = ref None in
   let count span =
@@ -1060,8 +1060,18 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
           go_ty span ret;
           match body with Statements xs -> go_stmts xs | Declaration -> ()))
   in
+  (go_item, go_stmt, total, failed)
+
+let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
+  let go_item, _, total, failed = expanded_walker ~identifiers ~limit in
   List.iter go_item program.items;
   (!total, !failed)
+
+let stmt_names statement =
+  let identifiers = ref [] in
+  let _, go_stmt, _, _ = expanded_walker ~identifiers ~limit:max_int in
+  go_stmt statement;
+  List.sort_uniq String.compare !identifiers
 
 let count_expanded_nodes program = fst (fold_expanded_nodes ~limit:max_int program)
 

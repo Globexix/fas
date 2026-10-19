@@ -171,6 +171,7 @@ let config_for state key : Cli.t =
     target = state.options.lsp_target;
     target_features = None;
     profile = None;
+    all_errors = false;
   }
 
 let lsp_message (diag : Diag.t) =

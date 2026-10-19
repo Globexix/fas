@@ -1902,8 +1902,8 @@ let analyze_resolved ?overlay ?cache ?index ?recovery ?(edits = []) ?pgo config 
           let specializations = Sema_specialization.create () in
           let* hir =
             match
-              Sema.check ?index ~limits ~c_aliases:imported.aliases
-                ~c_unsupported:imported.unsupported
+              Sema.check ?index ~limits ~all_errors:config.Cli.all_errors
+                ~c_aliases:imported.aliases ~c_unsupported:imported.unsupported
                 ~c_nonnull_parameters:imported.nonnull_parameters
                 ~c_string_parameters:imported.c_string_parameters
                 ~c_alloc_size_parameters:imported.alloc_size_parameters

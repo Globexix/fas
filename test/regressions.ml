@@ -903,6 +903,34 @@ let parse_error_message name fragment text =
   if not (contains rendered fragment) then
     failwith (name ^ ": unexpected diagnostic: " ^ rendered)
 
+let all_errors_pin name text expected =
+  incr checks_run;
+  let program = expect_ok (Parser.parse (source text)) in
+  let shown diagnostics =
+    List.map
+      (fun (diagnostic : Diag.t) -> (diagnostic.primary.Span.line, diagnostic.message))
+      diagnostics
+  in
+  let render diagnostics =
+    String.concat "; "
+      (List.map
+         (fun (line, message) -> string_of_int line ^ ": " ^ message)
+         diagnostics)
+  in
+  (match Sema.check ~all_errors:true program with
+  | Error diagnostics when shown diagnostics = expected -> ()
+  | Error diagnostics ->
+      failwith
+        (name ^ ": expected [" ^ render expected ^ "], got ["
+        ^ render (shown diagnostics)
+        ^ "]")
+  | Ok _ -> failwith (name ^ ": expected rejection"));
+  match (Sema.check program, expected) with
+  | Error [ diagnostic ], first :: _ when shown [ diagnostic ] = [ first ] -> ()
+  | Error diagnostics, _ ->
+      failwith (name ^ ": without --all-errors got [" ^ render (shown diagnostics) ^ "]")
+  | Ok _, _ -> failwith (name ^ ": expected rejection without --all-errors")
+
 let cli_error name fragment args =
   incr checks_run;
   match Cli.parse (Array.of_list ("fas" :: args)) with
@@ -2408,6 +2436,117 @@ let () =
     contains pruned_dispatch "C=usize:0"
     || not (contains pruned_dispatch "N=usize:3;1:C=usize:1")
   then failwith "pruned-return-no-dead-instances";
+  all_errors_pin "all-errors-casts"
+    "fn f(a u64, b u32) u8 {\n\
+    \    x u32 = a\n\
+    \    y u64 = b + x\n\
+    \    z u64 = y\n\
+    \    return z\n\
+     }\n\
+     fn g(a u64) u8 {\n\
+    \    return a\n\
+     }\n\
+     fn main() i32 {\n\
+    \    q i32 = f(1, 2) + g(3)\n\
+    \    return q\n\
+     }\n"
+    [
+      (2, "cannot assign `u64` to `u32`: values above 4294967295 would be lost");
+      (3, "`b + x` is computed in `u32` and may wrap before it reaches `u64`");
+      (5, "cannot return `u64` as `u8`: values above 255 would be lost");
+      (8, "cannot return `u64` as `u8`: values above 255 would be lost");
+      (11, "`f(1, 2) + g(3)` is computed in `u8` and may wrap before it reaches `i32`");
+    ];
+  all_errors_pin "all-errors-no-cascade"
+    "fn a1(p u64) u32 {\n\
+    \    x u32\n\
+    \    x = p\n\
+    \    return x\n\
+     }\n\
+     fn a2(p u64) u64 {\n\
+    \    t arr[4, u64] = {}\n\
+    \    i u64 = 10\n\
+    \    i = p + true\n\
+    \    return t[i]\n\
+     }\n\
+     fn a3(p u64) u64 {\n\
+    \    s u64 = 0\n\
+    \    for i u64 = 0; i < p; i += 1 {\n\
+    \        if i == 3 {\n\
+    \            v u32 = i\n\
+    \            break\n\
+    \        }\n\
+    \        s += i\n\
+    \    }\n\
+    \    return s\n\
+     }\n\
+     fn a4(p u64) u64 {\n\
+    \    defer {\n\
+    \        z u8 = p\n\
+    \    }\n\
+    \    return p\n\
+     }\n\
+     fn a5(p u64) u64 {\n\
+    \    if p > 1 {\n\
+    \        return p + true\n\
+    \    }\n\
+    \    return p\n\
+     }\n\
+     fn main() i32 {\n\
+    \    return 0\n\
+     }\n"
+    [
+      (3, "cannot assign `u64` to `u32`: values above 4294967295 would be lost");
+      (9, "operands of `+` have different types: `u64` and `bool`");
+      (16, "cannot assign `u64` to `u32`: values above 4294967295 would be lost");
+      (25, "cannot assign `u64` to `u8`: values above 255 would be lost");
+      (31, "operands of `+` have different types: `u64` and `bool`");
+    ];
+  all_errors_pin "all-errors-unresolved-locals"
+    "fn a(p u64) u64 {\n\
+    \    w Nope = p\n\
+    \    return w + q\n\
+     }\n\
+     fn b(p u64) u64 {\n\
+    \    p u32 = 1\n\
+    \    return 0\n\
+     }\n\
+     fn c(p u64) u8 {\n\
+    \    return a(p) + 1\n\
+     }\n\
+     fn main() i32 {\n\
+    \    return 0\n\
+     }\n"
+    [
+      (2, "unknown type `Nope`");
+      (6, "duplicate local `p`");
+      (10, "cannot return `u64` as `u8`: values above 255 would be lost");
+    ];
+  all_errors_pin "all-errors-instances"
+    "fn pick[T](x T) u8 {\n\
+    \    y u8 = x\n\
+    \    k u8 = 300\n\
+    \    return y\n\
+     }\n\
+     fn main() i32 {\n\
+    \    v u64 = 1\n\
+    \    w u32 = 2\n\
+    \    a u8 = pick(v)\n\
+    \    b u8 = pick(w)\n\
+    \    c u8 = pick(v)\n\
+    \    return 0\n\
+     }\n"
+    [
+      (2, "cannot assign `u64` to `u8`: values above 255 would be lost");
+      (2, "cannot assign `u32` to `u8`: values above 255 would be lost");
+      (3, "integer literal is out of range for u8: `300`");
+    ];
+  (match (cli_run [ "--all-errors"; "x.fas" ]).all_errors with
+  | true -> ()
+  | false -> failwith "all-errors-flag");
+  (match (cli_run [ "x.fas" ]).all_errors with
+  | false -> ()
+  | true -> failwith "all-errors-default-off");
   let uninitialized_aggregate_llvm =
     llvm_of "struct S { x i64 y i64 }\nfn f() i64 { s S\n s.x = 1\n return s.x }\n"
   in

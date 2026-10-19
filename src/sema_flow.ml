@@ -86,6 +86,7 @@ type t = {
   mutable defer_scopes : checked_defer list list;
   mutable falls_through : bool;
   mutable checking_dead : bool;
+  mutable recovered : Diag.t list option;
 }
 
 let error span message = Error [ Diag.error span message ]
@@ -95,7 +96,7 @@ let ( let* ) result continuation =
   | Error diagnostics -> Error diagnostics
   | Ok value -> continuation value
 
-let create ~initial_scope structs =
+let create ?(recover = false) ~initial_scope structs =
   {
     structs;
     locals = ref (if initial_scope then [ Hashtbl.create 8 ] else []);
@@ -118,6 +119,7 @@ let create ~initial_scope structs =
     defer_scopes = [];
     falls_through = true;
     checking_dead = false;
+    recovered = (if recover then Some [] else None);
   }
 
 let lookup_local name flow =
@@ -1050,3 +1052,98 @@ let finish_defer flow capture checked ~falls_through:body_falls_through =
            :: rest
      | [] -> ());
   Ok body
+
+type checkpoint = {
+  state : snapshot;
+  locals : (string, binding) Hashtbl.t list;
+  view_origins : (int, (binding * place_path) option) Hashtbl.t;
+  view_accesses : (int, view_access) Hashtbl.t;
+  view_readonly_names : (int, string) Hashtbl.t;
+  raw_view_types : (int, Hir.ty) Hashtbl.t;
+  call_objects : (Span.t * string * int64) list;
+  loop_depth : int;
+  loop_init_flows : loop_init_flow list;
+  loops : (snapshot list * snapshot list * bool * bool) list;
+  in_defer : bool;
+  collecting_defer : deferred_requirement list option;
+  defer_scopes : checked_defer list list;
+  falls_through : bool;
+  checking_dead : bool;
+}
+
+let recovering flow = Option.is_some flow.recovered
+
+let record flow diagnostics =
+  Option.iter
+    (fun recorded -> flow.recovered <- Some (List.rev_append diagnostics recorded))
+    flow.recovered
+
+let recovered flow = List.rev (Option.value flow.recovered ~default:[])
+
+let checkpoint flow =
+  {
+    state = snapshot flow;
+    locals = !(flow.locals);
+    view_origins = Hashtbl.copy flow.view_origins;
+    view_accesses = Hashtbl.copy flow.view_accesses;
+    view_readonly_names = Hashtbl.copy flow.view_readonly_names;
+    raw_view_types = Hashtbl.copy flow.raw_view_types;
+    call_objects = flow.call_objects;
+    loop_depth = flow.loop_depth;
+    loop_init_flows = flow.loop_init_flows;
+    loops =
+      List.map
+        (fun loop ->
+          (loop.break_states, loop.continue_states, loop.induction_valid, loop.stepping))
+        flow.loop_init_flows;
+    in_defer = flow.in_defer;
+    collecting_defer = flow.collecting_defer;
+    defer_scopes = flow.defer_scopes;
+    falls_through = flow.falls_through;
+    checking_dead = flow.checking_dead;
+  }
+
+let rewind flow (saved : checkpoint) =
+  let refill table copy =
+    Hashtbl.reset table;
+    Hashtbl.iter (Hashtbl.replace table) copy
+  in
+  restore flow saved.state;
+  flow.locals := saved.locals;
+  refill flow.view_origins saved.view_origins;
+  refill flow.view_accesses saved.view_accesses;
+  refill flow.view_readonly_names saved.view_readonly_names;
+  refill flow.raw_view_types saved.raw_view_types;
+  flow.call_objects <- saved.call_objects;
+  flow.loop_depth <- saved.loop_depth;
+  flow.loop_init_flows <- saved.loop_init_flows;
+  List.iter2
+    (fun loop (breaks, continues, induction_valid, stepping) ->
+      loop.break_states <- breaks;
+      loop.continue_states <- continues;
+      loop.induction_valid <- induction_valid;
+      loop.stepping <- stepping)
+    saved.loop_init_flows saved.loops;
+  flow.in_defer <- saved.in_defer;
+  flow.collecting_defer <- saved.collecting_defer;
+  flow.defer_scopes <- saved.defer_scopes;
+  flow.falls_through <- saved.falls_through;
+  flow.checking_dead <- saved.checking_dead
+
+let forget_facts flow =
+  forget_all_values flow;
+  forget_all_addresses flow;
+  forget_all_masks flow
+
+let recoverable (diagnostic : Diag.t) =
+  let mentions needle =
+    let size = String.length needle and total = String.length diagnostic.message in
+    let rec at index =
+      index + size <= total
+      && (String.sub diagnostic.message index size = needle || at (index + 1))
+    in
+    at 0
+  in
+  not
+    (String.starts_with ~prefix:"internal error:" diagnostic.message
+    || mentions "(profile ")

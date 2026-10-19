@@ -4762,13 +4762,59 @@ let rec check_block (c : context) stmts =
         let out = List.rev acc in
         let* () = Sema_flow.finish_block_scope c.flow in
         Ok out
-    | s :: rest ->
+    | s :: rest -> (
         let before = Sema_flow.snapshot c.flow in
-        let* x = check_stmt c s in
-        Sema_flow.finish_statement c.flow ~before ~terminates:(stmt_terminates s);
-        go (x :: acc) rest
+        let saved =
+          if Sema_flow.recovering c.flow then
+            Some
+              (Sema_flow.checkpoint c.flow, c.expression_depth, c.handle_view_expansion)
+          else None
+        in
+        match (check_stmt c s, saved) with
+        | Ok x, _ ->
+            Sema_flow.finish_statement c.flow ~before ~terminates:(stmt_terminates s);
+            go (x :: acc) rest
+        | Error diagnostics, Some (checkpoint, depth, expansion)
+          when List.for_all Sema_flow.recoverable diagnostics ->
+            Sema_flow.record c.flow diagnostics;
+            Sema_flow.rewind c.flow checkpoint;
+            c.expression_depth <- depth;
+            c.handle_view_expansion <- expansion;
+            let continues = recover_stmt c s in
+            Sema_flow.finish_statement c.flow ~before ~terminates:(stmt_terminates s);
+            let acc = match placeholder s with Some x -> x :: acc | None -> acc in
+            if continues then go acc rest else go acc []
+        | Error diagnostics, _ -> Error diagnostics)
   in
   go [] stmts
+
+and recover_stmt c s =
+  Sema_flow.forget_facts c.flow;
+  List.iter
+    (fun name ->
+      match lookup_local name c with Some binding -> mark_init binding c | None -> ())
+    (Ast.stmt_names s);
+  match s with
+  | Ast.Let { name; ty; ty_span; span; _ } -> (
+      match source_ty_in_context c ty_span ty with
+      | Error _ -> false
+      | Ok t -> (
+          match ensure_new_local name c span with
+          | Error _ -> true
+          | Ok () -> (
+              match add_local name t c span with
+              | Ok binding ->
+                  mark_init binding c;
+                  true
+              | Error _ -> false)))
+  | Ast.View _ -> false
+  | _ -> true
+
+and placeholder = function
+  | Ast.Break (target, s) -> Some (Hir.Break (Option.map fst target, s))
+  | Ast.Continue (target, s) -> Some (Hir.Continue (Option.map fst target, s))
+  | s when stmt_terminates s -> Some (Hir.Return (None, Ast.stmt_span s))
+  | _ -> None
 
 and check_stmt (c : context) = function
   | Ast.Let { name; ty; ty_span; init; span } -> (

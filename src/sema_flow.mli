@@ -25,7 +25,7 @@ type loop
 type defer_capture
 type t
 
-val create : initial_scope:bool -> Hir.struct_def list -> t
+val create : ?recover:bool -> initial_scope:bool -> Hir.struct_def list -> t
 val lookup_local : string -> t -> binding option
 val local_names : t -> string list
 val ensure_new_local : string -> t -> Span.t -> (unit, Diag.t list) result
@@ -125,3 +125,13 @@ val finish_defer :
   ('a, Diag.t list) result ->
   falls_through:('a -> bool) ->
   ('a, Diag.t list) result
+
+type checkpoint
+
+val recoverable : Diag.t -> bool
+val recovering : t -> bool
+val record : t -> Diag.t list -> unit
+val recovered : t -> Diag.t list
+val checkpoint : t -> checkpoint
+val rewind : t -> checkpoint -> unit
+val forget_facts : t -> unit

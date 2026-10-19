@@ -19,6 +19,7 @@ type t = {
   target : target;
   target_features : string option;
   profile : string option;
+  all_errors : bool;
 }
 
 type perf_mode = Measure | Tune of string option
