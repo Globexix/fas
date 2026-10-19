@@ -8,6 +8,7 @@ type t = {
   max_rendered_ir_bytes : int;
   max_specializations : int;
   max_specialization_depth : int;
+  max_const_loop_iterations : int;
   max_aggregate_elements : int;
   max_object_alignment : int;
   max_object_size : int;
@@ -35,6 +36,7 @@ let for_budget_version version =
         max_rendered_ir_bytes = 32_000_000;
         max_specializations = 10_000;
         max_specialization_depth = 64;
+        max_const_loop_iterations = 4_096;
         max_aggregate_elements = 1_000_000;
         max_object_alignment = 1_048_576;
         max_object_size = 1_073_741_824;

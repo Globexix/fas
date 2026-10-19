@@ -8,6 +8,7 @@ type t = {
   max_rendered_ir_bytes : int;
   max_specializations : int;
   max_specialization_depth : int;
+  max_const_loop_iterations : int;
   max_aggregate_elements : int;
   max_object_alignment : int;
   max_object_size : int;

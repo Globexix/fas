@@ -320,9 +320,55 @@ fn commented(x u32) u32 { /* inline block */ return x // trailing
       (comment)))
   (comment))
 
-================================================================================
+================================================================================================================================
+const loops
+================================================================================================================================
+fn spread[N const usize](x u32) u32 {
+  for const i usize in 0..N + 1 {
+    for const j u8 in 0..4 { continue }
+    x += i
+  }
+  return x
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    (identifier)
+    (generic_params
+      (generic_param
+        (identifier)
+        (primitive_type)))
+    (parameter_list
+      (identifier)
+      (primitive_type))
+    (primitive_type)
+    (block
+      (const_for_statement
+        (identifier)
+        (primitive_type)
+        (integer)
+        (binary_expression
+          (identifier)
+          (integer))
+        (block
+          (const_for_statement
+            (identifier)
+            (primitive_type)
+            (integer)
+            (integer)
+            (block
+              (continue_statement)))
+          (assignment
+            (identifier)
+            (identifier))))
+      (return_statement
+        (identifier)))))
+
+================================
 return forms
-================================================================================
+================================
 fn bare() void { return }
 fn value() u32 { return 1 + 2 }
 

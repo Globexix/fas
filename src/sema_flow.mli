@@ -132,6 +132,8 @@ val recoverable : Diag.t -> bool
 val recovering : t -> bool
 val record : t -> Diag.t list -> unit
 val recovered : t -> Diag.t list
+val recovered_count : t -> int
+val map_recovered_since : t -> int -> (Diag.t -> Diag.t) -> unit
 val checkpoint : t -> checkpoint
 val rewind : t -> checkpoint -> unit
 val forget_facts : t -> unit

@@ -110,7 +110,10 @@ let lex ?(limits = Limits.default) source =
           ]
       else if is_digit c then
         let rec number_end i =
-          if i < n && (is_ident_continue text.[i] || text.[i] = '_' || text.[i] = '.')
+          if
+            i < n
+            && (is_ident_continue text.[i] || text.[i] = '_' || text.[i] = '.')
+            && not (text.[i] = '.' && i + 1 < n && text.[i + 1] = '.')
           then number_end (i + 1)
           else if
             i < n
@@ -392,6 +395,9 @@ let lex ?(limits = Limits.default) source =
             let sp = Source.span source ~start_offset:offset ~end_offset:(offset + 3) in
             loop (offset + 3) (count + 1)
               ({ Token.kind = Ellipsis; span = sp } :: tokens)
+        | '.' when offset + 1 < n && text.[offset + 1] = '.' ->
+            let sp = Source.span source ~start_offset:offset ~end_offset:(offset + 2) in
+            loop (offset + 2) (count + 1) ({ Token.kind = Dot_dot; span = sp } :: tokens)
         | '.' -> one Dot
         | '+' -> two '=' Plus Plus_eq
         | '-' -> two '=' Minus Minus_eq

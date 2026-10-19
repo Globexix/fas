@@ -233,7 +233,12 @@ let refer index use_span (declaration : declaration) =
 
 let rec statement_children = function
   | Ast.If (_, yes, no, _) -> yes @ Option.value ~default:[] no
-  | Ast.While (_, _, body, _) | Ast.Defer (body, _) | Ast.Block (body, _) -> body
+  | Ast.While (_, _, body, _)
+  | Ast.Defer (body, _)
+  | Ast.Block (body, _)
+  | Ast.Const_for { body; _ }
+  | Ast.Const_copy { body; _ } ->
+      body
   | Ast.For (_, init, _, step, body, _) ->
       Option.to_list init @ Option.to_list step @ body
   | Ast.Switch (_, cases, default, _) ->
@@ -252,7 +257,8 @@ and statement_expressions = function
   | Ast.For (_, _, condition, _, _, _) -> Option.to_list condition
   | Ast.Switch (subject, cases, _, _) -> subject :: List.concat_map fst cases
   | Ast.Expr_stmt (value, _, _) -> [ value ]
-  | Ast.Break _ | Ast.Continue _ | Ast.Defer _ | Ast.Block _ -> []
+  | Ast.Const_for { low; high; _ } -> [ low; high ]
+  | Ast.Break _ | Ast.Continue _ | Ast.Defer _ | Ast.Block _ | Ast.Const_copy _ -> []
 
 and target_expressions = function
   | Ast.Target_ident _ -> []
@@ -539,6 +545,10 @@ let reference_program index ~instantiated (program : Ast.program) =
             ty owner shadowed local_ty;
             name :: shadowed
         | Ast.View { name; _ } -> name :: shadowed
+        | Ast.Const_for { name; ty = index_ty; body = statements; _ } ->
+            ty owner shadowed index_ty;
+            ignore (body owner (name :: shadowed) statements);
+            shadowed
         | Ast.For (_, init, _, step, statements, _) ->
             let inner = body owner shadowed (Option.to_list init) in
             ignore (body owner inner (Option.to_list step @ statements));
@@ -550,7 +560,8 @@ let reference_program index ~instantiated (program : Ast.program) =
               | Ast.If (_, yes, no, _) -> yes :: Option.to_list no
               | Ast.While (_, _, statements, _)
               | Ast.Defer (statements, _)
-              | Ast.Block (statements, _) ->
+              | Ast.Block (statements, _)
+              | Ast.Const_copy { body = statements; _ } ->
                   [ statements ]
               | Ast.Switch (_, cases, default, _) ->
                   List.map snd cases @ Option.to_list default

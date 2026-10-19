@@ -359,7 +359,11 @@ let replay_nodes index (program : Ast.program) =
         run condition;
         List.iter stmt body
     | Break _ | Continue _ -> ()
-    | Defer (body, _) | Block (body, _) -> List.iter stmt body
+    | Defer (body, _) | Block (body, _) | Const_copy { body; _ } -> List.iter stmt body
+    | Const_for { low; high; body; _ } ->
+        run low;
+        run high;
+        List.iter stmt body
     | Expr_stmt (operand, _, _) -> run operand
     | For (_, initial, condition, step, body, _) ->
         Option.iter stmt initial;
@@ -19665,6 +19669,172 @@ let () =
     "(v * v)[0]" "bitcast[u32]((sext[vec[4, i32]](v) * sext[vec[4, i32]](v))[0])"
     "widen vector operands first: `bitcast[u32]((sext[vec[4, i32]](v) * sext[vec[4, \
      i32]](v))[0])`"
+
+let () =
+  semantic_accept "const-loop-array-size-and-generic-argument"
+    "fn scale[K const usize](x usize) usize { return x * K }\n\
+     fn f() usize {\n\
+    \  total usize = 0\n\
+    \  for const i usize in 0..4 {\n\
+    \    a arr[i + 1, u8] = {}\n\
+    \    total += scale[i](len(a))\n\
+    \  }\n\
+    \  return total\n\
+     }\n";
+  semantic_accept "const-loop-prunes-per-copy"
+    "fn f(x u32) u32 {\n\
+    \  for const i u32 in 0..3 {\n\
+    \    if i != 0 { x += 10 / i }\n\
+    \  }\n\
+    \  return x\n\
+     }\n";
+  semantic_accept "const-loop-nested"
+    "fn f(x u64) u64 {\n\
+    \  for const i u64 in 0..3 {\n\
+    \    for const j u64 in i..3 {\n\
+    \      if j == 1 { continue }\n\
+    \      x = x * 3 + i * j\n\
+    \    }\n\
+    \  }\n\
+    \  return x\n\
+     }\n";
+  semantic_accept "const-loop-copy-scopes"
+    "fn f() u32 {\n\
+    \  t u32 = 0\n\
+    \  for const i u32 in 0..3 {\n\
+    \    y u32 = i\n\
+    \    t += y\n\
+    \  }\n\
+    \  return t\n\
+     }\n";
+  semantic_accept "const-loop-empty-range"
+    "fn f() u32 {\n\
+    \  for const i u32 in 3..3 { return 1 }\n\
+    \  for const i i32 in 2..-2 { return 2 }\n\
+    \  return 0\n\
+     }\n";
+  semantic_accept "const-loop-budget-boundary"
+    "fn f() void {\n  for const i u32 in 0..4096 { }\n}\n";
+  let generic_loop =
+    expect_ok
+      (Parser.parse
+         (source
+            "fn scale[K const u32](x u32) u32 { return x * K }\n\
+             fn sum[N const u32](x u32) u32 {\n\
+            \  t u32 = 0\n\
+            \  for const i u32 in 0..N { t += scale[i + 1](x) }\n\
+            \  return t\n\
+             }\n\
+             fn f(x u32) u32 { return sum[3](x) + sum[5](x) }\n"))
+    |> Sema.check |> expect_ok
+  in
+  let instances name =
+    List.length
+      (List.filter
+         (fun (func : Hir.func) -> contains func.name (name ^ "$spec$"))
+         generic_loop.Hir.funcs)
+  in
+  if instances "scale" <> 5 || instances "sum" <> 2 then
+    failwith "const-loop-generic-bounds: unexpected instance counts";
+  semantic_pin "const-loop-break"
+    "fn f() void {\n  for const i u32 in 0..4 { break }\n}\n" 2 29 5
+    "`break` cannot leave a `for const` loop; its copies are straight-line code" None;
+  syntax_pin "const-loop-label"
+    "fn f() void {\n  outer: for const i u32 in 0..4 { }\n}\n" 2 3 5
+    "a `for const` loop cannot have a label";
+  syntax_pin "const-loop-missing-in" "fn f() void {\n  for const i u32 0..4 { }\n}\n" 2
+    19 1 "expected `in` after `for const i u32`";
+  semantic_pin "const-loop-budget"
+    "fn f() void {\n  for const i u32 in 0..4097 { }\n}\n" 2 3 3
+    "`for const` loop has 4097 iterations: budget max_const_loop_iterations of 4096 \
+     (profile 0.1.5)"
+    None;
+  let third =
+    "fn f(x u32) u32 {\n\
+    \  for const i u32 in 0..5 {\n\
+    \    if i == 3 { x = x / 0 }\n\
+    \  }\n\
+    \  return x\n\
+     }\n"
+  in
+  semantic_message "const-loop-iteration-error"
+    "division by zero is not a defined runtime operation" third;
+  semantic_note "const-loop-iteration-note" "in iteration `i = 3`" third;
+  semantic_accept "const-loop-half-open"
+    "fn f(x u8) u8 {\n\
+    \  for const i u8 in 0..3 {\n\
+    \    if i == 3 { x = x / 0 }\n\
+    \  }\n\
+    \  return x\n\
+     }\n";
+  semantic_note "const-loop-first-value" "in iteration `i = 0`"
+    "fn f(x u8) u8 {\n\
+    \  for const i u8 in 0..3 {\n\
+    \    if i == 0 { x = x / 0 }\n\
+    \  }\n\
+    \  return x\n\
+     }\n";
+  semantic_note "const-loop-signed-note" "in iteration `i = -2`"
+    "fn f(x i32) i32 {\n\
+    \  for const i i32 in -3..0 {\n\
+    \    if i == -2 { x = x / 0 }\n\
+    \  }\n\
+    \  return x\n\
+     }\n";
+  all_errors_pin "const-loop-independent-error-once"
+    "fn f() void {\n  for const i u32 in 0..4 {\n    x u32 = 1 + true\n  }\n}\n"
+    [ (3, "operator `+` needs integer or integer vector operands, got `bool`") ];
+  semantic_pin "const-loop-shadows-local"
+    "fn f() void {\n  i u32 = 0\n  for const i u32 in 0..2 { }\n}\n" 3 3 3
+    "`for const` index `i` shadows a local of the same name" None;
+  semantic_message "const-loop-shadows-index"
+    "`for const` index `i` shadows a constant of the same name"
+    "fn f() void {\n  for const i u32 in 0..2 { for const i u32 in 0..2 { } }\n}\n";
+  semantic_message "const-loop-shadows-generic-constant"
+    "`for const` index `N` shadows a constant of the same name"
+    "fn g[N const u32]() void {\n\
+    \  for const N u32 in 0..2 { }\n\
+     }\n\
+     fn f() void { g[1]() }\n";
+  semantic_pin "const-loop-float-index"
+    "fn f() void {\n  for const i f32 in 0..2 { }\n}\n" 2 15 3
+    "a `for const` index must have an integer type" None;
+  semantic_message "const-loop-bound-out-of-range"
+    "integer literal is out of range for u8: `256`"
+    "fn f() void {\n  for const i u8 in 0..256 { }\n}\n";
+  semantic_pin "const-loop-runtime-bound"
+    "fn f(n u32) void {\n  for const i u32 in 0..n { }\n}\n" 2 25 1
+    "`for const` bounds must be compile-time constants" None;
+  semantic_message "const-loop-index-redeclared" "duplicate local `i`"
+    "fn f() void {\n  for const i u8 in 0..2 { i u8 = 1 }\n}\n";
+  let node_limits = { Limits.default with max_ast_nodes = 1000 } in
+  let node_check count =
+    Sema.check ~limits:node_limits
+      (expect_ok
+         (Parser.parse
+            (source
+               (Printf.sprintf
+                  "fn f() u32 {\n\
+                  \  x u32 = 0\n\
+                  \  for const i u32 in 0..%d { x += i }\n\
+                  \  return x\n\
+                   }\n"
+                  count))))
+  in
+  ignore (expect_ok (node_check 10));
+  (match node_check 1000 with
+  | Error [ diagnostic ]
+    when diagnostic.Diag.message
+         = "cumulative expanded AST nodes exceed budget max_ast_nodes of 1000 (profile \
+            0.1.5)" ->
+      ()
+  | Error diagnostics ->
+      failwith
+        ("const-loop-node-budget: unexpected diagnostic: "
+        ^ Diag.render_all ~source:None diagnostics)
+  | Ok _ -> failwith "const-loop-node-budget: expected rejection");
+  semantic_message "const-loop-index-scope" "unknown name `i`"
+    "fn f() u8 {\n  for const i u8 in 0..2 { }\n  return i\n}\n"
 
 let replay_unmatched_bound = 30
 

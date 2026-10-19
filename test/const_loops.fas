@@ -1,0 +1,167 @@
+extern "C" {
+  fn printf(format addr, ...) i32
+}
+
+fn mix4(x u32) u32 {
+  for const i u32 in 0..4 {
+    x = x * 31 + i
+  }
+  return x
+}
+
+fn skip4(x u32) u32 {
+  for const i u32 in 0..4 {
+    if x == i { continue }
+    x += i * 7
+  }
+  return x
+}
+
+fn scale[K const u32](x u32) u32 {
+  return x * K + K
+}
+
+fn sizes() usize {
+  total usize = 0
+  for const i usize in 0..5 {
+    a arr[i + 1, u8] = {}
+    total += len(a) * (i + 3)
+  }
+  return total
+}
+
+fn pruned(x u32) u32 {
+  for const i u32 in 0..6 {
+    if i == 0 {
+      x += 1000
+    } else if i % 2 == 0 {
+      x = scale[i](x)
+    } else {
+      x ^= i << 4
+    }
+  }
+  return x
+}
+
+fn triangle(x u64) u64 {
+  for const i u64 in 0..5 {
+    for const j u64 in i..5 {
+      if j == 3 { continue }
+      x = x * 3 + i * 10 + j
+    }
+  }
+  return x
+}
+
+fn signed_range(x i64) i64 {
+  for const i i64 in -3..3 {
+    x = x * 2 + i
+  }
+  for const i i64 in 5..5 {
+    x = 0
+  }
+  for const i i64 in 5..2 {
+    x = 0
+  }
+  return x
+}
+
+fn narrow(x i32, y u8) i32 {
+  for const i i32 in -3..2 {
+    x = x * 3 + i
+  }
+  for const i u8 in 250..255 {
+    y ^= i
+  }
+  for const i i8 in -128..-125 {
+    x += sext[i32](i)
+  }
+  return x + zext[i32](y)
+}
+
+fn window[N const usize](values addr) u64 {
+  total u64 = 0
+  for const i usize in 0..N {
+    for const j usize in i..N {
+      total += values[u64, j] << i
+    }
+  }
+  return total
+}
+
+fn first_match(x u32) u32 {
+  for const i u32 in 0..8 {
+    if x & 7 == i {
+      return scale[i + 1](x)
+    }
+  }
+  return 0
+}
+
+fn labeled(limit u32) u32 {
+  total u32 = 0
+  n u32 = 0
+  outer: while n < limit {
+    n += 1
+    for const i u32 in 0..4 {
+      if n % 3 == i { continue outer }
+      if n == 11 { break outer }
+      total += n * (i + 1)
+    }
+  }
+  return total
+}
+
+fn deferred(x u32) u32 {
+  view v = x
+  for const i u32 in 0..3 {
+    defer { v = v * 5 + i }
+    v += 100
+  }
+  return x
+}
+
+fn dense[S const usize](start usize) usize {
+  return start * S + S * S
+}
+
+fn dense_for[S const usize, C const usize](start usize, step usize) usize {
+  if C > 1 {
+    if step < S + C { return dense_for[S, C / 2](start, step) }
+    return dense_for[S + C, C / 2](start, step)
+  }
+  return dense[S](start)
+}
+
+fn dense_loop[S const usize, C const usize](start usize, step usize) usize {
+  for const k usize in 0..C {
+    if step == S + 2 * k { return dense[S + 2 * k](start) }
+  }
+  return 0
+}
+
+fn main() i32 {
+  printf(c"mix4 %u\n", mix4(7))
+  printf(c"skip4 %u %u\n", skip4(2), skip4(9))
+  printf(c"sizes %zu\n", sizes())
+  printf(c"pruned %u\n", pruned(5))
+  printf(c"triangle %llu\n", triangle(1))
+  printf(c"signed %lld\n", signed_range(9))
+  printf(c"narrow %d\n", narrow(4, 7))
+  values arr[6, u64] = {3, 1, 4, 1, 5, 9}
+  printf(c"window %llu %llu\n", window[4](&values), window[6](&values))
+  for x u32 = 0; x < 10; x += 1 {
+    printf(c"first %u %u\n", x, first_match(x * 13))
+  }
+  printf(c"labeled %u %u\n", labeled(9), labeled(40))
+  printf(c"deferred %u\n", deferred(1))
+  same usize = 0
+  for step usize = 3; step < 3 + 2 * 32; step += 2 {
+    a usize = dense_for[3, 32](step * 11, step)
+    b usize = dense_loop[3, 32](step * 11, step)
+    if a != b { return 1 }
+    same += a
+  }
+  printf(c"dense %zu\n", same)
+  return 0
+}

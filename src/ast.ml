@@ -97,6 +97,24 @@ and stmt =
   | For of
       loop_label option * stmt option * expr option * stmt option * stmt list * Span.t
   | Switch of expr * (expr list * stmt list) list * stmt list option * Span.t
+  | Const_for of {
+      name : string;
+      name_span : Span.t;
+      ty : ty;
+      ty_span : Span.t;
+      low : expr;
+      high : expr;
+      body : stmt list;
+      span : Span.t;
+    }
+  | Const_copy of {
+      name : string;
+      ty : ty;
+      value : int64;
+      note : string;
+      body : stmt list;
+      span : Span.t;
+    }
 
 and loop_label = { name : string; span : Span.t }
 
@@ -278,7 +296,9 @@ let stmt_span = function
   | Expr_stmt (_, span, _)
   | Block (_, span)
   | For (_, _, _, _, _, span)
-  | Switch (_, _, _, span) ->
+  | Switch (_, _, _, span)
+  | Const_for { span; _ }
+  | Const_copy { span; _ } ->
       span
 
 let string_literal_name c value =
@@ -732,10 +752,25 @@ let render_program program =
         text "\n";
         text indent;
         text "}"
-    | Block (xs, _) ->
+    | Block (xs, _) | Const_copy { body = xs; _ } ->
         text indent;
         text "{";
         emit_lines (indent ^ "  ") xs;
+        text "\n";
+        text indent;
+        text "}"
+    | Const_for { name; ty; low; high; body; _ } ->
+        text indent;
+        text "for const ";
+        add_name name;
+        text " ";
+        emit_ty ty;
+        text " in ";
+        emit_expr low;
+        text "..";
+        emit_expr high;
+        text " {";
+        emit_lines (indent ^ "  ") body;
         text "\n";
         text indent;
         text "}"
@@ -1008,7 +1043,12 @@ let expanded_walker ~identifiers ~limit =
           go_expr c;
           go_stmts xs
       | Break _ | Continue _ -> ()
-      | Defer (xs, _) | Block (xs, _) -> go_stmts xs
+      | Defer (xs, _) | Block (xs, _) | Const_copy { body = xs; _ } -> go_stmts xs
+      | Const_for { ty; ty_span; low; high; body; _ } ->
+          go_ty ty_span ty;
+          go_expr low;
+          go_expr high;
+          go_stmts body
       | Expr_stmt (e, _, _) -> go_expr e
       | For (_, i, c, st, body, _) ->
           Option.iter go_stmt i;
@@ -1066,6 +1106,11 @@ let fold_expanded_nodes ?(identifiers = ref []) ~limit program =
   let go_item, _, total, failed = expanded_walker ~identifiers ~limit in
   List.iter go_item program.items;
   (!total, !failed)
+
+let count_stmt_nodes statements =
+  let _, go_stmt, total, _ = expanded_walker ~identifiers:(ref []) ~limit:max_int in
+  List.iter go_stmt statements;
+  !total
 
 let stmt_names statement =
   let identifiers = ref [] in
@@ -1159,3 +1204,46 @@ and block_terminates body =
   | [] -> false
   | statement :: rest ->
       if stmt_terminates statement then true else block_terminates rest
+
+let rec copy_jumps ~select statements = List.concat_map (copy_jump ~select) statements
+
+and copy_jump ~select = function
+  | (Break (None, _) | Continue (None, _)) as statement -> select statement
+  | If (_, yes, no, _) ->
+      copy_jumps ~select yes @ Option.fold ~none:[] ~some:(copy_jumps ~select) no
+  | Block (body, _) | Defer (body, _) -> copy_jumps ~select body
+  | Switch (_, arms, default, _) ->
+      List.concat_map (fun (_, body) -> copy_jumps ~select body) arms
+      @ Option.fold ~none:[] ~some:(copy_jumps ~select) default
+  | Let _ | View _ | Assign _ | Compound_assign _ | Return _ | Expr_stmt _ | Break _
+  | Continue _ | While _ | For _ | Const_for _ | Const_copy _ ->
+      []
+
+let copy_breaks body =
+  copy_jumps ~select:(function Break (None, span) -> [ span ] | _ -> []) body
+
+let copy_continues body =
+  copy_jumps ~select:(function Continue (None, span) -> [ span ] | _ -> []) body <> []
+
+let rec continues_to_breaks label statements =
+  List.map (continue_to_break label) statements
+
+and continue_to_break label = function
+  | Continue (None, span) -> Break (Some (label, span), span)
+  | If (condition, yes, no, span) ->
+      If
+        ( condition,
+          continues_to_breaks label yes,
+          Option.map (continues_to_breaks label) no,
+          span )
+  | Block (body, span) -> Block (continues_to_breaks label body, span)
+  | Defer (body, span) -> Defer (continues_to_breaks label body, span)
+  | Switch (value, arms, default, span) ->
+      Switch
+        ( value,
+          List.map (fun (cases, body) -> (cases, continues_to_breaks label body)) arms,
+          Option.map (continues_to_breaks label) default,
+          span )
+  | ( Let _ | View _ | Assign _ | Compound_assign _ | Return _ | Expr_stmt _ | Break _
+    | Continue _ | While _ | For _ | Const_for _ | Const_copy _ ) as statement ->
+      statement

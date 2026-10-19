@@ -849,7 +849,11 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
         own_loop_label label @ loop_labels_in_block body
     | Ast.If (_, yes, no, _) ->
         loop_labels_in_block yes @ Option.fold ~none:[] ~some:loop_labels_in_block no
-    | Ast.Defer (body, _) | Ast.Block (body, _) -> loop_labels_in_block body
+    | Ast.Defer (body, _)
+    | Ast.Block (body, _)
+    | Ast.Const_for { body; _ }
+    | Ast.Const_copy { body; _ } ->
+        loop_labels_in_block body
     | Ast.Switch (_, cases, default, _) ->
         List.concat_map (fun (_, body) -> loop_labels_in_block body) cases
         @ Option.fold ~none:[] ~some:loop_labels_in_block default

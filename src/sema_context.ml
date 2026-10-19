@@ -242,7 +242,12 @@ and count_expanded_stmt_type_nodes stmt cap total =
         count_expanded_stmts_type_nodes body cap
           (count_expanded_expr_type_nodes condition cap total)
     | Ast.Break _ | Ast.Continue _ -> total
-    | Ast.Defer (body, _) | Ast.Block (body, _) ->
+    | Ast.Defer (body, _) | Ast.Block (body, _) | Ast.Const_copy { body; _ } ->
+        count_expanded_stmts_type_nodes body cap total
+    | Ast.Const_for { ty; low; high; body; _ } ->
+        let total = count_expanded_type_nodes ty cap total in
+        let total = count_expanded_expr_type_nodes low cap total in
+        let total = count_expanded_expr_type_nodes high cap total in
         count_expanded_stmts_type_nodes body cap total
     | Ast.Expr_stmt (expression, _, _) ->
         count_expanded_expr_type_nodes expression cap total

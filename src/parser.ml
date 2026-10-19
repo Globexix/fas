@@ -465,6 +465,9 @@ module P = struct
         let type_span = span p in
         ignore (bump p);
         Ok (Ast.Type_arg (Ast.Named_type ("void", type_span)))
+    | Token.Dot_dot ->
+        let token = bump p in
+        Ok (Ast.Name_arg ("..", token.span))
     | Token.Dot when (peek_n p 1).kind = Token.Dot ->
         let first = bump p in
         let last = bump p in
@@ -609,6 +612,7 @@ module P = struct
                 Error [ Diag.error use_span "C header name cannot be empty" ]
               else Ok (Ast.C_system (String.concat "" (List.rev parts)))
           | Token.Dot -> path ("." :: parts)
+          | Token.Dot_dot -> path (".." :: parts)
           | Token.Slash -> path ("/" :: parts)
           | Token.Minus -> path ("-" :: parts)
           | Token.Plus -> path ("+" :: parts)
@@ -1376,7 +1380,32 @@ module P = struct
 
   and for_stmt p label =
     let s = span p in
-    if (peek_n p 1).kind = Token.Lparen then
+    if (peek_n p 1).kind = Token.Kw_const then (
+      match label with
+      | Some (label : Ast.loop_label) ->
+          error label.span "a `for const` loop cannot have a label"
+      | None ->
+          ignore (bump p);
+          ignore (bump p);
+          let name_span = span p in
+          let* name = ident p in
+          let ty_span = span p in
+          let* ty = ty p in
+          let* () =
+            if at p (Token.Ident "in") then (
+              ignore (bump p);
+              Ok ())
+            else
+              error (span p)
+                (Printf.sprintf "expected `in` after `for const %s %s`" name
+                   (Ast.type_name ty))
+          in
+          let* low = expr p in
+          let* () = expected p Token.Dot_dot in
+          let* high = expr_before_block p in
+          let* body = block p in
+          Ok (Ast.Const_for { name; name_span; ty; ty_span; low; high; body; span = s }))
+    else if (peek_n p 1).kind = Token.Lparen then
       error (peek_n p 2).span
         "C `for (;;)` syntax has parentheses; Fas writes `for ; ;` with an optional \
          condition"

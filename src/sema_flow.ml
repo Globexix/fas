@@ -1079,6 +1079,17 @@ let record flow diagnostics =
     flow.recovered
 
 let recovered flow = List.rev (Option.value flow.recovered ~default:[])
+let recovered_count flow = List.length (Option.value flow.recovered ~default:[])
+
+let map_recovered_since flow count f =
+  flow.recovered <-
+    Option.map
+      (fun recorded ->
+        let fresh = List.length recorded - count in
+        List.mapi
+          (fun index diagnostic -> if index < fresh then f diagnostic else diagnostic)
+          recorded)
+      flow.recovered
 
 let checkpoint flow =
   {

@@ -245,6 +245,7 @@ module.exports = grammar({
         $.if_statement,
         $.while_statement,
         $.for_statement,
+        $.const_for_statement,
         $.switch_statement,
         $.defer_statement,
         $.block,
@@ -310,6 +311,19 @@ module.exports = grammar({
         optional(field('condition', $._expression)),
         ';',
         optional(field('step', $._for_clause)),
+        $.block,
+      ),
+
+    const_for_statement: ($) =>
+      seq(
+        'for',
+        'const',
+        field('name', $.identifier),
+        field('type', $._type),
+        'in',
+        field('low', $._expr),
+        '..',
+        field('high', $._expr),
         $.block,
       ),
 

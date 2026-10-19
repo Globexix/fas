@@ -41,6 +41,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Some (structs, named_types, consts, arrays) ->
         (structs, named_types, consts, arrays)
   in
+  let expanded_nodes = ref (Ast.count_expanded_nodes program) in
   let generic_structs =
     List.filter (function Ast.Struct _ -> true | _ -> false) program.Ast.items
   in
@@ -604,6 +605,24 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           | Some body -> validate_statement_block_names value_names type_names body
         in
         Ok (value_names, scope_names)
+    | Ast.Const_for { name; ty; ty_span; low; high; body; span; _ } ->
+        let* () = validate_binding_name span name in
+        let* () = validate_type_names value_names type_names ty_span ty in
+        let* () = validate_expression_names value_names type_names low in
+        let* () = validate_expression_names value_names type_names high in
+        let* () =
+          validate_statement_block_names ~scope_names:(String_set.singleton name)
+            (String_set.add name value_names)
+            type_names body
+        in
+        Ok (value_names, scope_names)
+    | Ast.Const_copy { name; body; _ } ->
+        let* () =
+          validate_statement_block_names ~scope_names:(String_set.singleton name)
+            (String_set.add name value_names)
+            type_names body
+        in
+        Ok (value_names, scope_names)
     | Ast.Break _ | Ast.Continue _ -> Ok (value_names, scope_names)
   and validate_statement_block_names ?(scope_names = String_set.empty) value_names
       type_names = function
@@ -657,6 +676,12 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           match default with
           | None -> Ok ()
           | Some body -> validate_statement_block_duplicates body
+        in
+        Ok scope_names
+    | Ast.Const_for { name; body; _ } | Ast.Const_copy { name; body; _ } ->
+        let* () =
+          validate_statement_block_duplicates ~scope_names:(String_set.singleton name)
+            body
         in
         Ok scope_names
     | Ast.Assign _ | Ast.Compound_assign _ | Ast.Return _ | Ast.Expr_stmt _
@@ -1914,7 +1939,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           | Some body -> validate_non_dependent_block c dependent expected_return body
         in
         Ok dependent
-    | Ast.Break _ | Ast.Continue _ -> Ok dependent
+    | Ast.Break _ | Ast.Continue _ | Ast.Const_for _ | Ast.Const_copy _ -> Ok dependent
   in
   let validate_generic_legality ~span ~ret ~params ~generic_params statements =
     let generic_value_names =
@@ -2924,6 +2949,128 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           in
           Ok (Ast.While (label, condition, body, span))
       | (Ast.Break _ | Ast.Continue _) as statement -> Ok statement
+      | Ast.Const_for _ when not eager_functions -> Ok statement
+      | Ast.Const_for { name; name_span; ty; ty_span; low; high; body; span } ->
+          let* () =
+            match Ast.copy_breaks body with
+            | span :: _ ->
+                error span
+                  "`break` cannot leave a `for const` loop; its copies are \
+                   straight-line code"
+            | [] -> Ok ()
+          in
+          let* () =
+            if List.exists (fun (value_name, _, _) -> value_name = name) values then
+              error name_span
+                (Printf.sprintf
+                   "`for const` index `%s` shadows a constant of the same name" name)
+            else Ok ()
+          in
+          let* ty =
+            resolve_ty ~values ~defer_const_structs substitutions depth ty_span ty
+          in
+          let* index_ty = source_ty_diag [] ty_span ty in
+          let* () =
+            match index_ty with
+            | Hir.Int _ -> Ok ()
+            | _ -> error ty_span "a `for const` index must have an integer type"
+          in
+          let constant_environment =
+            List.filter
+              (fun (name, _, _) -> not (String_set.mem name !shadowed_constants))
+              (values @ eval_consts)
+          in
+          let bound expression =
+            let* expression =
+              resolve_expr ~values ~defer_const_structs substitutions depth expression
+            in
+            match
+              const_expr ~structs:eval_structs ~named_types:eval_named_types
+                ~generic_structs ~globals:global_names
+                ~array_lengths:
+                  (array_lengths @ static_array_lengths top_level_bindings eval_globals)
+                ~arrays:eval_arrays constant_environment (Some index_ty) expression
+            with
+            | Ok (_, value) -> Ok value
+            | Error _
+              when expression_mentions (String_set.elements !local_values) expression ->
+                error (Ast.expr_span expression)
+                  "`for const` bounds must be compile-time constants"
+            | Error diagnostics -> Error diagnostics
+          in
+          let unsigned = Sema_numeric.is_unsigned index_ty in
+          let widen value =
+            if unsigned then value else Sema_numeric.sign_extend_value index_ty value
+          in
+          let* low = bound low in
+          let* high = bound high in
+          let low = widen low and high = widen high in
+          let compare = if unsigned then Int64.unsigned_compare else Int64.compare in
+          let count = if compare low high >= 0 then 0L else Int64.sub high low in
+          let budget = limits.Limits.max_const_loop_iterations in
+          if Int64.unsigned_compare count (Int64.of_int budget) > 0 then
+            error span
+              (Printf.sprintf
+                 "`for const` loop has %s iterations: budget max_const_loop_iterations \
+                  of %d (profile %s)"
+                 (Sema_numeric.unsigned_int64_to_string count)
+                 budget
+                 (Limits.budget_profile_name limits))
+          else
+            let copy_nodes = Ast.count_stmt_nodes body in
+            let* () =
+              if
+                Int64.unsigned_compare count
+                  (Int64.of_int
+                     ((limits.Limits.max_ast_nodes - !expanded_nodes) / max 1 copy_nodes))
+                > 0
+              then
+                error span
+                  (Printf.sprintf
+                     "cumulative expanded AST nodes exceed budget max_ast_nodes of %d \
+                      (profile %s)"
+                     limits.Limits.max_ast_nodes
+                     (Limits.budget_profile_name limits))
+              else (
+                expanded_nodes := !expanded_nodes + (Int64.to_int count * copy_nodes);
+                Ok ())
+            in
+            let render value =
+              if unsigned then Sema_numeric.unsigned_int64_to_string value
+              else Int64.to_string value
+            in
+            let copy offset =
+              let wide = Int64.add low (Int64.of_int offset) in
+              let value = Sema_numeric.mask_value index_ty wide in
+              let note = Printf.sprintf "in iteration `%s = %s`" name (render wide) in
+              let* body =
+                with_local_values (String_set.remove name !local_values) (fun () ->
+                    resolve_statements
+                      (resolve_stmt
+                         ~values:((name, index_ty, value) :: values)
+                         ~defer_const_structs substitutions depth)
+                      body)
+                |> Result.map_error
+                     (List.map (fun (diagnostic : Diag.t) ->
+                          { diagnostic with notes = diagnostic.notes @ [ note ] }))
+              in
+              Ok (Ast.Const_copy { name; ty; value; note; body; span })
+            in
+            let* copies =
+              Result_list.map copy (List.init (Int64.to_int count) Fun.id)
+            in
+            Ok (Ast.Block (copies, span))
+      | Ast.Const_copy { name; ty; value; note; body; span } ->
+          let* index_ty = source_ty_diag [] span ty in
+          let* body =
+            with_local_values (String_set.remove name !local_values) (fun () ->
+                resolve_statements
+                  (resolve_stmt
+                     ~values:((name, index_ty, value) :: values)
+                     ~defer_const_structs substitutions depth)
+                  body)
+          in
+          Ok (Ast.Const_copy { name; ty; value; note; body; span })
       | Ast.Defer (body, span) ->
           let* body =
             with_local_values !local_values (fun () ->

@@ -31,6 +31,7 @@ type kind =
   | Comma
   | Dot
   | Ellipsis
+  | Dot_dot
   | Semi
   | At
   | Colon
@@ -102,6 +103,7 @@ let show = function
   | Comma -> "`,`"
   | Dot -> "`.`"
   | Ellipsis -> "`...`"
+  | Dot_dot -> "`..`"
   | Semi -> "`;`"
   | At -> "`@`"
   | Colon -> "`:`"

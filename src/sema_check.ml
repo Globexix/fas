@@ -4536,8 +4536,12 @@ let rec statement_changes_name name = function
   | Ast.While (_, condition, body, _) ->
       expression_takes_name_address name condition
       || List.exists (statement_changes_name name) body
-  | Ast.Defer (body, _) | Ast.Block (body, _) ->
+  | Ast.Defer (body, _) | Ast.Block (body, _) | Ast.Const_copy { body; _ } ->
       List.exists (statement_changes_name name) body
+  | Ast.Const_for { name = index; low; high; body; _ } ->
+      expression_takes_name_address name low
+      || expression_takes_name_address name high
+      || (index <> name && List.exists (statement_changes_name name) body)
   | Ast.Expr_stmt (expression, _, _) -> expression_takes_name_address name expression
   | Ast.For (_, init, condition, step, body, _) ->
       Option.fold ~none:false ~some:(statement_changes_name name) init
@@ -5287,6 +5291,38 @@ and check_stmt (c : context) = function
   | Ast.Block (xs, s) ->
       let* x = check_block c xs in
       Ok (Hir.Block (x, s))
+  | Ast.Const_for { span; _ } ->
+      error span "internal error: `for const` loop was not expanded"
+  | Ast.Const_copy { name; ty; value; note; body; span } ->
+      let* () =
+        match lookup_local name c with
+        | Some _ ->
+            error span
+              (Printf.sprintf "`for const` index `%s` shadows a local of the same name"
+                 name)
+        | None -> Ok ()
+      in
+      let* index_ty = source_ty_in_context c span ty in
+      let copy = { c with consts = (name, index_ty, value) :: c.consts } in
+      let statement =
+        if Ast.copy_continues body then
+          let label = Printf.sprintf "for const %s %d" name span.Span.start_offset in
+          Ast.While
+            ( Some { Ast.name = label; span },
+              Ast.Bool_lit (true, span),
+              Ast.continues_to_breaks label body
+              @ [ Ast.Break (Some (label, span), span) ],
+              span )
+        else Ast.Block (body, span)
+      in
+      let annotate (diagnostic : Diag.t) =
+        if List.mem note diagnostic.notes then diagnostic
+        else { diagnostic with notes = diagnostic.notes @ [ note ] }
+      in
+      let recorded = Sema_flow.recovered_count c.flow in
+      let result = check_stmt copy statement |> Result.map_error (List.map annotate) in
+      Sema_flow.map_recovered_since c.flow recorded annotate;
+      result
   | Ast.If (q, a, b, s) ->
       let* tq = check_expr c None q in
       if Hir.expr_ty tq <> Hir.Bool then
