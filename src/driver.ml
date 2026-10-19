@@ -1027,19 +1027,107 @@ let pass_report config = opt_pass config
 
 type profile = { indexed_path : string; temp_paths : string list }
 type pgo = Instrument | Use of profile
+type choice = Default | Pgo | Native | Native_pgo
 
-let profile_format = "fas profile 1"
+type profile_header = {
+  choice : choice;
+  align_loops : int option;
+  cpu : string;
+  counts : string;
+}
+
+let profile_format = "fas profile 2"
 let profile_error message = Error [ Diag.error Span.synthetic message ]
 
-let profile_counts path text =
+let choice_name = function
+  | Default -> "default"
+  | Pgo -> "pgo"
+  | Native -> "native"
+  | Native_pgo -> "native-pgo"
+
+let choice_of_name = function
+  | "default" -> Some Default
+  | "pgo" -> Some Pgo
+  | "native" -> Some Native
+  | "native-pgo" -> Some Native_pgo
+  | _ -> None
+
+let align_loops_name = function None -> "def" | Some n -> string_of_int n
+
+let align_loops_of_name = function
+  | "def" -> Some None
+  | "32" -> Some (Some 32)
+  | "64" -> Some (Some 64)
+  | _ -> None
+
+let header_value prefix line =
+  if String.starts_with ~prefix line then
+    Some
+      (String.sub line (String.length prefix)
+         (String.length line - String.length prefix))
+  else None
+
+let profile_cpu line = Option.value (header_value "cpu " line) ~default:line
+
+let profile_header path text =
+  let no_counts () =
+    profile_error (Printf.sprintf "profile `%s` has no `counts` section" path)
+  in
   match String.split_on_char '\n' text with
-  | first :: _ :: _ :: _ :: "counts" :: lines when first = profile_format ->
-      Ok (String.concat "\n" lines)
-  | first :: _ when first = profile_format ->
-      profile_error (Printf.sprintf "profile `%s` has no `counts` section" path)
+  | "fas profile 1" :: _ :: _ :: cpu :: "counts" :: lines ->
+      Ok
+        {
+          choice = Pgo;
+          align_loops = None;
+          cpu = profile_cpu cpu;
+          counts = String.concat "\n" lines;
+        }
+  | "fas profile 1" :: _ -> no_counts ()
+  | first :: _ :: _ :: cpu :: choice :: align :: measured :: rest
+    when first = profile_format -> (
+      let line number expected =
+        profile_error
+          (Printf.sprintf "profile `%s` line %d must be `%s`" path number expected)
+      in
+      match
+        ( Option.map choice_of_name (header_value "choice " choice),
+          Option.map align_loops_of_name (header_value "align-loops " align),
+          header_value "measured " measured,
+          rest )
+      with
+      | None, _, _, _ -> line 5 "choice default|pgo|native|native-pgo"
+      | Some None, _, _, _ ->
+          profile_error
+            (Printf.sprintf
+               "profile `%s` has an unknown choice `%s`; expected default, pgo, native \
+                or native-pgo"
+               path
+               (Option.get (header_value "choice " choice)))
+      | _, None, _, _ -> line 6 "align-loops def|32|64"
+      | _, Some None, _, _ ->
+          profile_error
+            (Printf.sprintf
+               "profile `%s` has an unknown align-loops value `%s`; expected def, 32 \
+                or 64"
+               path
+               (Option.get (header_value "align-loops " align)))
+      | _, _, None, _ ->
+          line 7 "measured RATIO band BAND rounds R placements K metric M"
+      | Some (Some choice), Some (Some align_loops), Some _, "counts" :: lines ->
+          Ok
+            {
+              choice;
+              align_loops;
+              cpu = profile_cpu cpu;
+              counts = String.concat "\n" lines;
+            }
+      | Some (Some _), Some (Some _), Some _, _ -> no_counts ())
+  | first :: _ when first = profile_format -> no_counts ()
   | _ ->
       profile_error
-        (Printf.sprintf "`%s` is not a fas profile (expected `fas profile 1` on line 1)"
+        (Printf.sprintf
+           "`%s` is not a fas profile (expected `fas profile 1` or `fas profile 2` on \
+            line 1)"
            path)
 
 let profile_io f =
@@ -1093,24 +1181,25 @@ let tool_output_lines path =
   | Ok (stdout, _) -> List.map String.trim (String.split_on_char '\n' stdout)
   | Error _ -> []
 
+let llc_host_cpu () =
+  let _, llc, _ = tools () in
+  let host_prefix = "Host CPU:" in
+  tool_output_lines llc
+  |> List.find_map (fun line ->
+      if String.starts_with ~prefix:host_prefix line then
+        let rest = String.length host_prefix in
+        Some (String.trim (String.sub line rest (String.length line - rest)))
+      else None)
+  |> Option.value ~default:"unknown"
+
 let tune_header () =
-  let opt, llc, _ = tools () in
+  let opt, _, _ = tools () in
   let llvm =
     tool_output_lines opt
     |> List.find_opt (contains_text "LLVM version")
     |> Option.value ~default:"unknown"
   in
-  let host_prefix = "Host CPU:" in
-  let cpu =
-    tool_output_lines llc
-    |> List.find_map (fun line ->
-        if String.starts_with ~prefix:host_prefix line then
-          let rest = String.length host_prefix in
-          Some (String.trim (String.sub line rest (String.length line - rest)))
-        else None)
-    |> Option.value ~default:"unknown"
-  in
-  [ profile_format; "fas " ^ version; "llvm " ^ llvm; "cpu " ^ cpu ]
+  [ profile_format; "fas " ^ version; "llvm " ^ llvm; "cpu " ^ llc_host_cpu () ]
 
 let count_profile_functions text =
   String.split_on_char '\n' text
@@ -1127,7 +1216,10 @@ let write_atomically path text =
     remove temp;
     raise error
 
-let write_tune_profile ~output ~scratch ~profraw ~header =
+let io_error message =
+  Error [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ]
+
+let merge_profraw ~scratch ~profraw =
   let merged = Filename.concat scratch "merged.proftext" in
   let tool_path = profdata () in
   let argv = Array.of_list ([ tool_path; "merge"; "--text"; "-o"; merged ] @ profraw) in
@@ -1135,26 +1227,27 @@ let write_tune_profile ~output ~scratch ~profraw ~header =
   | Error failure -> Error [ tool_error ("profile merge with " ^ tool_path) failure ]
   | Ok _ -> (
       match read_file merged with
-      | Error message ->
-          Error [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ]
-      | Ok text -> (
-          let body = String.concat "\n" header ^ "\ncounts\n" ^ text in
-          try
-            write_atomically output body;
-            Ok (count_profile_functions text)
-          with
-          | Sys_error message ->
-              Error [ Diag.error Span.synthetic ("backend I/O failed: " ^ message) ]
-          | Unix.Unix_error (code, _, _) ->
-              Error
-                [
-                  Diag.error Span.synthetic
-                    ("backend I/O failed: " ^ Unix.error_message code);
-                ]))
+      | Error message -> io_error message
+      | Ok text -> Ok text)
+
+let write_profile_file output text =
+  try Ok (write_atomically output text) with
+  | Sys_error message -> io_error message
+  | Unix.Unix_error (code, _, _) -> io_error (Unix.error_message code)
+
+let write_tune_profile ~output ~scratch ~profraw ~header =
+  let* text = merge_profraw ~scratch ~profraw in
+  let* () =
+    write_profile_file output
+      (String.concat "\n"
+         (header @ [ "choice pgo"; "align-loops def"; "measured none"; "counts" ])
+      ^ "\n" ^ text)
+  in
+  Ok (count_profile_functions text)
 
 let with_profile config f =
   match config.Cli.profile with
-  | None -> f None
+  | None -> f config None
   | Some path ->
       let temps = ref [] in
       let cleanup () = if not config.Cli.keep then List.iter remove !temps in
@@ -1167,9 +1260,31 @@ let with_profile config f =
                     (Printf.sprintf "cannot read profile `%s`" path);
                 ])
           in
-          let* counts = profile_counts path text in
-          let* indexed_path = profile_io (fun () -> merge_profile path counts temps) in
-          f (Some (Use { indexed_path; temp_paths = !temps })))
+          let* header = profile_header path text in
+          let native = header.choice = Native || header.choice = Native_pgo in
+          let* () =
+            if native && header.cpu <> llc_host_cpu () then
+              profile_error
+                (Printf.sprintf
+                   "profile `%s` was tuned for the CPU `%s`; this machine is `%s` (a \
+                    native choice runs only on the CPU it was measured on)"
+                   path header.cpu (llc_host_cpu ()))
+            else Ok ()
+          in
+          let config =
+            {
+              config with
+              Cli.align_loops = header.align_loops;
+              target = (if native then Cli.Force_native else config.Cli.target);
+            }
+          in
+          match header.choice with
+          | Default | Native -> f config None
+          | Pgo | Native_pgo ->
+              let* indexed_path =
+                profile_io (fun () -> merge_profile path header.counts temps)
+              in
+              f config (Some (Use { indexed_path; temp_paths = !temps })))
 
 let pgo_opt_flags config pgo =
   match pgo with
@@ -1269,6 +1384,9 @@ let run_llc ?llc_remarks config llc ~filetype ~input ~output =
           "-relocation-model=pic";
           "-filetype=" ^ filetype;
         ]
+       @ (match config.Cli.align_loops with
+         | Some n -> [ "-align-loops=" ^ string_of_int n ]
+         | None -> [])
        @ target_cpu_option config @ remark_option llc_remarks @ [ input; "-o"; output ]
        ))
 
@@ -2329,8 +2447,8 @@ let run ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache ?(instrument = fal
       ]
   else
     let with_pgo f =
-      if instrument then f (Some Instrument) else with_profile config f
+      if instrument then f config (Some Instrument) else with_profile config f
     in
-    with_pgo (fun pgo ->
+    with_pgo (fun config pgo ->
         let* config = resolve_target config in
         run_resolved ?remarks ?llc_remarks ?llvm_text ?c_debug ?link_cache ~pgo config)

@@ -66,7 +66,19 @@ val run :
   (string, Diag.t list) result
 
 val check_clang : unit -> (unit, Diag.t list) result
+
+type choice = Default | Pgo | Native | Native_pgo
+
+val choice_name : choice -> string
+val align_loops_name : int option -> string
+val llc_host_cpu : unit -> string
 val tune_header : unit -> string list
+
+val merge_profraw :
+  scratch:string -> profraw:string list -> (string, Diag.t list) result
+
+val count_profile_functions : string -> int
+val write_profile_file : string -> string -> (unit, Diag.t list) result
 
 val write_tune_profile :
   output:string ->

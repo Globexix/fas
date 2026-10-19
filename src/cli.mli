@@ -20,6 +20,7 @@ type t = {
   target_features : string option;
   profile : string option;
   all_errors : bool;
+  align_loops : int option;
 }
 
 type perf_mode = Measure | Tune of string option

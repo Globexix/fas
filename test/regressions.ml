@@ -3721,13 +3721,39 @@ let () =
       in
       profile_rejection "profile-unreadable" (profile_file ^ ".missing")
         "cannot read profile";
-      write profile_file "fas profile 2\nfas 0.5.2\nllvm x\ncpu x\ncounts\n";
+      write profile_file "fas profile 3\nfas 0.5.2\nllvm x\ncpu x\ncounts\n";
       profile_rejection "profile-bad-header" profile_file
-        "is not a fas profile (expected `fas profile 1` on line 1)";
+        "is not a fas profile (expected `fas profile 1` or `fas profile 2` on line 1)";
       write profile_file "fas profile 1\nfas 0.5.2\nllvm x\ncpu x\nno counts here\n";
       profile_rejection "profile-no-counts" profile_file "has no `counts` section";
       write profile_file "fas profile 1\ncounts\n";
-      profile_rejection "profile-early-counts" profile_file "has no `counts` section");
+      profile_rejection "profile-early-counts" profile_file "has no `counts` section";
+      write profile_file
+        "fas profile 2\n\
+         fas 0.5.2\n\
+         llvm x\n\
+         cpu x\n\
+         choice fast\n\
+         align-loops def\n\
+         measured 1\n\
+         counts\n";
+      profile_rejection "profile-unknown-choice" profile_file
+        "has an unknown choice `fast`; expected default, pgo, native or native-pgo";
+      write profile_file
+        "fas profile 2\n\
+         fas 0.5.2\n\
+         llvm x\n\
+         cpu x\n\
+         choice pgo\n\
+         align-loops 128\n\
+         measured 1\n\
+         counts\n";
+      profile_rejection "profile-unknown-align" profile_file
+        "has an unknown align-loops value `128`; expected def, 32 or 64";
+      write profile_file
+        "fas profile 2\nfas 0.5.2\nllvm x\ncpu x\nchoice pgo\nalign-loops def\ncounts\n";
+      profile_rejection "profile-no-measured" profile_file
+        "line 7 must be `measured RATIO band BAND rounds R placements K metric M`");
   cli_error "sanitize-empty-list" "--sanitize requires a non-empty list"
     [ "--sanitize="; "profile.fas" ];
   cli_error "sanitize-unknown-name" "unknown sanitizer `memory`"

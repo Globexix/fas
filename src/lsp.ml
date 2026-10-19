@@ -172,6 +172,7 @@ let config_for state key : Cli.t =
     target_features = None;
     profile = None;
     all_errors = false;
+    align_loops = None;
   }
 
 let lsp_message (diag : Diag.t) =

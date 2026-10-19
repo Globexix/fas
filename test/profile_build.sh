@@ -129,7 +129,7 @@ int prof_link_bump(int value) {
 }
 C
 
-printf 'fas profile 2\nfas 0.5.2\ncounts\n' >wrong.fasprof
+printf 'fas profile 3\nfas 0.5.2\ncounts\n' >wrong.fasprof
 : >empty.fasprof
 printf 'fas profile 1\ncounts\n' >early.fasprof
 printf 'fas profile 1\nfas 0.5.2\nllvm x\ncpu y\nnot counts\n' >nocounts.fasprof
@@ -141,6 +141,13 @@ printf '%s\n' "\$*" >>"$WORK/cc.log"
 exec "$CC" "\$@"
 SH
 chmod +x cc-log.sh
+
+cat >llc-log.sh <<SH
+#!/bin/sh
+printf '%s\n' "\$*" >>"$WORK/llc.log"
+exec "$LLVM_LLC" "\$@"
+SH
+chmod +x llc-log.sh
 
 no_profile_temps() {
   for leftover in "$TMPDIR"/fas-profile-*; do
@@ -263,8 +270,8 @@ cmp det-a.o det-b.o || fail "two profile builds produced different objects"
 
 expect_error unreadable 'error: cannot read profile `nope.fasprof`' --profile nope.fasprof main.fas prof_link.c
 expect_error unreadable-O0 'error: cannot read profile `nope.fasprof`' -O0 --profile nope.fasprof main.fas prof_link.c
-expect_error wrong-version 'error: `wrong.fasprof` is not a fas profile (expected `fas profile 1` on line 1)' --profile wrong.fasprof main.fas prof_link.c
-expect_error empty-profile 'error: `empty.fasprof` is not a fas profile (expected `fas profile 1` on line 1)' --profile empty.fasprof main.fas prof_link.c
+expect_error wrong-version 'error: `wrong.fasprof` is not a fas profile (expected `fas profile 1` or `fas profile 2` on line 1)' --profile wrong.fasprof main.fas prof_link.c
+expect_error empty-profile 'error: `empty.fasprof` is not a fas profile (expected `fas profile 1` or `fas profile 2` on line 1)' --profile empty.fasprof main.fas prof_link.c
 expect_error early-counts 'error: profile `early.fasprof` has no `counts` section' --profile early.fasprof main.fas prof_link.c
 expect_error no-counts 'error: profile `nocounts.fasprof` has no `counts` section' --profile nocounts.fasprof main.fas prof_link.c
 expect_invalid_counts invalid-counts --profile bad.fasprof main.fas prof_link.c
@@ -281,6 +288,93 @@ cd stale
 [ ! -s stale.err ] || fail "stale profile build printed: $(cat stale.err)"
 cd "$WORK"
 no_profile_temps
+
+profile2() {
+  {
+    echo 'fas profile 2'
+    echo "fas $FAS_VERSION"
+    echo "llvm $OPT_LINE"
+    echo "cpu $2"
+    echo "$3"
+    echo "$4"
+    echo "$5"
+    echo counts
+    cat main.proftext
+  } >"$1"
+}
+MEASURED='measured 1.0430 band 0.0120 rounds 7 placements 9 metric cycles'
+profile2 pgo2.fasprof "$HOST_CPU" 'choice pgo' 'align-loops def' "$MEASURED"
+profile2 default2.fasprof "$HOST_CPU" 'choice default' 'align-loops def' "$MEASURED"
+profile2 align64.fasprof "$HOST_CPU" 'choice default' 'align-loops 64' "$MEASURED"
+profile2 align32.fasprof "$HOST_CPU" 'choice pgo' 'align-loops 32' "$MEASURED"
+profile2 native2.fasprof "$HOST_CPU" 'choice native' 'align-loops def' "$MEASURED"
+profile2 nativepgo2.fasprof "$HOST_CPU" 'choice native-pgo' 'align-loops def' "$MEASURED"
+profile2 othercpu.fasprof othercpu 'choice native' 'align-loops def' "$MEASURED"
+profile2 othercpu-pgo.fasprof othercpu 'choice native-pgo' 'align-loops def' "$MEASURED"
+profile2 othercpu-portable.fasprof othercpu 'choice pgo' 'align-loops def' "$MEASURED"
+profile2 badchoice.fasprof "$HOST_CPU" 'choice fast' 'align-loops def' "$MEASURED"
+profile2 badalign.fasprof "$HOST_CPU" 'choice pgo' 'align-loops 16' "$MEASURED"
+profile2 nochoice.fasprof "$HOST_CPU" 'align-loops def' 'choice pgo' "$MEASURED"
+profile2 noalign.fasprof "$HOST_CPU" 'choice pgo' "$MEASURED" 'align-loops def'
+profile2 nomeasured.fasprof "$HOST_CPU" 'choice pgo' 'align-loops def' 'counts'
+printf 'fas profile 2\nfas 0.5.2\nllvm x\ncpu y\nchoice pgo\nalign-loops def\nmeasured 1\nnot counts\n' >nocounts2.fasprof
+
+"$OCAML_FAS" --profile pgo2.fasprof --emit-llvm=optimized main.fas >pgo2.ll
+cmp with-profile.ll pgo2.ll || fail "a format 2 pgo profile differs from the format 1 profile"
+fas_build pgo2-O2.bin --profile pgo2.fasprof main.fas prof_link.c
+cmp profile-O2.bin pgo2-O2.bin || fail "a format 2 pgo executable differs from the format 1 executable"
+
+"$OCAML_FAS" --profile default2.fasprof --emit-llvm=optimized main.fas >default2.ll
+cmp without-profile.ll default2.ll || fail "choice default changed the optimized IR"
+fas_build default2.o -c --profile default2.fasprof main.fas
+fas_build plain.o -c main.fas
+cmp plain.o default2.o || fail "choice default changed the object"
+fas_build default2-O2.bin --profile default2.fasprof main.fas prof_link.c
+cmp plain-O2.bin default2-O2.bin || fail "choice default changed the executable"
+: >cc.log
+FAS_CC="$WORK/cc-log.sh" "$OCAML_FAS" --profile default2.fasprof main.fas prof_link.c -o cc-default2.bin
+if grep -q -F -e '-fprofile-use=' cc.log; then
+  fail "choice default passes -fprofile-use"
+fi
+
+: >llc.log
+FAS_LLC="$WORK/llc-log.sh" "$OCAML_FAS" -c main.fas -o llc-plain.o
+FAS_LLC="$WORK/llc-log.sh" "$OCAML_FAS" -c --profile default2.fasprof main.fas -o llc-default2.o
+FAS_LLC="$WORK/llc-log.sh" "$OCAML_FAS" -c --profile pgo2.fasprof main.fas -o llc-pgo2.o
+if grep -q -F -e '-align-loops' llc.log; then
+  fail "llc got -align-loops without an align-loops profile line"
+fi
+: >llc.log
+FAS_LLC="$WORK/llc-log.sh" "$OCAML_FAS" -c --profile align64.fasprof main.fas -o llc-align64.o
+grep -q -F -e '-align-loops=64' llc.log || fail "align-loops 64 did not reach llc: $(cat llc.log)"
+: >llc.log
+FAS_LLC="$WORK/llc-log.sh" "$OCAML_FAS" -c --profile align32.fasprof main.fas -o llc-align32.o
+grep -q -F -e '-align-loops=32' llc.log || fail "align-loops 32 did not reach llc: $(cat llc.log)"
+cmp -s llc-plain.o llc-align64.o && fail "align-loops 64 left the object unchanged"
+fas_build align64.bin --profile align64.fasprof main.fas prof_link.c
+run_program align64.bin 250
+
+"$OCAML_FAS" --target=force-native --emit-llvm=optimized main.fas >native-plain.ll
+"$OCAML_FAS" --profile native2.fasprof --emit-llvm=optimized main.fas >native2.ll
+cmp native-plain.ll native2.ll || fail "choice native differs from --target=force-native"
+"$OCAML_FAS" --target=force-native --profile main.fasprof --emit-llvm=optimized main.fas >native-v1.ll
+"$OCAML_FAS" --profile nativepgo2.fasprof --emit-llvm=optimized main.fas >nativepgo2.ll
+cmp native-v1.ll nativepgo2.ll || fail "choice native-pgo differs from --target=force-native with the counts"
+grep -q '!"branch_weights"' nativepgo2.ll || fail "choice native-pgo lost the counts"
+fas_build native2.bin --profile native2.fasprof main.fas prof_link.c
+fas_build nativepgo2.bin --profile nativepgo2.fasprof main.fas prof_link.c
+run_program native2.bin 250
+run_program nativepgo2.bin 250
+
+expect_error other-cpu "error: profile \`othercpu.fasprof\` was tuned for the CPU \`othercpu\`; this machine is \`$HOST_CPU\` (a native choice runs only on the CPU it was measured on)" --profile othercpu.fasprof main.fas prof_link.c
+expect_error other-cpu-pgo "error: profile \`othercpu-pgo.fasprof\` was tuned for the CPU \`othercpu\`; this machine is \`$HOST_CPU\` (a native choice runs only on the CPU it was measured on)" -O0 --profile othercpu-pgo.fasprof main.fas prof_link.c
+fas_build other-cpu-portable.bin --profile othercpu-portable.fasprof main.fas prof_link.c
+expect_error bad-choice 'error: profile `badchoice.fasprof` has an unknown choice `fast`; expected default, pgo, native or native-pgo' --profile badchoice.fasprof main.fas prof_link.c
+expect_error bad-align 'error: profile `badalign.fasprof` has an unknown align-loops value `16`; expected def, 32 or 64' --profile badalign.fasprof main.fas prof_link.c
+expect_error no-choice 'error: profile `nochoice.fasprof` line 5 must be `choice default|pgo|native|native-pgo`' --profile nochoice.fasprof main.fas prof_link.c
+expect_error no-align 'error: profile `noalign.fasprof` line 6 must be `align-loops def|32|64`' --profile noalign.fasprof main.fas prof_link.c
+expect_error no-measured 'error: profile `nomeasured.fasprof` line 7 must be `measured RATIO band BAND rounds R placements K metric M`' --profile nomeasured.fasprof main.fas prof_link.c
+expect_error no-counts2 'error: profile `nocounts2.fasprof` has no `counts` section' --profile nocounts2.fasprof main.fas prof_link.c
 
 "$OCAML_FAS" --profile main.fasprof --keep main.fas prof_link.c -o keep.bin >keep.bin.out 2>keep.bin.err || fail "--keep profile build failed: $(cat keep.bin.err)"
 kept=$(grep '^fas: kept intermediates:' keep.bin.err) || fail "--keep printed no intermediates line"

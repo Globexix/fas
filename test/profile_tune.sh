@@ -193,10 +193,13 @@ FAS_VERSION=$("$OCAML_FAS" --version | sed -n '1p' | awk '{ print $2 }')
 OPT_LINE=$("$LLVM_OPT" --version | sed -n 's/^[[:space:]]*//;/LLVM version/{p;q;}')
 HOST_CPU=$("$LLVM_LLC" --version | sed -n 's/^[[:space:]]*Host CPU: *//p')
 {
-  echo 'fas profile 1'
+  echo 'fas profile 2'
   echo "fas $FAS_VERSION"
   echo "llvm $OPT_LINE"
   echo "cpu $HOST_CPU"
+  echo 'choice pgo'
+  echo 'align-loops def'
+  echo 'measured none'
   echo 'counts'
 } >expected-header.txt
 
@@ -205,9 +208,9 @@ status=0
 [ "$status" -eq 0 ] || { cat tune.err >&2; fail "tune run exited $status, expected 0"; }
 [ "$(cat tune.err)" = 'fas perf: wrote tune.fasprof (3 functions)' ] || fail "tune run stderr is '$(cat tune.err)'"
 [ ! -s tune.out ] || fail "tune run wrote to stdout"
-head -n 5 tune.fasprof >tune-header.txt
+head -n 8 tune.fasprof >tune-header.txt
 cmp tune-header.txt expected-header.txt || fail "tune profile header differs from the expected header"
-tail -n +6 tune.fasprof >tune-body.proftext
+tail -n +9 tune.fasprof >tune-body.proftext
 "$PROFDATA" show tune-body.proftext >tune-show.txt 2>&1 || fail "llvm-profdata cannot show the tune profile body"
 grep -F -q 'Total functions: 3' tune-show.txt || fail "tune profile does not hold 3 functions: $(cat tune-show.txt)"
 no_tune_temps

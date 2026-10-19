@@ -20,6 +20,7 @@ type t = {
   target_features : string option;
   profile : string option;
   all_errors : bool;
+  align_loops : int option;
 }
 
 type perf_mode = Measure | Tune of string option
@@ -194,6 +195,7 @@ let parse_invocation ~subcommand argv =
                 target_features = None;
                 profile = !profile;
                 all_errors = !all_errors;
+                align_loops = None;
               }
             in
             Ok (if subcommand = Check_subcommand then Check config else Run config)
