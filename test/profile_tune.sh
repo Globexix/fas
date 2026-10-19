@@ -228,6 +228,59 @@ status=0
 cmp tune.fasprof tune-again.fasprof || fail "two tune runs wrote different profiles"
 no_tune_temps
 
+cat >static.fas <<'FAS'
+use "C" <<PROF
+__attribute__((noinline)) static int prof_static_step(int value) {
+  return value % 7 ? value * 3 : value + 1;
+}
+int prof_static_sum(int count) {
+  int total = 0;
+  for (int i = 0; i < count; i++) total += prof_static_step(i);
+  return total;
+}
+PROF
+
+fn main() i32 {
+  if prof_static_sum(2048) == 0 {
+    return 1
+  }
+  return 0
+}
+FAS
+
+cat >cc-unit.sh <<SH
+#!/bin/sh
+"$CC" "\$@" || exit
+case "\$*" in
+  *-fprofile-use=*fas-c-import-*.c\ -o*) ;;
+  *) exit 0 ;;
+esac
+set -- "\$@" --end
+while [ "\$1" != --end ]; do
+  arg=\$1
+  shift
+  case "\$arg" in
+    -c) ;;
+    -o) shift ;;
+    *) set -- "\$@" "\$arg" ;;
+  esac
+done
+shift
+exec "$CC" "\$@" -S -emit-llvm -o "$WORK/static-unit.ll"
+SH
+chmod +x cc-unit.sh
+
+status=0
+"$OCAML_FAS" perf --tune static.fas -o static.fasprof >static.out 2>static.err || status=$?
+[ "$status" -eq 0 ] || { cat static.err >&2; fail "static tune run exited $status"; }
+grep -E -q '^fas-c-import-[0-9a-f]+\.c;prof_static_step$' static.fasprof || fail "the static C function profile name is not stable: $(grep 'prof_static_step' static.fasprof)"
+"$OCAML_FAS" perf --tune static.fas -o static-again.fasprof >static-again.out 2>static-again.err || fail "second static tune run failed"
+cmp static.fasprof static-again.fasprof || fail "two static tune runs wrote different profiles"
+FAS_CC="$WORK/cc-unit.sh" "$OCAML_FAS" --profile static.fasprof static.fas -o static.bin 2>static-build.err || { cat static-build.err >&2; fail "static profile build failed"; }
+[ -f static-unit.ll ] || fail "the C unit was not compiled with the profile"
+grep -E -q 'define internal [^{]*@prof_static_step\(.*!prof' static-unit.ll || fail "the static C function gets no profile counts"
+no_tune_temps
+
 status=0
 "$OCAML_FAS" perf --tune fork.fas -o fork.fasprof >fork.out 2>fork.err || status=$?
 [ "$status" -eq 0 ] || { cat fork.err >&2; fail "fork tune run exited $status, expected 0"; }

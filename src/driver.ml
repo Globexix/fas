@@ -1190,6 +1190,15 @@ let pgo_c_flags config pgo =
       ]
   | _ -> []
 
+let pgo_unit_name_flags pgo unit_path =
+  match pgo with
+  | None -> []
+  | Some _ ->
+      let depth =
+        String.fold_left (fun n c -> if c = '/' then n + 1 else n) 0 unit_path
+      in
+      [ "-mllvm"; "-static-func-strip-dirname-prefix=" ^ string_of_int depth ]
+
 let report_kept config pgo paths opt llc cc =
   if config.Cli.keep then (
     let temps =
@@ -1545,6 +1554,9 @@ let compile_c_units ~pgo config cc units adapters standard_headers declaration_h
                    c_sanitizer_flags config
                  else [])
               @ (if Option.is_none unit.assembly then pgo_c_flags config pgo else [])
+              @ (if Option.is_none unit.assembly then
+                   pgo_unit_name_flags pgo unit.unit_path
+                 else [])
               @ (if Option.is_some unit.assembly then
                    [ "-iquote"; Filename.dirname unit.source ]
                  else [])
