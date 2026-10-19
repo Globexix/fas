@@ -79,14 +79,6 @@ val merge_profraw :
 
 val count_profile_functions : string -> int
 val write_profile_file : string -> string -> (unit, Diag.t list) result
-
-val write_tune_profile :
-  output:string ->
-  scratch:string ->
-  profraw:string list ->
-  header:string list ->
-  (int, Diag.t list) result
-
 val pkg_cflags_message : string -> (string list, string) result
 val tool : string -> string -> string
 val executable_path : string -> string

@@ -4555,3 +4555,79 @@ let () =
   assert (Lsp_map.to_current shifted_map 1 = Some 3);
   assert (Lsp_map.to_current shifted_map 4 = Some 6);
   assert (Lsp_map.to_current shifted_map 9 = None)
+
+let () =
+  let side median mad = { Tune_decide.median; mad } in
+  let flat n median mad = Array.make n (side median mad) in
+  let close a b = Float.abs (a -. b) < 1e-3 in
+  assert (close (Tune_decide.z_for 1) 3.0);
+  assert (close (Tune_decide.quantile 0.05) 1.96);
+  assert (Tune_decide.z_for 27 > Tune_decide.z_for 9);
+  assert (Tune_decide.z_for 9 > Tune_decide.z_for 3);
+  assert (Tune_decide.z_for 3 > Tune_decide.z_for 1);
+  assert (Tune_decide.median [| 3.; 1.; 2. |] = 2.);
+  assert (Tune_decide.median [| 4.; 1.; 2.; 3. |] = 2.5);
+  let s = Tune_decide.summarize [| 10.; 12.; 11.; 30.; 9. |] in
+  assert (s.median = 11. && s.mad = 1.);
+  let baseline = flat 9 100. 0.5 in
+  let wide = Tune_decide.compare ~tests:27 ~rounds:7 ~baseline ~candidate:baseline in
+  let narrow = Tune_decide.compare ~tests:1 ~rounds:7 ~baseline ~candidate:baseline in
+  assert (wide.band > narrow.band);
+  let se = 1.253 *. 1.4826 *. 0.5 /. 100. /. Float.sqrt 7. in
+  assert (close narrow.band (3. *. Float.sqrt 2. *. se));
+  let quiet = flat 9 100. 0.1 in
+  let clamped =
+    Tune_decide.compare ~tests:27 ~rounds:7 ~baseline:quiet ~candidate:quiet
+  in
+  assert (clamped.band = 0.01);
+  let noisy = flat 9 100. 3. in
+  let noisy_band =
+    Tune_decide.compare ~tests:27 ~rounds:7 ~baseline:noisy ~candidate:noisy
+  in
+  let noisier =
+    Tune_decide.compare ~tests:54 ~rounds:7 ~baseline:noisy ~candidate:noisy
+  in
+  assert (noisier.band > noisy_band.band && noisy_band.band > 0.01);
+  let wins = flat 9 90. 0.5 in
+  let all_wins = Tune_decide.compare ~tests:27 ~rounds:7 ~baseline ~candidate:wins in
+  assert (all_wins.passes && all_wins.keep);
+  assert (close all_wins.geomean (100. /. 90.));
+  let one_loss = Array.copy wins in
+  one_loss.(4) <- side 104. 0.5;
+  let lost = Tune_decide.compare ~tests:27 ~rounds:7 ~baseline ~candidate:one_loss in
+  assert ((not lost.passes) && not lost.keep);
+  assert (lost.geomean > 1. +. lost.band);
+  let inside = flat 9 99.5 0.5 in
+  let small = Tune_decide.compare ~tests:27 ~rounds:7 ~baseline ~candidate:inside in
+  assert (small.passes && not small.keep);
+  let select candidates = Tune_decide.select ~rounds:7 ~baseline ~candidates in
+  (match select [| inside; one_loss; wins |] with
+  | Tune_decide.Selected (2, c) -> assert c.keep
+  | _ -> assert false);
+  let better_but_failing = Array.map (fun _ -> side 80. 0.5) wins in
+  better_but_failing.(0) <- side 110. 0.5;
+  (match select [| better_but_failing; wins |] with
+  | Tune_decide.Selected (1, _) -> ()
+  | _ -> assert false);
+  (match select [| inside; one_loss |] with
+  | Tune_decide.Rejected (Some (1, c)) -> assert (not c.passes)
+  | _ -> assert false);
+  let selection = select [| wins |] in
+  let confirmation =
+    Tune_decide.confirm ~rounds:7 ~baseline ~candidate:(flat 9 99.8 0.5)
+  in
+  assert (not (Tune_decide.kept selection confirmation));
+  let confirmed = Tune_decide.confirm ~rounds:7 ~baseline ~candidate:wins in
+  assert (Tune_decide.kept selection confirmed);
+  assert (not (Tune_decide.kept (select [| inside |]) confirmed));
+  let layouts best =
+    Array.init 3 (fun i -> flat 3 (if i = best then 90. else 100.) 0.5)
+  in
+  assert (Tune_decide.best_layout ~rounds:7 ~layouts:(layouts 2) = Some 2);
+  assert (Tune_decide.best_layout ~rounds:7 ~layouts:(layouts 0) = Some 0);
+  let tie = layouts 1 in
+  tie.(2) <- flat 3 90.5 0.5;
+  assert (Tune_decide.best_layout ~rounds:7 ~layouts:tie = None);
+  assert (
+    Tune_decide.best_layout ~rounds:7 ~layouts:(Array.init 3 (fun _ -> flat 3 100. 0.5))
+    = None)

@@ -33,6 +33,7 @@ type perf_options = {
   copy : int option;
   compare : string option;
   mode : perf_mode;
+  no_arena : bool;
 }
 
 type lsp_options = { lsp_c_flags : string list; lsp_target : target }

@@ -33,6 +33,7 @@ type perf_options = {
   copy : int option;
   compare : string option;
   mode : perf_mode;
+  no_arena : bool;
 }
 
 type lsp_options = { lsp_c_flags : string list; lsp_target : target }
@@ -57,6 +58,7 @@ let default_perf =
     copy = None;
     compare = None;
     mode = Measure;
+    no_arena = false;
   }
 
 let usage =
@@ -65,12 +67,14 @@ let usage =
   \       fas check file.fas [options]\n\
   \       fas perf file.fas [options] [--top N] [--static] [--compare FILE] [-- \
    program arguments]\n\
-  \       fas perf --tune file.fas [build options] [-o PROFILE] [-- program arguments]\n\
+  \       fas perf --tune file.fas [build options] [-o PROFILE] [--no-arena] [-- \
+   program arguments]\n\
    commands:\n\
   \  run FILE      build to a temporary executable, run it, delete it\n\
   \  check FILE    check without building (no LLVM, no linking)\n\
   \  perf FILE     profile: hot loops by Fas line (needs perf)\n\
-  \  perf --tune FILE  run the program and write a profile for --profile\n\
+  \  perf --tune FILE  measure builds of FILE on this machine, keep the fastest \
+   correct one in a profile for --profile\n\
   \  lsp           language server over stdio (for editors)\n\
    build:\n\
   \  -O0..-O3      set opt and llc optimization levels (default -O2)\n\
@@ -417,6 +421,7 @@ let split_perf_options argv =
             | Tune (Some _) -> Error "duplicate -o option"
             | Measure | Tune None ->
                 scan (i + 2) kept { options with mode = Tune (Some argv.(i + 1)) })
+      | "--no-arena" -> scan (i + 1) kept { options with no_arena = true }
       | "--static" -> scan (i + 1) kept { options with static = true }
       | "--json" -> scan (i + 1) kept { options with json = true }
       | "--compare" ->
@@ -475,7 +480,8 @@ let perf_command config options args =
       else if Option.is_some config.profile then rejected "--profile"
       else Ok (Perf (config, options, args))
   | Measure ->
-      if options.json && Option.is_some options.asm then
+      if options.no_arena then Error "`--no-arena` needs `--tune`"
+      else if options.json && Option.is_some options.asm then
         Error "fas perf: --json and --asm cannot be combined"
       else if options.static && args <> [] then
         Error

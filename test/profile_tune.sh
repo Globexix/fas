@@ -198,19 +198,35 @@ HOST_CPU=$("$LLVM_LLC" --version | sed -n 's/^[[:space:]]*Host CPU: *//p')
   echo "llvm $OPT_LINE"
   echo "cpu $HOST_CPU"
   echo 'choice pgo'
-  echo 'align-loops def'
-  echo 'measured none'
-  echo 'counts'
 } >expected-header.txt
+
+FAS_TUNE_TEST_SCALE=pgo=0.01
+export FAS_TUNE_TEST_SCALE
+
+last_line() {
+  tail -n 1 "$1"
+}
+
+body() {
+  tail -n +9 "$1"
+}
+
+check_shape() {
+  sed -n '6p' "$1" | grep -E -q '^align-loops (def|32|64)$' || fail "$1: line 6 is '$(sed -n '6p' "$1")'"
+  sed -n '7p' "$1" | grep -E -q '^measured [0-9]+\.[0-9]{4} band [0-9]+\.[0-9]{4} rounds 7 placements (9|3) metric (cycles|wall)$' || fail "$1: line 7 is '$(sed -n '7p' "$1")'"
+  [ "$(sed -n '8p' "$1")" = counts ] || fail "$1: line 8 is '$(sed -n '8p' "$1")'"
+}
 
 status=0
 "$OCAML_FAS" perf --tune tune.fas prof_link.c -o tune.fasprof >tune.out 2>tune.err || status=$?
 [ "$status" -eq 0 ] || { cat tune.err >&2; fail "tune run exited $status, expected 0"; }
-[ "$(cat tune.err)" = 'fas perf: wrote tune.fasprof (3 functions)' ] || fail "tune run stderr is '$(cat tune.err)'"
+[ "$(last_line tune.err)" = 'fas perf: wrote tune.fasprof (3 functions)' ] || fail "tune run stderr is '$(cat tune.err)'"
+grep -E -q '^fas perf: kept the profile \(pgo [0-9.]+×, band [0-9.]+%' tune.err || fail "tune run did not keep pgo: $(cat tune.err)"
 [ ! -s tune.out ] || fail "tune run wrote to stdout"
-head -n 8 tune.fasprof >tune-header.txt
+head -n 5 tune.fasprof >tune-header.txt
 cmp tune-header.txt expected-header.txt || fail "tune profile header differs from the expected header"
-tail -n +9 tune.fasprof >tune-body.proftext
+check_shape tune.fasprof
+body tune.fasprof >tune-body.proftext
 "$PROFDATA" show tune-body.proftext >tune-show.txt 2>&1 || fail "llvm-profdata cannot show the tune profile body"
 grep -F -q 'Total functions: 3' tune-show.txt || fail "tune profile does not hold 3 functions: $(cat tune-show.txt)"
 no_tune_temps
@@ -228,7 +244,8 @@ grep -F -q 'branch_weights", i32 64, i32 4032' tune-profiled.ll || fail "profile
 status=0
 "$OCAML_FAS" perf --tune tune.fas prof_link.c -o tune-again.fasprof >tune-again.out 2>tune-again.err || status=$?
 [ "$status" -eq 0 ] || fail "second tune run exited $status"
-cmp tune.fasprof tune-again.fasprof || fail "two tune runs wrote different profiles"
+head -n 5 tune-again.fasprof | cmp - expected-header.txt || fail "the second tune run kept another choice"
+body tune-again.fasprof | cmp - tune-body.proftext || fail "two tune runs wrote different counts"
 no_tune_temps
 
 cat >static.fas <<'FAS'
@@ -278,7 +295,8 @@ status=0
 [ "$status" -eq 0 ] || { cat static.err >&2; fail "static tune run exited $status"; }
 grep -E -q '^fas-c-import-[0-9a-f]+\.c;prof_static_step$' static.fasprof || fail "the static C function profile name is not stable: $(grep 'prof_static_step' static.fasprof)"
 "$OCAML_FAS" perf --tune static.fas -o static-again.fasprof >static-again.out 2>static-again.err || fail "second static tune run failed"
-cmp static.fasprof static-again.fasprof || fail "two static tune runs wrote different profiles"
+body static.fasprof >static-body.proftext
+body static-again.fasprof | cmp - static-body.proftext || fail "two static tune runs wrote different counts"
 FAS_CC="$WORK/cc-unit.sh" "$OCAML_FAS" --profile static.fasprof static.fas -o static.bin 2>static-build.err || { cat static-build.err >&2; fail "static profile build failed"; }
 [ -f static-unit.ll ] || fail "the C unit was not compiled with the profile"
 grep -E -q 'define internal [^{]*@prof_static_step\(.*!prof' static-unit.ll || fail "the static C function gets no profile counts"
@@ -287,7 +305,7 @@ no_tune_temps
 status=0
 "$OCAML_FAS" perf --tune fork.fas -o fork.fasprof >fork.out 2>fork.err || status=$?
 [ "$status" -eq 0 ] || { cat fork.err >&2; fail "fork tune run exited $status, expected 0"; }
-[ "$(cat fork.err)" = 'fas perf: wrote fork.fasprof (3 functions)' ] || fail "fork tune run stderr is '$(cat fork.err)'"
+[ "$(last_line fork.err)" = 'fas perf: wrote fork.fasprof (3 functions)' ] || fail "fork tune run stderr is '$(cat fork.err)'"
 child_count=$(awk '/^child_only_path$/ { found = 1; next } found && /^# Counter Values:$/ { getline; print; exit }' fork.fasprof)
 [ "$child_count" = 3 ] || fail "child-only counter is '$child_count', expected 3"
 no_tune_temps
@@ -306,9 +324,42 @@ cp tune.fas prof_link.c defaults/
 status=0
 "$OCAML_FAS" perf --tune defaults/tune.fas defaults/prof_link.c >default.out 2>default.err || status=$?
 [ "$status" -eq 0 ] || fail "default output tune run exited $status"
-[ "$(cat default.err)" = 'fas perf: wrote defaults/tune.fasprof (3 functions)' ] || fail "default output stderr is '$(cat default.err)'"
+[ "$(last_line default.err)" = 'fas perf: wrote defaults/tune.fasprof (3 functions)' ] || fail "default output stderr is '$(cat default.err)'"
 [ -f defaults/tune.fasprof ] || fail "default output defaults/tune.fasprof was not written"
-cmp defaults/tune.fasprof tune.fasprof || fail "default output differs from the -o output"
+body defaults/tune.fasprof | cmp - tune-body.proftext || fail "default output differs from the -o output"
+no_tune_temps
+
+status=0
+FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100 "$OCAML_FAS" perf --tune tune.fas prof_link.c -o slow.fasprof >slow.out 2>slow.err || status=$?
+[ "$status" -eq 0 ] || { cat slow.err >&2; fail "slow tune run exited $status"; }
+grep -E -q '^fas perf: kept the default build \(best (pgo|native|native-pgo) 0\.[0-9]+×, band [0-9.]+%\)$' slow.err || fail "slow tune run did not keep the default build: $(cat slow.err)"
+[ "$(sed -n '5p;6p' slow.fasprof)" = "$(printf 'choice default\nalign-loops def')" ] || fail "slow profile header is '$(head -n 7 slow.fasprof)'"
+grep -E -q '^measured 1\.0000 band ' slow.fasprof || fail "slow profile measured line is '$(sed -n '7p' slow.fasprof)'"
+grep -q 'tuned for' slow.err && fail "a default choice says it was tuned for this CPU"
+"$OCAML_FAS" --profile slow.fasprof -c tune.fas -o slow.o
+"$OCAML_FAS" -c tune.fas -o plain.o
+cmp slow.o plain.o || fail "the kept default build differs from a build without a profile"
+no_tune_temps
+
+status=0
+FAS_TUNE_TEST_SCALE=native-pgo=0.01 "$OCAML_FAS" perf --tune tune.fas prof_link.c -o native.fasprof >native.out 2>native.err || status=$?
+[ "$status" -eq 0 ] || { cat native.err >&2; fail "native tune run exited $status"; }
+[ "$(sed -n '5p' native.fasprof)" = 'choice native-pgo' ] || fail "native tune kept '$(sed -n '5p' native.fasprof)'"
+grep -F -q "fas perf: tuned for $HOST_CPU; the binary may not run on other CPUs" native.err || fail "native tune run did not name the CPU: $(cat native.err)"
+"$OCAML_FAS" --profile native.fasprof --emit-llvm=optimized tune.fas >native-profiled.ll
+grep -F -q 'branch_weights' native-profiled.ll || fail "the native-pgo profile carries no counts"
+no_tune_temps
+
+status=0
+FAS_TUNE_TEST_SCALE=pgo=0.01 "$OCAML_FAS" perf --tune --target=force-native tune.fas prof_link.c -o forced.fasprof >forced.out 2>forced.err || status=$?
+[ "$status" -eq 0 ] || { cat forced.err >&2; fail "forced native tune run exited $status"; }
+[ "$(sed -n '5p' forced.fasprof)" = 'choice native-pgo' ] || fail "forced native tune kept '$(sed -n '5p' forced.fasprof)'"
+grep -E -q '^placement +default +pgo +ratio$' forced.err || fail "forced native tune table names other candidates: $(cat forced.err)"
+FAS_TUNE_TEST_SCALE=pgo=100 "$OCAML_FAS" perf --tune --target=force-native tune.fas prof_link.c -o forced-default.fasprof >forced-default.out 2>forced-default.err || fail "forced native default run failed"
+[ "$(sed -n '5p' forced-default.fasprof)" = 'choice native' ] || fail "forced native default kept '$(sed -n '5p' forced-default.fasprof)'"
+"$OCAML_FAS" --profile forced-default.fasprof -c tune.fas -o forced-default.o
+"$OCAML_FAS" --target=force-native -c tune.fas -o forced-plain.o
+cmp forced-default.o forced-plain.o || fail "the kept native default differs from --target=force-native"
 no_tune_temps
 
 tune_expect combo-static 2 '`--tune` cannot be combined with `--static`' tune.fas --static -o combo-static.fasprof

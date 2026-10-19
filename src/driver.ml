@@ -1235,16 +1235,6 @@ let write_profile_file output text =
   | Sys_error message -> io_error message
   | Unix.Unix_error (code, _, _) -> io_error (Unix.error_message code)
 
-let write_tune_profile ~output ~scratch ~profraw ~header =
-  let* text = merge_profraw ~scratch ~profraw in
-  let* () =
-    write_profile_file output
-      (String.concat "\n"
-         (header @ [ "choice pgo"; "align-loops def"; "measured none"; "counts" ])
-      ^ "\n" ^ text)
-  in
-  Ok (count_profile_functions text)
-
 let with_profile config f =
   match config.Cli.profile with
   | None -> f config None

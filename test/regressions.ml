@@ -3670,6 +3670,15 @@ let () =
   (match Cli.parse [| "fas"; "perf"; "--tune"; "profile.fas" |] with
   | Ok (Cli.Perf (_, options, _)) -> assert (options.Cli.mode = Cli.Tune None)
   | _ -> failwith "perf-tune: expected perf invocation");
+  (match Cli.parse [| "fas"; "perf"; "--tune"; "--no-arena"; "profile.fas" |] with
+  | Ok (Cli.Perf (_, options, _)) ->
+      assert (options.Cli.no_arena && options.Cli.mode = Cli.Tune None)
+  | _ -> failwith "perf-tune-no-arena: expected perf invocation");
+  (match Cli.parse [| "fas"; "perf"; "--tune"; "profile.fas" |] with
+  | Ok (Cli.Perf (_, options, _)) -> assert (not options.Cli.no_arena)
+  | _ -> failwith "perf-tune-arena-default: expected perf invocation");
+  cli_error "no-arena-without-tune" "`--no-arena` needs `--tune`"
+    [ "perf"; "--no-arena"; "profile.fas" ];
   (match
      Cli.parse
        [| "fas"; "perf"; "--tune"; "profile.fas"; "-o"; "out.fasprof"; "--"; "x" |]
