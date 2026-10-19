@@ -13,6 +13,18 @@ module String_set = Set.Make (String)
 let error span message = Error [ Diag.error span message ]
 let ( let* ) r f = match r with Error e -> Error e | Ok x -> f x
 
+let resolve_statements resolve statements =
+  let rec go acc = function
+    | [] -> Ok (List.rev acc)
+    | statement :: rest -> (
+        let* resolved = resolve statement in
+        match (statement, resolved) with
+        | Ast.If _, Ast.Block (body, _) when Ast.block_terminates body ->
+            Ok (List.rev (resolved :: acc))
+        | _ -> go (resolved :: acc) rest)
+  in
+  go [] statements
+
 let view_source_type = function
   | Some (Ast.Handle _ as ty) -> Some ty
   | source_type -> source_type
@@ -2875,17 +2887,19 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 | None -> Ok []
                 | Some statements ->
                     with_local_values !local_values (fun () ->
-                        Result_list.map resolve statements)
+                        resolve_statements resolve statements)
               in
               Ok (Ast.Block (no, span))
           | Some true ->
               let* yes =
-                with_local_values !local_values (fun () -> Result_list.map resolve yes)
+                with_local_values !local_values (fun () ->
+                    resolve_statements resolve yes)
               in
               Ok (Ast.Block (yes, span))
           | None ->
               let* yes =
-                with_local_values !local_values (fun () -> Result_list.map resolve yes)
+                with_local_values !local_values (fun () ->
+                    resolve_statements resolve yes)
               in
               let* no =
                 match no with
@@ -2893,7 +2907,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 | Some statements ->
                     let* statements =
                       with_local_values !local_values (fun () ->
-                          Result_list.map resolve statements)
+                          resolve_statements resolve statements)
                     in
                     Ok (Some statements)
               in
@@ -2904,7 +2918,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
           in
           let* body =
             with_local_values !local_values (fun () ->
-                Result_list.map
+                resolve_statements
                   (resolve_stmt ~values ~defer_const_structs substitutions depth)
                   body)
           in
@@ -2913,7 +2927,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       | Ast.Defer (body, span) ->
           let* body =
             with_local_values !local_values (fun () ->
-                Result_list.map
+                resolve_statements
                   (resolve_stmt ~values ~defer_const_structs substitutions depth)
                   body)
           in
@@ -2926,7 +2940,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       | Ast.Block (body, span) ->
           let* body =
             with_local_values !local_values (fun () ->
-                Result_list.map
+                resolve_statements
                   (resolve_stmt ~values ~defer_const_structs substitutions depth)
                   body)
           in
@@ -2950,7 +2964,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               let* step = resolve_optional resolve_stmt step in
               let* body =
                 with_local_values !local_values (fun () ->
-                    Result_list.map resolve_stmt body)
+                    resolve_statements resolve_stmt body)
               in
               Ok (Ast.For (label, init, condition, step, body, span)))
       | Ast.Switch (expression, cases, default, span) ->
@@ -2967,7 +2981,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                 let* values = Result_list.map resolve_expr values in
                 let* body =
                   with_local_values !local_values (fun () ->
-                      Result_list.map resolve_stmt body)
+                      resolve_statements resolve_stmt body)
                 in
                 Ok (values, body))
               cases
@@ -2978,7 +2992,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             | Some body ->
                 let* body =
                   with_local_values !local_values (fun () ->
-                      Result_list.map resolve_stmt body)
+                      resolve_statements resolve_stmt body)
                 in
                 Ok (Some body)
           in
@@ -3068,7 +3082,7 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
                         statements
                   in
                   let* statements =
-                    Result_list.map
+                    resolve_statements
                       (resolve_stmt ~values ~defer_const_structs substitutions depth)
                       statements
                   in
@@ -3162,7 +3176,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
               let* statements =
                 with_local_values body_value_names (fun () ->
                     shadowed_constants := body_value_names;
-                    Result_list.map (resolve_stmt ~defer_const_structs [] 0) statements)
+                    resolve_statements
+                      (resolve_stmt ~defer_const_structs [] 0)
+                      statements)
               in
               Ok (Ast.Statements statements)
         in

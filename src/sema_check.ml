@@ -4753,21 +4753,7 @@ let check_copy c args span =
         | _ -> ()));
     Ok (Hir.Copy (destination.expr, source.expr, destination_ty, scratch_free, span))
 
-let rec stmt_terminates = function
-  | Ast.Return _ | Ast.Break _ | Ast.Continue _ -> true
-  | Ast.Block (body, _) -> block_terminates body
-  | Ast.If (_, then_body, Some else_body, _) ->
-      block_terminates then_body && block_terminates else_body
-  | Ast.Switch (_, arms, Some default, _) ->
-      block_terminates default
-      && List.for_all (fun (_, body) -> block_terminates body) arms
-  | _ -> false
-
-and block_terminates body =
-  match body with
-  | [] -> false
-  | statement :: rest ->
-      if stmt_terminates statement then true else block_terminates rest
+let stmt_terminates = Ast.stmt_terminates
 
 let rec check_block (c : context) stmts =
   push c;

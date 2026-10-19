@@ -1133,3 +1133,19 @@ let item_span_by_name program name =
       Option.fold ~none:None
         ~some:(fun template -> lookup template)
         (specialization_template_name name)
+
+let rec stmt_terminates = function
+  | Return _ | Break _ | Continue _ -> true
+  | Block (body, _) -> block_terminates body
+  | If (_, then_body, Some else_body, _) ->
+      block_terminates then_body && block_terminates else_body
+  | Switch (_, arms, Some default, _) ->
+      block_terminates default
+      && List.for_all (fun (_, body) -> block_terminates body) arms
+  | _ -> false
+
+and block_terminates body =
+  match body with
+  | [] -> false
+  | statement :: rest ->
+      if stmt_terminates statement then true else block_terminates rest

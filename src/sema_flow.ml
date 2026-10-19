@@ -837,7 +837,8 @@ let finish_block_scope flow =
   Ok ()
 
 let finish_statement flow ~before ~terminates =
-  if not flow.falls_through then restore flow before
+  if not flow.falls_through then
+    restore flow { before with initialized = flow.initialized }
   else if terminates then flow.falls_through <- false
 
 let validate_return flow span =

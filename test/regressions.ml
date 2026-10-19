@@ -2383,6 +2383,31 @@ let () =
     "fn f() i64 { x i64\n while true { break\n x = 1 }\n return x }\n";
   semantic_error "place-init-after-continue" "use of uninitialized local `x`"
     "fn f() i64 { x i64\n while true { continue\n x = 1 }\n return x }\n";
+  semantic_accept "init-in-code-after-return"
+    "fn f(x i64) i64 { return x\n a i64 = x + 1\n return a }\n";
+  semantic_error "uninit-in-code-after-return" "use of uninitialized local `a`"
+    "fn f(x i64) i64 { a i64\n return x\n return a }\n";
+  semantic_error "code-after-return-still-checked"
+    "integer literal is out of range for u8: `300`"
+    "fn f(x i64) i64 { return x\n y u8 = 300\n return 0 }\n";
+  semantic_accept "pruned-return-skips-instance-rest"
+    "fn g[C const usize](x i32) i32 { if C >= 4 { return x }\n\
+    \ a arr[4, i32] = {}\n\
+    \ return a[C] + x }\n\
+     fn main() i32 { return g[10](2) + g[3](4) }\n";
+  let pruned_dispatch =
+    llvm_of
+      "fn leaf[N const usize](x usize) usize { return x + N }\n\
+       fn pick[N const usize, C const usize](x usize) usize {\n\
+      \ if C == 1 { return leaf[N](x) }\n\
+      \ if x < N + C / 2 { return pick[N, C / 2](x) }\n\
+      \ return pick[N + C / 2, C / 2](x) }\n\
+       fn main() i32 { return bitcast[i32](trunc[u32](pick[0, 4](3))) }\n"
+  in
+  if
+    contains pruned_dispatch "C=usize:0"
+    || not (contains pruned_dispatch "N=usize:3;1:C=usize:1")
+  then failwith "pruned-return-no-dead-instances";
   let uninitialized_aggregate_llvm =
     llvm_of "struct S { x i64 y i64 }\nfn f() i64 { s S\n s.x = 1\n return s.x }\n"
   in
