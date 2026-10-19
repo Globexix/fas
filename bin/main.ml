@@ -151,11 +151,17 @@ let write_tune_result (config : Cli.t) output dir =
           0)
 
 let tune_command (config : Cli.t) output args =
-  match Driver.check_clang () with
-  | Error diagnostics ->
+  match (Driver.check_clang (), Sys.getenv_opt "FAS_TUNE_TEST_TOOLS") with
+  | Error diagnostics, _ ->
       report config diagnostics;
       1
-  | Ok () -> (
+  | Ok (), Some dir -> (
+      match Tune_tools.build ~cc:(Driver.tool "FAS_CC" "clang-22") dir with
+      | Ok _ -> 0
+      | Error message ->
+          prerr_endline ("fas: " ^ message);
+          1)
+  | Ok (), None -> (
       match Filename.temp_dir "fas-tune-" "" with
       | exception Sys_error message ->
           prerr_endline ("fas: " ^ message);
