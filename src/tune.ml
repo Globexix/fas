@@ -28,6 +28,7 @@ type session = {
 }
 
 exception Stop of int
+exception Interrupted of int
 
 let rounds = 7
 let layouts = [ None; Some 32; Some 64 ]
@@ -151,6 +152,7 @@ let log_line session text =
           output_string channel (text ^ "\n"))
 
 let run_counter = ref 0
+let child = ref None
 
 let execute session ?(env = Unix.environment ()) ?(arena = true) ~label placement
     program =
@@ -186,12 +188,15 @@ let execute session ?(env = Unix.environment ()) ?(arena = true) ~label placemen
    with
   | exception Unix.Unix_error (code, _, _) -> failed (Unix.error_message code)
   | pid -> (
+      child := Some pid;
       let rec wait () =
         match Unix.waitpid [] pid with
         | exception Unix.Unix_error (Unix.EINTR, _, _) -> wait ()
         | _, status -> status
       in
-      match wait () with Unix.WEXITED 0 -> () | _ -> failed "it did not finish"));
+      let status = wait () in
+      child := None;
+      match status with Unix.WEXITED 0 -> () | _ -> failed "it did not finish"));
   let result = read (Filename.concat out "result") in
   let fields = String.split_on_char ' ' (String.trim result) in
   let run =
@@ -271,7 +276,7 @@ let train ~report session config ~target name =
       "error: the program wrote no profile (it must return from `main` or call `exit`)";
     raise (Stop 1));
   match Driver.merge_profraw ~scratch:dir ~profraw with
-  | Ok counts -> counts
+  | Ok counts -> (counts, run.wall)
   | Error diagnostics ->
       report diagnostics;
       raise (Stop 1)
@@ -297,8 +302,219 @@ let write ~report output text =
       raise (Stop 1)
 
 let percent band = Printf.sprintf "%.1f%%" (band *. 100.)
+let test_root () = Option.value (Sys.getenv_opt "FAS_TUNE_TEST_ROOT") ~default:""
+let state_path () = test_root () ^ "/run/fas-tune-isolate"
+let interactive () = Unix.isatty Unix.stdin && Unix.isatty Unix.stderr
 
-let tune ~report (config : Cli.t) ~output ~no_arena ~dir ~argv0 args =
+let ask question ~default =
+  prerr_string (question ^ " ");
+  flush stderr;
+  match In_channel.input_line stdin with
+  | None ->
+      prerr_newline ();
+      false
+  | Some answer -> (
+      match String.lowercase_ascii (String.trim answer) with
+      | "" -> default
+      | "y" | "yes" -> true
+      | _ -> false)
+
+let cpu_list cpus = String.concat "," (List.map string_of_int cpus)
+
+let sudo_argv mode cpu =
+  [|
+    "sudo";
+    "--";
+    "sh";
+    "-c";
+    Tune_tools.isolate_source;
+    mode;
+    string_of_int cpu;
+    string_of_int (Unix.getpid ());
+    test_root ();
+  |]
+
+let rec wait_for pid =
+  match Unix.waitpid [] pid with
+  | exception Unix.Unix_error (Unix.EINTR, _, _) -> wait_for pid
+  | exception Unix.Unix_error (Unix.ECHILD, _, _) -> Unix.WEXITED 255
+  | _, status -> status
+
+let script_line prefix line =
+  match line with
+  | Some line when String.starts_with ~prefix:(prefix ^ " ") line ->
+      Some
+        (String.sub line
+           (String.length prefix + 1)
+           (String.length line - String.length prefix - 1))
+  | _ -> None
+
+type held = { pid : int; input : Unix.file_descr; output : in_channel }
+
+let held = ref None
+
+let start_sudo mode cpu =
+  let stdin_read, stdin_write = Unix.pipe ~cloexec:true () in
+  let out_read, out_write = Unix.pipe ~cloexec:true () in
+  match
+    Unix.create_process "sudo" (sudo_argv mode cpu) stdin_read out_write Unix.stderr
+  with
+  | exception Unix.Unix_error (code, _, _) ->
+      List.iter Unix.close [ stdin_read; stdin_write; out_read; out_write ];
+      Error (Unix.error_message code)
+  | pid ->
+      Unix.close stdin_read;
+      Unix.close out_write;
+      Ok { pid; input = stdin_write; output = Unix.in_channel_of_descr out_read }
+
+let finish_sudo process =
+  (try Unix.close process.input with Unix.Unix_error _ -> ());
+  let rec last line =
+    match In_channel.input_line process.output with
+    | Some next -> last (Some next)
+    | None | (exception Sys_error _) -> line
+  in
+  let line = last None in
+  In_channel.close process.output;
+  (line, wait_for process.pid)
+
+let isolate cpu =
+  match start_sudo "hold" cpu with
+  | Error message ->
+      Printf.eprintf "fas perf: cannot run sudo (%s); measuring without isolation\n%!"
+        message
+  | Ok process -> (
+      match script_line "isolated" (In_channel.input_line process.output) with
+      | Some cpus ->
+          held := Some process;
+          Printf.eprintf "fas perf: isolated CPUs %s for the measurement\n%!" cpus
+      | None ->
+          ignore (finish_sudo process);
+          prerr_endline
+            "fas perf: the CPU was not isolated; measuring without isolation")
+
+let release () =
+  match !held with
+  | None -> ()
+  | Some process -> (
+      held := None;
+      match finish_sudo process with
+      | line, Unix.WEXITED 0 when Option.is_some (script_line "released" line) ->
+          Printf.eprintf "fas perf: restored CPUs %s\n%!"
+            (Option.get (script_line "released" line))
+      | _ ->
+          Printf.eprintf
+            "fas perf: restoring the isolated CPU failed; `%s` lists the saved values\n\
+             %!"
+            (state_path ()))
+
+let stale_state () =
+  match In_channel.with_open_bin (state_path ()) In_channel.input_line with
+  | exception Sys_error _ -> None
+  | None -> Some (None, None)
+  | Some line -> (
+      match String.split_on_char ' ' line with
+      | [ "#"; "cpu"; cpu; "pid"; pid ] ->
+          Some (int_of_string_opt cpu, int_of_string_opt pid)
+      | _ -> Some (None, None))
+
+let alive pid = pid > 0 && Sys.file_exists ("/proc/" ^ string_of_int pid)
+
+let restore_stale ~prompts =
+  match stale_state () with
+  | None -> true
+  | Some (_, Some pid) when alive pid && pid <> Unix.getpid () ->
+      Printf.eprintf
+        "fas perf: another tune session (process %d) holds an isolated CPU; measuring \
+         without isolation\n\
+         %!"
+        pid;
+      false
+  | Some (None, _) ->
+      Printf.eprintf
+        "fas perf: `%s` is not a tune state file; measuring without isolation\n%!"
+        (state_path ());
+      false
+  | Some (Some cpu, _) ->
+      Printf.eprintf "fas perf: an earlier tune session left CPU %d isolated (%s)\n%!"
+        cpu (state_path ());
+      if prompts && ask "restore it now with sudo? [Y/n]" ~default:true then (
+        match start_sudo "off" cpu with
+        | Ok process -> (
+            match finish_sudo process with
+            | line, Unix.WEXITED 0 when Option.is_some (script_line "released" line) ->
+                Printf.eprintf "fas perf: restored CPUs %s\n%!"
+                  (Option.get (script_line "released" line));
+                true
+            | _ ->
+                prerr_endline "fas perf: restoring failed; measuring without isolation";
+                false)
+        | Error message ->
+            Printf.eprintf "fas perf: cannot run sudo (%s)\n%!" message;
+            false)
+      else (
+        if not prompts then
+          prerr_endline
+            "fas perf: run `fas perf --tune` on a terminal without `--yes` to restore \
+             it";
+        false)
+
+let duration seconds =
+  if seconds < 1. then "under a second"
+  else if seconds < 90. then Printf.sprintf "about %.0f s" seconds
+  else if seconds < 5400. then Printf.sprintf "about %.0f min" (seconds /. 60.)
+  else
+    let minutes = Float.to_int (Float.round (seconds /. 60.)) in
+    Printf.sprintf "about %d h %d min" (minutes / 60) (minutes mod 60)
+
+let announce ~input ~cpu ~trained ~candidates ~placements ~wall =
+  let selection = candidates * placements * (1 + rounds)
+  and confirmation = 2 * placements * rounds in
+  let runs = trained + 2 + selection + confirmation in
+  let builds = candidates * List.length layouts in
+  let others = List.filter (( <> ) cpu) (siblings cpu) in
+  Printf.eprintf "fas perf: tuning %s for this machine\n" input;
+  Printf.eprintf
+    "  runs: %d training, 2 reference, %d selection (%d builds x %d placements x %d), \
+     %d confirmation (2 x %d x %d); %d builds\n"
+    trained selection candidates placements (1 + rounds) confirmation placements rounds
+    builds;
+  Printf.eprintf
+    "  time: %s for the runs, plus the builds (one training run took %.3f s)\n"
+    (duration (wall *. float_of_int runs *. 1.1 /. 1e9))
+    (wall /. 1e9);
+  Printf.eprintf "  CPU %d%s\n" cpu
+    (match others with
+    | [] -> ""
+    | others -> Printf.sprintf " (its sibling %s gets no work)" (cpu_list others));
+  prerr_endline
+    "  Leave the machine alone until it finishes. The program run after `--` should do \
+     the\n\
+    \  work it really does and finish quickly (well under a second is ideal).";
+  flush stderr
+
+let offer cpu =
+  let cpus = cpu_list (siblings cpu) in
+  let others = List.filter (( <> ) cpu) (siblings cpu) in
+  Printf.eprintf
+    "For more accurate results, fas can isolate CPU %d%s for the\n\
+     measurement. This needs sudo and is used only to:\n\
+    \  - keep other processes off CPUs %s (runtime cpuset of system.slice, init.scope \
+     and\n\
+    \    session scopes; CPU affinity of your own processes)\n\
+    \  - move interrupts and kernel workqueues off CPUs %s\n\
+    \  - set the performance governor and disable idle states deeper than 1 us on CPUs \
+     %s\n\
+    \  - turn off the NMI watchdog\n\
+     Every change is undone when tuning ends, also on Ctrl-C.\n"
+    cpu
+    (match others with
+    | [] -> ""
+    | others -> Printf.sprintf " (and its sibling %s)" (cpu_list others))
+    cpus cpus cpus;
+  ask "use sudo? [y/N]" ~default:false
+
+let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~may_isolate ~dir ~argv0 args =
   let cc = Driver.tool "FAS_CC" "clang-22" in
   let tools = Filename.concat dir "tools" in
   mkdir tools;
@@ -322,13 +538,24 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~dir ~argv0 args =
   in
   let header = Driver.tune_header () in
   let native_only = config.target = Cli.Force_native in
-  let first_counts =
+  let first_counts, wall =
     train ~report session config ~target:config.target
       (if native_only then "native" else "portable")
   in
+  if interactive () then (
+    announce ~input:config.input ~cpu:session.cpu
+      ~trained:(if native_only then 1 else 2)
+      ~candidates:(if native_only then 2 else 4)
+      ~placements:(List.length (placements no_arena))
+      ~wall;
+    if not yes then (
+      if not (ask "continue? [Y/n]" ~default:true) then (
+        prerr_endline "fas perf: stopped; no profile written";
+        raise (Stop 0));
+      if may_isolate && session.cpu >= 0 && offer session.cpu then isolate session.cpu));
   let native_counts =
     if native_only then first_counts
-    else train ~report session config ~target:Cli.Force_native "native"
+    else fst (train ~report session config ~target:Cli.Force_native "native")
   in
   let test_input = Sys.getenv_opt "FAS_TUNE_TEST_CANDIDATE" in
   let candidate name choice counts index =
@@ -557,7 +784,9 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~dir ~argv0 args =
     (Driver.count_profile_functions kept.counts);
   0
 
-let run ~report (config : Cli.t) ~output ~no_arena ~argv0 args =
+let signals = [ (Sys.sigint, 130); (Sys.sigterm, 143); (Sys.sighup, 129) ]
+
+let run ~report (config : Cli.t) ~output ~no_arena ~yes ~argv0 args =
   match Driver.check_clang () with
   | Error diagnostics ->
       report diagnostics;
@@ -576,9 +805,44 @@ let run ~report (config : Cli.t) ~output ~no_arena ~argv0 args =
               prerr_endline ("fas: " ^ message);
               1
           | dir ->
-              let status =
-                try tune ~report config ~output ~no_arena ~dir ~argv0 args
-                with Stop status -> status
+              let previous =
+                List.map
+                  (fun (signal, code) ->
+                    ( signal,
+                      Sys.signal signal
+                        (Sys.Signal_handle (fun _ -> raise (Interrupted code))) ))
+                  signals
               in
+              let status =
+                try
+                  let may_isolate =
+                    if Sys.file_exists (state_path ()) then
+                      restore_stale ~prompts:(interactive () && not yes)
+                    else true
+                  in
+                  tune ~report config ~output ~no_arena ~yes ~may_isolate ~dir ~argv0
+                    args
+                with
+                | Stop status -> status
+                | Interrupted code ->
+                    List.iter
+                      (fun (signal, _) -> Sys.set_signal signal Sys.Signal_ignore)
+                      signals;
+                    Option.iter
+                      (fun pid ->
+                        try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ())
+                      !child;
+                    Option.iter (fun pid -> ignore (wait_for pid)) !child;
+                    child := None;
+                    prerr_endline "fas perf: interrupted; no profile written";
+                    code
+              in
+              List.iter
+                (fun (signal, _) -> Sys.set_signal signal Sys.Signal_ignore)
+                signals;
+              release ();
+              List.iter
+                (fun (signal, behavior) -> Sys.set_signal signal behavior)
+                previous;
               if not (config.keep || status = 2) then remove_tree dir;
               if status = 2 then 1 else status))

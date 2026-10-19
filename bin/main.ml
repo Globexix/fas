@@ -220,7 +220,7 @@ let () =
           in
           exit
             (Tune.run ~report:(report config) config ~output ~no_arena:options.no_arena
-               ~argv0:(program_name config) args)
+               ~yes:options.yes ~argv0:(program_name config) args)
       | Cli.Measure -> (
           match load_baseline options with
           | Ok baseline -> exit (perf_command config options baseline args)

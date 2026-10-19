@@ -34,6 +34,7 @@ type perf_options = {
   compare : string option;
   mode : perf_mode;
   no_arena : bool;
+  yes : bool;
 }
 
 type lsp_options = { lsp_c_flags : string list; lsp_target : target }
@@ -59,6 +60,7 @@ let default_perf =
     compare = None;
     mode = Measure;
     no_arena = false;
+    yes = false;
   }
 
 let usage =
@@ -67,8 +69,8 @@ let usage =
   \       fas check file.fas [options]\n\
   \       fas perf file.fas [options] [--top N] [--static] [--compare FILE] [-- \
    program arguments]\n\
-  \       fas perf --tune file.fas [build options] [-o PROFILE] [--no-arena] [-- \
-   program arguments]\n\
+  \       fas perf --tune file.fas [build options] [-o PROFILE] [--no-arena] [--yes] \
+   [-- program arguments]\n\
    commands:\n\
   \  run FILE      build to a temporary executable, run it, delete it\n\
   \  check FILE    check without building (no LLVM, no linking)\n\
@@ -422,6 +424,7 @@ let split_perf_options argv =
             | Measure | Tune None ->
                 scan (i + 2) kept { options with mode = Tune (Some argv.(i + 1)) })
       | "--no-arena" -> scan (i + 1) kept { options with no_arena = true }
+      | "--yes" -> scan (i + 1) kept { options with yes = true }
       | "--static" -> scan (i + 1) kept { options with static = true }
       | "--json" -> scan (i + 1) kept { options with json = true }
       | "--compare" ->
@@ -481,6 +484,7 @@ let perf_command config options args =
       else Ok (Perf (config, options, args))
   | Measure ->
       if options.no_arena then Error "`--no-arena` needs `--tune`"
+      else if options.yes then Error "`--yes` needs `--tune`"
       else if options.json && Option.is_some options.asm then
         Error "fas perf: --json and --asm cannot be combined"
       else if options.static && args <> [] then

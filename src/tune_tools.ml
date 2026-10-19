@@ -307,6 +307,122 @@ void *pvalloc(size_t n) {
 size_t malloc_usable_size(void *p) { return p ? usable(p) : 0; }
 |c}
 
+let isolate_source =
+  {sh|set -u
+mode=$0
+cpu=${1:-}
+self=${2:-0}
+root=${3:-}
+sys=$root/sys
+proc=$root/proc
+top=$sys/devices/system/cpu
+state=$root/run/fas-tune-isolate
+affinity=$root/run/fas-tune-isolate.affinity
+case $cpu in
+''|*[!0-9]*) echo "fas-tune-isolate: CPU must be a number" >&2; exit 2 ;;
+esac
+[ -r "$top/cpu$cpu/topology/thread_siblings_list" ] || { echo "fas-tune-isolate: no CPU $cpu" >&2; exit 2; }
+expand() { echo "$1" | tr ',' '\n' | awk -F- 'NF { b = (NF > 1) ? $2 : $1; for (c = $1; c <= b; c++) print c }'; }
+join() { paste -sd, -; }
+mask() { expand "$1" | awk 'BEGIN { n = 0 } { w = int($1 / 32); m[w] += 2 ^ ($1 % 32); if (w > n) n = w } END { s = sprintf("%x", m[n]); for (w = n - 1; w >= 0; w--) s = s sprintf(",%08x", m[w]); print s }'; }
+core=$(expand "$(cat "$top/cpu$cpu/topology/thread_siblings_list")")
+sib=$(echo "$core" | join)
+last=$(ls -d "$top"/cpu[0-9]* | sed 's/.*cpu//' | sort -n | tail -n 1)
+all=0-$last
+house=$(seq 0 "$last" | grep -v -x -F "$core" | join)
+[ -n "$house" ] || { echo "fas-tune-isolate: no CPU left for other work" >&2; exit 2; }
+user=${SUDO_USER:-$(id -un)}
+skip=$(sed -n 's|^0::.*/\([^/]*\.scope\)$|\1|p' "$proc/$self/cgroup" 2>/dev/null)
+units() {
+    echo system.slice
+    echo init.scope
+    systemctl list-units --type=scope --no-legend --plain 'session-*.scope' 2>/dev/null | awk '{ print $1 }' | grep -v -x -F "${skip:-/}"
+}
+started() { s=$(ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' '_'); echo "${s:--}"; }
+current() { taskset -pc "$1" 2>/dev/null | sed 's/.*: //'; }
+save() { [ -e "$1" ] && printf 'file\t%s\t%s\n' "$1" "$(cat "$1")" >>"$state"; }
+put() { [ -w "$1" ] && echo "$2" >"$1" 2>/dev/null; }
+on() {
+    if [ ! -e "$state" ]; then
+        echo "# cpu $cpu pid $self" >"$state" || exit 1
+        for c in $core; do
+            save "$top/cpu$c/cpufreq/scaling_governor"
+            for d in "$top/cpu$c"/cpuidle/state*/disable; do save "$d"; done
+        done
+        save "$proc/sys/kernel/nmi_watchdog"
+        save "$sys/devices/virtual/workqueue/cpumask"
+        save "$proc/irq/default_smp_affinity"
+        for f in "$proc"/irq/*/smp_affinity_list; do save "$f"; done
+        for u in $(units); do
+            printf 'unit\t%s\t%s\n' "$u" "$(systemctl show -p AllowedCPUs --value "$u" 2>/dev/null)" >>"$state"
+        done
+    fi
+    for c in $core; do
+        put "$top/cpu$c/cpufreq/scaling_governor" performance
+        for d in "$top/cpu$c"/cpuidle/state*; do
+            [ -r "$d/latency" ] && [ "$(cat "$d/latency")" -gt 1 ] && put "$d/disable" 1
+        done
+    done
+    put "$proc/sys/kernel/nmi_watchdog" 0
+    for u in $(units); do systemctl set-property --runtime "$u" AllowedCPUs="$house"; done
+    for f in "$proc"/irq/*/smp_affinity_list; do put "$f" "$house"; done
+    put "$proc/irq/default_smp_affinity" "$(mask "$house")"
+    put "$sys/devices/virtual/workqueue/cpumask" "$(mask "$house")"
+    [ -e "$affinity" ] || : >"$affinity"
+    for p in $(pgrep -u "$user"); do
+        cur=$(current "$p")
+        [ -n "$cur" ] || continue
+        grep -q "^$p " "$affinity" || printf '%s %s %s\n' "$p" "$(started "$p")" "$cur" >>"$affinity"
+        new=$(expand "$cur" | grep -v -x -F "$core" | join)
+        [ -n "$new" ] || continue
+        [ "$new" != "$(expand "$cur" | join)" ] || continue
+        taskset -a -cp "$new" "$p" >/dev/null 2>&1
+    done
+    echo "isolated $sib"
+}
+off() {
+    restored=
+    if [ -e "$affinity" ]; then
+        while read -r p start m; do
+            [ "$(started "$p")" = "$start" ] || continue
+            restored="$restored $p "
+            taskset -a -cp "$m" "$p" >/dev/null 2>&1
+        done <"$affinity"
+    fi
+    hs=$(expand "$house" | join)
+    for p in $(pgrep -u "$user"); do
+        case $restored in *" $p "*) continue ;; esac
+        cur=$(current "$p")
+        [ -n "$cur" ] || continue
+        [ "$(expand "$cur" | join)" = "$hs" ] && taskset -a -cp "$all" "$p" >/dev/null 2>&1
+    done
+    rm -f "$affinity"
+    if [ -e "$state" ]; then
+        tab=$(printf '\t')
+        while IFS=$tab read -r kind name value; do
+            case $kind in
+            file) put "$name" "$value" ;;
+            unit) systemctl set-property --runtime "$name" AllowedCPUs="$value" ;;
+            esac
+        done <"$state"
+        rm -f "$state"
+    fi
+    echo "released $sib"
+}
+case $mode in
+on) on ;;
+off) off ;;
+hold)
+    trap '' INT TERM HUP
+    on
+    cat >/dev/null
+    off
+    ;;
+*) echo "usage: sh -c SCRIPT on|off|hold CPU [PID [ROOT]]" >&2; exit 2 ;;
+esac
+exit 0
+|sh}
+
 let ( let* ) = Result.bind
 
 let build ~cc dir =
@@ -326,6 +442,7 @@ let build ~cc dir =
              (String.trim failure.Process.stderr))
   in
   try
+    ignore (write "isolate.sh" isolate_source);
     let* runner =
       compile [ "-O2" ] (write "runner.c" runner_source) (Filename.concat dir "runner")
     in
