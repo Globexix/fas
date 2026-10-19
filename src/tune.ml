@@ -467,10 +467,11 @@ let duration seconds =
     let minutes = Float.to_int (Float.round (seconds /. 60.)) in
     Printf.sprintf "about %d h %d min" (minutes / 60) (minutes mod 60)
 
-let announce ~input ~cpu ~trained ~candidates ~placements ~wall =
+let announce ~input ~cpu ~trained ~candidates ~placements ~second ~wall =
   let selection = candidates * placements * (1 + rounds)
   and confirmation = 2 * placements * rounds in
-  let runs = trained + 2 + selection + confirmation in
+  let held = if second then 2 + (candidates * placements) + confirmation else 0 in
+  let runs = trained + 2 + selection + confirmation + held in
   let builds = candidates * List.length layouts in
   let others = List.filter (( <> ) cpu) (siblings cpu) in
   Printf.eprintf "fas perf: tuning %s for this machine\n" input;
@@ -479,6 +480,11 @@ let announce ~input ~cpu ~trained ~candidates ~placements ~wall =
      %d confirmation (2 x %d x %d); %d builds\n"
     trained selection candidates placements (1 + rounds) confirmation placements rounds
     builds;
+  if second then
+    Printf.eprintf
+      "  second input: 2 reference, %d checks (%d builds x %d placements), %d \
+       confirmation (2 x %d x %d)\n"
+      (candidates * placements) candidates placements confirmation placements rounds;
   Printf.eprintf
     "  time: %s for the runs, plus the builds (one training run took %.3f s)\n"
     (duration (wall *. float_of_int runs *. 1.1 /. 1e9))
@@ -514,7 +520,8 @@ let offer cpu =
     cpus cpus cpus;
   ask "use sudo? [y/N]" ~default:false
 
-let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~may_isolate ~dir ~argv0 args =
+let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolate ~dir
+    ~argv0 args =
   let cc = Driver.tool "FAS_CC" "clang-22" in
   let tools = Filename.concat dir "tools" in
   mkdir tools;
@@ -547,7 +554,7 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~may_isolate ~dir ~argv
       ~trained:(if native_only then 1 else 2)
       ~candidates:(if native_only then 2 else 4)
       ~placements:(List.length (placements no_arena))
-      ~wall;
+      ~second:(Option.is_some check_with) ~wall;
     if not yes then (
       if not (ask "continue? [Y/n]" ~default:true) then (
         prerr_endline "fas perf: stopped; no profile written";
@@ -602,7 +609,8 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~may_isolate ~dir ~argv
         layouts)
     candidates;
   let baseline = candidates.(0) in
-  let suffix = "" in
+  let second = Option.map (fun args -> { session with args }) check_with in
+  let suffix = if Option.is_none second then " (measured on one input)" else "" in
   let default_profile reason =
     prerr_endline ("fas perf: " ^ reason ^ "; the profile keeps the default build");
     write ~report output
@@ -611,41 +619,53 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~may_isolate ~dir ~argv
     Printf.eprintf "fas perf: wrote %s\n%!" output;
     raise (Stop 0)
   in
-  let reference =
+  let unstable input =
+    "the program's output differs between two runs of the same build"
+    ^ match input with `First -> "" | `Second -> " on the second input"
+  in
+  let reference input session prefix =
     let run () =
       execute session ~arena:false
-        ~label:("reference " ^ baseline.name)
+        ~label:(prefix ^ " " ^ baseline.name)
         None (program baseline None)
     in
     let first = run () in
     let second = run () in
-    if not (same first second) then
-      default_profile "the program's output differs between two runs of the same build";
+    if not (same first second) then default_profile (unstable input);
     first
   in
-  let check index p run =
-    if not (same reference run) then
+  let first_reference = reference `First session "reference" in
+  let second_reference =
+    Option.map (fun session -> reference `Second session "reference-with") second
+  in
+  let check input index p run =
+    let expected =
+      match input with
+      | `First -> first_reference
+      | `Second -> Option.get second_reference
+    in
+    if not (same expected run) then
       if index = 0 then
         match p.offset with
         | Some offset ->
             prerr_endline
               (Printf.sprintf
                  "error: the program behaves differently under the measuring allocator \
-                  (arena offset %d); rerun with --no-arena"
-                 offset);
+                  (arena offset %d%s); rerun with --no-arena"
+                 offset
+                 (match input with `First -> "" | `Second -> ", second input"));
             raise (Stop 1)
-        | None ->
-            default_profile
-              "the program's output differs between two runs of the same build"
+        | None -> default_profile (unstable input)
       else (
         prerr_endline
           (Printf.sprintf
-             "internal error: a tuned build changed the program's output (%s, %s); \
+             "internal error: a tuned build changed the program's output (%s, %s%s); \
               kept builds in %s"
              candidates.(index).name
              (match p.offset with
              | Some n -> "arena offset " ^ string_of_int n
              | None -> "no arena")
+             (match input with `First -> "" | `Second -> ", second input")
              builds);
         raise (Stop 2))
   in
@@ -661,19 +681,25 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~may_isolate ~dir ~argv
                 Option.map (fun factor -> (name, factor)) (float_of_string_opt factor)
             | _ -> None)
   in
+  let scale_for input name =
+    let key = match input with `First -> name | `Second -> name ^ "@with" in
+    match List.assoc_opt key scales with
+    | Some factor -> factor
+    | None -> Option.value ~default:1. (List.assoc_opt name scales)
+  in
   let wall_metric = ref false in
-  let measure_once phase index p =
+  let measure_once input session phase index p =
     let c = candidates.(index) in
     let run =
       execute session
         ~label:(Printf.sprintf "%s %s %s" phase c.name (placement_name p))
         (Some p) (program c p.layout)
     in
-    check index p run;
+    check input index p run;
     (match run.cycles with Some c when c > 0. -> () | _ -> wall_metric := true);
-    metric run *. Option.value ~default:1. (List.assoc_opt c.name scales)
+    metric run *. scale_for input c.name
   in
-  let measure phase indices =
+  let measure input session phase indices =
     let pairs =
       Array.of_list
         (List.concat_map
@@ -685,7 +711,7 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~may_isolate ~dir ~argv
       let n = Array.length pairs in
       for k = 0 to n - 1 do
         let index, p = pairs.((round + k) mod n) in
-        let value = measure_once phase index placements.(p) in
+        let value = measure_once input session phase index placements.(p) in
         Hashtbl.replace samples (index, p)
           (value :: Option.value ~default:[] (Hashtbl.find_opt samples (index, p)))
       done
@@ -695,25 +721,41 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~may_isolate ~dir ~argv
           Tune_decide.summarize (Array.of_list (Hashtbl.find samples (index, p))))
   in
   let all = List.init (Array.length candidates) Fun.id in
-  List.iter
-    (fun index ->
-      Array.iter (fun p -> ignore (measure_once "check" index p)) placements)
-    all;
-  let selection = measure "select" all in
+  let check_all input session phase =
+    List.iter
+      (fun index ->
+        Array.iter
+          (fun p -> ignore (measure_once input session phase index p))
+          placements)
+      all
+  in
+  check_all `First session "check";
+  Option.iter (fun session -> check_all `Second session "check-with") second;
+  let selection = measure `First session "select" all in
   let others = Array.init (Array.length candidates - 1) (fun i -> selection (i + 1)) in
+  let selected =
+    Tune_decide.select ~rounds ~baseline:(selection 0) ~candidates:others
+  in
   let decision =
-    match Tune_decide.select ~rounds ~baseline:(selection 0) ~candidates:others with
+    match selected with
     | Tune_decide.Selected (i, _) ->
         let index = i + 1 in
-        let confirmation = measure "confirm" [ 0; index ] in
+        let confirmation = measure `First session "confirm" [ 0; index ] in
         let comparison =
           Tune_decide.confirm ~rounds ~baseline:(confirmation 0)
             ~candidate:(confirmation index)
         in
-        Some ({ comparison; index }, confirmation)
+        let held =
+          Option.map
+            (fun session ->
+              let data = measure `Second session "confirm-with" [ 0; index ] in
+              Tune_decide.confirm ~rounds ~baseline:(data 0) ~candidate:(data index))
+            second
+        in
+        Some ({ comparison; index }, confirmation, held)
     | Tune_decide.Rejected best ->
         Option.map
-          (fun (i, comparison) -> ({ comparison; index = i + 1 }, selection))
+          (fun (i, comparison) -> ({ comparison; index = i + 1 }, selection, None))
           best
   in
   if !wall_metric then
@@ -734,8 +776,10 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~may_isolate ~dir ~argv
   in
   let kept, layout, band =
     match decision with
-    | None -> (baseline, None, 0.)
-    | Some (m, data) ->
+    | None ->
+        Printf.eprintf "fas perf: kept the default build%s\n" suffix;
+        (baseline, None, 0.)
+    | Some (m, data, held) ->
         let shown = candidates.(m.index).name in
         Printf.eprintf "%-14s %14s %14s %8s\n" "placement" baseline.name shown "ratio";
         let base = data 0 and cand = data m.index in
@@ -745,28 +789,36 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~may_isolate ~dir ~argv
               base.(p).median cand.(p).median m.comparison.ratios.(p))
           placements;
         let c = m.comparison in
-        if c.keep then (
+        let second_input =
+          match held with
+          | Some (h : Tune_decide.comparison) ->
+              Printf.sprintf "; second input %.3f×, band %s%s" h.geomean
+                (percent h.band)
+                (if h.passes then "" else ", slower at some placement")
+          | None -> ""
+        in
+        if Tune_decide.kept ?held selected c then (
           let layout =
             match Tune_decide.best_layout ~rounds ~layouts:(by_layout cand) with
             | Some i -> List.nth layouts i
             | None -> None
           in
-          Printf.eprintf "fas perf: kept the profile (%s %.3f×, band %s%s)%s\n" shown
+          Printf.eprintf "fas perf: kept the profile (%s %.3f×, band %s%s%s)%s\n" shown
             c.geomean (percent c.band)
             (match layout with
             | Some n -> Printf.sprintf ", loops aligned to %d" n
             | None -> "")
-            suffix;
+            second_input suffix;
           (candidates.(m.index), layout, c.band))
         else (
-          Printf.eprintf "fas perf: kept the default build (best %s %.3f×, band %s)%s\n"
-            shown c.geomean (percent c.band) suffix;
+          Printf.eprintf
+            "fas perf: kept the default build (best %s %.3f×, band %s%s)%s\n" shown
+            c.geomean (percent c.band) second_input suffix;
           (baseline, None, c.band))
   in
-  if decision = None then Printf.eprintf "fas perf: kept the default build%s\n" suffix;
   let ratio =
     match decision with
-    | Some (m, _) when kept != baseline -> m.comparison.geomean
+    | Some (m, _, _) when kept != baseline -> m.comparison.geomean
     | _ -> 1.
   in
   (match kept.choice with
@@ -786,7 +838,7 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~may_isolate ~dir ~argv
 
 let signals = [ (Sys.sigint, 130); (Sys.sigterm, 143); (Sys.sighup, 129) ]
 
-let run ~report (config : Cli.t) ~output ~no_arena ~yes ~argv0 args =
+let run ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~argv0 args =
   match Driver.check_clang () with
   | Error diagnostics ->
       report diagnostics;
@@ -820,8 +872,8 @@ let run ~report (config : Cli.t) ~output ~no_arena ~yes ~argv0 args =
                       restore_stale ~prompts:(interactive () && not yes)
                     else true
                   in
-                  tune ~report config ~output ~no_arena ~yes ~may_isolate ~dir ~argv0
-                    args
+                  tune ~report config ~output ~no_arena ~yes ~check_with ~may_isolate
+                    ~dir ~argv0 args
                 with
                 | Stop status -> status
                 | Interrupted code ->

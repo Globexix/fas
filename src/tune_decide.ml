@@ -80,8 +80,11 @@ let select ~rounds ~baseline ~candidates =
       | best :: _ -> Rejected (Some best)
       | [] -> Rejected None)
 
-let kept selection confirmation =
-  match selection with Selected _ -> confirmation.keep | Rejected _ -> false
+let kept ?held selection confirmation =
+  match selection with
+  | Selected _ ->
+      confirmation.keep && Option.fold ~none:true ~some:(fun held -> held.passes) held
+  | Rejected _ -> false
 
 let confirm ~rounds ~baseline ~candidate =
   compare ~tests:(Array.length baseline) ~rounds ~baseline ~candidate

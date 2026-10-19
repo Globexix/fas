@@ -35,6 +35,7 @@ type perf_options = {
   mode : perf_mode;
   no_arena : bool;
   yes : bool;
+  check_with : string list option;
 }
 
 type lsp_options = { lsp_c_flags : string list; lsp_target : target }

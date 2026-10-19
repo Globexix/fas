@@ -4620,6 +4620,17 @@ let () =
   let confirmed = Tune_decide.confirm ~rounds:7 ~baseline ~candidate:wins in
   assert (Tune_decide.kept selection confirmed);
   assert (not (Tune_decide.kept (select [| inside |]) confirmed));
+  let held candidate = Tune_decide.confirm ~rounds:7 ~baseline ~candidate in
+  assert (Tune_decide.kept ~held:(held wins) selection confirmed);
+  assert (Tune_decide.kept ~held:(held (flat 9 100.3 0.5)) selection confirmed);
+  assert (not (Tune_decide.kept ~held:(held (flat 9 110. 0.5)) selection confirmed));
+  let one_slow = Array.copy wins in
+  one_slow.(6) <- side 106. 0.5;
+  let slow = held one_slow in
+  assert (slow.geomean > 1. +. slow.band);
+  assert (not (Tune_decide.kept ~held:slow selection confirmed));
+  assert (not (Tune_decide.kept ~held:(held wins) selection confirmation));
+  assert (not (Tune_decide.kept ~held:(held wins) (select [| inside |]) confirmed));
   let layouts best =
     Array.init 3 (fun i -> flat 3 (if i = best then 90. else 100.) 0.5)
   in

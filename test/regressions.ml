@@ -3688,6 +3688,44 @@ let () =
   | _ -> failwith "perf-tune-yes-default: expected perf invocation");
   cli_error "yes-without-tune" "`--yes` needs `--tune`"
     [ "perf"; "--yes"; "profile.fas" ];
+  let check_with name argv expected_args expected_second =
+    incr checks_run;
+    match
+      Cli.parse (Array.of_list ("fas" :: "perf" :: "--tune" :: "profile.fas" :: argv))
+    with
+    | Ok (Cli.Perf (_, options, args)) ->
+        if args <> expected_args || options.Cli.check_with <> expected_second then
+          failwith (name ^ ": wrong split")
+    | _ -> failwith (name ^ ": expected perf invocation")
+  in
+  check_with "check-with-after-args"
+    [ "--"; "a"; "b"; "--check-with"; "--"; "c" ]
+    [ "a"; "b" ] (Some [ "c" ]);
+  check_with "check-with-no-args"
+    [ "--check-with"; "--"; "c"; "d" ]
+    []
+    (Some [ "c"; "d" ]);
+  check_with "check-with-empty" [ "--"; "a"; "--check-with"; "--" ] [ "a" ] (Some []);
+  check_with "check-with-not-separator"
+    [ "--"; "a"; "--check-with"; "b" ]
+    [ "a"; "--check-with"; "b" ] None;
+  check_with "check-with-first-split"
+    [ "--"; "a"; "--check-with"; "--"; "b"; "--check-with"; "--"; "c" ]
+    [ "a" ]
+    (Some [ "b"; "--check-with"; "--"; "c" ]);
+  check_with "check-with-before-args"
+    [ "--check-with"; "--"; "a"; "--check-with"; "--"; "b" ]
+    []
+    (Some [ "a"; "--check-with"; "--"; "b" ]);
+  check_with "check-with-absent" [ "--"; "a" ] [ "a" ] None;
+  cli_error "check-with-value"
+    "`--check-with` must be followed by `--` and the second input's arguments"
+    [ "perf"; "--tune"; "profile.fas"; "--check-with"; "x" ];
+  cli_error "check-with-last"
+    "`--check-with` must be followed by `--` and the second input's arguments"
+    [ "perf"; "--tune"; "profile.fas"; "--check-with" ];
+  cli_error "check-with-without-tune" "`--check-with` needs `--tune`"
+    [ "perf"; "profile.fas"; "--check-with"; "--"; "x" ];
   (match
      Cli.parse
        [| "fas"; "perf"; "--tune"; "profile.fas"; "-o"; "out.fasprof"; "--"; "x" |]

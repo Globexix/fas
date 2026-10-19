@@ -100,6 +100,36 @@ fn main() i32 {
 }
 FAS
 
+cat >args.fas <<'FAS'
+use "C" <<ARGS
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+int args_report(void) {
+  char buf[4096];
+  FILE *f = fopen("/proc/self/cmdline", "rb");
+  size_t n = f ? fread(buf, 1, sizeof buf - 1, f) : 0;
+  if (f) fclose(f);
+  buf[n] = 0;
+  size_t i = strlen(buf) + 1;
+  while (i < n) {
+    const char *a = buf + i;
+    if (strcmp(a, "pid") == 0) printf("pid %ld\n", (long)getpid());
+    else printf("arg %s\n", a);
+    i += strlen(a) + 1;
+  }
+  return 0;
+}
+ARGS
+
+fn main() i32 {
+  return args_report()
+}
+FAS
+
+sed 's/else printf("arg %s\\n", a);/else if (strcmp(a, "second") == 0) printf("changed\\n"); else printf("arg %s\\n", a);/' args.fas >args-other.fas
+grep -q changed args-other.fas || fail "args-other.fas was not generated"
+
 no_tune_temps() {
   leftovers=$(ls -A "$TMPDIR")
   [ -z "$leftovers" ] || fail "temporary files left behind in TMPDIR: $leftovers"
@@ -168,7 +198,7 @@ grep -q '^confirm \(native\|native-pgo\) ' keep.log && fail "keep: confirmation 
 grep -E -q '^placement +default +pgo +ratio$' keep.err || fail "keep: no report table: $(cat keep.err)"
 [ "$(grep -c -E '^(def|32|64)\+[0-9]+ +[0-9]+ +[0-9]+ +[0-9]+\.[0-9]{3}$' keep.err)" -eq 9 ] || fail "keep: the table has no 9 placement rows: $(cat keep.err)"
 grep -E -q '^fas perf: measured on CPU [0-9]+, 7 rounds$' keep.err || fail "keep: no CPU line: $(cat keep.err)"
-grep -E -q '^fas perf: kept the profile \(pgo [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?\)$' keep.err || fail "keep: no kept line: $(cat keep.err)"
+grep -E -q '^fas perf: kept the profile \(pgo [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?\) \(measured on one input\)$' keep.err || fail "keep: no kept line: $(cat keep.err)"
 no_tune_temps
 
 FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100 tune reject work.fas -o reject.fasprof
@@ -176,7 +206,7 @@ FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100 tune reject work.fas -o re
 [ "$(sed -n '5p' reject.fasprof)" = 'choice default' ] || fail "reject run kept '$(sed -n '5p' reject.fasprof)'"
 check_counts reject.log "$ARENA_PLACEMENTS"
 grep -q '^confirm ' reject.log && fail "reject: a confirmation ran without a keep"
-grep -E -q '^fas perf: kept the default build \(best (pgo|native|native-pgo) 0\.[0-9]{3}×, band [0-9]+\.[0-9]%\)$' reject.err || fail "reject: no kept line: $(cat reject.err)"
+grep -E -q '^fas perf: kept the default build \(best (pgo|native|native-pgo) 0\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' reject.err || fail "reject: no kept line: $(cat reject.err)"
 no_tune_temps
 
 FAS_TUNE_TEST_SCALE=pgo=0.01 tune noarena --no-arena env.fas -o noarena.fasprof
@@ -228,6 +258,64 @@ no_tune_temps
 
 FAS_TUNE_TEST_CANDIDATE="$WORK/work.fas" FAS_TUNE_TEST_SCALE= tune same work.fas -o same.fasprof
 [ "$status" -eq 0 ] || { cat same.err >&2; fail "same-source run exited $status"; }
+no_tune_temps
+
+check_second() {
+  log=$1
+  shift
+  for candidate in default pgo native native-pgo; do
+    expected=1
+    for confirmed in "$@"; do
+      [ "$candidate" = "$confirmed" ] && expected=8
+    done
+    for placement in $ARENA_PLACEMENTS; do
+      total=$(($(count "$log" "check-with $candidate $placement") + $(count "$log" "confirm-with $candidate $placement")))
+      [ "$total" -eq "$expected" ] || fail "$log: second input $candidate $placement ran $total times, expected $expected"
+    done
+  done
+}
+
+FAS_TUNE_TEST_SCALE=pgo=0.01 tune held args.fas -o held.fasprof -- first --check-with -- second
+[ "$status" -eq 0 ] || { cat held.err >&2; fail "held run exited $status"; }
+[ "$(sed -n '5p' held.fasprof)" = 'choice pgo' ] || fail "held run kept '$(sed -n '5p' held.fasprof)'"
+[ "$(head -n 6 held.log | tr '\n' ' ')" = 'train portable train native reference default reference default reference-with default reference-with default ' ] || fail "held: the log starts with $(head -n 6 held.log)"
+check_counts held.log "$ARENA_PLACEMENTS" default pgo
+check_second held.log default pgo
+check_rotation held.log confirm-with 18
+grep -q '^select .*' held.log || fail "held: no selection"
+[ "$(grep -c '^confirm-with ' held.log)" -eq 126 ] || fail "held: $(grep -c '^confirm-with ' held.log) second-input confirmation runs"
+grep -E -q '^fas perf: kept the profile \(pgo [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?; second input [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\)$' held.err || fail "held: no kept line: $(cat held.err)"
+no_tune_temps
+
+FAS_TUNE_TEST_SCALE=pgo=0.01,pgo@with=100 tune heldlost args.fas -o heldlost.fasprof -- first --check-with -- second
+[ "$status" -eq 0 ] || { cat heldlost.err >&2; fail "held-lost run exited $status"; }
+[ "$(sed -n '5p' heldlost.fasprof)" = 'choice default' ] || fail "held-lost run kept '$(sed -n '5p' heldlost.fasprof)'"
+grep -E -q '^fas perf: kept the default build \(best pgo [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%; second input 0\.0[0-9]{2}×, band [0-9]+\.[0-9]%, slower at some placement\)$' heldlost.err || fail "held-lost: no kept line: $(cat heldlost.err)"
+check_second heldlost.log default pgo
+no_tune_temps
+
+tune heldpid args.fas -o heldpid.fasprof -- first --check-with -- pid
+[ "$status" -eq 0 ] || { cat heldpid.err >&2; fail "held pid run exited $status"; }
+[ "$(head -n 1 heldpid.err)" = "fas perf: the program's output differs between two runs of the same build on the second input; the profile keeps the default build" ] || fail "held pid stderr: $(cat heldpid.err)"
+[ "$(sed -n '5p' heldpid.fasprof)" = 'choice default' ] || fail "held pid profile: $(sed -n '5p' heldpid.fasprof)"
+grep -q '^check' heldpid.log && fail "held pid run checked after the reference"
+no_tune_temps
+
+FAS_TUNE_TEST_CANDIDATE="$WORK/args-other.fas" tune heldchanged args.fas -o heldchanged.fasprof -- first --check-with -- second
+[ "$status" -eq 1 ] || fail "held changed run exited $status, expected 1"
+case "$(cat heldchanged.err)" in
+  "internal error: a tuned build changed the program's output (pgo, arena offset 0, second input); kept builds in $TMPDIR/fas-tune-"*/builds) ;;
+  *) fail "held changed stderr: $(cat heldchanged.err)" ;;
+esac
+[ "$(count heldchanged.log 'check pgo def+0')" -eq 1 ] || fail "held changed: the first input was not checked first"
+[ ! -e heldchanged.fasprof ] || fail "held changed run wrote a profile"
+kept=$(sed -n 's/.*; kept builds in //p' heldchanged.err)
+rm -rf "${kept%/builds}"
+no_tune_temps
+
+FAS_TUNE_TEST_SCALE=pgo=0.01 tune heldfirst args.fas -o heldfirst.fasprof --check-with -- second
+[ "$status" -eq 0 ] || { cat heldfirst.err >&2; fail "held-first run exited $status"; }
+check_second heldfirst.log default pgo
 no_tune_temps
 
 echo "tune_measure: passed"

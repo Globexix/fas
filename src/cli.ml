@@ -35,6 +35,7 @@ type perf_options = {
   mode : perf_mode;
   no_arena : bool;
   yes : bool;
+  check_with : string list option;
 }
 
 type lsp_options = { lsp_c_flags : string list; lsp_target : target }
@@ -61,6 +62,7 @@ let default_perf =
     mode = Measure;
     no_arena = false;
     yes = false;
+    check_with = None;
   }
 
 let usage =
@@ -70,7 +72,7 @@ let usage =
   \       fas perf file.fas [options] [--top N] [--static] [--compare FILE] [-- \
    program arguments]\n\
   \       fas perf --tune file.fas [build options] [-o PROFILE] [--no-arena] [--yes] \
-   [-- program arguments]\n\
+   [-- program arguments] [--check-with -- second arguments]\n\
    commands:\n\
   \  run FILE      build to a temporary executable, run it, delete it\n\
   \  check FILE    check without building (no LLVM, no linking)\n\
@@ -396,7 +398,7 @@ let parse_invocation ~subcommand argv =
     (if subcommand = Check_subcommand then Ir else Executable)
     false 2 false false None
 
-let split_perf_options argv =
+let split_perf_options ~argv_has_separator argv =
   let n = Array.length argv in
   let tuning = Array.exists (String.equal "--tune") argv in
   let rec scan i kept options =
@@ -425,6 +427,12 @@ let split_perf_options argv =
                 scan (i + 2) kept { options with mode = Tune (Some argv.(i + 1)) })
       | "--no-arena" -> scan (i + 1) kept { options with no_arena = true }
       | "--yes" -> scan (i + 1) kept { options with yes = true }
+      | "--check-with" ->
+          if i + 1 = n && argv_has_separator then
+            scan (i + 1) kept { options with check_with = Some [] }
+          else
+            Error
+              "`--check-with` must be followed by `--` and the second input's arguments"
       | "--static" -> scan (i + 1) kept { options with static = true }
       | "--json" -> scan (i + 1) kept { options with json = true }
       | "--compare" ->
@@ -473,7 +481,7 @@ let split_perf_options argv =
 
 let perf_command config options args =
   match options.mode with
-  | Tune _ ->
+  | Tune _ -> (
       let rejected flag = Error ("`--tune` cannot be combined with `" ^ flag ^ "`") in
       if options.static then rejected "--static"
       else if options.json then rejected "--json"
@@ -481,10 +489,22 @@ let perf_command config options args =
       else if Option.is_some options.top then rejected "--top"
       else if Option.is_some options.asm then rejected "--asm"
       else if Option.is_some config.profile then rejected "--profile"
-      else Ok (Perf (config, options, args))
+      else
+        let rec split before = function
+          | "--check-with" :: "--" :: after -> Some (List.rev before, after)
+          | arg :: rest -> split (arg :: before) rest
+          | [] -> None
+        in
+        match (options.check_with, split [] args) with
+        | Some _, _ -> Ok (Perf (config, { options with check_with = Some args }, []))
+        | None, Some (args, second) ->
+            Ok (Perf (config, { options with check_with = Some second }, args))
+        | None, None -> Ok (Perf (config, options, args)))
   | Measure ->
       if options.no_arena then Error "`--no-arena` needs `--tune`"
       else if options.yes then Error "`--yes` needs `--tune`"
+      else if Option.is_some options.check_with then
+        Error "`--check-with` needs `--tune`"
       else if options.json && Option.is_some options.asm then
         Error "fas perf: --json and --asm cannot be combined"
       else if options.static && args <> [] then
@@ -557,7 +577,8 @@ let parse argv =
       in
       let build_argv = Array.sub argv 0 sep in
       let invocation =
-        if subcommand = Perf_subcommand then split_perf_options build_argv
+        if subcommand = Perf_subcommand then
+          split_perf_options ~argv_has_separator:(sep < n) build_argv
         else Ok (build_argv, default_perf)
       in
       match invocation with
