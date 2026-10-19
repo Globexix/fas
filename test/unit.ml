@@ -22,7 +22,7 @@ let () =
   assert (Limits.default.max_tokens = 1_000_000);
   assert (Limits.default.max_nesting = 128);
   assert (Limits.default.max_interned_string_bytes = 4_000_000);
-  assert (Limits.default.max_rendered_ir_bytes = 4_000_000);
+  assert (Limits.default.max_rendered_ir_bytes = 32_000_000);
   assert (Limits.default.max_specializations = 10_000);
   assert (Limits.default.max_specialization_depth = 64);
   assert (Limits.default.max_aggregate_elements = 1_000_000);
@@ -1069,11 +1069,20 @@ attributes #0 = { "no-builtin-helper" }
 |}
   in
   assert (Ir.render ~debug_info:true debug_marked = debug_expected);
+  let debug_counted = String.length (Ir.render debug_marked) in
+  assert (debug_counted < String.length debug_expected);
   assert (
-    Ir.render_bounded ~debug_info:true
-      ~budget:(String.length debug_expected)
-      debug_marked
+    Ir.render_bounded ~debug_info:true ~budget:debug_counted debug_marked
     = Ok debug_expected);
+  (match
+     Ir.render_bounded ~debug_info:true ~budget:(debug_counted - 1) debug_marked
+   with
+  | Error message ->
+      assert (
+        message
+        = Printf.sprintf "rendered LLVM text exceeds the configured limit of %d bytes"
+            (debug_counted - 1))
+  | Ok _ -> assert false);
   (match
      Ir.render_bounded ~debug_info:true
        ~redirect:(fun name -> name ^ "_sym")

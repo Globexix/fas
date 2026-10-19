@@ -3735,9 +3735,16 @@ let () =
     ~finally:(fun () -> Sys.remove budget_source_path)
     (fun () ->
       let channel = open_out_bin budget_source_path in
-      output_string channel "fn main() i32 {\n  s addr = \"";
-      output_string channel (String.make 3_999_999 'A');
-      output_string channel "\"\n  return 0\n}\n";
+      output_string channel "fn f[K const u64, D const u64](x u64) u64 {\n";
+      for i = 0 to 45 do
+        output_string channel
+          (Printf.sprintf "  x = x * 6364136223846793005 + K + %d\n" i)
+      done;
+      output_string channel
+        "  if D == 0 { return x }\n\
+        \  return f[2 * K, D - 1](x) + f[2 * K + 1, D - 1](x)\n\
+         }\n\
+         fn main() i32 { return bitcast[i32](trunc[u32](f[1, 11](3))) }\n";
       close_out channel;
       let expect_budget_rejection config label =
         match Driver.run config with
@@ -3746,7 +3753,7 @@ let () =
             if
               not
                 (contains rendered
-                   "rendered LLVM text exceeds the configured limit of 4000000 bytes")
+                   "rendered LLVM text exceeds the configured limit of 32000000 bytes")
             then failwith (label ^ ": unexpected diagnostic: " ^ rendered)
         | Ok _ -> failwith (label ^ ": oversized render was accepted")
       in

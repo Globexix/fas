@@ -1731,13 +1731,21 @@ let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false)
   if budget < 0 then Error "rendered LLVM text budget must not be negative"
   else
     let buffer = Buffer.create 4096 in
+    let debug_bytes = ref 0 and in_debug = ref false in
+    let counted () = Buffer.length buffer - !debug_bytes in
     let add s =
-      if Buffer.length buffer > budget - String.length s then raise Render_exhausted
+      if !in_debug then (
+        debug_bytes := !debug_bytes + String.length s;
+        Buffer.add_string buffer s)
+      else if counted () > budget - String.length s then raise Render_exhausted
       else Buffer.add_string buffer s
     in
-    let sink =
-      { text = add; room = (fun n -> Buffer.length buffer <= budget - n); redirect }
+    let debug f =
+      in_debug := true;
+      f ();
+      in_debug := false
     in
+    let sink = { text = add; room = (fun n -> counted () <= budget - n); redirect } in
     let variadic_signatures = Hashtbl.create (List.length m.funcs) in
     List.iter
       (fun (f : func) ->
@@ -2006,7 +2014,9 @@ let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false)
              add sanitize_address;
              if no_builtin_names <> [] then add " #0";
              if target <> None then add " #1";
-             Option.iter (fun sp -> add (Printf.sprintf " !dbg !%d" sp)) scope;
+             Option.iter
+               (fun sp -> debug (fun () -> add (Printf.sprintf " !dbg !%d" sp)))
+               scope;
              add " {";
              newline ();
              let current =
@@ -2017,8 +2027,9 @@ let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false)
                | None -> ()
                | Some sp ->
                    let line, column = !current in
-                   add ", !dbg !";
-                   add (string_of_int (location_id line column sp))
+                   debug (fun () ->
+                       add ", !dbg !";
+                       add (string_of_int (location_id line column sp)))
              in
              List.iteri
                (fun i b ->
@@ -2072,62 +2083,66 @@ let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false)
           add " }";
           newline ())
         target;
-      if !file_order <> [] then (
-        add "!llvm.dbg.cu = !{!0}";
-        newline ();
-        add (Printf.sprintf "!llvm.module.flags = !{!%d, !%d}" flags_id (flags_id + 1));
-        newline ();
-        add
-          "!0 = distinct !DICompileUnit(language: DW_LANG_C11, file: !1, producer: \
-           \"fas 0.5.2\", isOptimized: false, runtimeVersion: 0, emissionKind: \
-           LineTablesOnly)";
-        newline ();
-        List.iter
-          (fun path ->
+      if !file_order <> [] then
+        debug (fun () ->
+            add "!llvm.dbg.cu = !{!0}";
+            newline ();
             add
-              (Printf.sprintf "!%d = !DIFile(filename: \"" (Hashtbl.find file_ids path));
-            add_escaped_bytes (Filename.basename path);
-            add "\", directory: \"";
-            add_escaped_bytes (absolute_directory path);
-            add "\")";
-            newline ())
-          (List.rev !file_order);
-        add (Printf.sprintf "!%d = !{i32 7, !\"Dwarf Version\", i32 5}" flags_id);
-        newline ();
-        add
-          (Printf.sprintf "!%d = !{i32 2, !\"Debug Info Version\", i32 3}" (flags_id + 1));
-        newline ();
-        List.iter2
-          (fun (f : func) scope ->
-            match (scope, f.source) with
-            | Some sp, Some (path, line) ->
-                let file = Hashtbl.find file_ids path in
-                let display = Option.value f.display ~default:f.name in
-                add (Printf.sprintf "!%d = distinct !DISubprogram(name: \"" sp);
-                add_escaped_bytes display;
-                add "\"";
-                let linkage_name = redirect f.name in
-                if linkage_name <> display then (
-                  add ", linkageName: \"";
-                  add_escaped_bytes linkage_name;
-                  add "\"");
+              (Printf.sprintf "!llvm.module.flags = !{!%d, !%d}" flags_id (flags_id + 1));
+            newline ();
+            add
+              "!0 = distinct !DICompileUnit(language: DW_LANG_C11, file: !1, producer: \
+               \"fas 0.5.2\", isOptimized: false, runtimeVersion: 0, emissionKind: \
+               LineTablesOnly)";
+            newline ();
+            List.iter
+              (fun path ->
                 add
-                  (Printf.sprintf
-                     ", scope: !%d, file: !%d, line: %d, type: !%d, scopeLine: %d, \
-                      spFlags: DISPFlagDefinition, unit: !0)"
-                     file file line type_id line);
-                newline ()
-            | Some _, None | None, _ -> ())
-          m.funcs scopes;
-        add (Printf.sprintf "!%d = !DISubroutineType(types: !{})" type_id);
-        newline ();
-        List.iter
-          (fun (id, line, column, scope) ->
+                  (Printf.sprintf "!%d = !DIFile(filename: \""
+                     (Hashtbl.find file_ids path));
+                add_escaped_bytes (Filename.basename path);
+                add "\", directory: \"";
+                add_escaped_bytes (absolute_directory path);
+                add "\")";
+                newline ())
+              (List.rev !file_order);
+            add (Printf.sprintf "!%d = !{i32 7, !\"Dwarf Version\", i32 5}" flags_id);
+            newline ();
             add
-              (Printf.sprintf "!%d = !DILocation(line: %d, column: %d, scope: !%d)" id
-                 line column scope);
-            newline ())
-          (List.rev !location_order));
+              (Printf.sprintf "!%d = !{i32 2, !\"Debug Info Version\", i32 3}"
+                 (flags_id + 1));
+            newline ();
+            List.iter2
+              (fun (f : func) scope ->
+                match (scope, f.source) with
+                | Some sp, Some (path, line) ->
+                    let file = Hashtbl.find file_ids path in
+                    let display = Option.value f.display ~default:f.name in
+                    add (Printf.sprintf "!%d = distinct !DISubprogram(name: \"" sp);
+                    add_escaped_bytes display;
+                    add "\"";
+                    let linkage_name = redirect f.name in
+                    if linkage_name <> display then (
+                      add ", linkageName: \"";
+                      add_escaped_bytes linkage_name;
+                      add "\"");
+                    add
+                      (Printf.sprintf
+                         ", scope: !%d, file: !%d, line: %d, type: !%d, scopeLine: %d, \
+                          spFlags: DISPFlagDefinition, unit: !0)"
+                         file file line type_id line);
+                    newline ()
+                | Some _, None | None, _ -> ())
+              m.funcs scopes;
+            add (Printf.sprintf "!%d = !DISubroutineType(types: !{})" type_id);
+            newline ();
+            List.iter
+              (fun (id, line, column, scope) ->
+                add
+                  (Printf.sprintf "!%d = !DILocation(line: %d, column: %d, scope: !%d)"
+                     id line column scope);
+                newline ())
+              (List.rev !location_order));
       Ok (Buffer.contents buffer)
     with Render_exhausted ->
       Error
