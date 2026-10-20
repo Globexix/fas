@@ -10,7 +10,7 @@ type t = {
   keep : bool;
   optimization : int;
   debug : bool;
-  no_inline_function : string option;
+  no_inline_functions : string list;
   sanitizers : string list;
   link_inputs : string list;
   c_flags : string list;
@@ -105,7 +105,8 @@ let usage =
   \  --emit-ir-json print the custom IR as JSON\n\
   \  --keep        retain and report intermediate paths and active tool pipeline\n\
   \  -g            emit DWARF line tables (machine code unchanged)\n\
-  \  --no-inline NAME  add LLVM noinline to NAME\n\
+  \  --no-inline NAME  add LLVM noinline to NAME (a generic: every instance; \
+   NAME[ARGS]: one; repeatable)\n\
   \  --profile FILE  optimize with a fas profile file (format: fas profile 1)\n\
   \  --sanitize=LIST instrument with address and/or undefined behavior sanitizers\n\
    environment:\n\
@@ -193,7 +194,7 @@ let parse_invocation ~subcommand argv =
                 keep;
                 optimization;
                 debug;
-                no_inline_function;
+                no_inline_functions = List.rev no_inline_function;
                 sanitizers = Option.value ~default:[] !sanitizers;
                 link_inputs = List.rev !link_inputs_rev;
                 c_flags = List.rev !c_flags_rev;
@@ -329,11 +330,9 @@ let parse_invocation ~subcommand argv =
             let name = argv.(i + 1) in
             if name = "" || name.[0] = '-' then
               Error "--no-inline requires a function name"
-            else if Option.is_some no_inline_function then
-              Error "duplicate --no-inline option"
             else
               loop (i + 2) input output emit keep optimization optimization_explicit
-                debug (Some name)
+                debug (name :: no_inline_function)
       | ("-l" | "-L") as flag ->
           if i + 1 >= n || argv.(i + 1) = "" then Error (flag ^ " requires an argument")
           else (
@@ -396,7 +395,7 @@ let parse_invocation ~subcommand argv =
     (if subcommand = Build then 1 else 2)
     None None
     (if subcommand = Check_subcommand then Ir else Executable)
-    false 2 false false None
+    false 2 false false []
 
 let split_perf_options ~argv_has_separator argv =
   let n = Array.length argv in

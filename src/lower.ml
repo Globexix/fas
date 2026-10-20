@@ -3326,7 +3326,7 @@ let lower ?(sanitize_address = false) ?(intrinsic_masked_loads = true) (p : Hir.
       structs;
       globals = strings @ arrays @ storage_globals;
       funcs = funcs @ intrinsic_decls funcs;
-      no_inline_function = None;
+      no_inline_functions = [];
     }
   in
   match Ir.validate module_ with

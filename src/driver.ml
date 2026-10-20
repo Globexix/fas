@@ -1538,24 +1538,81 @@ let emit_optimized_llvm ~pgo config program ir redirect =
       emit_text config (with_fas_module_id text))
 
 let apply_no_inline config ir =
-  match config.Cli.no_inline_function with
-  | None -> Ok ir
-  | Some name -> (
-      match List.find_opt (fun (f : Ir.func) -> f.name = name) ir.Ir.funcs with
-      | None ->
-          Error
-            [
-              Diag.error Span.synthetic
-                (Printf.sprintf "--no-inline function `%s` was not emitted" name);
-            ]
-      | Some f when f.blocks = [] ->
-          Error
-            [
-              Diag.error Span.synthetic
-                (Printf.sprintf "--no-inline function `%s` is not a normal definition"
-                   name);
-            ]
-      | Some _ -> Ok { ir with Ir.no_inline_function = Some name })
+  let squeeze text =
+    String.concat "" (String.split_on_char ' ' text |> List.filter (( <> ) ""))
+  in
+  let defined (f : Ir.func) = f.blocks <> [] in
+  let template (f : Ir.func) = Ast.specialization_template_name f.name in
+  let resolve name =
+    let base =
+      match String.index_opt name '[' with
+      | Some index -> String.sub name 0 index
+      | None -> name
+    in
+    let matches =
+      if String.contains name '[' then
+        List.filter
+          (fun (f : Ir.func) ->
+            template f = Some base
+            && Option.fold ~none:false
+                 ~some:(fun display -> squeeze display = squeeze name)
+                 f.display)
+          ir.Ir.funcs
+      else
+        List.filter
+          (fun (f : Ir.func) -> f.name = name || template f = Some name)
+          ir.Ir.funcs
+    in
+    match (matches, List.filter defined matches) with
+    | [], _ ->
+        let instances =
+          List.filter_map
+            (fun (f : Ir.func) ->
+              if template f = Some base && defined f then f.display else None)
+            ir.Ir.funcs
+        in
+        let shown = List.filteri (fun index _ -> index < 4) instances in
+        let help =
+          if instances = [] then None
+          else
+            Some
+              (Printf.sprintf "emitted instances: %s%s"
+                 (String.concat ", " (List.map (Printf.sprintf "`%s`") shown))
+                 (if List.length instances > 4 then ", ..." else ""))
+        in
+        Error
+          [
+            {
+              (Diag.error Span.synthetic
+                 (Printf.sprintf "--no-inline function `%s` was not emitted" name))
+              with
+              help;
+            };
+          ]
+    | _, [] ->
+        Error
+          [
+            Diag.error Span.synthetic
+              (Printf.sprintf "--no-inline function `%s` is not a normal definition"
+                 name);
+          ]
+    | _, defined -> Ok (List.map (fun (f : Ir.func) -> f.name) defined)
+  in
+  let* names =
+    List.fold_left
+      (fun result name ->
+        let* acc = result in
+        let* found = resolve name in
+        Ok (acc @ found))
+      (Ok []) config.Cli.no_inline_functions
+  in
+  let names = List.sort_uniq String.compare names in
+  let names =
+    List.filter_map
+      (fun (f : Ir.func) -> if List.mem f.name names then Some f.name else None)
+      ir.Ir.funcs
+  in
+  Ok { ir with Ir.no_inline_functions = names }
 
 type imported_c_unit = {
   source : string;

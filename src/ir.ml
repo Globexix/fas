@@ -135,7 +135,7 @@ type module_ = {
   structs : struct_def list;
   globals : global list;
   funcs : func list;
-  no_inline_function : string option;
+  no_inline_functions : string list;
 }
 
 let real_instrs block =
@@ -1235,13 +1235,14 @@ let validate module_ =
   let* () = collect_globals module_.globals in
   let* () = collect_functions module_.funcs in
   let* () =
-    match module_.no_inline_function with
-    | None -> Ok ()
-    | Some name -> (
-        match Hashtbl.find_opt functions name with
-        | Some func when func.blocks <> [] -> Ok ()
-        | Some _ -> Error ("no-inline function `" ^ name ^ "` has no definition")
-        | None -> Error ("no-inline function `" ^ name ^ "` does not exist"))
+    List.fold_left
+      (fun result name ->
+        Result.bind result (fun () ->
+            match Hashtbl.find_opt functions name with
+            | Some func when func.blocks <> [] -> Ok ()
+            | Some _ -> Error ("no-inline function `" ^ name ^ "` has no definition")
+            | None -> Error ("no-inline function `" ^ name ^ "` does not exist")))
+      (Ok ()) module_.no_inline_functions
   in
   validate_functions module_.funcs
 
@@ -1994,9 +1995,7 @@ let render_bounded ?(redirect = Fun.id) ?(sanitize_address = false)
            else
              let link = if f.linkage = Internal then "internal " else "" in
              let no_inline =
-               match m.no_inline_function with
-               | Some name when name = f.name -> " noinline"
-               | _ -> ""
+               if List.mem f.name m.no_inline_functions then " noinline" else ""
              in
              let sanitize_address =
                if sanitize_address then " sanitize_address" else ""
@@ -2213,10 +2212,8 @@ let render_debug_bounded ~limits m =
       line (Printf.sprintf "  target_triple = %S;" m.target_triple);
       line (Printf.sprintf "  data_layout = %S;" m.data_layout);
       line
-        (Printf.sprintf "  no_inline_function = %s;"
-           (match m.no_inline_function with
-           | None -> "None"
-           | Some name -> Printf.sprintf "Some %S" name));
+        (Printf.sprintf "  no_inline_functions = [%s];"
+           (String.concat "; " (List.map (Printf.sprintf "%S") m.no_inline_functions)));
       line "  globals = [";
       List.iter global m.globals;
       line "  ];";

@@ -327,7 +327,7 @@ def assert_legacy_values(expected, actual, function_names, path=()):
         assert isinstance(actual, dict), path
         added = set()
         if len(path) == 1:
-            added = {"format", "version", "target_triple", "data_layout", "no_inline", "c_adapters"}
+            added = {"format", "version", "target_triple", "data_layout", "no_inline", "no_inline_functions", "c_adapters"}
             assert actual.get("format") == "fas-ir-json" and actual.get("version") == 2, path
         elif len(path) == 3 and path[1] == "funcs" and isinstance(path[2], int):
             added = {"ret_extension"}
@@ -495,12 +495,13 @@ for key, tags in expected.items():
 
 fixture = read_json(os.path.join(root, "out.json"))
 assert list(fixture) == ["structs", "globals", "funcs", "format", "version",
-                         "target_triple", "data_layout", "no_inline", "c_adapters"]
+                         "target_triple", "data_layout", "no_inline", "no_inline_functions",
+                         "c_adapters"]
 assert fixture["c_adapters"] == []
 assert fixture["format"] == "fas-ir-json" and fixture["version"] == 2
 assert fixture["target_triple"] == "x86_64-unknown-linux-gnu"
 assert fixture["data_layout"] == "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
-assert fixture["no_inline"] is None
+assert fixture["no_inline"] is None and fixture["no_inline_functions"] == []
 assert [list(item) for item in fixture["structs"]] == [["name", "fields", "tail_padding"]]
 assert [item["name"] for item in fixture["structs"]] == ["Pair"]
 assert fixture["structs"][0]["fields"] == ["i32", "i32"]
@@ -543,7 +544,7 @@ assert calls and calls[0][4] == "pick" and [arg[2] for arg in calls[0][5]] == [
 ], calls
 
 noinline = read_json(os.path.join(root, "noinline.json"))
-assert noinline["no_inline"] == "pick"
+assert noinline["no_inline"] == "pick" and noinline["no_inline_functions"] == ["pick"]
 abi = read_json(os.path.join(root, "pairs", str(source_indexes["abi_exports"]) + ".json"))
 abi_functions = {function["name"]: function for function in abi["funcs"]}
 for name, extension in (("fas_bool", "zext"), ("fas_i8", "sext"), ("fas_u8", "zext")):

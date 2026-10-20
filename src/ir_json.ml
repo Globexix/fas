@@ -265,7 +265,8 @@ let render ?(redirect = Fun.id) ?(c_adapters = []) m =
       ("target_triple", str m.target_triple);
       ("data_layout", str m.data_layout);
       ( "no_inline",
-        match m.no_inline_function with Some name -> str name | None -> "null" );
+        match m.no_inline_functions with [ name ] -> str name | _ -> "null" );
+      ("no_inline_functions", arr (List.map str m.no_inline_functions));
       ( "c_adapters",
         arr
           (List.map

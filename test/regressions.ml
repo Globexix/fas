@@ -3607,7 +3607,7 @@ let () =
       "noundef align";
     ];
   let cli_profile = cli_run [ "-g"; "--no-inline"; "helper"; "profile.fas" ] in
-  assert (cli_profile.Cli.no_inline_function = Some "helper");
+  assert (cli_profile.Cli.no_inline_functions = [ "helper" ]);
   let cli_sanitizers =
     cli_run
       [
@@ -3625,7 +3625,7 @@ let () =
   cli_error "no-inline-flag-name" "requires a function name"
     [ "-g"; "--no-inline"; "-O3"; "profile.fas" ];
   let cli_no_inline_without_g = cli_run [ "--no-inline"; "helper"; "profile.fas" ] in
-  assert (cli_no_inline_without_g.Cli.no_inline_function = Some "helper");
+  assert (cli_no_inline_without_g.Cli.no_inline_functions = [ "helper" ]);
   assert (cli_no_inline_without_g.Cli.optimization = 2);
   assert (
     (cli_run [ "--emit-llvm=optimized"; "profile.fas" ]).Cli.emit = Cli.Optimized_llvm);
@@ -3636,8 +3636,9 @@ let () =
   cli_error "removed-no-inline-option"
     "unknown option `-no-inline`; write `--no-inline`"
     [ "-no-inline"; "helper"; "profile.fas" ];
-  cli_error "no-inline-duplicate" "duplicate --no-inline"
-    [ "-g"; "--no-inline"; "helper"; "--no-inline"; "other"; "profile.fas" ];
+  assert (
+    (cli_run [ "-g"; "--no-inline"; "helper"; "--no-inline"; "other"; "profile.fas" ])
+      .Cli.no_inline_functions = [ "helper"; "other" ]);
   assert (
     (cli_run [ "--emit-llvm=optimized"; "--profile"; "profile.fasprof"; "profile.fas" ])
       .Cli.profile = Some "profile.fasprof");

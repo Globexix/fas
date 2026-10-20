@@ -86,5 +86,5 @@ let module_ ~markers =
     structs = [];
     globals = [];
     funcs = [ main; helper; plain ];
-    no_inline_function = None;
+    no_inline_functions = [];
   }

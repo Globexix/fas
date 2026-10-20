@@ -400,14 +400,14 @@ let () =
   assert (List.length specialized.Hir.funcs = 2);
   let lowered = expect_ok (Lower.lower specialized) in
   assert (List.length lowered.Ir.funcs = 2);
-  let ir_module ?(structs = []) ?(globals = []) ?no_inline_function funcs =
+  let ir_module ?(structs = []) ?(globals = []) ?(no_inline_functions = []) funcs =
     {
       Ir.target_triple = Target_layout.current.triple;
       data_layout = Target_layout.current.llvm_data_layout;
       structs;
       globals;
       funcs;
-      no_inline_function;
+      no_inline_functions;
     }
   in
   let ir_function blocks =
@@ -866,7 +866,7 @@ let () =
     (ir_module ~globals:[ array_global ]
        [ call_caller (Ir.Load (0, Ir.I8, Ir.Global ("numbers", Ir.I8), 1)) ]);
   expect_ir_error "no-inline function `missing` does not exist"
-    (ir_module ~no_inline_function:"missing" []);
+    (ir_module ~no_inline_functions:[ "missing" ] []);
   assert (Ir.render lowered = Ir.render lowered);
   let unresolved_template_call =
     {
@@ -1548,7 +1548,7 @@ attributes #0 = { "no-builtin-helper" }
   let no_inline =
     expect_cli (Cli.parse [| "fas"; "-g"; "--no-inline"; "helper"; "root.fas" |])
   in
-  assert (no_inline.no_inline_function = Some "helper");
+  assert (no_inline.no_inline_functions = [ "helper" ]);
   List.iter
     (fun mode ->
       List.iter
@@ -2433,7 +2433,7 @@ attributes #0 = { "no-builtin-helper" }
         "Module {\n\
         \  target_triple = %S;\n\
         \  data_layout = %S;\n\
-        \  no_inline_function = None;\n\
+        \  no_inline_functions = [];\n\
         \  globals = [\n\
         \  ];\n\
         \  functions = [\n\
