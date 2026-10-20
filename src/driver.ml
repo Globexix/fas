@@ -998,7 +998,7 @@ let render_ir ?(redirect = Fun.id) ?(sanitize_address = false) ?target ~debug_in
   | Ok text -> Ok text
   | Error message -> Error [ Diag.error Span.synthetic message ]
 
-let unroll_values = [ 600; 1200; 2400 ]
+let unroll_values = [ 600; 1200; 2400; 4800 ]
 let unroll_name value = "unroll=" ^ string_of_int value
 
 let tune_enabled config name =

@@ -3843,7 +3843,8 @@ let () =
          align-functions def\n\
          counts\n";
       profile_rejection "profile-no-options" profile_file
-        "line 8 must be `options [unroll=600] [unroll=1200] [unroll=2400] [O3]`";
+        "line 8 must be `options [unroll=600] [unroll=1200] [unroll=2400] \
+         [unroll=4800] [O3]`";
       write profile_file
         "fas profile 3\n\
          fas 0.5.2\n\
@@ -3856,8 +3857,8 @@ let () =
          measured 1\n\
          counts\n";
       profile_rejection "profile-unknown-option" profile_file
-        "has an unknown option `fast`; expected unroll=600, unroll=1200, unroll=2400 \
-         or O3";
+        "has an unknown option `fast`; expected unroll=600, unroll=1200, unroll=2400, \
+         unroll=4800 or O3";
       write profile_file
         "fas profile 3\n\
          fas 0.5.2\n\
@@ -3895,8 +3896,8 @@ let () =
          measured 1\n\
          counts\n";
       profile_rejection "profile-bare-unroll" profile_file
-        "has an unknown option `unroll`; expected unroll=600, unroll=1200, unroll=2400 \
-         or O3";
+        "has an unknown option `unroll`; expected unroll=600, unroll=1200, \
+         unroll=2400, unroll=4800 or O3";
       write profile_file
         "fas profile 3\n\
          fas 0.5.2\n\
@@ -3910,7 +3911,7 @@ let () =
          counts\n";
       profile_rejection "profile-unknown-unroll-value" profile_file
         "has an unknown option `unroll=3`; expected unroll=600, unroll=1200, \
-         unroll=2400 or O3";
+         unroll=2400, unroll=4800 or O3";
       write profile_file
         "fas profile 3\n\
          fas 0.5.2\n\

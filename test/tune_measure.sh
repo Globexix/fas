@@ -382,6 +382,7 @@ check_totals options-unroll.log "$ARENA_PLACEMENTS" 'check select confirm' defau
 check_rotation options-unroll.log select 36 45 18
 check_rotation options-unroll.log confirm 18
 grep -E -q '^placement +default +default\+unroll=1200 +ratio$' options-unroll.err || fail "options-unroll: no option table: $(cat options-unroll.err)"
+grep -q -x -F 'fas perf: options: default+unroll=4800 builds the same binary as default+unroll=2400; not measured' options-unroll.err || fail "options-unroll: no unroll=4800 line: $(cat options-unroll.err)"
 grep -E -q '^fas perf: kept options unroll=1200 \([0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' options-unroll.err || fail "options-unroll: no kept options line: $(cat options-unroll.err)"
 grep -E -q '^fas perf: kept no more options \(best O3 [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' options-unroll.err || fail "options-unroll: no second option line: $(cat options-unroll.err)"
 grep -E -q '^fas perf: kept the profile \(default [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?(, functions aligned to 64)?, options unroll=1200\) \(measured on one input\)$' options-unroll.err || fail "options-unroll: no kept line: $(cat options-unroll.err)"
@@ -398,10 +399,47 @@ grep -E -q '^fas perf: kept options unroll=2400 O3 \([0-9]+\.[0-9]{3}×, band [0
 grep -E -q '^fas perf: kept the profile \(default [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?(, functions aligned to 64)?, options unroll=2400 O3\) \(measured on one input\)$' options-o3.err || fail "options-o3: no kept line: $(cat options-o3.err)"
 no_tune_temps
 
+cat >fixed-loop.fas <<'FAS'
+use "C" <stdio.h>
+
+fn churn(seed u64) u64 {
+    acc u64 = seed
+    for i usize = 0; i < 512; i += 1 {
+        acc = acc * 6364136223846793005 + i
+        acc = acc ^ (acc >> 29)
+        acc = acc * 1442695040888963407 + 1
+        acc = acc ^ (acc << 7)
+    }
+    return acc
+}
+
+fn main() i32 {
+    printed i32 = printf(c"%lu\n", churn(300))
+    if printed <= 0 { return 1 }
+    return 0
+}
+FAS
+
+FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100,default+unroll=4800=0.01 tune options-fixed-loop fixed-loop.fas -o options-fixed-loop.fasprof
+[ "$status" -eq 0 ] || { cat options-fixed-loop.err >&2; fail "options-fixed-loop run exited $status"; }
+[ "$(sed -n '5p;8p' options-fixed-loop.fasprof)" = "$(printf 'choice default\noptions unroll=4800')" ] || fail "options-fixed-loop profile: $(head -n 8 options-fixed-loop.fasprof)"
+check_totals options-fixed-loop.log "$ARENA_PLACEMENTS" 'check select confirm' default=22 pgo=8 native=8 native-pgo=8 default+unroll=4800=15
+check_rotation options-fixed-loop.log select 36 18
+check_rotation options-fixed-loop.log confirm 18
+grep -q -x -F 'fas perf: options: default+unroll=600 builds the same binary as default; not measured' options-fixed-loop.err || fail "options-fixed-loop: no unroll=600 line: $(cat options-fixed-loop.err)"
+grep -q -x -F 'fas perf: options: default+unroll=1200 builds the same binary as default; not measured' options-fixed-loop.err || fail "options-fixed-loop: no unroll=1200 line: $(cat options-fixed-loop.err)"
+grep -q -x -F 'fas perf: options: default+unroll=2400 builds the same binary as default; not measured' options-fixed-loop.err || fail "options-fixed-loop: no unroll=2400 line: $(cat options-fixed-loop.err)"
+grep -q -x -F 'fas perf: options: default+O3 builds the same binary as default; not measured' options-fixed-loop.err || fail "options-fixed-loop: no O3 line: $(cat options-fixed-loop.err)"
+grep -q -x -F 'fas perf: options: default+unroll=4800+O3 builds the same binary as default+unroll=4800; not measured' options-fixed-loop.err || fail "options-fixed-loop: no unroll=4800+O3 line: $(cat options-fixed-loop.err)"
+grep -E -q '^fas perf: kept options unroll=4800 \([0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' options-fixed-loop.err || fail "options-fixed-loop: no kept options line: $(cat options-fixed-loop.err)"
+grep -E -q '^fas perf: kept the profile \(default [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?(, functions aligned to 64)?, options unroll=4800\) \(measured on one input\)$' options-fixed-loop.err || fail "options-fixed-loop: no kept line: $(cat options-fixed-loop.err)"
+no_tune_temps
+
 FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100 FAS_TUNE_TEST_OPTION_CANDIDATE="$WORK/vec-other.fas" tune options-changed vec.fas -o options-changed.fasprof
 [ "$status" -eq 1 ] || fail "options-changed run exited $status, expected 1"
 case "$(cat options-changed.err)" in
-  "internal error: a tuned build changed the program's output (default+unroll=600, arena offset 0); kept builds in $TMPDIR/fas-tune-"*/builds) ;;
+  "fas perf: options: default+unroll=4800 builds the same binary as default+unroll=2400; not measured
+internal error: a tuned build changed the program's output (default+unroll=600, arena offset 0); kept builds in $TMPDIR/fas-tune-"*/builds) ;;
   *) fail "options-changed stderr: $(cat options-changed.err)" ;;
 esac
 [ ! -e options-changed.fasprof ] || fail "options-changed run wrote a profile"
@@ -416,14 +454,15 @@ FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100,default+unroll=600=0.01 tu
 [ "$status" -eq 0 ] || { cat identical.err >&2; fail "identical run exited $status"; }
 grep -q -x -F 'fas perf: options: default+unroll=1200 builds the same binary as default+unroll=600; not measured' identical.err || fail "identical: no unroll=1200 line: $(cat identical.err)"
 grep -q -x -F 'fas perf: options: default+unroll=2400 builds the same binary as default+unroll=600; not measured' identical.err || fail "identical: no unroll=2400 line: $(cat identical.err)"
+grep -q -x -F 'fas perf: options: default+unroll=4800 builds the same binary as default+unroll=600; not measured' identical.err || fail "identical: no unroll=4800 line: $(cat identical.err)"
 grep -q -x -F 'fas perf: options: default+O3 builds the same binary as default; not measured' identical.err || fail "identical: no O3 line: $(cat identical.err)"
-grep -E -q '^(check|select|confirm) default\+(unroll=1200|unroll=2400|O3) ' identical.log && fail "identical: an identical build was measured"
+grep -E -q '^(check|select|confirm) default\+(unroll=1200|unroll=2400|unroll=4800|O3) ' identical.log && fail "identical: an identical build was measured"
 [ "$(sed -n '8p' identical.fasprof)" = 'options unroll=600' ] || fail "identical profile: $(sed -n '8p' identical.fasprof)"
 no_tune_temps
 
 FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100 tune loopless empty.fas -o loopless.fasprof
 [ "$status" -eq 0 ] || { cat loopless.err >&2; fail "loopless run exited $status"; }
-[ "$(grep -c -x -E 'fas perf: options: default\+(unroll=600|unroll=1200|unroll=2400|O3) builds the same binary as default; not measured' loopless.err)" -eq 4 ] || fail "loopless: option candidates were not all dropped: $(cat loopless.err)"
+[ "$(grep -c -x -E 'fas perf: options: default\+(unroll=600|unroll=1200|unroll=2400|unroll=4800|O3) builds the same binary as default; not measured' loopless.err)" -eq 5 ] || fail "loopless: option candidates were not all dropped: $(cat loopless.err)"
 grep -E -q '^(check|select|confirm) default\+' loopless.log && fail "loopless: an option candidate was measured"
 [ "$(sed -n '8p' loopless.fasprof)" = options ] || fail "loopless profile line 8: $(sed -n '8p' loopless.fasprof)"
 no_tune_temps

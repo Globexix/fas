@@ -214,7 +214,7 @@ body() {
 check_shape() {
   sed -n '6p' "$1" | grep -E -q '^align-loops (def|32|64)$' || fail "$1: line 6 is '$(sed -n '6p' "$1")'"
   sed -n '7p' "$1" | grep -E -q '^align-functions (def|64)$' || fail "$1: line 7 is '$(sed -n '7p' "$1")'"
-  sed -n '8p' "$1" | grep -E -q '^options( (unroll=(600|1200|2400)|O3))*$' || fail "$1: line 8 is '$(sed -n '8p' "$1")'"
+  sed -n '8p' "$1" | grep -E -q '^options( (unroll=(600|1200|2400|4800)|O3))*$' || fail "$1: line 8 is '$(sed -n '8p' "$1")'"
   sed -n '9p' "$1" | grep -E -q '^measured [0-9]+\.[0-9]{4} band [0-9]+\.[0-9]{4} rounds 7 placements (9|3) metric (cycles|wall)$' || fail "$1: line 9 is '$(sed -n '9p' "$1")'"
   [ "$(sed -n '10p' "$1")" = counts ] || fail "$1: line 10 is '$(sed -n '10p' "$1")'"
 }

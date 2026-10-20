@@ -401,6 +401,7 @@ profile3() {
 profile3 pgo3.fasprof "$HOST_CPU" 'choice pgo' 'align-loops def' 'align-functions def' 'options' "$MEASURED"
 profile3 o3u64.fasprof "$HOST_CPU" 'choice default' 'align-loops def' 'align-functions 64' 'options unroll=1200 O3' "$MEASURED"
 profile3 o3.fasprof "$HOST_CPU" 'choice default' 'align-loops def' 'align-functions def' 'options O3' "$MEASURED"
+profile3 unroll4800.fasprof "$HOST_CPU" 'choice default' 'align-loops def' 'align-functions def' 'options unroll=4800' "$MEASURED"
 
 fas_build pgo2-c.o -c --profile pgo2.fasprof main.fas
 fas_build pgo3-c.o -c --profile pgo3.fasprof main.fas
@@ -415,6 +416,13 @@ grep -q -F -e '-O3' llc.log || fail "options O3 did not reach llc: $(cat llc.log
 grep -q -F -e '-align-all-functions=6' llc.log || fail "align-functions 64 did not reach llc: $(cat llc.log)"
 fas_build o3u64.bin --profile o3u64.fasprof main.fas prof_link.c
 run_program o3u64.bin 250
+
+: >opt.log
+FAS_OPT="$WORK/opt-log.sh" "$OCAML_FAS" -c --profile unroll4800.fasprof main.fas -o opt-unroll4800.o
+grep -q -F -e 'unroll-threshold=4800' opt.log || fail "options unroll=4800 did not reach opt: $(cat opt.log)"
+grep -q -F -e 'unroll-threshold=1200' opt.log && fail "options unroll=4800 passed another unroll threshold"
+fas_build unroll4800.bin --profile unroll4800.fasprof main.fas prof_link.c
+run_program unroll4800.bin 250
 
 : >opt.log
 FAS_OPT="$WORK/opt-log.sh" "$OCAML_FAS" -c --profile o3.fasprof main.fas -o opt-o3.o

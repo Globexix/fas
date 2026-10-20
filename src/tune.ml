@@ -520,11 +520,15 @@ let announce ~input ~cpu ~trained ~candidates ~placements ~layout_placements ~se
     + confirmation
     + if second then (fresh * placements) + confirmation else 0
   in
-  let options = option_stage ~fresh:4 ~measured:5 + option_stage ~fresh:1 ~measured:2 in
+  let stage1 = List.length Driver.tune_option_names in
+  let options =
+    option_stage ~fresh:stage1 ~measured:(stage1 + 1)
+    + option_stage ~fresh:1 ~measured:2
+  in
   let layout_runs = layout_placements * rounds in
   let runs = trained + 2 + selection + confirmation + held + options + layout_runs in
   let builds = candidates * List.length layouts in
-  let option_builds = 5 * List.length layouts in
+  let option_builds = (stage1 + 1) * List.length layouts in
   let others = List.filter (( <> ) cpu) (siblings cpu) in
   Printf.eprintf "fas perf: tuning %s for this machine\n" input;
   Printf.eprintf
