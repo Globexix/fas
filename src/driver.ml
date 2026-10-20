@@ -998,11 +998,25 @@ let render_ir ?(redirect = Fun.id) ?(sanitize_address = false) ?target ~debug_in
   | Ok text -> Ok text
   | Error message -> Error [ Diag.error Span.synthetic message ]
 
+let unroll_threshold = 1200
+
+let tune_enabled config name =
+  optimization_level config.Cli.optimization > 0
+  && List.mem name config.Cli.tune_options
+
+let effective_level config =
+  if tune_enabled config "O3" then 3 else config.Cli.optimization
+
+let unroll_option config =
+  if tune_enabled config "unroll" then
+    [ "-unroll-threshold=" ^ string_of_int unroll_threshold ]
+  else []
+
 let opt_pass config =
   let configured =
     match Sys.getenv_opt "FAS_OPT_PASSES" with
     | Some value when value <> "" -> value
-    | _ -> Printf.sprintf "default<O%d>" (optimization_level config.Cli.optimization)
+    | _ -> Printf.sprintf "default<O%d>" (optimization_level (effective_level config))
   in
   if List.mem "address" config.Cli.sanitizers then "asan," ^ configured else configured
 
@@ -1032,11 +1046,14 @@ type choice = Default | Pgo | Native | Native_pgo
 type profile_header = {
   choice : choice;
   align_loops : int option;
+  align_functions : int option;
+  options : string list;
   cpu : string;
   counts : string;
 }
 
-let profile_format = "fas profile 2"
+let profile_format = "fas profile 3"
+let tune_option_names = [ "unroll"; "O3" ]
 let profile_error message = Error [ Diag.error Span.synthetic message ]
 
 let choice_name = function
@@ -1069,6 +1086,91 @@ let header_value prefix line =
 
 let profile_cpu line = Option.value (header_value "cpu " line) ~default:line
 
+let align_functions_of_name = function
+  | "def" -> Some None
+  | "64" -> Some (Some 64)
+  | _ -> None
+
+let profile_line_error path number expected =
+  profile_error
+    (Printf.sprintf "profile `%s` line %d must be `%s`" path number expected)
+
+let profile_choice path line =
+  match Option.bind line (header_value "choice ") with
+  | None -> profile_line_error path 5 "choice default|pgo|native|native-pgo"
+  | Some value -> (
+      match choice_of_name value with
+      | Some choice -> Ok choice
+      | None ->
+          profile_error
+            (Printf.sprintf
+               "profile `%s` has an unknown choice `%s`; expected default, pgo, native \
+                or native-pgo"
+               path value))
+
+let profile_align_loops path line =
+  match Option.bind line (header_value "align-loops ") with
+  | None -> profile_line_error path 6 "align-loops def|32|64"
+  | Some value -> (
+      match align_loops_of_name value with
+      | Some align_loops -> Ok align_loops
+      | None ->
+          profile_error
+            (Printf.sprintf
+               "profile `%s` has an unknown align-loops value `%s`; expected def, 32 \
+                or 64"
+               path value))
+
+let profile_align_functions path line =
+  match Option.bind line (header_value "align-functions ") with
+  | None -> profile_line_error path 7 "align-functions def|64"
+  | Some value -> (
+      match align_functions_of_name value with
+      | Some align_functions -> Ok align_functions
+      | None ->
+          profile_error
+            (Printf.sprintf
+               "profile `%s` has an unknown align-functions value `%s`; expected def \
+                or 64"
+               path value))
+
+let profile_options path line =
+  let expected =
+    "options "
+    ^ String.concat " " (List.map (fun name -> "[" ^ name ^ "]") tune_option_names)
+  in
+  let names =
+    match line with
+    | Some "options" -> Some []
+    | _ ->
+        Option.bind line (header_value "options ")
+        |> Option.map (fun value ->
+            List.filter (fun name -> name <> "") (String.split_on_char ' ' value))
+  in
+  match names with
+  | None -> profile_line_error path 8 expected
+  | Some names ->
+      let rec check seen = function
+        | [] -> Ok (List.rev seen)
+        | name :: _ when not (List.mem name tune_option_names) ->
+            profile_error
+              (Printf.sprintf "profile `%s` has an unknown option `%s`; expected %s"
+                 path name
+                 (String.concat " or " tune_option_names))
+        | name :: _ when List.mem name seen ->
+            profile_error
+              (Printf.sprintf "profile `%s` repeats the option `%s`" path name)
+        | name :: rest -> check (name :: seen) rest
+      in
+      check [] names
+
+let profile_measured path number line =
+  match Option.bind line (header_value "measured ") with
+  | Some _ -> Ok ()
+  | None ->
+      profile_line_error path number
+        "measured RATIO band BAND rounds R placements K metric M"
+
 let profile_header path text =
   let no_counts () =
     profile_error (Printf.sprintf "profile `%s` has no `counts` section" path)
@@ -1079,55 +1181,53 @@ let profile_header path text =
         {
           choice = Pgo;
           align_loops = None;
+          align_functions = None;
+          options = [];
           cpu = profile_cpu cpu;
           counts = String.concat "\n" lines;
         }
   | "fas profile 1" :: _ -> no_counts ()
-  | first :: _ :: _ :: cpu :: choice :: align :: measured :: rest
-    when first = profile_format -> (
-      let line number expected =
-        profile_error
-          (Printf.sprintf "profile `%s` line %d must be `%s`" path number expected)
-      in
-      match
-        ( Option.map choice_of_name (header_value "choice " choice),
-          Option.map align_loops_of_name (header_value "align-loops " align),
-          header_value "measured " measured,
-          rest )
-      with
-      | None, _, _, _ -> line 5 "choice default|pgo|native|native-pgo"
-      | Some None, _, _, _ ->
-          profile_error
-            (Printf.sprintf
-               "profile `%s` has an unknown choice `%s`; expected default, pgo, native \
-                or native-pgo"
-               path
-               (Option.get (header_value "choice " choice)))
-      | _, None, _, _ -> line 6 "align-loops def|32|64"
-      | _, Some None, _, _ ->
-          profile_error
-            (Printf.sprintf
-               "profile `%s` has an unknown align-loops value `%s`; expected def, 32 \
-                or 64"
-               path
-               (Option.get (header_value "align-loops " align)))
-      | _, _, None, _ ->
-          line 7 "measured RATIO band BAND rounds R placements K metric M"
-      | Some (Some choice), Some (Some align_loops), Some _, "counts" :: lines ->
+  | "fas profile 2" :: _ :: _ :: cpu :: choice :: align :: measured :: rest -> (
+      let* choice = profile_choice path (Some choice) in
+      let* align_loops = profile_align_loops path (Some align) in
+      let* () = profile_measured path 7 (Some measured) in
+      match rest with
+      | "counts" :: lines ->
           Ok
             {
               choice;
               align_loops;
+              align_functions = None;
+              options = [];
               cpu = profile_cpu cpu;
               counts = String.concat "\n" lines;
             }
-      | Some (Some _), Some (Some _), Some _, _ -> no_counts ())
-  | first :: _ when first = profile_format -> no_counts ()
+      | _ -> no_counts ())
+  | "fas profile 3" :: _ :: _ :: cpu :: rest -> (
+      let nth number = List.nth_opt rest (number - 5) in
+      let* choice = profile_choice path (nth 5) in
+      let* align_loops = profile_align_loops path (nth 6) in
+      let* align_functions = profile_align_functions path (nth 7) in
+      let* options = profile_options path (nth 8) in
+      let* () = profile_measured path 9 (nth 9) in
+      match rest with
+      | _ :: _ :: _ :: _ :: _ :: "counts" :: lines ->
+          Ok
+            {
+              choice;
+              align_loops;
+              align_functions;
+              options;
+              cpu = profile_cpu cpu;
+              counts = String.concat "\n" lines;
+            }
+      | _ -> no_counts ())
+  | ("fas profile 2" | "fas profile 3") :: _ -> no_counts ()
   | _ ->
       profile_error
         (Printf.sprintf
-           "`%s` is not a fas profile (expected `fas profile 1` or `fas profile 2` on \
-            line 1)"
+           "`%s` is not a fas profile (expected `fas profile 1`, `fas profile 2` or \
+            `fas profile 3` on line 1)"
            path)
 
 let profile_io f =
@@ -1265,6 +1365,8 @@ let with_profile config f =
             {
               config with
               Cli.align_loops = header.align_loops;
+              Cli.align_functions = header.align_functions;
+              Cli.tune_options = header.options;
               target = (if native then Cli.Force_native else config.Cli.target);
             }
           in
@@ -1315,7 +1417,7 @@ let report_kept config pgo paths opt llc cc =
          "fas: tools FAS_OPT=%s FAS_LLC=%s FAS_CC=%s FAS_PROFDATA=%s; opt passes=%s; \
           verify before and after opt; llc %s"
          opt llc cc (profdata ()) (pass_report config)
-         (llc_opt config.Cli.optimization)))
+         (llc_opt (effective_level config))))
 
 let with_debug_c_inputs ~enabled ~pgo_flags config cc f =
   if not (enabled || pgo_flags <> []) then f config.Cli.link_inputs
@@ -1365,20 +1467,30 @@ let target_cpu_option config =
   | Cli.Portable, None -> [ "-mcpu=x86-64" ]
   | Cli.Force_native, None -> []
 
+let log2_bytes n =
+  let rec go k = if 1 lsl k >= n then k else go (k + 1) in
+  go 0
+
+let align_functions_option config =
+  match config.Cli.align_functions with
+  | Some n when optimization_level config.Cli.optimization > 0 ->
+      [ "-align-all-functions=" ^ string_of_int (log2_bytes n) ]
+  | _ -> []
+
 let run_llc ?llc_remarks config llc ~filetype ~input ~output =
   run_tool llc
     (Array.of_list
        ([
           llc;
-          llc_opt config.Cli.optimization;
+          llc_opt (effective_level config);
           "-relocation-model=pic";
           "-filetype=" ^ filetype;
         ]
        @ (match config.Cli.align_loops with
          | Some n -> [ "-align-loops=" ^ string_of_int n ]
          | None -> [])
-       @ target_cpu_option config @ remark_option llc_remarks @ [ input; "-o"; output ]
-       ))
+       @ align_functions_option config @ target_cpu_option config
+       @ remark_option llc_remarks @ [ input; "-o"; output ]))
 
 let build_assembly ?llc_remarks config llc opt_path asm_path =
   let* () =
@@ -1401,8 +1513,8 @@ let optimize_module ?remarks ~pgo config opt ll_path opt_path =
     run_tool opt
       (Array.of_list
          ([ opt; "-passes=" ^ opt_pass config ]
-         @ target_cpu_option config @ remark_option remarks @ address_scope_option
-         @ pgo_opt_flags config pgo
+         @ unroll_option config @ target_cpu_option config @ remark_option remarks
+         @ address_scope_option @ pgo_opt_flags config pgo
          @ [ ll_path; "-S"; "-o"; opt_path ]))
   in
   verify_llvm opt opt_path
@@ -1709,7 +1821,7 @@ let compile_c_units ~pgo config cc units adapters standard_headers declaration_h
                  cc;
                  "--target=x86_64-unknown-linux-gnu";
                  "-fPIC";
-                 llc_opt config.Cli.optimization;
+                 llc_opt (effective_level config);
                ]
               @ host_march config @ unit.c_flags
               @ (if Option.is_none unit.assembly then

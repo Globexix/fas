@@ -21,6 +21,8 @@ type t = {
   profile : string option;
   all_errors : bool;
   align_loops : int option;
+  align_functions : int option;
+  tune_options : string list;
 }
 
 type perf_mode = Measure | Tune of string option

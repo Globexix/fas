@@ -289,6 +289,8 @@ let profile_text ~header ~choice ~layout ~measured ~counts =
     @ [
         "choice " ^ Driver.choice_name choice;
         "align-loops " ^ Driver.align_loops_name layout;
+        "align-functions def";
+        "options";
         "measured " ^ measured;
         "counts";
       ])

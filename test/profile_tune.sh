@@ -193,7 +193,7 @@ FAS_VERSION=$("$OCAML_FAS" --version | sed -n '1p' | awk '{ print $2 }')
 OPT_LINE=$("$LLVM_OPT" --version | sed -n 's/^[[:space:]]*//;/LLVM version/{p;q;}')
 HOST_CPU=$("$LLVM_LLC" --version | sed -n 's/^[[:space:]]*Host CPU: *//p')
 {
-  echo 'fas profile 2'
+  echo 'fas profile 3'
   echo "fas $FAS_VERSION"
   echo "llvm $OPT_LINE"
   echo "cpu $HOST_CPU"
@@ -208,13 +208,15 @@ last_line() {
 }
 
 body() {
-  tail -n +9 "$1"
+  tail -n +11 "$1"
 }
 
 check_shape() {
   sed -n '6p' "$1" | grep -E -q '^align-loops (def|32|64)$' || fail "$1: line 6 is '$(sed -n '6p' "$1")'"
-  sed -n '7p' "$1" | grep -E -q '^measured [0-9]+\.[0-9]{4} band [0-9]+\.[0-9]{4} rounds 7 placements (9|3) metric (cycles|wall)$' || fail "$1: line 7 is '$(sed -n '7p' "$1")'"
-  [ "$(sed -n '8p' "$1")" = counts ] || fail "$1: line 8 is '$(sed -n '8p' "$1")'"
+  sed -n '7p' "$1" | grep -E -q '^align-functions (def|64)$' || fail "$1: line 7 is '$(sed -n '7p' "$1")'"
+  sed -n '8p' "$1" | grep -E -q '^options( (unroll|O3))*$' || fail "$1: line 8 is '$(sed -n '8p' "$1")'"
+  sed -n '9p' "$1" | grep -E -q '^measured [0-9]+\.[0-9]{4} band [0-9]+\.[0-9]{4} rounds 7 placements (9|3) metric (cycles|wall)$' || fail "$1: line 9 is '$(sed -n '9p' "$1")'"
+  [ "$(sed -n '10p' "$1")" = counts ] || fail "$1: line 10 is '$(sed -n '10p' "$1")'"
 }
 
 status=0
@@ -334,7 +336,7 @@ FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100 "$OCAML_FAS" perf --tune t
 [ "$status" -eq 0 ] || { cat slow.err >&2; fail "slow tune run exited $status"; }
 grep -E -q '^fas perf: kept the default build \(best (pgo|native|native-pgo) 0\.[0-9]+×, band [0-9.]+%\) \(measured on one input\)$' slow.err || fail "slow tune run did not keep the default build: $(cat slow.err)"
 [ "$(sed -n '5p;6p' slow.fasprof)" = "$(printf 'choice default\nalign-loops def')" ] || fail "slow profile header is '$(head -n 7 slow.fasprof)'"
-grep -E -q '^measured 1\.0000 band ' slow.fasprof || fail "slow profile measured line is '$(sed -n '7p' slow.fasprof)'"
+grep -E -q '^measured 1\.0000 band ' slow.fasprof || fail "slow profile measured line is '$(sed -n '9p' slow.fasprof)'"
 grep -q 'tuned for' slow.err && fail "a default choice says it was tuned for this CPU"
 "$OCAML_FAS" --profile slow.fasprof -c tune.fas -o slow.o
 "$OCAML_FAS" -c tune.fas -o plain.o

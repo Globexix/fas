@@ -129,7 +129,7 @@ int prof_link_bump(int value) {
 }
 C
 
-printf 'fas profile 3\nfas 0.5.2\ncounts\n' >wrong.fasprof
+printf 'fas profile 4\nfas 0.5.2\ncounts\n' >wrong.fasprof
 : >empty.fasprof
 printf 'fas profile 1\ncounts\n' >early.fasprof
 printf 'fas profile 1\nfas 0.5.2\nllvm x\ncpu y\nnot counts\n' >nocounts.fasprof
@@ -148,6 +148,13 @@ printf '%s\n' "\$*" >>"$WORK/llc.log"
 exec "$LLVM_LLC" "\$@"
 SH
 chmod +x llc-log.sh
+
+cat >opt-log.sh <<SH
+#!/bin/sh
+printf '%s\n' "\$*" >>"$WORK/opt.log"
+exec "$LLVM_OPT" "\$@"
+SH
+chmod +x opt-log.sh
 
 no_profile_temps() {
   for leftover in "$TMPDIR"/fas-profile-*; do
@@ -270,8 +277,8 @@ cmp det-a.o det-b.o || fail "two profile builds produced different objects"
 
 expect_error unreadable 'error: cannot read profile `nope.fasprof`' --profile nope.fasprof main.fas prof_link.c
 expect_error unreadable-O0 'error: cannot read profile `nope.fasprof`' -O0 --profile nope.fasprof main.fas prof_link.c
-expect_error wrong-version 'error: `wrong.fasprof` is not a fas profile (expected `fas profile 1` or `fas profile 2` on line 1)' --profile wrong.fasprof main.fas prof_link.c
-expect_error empty-profile 'error: `empty.fasprof` is not a fas profile (expected `fas profile 1` or `fas profile 2` on line 1)' --profile empty.fasprof main.fas prof_link.c
+expect_error wrong-version 'error: `wrong.fasprof` is not a fas profile (expected `fas profile 1`, `fas profile 2` or `fas profile 3` on line 1)' --profile wrong.fasprof main.fas prof_link.c
+expect_error empty-profile 'error: `empty.fasprof` is not a fas profile (expected `fas profile 1`, `fas profile 2` or `fas profile 3` on line 1)' --profile empty.fasprof main.fas prof_link.c
 expect_error early-counts 'error: profile `early.fasprof` has no `counts` section' --profile early.fasprof main.fas prof_link.c
 expect_error no-counts 'error: profile `nocounts.fasprof` has no `counts` section' --profile nocounts.fasprof main.fas prof_link.c
 expect_invalid_counts invalid-counts --profile bad.fasprof main.fas prof_link.c
@@ -375,6 +382,49 @@ expect_error no-choice 'error: profile `nochoice.fasprof` line 5 must be `choice
 expect_error no-align 'error: profile `noalign.fasprof` line 6 must be `align-loops def|32|64`' --profile noalign.fasprof main.fas prof_link.c
 expect_error no-measured 'error: profile `nomeasured.fasprof` line 7 must be `measured RATIO band BAND rounds R placements K metric M`' --profile nomeasured.fasprof main.fas prof_link.c
 expect_error no-counts2 'error: profile `nocounts2.fasprof` has no `counts` section' --profile nocounts2.fasprof main.fas prof_link.c
+
+profile3() {
+  {
+    echo 'fas profile 3'
+    echo "fas $FAS_VERSION"
+    echo "llvm $OPT_LINE"
+    echo "cpu $2"
+    echo "$3"
+    echo "$4"
+    echo "$5"
+    echo "$6"
+    echo "$7"
+    echo counts
+    cat main.proftext
+  } >"$1"
+}
+profile3 pgo3.fasprof "$HOST_CPU" 'choice pgo' 'align-loops def' 'align-functions def' 'options' "$MEASURED"
+profile3 o3u64.fasprof "$HOST_CPU" 'choice default' 'align-loops def' 'align-functions 64' 'options unroll O3' "$MEASURED"
+profile3 o3.fasprof "$HOST_CPU" 'choice default' 'align-loops def' 'align-functions def' 'options O3' "$MEASURED"
+
+fas_build pgo2-c.o -c --profile pgo2.fasprof main.fas
+fas_build pgo3-c.o -c --profile pgo3.fasprof main.fas
+cmp pgo2-c.o pgo3-c.o || fail "a format 3 profile without options or function alignment differs from the format 2 profile"
+
+: >opt.log
+: >llc.log
+FAS_OPT="$WORK/opt-log.sh" FAS_LLC="$WORK/llc-log.sh" "$OCAML_FAS" -c --profile o3u64.fasprof main.fas -o llc-o3u64.o
+grep -q -F -e 'default<O3>' opt.log || fail "options O3 did not reach opt: $(cat opt.log)"
+grep -q -F -e 'unroll-threshold=1200' opt.log || fail "options unroll did not reach opt: $(cat opt.log)"
+grep -q -F -e '-O3' llc.log || fail "options O3 did not reach llc: $(cat llc.log)"
+grep -q -F -e '-align-all-functions=6' llc.log || fail "align-functions 64 did not reach llc: $(cat llc.log)"
+fas_build o3u64.bin --profile o3u64.fasprof main.fas prof_link.c
+run_program o3u64.bin 250
+
+: >opt.log
+FAS_OPT="$WORK/opt-log.sh" "$OCAML_FAS" -c --profile o3.fasprof main.fas -o opt-o3.o
+grep -q -F -e 'default<O3>' opt.log || fail "options O3 alone did not reach opt: $(cat opt.log)"
+grep -q -F -e 'unroll-threshold' opt.log && fail "options O3 alone passed the unroll threshold"
+: >opt.log
+FAS_OPT="$WORK/opt-log.sh" "$OCAML_FAS" -c -O0 --profile o3u64.fasprof main.fas -o opt-o0.o
+grep -q -F -e 'default<O0>' opt.log || fail "-O0 with options O3 did not run opt at O0: $(cat opt.log)"
+grep -q -F -e 'default<O3>' opt.log && fail "-O0 with options O3 ran the O3 pipeline"
+grep -q -F -e 'unroll-threshold' opt.log && fail "-O0 with options unroll passed the unroll threshold"
 
 "$OCAML_FAS" --profile main.fasprof --keep main.fas prof_link.c -o keep.bin >keep.bin.out 2>keep.bin.err || fail "--keep profile build failed: $(cat keep.bin.err)"
 kept=$(grep '^fas: kept intermediates:' keep.bin.err) || fail "--keep printed no intermediates line"

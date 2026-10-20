@@ -173,6 +173,8 @@ let config_for state key : Cli.t =
     profile = None;
     all_errors = false;
     align_loops = None;
+    align_functions = None;
+    tune_options = [];
   }
 
 let lsp_message (diag : Diag.t) =

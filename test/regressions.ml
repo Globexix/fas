@@ -3782,9 +3782,10 @@ let () =
       in
       profile_rejection "profile-unreadable" (profile_file ^ ".missing")
         "cannot read profile";
-      write profile_file "fas profile 3\nfas 0.5.2\nllvm x\ncpu x\ncounts\n";
+      write profile_file "fas profile 4\nfas 0.5.2\nllvm x\ncpu x\ncounts\n";
       profile_rejection "profile-bad-header" profile_file
-        "is not a fas profile (expected `fas profile 1` or `fas profile 2` on line 1)";
+        "is not a fas profile (expected `fas profile 1`, `fas profile 2` or `fas \
+         profile 3` on line 1)";
       write profile_file "fas profile 1\nfas 0.5.2\nllvm x\ncpu x\nno counts here\n";
       profile_rejection "profile-no-counts" profile_file "has no `counts` section";
       write profile_file "fas profile 1\ncounts\n";
@@ -3814,7 +3815,73 @@ let () =
       write profile_file
         "fas profile 2\nfas 0.5.2\nllvm x\ncpu x\nchoice pgo\nalign-loops def\ncounts\n";
       profile_rejection "profile-no-measured" profile_file
-        "line 7 must be `measured RATIO band BAND rounds R placements K metric M`");
+        "line 7 must be `measured RATIO band BAND rounds R placements K metric M`";
+      write profile_file
+        "fas profile 3\nfas 0.5.2\nllvm x\ncpu x\nchoice pgo\nalign-loops def\ncounts\n";
+      profile_rejection "profile-no-align-functions" profile_file
+        "line 7 must be `align-functions def|64`";
+      write profile_file
+        "fas profile 3\n\
+         fas 0.5.2\n\
+         llvm x\n\
+         cpu x\n\
+         choice pgo\n\
+         align-loops def\n\
+         align-functions 32\n\
+         options\n\
+         measured 1\n\
+         counts\n";
+      profile_rejection "profile-unknown-align-functions" profile_file
+        "has an unknown align-functions value `32`; expected def or 64";
+      write profile_file
+        "fas profile 3\n\
+         fas 0.5.2\n\
+         llvm x\n\
+         cpu x\n\
+         choice pgo\n\
+         align-loops def\n\
+         align-functions def\n\
+         counts\n";
+      profile_rejection "profile-no-options" profile_file
+        "line 8 must be `options [unroll] [O3]`";
+      write profile_file
+        "fas profile 3\n\
+         fas 0.5.2\n\
+         llvm x\n\
+         cpu x\n\
+         choice pgo\n\
+         align-loops def\n\
+         align-functions def\n\
+         options unroll fast\n\
+         measured 1\n\
+         counts\n";
+      profile_rejection "profile-unknown-option" profile_file
+        "has an unknown option `fast`; expected unroll or O3";
+      write profile_file
+        "fas profile 3\n\
+         fas 0.5.2\n\
+         llvm x\n\
+         cpu x\n\
+         choice pgo\n\
+         align-loops def\n\
+         align-functions def\n\
+         options unroll unroll\n\
+         measured 1\n\
+         counts\n";
+      profile_rejection "profile-repeated-option" profile_file
+        "repeats the option `unroll`";
+      write profile_file
+        "fas profile 3\n\
+         fas 0.5.2\n\
+         llvm x\n\
+         cpu x\n\
+         choice pgo\n\
+         align-loops def\n\
+         align-functions def\n\
+         options\n\
+         counts\n";
+      profile_rejection "profile-no-measured-3" profile_file
+        "line 9 must be `measured RATIO band BAND rounds R placements K metric M`");
   cli_error "sanitize-empty-list" "--sanitize requires a non-empty list"
     [ "--sanitize="; "profile.fas" ];
   cli_error "sanitize-unknown-name" "unknown sanitizer `memory`"

@@ -21,6 +21,8 @@ type t = {
   profile : string option;
   all_errors : bool;
   align_loops : int option;
+  align_functions : int option;
+  tune_options : string list;
 }
 
 type perf_mode = Measure | Tune of string option
@@ -108,7 +110,7 @@ let usage =
   \  --no-inline NAME  add LLVM noinline to NAME (a generic: every instance; \
    NAME[ARGS]: one; repeatable)\n\
   \  --profile FILE  optimize with a fas profile file (from fas perf --tune; format: \
-   fas profile 1 or 2)\n\
+   fas profile 1, 2 or 3)\n\
   \  --sanitize=LIST instrument with address and/or undefined behavior sanitizers\n\
    environment:\n\
   \  FAS_OPT, FAS_LLC, FAS_CC, FAS_PROFDATA select opt, llc, the C compiler and \
@@ -206,6 +208,8 @@ let parse_invocation ~subcommand argv =
                 profile = !profile;
                 all_errors = !all_errors;
                 align_loops = None;
+                align_functions = None;
+                tune_options = [];
               }
             in
             Ok (if subcommand = Check_subcommand then Check config else Run config)
