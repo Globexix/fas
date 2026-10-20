@@ -107,7 +107,8 @@ let usage =
   \  -g            emit DWARF line tables (machine code unchanged)\n\
   \  --no-inline NAME  add LLVM noinline to NAME (a generic: every instance; \
    NAME[ARGS]: one; repeatable)\n\
-  \  --profile FILE  optimize with a fas profile file (format: fas profile 1)\n\
+  \  --profile FILE  optimize with a fas profile file (from fas perf --tune; format: \
+   fas profile 1 or 2)\n\
   \  --sanitize=LIST instrument with address and/or undefined behavior sanitizers\n\
    environment:\n\
   \  FAS_OPT, FAS_LLC, FAS_CC, FAS_PROFDATA select opt, llc, the C compiler and \
