@@ -191,6 +191,8 @@ check_rotation() {
 }
 
 ARENA_PLACEMENTS='def+0 def+65536 def+589824 32+0 32+65536 32+589824 64+0 64+65536 64+589824'
+LAYOUT_PLACEMENTS='def+0 def+65536 def+589824 32+0 32+65536 32+589824 64+0 64+65536 64+589824 def+f64+0 def+f64+65536 def+f64+589824 32+f64+0 32+f64+65536 32+f64+589824 64+f64+0 64+f64+65536 64+f64+589824'
+NOARENA_LAYOUT='def def+f64 32 32+f64 64 64+f64'
 
 
 FAS_TUNE_TEST_SCALE=pgo=0.01 tune keep work.fas -o keep.fasprof
@@ -203,14 +205,29 @@ FAS_TUNE_TEST_SCALE=pgo=0.01 tune keep work.fas -o keep.fasprof
 check_totals keep.log "$ARENA_PLACEMENTS" 'check select confirm' default=15 pgo=15 native=8 native-pgo=8
 check_rotation keep.log select 36
 check_rotation keep.log confirm 18
+check_totals keep.log "$LAYOUT_PLACEMENTS" layout pgo=7
 grep -q '^confirm \(native\|native-pgo\) ' keep.log && fail "keep: confirmation measured another candidate"
 grep -E -q '^placement +default +pgo +ratio$' keep.err || fail "keep: no report table: $(cat keep.err)"
 [ "$(grep -c -E '^(def|32|64)\+[0-9]+ +[0-9]+ +[0-9]+ +[0-9]+\.[0-9]{3}$' keep.err)" -eq 9 ] || fail "keep: the table has no 9 placement rows: $(cat keep.err)"
 grep -E -q '^fas perf: measured on CPU [0-9]+, 7 rounds$' keep.err || fail "keep: no CPU line: $(cat keep.err)"
-grep -E -q '^fas perf: kept the profile \(pgo [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?\) \(measured on one input\)$' keep.err || fail "keep: no kept line: $(cat keep.err)"
+grep -E -q '^fas perf: kept the profile \(pgo [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?(, functions aligned to 64)?\) \(measured on one input\)$' keep.err || fail "keep: no kept line: $(cat keep.err)"
 no_tune_temps
 
-FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100 tune reject work.fas -o reject.fasprof
+FAS_TUNE_TEST_SCALE=pgo=0.01,pgo-def-f64=0.5 tune layout-kept work.fas -o layout-kept.fasprof
+[ "$status" -eq 0 ] || { cat layout-kept.err >&2; fail "layout-kept run exited $status"; }
+[ "$(sed -n '5,7p' layout-kept.fasprof)" = "$(printf 'choice pgo\nalign-loops def\nalign-functions 64')" ] || fail "layout-kept profile: $(head -n 8 layout-kept.fasprof)"
+check_totals layout-kept.log "$LAYOUT_PLACEMENTS" layout pgo=7
+grep -E -q '^fas perf: kept the profile \(pgo [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%, functions aligned to 64\) \(measured on one input\)$' layout-kept.err || fail "layout-kept: no kept line: $(cat layout-kept.err)"
+no_tune_temps
+
+FAS_TUNE_TEST_SCALE=pgo=0.01,pgo-32=2,pgo-64=2,pgo-def-f64=2,pgo-32-f64=2,pgo-64-f64=2 tune layout-none work.fas -o layout-none.fasprof
+[ "$status" -eq 0 ] || { cat layout-none.err >&2; fail "layout-none run exited $status"; }
+[ "$(sed -n '5,7p' layout-none.fasprof)" = "$(printf 'choice pgo\nalign-loops def\nalign-functions def')" ] || fail "layout-none profile: $(head -n 8 layout-none.fasprof)"
+check_totals layout-none.log "$LAYOUT_PLACEMENTS" layout pgo=7
+grep -E -q '^fas perf: kept the profile \(pgo [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' layout-none.err || fail "layout-none: no kept line: $(cat layout-none.err)"
+no_tune_temps
+
+FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100,default-32=2,default-64=2,default-def-f64=2,default-32-f64=2,default-64-f64=2 tune reject work.fas -o reject.fasprof
 [ "$status" -eq 0 ] || { cat reject.err >&2; fail "reject run exited $status"; }
 [ "$(sed -n '5p' reject.fasprof)" = 'choice default' ] || fail "reject run kept '$(sed -n '5p' reject.fasprof)'"
 check_totals reject.log "$ARENA_PLACEMENTS" 'check select' default=8 pgo=8 native=8 native-pgo=8
@@ -223,6 +240,7 @@ FAS_TUNE_TEST_SCALE=pgo=0.01 tune noarena --no-arena env.fas -o noarena.fasprof
 [ "$status" -eq 0 ] || { cat noarena.err >&2; fail "--no-arena run exited $status"; }
 check_totals noarena.log 'def 32 64' 'check select confirm' default=15 pgo=22 native=8 native-pgo=8 pgo+O3=8
 check_rotation noarena.log select 12 6
+check_totals noarena.log "$NOARENA_LAYOUT" layout pgo=7
 grep -q -E '\+[0-9]+$' noarena.log && fail "--no-arena used an arena offset"
 grep -E -q '^measured [0-9.]+ band [0-9.]+ rounds 7 placements 3 metric (cycles|wall)$' noarena.fasprof || fail "--no-arena profile: $(sed -n '7p' noarena.fasprof)"
 no_tune_temps
@@ -366,7 +384,7 @@ check_rotation options-unroll.log confirm 18
 grep -E -q '^placement +default +default\+unroll=1200 +ratio$' options-unroll.err || fail "options-unroll: no option table: $(cat options-unroll.err)"
 grep -E -q '^fas perf: kept options unroll=1200 \([0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' options-unroll.err || fail "options-unroll: no kept options line: $(cat options-unroll.err)"
 grep -E -q '^fas perf: kept no more options \(best O3 [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' options-unroll.err || fail "options-unroll: no second option line: $(cat options-unroll.err)"
-grep -E -q '^fas perf: kept the profile \(default [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%, options unroll=1200\) \(measured on one input\)$' options-unroll.err || fail "options-unroll: no kept line: $(cat options-unroll.err)"
+grep -E -q '^fas perf: kept the profile \(default [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?(, functions aligned to 64)?, options unroll=1200\) \(measured on one input\)$' options-unroll.err || fail "options-unroll: no kept line: $(cat options-unroll.err)"
 no_tune_temps
 
 FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100,default+O3=0.01,default+unroll=2400=0.5,default+unroll=2400+O3=0.001 tune options-o3 vec.fas -o options-o3.fasprof
@@ -377,7 +395,7 @@ check_rotation options-o3.log select 36 45 18
 check_rotation options-o3.log confirm 18 18
 grep -E -q '^fas perf: kept options O3 \([0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' options-o3.err || fail "options-o3: no first option line: $(cat options-o3.err)"
 grep -E -q '^fas perf: kept options unroll=2400 O3 \([0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' options-o3.err || fail "options-o3: no second option line: $(cat options-o3.err)"
-grep -E -q '^fas perf: kept the profile \(default [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%, options unroll=2400 O3\) \(measured on one input\)$' options-o3.err || fail "options-o3: no kept line: $(cat options-o3.err)"
+grep -E -q '^fas perf: kept the profile \(default [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?(, functions aligned to 64)?, options unroll=2400 O3\) \(measured on one input\)$' options-o3.err || fail "options-o3: no kept line: $(cat options-o3.err)"
 no_tune_temps
 
 FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100 FAS_TUNE_TEST_OPTION_CANDIDATE="$WORK/vec-other.fas" tune options-changed vec.fas -o options-changed.fasprof
@@ -419,10 +437,10 @@ check_totals held.log "$ARENA_PLACEMENTS" 'check-with confirm-with' default=8 pg
 check_rotation held.log confirm-with 18
 grep -q '^select .*' held.log || fail "held: no selection"
 [ "$(grep -c '^confirm-with ' held.log)" -eq 126 ] || fail "held: $(grep -c '^confirm-with ' held.log) second-input confirmation runs"
-grep -E -q '^fas perf: kept the profile \(pgo [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?; second input [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\)$' held.err || fail "held: no kept line: $(cat held.err)"
+grep -E -q '^fas perf: kept the profile \(pgo [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?(, functions aligned to 64)?; second input [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\)$' held.err || fail "held: no kept line: $(cat held.err)"
 no_tune_temps
 
-FAS_TUNE_TEST_SCALE=pgo=0.01,pgo@with=100 tune heldlost args.fas -o heldlost.fasprof -- first --check-with -- second
+FAS_TUNE_TEST_SCALE=pgo=0.01,pgo@with=100,default-32=2,default-64=2,default-def-f64=2,default-32-f64=2,default-64-f64=2 tune heldlost args.fas -o heldlost.fasprof -- first --check-with -- second
 [ "$status" -eq 0 ] || { cat heldlost.err >&2; fail "held-lost run exited $status"; }
 [ "$(sed -n '5p' heldlost.fasprof)" = 'choice default' ] || fail "held-lost run kept '$(sed -n '5p' heldlost.fasprof)'"
 grep -E -q '^fas perf: kept the default build \(best pgo [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%; second input 0\.0[0-9]{2}×, band [0-9]+\.[0-9]%, slower at some placement\)$' heldlost.err || fail "held-lost: no kept line: $(cat heldlost.err)"

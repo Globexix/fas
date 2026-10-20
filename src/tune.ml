@@ -6,7 +6,6 @@ type candidate = {
   counts : string;
   input : string;
   options : string list;
-  align_functions : int option;
 }
 
 type outcome = {
@@ -19,7 +18,7 @@ type outcome = {
   select : int -> Tune_decide.side array;
 }
 
-type placement = { layout : int option; offset : int option }
+type placement = { layout : int option; functions : int option; offset : int option }
 
 type run = {
   wall : float;
@@ -44,17 +43,29 @@ exception Interrupted of int
 
 let rounds = 7
 let layouts = [ None; Some 32; Some 64 ]
+let function_alignments = [ None; Some 64 ]
 let offsets = [ 0; 65536; 589824 ]
 
-let placements no_arena =
+let layout_pairs =
   List.concat_map
-    (fun layout ->
-      if no_arena then [ { layout; offset = None } ]
-      else List.map (fun offset -> { layout; offset = Some offset }) offsets)
+    (fun layout -> List.map (fun functions -> (layout, functions)) function_alignments)
     layouts
+
+let placements_for pairs no_arena =
+  List.concat_map
+    (fun (layout, functions) ->
+      if no_arena then [ { layout; functions; offset = None } ]
+      else List.map (fun offset -> { layout; functions; offset = Some offset }) offsets)
+    pairs
+
+let placements no_arena =
+  placements_for (List.map (fun layout -> (layout, None)) layouts) no_arena
+
+let layout_placements no_arena = placements_for layout_pairs no_arena
 
 let placement_name p =
   Driver.align_loops_name p.layout
+  ^ (match p.functions with Some n -> "+f" ^ string_of_int n | None -> "")
   ^ match p.offset with Some n -> "+" ^ string_of_int n | None -> ""
 
 let read path = In_channel.with_open_bin path In_channel.input_all
@@ -305,13 +316,13 @@ let train ~report session config ~target name =
 
 let align_functions_name = function None -> "def" | Some n -> string_of_int n
 
-let profile_text ~header ~(candidate : candidate) ~layout ~measured =
+let profile_text ~header ~(candidate : candidate) ~functions ~layout ~measured =
   String.concat "\n"
     (header
     @ [
         "choice " ^ Driver.choice_name candidate.choice;
         "align-loops " ^ Driver.align_loops_name layout;
-        "align-functions " ^ align_functions_name candidate.align_functions;
+        "align-functions " ^ align_functions_name functions;
         String.concat " " ("options" :: candidate.options);
         "measured " ^ measured;
         "counts";
@@ -498,7 +509,8 @@ let duration seconds =
     let minutes = Float.to_int (Float.round (seconds /. 60.)) in
     Printf.sprintf "about %d h %d min" (minutes / 60) (minutes mod 60)
 
-let announce ~input ~cpu ~trained ~candidates ~placements ~second ~wall =
+let announce ~input ~cpu ~trained ~candidates ~placements ~layout_placements ~second
+    ~wall =
   let selection = candidates * placements * (1 + rounds)
   and confirmation = 2 * placements * rounds in
   let held = if second then 2 + (candidates * placements) + confirmation else 0 in
@@ -509,7 +521,8 @@ let announce ~input ~cpu ~trained ~candidates ~placements ~second ~wall =
     + if second then (fresh * placements) + confirmation else 0
   in
   let options = option_stage ~fresh:4 ~measured:5 + option_stage ~fresh:1 ~measured:2 in
-  let runs = trained + 2 + selection + confirmation + held + options in
+  let layout_runs = layout_placements * rounds in
+  let runs = trained + 2 + selection + confirmation + held + options + layout_runs in
   let builds = candidates * List.length layouts in
   let option_builds = 5 * List.length layouts in
   let others = List.filter (( <> ) cpu) (siblings cpu) in
@@ -526,6 +539,9 @@ let announce ~input ~cpu ~trained ~candidates ~placements ~second ~wall =
       (candidates * placements) candidates placements confirmation placements rounds;
   Printf.eprintf "  options: up to %d more runs (both option stages, up to %d builds)\n"
     options option_builds;
+  Printf.eprintf
+    "  layout: %d runs (%d placements x %d), %d builds with align-functions 64\n"
+    layout_runs layout_placements rounds (List.length layouts);
   Printf.eprintf
     "  time: %s for the runs, plus the builds (one training run took %.3f s)\n"
     (duration (wall *. float_of_int runs *. 1.1 /. 1e9))
@@ -595,6 +611,7 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
       ~trained:(if native_only then 1 else 2)
       ~candidates:(if native_only then 2 else 4)
       ~placements:(List.length (placements no_arena))
+      ~layout_placements:(List.length (layout_placements no_arena))
       ~second:(Option.is_some check_with) ~wall;
     if not yes then (
       if not (ask "continue? [Y/n]" ~default:true) then (
@@ -611,10 +628,23 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
   let get index : candidate = !pool.(index) in
   let builds = Filename.concat dir "builds" in
   mkdir builds;
-  let program (c : candidate) layout =
-    Filename.concat builds (c.name ^ "-" ^ Driver.align_loops_name layout)
+  let build_name (c : candidate) functions layout =
+    c.name ^ "-"
+    ^ Driver.align_loops_name layout
+    ^ match functions with Some n -> "-f" ^ string_of_int n | None -> ""
   in
+  let program_with (c : candidate) functions layout =
+    Filename.concat builds (build_name c functions layout)
+  in
+  let program c layout = program_with c None layout in
   let unmeasured = "none" in
+  let build_program (c : candidate) functions layout =
+    let profile = program_with c functions layout ^ ".fasprof" in
+    write ~report profile
+      (profile_text ~header ~candidate:c ~functions ~layout ~measured:unmeasured);
+    build ~report config ~profile ~target:Cli.Portable ~input:c.input
+      (program_with c functions layout)
+  in
   let add ~name ~choice ~counts ~options =
     let index = Array.length !pool in
     let input =
@@ -623,18 +653,9 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
       | _, Some input when options <> [] -> input
       | _ -> config.input
     in
-    let c =
-      { name; choice; counts; input; options; align_functions = config.align_functions }
-    in
+    let c = { name; choice; counts; input; options } in
     pool := Array.append !pool [| c |];
-    List.iter
-      (fun layout ->
-        let profile = program c layout ^ ".fasprof" in
-        write ~report profile
-          (profile_text ~header ~candidate:c ~layout ~measured:unmeasured);
-        build ~report config ~profile ~target:Cli.Portable ~input:c.input
-          (program c layout))
-      layouts;
+    List.iter (fun layout -> build_program c None layout) layouts;
     index
   in
   let choices =
@@ -657,13 +678,14 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
       choices
   in
   let placements = Array.of_list (placements no_arena) in
+  let measured_layouts = Array.of_list (layout_placements no_arena) in
   let baseline_index = 0 in
   let second = Option.map (fun args -> { session with args }) check_with in
   let suffix = if Option.is_none second then " (measured on one input)" else "" in
   let default_profile reason =
     prerr_endline ("fas perf: " ^ reason ^ "; the profile keeps the default build");
     write ~report output
-      (profile_text ~header ~candidate:(get baseline_index) ~layout:None
+      (profile_text ~header ~candidate:(get baseline_index) ~functions:None ~layout:None
          ~measured:unmeasured);
     Printf.eprintf "fas perf: wrote %s\n%!" output;
     raise (Stop 0)
@@ -740,22 +762,26 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
     | None -> Option.value ~default:1. (List.assoc_opt name scales)
   in
   let wall_metric = ref false in
+  let scale_of input (c : candidate) p =
+    scale_for input c.name *. scale_for input (build_name c p.functions p.layout)
+  in
   let measure_once input session step index p =
     let c = get index in
     let run =
       execute session
         ~label:(Printf.sprintf "%s %s %s" step c.name (placement_name p))
-        (Some p) (program c p.layout)
+        (Some p)
+        (program_with c p.functions p.layout)
     in
     check input index p run;
     (match run.cycles with Some c when c > 0. -> () | _ -> wall_metric := true);
-    metric run *. scale_for input c.name
+    metric run *. scale_of input c p
   in
-  let measure input session step indices =
+  let measure_in pls input session step indices =
     let pairs =
       Array.of_list
         (List.concat_map
-           (fun index -> List.init (Array.length placements) (fun p -> (index, p)))
+           (fun index -> List.init (Array.length pls) (fun p -> (index, p)))
            indices)
     in
     let samples = Hashtbl.create 64 in
@@ -763,14 +789,17 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
       let n = Array.length pairs in
       for k = 0 to n - 1 do
         let index, p = pairs.((round + k) mod n) in
-        let value = measure_once input session step index placements.(p) in
+        let value = measure_once input session step index pls.(p) in
         Hashtbl.replace samples (index, p)
           (value :: Option.value ~default:[] (Hashtbl.find_opt samples (index, p)))
       done
     done;
     fun index ->
-      Array.init (Array.length placements) (fun p ->
+      Array.init (Array.length pls) (fun p ->
           Tune_decide.summarize (Array.of_list (Hashtbl.find samples (index, p))))
+  in
+  let measure input session step indices =
+    measure_in placements input session step indices
   in
   let check_all input session step indices =
     List.iter
@@ -900,17 +929,19 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
     prerr_endline "fas perf: cycle counters are not available; measured wall time";
   let metric_name = if !wall_metric then "wall" else "cycles" in
   Printf.eprintf "fas perf: measured on CPU %d, %d rounds\n" session.cpu rounds;
-  let by_layout (data : Tune_decide.side array) =
+  let by_group (data : Tune_decide.side array) =
     Array.of_list
       (List.map
-         (fun layout ->
+         (fun pair ->
            Array.of_list
              (List.filter_map Fun.id
                 (List.mapi
-                   (fun p placement ->
-                     if placement.layout = layout then Some data.(p) else None)
-                   (Array.to_list placements))))
-         layouts)
+                   (fun p (placement : placement) ->
+                     if (placement.layout, placement.functions) = pair then
+                       Some data.(p)
+                     else None)
+                   (Array.to_list measured_layouts))))
+         layout_pairs)
   in
   let table (o : outcome) =
     let before = o.data o.head and after = o.data o.challenger in
@@ -964,18 +995,36 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
           (fun acc (o : outcome) -> acc +. o.comparison.band)
           0. kept_stages
   in
-  let chosen =
-    get (match final with Some o -> o.challenger | None -> baseline_index)
+  let chosen_index =
+    match final with Some o -> o.challenger | None -> baseline_index
   in
-  let layout =
-    match final with
-    | None -> None
-    | Some o -> (
-        match
-          Tune_decide.best_layout ~rounds ~layouts:(by_layout (o.data o.challenger))
-        with
-        | Some i -> List.nth layouts i
-        | None -> None)
+  let chosen = get chosen_index in
+  List.iter (fun layout -> build_program chosen (Some 64) layout) layouts;
+  let layout_data =
+    measure_in measured_layouts `First session "layout" [ chosen_index ]
+  in
+  let groups = by_group (layout_data chosen_index) in
+  let picked =
+    Option.value ~default:0 (Tune_decide.best_layout ~rounds ~layouts:groups)
+  in
+  let layout, functions = List.nth layout_pairs picked in
+  let layout_comparison =
+    Tune_decide.compare
+      ~tests:((Array.length groups - 1) * Array.length groups.(0))
+      ~rounds ~baseline:groups.(0) ~candidate:groups.(picked)
+  in
+  let loops_text =
+    match layout with
+    | Some n -> [ Printf.sprintf "loops aligned to %d" n ]
+    | None -> []
+  in
+  let functions_text =
+    match functions with
+    | Some n -> [ Printf.sprintf "functions aligned to %d" n ]
+    | None -> []
+  in
+  let layout_parts =
+    String.concat "" (List.map (fun text -> ", " ^ text) (loops_text @ functions_text))
   in
   let second_text =
     match final with
@@ -984,18 +1033,18 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
   in
   (match (final, choice) with
   | Some _, _ ->
-      let loops =
-        match layout with
-        | Some n -> Printf.sprintf ", loops aligned to %d" n
-        | None -> ""
-      in
       let options =
         match chosen.options with
         | [] -> ""
         | opts -> ", options " ^ String.concat " " opts
       in
       Printf.eprintf "fas perf: kept the profile (%s %.3f×, band %s%s%s%s)%s\n"
-        (get base).name ratio (percent band) loops options second_text suffix
+        (get base).name ratio (percent band) layout_parts options second_text suffix
+  | None, _ when (layout, functions) <> (None, None) ->
+      Printf.eprintf "fas perf: kept the profile (%s %.3f×, band %s%s%s)%s\n"
+        (get base).name layout_comparison.geomean
+        (percent layout_comparison.band)
+        layout_parts second_text suffix
   | None, Some o ->
       Printf.eprintf "fas perf: kept the default build (best %s %.3f×, band %s%s)%s\n"
         (get o.challenger).name o.comparison.geomean (percent o.comparison.band)
@@ -1010,7 +1059,8 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
     Printf.sprintf "%.4f band %.4f rounds %d placements %d metric %s" ratio band rounds
       (Array.length placements) metric_name
   in
-  write ~report output (profile_text ~header ~candidate:chosen ~layout ~measured);
+  write ~report output
+    (profile_text ~header ~candidate:chosen ~functions ~layout ~measured);
   Printf.eprintf "fas perf: wrote %s (%d functions)\n%!" output
     (Driver.count_profile_functions chosen.counts);
   0

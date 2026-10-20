@@ -341,6 +341,7 @@ session nosudo 'y\n\n'
 [ "$status" -eq 0 ] || fail "no sudo: exit $status: $(cat nosudo.out)"
 for text in 'tuning work.fas for this machine' \
   'runs: 2 training, 2 reference, 288 selection (4 builds x 9 placements x 8), 126 confirmation (2 x 9 x 7); 12 builds' \
+  'layout: 126 runs (18 placements x 7), 3 builds with align-functions 64' \
   'one training run took' 'Leave the machine alone' 'use sudo? [y/N]' \
   'keep other processes off CPUs' 'move interrupts and kernel workqueues off CPUs' \
   'set the performance governor and disable idle states deeper than 1 us' \
@@ -354,6 +355,7 @@ no_temps "no sudo"
 session noarena 'y\nn\n' --no-arena
 [ "$status" -eq 0 ] || fail "no arena: exit $status"
 grep -q -F '96 selection (4 builds x 3 placements x 8), 42 confirmation (2 x 3 x 7)' noarena.out || fail "no arena: wrong counts: $(cat noarena.out)"
+grep -q -F 'layout: 42 runs (6 placements x 7), 3 builds with align-functions 64' noarena.out || fail "no arena: wrong layout counts: $(cat noarena.out)"
 
 session yes '' --yes
 [ "$status" -eq 0 ] || fail "--yes: exit $status: $(cat yes.out)"
