@@ -157,7 +157,7 @@ check_totals() {
   [ "$logged_names" = "$expected_names" ] || fail "$log: $steps ran candidates $(echo $logged_names), expected $(echo $expected_names)"
   for item in "$@"; do
     name=${item%=*}
-    expected=${item#*=}
+    expected=${item##*=}
     for placement in $placements; do
       total=0
       for step in $steps; do
@@ -200,31 +200,29 @@ FAS_TUNE_TEST_SCALE=pgo=0.01 tune keep work.fas -o keep.fasprof
 [ "$(count keep.log 'train native')" -eq 1 ] || fail "keep: native training ran $(count keep.log 'train native') times"
 [ "$(count keep.log 'reference default')" -eq 2 ] || fail "keep: the reference ran $(count keep.log 'reference default') times"
 [ "$(head -n 4 keep.log | tr '\n' ' ')" = 'train portable train native reference default reference default ' ] || fail "keep: the log starts with $(head -n 4 keep.log)"
-check_totals keep.log "$ARENA_PLACEMENTS" 'check select confirm' default=15 pgo=22 native=8 native-pgo=8 pgo+unroll=8 pgo+O3=8
-check_rotation keep.log select 36 27
+check_totals keep.log "$ARENA_PLACEMENTS" 'check select confirm' default=15 pgo=15 native=8 native-pgo=8
+check_rotation keep.log select 36
 check_rotation keep.log confirm 18
 grep -q '^confirm \(native\|native-pgo\) ' keep.log && fail "keep: confirmation measured another candidate"
 grep -E -q '^placement +default +pgo +ratio$' keep.err || fail "keep: no report table: $(cat keep.err)"
-[ "$(grep -c -E '^(def|32|64)\+[0-9]+ +[0-9]+ +[0-9]+ +[0-9]+\.[0-9]{3}$' keep.err)" -eq 18 ] || fail "keep: the tables have no 18 placement rows: $(cat keep.err)"
-grep -E -q '^fas perf: options: [a-zA-Z0-9 ]+ did not win \(best [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\)$' keep.err || fail "keep: no options line: $(cat keep.err)"
+[ "$(grep -c -E '^(def|32|64)\+[0-9]+ +[0-9]+ +[0-9]+ +[0-9]+\.[0-9]{3}$' keep.err)" -eq 9 ] || fail "keep: the table has no 9 placement rows: $(cat keep.err)"
 grep -E -q '^fas perf: measured on CPU [0-9]+, 7 rounds$' keep.err || fail "keep: no CPU line: $(cat keep.err)"
 grep -E -q '^fas perf: kept the profile \(pgo [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?\) \(measured on one input\)$' keep.err || fail "keep: no kept line: $(cat keep.err)"
 no_tune_temps
 
-FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100,default+unroll=100,default+O3=100 tune reject work.fas -o reject.fasprof
+FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100 tune reject work.fas -o reject.fasprof
 [ "$status" -eq 0 ] || { cat reject.err >&2; fail "reject run exited $status"; }
 [ "$(sed -n '5p' reject.fasprof)" = 'choice default' ] || fail "reject run kept '$(sed -n '5p' reject.fasprof)'"
-check_totals reject.log "$ARENA_PLACEMENTS" 'check select confirm' default=15 pgo=8 native=8 native-pgo=8 default+unroll=8 default+O3=8
-check_rotation reject.log select 36 27
+check_totals reject.log "$ARENA_PLACEMENTS" 'check select' default=8 pgo=8 native=8 native-pgo=8
+check_rotation reject.log select 36
 grep -q '^confirm ' reject.log && fail "reject: a confirmation ran without a keep"
-grep -E -q '^fas perf: options: [a-zA-Z0-9 ]+ did not win ' reject.err || fail "reject: no options line: $(cat reject.err)"
 grep -E -q '^fas perf: kept the default build \(best (pgo|native|native-pgo) 0\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' reject.err || fail "reject: no kept line: $(cat reject.err)"
 no_tune_temps
 
 FAS_TUNE_TEST_SCALE=pgo=0.01 tune noarena --no-arena env.fas -o noarena.fasprof
 [ "$status" -eq 0 ] || { cat noarena.err >&2; fail "--no-arena run exited $status"; }
-check_totals noarena.log 'def 32 64' 'check select confirm' default=15 pgo=22 native=8 native-pgo=8 pgo+unroll=8 pgo+O3=8
-check_rotation noarena.log select 12 9
+check_totals noarena.log 'def 32 64' 'check select confirm' default=15 pgo=22 native=8 native-pgo=8 pgo+O3=8
+check_rotation noarena.log select 12 6
 grep -q -E '\+[0-9]+$' noarena.log && fail "--no-arena used an arena offset"
 grep -E -q '^measured [0-9.]+ band [0-9.]+ rounds 7 placements 3 metric (cycles|wall)$' noarena.fasprof || fail "--no-arena profile: $(sed -n '7p' noarena.fasprof)"
 no_tune_temps
@@ -272,60 +270,163 @@ FAS_TUNE_TEST_CANDIDATE="$WORK/work.fas" FAS_TUNE_TEST_SCALE= tune same work.fas
 [ "$status" -eq 0 ] || { cat same.err >&2; fail "same-source run exited $status"; }
 no_tune_temps
 
-FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100,default+O3=0.01 tune options-kept work.fas -o options-kept.fasprof
-[ "$status" -eq 0 ] || { cat options-kept.err >&2; fail "options-kept run exited $status"; }
-[ "$(sed -n '5p;8p' options-kept.fasprof)" = "$(printf 'choice default\noptions O3')" ] || fail "options-kept profile: $(head -n 8 options-kept.fasprof)"
-check_totals options-kept.log "$ARENA_PLACEMENTS" 'check select confirm' default=22 pgo=8 native=8 native-pgo=8 default+unroll=8 default+O3=22 default+unroll+O3=8
-check_rotation options-kept.log select 36 27 18
-check_rotation options-kept.log confirm 18
-grep -E -q '^placement +default +default\+O3 +ratio$' options-kept.err || fail "options-kept: no option table: $(cat options-kept.err)"
-grep -E -q '^fas perf: options: kept O3 \([0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\)$' options-kept.err || fail "options-kept: no kept options line: $(cat options-kept.err)"
-grep -E -q '^fas perf: options: unroll O3 did not win \(best [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\)$' options-kept.err || fail "options-kept: no union line: $(cat options-kept.err)"
-grep -E -q '^fas perf: kept the profile \(default [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?, options O3\) \(measured on one input\)$' options-kept.err || fail "options-kept: no kept line: $(cat options-kept.err)"
+cat >vec.fas <<'FAS'
+use "C" <stdio.h>
+
+var buf arr[256, u32] = {}
+
+fn fill(n usize) i32 {
+    for i usize = 0; i < n; i += 1 {
+        buf[i] = trunc[u32](i) * 2654435761 + 12345
+    }
+    return 0
+}
+
+fn total(n usize) u64 {
+    sum u64 = 0
+    for i usize = 0; i < n; i += 1 {
+        sum += zext[u64](buf[i])
+    }
+    return sum
+}
+
+fn permute_lanes() i32 {
+    raw vec[16,u8] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}
+    pidx vec[16,u8] = {15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0}
+    moved vec[16,u8] = permute(raw, pidx)
+    for k usize = 0; k < 16; k += 1 {
+        lane u32 = zext[u32](moved[k])
+        printed i32 = printf(c"%u\n", lane)
+        if printed <= 0 { return 1 }
+    }
+    return 0
+}
+
+fn main() i32 {
+    if fill(256) != 0 { return 3 }
+    printed i32 = printf(c"sum %lu\n", total(256))
+    if printed <= 0 { return 1 }
+    if permute_lanes() != 0 { return 2 }
+    return 0
+}
+FAS
+sed 's/sum %lu/sum changed %lu/' vec.fas >vec-other.fas
+grep -q 'sum changed' vec-other.fas || fail "vec-other.fas was not generated"
+cat >identical.fas <<'FAS'
+use "C" <<WORK
+#include <stdio.h>
+unsigned long seed_value(void) { return 88172645463325252UL; }
+int work_report(unsigned long total) {
+  return printf("total %lu\n", total) > 0 ? 0 : 1;
+}
+WORK
+
+fn main() i32 {
+  total u64 = 0
+  state u64 = seed_value()
+  i1 i64 = 0
+  while i1 < 8 {
+    state ^= state << 13
+    state ^= state >> 7
+    state ^= state << 17
+    state ^= state << 13
+    state ^= state >> 7
+    state ^= state << 17
+    state ^= state << 13
+    state ^= state >> 7
+    state ^= state << 17
+    state ^= state << 13
+    state ^= state >> 7
+    state ^= state << 17
+    state ^= state << 13
+    state ^= state >> 7
+    state ^= state << 17
+    state ^= state << 13
+    state ^= state >> 7
+    state ^= state << 17
+    state ^= state << 13
+    state ^= state >> 7
+    state ^= state << 17
+    state ^= state << 13
+    state ^= state >> 7
+    state ^= state << 17
+    total = total + state
+    i1 = i1 + 1
+  }
+  return work_report(total)
+}
+FAS
+
+FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100,default+unroll=1200=0.01 tune options-unroll vec.fas -o options-unroll.fasprof
+[ "$status" -eq 0 ] || { cat options-unroll.err >&2; fail "options-unroll run exited $status"; }
+[ "$(sed -n '5p;8p' options-unroll.fasprof)" = "$(printf 'choice default\noptions unroll=1200')" ] || fail "options-unroll profile: $(head -n 8 options-unroll.fasprof)"
+check_totals options-unroll.log "$ARENA_PLACEMENTS" 'check select confirm' default=22 pgo=8 native=8 native-pgo=8 default+unroll=600=8 default+unroll=1200=22 default+unroll=2400=8 default+O3=8 default+unroll=1200+O3=8
+check_rotation options-unroll.log select 36 45 18
+check_rotation options-unroll.log confirm 18
+grep -E -q '^placement +default +default\+unroll=1200 +ratio$' options-unroll.err || fail "options-unroll: no option table: $(cat options-unroll.err)"
+grep -E -q '^fas perf: kept options unroll=1200 \([0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' options-unroll.err || fail "options-unroll: no kept options line: $(cat options-unroll.err)"
+grep -E -q '^fas perf: kept no more options \(best O3 [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' options-unroll.err || fail "options-unroll: no second option line: $(cat options-unroll.err)"
+grep -E -q '^fas perf: kept the profile \(default [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%, options unroll=1200\) \(measured on one input\)$' options-unroll.err || fail "options-unroll: no kept line: $(cat options-unroll.err)"
 no_tune_temps
 
-FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100,default+O3=0.1,default+unroll+O3=0.01 tune options-both work.fas -o options-both.fasprof
-[ "$status" -eq 0 ] || { cat options-both.err >&2; fail "options-both run exited $status"; }
-[ "$(sed -n '5p;8p' options-both.fasprof)" = "$(printf 'choice default\noptions unroll O3')" ] || fail "options-both profile: $(head -n 8 options-both.fasprof)"
-check_totals options-both.log "$ARENA_PLACEMENTS" 'check select confirm' default=22 pgo=8 native=8 native-pgo=8 default+unroll=8 default+O3=29 default+unroll+O3=15
-check_rotation options-both.log select 36 27 18
-check_rotation options-both.log confirm 18 18
-grep -E -q '^fas perf: options: kept O3 \([0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\)$' options-both.err || fail "options-both: no first option line: $(cat options-both.err)"
-grep -E -q '^fas perf: options: kept unroll O3 \([0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\)$' options-both.err || fail "options-both: no combined option line: $(cat options-both.err)"
-grep -E -q '^fas perf: kept the profile \(default [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?, options unroll O3\) \(measured on one input\)$' options-both.err || fail "options-both: no kept line: $(cat options-both.err)"
+FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100,default+O3=0.01,default+unroll=2400=0.5,default+unroll=2400+O3=0.001 tune options-o3 vec.fas -o options-o3.fasprof
+[ "$status" -eq 0 ] || { cat options-o3.err >&2; fail "options-o3 run exited $status"; }
+[ "$(sed -n '5p;8p' options-o3.fasprof)" = "$(printf 'choice default\noptions unroll=2400 O3')" ] || fail "options-o3 profile: $(head -n 8 options-o3.fasprof)"
+check_totals options-o3.log "$ARENA_PLACEMENTS" 'check select confirm' default=22 pgo=8 native=8 native-pgo=8 default+unroll=600=8 default+unroll=1200=8 default+unroll=2400=8 default+O3=29 default+unroll=2400+O3=15
+check_rotation options-o3.log select 36 45 18
+check_rotation options-o3.log confirm 18 18
+grep -E -q '^fas perf: kept options O3 \([0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' options-o3.err || fail "options-o3: no first option line: $(cat options-o3.err)"
+grep -E -q '^fas perf: kept options unroll=2400 O3 \([0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' options-o3.err || fail "options-o3: no second option line: $(cat options-o3.err)"
+grep -E -q '^fas perf: kept the profile \(default [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%, options unroll=2400 O3\) \(measured on one input\)$' options-o3.err || fail "options-o3: no kept line: $(cat options-o3.err)"
 no_tune_temps
 
-FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100 FAS_TUNE_TEST_OPTION_CANDIDATE="$WORK/other.fas" tune options-changed work.fas -o options-changed.fasprof
+FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100 FAS_TUNE_TEST_OPTION_CANDIDATE="$WORK/vec-other.fas" tune options-changed vec.fas -o options-changed.fasprof
 [ "$status" -eq 1 ] || fail "options-changed run exited $status, expected 1"
 case "$(cat options-changed.err)" in
-  "internal error: a tuned build changed the program's output (default+unroll, arena offset 0); kept builds in $TMPDIR/fas-tune-"*/builds) ;;
+  "internal error: a tuned build changed the program's output (default+unroll=600, arena offset 0); kept builds in $TMPDIR/fas-tune-"*/builds) ;;
   *) fail "options-changed stderr: $(cat options-changed.err)" ;;
 esac
 [ ! -e options-changed.fasprof ] || fail "options-changed run wrote a profile"
-[ "$(count options-changed.log 'check default+unroll def+0')" -eq 1 ] || fail "options-changed: the option candidate was not checked first"
+[ "$(count options-changed.log 'check default+unroll=600 def+0')" -eq 1 ] || fail "options-changed: the option candidate was not checked first"
 grep -q -E '^(select|confirm) default\+' options-changed.log && fail "options-changed run measured an option candidate after a mismatch"
 kept=$(sed -n 's/.*; kept builds in //p' options-changed.err)
-[ -x "$kept/default+unroll-def" ] || fail "options-changed run did not keep the builds in $kept"
+[ -x "$kept/default+unroll=600-def" ] || fail "options-changed run did not keep the builds in $kept"
 rm -rf "${kept%/builds}"
+no_tune_temps
+
+FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100,default+unroll=600=0.01 tune identical identical.fas -o identical.fasprof
+[ "$status" -eq 0 ] || { cat identical.err >&2; fail "identical run exited $status"; }
+grep -q -x -F 'fas perf: options: default+unroll=1200 builds the same binary as default+unroll=600; not measured' identical.err || fail "identical: no unroll=1200 line: $(cat identical.err)"
+grep -q -x -F 'fas perf: options: default+unroll=2400 builds the same binary as default+unroll=600; not measured' identical.err || fail "identical: no unroll=2400 line: $(cat identical.err)"
+grep -q -x -F 'fas perf: options: default+O3 builds the same binary as default; not measured' identical.err || fail "identical: no O3 line: $(cat identical.err)"
+grep -E -q '^(check|select|confirm) default\+(unroll=1200|unroll=2400|O3) ' identical.log && fail "identical: an identical build was measured"
+[ "$(sed -n '8p' identical.fasprof)" = 'options unroll=600' ] || fail "identical profile: $(sed -n '8p' identical.fasprof)"
+no_tune_temps
+
+FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100 tune loopless empty.fas -o loopless.fasprof
+[ "$status" -eq 0 ] || { cat loopless.err >&2; fail "loopless run exited $status"; }
+[ "$(grep -c -x -E 'fas perf: options: default\+(unroll=600|unroll=1200|unroll=2400|O3) builds the same binary as default; not measured' loopless.err)" -eq 4 ] || fail "loopless: option candidates were not all dropped: $(cat loopless.err)"
+grep -E -q '^(check|select|confirm) default\+' loopless.log && fail "loopless: an option candidate was measured"
+[ "$(sed -n '8p' loopless.fasprof)" = options ] || fail "loopless profile line 8: $(sed -n '8p' loopless.fasprof)"
 no_tune_temps
 
 FAS_TUNE_TEST_SCALE=pgo=0.01 tune held args.fas -o held.fasprof -- first --check-with -- second
 [ "$status" -eq 0 ] || { cat held.err >&2; fail "held run exited $status"; }
 [ "$(sed -n '5p' held.fasprof)" = 'choice pgo' ] || fail "held run kept '$(sed -n '5p' held.fasprof)'"
 [ "$(head -n 6 held.log | tr '\n' ' ')" = 'train portable train native reference default reference default reference-with default reference-with default ' ] || fail "held: the log starts with $(head -n 6 held.log)"
-check_totals held.log "$ARENA_PLACEMENTS" 'check select confirm' default=15 pgo=22 native=8 native-pgo=8 pgo+unroll=8 pgo+O3=8
-check_totals held.log "$ARENA_PLACEMENTS" 'check-with confirm-with' default=8 pgo=8 native=1 native-pgo=1 pgo+unroll=1 pgo+O3=1
+check_totals held.log "$ARENA_PLACEMENTS" 'check select confirm' default=15 pgo=15 native=8 native-pgo=8
+check_totals held.log "$ARENA_PLACEMENTS" 'check-with confirm-with' default=8 pgo=8 native=1 native-pgo=1
 check_rotation held.log confirm-with 18
 grep -q '^select .*' held.log || fail "held: no selection"
 [ "$(grep -c '^confirm-with ' held.log)" -eq 126 ] || fail "held: $(grep -c '^confirm-with ' held.log) second-input confirmation runs"
 grep -E -q '^fas perf: kept the profile \(pgo [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?; second input [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\)$' held.err || fail "held: no kept line: $(cat held.err)"
 no_tune_temps
 
-FAS_TUNE_TEST_SCALE=pgo=0.01,pgo@with=100,default+unroll=100,default+O3=100 tune heldlost args.fas -o heldlost.fasprof -- first --check-with -- second
+FAS_TUNE_TEST_SCALE=pgo=0.01,pgo@with=100 tune heldlost args.fas -o heldlost.fasprof -- first --check-with -- second
 [ "$status" -eq 0 ] || { cat heldlost.err >&2; fail "held-lost run exited $status"; }
 [ "$(sed -n '5p' heldlost.fasprof)" = 'choice default' ] || fail "held-lost run kept '$(sed -n '5p' heldlost.fasprof)'"
 grep -E -q '^fas perf: kept the default build \(best pgo [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%; second input 0\.0[0-9]{2}×, band [0-9]+\.[0-9]%, slower at some placement\)$' heldlost.err || fail "held-lost: no kept line: $(cat heldlost.err)"
-check_totals heldlost.log "$ARENA_PLACEMENTS" 'check-with confirm-with' default=8 pgo=8 native=1 native-pgo=1 default+unroll=1 default+O3=1
+check_totals heldlost.log "$ARENA_PLACEMENTS" 'check-with confirm-with' default=8 pgo=8 native=1 native-pgo=1
 no_tune_temps
 
 tune heldpid args.fas -o heldpid.fasprof -- first --check-with -- pid
@@ -349,7 +450,7 @@ no_tune_temps
 
 FAS_TUNE_TEST_SCALE=pgo=0.01 tune heldfirst args.fas -o heldfirst.fasprof --check-with -- second
 [ "$status" -eq 0 ] || { cat heldfirst.err >&2; fail "held-first run exited $status"; }
-check_totals heldfirst.log "$ARENA_PLACEMENTS" 'check-with confirm-with' default=8 pgo=8 native=1 native-pgo=1 pgo+unroll=1 pgo+O3=1
+check_totals heldfirst.log "$ARENA_PLACEMENTS" 'check-with confirm-with' default=8 pgo=8 native=1 native-pgo=1
 no_tune_temps
 
 echo "tune_measure: passed"

@@ -16,6 +16,7 @@ type outcome = {
   held : Tune_decide.comparison option;
   selection : Tune_decide.selection;
   data : int -> Tune_decide.side array;
+  select : int -> Tune_decide.side array;
 }
 
 type placement = { layout : int option; offset : int option }
@@ -162,6 +163,7 @@ let log_line session text =
       Out_channel.with_open_gen [ Open_append; Open_creat ] 0o644 path (fun channel ->
           output_string channel (text ^ "\n"))
 
+let signals = [ (Sys.sigint, 130); (Sys.sigterm, 143); (Sys.sighup, 129) ]
 let run_counter = ref 0
 let child = ref None
 
@@ -195,11 +197,20 @@ let execute session ?(env = Unix.environment ()) ?(arena = true) ~label placemen
     raise (Stop 1)
   in
   (match
-     Unix.create_process_env session.runner argv env Unix.stdin Unix.stdout Unix.stderr
+     Fun.protect
+       ~finally:(fun () ->
+         ignore (Unix.sigprocmask Unix.SIG_UNBLOCK (List.map fst signals)))
+       (fun () ->
+         ignore (Unix.sigprocmask Unix.SIG_BLOCK (List.map fst signals));
+         let pid =
+           Unix.create_process_env session.runner argv env Unix.stdin Unix.stdout
+             Unix.stderr
+         in
+         child := Some pid;
+         pid)
    with
   | exception Unix.Unix_error (code, _, _) -> failed (Unix.error_message code)
   | pid -> (
-      child := Some pid;
       let rec wait () =
         match Unix.waitpid [] pid with
         | exception Unix.Unix_error (Unix.EINTR, _, _) -> wait ()
@@ -497,10 +508,10 @@ let announce ~input ~cpu ~trained ~candidates ~placements ~second ~wall =
     + confirmation
     + if second then (fresh * placements) + confirmation else 0
   in
-  let options = option_stage ~fresh:2 ~measured:3 + option_stage ~fresh:1 ~measured:2 in
+  let options = option_stage ~fresh:4 ~measured:5 + option_stage ~fresh:1 ~measured:2 in
   let runs = trained + 2 + selection + confirmation + held + options in
   let builds = candidates * List.length layouts in
-  let option_builds = 3 * List.length layouts in
+  let option_builds = 5 * List.length layouts in
   let others = List.filter (( <> ) cpu) (siblings cpu) in
   Printf.eprintf "fas perf: tuning %s for this machine\n" input;
   Printf.eprintf
@@ -715,10 +726,12 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
     | Some text ->
         String.split_on_char ',' text
         |> List.filter_map (fun item ->
-            match String.split_on_char '=' item with
-            | [ name; factor ] ->
+            match String.rindex_opt item '=' with
+            | Some i ->
+                let name = String.sub item 0 i
+                and factor = String.sub item (i + 1) (String.length item - i - 1) in
                 Option.map (fun factor -> (name, factor)) (float_of_string_opt factor)
-            | _ -> None)
+            | None -> None)
   in
   let scale_for input name =
     let key = match input with `First -> name | `Second -> name ^ "@with" in
@@ -771,13 +784,21 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
     check_all `First session "check" fresh;
     Option.iter (fun session -> check_all `Second session "check-with" fresh) second;
     let head = List.hd indices and challengers = List.tl indices in
-    let data = measure `First session "select" indices in
+    let select_data = measure `First session "select" indices in
     let selection =
-      Tune_decide.select ~rounds ~baseline:(data head)
-        ~candidates:(Array.of_list (List.map data challengers))
+      Tune_decide.select ~rounds ~baseline:(select_data head)
+        ~candidates:(Array.of_list (List.map select_data challengers))
     in
     let make index comparison held selection data =
-      { head; challenger = index; comparison; held; selection; data }
+      {
+        head;
+        challenger = index;
+        comparison;
+        held;
+        selection;
+        data;
+        select = select_data;
+      }
     in
     match selection with
     | Tune_decide.Selected (i, _) ->
@@ -798,7 +819,7 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
     | Tune_decide.Rejected best ->
         Option.map
           (fun (i, comparison) ->
-            make (List.nth challengers i) comparison None selection data)
+            make (List.nth challengers i) comparison None selection select_data)
           best
   in
   let kept_by_selection (o : outcome) =
@@ -817,12 +838,63 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
       ~name:(String.concat "+" (b.name :: options))
       ~choice:b.choice ~counts:b.counts ~options
   in
+  let same_binary a b =
+    List.for_all
+      (fun layout -> read (program (get a) layout) = read (program (get b) layout))
+      layouts
+  in
+  let distinct_builds head candidates =
+    List.rev
+      (List.fold_left
+         (fun kept index ->
+           match
+             List.find_opt (fun other -> same_binary other index) (head :: kept)
+           with
+           | Some other ->
+               Printf.eprintf
+                 "fas perf: options: %s builds the same binary as %s; not measured\n%!"
+                 (get index).name (get other).name;
+               kept
+           | None -> index :: kept)
+         [] candidates)
+  in
+  let option_round head kept =
+    match kept with [] -> None | _ -> stage (head :: kept) kept
+  in
+  let unroll_only index =
+    match (get index).options with [ name ] -> Driver.is_unroll_name name | _ -> false
+  in
+  let best_unroll (o : outcome) kept =
+    let baseline = o.select base in
+    List.fold_left
+      (fun best index ->
+        if not (unroll_only index) then best
+        else
+          let geomean =
+            (Tune_decide.compare ~tests:(Array.length placements) ~rounds ~baseline
+               ~candidate:(o.select index))
+              .geomean
+          in
+          match best with
+          | Some (_, best_geomean) when best_geomean >= geomean -> best
+          | _ -> Some (index, geomean))
+      None kept
+    |> Option.map fst
+  in
   let fresh = List.map (fun option -> derive [ option ]) Driver.tune_option_names in
-  let option_stage1 = stage (base :: fresh) fresh in
+  let kept1 = distinct_builds base fresh in
+  let option_stage1 = option_round base kept1 in
   let option_stage2 =
     Option.bind (winner option_stage1) (fun (o : outcome) ->
-        let union = derive Driver.tune_option_names in
-        stage [ o.challenger; union ] [ union ])
+        match (get o.challenger).options with
+        | [ name ] when Driver.is_unroll_name name ->
+            option_round o.challenger
+              (distinct_builds o.challenger [ derive [ name; "O3" ] ])
+        | _ ->
+            Option.bind (best_unroll o kept1) (fun unroll ->
+                let name = List.hd (get unroll).options in
+                option_round o.challenger
+                  (distinct_builds o.challenger [ derive [ name; "O3" ] ])))
   in
   if !wall_metric then
     prerr_endline "fas perf: cycle counters are not available; measured wall time";
@@ -850,22 +922,34 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
           before.(p).median after.(p).median o.comparison.ratios.(p))
       placements
   in
-  let option_line (o : outcome) =
-    let text = String.concat " " (get o.challenger).options in
+  let option_line ~more (o : outcome) =
     let held = second_input_text o.held in
     if kept_by_selection o then
-      Printf.eprintf "fas perf: options: kept %s (%.3f×, band %s%s)\n%!" text
-        o.comparison.geomean (percent o.comparison.band) held
+      Printf.eprintf "fas perf: kept options %s (%.3f×, band %s%s)%s\n%!"
+        (String.concat " " (get o.challenger).options)
+        o.comparison.geomean (percent o.comparison.band) held suffix
     else
-      Printf.eprintf "fas perf: options: %s did not win (best %.3f×, band %s%s)\n%!"
-        text o.comparison.geomean (percent o.comparison.band) held
+      let added =
+        List.filter
+          (fun name -> not (List.mem name (get o.head).options))
+          (get o.challenger).options
+      in
+      Printf.eprintf "fas perf: kept no %soptions (best %s %.3f×, band %s%s)%s\n%!"
+        (if more then "more " else "")
+        (String.concat " " added) o.comparison.geomean (percent o.comparison.band) held
+        suffix
   in
   Option.iter table choice;
-  List.iter
-    (Option.iter (fun o ->
-         table o;
-         option_line o))
-    [ option_stage1; option_stage2 ];
+  Option.iter
+    (fun o ->
+      table o;
+      option_line ~more:false o)
+    option_stage1;
+  Option.iter
+    (fun o ->
+      table o;
+      option_line ~more:true o)
+    option_stage2;
   let kept_stages = List.filter_map winner [ choice; option_stage1; option_stage2 ] in
   let final = match List.rev kept_stages with last :: _ -> Some last | [] -> None in
   let ratio =
@@ -931,8 +1015,6 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
     (Driver.count_profile_functions chosen.counts);
   0
 
-let signals = [ (Sys.sigint, 130); (Sys.sigterm, 143); (Sys.sighup, 129) ]
-
 let run ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~argv0 args =
   match Driver.check_clang () with
   | Error diagnostics ->
@@ -971,7 +1053,7 @@ let run ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~argv0 args 
                     ~dir ~argv0 args
                 with
                 | Stop status -> status
-                | Interrupted code ->
+                | Interrupted code | Fun.Finally_raised (Interrupted code) ->
                     List.iter
                       (fun (signal, _) -> Sys.set_signal signal Sys.Signal_ignore)
                       signals;

@@ -998,7 +998,8 @@ let render_ir ?(redirect = Fun.id) ?(sanitize_address = false) ?target ~debug_in
   | Ok text -> Ok text
   | Error message -> Error [ Diag.error Span.synthetic message ]
 
-let unroll_threshold = 1200
+let unroll_values = [ 600; 1200; 2400 ]
+let unroll_name value = "unroll=" ^ string_of_int value
 
 let tune_enabled config name =
   optimization_level config.Cli.optimization > 0
@@ -1007,10 +1008,17 @@ let tune_enabled config name =
 let effective_level config =
   if tune_enabled config "O3" then 3 else config.Cli.optimization
 
+let unroll_threshold config =
+  if optimization_level config.Cli.optimization > 0 then
+    List.find_opt
+      (fun value -> List.mem (unroll_name value) config.Cli.tune_options)
+      unroll_values
+  else None
+
 let unroll_option config =
-  if tune_enabled config "unroll" then
-    [ "-unroll-threshold=" ^ string_of_int unroll_threshold ]
-  else []
+  match unroll_threshold config with
+  | Some value -> [ "-unroll-threshold=" ^ string_of_int value ]
+  | None -> []
 
 let opt_pass config =
   let configured =
@@ -1053,7 +1061,7 @@ type profile_header = {
 }
 
 let profile_format = "fas profile 3"
-let tune_option_names = [ "unroll"; "O3" ]
+let tune_option_names = List.map unroll_name unroll_values @ [ "O3" ]
 let profile_error message = Error [ Diag.error Span.synthetic message ]
 
 let choice_name = function
@@ -1134,6 +1142,15 @@ let profile_align_functions path line =
                 or 64"
                path value))
 
+let or_list = function
+  | [] -> ""
+  | [ only ] -> only
+  | names ->
+      let reversed = List.rev names in
+      String.concat ", " (List.rev (List.tl reversed)) ^ " or " ^ List.hd reversed
+
+let is_unroll_name name = String.starts_with ~prefix:"unroll=" name
+
 let profile_options path line =
   let expected =
     "options "
@@ -1155,11 +1172,12 @@ let profile_options path line =
         | name :: _ when not (List.mem name tune_option_names) ->
             profile_error
               (Printf.sprintf "profile `%s` has an unknown option `%s`; expected %s"
-                 path name
-                 (String.concat " or " tune_option_names))
+                 path name (or_list tune_option_names))
         | name :: _ when List.mem name seen ->
             profile_error
               (Printf.sprintf "profile `%s` repeats the option `%s`" path name)
+        | name :: _ when is_unroll_name name && List.exists is_unroll_name seen ->
+            profile_error (Printf.sprintf "profile `%s` has two unroll values" path)
         | name :: rest -> check (name :: seen) rest
       in
       check [] names

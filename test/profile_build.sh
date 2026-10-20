@@ -399,7 +399,7 @@ profile3() {
   } >"$1"
 }
 profile3 pgo3.fasprof "$HOST_CPU" 'choice pgo' 'align-loops def' 'align-functions def' 'options' "$MEASURED"
-profile3 o3u64.fasprof "$HOST_CPU" 'choice default' 'align-loops def' 'align-functions 64' 'options unroll O3' "$MEASURED"
+profile3 o3u64.fasprof "$HOST_CPU" 'choice default' 'align-loops def' 'align-functions 64' 'options unroll=1200 O3' "$MEASURED"
 profile3 o3.fasprof "$HOST_CPU" 'choice default' 'align-loops def' 'align-functions def' 'options O3' "$MEASURED"
 
 fas_build pgo2-c.o -c --profile pgo2.fasprof main.fas
