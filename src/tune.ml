@@ -1018,8 +1018,37 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
     measure_in measured_layouts `First session "layout" [ chosen_index ]
   in
   let groups = by_group (layout_data chosen_index) in
+  let fallback =
+    match choice with
+    | None -> None
+    | Some (o : outcome) ->
+        let kept = match winner choice with Some w -> w.challenger | None -> o.head in
+        let data = o.select kept in
+        let loop_groups =
+          Array.of_list
+            (List.map
+               (fun layout ->
+                 Array.of_list
+                   (List.filter_map Fun.id
+                      (List.mapi
+                         (fun p (placement : placement) ->
+                           if placement.layout = layout then Some data.(p) else None)
+                         (Array.to_list placements))))
+               layouts)
+        in
+        Option.map
+          (fun i -> List.nth layouts i)
+          (Tune_decide.best_layout ~rounds ~layouts:loop_groups)
+  in
   let picked =
-    Option.value ~default:0 (Tune_decide.best_layout ~rounds ~layouts:groups)
+    match Tune_decide.best_layout ~rounds ~layouts:groups with
+    | Some i -> i
+    | None -> (
+        match fallback with
+        | Some layout ->
+            Option.value ~default:0
+              (List.find_index (fun pair -> pair = (layout, None)) layout_pairs)
+        | None -> 0)
   in
   let layout, functions = List.nth layout_pairs picked in
   let layout_comparison =

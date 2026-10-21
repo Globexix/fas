@@ -227,6 +227,13 @@ check_totals layout-none.log "$LAYOUT_PLACEMENTS" layout pgo=7
 grep -E -q '^fas perf: kept the profile \(pgo [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' layout-none.err || fail "layout-none: no kept line: $(cat layout-none.err)"
 no_tune_temps
 
+FAS_TUNE_TEST_SCALE=pgo=0.01,pgo-64=0.1,pgo-64-f64=0.1 tune layout-fallback work.fas -o layout-fallback.fasprof
+[ "$status" -eq 0 ] || { cat layout-fallback.err >&2; fail "layout-fallback run exited $status"; }
+[ "$(sed -n '5,7p' layout-fallback.fasprof)" = "$(printf 'choice pgo\nalign-loops 64\nalign-functions def')" ] || fail "layout-fallback profile: $(head -n 8 layout-fallback.fasprof)"
+check_totals layout-fallback.log "$LAYOUT_PLACEMENTS" layout pgo=7
+grep -E -q '^fas perf: kept the profile \(pgo [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%, loops aligned to 64\) \(measured on one input\)$' layout-fallback.err || fail "layout-fallback: no kept line: $(cat layout-fallback.err)"
+no_tune_temps
+
 FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100,default-32=2,default-64=2,default-def-f64=2,default-32-f64=2,default-64-f64=2 tune reject work.fas -o reject.fasprof
 [ "$status" -eq 0 ] || { cat reject.err >&2; fail "reject run exited $status"; }
 [ "$(sed -n '5p' reject.fasprof)" = 'choice default' ] || fail "reject run kept '$(sed -n '5p' reject.fasprof)'"
