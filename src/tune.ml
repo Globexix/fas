@@ -338,11 +338,21 @@ let write ~report output text =
 
 let percent band = Printf.sprintf "%.1f%%" (band *. 100.)
 
-let second_input_text = function
-  | Some (h : Tune_decide.comparison) ->
-      Printf.sprintf "; second input %.3f×, band %s%s" h.geomean (percent h.band)
-        (if h.passes then "" else ", slower at some placement")
-  | None -> ""
+let second_input_text (held : Tune_decide.comparison list) =
+  match held with
+  | [] -> ""
+  | _ ->
+      let geomean =
+        List.fold_left
+          (fun acc (h : Tune_decide.comparison) -> acc *. h.geomean)
+          1. held
+      in
+      let band =
+        List.fold_left (fun acc (h : Tune_decide.comparison) -> acc +. h.band) 0. held
+      in
+      let passes = List.for_all (fun (h : Tune_decide.comparison) -> h.passes) held in
+      Printf.sprintf "; second input %.3f×, band %s%s" geomean (percent band)
+        (if passes then "" else ", slower at some placement")
 
 let test_root () = Option.value (Sys.getenv_opt "FAS_TUNE_TEST_ROOT") ~default:""
 let state_path () = test_root () ^ "/run/fas-tune-isolate"
@@ -958,7 +968,7 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
       placements
   in
   let option_line ~more (o : outcome) =
-    let held = second_input_text o.held in
+    let held = second_input_text (Option.to_list o.held) in
     if kept_by_selection o then
       Printf.eprintf "fas perf: kept options %s (%.3f×, band %s%s)%s\n%!"
         (String.concat " " (get o.challenger).options)
@@ -1032,8 +1042,11 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
   in
   let second_text =
     match final with
-    | Some o -> second_input_text o.held
-    | None -> second_input_text (Option.bind choice (fun (o : outcome) -> o.held))
+    | Some _ ->
+        second_input_text (List.filter_map (fun (o : outcome) -> o.held) kept_stages)
+    | None ->
+        second_input_text
+          (Option.to_list (Option.bind choice (fun (o : outcome) -> o.held)))
   in
   (match (final, choice) with
   | Some _, _ ->

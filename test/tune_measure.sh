@@ -510,4 +510,29 @@ FAS_TUNE_TEST_SCALE=pgo=0.01 tune heldfirst args.fas -o heldfirst.fasprof --chec
 check_totals heldfirst.log "$ARENA_PLACEMENTS" 'check-with confirm-with' default=8 pgo=8 native=1 native-pgo=1
 no_tune_temps
 
+FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100,default+O3=0.01,default+unroll=2400=0.5,default+unroll=2400+O3=0.001,default+O3@with=0.5,default+unroll=2400+O3@with=0.25 tune heldoptions vec.fas -o heldoptions.fasprof -- first --check-with -- second
+[ "$status" -eq 0 ] || { cat heldoptions.err >&2; fail "held options run exited $status"; }
+[ "$(sed -n '5p;8p' heldoptions.fasprof)" = "$(printf 'choice default\noptions unroll=2400 O3')" ] || fail "held options profile: $(head -n 8 heldoptions.fasprof)"
+stage1=$(grep -E '^fas perf: kept options O3 \(' heldoptions.err) || fail "held options: no first option line: $(cat heldoptions.err)"
+stage2=$(grep -E '^fas perf: kept options unroll=2400 O3 \(' heldoptions.err) || fail "held options: no second option line: $(cat heldoptions.err)"
+final=$(grep -E '^fas perf: kept the profile \(' heldoptions.err) || fail "held options: no kept line: $(cat heldoptions.err)"
+printf '%s\n' "$stage1" | grep -E -q '^fas perf: kept options O3 \([0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%; second input [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\)$' || fail "held options: first option line: $stage1"
+printf '%s\n' "$stage2" | grep -E -q '^fas perf: kept options unroll=2400 O3 \([0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%; second input [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\)$' || fail "held options: second option line: $stage2"
+printf '%s\n' "$final" | grep -E -q '^fas perf: kept the profile \(default [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?(, functions aligned to 64)?, options unroll=2400 O3; second input [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\)$' || fail "held options: kept line: $final"
+held_values() { printf '%s\n' "$1" | sed -n 's/.*; second input \([0-9.]*\)×, band \([0-9.]*\)%).*/\1 \2/p'; }
+g1=$(held_values "$stage1" | cut -d ' ' -f 1)
+b1=$(held_values "$stage1" | cut -d ' ' -f 2)
+g2=$(held_values "$stage2" | cut -d ' ' -f 1)
+b2=$(held_values "$stage2" | cut -d ' ' -f 2)
+fg=$(held_values "$final" | cut -d ' ' -f 1)
+fb=$(held_values "$final" | cut -d ' ' -f 2)
+awk -v g1="$g1" -v b1="$b1" -v g2="$g2" -v b2="$b2" -v fg="$fg" -v fb="$fb" 'BEGIN {
+  dg = fg - g1 * g2
+  if (dg < 0) dg = -dg
+  db = fb - (b1 + b2)
+  if (db < 0) db = -db
+  exit (dg <= 0.0006 + 0.0005 * (g1 + g2) && db <= 0.15 + 0.000001) ? 0 : 1
+}' || fail "held options: combined second input $fg, band $fb does not match the kept stages ($g1 $b1, $g2 $b2): $(cat heldoptions.err)"
+no_tune_temps
+
 echo "tune_measure: passed"
