@@ -4642,3 +4642,16 @@ let () =
   assert (
     Tune_decide.best_layout ~rounds:7 ~layouts:(Array.init 3 (fun _ -> flat 3 100. 0.5))
     = None)
+
+let () =
+  let before = Build_limit.get_soft () in
+  let three_gib = 3 * 1024 * 1024 * 1024 in
+  Build_limit.set_soft three_gib;
+  assert (Build_limit.get_soft () = three_gib);
+  Build_limit.set_soft before;
+  assert (Build_limit.get_soft () = before);
+  let expected = if before < 0 then Build_limit.cap else min Build_limit.cap before in
+  Build_limit.with_cap (fun () -> assert (Build_limit.get_soft () = expected));
+  assert (Build_limit.get_soft () = before);
+  (try Build_limit.with_cap (fun () -> failwith "probe") with Failure _ -> ());
+  assert (Build_limit.get_soft () = before)

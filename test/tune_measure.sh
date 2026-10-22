@@ -700,4 +700,55 @@ awk -v g1="$g1" -v b1="$b1" -v g2="$g2" -v b2="$b2" -v fg="$fg" -v fb="$fb" 'BEG
 }' || fail "held options: combined second input $fg, band $fb does not match the kept stages ($g1 $b1, $g2 $b2): $(cat heldoptions.err)"
 no_tune_temps
 
+OPTION_SCALE=pgo=100,native=100,native-pgo=100,default+unroll=1200=0.01,default+interleave=4=100,default+max-bandwidth=100,default+inline=1000=100
+
+FAS_TUNE_TEST_BUILD_SECONDS=default=1,default+unroll=2400=40,default+O3=40 FAS_TUNE_TEST_SCALE=$OPTION_SCALE tune options-slow vec.fas -o options-slow.fasprof
+[ "$status" -eq 0 ] || { cat options-slow.err >&2; fail "options-slow run exited $status"; }
+grep -q -x -F 'fas perf: options: default+unroll=2400 skipped (build took 40s, base 1s)' options-slow.err || fail "options-slow: no skip line: $(cat options-slow.err)"
+grep -q -E '^[a-z]+ default\+unroll=1200 ' options-slow.log || fail "options-slow: unroll=1200 was not measured after the skip"
+grep -q '^fas perf: kept options unroll=1200 (' options-slow.err || fail "options-slow: no kept options line after the skip: $(cat options-slow.err)"
+! grep -q -E '^[a-z]+ default\+unroll=2400 ' options-slow.log || fail "options-slow: skipped candidate was measured"
+grep -q -x -F 'fas perf: options: default+O3 skipped (build took 40s, base 1s)' options-slow.err || fail "options-slow: no O3 skip line: $(cat options-slow.err)"
+! grep -q 'O3' options-slow.log || fail "options-slow: skipped O3 was measured"
+! grep -q 'unroll=1200+O3' options-slow.err || fail "options-slow: skipped O3 was proposed again: $(cat options-slow.err)"
+no_tune_temps
+
+FAS_TUNE_TEST_TEXT_BYTES=default+unroll=2400=104857600 FAS_TUNE_TEST_SCALE=$OPTION_SCALE tune options-text vec.fas -o options-text.fasprof
+[ "$status" -eq 0 ] || { cat options-text.err >&2; fail "options-text run exited $status"; }
+grep -q -x -F 'fas perf: options: default+unroll=2400 skipped (.text 100 MiB)' options-text.err || fail "options-text: no skip line: $(cat options-text.err)"
+! grep -q -E '^[a-z]+ default\+unroll=2400 ' options-text.log || fail "options-text: skipped candidate was measured"
+grep -q '^fas perf: kept options unroll=1200 (' options-text.err || fail "options-text: no kept options line after the skip: $(cat options-text.err)"
+no_tune_temps
+
+FAS_TUNE_TEST_FAIL_BUILD=default+unroll=2400 FAS_TUNE_TEST_SCALE=$OPTION_SCALE tune options-failed vec.fas -o options-failed.fasprof
+[ "$status" -eq 0 ] || { cat options-failed.err >&2; fail "options-failed run exited $status"; }
+grep -q -x -F 'fas perf: options: default+unroll=2400 skipped (build failed)' options-failed.err || fail "options-failed: no skip line: $(cat options-failed.err)"
+! grep -q -E '^[a-z]+ default\+unroll=2400 ' options-failed.log || fail "options-failed: skipped candidate was measured"
+grep -q '^fas perf: kept options unroll=1200 (' options-failed.err || fail "options-failed: tuning did not continue: $(cat options-failed.err)"
+[ -s options-failed.fasprof ] || fail "options-failed: no profile written"
+no_tune_temps
+
+FAS_TUNE_TEST_BUILD_SECONDS=default=5,default+unroll=2400=45 FAS_TUNE_TEST_SCALE=$OPTION_SCALE tune options-nine-x vec.fas -o options-nine-x.fasprof
+[ "$status" -eq 0 ] || { cat options-nine-x.err >&2; fail "options-nine-x run exited $status"; }
+! grep -q 'default+unroll=2400 skipped' options-nine-x.err || fail "options-nine-x: 9x build was skipped: $(cat options-nine-x.err)"
+grep -q -E '^[a-z]+ default\+unroll=2400 ' options-nine-x.log || fail "options-nine-x: 9x build was not measured"
+no_tune_temps
+
+SLOW_ALL=default=1
+for option in unroll=600 unroll=1200 unroll=2400 unroll=4800 O3 inline=1000 interleave=4 max-bandwidth; do
+  SLOW_ALL=$SLOW_ALL,default+$option=40
+done
+FAS_TUNE_TEST_BUILD_SECONDS=$SLOW_ALL tune options-all-skipped vec.fas -o options-all-skipped.fasprof
+[ "$status" -eq 0 ] || { cat options-all-skipped.err >&2; fail "options-all-skipped run exited $status"; }
+[ "$(grep -c '^fas perf: options: ' options-all-skipped.err)" -eq 8 ] || fail "options-all-skipped: expected 8 option lines: $(cat options-all-skipped.err)"
+[ "$(grep -c -x -E 'fas perf: options: default\+[^ ]+ skipped \(build took 40s, base 1s\)' options-all-skipped.err)" -eq 8 ] || fail "options-all-skipped: an option line is not a skip line: $(cat options-all-skipped.err)"
+! grep -q -E '^fas perf: kept (no )?(more )?options ' options-all-skipped.err || fail "options-all-skipped: kept an option: $(cat options-all-skipped.err)"
+! grep -q -E '^[a-z]+ default\+' options-all-skipped.log || fail "options-all-skipped: a skipped option was checked, selected or confirmed"
+no_tune_temps
+
+FAS_TUNE_TEST_FAIL_BUILD=pgo tune choice-failed vec.fas -o choice-failed.fasprof
+[ "$status" -ne 0 ] || fail "choice-failed: a failed choice build did not stop tuning"
+[ "$(cat choice-failed.err)" = 'error: build of pgo failed' ] || fail "choice-failed: unexpected stderr: $(cat choice-failed.err)"
+no_tune_temps
+
 echo "tune_measure: passed"

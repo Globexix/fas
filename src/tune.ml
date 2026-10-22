@@ -70,6 +70,59 @@ let placement_name p =
 
 let read path = In_channel.with_open_bin path In_channel.input_all
 
+let test_values variable parse =
+  match Sys.getenv_opt variable with
+  | None -> []
+  | Some text ->
+      String.split_on_char ',' text
+      |> List.filter_map (fun item ->
+          match String.rindex_opt item '=' with
+          | Some i ->
+              let name = String.sub item 0 i
+              and value = String.sub item (i + 1) (String.length item - i - 1) in
+              Option.map (fun value -> (name, value)) (parse value)
+          | None -> None)
+
+let text_limit = 64 * 1024 * 1024
+
+let elf_field ic pos width =
+  seek_in ic pos;
+  let raw = really_input_string ic width in
+  let value = ref 0 in
+  for i = width - 1 downto 0 do
+    value := (!value lsl 8) lor Char.code raw.[i]
+  done;
+  !value
+
+let text_bytes path =
+  try
+    In_channel.with_open_bin path (fun ic ->
+        if really_input_string ic 6 <> "\127ELF\002\001" then None
+        else
+          let shoff = elf_field ic 0x28 8
+          and shentsize = elf_field ic 0x3A 2
+          and shnum = elf_field ic 0x3C 2
+          and shstrndx = elf_field ic 0x3E 2 in
+          let strings = shoff + (shstrndx * shentsize) in
+          let names_at = elf_field ic (strings + 0x18) 8
+          and names_size = elf_field ic (strings + 0x20) 8 in
+          seek_in ic names_at;
+          let names = really_input_string ic names_size in
+          let name_at offset =
+            let stop = String.index_from names offset '\000' in
+            String.sub names offset (stop - offset)
+          in
+          let rec find index =
+            if index >= shnum then None
+            else
+              let section = shoff + (index * shentsize) in
+              if name_at (elf_field ic section 4) = ".text" then
+                Some (elf_field ic (section + 0x20) 8)
+              else find (index + 1)
+          in
+          find 0)
+  with Sys_error _ | End_of_file | Invalid_argument _ | Failure _ | Not_found -> None
+
 let rec remove_tree path =
   match Sys.is_directory path with
   | true ->
@@ -262,22 +315,23 @@ let status_message = function
 
 let build ~report (config : Cli.t) ?profile ?(instrument = false)
     ?(target = config.target) ~input output =
-  match
-    Driver.run ~instrument
-      {
-        config with
-        Cli.input;
-        output;
-        output_explicit = true;
-        profile;
-        target;
-        emit = Cli.Executable;
-      }
-  with
-  | Ok _ -> ()
-  | Error diagnostics ->
-      report diagnostics;
-      raise (Stop 1)
+  Build_limit.with_cap (fun () ->
+      match
+        Driver.run ~instrument
+          {
+            config with
+            Cli.input;
+            output;
+            output_explicit = true;
+            profile;
+            target;
+            emit = Cli.Executable;
+          }
+      with
+      | Ok _ -> ()
+      | Error diagnostics ->
+          report diagnostics;
+          raise (Stop 1))
 
 let train ~report session config ~target name =
   let dir = Filename.concat session.dir ("train-" ^ name) in
@@ -642,6 +696,13 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
   in
   let test_input = Sys.getenv_opt "FAS_TUNE_TEST_CANDIDATE" in
   let test_option_input = Sys.getenv_opt "FAS_TUNE_TEST_OPTION_CANDIDATE" in
+  let scales = test_values "FAS_TUNE_TEST_SCALE" float_of_string_opt in
+  let build_seconds = test_values "FAS_TUNE_TEST_BUILD_SECONDS" float_of_string_opt in
+  let text_hook = test_values "FAS_TUNE_TEST_TEXT_BYTES" int_of_string_opt in
+  let failing_build = Sys.getenv_opt "FAS_TUNE_TEST_FAIL_BUILD" in
+  let baseline_index = 0 in
+  let base_seconds = ref 0. in
+  let skipped = ref [] in
   let pool = ref [||] in
   let get index : candidate = !pool.(index) in
   let builds = Filename.concat dir "builds" in
@@ -663,6 +724,12 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
     build ~report config ~profile ~target:Cli.Portable ~input:c.input
       (program_with c functions layout)
   in
+  let build_candidate (c : candidate) =
+    if failing_build = Some c.name then (
+      if c.options = [] then Printf.eprintf "error: build of %s failed\n%!" c.name;
+      raise (Stop 1));
+    List.iter (fun layout -> build_program c None layout) layouts
+  in
   let add ~name ~choice ~counts ~options =
     let index = Array.length !pool in
     let input =
@@ -672,9 +739,49 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
       | _ -> config.input
     in
     let c = { name; choice; counts; input; options } in
-    pool := Array.append !pool [| c |];
-    List.iter (fun layout -> build_program c None layout) layouts;
-    index
+    let skip reason =
+      skipped := options @ !skipped;
+      Printf.eprintf "fas perf: options: %s skipped (%s)\n%!" name reason;
+      None
+    in
+    let keep () =
+      pool := Array.append !pool [| c |];
+      Some index
+    in
+    let started = Unix.gettimeofday () in
+    let built =
+      if options = [] then (
+        build_candidate c;
+        true)
+      else
+        try
+          build_candidate c;
+          true
+        with Stop _ | Failure _ | Sys_error _ | Out_of_memory | Unix.Unix_error _ ->
+          false
+    in
+    let measured = Unix.gettimeofday () -. started in
+    if not built then skip "build failed"
+    else
+      let seconds =
+        Option.value ~default:measured (List.assoc_opt name build_seconds)
+      in
+      if index = baseline_index then base_seconds := seconds;
+      if options = [] then keep ()
+      else if seconds > Float.max (10. *. !base_seconds) 30. then
+        skip (Printf.sprintf "build took %.0fs, base %.0fs" seconds !base_seconds)
+      else
+        let text =
+          match List.assoc_opt name text_hook with
+          | Some bytes -> bytes
+          | None ->
+              List.fold_left
+                (fun acc layout ->
+                  max acc (Option.value ~default:0 (text_bytes (program c layout))))
+                0 layouts
+        in
+        if text > text_limit then skip (Printf.sprintf ".text %d MiB" (text / 1048576))
+        else keep ()
   in
   let choices =
     if native_only then
@@ -691,13 +798,12 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
       ]
   in
   let all =
-    List.map
+    List.filter_map
       (fun (name, choice, counts) -> add ~name ~choice ~counts ~options:[])
       choices
   in
   let placements = Array.of_list (placements no_arena) in
   let measured_layouts = Array.of_list (layout_placements no_arena) in
-  let baseline_index = 0 in
   let second = Option.map (fun args -> { session with args }) check_with in
   let suffix = if Option.is_none second then " (measured on one input)" else "" in
   let default_profile reason =
@@ -760,19 +866,6 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
         raise (Stop 2))
   in
   let metric run = match run.cycles with Some c when c > 0. -> c | _ -> run.wall in
-  let scales =
-    match Sys.getenv_opt "FAS_TUNE_TEST_SCALE" with
-    | None -> []
-    | Some text ->
-        String.split_on_char ',' text
-        |> List.filter_map (fun item ->
-            match String.rindex_opt item '=' with
-            | Some i ->
-                let name = String.sub item 0 i
-                and factor = String.sub item (i + 1) (String.length item - i - 1) in
-                Option.map (fun factor -> (name, factor)) (float_of_string_opt factor)
-            | None -> None)
-  in
   let scale_for input name =
     let key = match input with `First -> name | `Second -> name ^ "@with" in
     match List.assoc_opt key scales with
@@ -911,12 +1004,14 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
   let option_round head kept =
     match kept with [] -> None | _ -> stage (head :: kept) kept
   in
-  let fresh = List.map (fun option -> derive [ option ]) Driver.tune_option_names in
+  let fresh =
+    List.filter_map (fun option -> derive [ option ]) Driver.tune_option_names
+  in
   let kept1 = distinct_builds base fresh in
   let option_stage1 = option_round base kept1 in
   let kind_name (first : outcome) (kind, names) =
     match names with
-    | [ name ] -> Some name
+    | [ name ] -> if List.mem name !skipped then None else Some name
     | _ ->
         let baseline = first.select base in
         List.fold_left
@@ -947,7 +1042,7 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
     else
       let set = (get previous.challenger).options in
       let candidates =
-        List.map (fun name -> derive (set @ [ name ])) (next_names set first)
+        List.filter_map (fun name -> derive (set @ [ name ])) (next_names set first)
       in
       match
         option_round previous.challenger
