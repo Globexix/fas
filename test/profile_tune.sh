@@ -332,9 +332,9 @@ body defaults/tune.fasprof | cmp - tune-body.proftext || fail "default output di
 no_tune_temps
 
 status=0
-FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100 "$OCAML_FAS" perf --tune tune.fas prof_link.c -o slow.fasprof >slow.out 2>slow.err || status=$?
+FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100,mtune=100,mtune-pgo=100 "$OCAML_FAS" perf --tune tune.fas prof_link.c -o slow.fasprof >slow.out 2>slow.err || status=$?
 [ "$status" -eq 0 ] || { cat slow.err >&2; fail "slow tune run exited $status"; }
-grep -E -q '^fas perf: kept the default build \(best (pgo|native|native-pgo) 0\.[0-9]+×, band [0-9.]+%\) \(measured on one input\)$' slow.err || fail "slow tune run did not keep the default build: $(cat slow.err)"
+grep -E -q '^fas perf: kept the default build \(best (pgo|native|native-pgo|mtune|mtune-pgo) 0\.[0-9]+×, band [0-9.]+%\) \(measured on one input\)$' slow.err || fail "slow tune run did not keep the default build: $(cat slow.err)"
 [ "$(sed -n '5p;6p' slow.fasprof)" = "$(printf 'choice default\nalign-loops def')" ] || fail "slow profile header is '$(head -n 7 slow.fasprof)'"
 grep -E -q '^measured 1\.0000 band ' slow.fasprof || fail "slow profile measured line is '$(sed -n '9p' slow.fasprof)'"
 grep -q 'tuned for' slow.err && fail "a default choice says it was tuned for this CPU"

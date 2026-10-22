@@ -67,7 +67,7 @@ val run :
 
 val check_clang : unit -> (unit, Diag.t list) result
 
-type choice = Default | Pgo | Native | Native_pgo
+type choice = Default | Pgo | Native | Native_pgo | Mtune | Mtune_pgo
 
 val choice_name : choice -> string
 val align_loops_name : int option -> string

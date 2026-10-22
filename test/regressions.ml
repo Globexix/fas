@@ -3800,7 +3800,8 @@ let () =
          measured 1\n\
          counts\n";
       profile_rejection "profile-unknown-choice" profile_file
-        "has an unknown choice `fast`; expected default, pgo, native or native-pgo";
+        "has an unknown choice `fast`; expected default, pgo, native, native-pgo, \
+         mtune or mtune-pgo";
       write profile_file
         "fas profile 2\n\
          fas 0.5.2\n\

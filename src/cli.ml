@@ -16,6 +16,7 @@ type t = {
   c_flags : string list;
   diagnostics : diagnostics;
   target_cpu : string option;
+  tune_cpu : string option;
   target : target;
   target_features : string option;
   profile : string option;
@@ -203,6 +204,7 @@ let parse_invocation ~subcommand argv =
                 c_flags = List.rev !c_flags_rev;
                 diagnostics = !diagnostics;
                 target_cpu = None;
+                tune_cpu = None;
                 target = !target;
                 target_features = None;
                 profile = !profile;

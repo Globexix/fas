@@ -978,7 +978,7 @@ let target_attributes config =
       Some
         {
           Ir.target_cpu = "x86-64";
-          target_tune = Some "generic";
+          target_tune = Some (Option.value config.Cli.tune_cpu ~default:"generic");
           target_features = None;
         }
   | Cli.Force_native, Some cpu, Some features ->
@@ -989,6 +989,9 @@ let host_march config =
   match config.Cli.target with
   | Cli.Force_native -> [ "-march=native" ]
   | Cli.Portable -> []
+
+let c_tuning config =
+  match config.Cli.tune_cpu with None -> [] | Some cpu -> [ "-mtune=" ^ cpu ]
 
 let render_ir ?(redirect = Fun.id) ?(sanitize_address = false) ?target ~debug_info ir =
   match
@@ -1076,7 +1079,7 @@ let pass_report config = opt_pass config
 
 type profile = { indexed_path : string; temp_paths : string list }
 type pgo = Instrument | Use of profile
-type choice = Default | Pgo | Native | Native_pgo
+type choice = Default | Pgo | Native | Native_pgo | Mtune | Mtune_pgo
 
 type profile_header = {
   choice : choice;
@@ -1095,12 +1098,16 @@ let choice_name = function
   | Pgo -> "pgo"
   | Native -> "native"
   | Native_pgo -> "native-pgo"
+  | Mtune -> "mtune"
+  | Mtune_pgo -> "mtune-pgo"
 
 let choice_of_name = function
   | "default" -> Some Default
   | "pgo" -> Some Pgo
   | "native" -> Some Native
   | "native-pgo" -> Some Native_pgo
+  | "mtune" -> Some Mtune
+  | "mtune-pgo" -> Some Mtune_pgo
   | _ -> None
 
 let align_loops_name = function None -> "def" | Some n -> string_of_int n
@@ -1131,15 +1138,16 @@ let profile_line_error path number expected =
 
 let profile_choice path line =
   match Option.bind line (header_value "choice ") with
-  | None -> profile_line_error path 5 "choice default|pgo|native|native-pgo"
+  | None ->
+      profile_line_error path 5 "choice default|pgo|native|native-pgo|mtune|mtune-pgo"
   | Some value -> (
       match choice_of_name value with
       | Some choice -> Ok choice
       | None ->
           profile_error
             (Printf.sprintf
-               "profile `%s` has an unknown choice `%s`; expected default, pgo, native \
-                or native-pgo"
+               "profile `%s` has an unknown choice `%s`; expected default, pgo, \
+                native, native-pgo, mtune or mtune-pgo"
                path value))
 
 let profile_align_loops path line =
@@ -1402,6 +1410,7 @@ let with_profile config f =
           in
           let* header = profile_header path text in
           let native = header.choice = Native || header.choice = Native_pgo in
+          let mtune = header.choice = Mtune || header.choice = Mtune_pgo in
           let* () =
             if native && header.cpu <> llc_host_cpu () then
               profile_error
@@ -1417,12 +1426,13 @@ let with_profile config f =
               Cli.align_loops = header.align_loops;
               Cli.align_functions = header.align_functions;
               Cli.tune_options = header.options;
+              tune_cpu = (if mtune then Some header.cpu else config.Cli.tune_cpu);
               target = (if native then Cli.Force_native else config.Cli.target);
             }
           in
           match header.choice with
-          | Default | Native -> f config None
-          | Pgo | Native_pgo ->
+          | Default | Native | Mtune -> f config None
+          | Pgo | Native_pgo | Mtune_pgo ->
               let* indexed_path =
                 profile_io (fun () -> merge_profile path header.counts temps)
               in
@@ -1491,8 +1501,8 @@ let with_debug_c_inputs ~enabled ~pgo_flags config cc f =
                   (Array.of_list
                      ([ cc ] @ debug
                      @ [ "-c"; path; "-o"; object_path ]
-                     @ host_march config @ config.Cli.c_flags @ c_sanitizer_flags config
-                     @ pgo_flags))
+                     @ host_march config @ c_tuning config @ config.Cli.c_flags
+                     @ c_sanitizer_flags config @ pgo_flags))
               in
               compile (object_path :: acc) rest
           | path :: rest -> compile (path :: acc) rest
@@ -1878,7 +1888,7 @@ let compile_c_units ~pgo config cc units adapters standard_headers declaration_h
                  "-fPIC";
                  llc_opt (effective_level config);
                ]
-              @ host_march config @ unit.c_flags
+              @ host_march config @ c_tuning config @ unit.c_flags
               @ (if Option.is_none unit.assembly then
                    C_import.reproducible_flags unit.stable_name unit.unit_path
                  else [])

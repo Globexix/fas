@@ -168,6 +168,7 @@ let config_for state key : Cli.t =
     c_flags = state.options.lsp_c_flags;
     diagnostics = Cli.Text;
     target_cpu = None;
+    tune_cpu = None;
     target = state.options.lsp_target;
     target_features = None;
     profile = None;

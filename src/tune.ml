@@ -681,7 +681,7 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
   if interactive () then (
     announce ~input:config.input ~cpu:session.cpu
       ~trained:(if native_only then 1 else 2)
-      ~candidates:(if native_only then 2 else 4)
+      ~candidates:(if native_only then 2 else 6)
       ~placements:(List.length (placements no_arena))
       ~layout_placements:(List.length (layout_placements no_arena))
       ~second:(Option.is_some check_with) ~wall;
@@ -795,6 +795,8 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
         ("pgo", Driver.Pgo, first_counts);
         ("native", Driver.Native, first_counts);
         ("native-pgo", Driver.Native_pgo, native_counts);
+        ("mtune", Driver.Mtune, first_counts);
+        ("mtune-pgo", Driver.Mtune_pgo, first_counts);
       ]
   in
   let all =
@@ -1214,7 +1216,7 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
   | Driver.Native | Driver.Native_pgo ->
       Printf.eprintf "fas perf: tuned for %s; the binary may not run on other CPUs\n"
         (Driver.llc_host_cpu ())
-  | Driver.Default | Driver.Pgo -> ());
+  | Driver.Default | Driver.Pgo | Driver.Mtune | Driver.Mtune_pgo -> ());
   let measured =
     Printf.sprintf "%.4f band %.4f rounds %d placements %d metric %s" ratio band rounds
       (Array.length placements) metric_name

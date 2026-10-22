@@ -16,6 +16,7 @@ type t = {
   c_flags : string list;
   diagnostics : diagnostics;
   target_cpu : string option;
+  tune_cpu : string option;
   target : target;
   target_features : string option;
   profile : string option;

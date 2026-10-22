@@ -319,6 +319,11 @@ profile2 nativepgo2.fasprof "$HOST_CPU" 'choice native-pgo' 'align-loops def' "$
 profile2 othercpu.fasprof othercpu 'choice native' 'align-loops def' "$MEASURED"
 profile2 othercpu-pgo.fasprof othercpu 'choice native-pgo' 'align-loops def' "$MEASURED"
 profile2 othercpu-portable.fasprof othercpu 'choice pgo' 'align-loops def' "$MEASURED"
+if [ "$HOST_CPU" = generic ]; then OTHER_CPU=x86-64; else OTHER_CPU=generic; fi
+profile2 mtune2.fasprof "$HOST_CPU" 'choice mtune' 'align-loops def' "$MEASURED"
+profile2 mtunepgo2.fasprof "$HOST_CPU" 'choice mtune-pgo' 'align-loops def' "$MEASURED"
+profile2 mtune-other.fasprof "$OTHER_CPU" 'choice mtune' 'align-loops def' "$MEASURED"
+profile2 mtunepgo-other.fasprof "$OTHER_CPU" 'choice mtune-pgo' 'align-loops def' "$MEASURED"
 profile2 badchoice.fasprof "$HOST_CPU" 'choice fast' 'align-loops def' "$MEASURED"
 profile2 badalign.fasprof "$HOST_CPU" 'choice pgo' 'align-loops 16' "$MEASURED"
 profile2 nochoice.fasprof "$HOST_CPU" 'align-loops def' 'choice pgo' "$MEASURED"
@@ -373,12 +378,58 @@ fas_build nativepgo2.bin --profile nativepgo2.fasprof main.fas prof_link.c
 run_program native2.bin 250
 run_program nativepgo2.bin 250
 
+tune_normal() {
+  sed 's/"tune-cpu"="[^"]*"/"tune-cpu"="CPU"/' "$1"
+}
+tune_normal without-profile.ll >without-profile-tune.ll
+"$OCAML_FAS" --profile mtune2.fasprof --emit-llvm=optimized main.fas >mtune2.ll
+grep -qxF -e "attributes #1 = { \"target-cpu\"=\"x86-64\" \"tune-cpu\"=\"$HOST_CPU\" }" mtune2.ll \
+  || fail "choice mtune did not set tune-cpu to $HOST_CPU: $(grep '^attributes' mtune2.ll)"
+tune_normal mtune2.ll >mtune2-tune.ll
+cmp without-profile-tune.ll mtune2-tune.ll || fail "choice mtune changed more than the tune-cpu attribute"
+"$OCAML_FAS" --profile mtune-other.fasprof --emit-llvm=optimized main.fas >mtune-other.ll
+grep -qxF -e "attributes #1 = { \"target-cpu\"=\"x86-64\" \"tune-cpu\"=\"$OTHER_CPU\" }" mtune-other.ll \
+  || fail "choice mtune did not set tune-cpu to $OTHER_CPU"
+tune_normal mtune-other.ll >mtune-other-tune.ll
+cmp without-profile-tune.ll mtune-other-tune.ll || fail "choice mtune with cpu $OTHER_CPU changed more than the tune-cpu attribute"
+"$OCAML_FAS" --profile mtunepgo2.fasprof --emit-llvm=optimized main.fas >mtunepgo2.ll
+grep -q '!"branch_weights"' mtunepgo2.ll || fail "choice mtune-pgo lost the counts"
+grep -qxF -e "attributes #1 = { \"target-cpu\"=\"x86-64\" \"tune-cpu\"=\"$HOST_CPU\" }" mtunepgo2.ll \
+  || fail "choice mtune-pgo did not set tune-cpu to $HOST_CPU"
+"$OCAML_FAS" --profile pgo2.fasprof --emit-llvm=optimized main.fas >pgo2-opt.ll
+tune_normal pgo2-opt.ll >pgo2-opt-tune.ll
+tune_normal mtunepgo2.ll >mtunepgo2-tune.ll
+cmp pgo2-opt-tune.ll mtunepgo2-tune.ll || fail "choice mtune-pgo changed more than the tune-cpu attribute"
+
+: >cc.log
+FAS_CC="$WORK/cc-log.sh" "$OCAML_FAS" --profile mtune2.fasprof main.fas prof_link.c -o cc-mtune2.bin
+grep -q -F -e "-mtune=$HOST_CPU" cc.log || fail "choice mtune did not pass -mtune=$HOST_CPU to C: $(cat cc.log)"
+if grep -q -F -e '-fprofile-use=' cc.log; then
+  fail "choice mtune passes -fprofile-use"
+fi
+: >cc.log
+FAS_CC="$WORK/cc-log.sh" "$OCAML_FAS" --profile mtunepgo2.fasprof main.fas prof_link.c -o cc-mtunepgo2.bin
+grep -q -F -e "-mtune=$HOST_CPU" cc.log || fail "choice mtune-pgo did not pass -mtune=$HOST_CPU to C: $(cat cc.log)"
+grep -q -F -e '-fprofile-use=' cc.log || fail "choice mtune-pgo did not pass -fprofile-use: $(cat cc.log)"
+: >cc.log
+FAS_CC="$WORK/cc-log.sh" "$OCAML_FAS" --profile mtune-other.fasprof main.fas prof_link.c -o cc-mtune-other.bin
+grep -q -F -e "-mtune=$OTHER_CPU" cc.log || fail "choice mtune with cpu $OTHER_CPU did not pass -mtune=$OTHER_CPU to C: $(cat cc.log)"
+
+fas_build mtune2.bin --profile mtune2.fasprof main.fas prof_link.c
+run_program mtune2.bin 250
+fas_build mtunepgo2.bin --profile mtunepgo2.fasprof main.fas prof_link.c
+run_program mtunepgo2.bin 250
+fas_build mtune-other.bin --profile mtune-other.fasprof main.fas prof_link.c
+run_program mtune-other.bin 250
+fas_build mtunepgo-other.bin --profile mtunepgo-other.fasprof main.fas prof_link.c
+run_program mtunepgo-other.bin 250
+
 expect_error other-cpu "error: profile \`othercpu.fasprof\` was tuned for the CPU \`othercpu\`; this machine is \`$HOST_CPU\` (a native choice runs only on the CPU it was measured on)" --profile othercpu.fasprof main.fas prof_link.c
 expect_error other-cpu-pgo "error: profile \`othercpu-pgo.fasprof\` was tuned for the CPU \`othercpu\`; this machine is \`$HOST_CPU\` (a native choice runs only on the CPU it was measured on)" -O0 --profile othercpu-pgo.fasprof main.fas prof_link.c
 fas_build other-cpu-portable.bin --profile othercpu-portable.fasprof main.fas prof_link.c
-expect_error bad-choice 'error: profile `badchoice.fasprof` has an unknown choice `fast`; expected default, pgo, native or native-pgo' --profile badchoice.fasprof main.fas prof_link.c
+expect_error bad-choice 'error: profile `badchoice.fasprof` has an unknown choice `fast`; expected default, pgo, native, native-pgo, mtune or mtune-pgo' --profile badchoice.fasprof main.fas prof_link.c
 expect_error bad-align 'error: profile `badalign.fasprof` has an unknown align-loops value `16`; expected def, 32 or 64' --profile badalign.fasprof main.fas prof_link.c
-expect_error no-choice 'error: profile `nochoice.fasprof` line 5 must be `choice default|pgo|native|native-pgo`' --profile nochoice.fasprof main.fas prof_link.c
+expect_error no-choice 'error: profile `nochoice.fasprof` line 5 must be `choice default|pgo|native|native-pgo|mtune|mtune-pgo`' --profile nochoice.fasprof main.fas prof_link.c
 expect_error no-align 'error: profile `noalign.fasprof` line 6 must be `align-loops def|32|64`' --profile noalign.fasprof main.fas prof_link.c
 expect_error no-measured 'error: profile `nomeasured.fasprof` line 7 must be `measured RATIO band BAND rounds R placements K metric M`' --profile nomeasured.fasprof main.fas prof_link.c
 expect_error no-counts2 'error: profile `nocounts2.fasprof` has no `counts` section' --profile nocounts2.fasprof main.fas prof_link.c
