@@ -184,7 +184,7 @@ let validate_extern_c_signature ~named_types ~ret_source ~bodyless span params c
          (Hir.ty_name ret))
 
 let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported = [])
-    ?(c_nonnull_parameters = []) ?(c_string_parameters = [])
+    ?(c_nonnull_parameters = []) ?(c_string_parameters = []) ?(c_record_calls = [])
     ?(c_alloc_size_parameters = []) ?(c_records = []) ?(all_errors = false)
     ?specializations ?index program =
   let global_names =
@@ -432,8 +432,8 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
       ~array_lengths:(Sema_static_env.source_array_lengths program.Ast.items)
       ~eval_context:(base_structs, named_types, early_consts, [])
       ~c_aliases ~c_unsupported ~c_nonnull_parameters ~c_alloc_size_parameters
-      ~c_string_parameters ~top_level_bindings ?recovered ~limits ~type_node_account
-      specializations program
+      ~c_string_parameters ~c_record_calls ~top_level_bindings ?recovered ~limits
+      ~type_node_account specializations program
   in
   let* named_types = collect_named_types String_set.empty [] program.Ast.items in
   let named_types = add_c_records (add_c_types named_types) in
@@ -629,8 +629,9 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
       ~array_lengths:(Sema_static_env.source_array_lengths program.Ast.items)
       ~eval_context:(structs, named_types, consts_ordered, arrays_ordered)
       ~eval_globals ~c_aliases ~c_unsupported ~c_nonnull_parameters
-      ~c_alloc_size_parameters ~c_string_parameters ~eager_functions:true
-      ~top_level_bindings ?recovered ~limits ~type_node_account specializations program
+      ~c_alloc_size_parameters ~c_string_parameters ~c_record_calls
+      ~eager_functions:true ~top_level_bindings ?recovered ~limits ~type_node_account
+      specializations program
   in
   let* named_types = collect_named_types String_set.empty [] program.Ast.items in
   let named_types = add_c_records (add_c_types named_types) in
@@ -660,6 +661,9 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
       c_unsupported;
       c_nonnull_parameters;
       c_string_parameters;
+      c_record_calls;
+      record_result_call = false;
+      record_call_checked = false;
       c_alloc_size_parameters;
       signatures = [];
       external_c_functions =
@@ -811,6 +815,9 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
       c_unsupported;
       c_nonnull_parameters;
       c_string_parameters;
+      c_record_calls;
+      record_result_call = false;
+      record_call_checked = false;
       c_alloc_size_parameters;
       signatures = sigs_ordered;
       external_c_functions =
@@ -1170,11 +1177,12 @@ let check_program ?(limits = Limits.default) ?(c_aliases = []) ?(c_unsupported =
       : Hir.program)
 
 let check ?limits ?c_aliases ?c_unsupported ?c_nonnull_parameters ?c_string_parameters
-    ?c_alloc_size_parameters ?c_records ?all_errors ?specializations ?index program =
+    ?c_record_calls ?c_alloc_size_parameters ?c_records ?all_errors ?specializations
+    ?index program =
   let run () =
     check_program ?limits ?c_aliases ?c_unsupported ?c_nonnull_parameters
-      ?c_string_parameters ?c_alloc_size_parameters ?c_records ?all_errors
-      ?specializations ?index program
+      ?c_string_parameters ?c_record_calls ?c_alloc_size_parameters ?c_records
+      ?all_errors ?specializations ?index program
   in
   match index with
   | None -> run ()

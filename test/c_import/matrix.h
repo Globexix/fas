@@ -64,6 +64,7 @@ struct FasByValue { int field; };
 struct FasByValue fas_struct_by_value(struct FasByValue value);
 union FasUnionByValue { int integer; unsigned char byte; };
 union FasUnionByValue fas_union_by_value(union FasUnionByValue value);
+int fas_variadic_by_value(struct FasByValue value, ...);
 extern struct FasByValue fas_direct_record_array[2];
 typedef struct FasByValue fas_record_array_type[2];
 extern fas_record_array_type fas_alias_record_array;

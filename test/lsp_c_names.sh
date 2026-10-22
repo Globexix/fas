@@ -123,6 +123,10 @@ int cn_fmt(const char *format, ...);
 int cn_none(int, int);
 
 int cn_kw(int view);
+
+CnPoint cn_scale(CnPoint point, int, const char *name) __attribute__((nonnull(3)));
+
+int cn_sum(struct CnPoint point);
 """
 
 GOOD_MAIN = "\n".join(
@@ -143,6 +147,9 @@ GOOD_MAIN = "\n".join(
         "  unnamed i32 = cn_none(1, 2)",
         "  keyed i32 = cn_kw(3)",
         '  printed i32 = printf(c"x")',
+        "  scaled CnPoint",
+        '  scaled = cn_scale(point, 2, c"s")',
+        "  summed i32 = cn_sum(scaled)",
         "  return 0",
         "}",
     ]
@@ -610,6 +617,18 @@ def pins_good(s, main, cn_h):
         "extern fn cn_kw(view i32) i32",
         [],
         r"^int cn_kw\(", local, "cn_kw",
+    )
+    expect_c_hover(
+        s, main, GOOD_MAIN, "cn_scale(point", 0,
+        "extern fn cn_scale(point CnPoint, arg1 i32, name addr) CnPoint",
+        ["nonnull: name; C string: name"],
+        r"^CnPoint cn_scale\(", local, "cn_scale",
+    )
+    expect_c_hover(
+        s, main, GOOD_MAIN, "cn_sum(scaled", 0,
+        "extern fn cn_sum(point CnPoint) i32",
+        [],
+        r"^int cn_sum\(", local, "cn_sum",
     )
     expect_c_hover(
         s, main, GOOD_MAIN, "printf(c", 0,

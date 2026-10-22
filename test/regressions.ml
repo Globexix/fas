@@ -540,6 +540,7 @@ let c_replay_run ((file, imported) : string * C_import.mapped) text =
           ~c_nonnull_parameters:imported.nonnull_parameters
           ~c_records:imported.record_types
           ~c_string_parameters:imported.c_string_parameters
+          ~c_record_calls:imported.record_calls
           ~c_alloc_size_parameters:imported.alloc_size_parameters program
       with
       | Ok _ -> []
@@ -559,6 +560,7 @@ let c_semantic_result ((source, imported) : string * C_import.mapped) text =
     Sema.check ~c_aliases:imported.aliases ~c_unsupported:imported.unsupported
       ~c_nonnull_parameters:imported.nonnull_parameters ~c_records:imported.record_types
       ~c_string_parameters:imported.c_string_parameters
+      ~c_record_calls:imported.record_calls
       ~c_alloc_size_parameters:imported.alloc_size_parameters program
   in
   match run () with
@@ -14940,10 +14942,106 @@ let () =
   unsupported "fas_int128_value" "`__int128` has no Fas type" "fas_int128_value(1)";
   unsupported "fas_uint128_value" "`__int128` has no Fas type" "fas_uint128_value(1)";
   unsupported "fas_bitint_value" "`_BitInt` has no Fas type" "fas_bitint_value(1)";
-  unsupported "fas_struct_by_value" "struct and union values are not supported"
-    "fas_struct_by_value(null)";
-  unsupported "fas_union_by_value" "struct and union values are not supported"
-    "fas_union_by_value(null)";
+  unsupported "fas_variadic_by_value"
+    "variadic functions with struct and union values are not supported"
+    "fas_variadic_by_value(0)";
+  c_semantic_accept "c-record-value-declaration" c_matrix
+    "fn probe() i32 {\n\
+     v FasByValue = {3}\n\
+     r FasByValue = fas_struct_by_value(v)\n\
+     return r.field }\n";
+  c_semantic_accept "c-record-value-union" c_matrix
+    "fn probe() i32 {\n\
+     u FasUnionByValue\n\
+     u.integer = 1\n\
+     r FasUnionByValue = fas_union_by_value(u)\n\
+     return r.integer }\n";
+  c_semantic_accept "c-record-value-places" c_matrix
+    "struct Pair { left FasByValue, right FasByValue }\n\
+     fn probe() i32 {\n\
+     xs arr[2,FasByValue] = {{1}, {2}}\n\
+     xs[1] = fas_struct_by_value(xs[0])\n\
+     p Pair = {{4}, {5}}\n\
+     p.left = fas_struct_by_value(p.right)\n\
+     fas_direct_record_array[1] = fas_struct_by_value(fas_direct_record_array[0])\n\
+     return xs[1].field + p.left.field }\n";
+  c_semantic_message "c-record-value-literal-argument"
+    "argument 1 of `fas_struct_by_value` passes `FasByValue` by value; pass a \
+     variable, field or array element of type `FasByValue`"
+    c_matrix
+    "fn probe() i32 {\nr FasByValue = fas_struct_by_value({3})\nreturn r.field }\n";
+  c_semantic_message "c-record-value-call-argument"
+    "argument 1 of `fas_struct_by_value` passes `FasByValue` by value; pass a \
+     variable, field or array element of type `FasByValue`"
+    c_matrix
+    "fn probe() i32 {\n\
+     v FasByValue = {3}\n\
+     r FasByValue = fas_struct_by_value(fas_struct_by_value(v))\n\
+     return r.field }\n";
+  c_semantic_message "c-record-value-wrong-argument"
+    "argument 1 of `fas_struct_by_value` passes `FasByValue` by value; pass a \
+     variable, field or array element of type `FasByValue`, got `FasUnionByValue`"
+    c_matrix
+    "fn probe() i32 {\n\
+     u FasUnionByValue\n\
+     u.integer = 1\n\
+     r FasByValue = fas_struct_by_value(u)\n\
+     return r.field }\n";
+  c_semantic_message "c-record-value-discarded-result"
+    "C function `fas_struct_by_value` returns `FasByValue` by value; use the result \
+     only as `x FasByValue = fas_struct_by_value(...)` or `place = \
+     fas_struct_by_value(...)`"
+    c_matrix
+    "fn probe() i32 {\nv FasByValue = {3}\nfas_struct_by_value(v)\nreturn 0 }\n";
+  c_semantic_message "c-record-value-field-of-result"
+    "C function `fas_struct_by_value` returns `FasByValue` by value; use the result \
+     only as `x FasByValue = fas_struct_by_value(...)` or `place = \
+     fas_struct_by_value(...)`"
+    c_matrix
+    "fn probe() i32 {\nv FasByValue = {3}\nreturn fas_struct_by_value(v).field }\n";
+  c_semantic_message "c-record-value-wrong-destination"
+    "C function `fas_struct_by_value` returns `FasByValue`, but the destination is \
+     `FasUnionByValue`"
+    c_matrix
+    "fn probe() i32 {\n\
+     v FasByValue = {3}\n\
+     u FasUnionByValue\n\
+     u = fas_struct_by_value(v)\n\
+     return 0 }\n";
+  let c_record_value_calls = c_import_fixture "record_value_calls.h" in
+  c_semantic_accept "c-record-value-nested-calls" c_record_value_calls
+    "fn probe() i32 {\n\
+     q FasPoint = {3, 4}\n\
+     p FasPoint = fas_point_make(fas_point_sum(q), fas_point_sum(q))\n\
+     p = fas_point_make(fas_point_sum(p), 1)\n\
+     return p.x }\n";
+  c_semantic_message "c-record-value-result-arity"
+    "function `fas_point_make` expects 2 arguments, got 1" c_record_value_calls
+    "fn probe() i32 {\np FasPoint = fas_point_make(1)\nreturn p.x }\n";
+  c_semantic_message "c-record-value-result-nonnull"
+    "null argument to nonnull parameter 2 of `fas_point_named`" c_record_value_calls
+    "fn probe() i32 {\np FasPoint = fas_point_named(1, null)\nreturn p.x }\n";
+  c_semantic_message "c-record-value-result-c-string"
+    "\"ab\" has no NUL terminator, but `fas_point_named` reads parameter `name` as a C \
+     string"
+    c_record_value_calls
+    "fn probe() i32 {\np FasPoint = fas_point_named(1, \"ab\")\nreturn p.x }\n";
+  c_semantic_accept "c-record-value-result-c-string-literal" c_record_value_calls
+    "fn probe() i32 {\np FasPoint = fas_point_named(1, c\"ab\")\nreturn p.x }\n";
+  c_semantic_message "c-record-value-shadowed-declaration"
+    "the declaration of `v` cannot use `v` in the arguments of `fas_struct_by_value`; \
+     give the result another name"
+    c_matrix
+    "fn probe() i32 {\n\
+     v FasByValue = {3}\n\
+     if true {\n\
+     v FasByValue = fas_struct_by_value(v)\n\
+     return v.field }\n\
+     return 0 }\n";
+  c_semantic_message "c-record-value-address"
+    "C function `fas_struct_by_value` passes a struct or union by value; Fas calls it \
+     through an adapter and cannot take its address"
+    c_matrix "fn probe() i32 {\np addr = &fas_struct_by_value\nreturn 0 }\n";
   unsupported "fas_bitfield_global" "bit-fields are not supported"
     "fas_bitfield_global = null";
   c_semantic_accept "c-import-array-global" c_matrix
@@ -15605,9 +15703,11 @@ let () =
           align=4 {word u32 @0, bytes arr[8, u8] @0, nested FasContainerNested @0}")
   then failwith "container union manifest omitted its layout or fields";
   c_semantic_message "c-import-union-by-value-parameter"
-    "C declaration `fas_union_by_value` is not supported: struct and union values are \
-     not supported"
+    "argument 1 of `fas_union_by_value` passes `FasUnionRecord` by value; pass a \
+     variable, field or array element of type `FasUnionRecord`"
     record_import_cases "fn probe() i32 { return fas_union_by_value(null) }\n";
+  c_semantic_accept "c-record-value-union-argument" record_import_cases
+    "fn probe() i32 {\nu FasUnionRecord\nu.value = 2\nreturn fas_union_by_value(u) }\n";
   c_semantic_accept "c-import-float-union-field" record_import_cases
     "fn read_bits(value handle[FasFloatUnion]) u32 {\n\
      raw addr = handle_addr(value)\n\

@@ -48,7 +48,8 @@
   c_import/alloc_size_typedef.h
   c_import/alloc_size_field.h
   c_import/alloc_size_parameter.h
-  c_import/c_string_parameters.h))
+  c_import/c_string_parameters.h
+  c_import/record_value_calls.h))
 
 (executable
  (name float_proof)
