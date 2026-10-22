@@ -89,6 +89,9 @@ val narrow_arithmetic_result : unsigned:bool -> Ast.expr -> bool
 val narrow_float_result : Ast.expr -> bool
 
 val unify_if_branches :
+  ?leaf_type:(Ast.expr -> Hir.ty option) ->
+  ?left_checked:Hir.expr ->
+  ?right_checked:Hir.expr ->
   Ast.expr ->
   Hir.ty ->
   Ast.expr ->
@@ -122,6 +125,7 @@ val ensure_expected :
   ?context:string ->
   ?expression:Ast.expr ->
   ?checked_expression:Hir.expr ->
+  ?leaf_type:(Ast.expr -> Hir.ty option) ->
   ?widening_help:bool ->
   Hir.ty ->
   Hir.ty ->
@@ -136,6 +140,9 @@ val comparison_chain_diagnostic :
 val binary_result_type :
   ?left_expression:Ast.expr ->
   ?right_expression:Ast.expr ->
+  ?left_checked:Hir.expr ->
+  ?right_checked:Hir.expr ->
+  ?leaf_type:(Ast.expr -> Hir.ty option) ->
   ?result_expected:Hir.ty ->
   ?comparison_chain_rewrite_valid:bool ->
   Span.t ->

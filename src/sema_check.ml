@@ -2310,8 +2310,9 @@ and check_expr_inner ?destination (c : context) expected expression =
               let rewrite_result =
                 let* first_value, middle_value = check_pair inner first middle in
                 let* _ =
-                  binary_result_type ~left_expression:first ~right_expression:middle s
-                    inner (Hir.expr_ty first_value) (Hir.expr_ty middle_value)
+                  binary_result_type ~left_expression:first ~right_expression:middle
+                    ~left_checked:first_value ~right_checked:middle_value s inner
+                    (Hir.expr_ty first_value) (Hir.expr_ty middle_value)
                 in
                 let* last_value =
                   check_expr c
@@ -2319,7 +2320,8 @@ and check_expr_inner ?destination (c : context) expected expression =
                     r
                 in
                 let* _ =
-                  binary_result_type ~left_expression:middle ~right_expression:r s op
+                  binary_result_type ~left_expression:middle ~right_expression:r
+                    ~left_checked:middle_value ~right_checked:last_value s op
                     (Hir.expr_ty middle_value) (Hir.expr_ty last_value)
                 in
                 Ok ()
@@ -2345,8 +2347,9 @@ and check_expr_inner ?destination (c : context) expected expression =
             Ok (Hir.Binary (op, a, b, Hir.Bool, s))
         | _ ->
             let* result_ty =
-              binary_result_type ~left_expression:l ~right_expression:r
-                ?result_expected:expected ~comparison_chain_rewrite_valid s op at bt
+              binary_result_type ~left_expression:l ~right_expression:r ~left_checked:a
+                ~right_checked:b ?result_expected:expected
+                ~comparison_chain_rewrite_valid s op at bt
             in
             let a, b, at, bt =
               match
@@ -2666,7 +2669,7 @@ and check_expr_inner ?destination (c : context) expected expression =
         in
         let* result_type, left_widen, right_widen =
           if Option.is_none expected then
-            unify_if_branches a at b bt
+            unify_if_branches ~left_checked:ta ~right_checked:tb a at b bt
             |> Result.map_error (fun diagnostic -> [ diagnostic ])
           else
             let* () =
@@ -3094,8 +3097,8 @@ and check_simd_memory_args c name access_ty args span =
           let* () =
             ensure_expected
               ~context:(Printf.sprintf "argument 3 of `%s`" name)
-              ~expression:value_arg (Hir.expr_ty value) value_ty
-              (Ast.expr_span value_arg)
+              ~checked_expression:value ~expression:value_arg (Hir.expr_ty value)
+              value_ty (Ast.expr_span value_arg)
           in
           Ok ([ base; mask; value ], lanes)
       | _ -> error (Ast.expr_span mask_arg) (name ^ " mask must be a bool vector")
@@ -3118,8 +3121,8 @@ and check_simd_memory_args c name access_ty args span =
           let* () =
             ensure_expected
               ~context:(Printf.sprintf "argument 4 of `%s`" name)
-              ~expression:value_arg (Hir.expr_ty value) value_ty
-              (Ast.expr_span value_arg)
+              ~checked_expression:value ~expression:value_arg (Hir.expr_ty value)
+              value_ty (Ast.expr_span value_arg)
           in
           Ok ([ base; indices; mask; value ], lanes)
       | _ ->
@@ -5219,8 +5222,8 @@ and check_stmt (c : context) = function
         let* value = check_expr c (Some access_ty) value_arg in
         let* () =
           ensure_expected ~context:"argument 2 of `volatile_store`"
-            ~expression:value_arg (Hir.expr_ty value) access_ty
-            (Ast.expr_span value_arg)
+            ~checked_expression:value ~expression:value_arg (Hir.expr_ty value)
+            access_ty (Ast.expr_span value_arg)
         in
         let* size =
           match layout_diag call_span c.structs access_ty with

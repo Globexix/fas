@@ -711,39 +711,99 @@ let arithmetic_binop = function
       true
   | _ -> false
 
-let rec widened_arithmetic ~unsigned (extension, target) expression =
-  let widen = widened_arithmetic ~unsigned (extension, target) in
-  let widen_or_keep child =
-    if narrow_arithmetic_result ~unsigned child then widen child
+let rec implicit_source checked expression =
+  match (unparenthesized expression, checked) with
+  | Ast.Cast _, _ -> checked
+  | _, Some (Hir.Cast ((Ast.Zext | Ast.Sext), inner, _, _)) ->
+      implicit_source (Some inner) expression
+  | _ -> checked
+
+let binary_operands operation = function
+  | Some (Hir.Binary (checked_operation, left, right, _, _))
+    when checked_operation = operation ->
+      (Some left, Some right)
+  | _ -> (None, None)
+
+let unary_operand operation = function
+  | Some (Hir.Unary (checked_operation, value, _, _)) when checked_operation = operation
+    ->
+      Some value
+  | _ -> None
+
+let ternary_branches = function
+  | Some (Hir.Ternary (_, yes, no, _, _)) -> (Some yes, Some no)
+  | _ -> (None, None)
+
+let ast_int_unsigned = function
+  | Ast.U8 | Ast.U16 | Ast.U32 | Ast.U64 | Ast.Usize -> true
+  | Ast.I8 | Ast.I16 | Ast.I32 | Ast.I64 | Ast.Isize -> false
+
+let type_extension ~default = function
+  | Hir.Int kind | Hir.Vec (_, Hir.Int kind) ->
+      if Sema_numeric.is_unsigned (Hir.Int kind) then Ast.Zext else Ast.Sext
+  | _ -> default
+
+let leaf_extension ?leaf_type ~default expression checked =
+  match unparenthesized expression with
+  | Ast.Cast (_, (Ast.Int kind | Ast.Vec (_, Ast.Int kind)), _, _) ->
+      if ast_int_unsigned kind then Ast.Zext else Ast.Sext
+  | Ast.Cast _ -> default
+  | _ -> (
+      match (implicit_source checked expression, leaf_type) with
+      | Some checked, _ -> type_extension ~default (Hir.expr_ty checked)
+      | None, Some leaf_type -> (
+          match leaf_type expression with
+          | Some ty -> type_extension ~default ty
+          | None -> default)
+      | None, None -> default)
+
+let extension_text = function Ast.Zext -> "zext" | _ -> "sext"
+
+let rec widened_arithmetic ?leaf_type ~unsigned (extension, target) checked expression =
+  let checked = implicit_source checked expression in
+  let widen = widened_arithmetic ?leaf_type ~unsigned (extension, target) in
+  let widen_or_keep child_checked child =
+    if narrow_arithmetic_result ~unsigned child then widen child_checked child
     else Some (unparenthesized child)
   in
   match expression with
-  | Ast.Parenthesized (inner, _) -> widen inner
+  | Ast.Parenthesized (inner, _) -> widen checked inner
   | Ast.Binary (((Ast.Shl | Ast.Shr) as op), left, right, span) ->
+      let left_checked, _ = binary_operands op checked in
       Option.map
         (fun left -> Ast.Binary (op, left, unparenthesized right, span))
-        (widen left)
+        (widen left_checked left)
   | Ast.Binary (op, left, right, span) when arithmetic_binop op ->
+      let left_checked, right_checked = binary_operands op checked in
       if integer_literal_expression left && not (integer_literal_expression right) then
         Option.map
           (fun right -> Ast.Binary (op, unparenthesized left, right, span))
-          (widen right)
+          (widen right_checked right)
       else
-        Option.bind (widen left) (fun left ->
+        Option.bind (widen left_checked left) (fun left ->
             Option.map
               (fun right -> Ast.Binary (op, left, right, span))
-              (widen_or_keep right))
+              (widen_or_keep right_checked right))
   | Ast.Unary (((Ast.Neg | Ast.Bit_not) as op), value, span) ->
-      Option.map (fun value -> Ast.Unary (op, value, span)) (widen value)
+      Option.map
+        (fun value -> Ast.Unary (op, value, span))
+        (widen (unary_operand op checked) value)
   | Ast.Ternary (condition, yes, no, span)
     when narrow_arithmetic_result ~unsigned expression -> (
-      match (widen yes, widen no) with
+      let yes_checked, no_checked = ternary_branches checked in
+      match (widen yes_checked yes, widen no_checked no) with
       | Some yes, Some no -> Some (Ast.Ternary (condition, yes, no, span))
       | _ -> None)
   | _ ->
       if narrow_arithmetic_result ~unsigned expression then None
       else if integer_literal_expression expression then Some expression
-      else Some (Ast.Cast (extension, target, expression, Ast.expr_span expression))
+      else
+        Some
+          (Ast.Cast
+             ( leaf_extension ?leaf_type ~default:extension expression checked,
+               target,
+               expression,
+               Ast.expr_span expression ))
 
 let convert_expected_kind ?expression actual expected =
   match expression with
@@ -1020,7 +1080,7 @@ let array_element_count_message expected actual =
 let aggregate_count_error_span span n xs =
   Option.fold ~none:span ~some:Ast.expr_span (List.nth_opt xs n)
 
-let ensure_expected ?(context = "value") ?expression ?checked_expression
+let ensure_expected ?(context = "value") ?expression ?checked_expression ?leaf_type
     ?(widening_help = true) actual expected span =
   if
     compatible actual expected
@@ -1137,8 +1197,17 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
                       let vector_ty =
                         diagnostic_ty_name (Hir.Vec (lanes, Hir.Int element_kind))
                       in
-                      let extension =
-                        if Sema_numeric.is_unsigned actual then "zext" else "sext"
+                      let default_extension =
+                        if Sema_numeric.is_unsigned actual then Ast.Zext else Ast.Sext
+                      in
+                      let left_checked, right_checked =
+                        binary_operands operator
+                          (implicit_source (Some base) base_expression)
+                      in
+                      let left_extension =
+                        leaf_extension ~default:default_extension left left_checked
+                      and right_extension =
+                        leaf_extension ~default:default_extension right right_checked
                       in
                       let operator_text =
                         match operator with
@@ -1150,9 +1219,13 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
                       in
                       let left = Ast.expr_name left and right = Ast.expr_name right in
                       let widened_left =
-                        Printf.sprintf "%s[%s](%s)" extension vector_ty left
+                        Printf.sprintf "%s[%s](%s)"
+                          (extension_text left_extension)
+                          vector_ty left
                       and widened_right =
-                        Printf.sprintf "%s[%s](%s)" extension vector_ty right
+                        Printf.sprintf "%s[%s](%s)"
+                          (extension_text right_extension)
+                          vector_ty right
                       in
                       let widened =
                         Printf.sprintf "(%s %s %s)[%s]" widened_left operator_text
@@ -1225,10 +1298,10 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
                 else widened
               in
               Printf.sprintf "widen an operand first: `%s`" (Ast.expr_name widened))
-            (widened_arithmetic
+            (widened_arithmetic ?leaf_type
                ~unsigned:(Sema_numeric.is_unsigned actual)
                (extension, Ast.Int (ast_int_kind widening_kind))
-               expression)
+               checked_expression expression)
       | _, Hir.Int _, Hir.Int _
         when (not (Sema_numeric.is_unsigned actual))
              && Sema_numeric.is_unsigned expected
@@ -1299,11 +1372,13 @@ let ensure_expected ?(context = "value") ?expression ?checked_expression
          (diagnostic_ty_name expected))
     |> fun diagnostic -> Error [ diagnostic ]
 
-let unify_if_branches left_expression left_type right_expression right_type =
-  let narrow_error expression actual target is_float =
+let unify_if_branches ?leaf_type ?left_checked ?right_checked left_expression left_type
+    right_expression right_type =
+  let narrow_error expression checked actual target is_float =
     let help =
       match
-        ensure_expected ~context:"if-expression branch" ~expression actual target
+        ensure_expected ~context:"if-expression branch" ?leaf_type
+          ?checked_expression:checked ~expression actual target
           (Ast.expr_span expression)
       with
       | Error [ diagnostic ] -> diagnostic.Diag.help
@@ -1354,7 +1429,7 @@ let unify_if_branches left_expression left_type right_expression right_type =
         && narrow_value_result left_type left_expression
       then
         Error
-          (narrow_error left_expression left_type result_type
+          (narrow_error left_expression left_checked left_type result_type
              (left_type = Hir.Float Hir.F32))
       else if
         Option.is_some right_widen
@@ -1362,7 +1437,7 @@ let unify_if_branches left_expression left_type right_expression right_type =
         && narrow_value_result right_type right_expression
       then
         Error
-          (narrow_error right_expression right_type result_type
+          (narrow_error right_expression right_checked right_type result_type
              (right_type = Hir.Float Hir.F32))
       else Ok (result_type, left_widen, right_widen)
 
@@ -1448,8 +1523,9 @@ let mixed_widen_help operation target left_extension right_extension left_expr
        (binary_operator_name operation)
        right_extension target (Ast.expr_name right_expr))
 
-let binary_result_type ?left_expression ?right_expression ?result_expected
-    ?(comparison_chain_rewrite_valid = true) span operation left right =
+let binary_result_type ?left_expression ?right_expression ?left_checked ?right_checked
+    ?leaf_type ?result_expected ?(comparison_chain_rewrite_valid = true) span operation
+    left right =
   let result_span expression =
     match expression with Some expression -> Ast.expr_span expression | None -> span
   in
@@ -1577,18 +1653,19 @@ let binary_result_type ?left_expression ?right_expression ?result_expected
          && Sema_numeric.is_int left && Sema_numeric.is_int right
          && Option.is_some (common_integer_type left right) -> (
       let common = Option.get (common_integer_type left right) in
-      let check_narrow expression actual =
+      let check_narrow expression checked actual =
         match expression with
         | Some expression
           when Option.is_some (implicit_integer_widen actual common)
                && narrow_arithmetic_result
                     ~unsigned:(Sema_numeric.is_unsigned actual)
                     expression ->
-            ensure_expected ~expression actual common (Ast.expr_span expression)
+            ensure_expected ~expression ?checked_expression:checked ?leaf_type actual
+              common (Ast.expr_span expression)
         | _ -> Ok ()
       in
-      let* () = check_narrow left_expression left in
-      let* () = check_narrow right_expression right in
+      let* () = check_narrow left_expression left_checked left in
+      let* () = check_narrow right_expression right_checked right in
       match operation with
       | Ast.Eq | Ast.Ne | Ast.Lt | Ast.Le | Ast.Gt | Ast.Ge -> Ok Hir.Bool
       | _ -> Ok common)

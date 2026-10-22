@@ -19794,6 +19794,77 @@ let () =
      i32]](v))[0])`"
 
 let () =
+  let mixed_leaf_division_source =
+    "fn f(a u16, s i32) i64 { value i64 = (a / 3) & s; return value }\n"
+  in
+  semantic_pin "widening-help-mixed-leaf-division" mixed_leaf_division_source 1
+    (String.length "fn f(a u16, s i32) i64 { value i64 = " + 1)
+    (String.length "(a / 3) & s")
+    "`(a / 3) & s` is computed in `i32` and may wrap before it reaches `i64`"
+    (Some "widen an operand first: `zext[i64](a) / 3 & s`");
+  conversion_help_twin "widening-help-mixed-leaf-division-compiles"
+    mixed_leaf_division_source "(a / 3) & s" "zext[i64](a) / 3 & s"
+    "widen an operand first: `zext[i64](a) / 3 & s`";
+  let mixed_leaf_product_source =
+    "fn f(a u16, s i32) i64 { value i64 = (a * s) + 1; return value }\n"
+  in
+  semantic_pin "widening-help-mixed-leaf-product" mixed_leaf_product_source 1
+    (String.length "fn f(a u16, s i32) i64 { value i64 = " + 1)
+    (String.length "(a * s) + 1")
+    "`(a * s) + 1` is computed in `i32` and may wrap before it reaches `i64`"
+    (Some "widen an operand first: `zext[i64](a) * s + 1`");
+  conversion_help_twin "widening-help-mixed-leaf-product-compiles"
+    mixed_leaf_product_source "(a * s) + 1" "zext[i64](a) * s + 1"
+    "widen an operand first: `zext[i64](a) * s + 1`";
+  let mixed_leaf_const_source =
+    "const A u16 = 40000\n\
+     const S i32 = -1\n\
+     const Y i64 = (A * S) + 1\n\
+     fn f() i64 { return Y }\n"
+  in
+  semantic_pin "widening-help-mixed-leaf-const-declaration" mixed_leaf_const_source 3
+    (String.length "const Y i64 = (" + 1)
+    (String.length "A * S")
+    "`A * S` is computed in `i32` and may wrap before it reaches `i64`"
+    (Some "widen an operand first: `zext[i64](A) * S`");
+  conversion_help_twin "widening-help-mixed-leaf-const-declaration-compiles"
+    mixed_leaf_const_source "A * S" "zext[i64](A) * S"
+    "widen an operand first: `zext[i64](A) * S`";
+  let mixed_leaf_switch_source =
+    "const A u16 = 40000\n\
+     const S i32 = -1\n\
+     fn f(y i64) i64 {\n\
+    \  switch y {\n\
+    \    case (A * S) + 1: return 1\n\
+    \    case 2: return 2\n\
+    \  }\n\
+    \  return 0\n\
+     }\n"
+  in
+  semantic_pin "widening-help-mixed-leaf-switch-case" mixed_leaf_switch_source 5
+    (String.length "    case (" + 1)
+    (String.length "A * S")
+    "`A * S` is computed in `i32` and may wrap before it reaches `i64`"
+    (Some "widen an operand first: `zext[i64](A) * S`");
+  conversion_help_twin "widening-help-mixed-leaf-switch-case-compiles"
+    mixed_leaf_switch_source "A * S" "zext[i64](A) * S"
+    "widen an operand first: `zext[i64](A) * S`";
+  let mixed_leaf_generic_source =
+    "fn g[N const i64]() i64 { return N }\n\
+     const A u16 = 40000\n\
+     const S i32 = -1\n\
+     fn f() i64 { return g[(A * S) + 1]() }\n"
+  in
+  semantic_pin "widening-help-mixed-leaf-generic-argument" mixed_leaf_generic_source 4
+    (String.length "fn f() i64 { return g[(" + 1)
+    (String.length "A * S")
+    "`A * S` is computed in `i32` and may wrap before it reaches `i64`"
+    (Some "widen an operand first: `zext[i64](A) * S`");
+  conversion_help_twin "widening-help-mixed-leaf-generic-argument-compiles"
+    mixed_leaf_generic_source "A * S" "zext[i64](A) * S"
+    "widen an operand first: `zext[i64](A) * S`"
+
+let () =
   semantic_accept "const-loop-array-size-and-generic-argument"
     "fn scale[K const usize](x usize) usize { return x * K }\n\
      fn f() usize {\n\

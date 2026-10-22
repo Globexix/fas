@@ -574,9 +574,28 @@ let rec const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = [])
   | _ -> ());
   result
 
+and const_leaf_type ?(structs = []) ?(named_types = []) ?(generic_structs = [])
+    ?(arrays = []) ?(array_lengths = []) ?(globals = []) ?resolve consts expression =
+  match
+    const_expr_inner ~structs ~named_types ~generic_structs ~arrays ~array_lengths
+      ~globals ?resolve consts None ~check_only:true expression
+  with
+  | Ok (ty, _) -> Some ty
+  | Error _ -> (
+      match
+        vector_const_expr_inner ~structs ~named_types ~generic_structs ~arrays
+          ~array_lengths ~globals ?resolve consts None ~check_only:true expression
+      with
+      | Ok (ty, _) -> Some ty
+      | Error _ -> None)
+
 and const_expr_widened ~structs ~named_types ~generic_structs ~arrays ~array_lengths
     ~globals ?resolve consts expected ~check_only ~validate_dead ~allow_widen expression
     =
+  let leaf_type =
+    const_leaf_type ~structs ~named_types ~generic_structs ~arrays ~array_lengths
+      ~globals ?resolve consts
+  in
   let result =
     const_expr_inner ~structs ~named_types ~generic_structs ~arrays ~array_lengths
       ~globals ?resolve consts expected ~check_only ~validate_dead expression
@@ -589,7 +608,8 @@ and const_expr_widened ~structs ~named_types ~generic_structs ~arrays ~array_len
             Ok (target, Sema_types.widen_integer_value kind actual target value)
         | None when scalar_conversion_pair actual target -> (
             match
-              ensure_expected ~expression actual target (Ast.expr_span expression)
+              ensure_expected ~leaf_type ~expression actual target
+                (Ast.expr_span expression)
             with
             | Error diagnostics -> Error diagnostics
             | Ok () -> Ok (actual, value))
@@ -606,6 +626,10 @@ and const_expr_widened ~structs ~named_types ~generic_structs ~arrays ~array_len
 and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
     ?(arrays = []) ?(array_lengths = []) ?(globals = []) ?resolve consts expected
     ?(check_only = false) ?(validate_dead = true) expression =
+  let leaf_type =
+    const_leaf_type ~structs ~named_types ~generic_structs ~arrays ~array_lengths
+      ~globals ?resolve consts
+  in
   match expression with
   | (Ast.C_dereference _ | Ast.C_dot_star _) as expression ->
       Error
@@ -891,16 +915,16 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
             let rewrite_result =
               let* first_ty, middle_ty = check_pair inner first middle in
               let* _ =
-                binary_result_type ~left_expression:first ~right_expression:middle s
-                  inner first_ty middle_ty
+                binary_result_type ~leaf_type ~left_expression:first
+                  ~right_expression:middle s inner first_ty middle_ty
               in
               let* last_ty, _ =
                 const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
                   ~globals ?resolve consts (Some middle_ty) ~check_only:true r
               in
               let* _ =
-                binary_result_type ~left_expression:middle ~right_expression:r s op
-                  middle_ty last_ty
+                binary_result_type ~leaf_type ~left_expression:middle
+                  ~right_expression:r s op middle_ty last_ty
               in
               Ok ()
             in
@@ -908,7 +932,7 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
         | _ -> true
       in
       let* result_ty =
-        binary_result_type ~left_expression:l ~right_expression:r
+        binary_result_type ~leaf_type ~left_expression:l ~right_expression:r
           ?result_expected:expected ~comparison_chain_rewrite_valid s op original_lt
           original_rt
       in
@@ -1028,7 +1052,7 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
             Ok ((left_type, left_value), (right_type, right_value))
         in
         let* result_type, left_widen, right_widen =
-          unify_if_branches a left_type b right_type
+          unify_if_branches ~leaf_type a left_type b right_type
           |> Result.map_error (fun diagnostic -> [ diagnostic ])
         in
         let selected_type, selected_value, selected_widen =
@@ -1054,7 +1078,7 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
               const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
                 ~globals ?resolve consts (Some at) ~check_only:true ~validate_dead b
             in
-            ensure_expected ~expression:b bt at (Ast.expr_span b)
+            ensure_expected ~leaf_type ~expression:b bt at (Ast.expr_span b)
         in
         Ok (at, av)
       else
@@ -1069,7 +1093,7 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
               const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
                 ~globals ?resolve consts (Some bt) ~check_only:true ~validate_dead a
             in
-            ensure_expected ~expression:a at bt (Ast.expr_span a)
+            ensure_expected ~leaf_type ~expression:a at bt (Ast.expr_span a)
         in
         Ok (bt, bv)
   | Ast.Cast (k, dst, e, s) ->
@@ -1484,6 +1508,10 @@ and vector_const_expr ?(structs = []) ?(named_types = []) ?(generic_structs = []
 and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
     ?(arrays = []) ?(array_lengths = []) ?(globals = []) ?resolve consts expected
     ?(check_only = false) expression =
+  let leaf_type =
+    const_leaf_type ~structs ~named_types ~generic_structs ~arrays ~array_lengths
+      ~globals ?resolve consts
+  in
   let lane_type = function Hir.Vec (_, element) -> Some element | _ -> None in
   let lane_mask ty value = mask_value ty value in
   let lane_signed ty value = sign_extend_value ty value in
@@ -1541,7 +1569,7 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
                       ~check_only element
                   in
                   let* () =
-                    ensure_expected ~expression:element actual_ty element_ty
+                    ensure_expected ~leaf_type ~expression:element actual_ty element_ty
                       (Ast.expr_span element)
                   in
                   values (lane_mask element_ty value :: acc) rest
@@ -1557,7 +1585,8 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
               ~globals ?resolve consts (Some element) ~check_only value
           in
           let* () =
-            ensure_expected ~expression actual element (Ast.expr_span expression)
+            ensure_expected ~leaf_type ~expression actual element
+              (Ast.expr_span expression)
           in
           Ok (ty, List.init lanes (fun _ -> lane_mask element value))
       | _ ->
@@ -1654,8 +1683,8 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
             Ok (left_ty, left_values, right_ty, right_values)
       in
       let* result_ty =
-        binary_result_type ~left_expression:left ~right_expression:right span operation
-          left_ty right_ty
+        binary_result_type ~leaf_type ~left_expression:left ~right_expression:right span
+          operation left_ty right_ty
       in
       let* element =
         match lane_type left_ty with
@@ -2116,7 +2145,8 @@ and vector_const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_struct
           if scalar_conversion_pair actual expected then "if-expression branch"
           else "value"
         in
-        ensure_expected ~context ~expression actual expected (Ast.expr_span expression)
+        ensure_expected ~leaf_type ~context ~expression actual expected
+          (Ast.expr_span expression)
       in
       let ensure_target expression actual =
         match expected with
