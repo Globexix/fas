@@ -214,7 +214,7 @@ grep -E -q '^fas perf: measured on CPU [0-9]+, 7 rounds$' keep.err || fail "keep
 grep -E -q '^fas perf: kept the profile \(pgo [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?(, functions aligned to 64)?\) \(measured on one input\)$' keep.err || fail "keep: no kept line: $(cat keep.err)"
 no_tune_temps
 
-FAS_TUNE_TEST_SCALE=pgo=0.01,pgo-def-f64=0.5 tune layout-kept work.fas -o layout-kept.fasprof
+FAS_TUNE_TEST_SCALE=pgo=0.01,pgo-def-f64=0.1 tune layout-kept work.fas -o layout-kept.fasprof
 [ "$status" -eq 0 ] || { cat layout-kept.err >&2; fail "layout-kept run exited $status"; }
 [ "$(sed -n '5,7p' layout-kept.fasprof)" = "$(printf 'choice pgo\nalign-loops def\nalign-functions 64')" ] || fail "layout-kept profile: $(head -n 8 layout-kept.fasprof)"
 check_totals layout-kept.log "$LAYOUT_PLACEMENTS" layout pgo=7
@@ -399,8 +399,8 @@ no_tune_temps
 FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100,default+O3=0.01,default+unroll=2400=0.5,default+unroll=2400+O3=0.001,default+interleave=4=100,default+max-bandwidth=100,default+inline=1000=100 tune options-o3 vec.fas -o options-o3.fasprof
 [ "$status" -eq 0 ] || { cat options-o3.err >&2; fail "options-o3 run exited $status"; }
 [ "$(sed -n '5p;8p' options-o3.fasprof)" = "$(printf 'choice default\noptions unroll=2400 O3')" ] || fail "options-o3 profile: $(head -n 8 options-o3.fasprof)"
-check_totals options-o3.log "$ARENA_PLACEMENTS" 'check select confirm' default=22 pgo=8 native=8 native-pgo=8 default+unroll=600=8 default+unroll=1200=8 default+unroll=2400=8 default+O3=29 default+unroll=2400+O3=15 default+interleave=4=8 default+max-bandwidth=8
-check_rotation options-o3.log select 36 63 18
+check_totals options-o3.log "$ARENA_PLACEMENTS" 'check select confirm' default=22 pgo=8 native=8 native-pgo=8 default+unroll=600=8 default+unroll=1200=8 default+unroll=2400=8 default+O3=29 default+unroll=2400+O3=15 default+interleave=4=8 default+max-bandwidth=8 default+O3+interleave=4=8 default+O3+max-bandwidth=8
+check_rotation options-o3.log select 36 63 36
 check_rotation options-o3.log confirm 18 18
 grep -E -q '^fas perf: kept options O3 \([0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' options-o3.err || fail "options-o3: no first option line: $(cat options-o3.err)"
 grep -E -q '^fas perf: kept options unroll=2400 O3 \([0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' options-o3.err || fail "options-o3: no second option line: $(cat options-o3.err)"
@@ -473,6 +473,163 @@ FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100 tune loopless empty.fas -o
 [ "$(grep -c -x -E 'fas perf: options: default\+(unroll=600|unroll=1200|unroll=2400|unroll=4800|O3|inline=1000|interleave=4|max-bandwidth) builds the same binary as default; not measured' loopless.err)" -eq 8 ] || fail "loopless: option candidates were not all dropped: $(cat loopless.err)"
 grep -E -q '^(check|select|confirm) default\+' loopless.log && fail "loopless: an option candidate was measured"
 [ "$(sed -n '8p' loopless.fasprof)" = options ] || fail "loopless profile line 8: $(sed -n '8p' loopless.fasprof)"
+no_tune_temps
+
+cat >fix4.fas <<'FAS'
+use "C" <stdio.h>
+
+var src arr[1024, u8] = {}
+var other arr[1024, u8] = {}
+var dst arr[1024, u32] = {}
+
+fn fill(n usize) i32 {
+    for i usize = 0; i < n; i += 1 {
+        src[i] = trunc[u8](i * 7 + 3)
+        other[i] = trunc[u8](i * 13 + 5)
+    }
+    return 0
+}
+
+fn blend(n usize) u64 {
+    sum u64 = 0
+    for i usize = 0; i < n; i += 1 {
+        dst[i] = zext[u32](src[i]) * 3 + zext[u32](other[i])
+    }
+    for i usize = 0; i < n; i += 1 {
+        sum += zext[u64](dst[i])
+    }
+    return sum
+}
+
+fn heavy(x u64) u64 {
+    a0 u64 = x * 6364136223846793005 + 1442695040888963407
+    a1 u64 = a0 * 2654435761 + 1
+    a2 u64 = a1 + (a1 << 3)
+    a3 u64 = a2 ^ (a2 >> 6)
+    a4 u64 = a3 * 2654435761 + 4
+    a5 u64 = a4 + (a4 << 6)
+    a6 u64 = a5 ^ (a5 >> 9)
+    a7 u64 = a6 * 2654435761 + 7
+    a8 u64 = a7 + (a7 << 9)
+    a9 u64 = a8 ^ (a8 >> 12)
+    a10 u64 = a9 * 2654435761 + 10
+    a11 u64 = a10 + (a10 << 1)
+    a12 u64 = a11 ^ (a11 >> 15)
+    a13 u64 = a12 * 2654435761 + 13
+    a14 u64 = a13 + (a13 << 4)
+    a15 u64 = a14 ^ (a14 >> 18)
+    a16 u64 = a15 * 2654435761 + 16
+    a17 u64 = a16 + (a16 << 7)
+    a18 u64 = a17 ^ (a17 >> 4)
+    a19 u64 = a18 * 2654435761 + 19
+    a20 u64 = a19 + (a19 << 10)
+    a21 u64 = a20 ^ (a20 >> 7)
+    a22 u64 = a21 * 2654435761 + 22
+    a23 u64 = a22 + (a22 << 2)
+    a24 u64 = a23 ^ (a23 >> 10)
+    a25 u64 = a24 * 2654435761 + 25
+    a26 u64 = a25 + (a25 << 5)
+    a27 u64 = a26 ^ (a26 >> 13)
+    a28 u64 = a27 * 2654435761 + 28
+    a29 u64 = a28 + (a28 << 8)
+    a30 u64 = a29 ^ (a29 >> 16)
+    a31 u64 = a30 * 2654435761 + 31
+    a32 u64 = a31 + (a31 << 11)
+    a33 u64 = a32 ^ (a32 >> 19)
+    a34 u64 = a33 * 2654435761 + 34
+    a35 u64 = a34 + (a34 << 3)
+    a36 u64 = a35 ^ (a35 >> 5)
+    a37 u64 = a36 * 2654435761 + 37
+    a38 u64 = a37 + (a37 << 6)
+    a39 u64 = a38 ^ (a38 >> 8)
+    a40 u64 = a39 * 2654435761 + 40
+    a41 u64 = a40 + (a40 << 9)
+    a42 u64 = a41 ^ (a41 >> 11)
+    a43 u64 = a42 * 2654435761 + 43
+    a44 u64 = a43 + (a43 << 1)
+    a45 u64 = a44 ^ (a44 >> 14)
+    a46 u64 = a45 * 2654435761 + 46
+    a47 u64 = a46 + (a46 << 4)
+    a48 u64 = a47 ^ (a47 >> 17)
+    a49 u64 = a48 * 2654435761 + 49
+    a50 u64 = a49 + (a49 << 7)
+    a51 u64 = a50 ^ (a50 >> 3)
+    a52 u64 = a51 * 2654435761 + 52
+    a53 u64 = a52 + (a52 << 10)
+    a54 u64 = a53 ^ (a53 >> 6)
+    a55 u64 = a54 * 2654435761 + 55
+    a56 u64 = a55 + (a55 << 2)
+    a57 u64 = a56 ^ (a56 >> 9)
+    a58 u64 = a57 * 2654435761 + 58
+    a59 u64 = a58 + (a58 << 5)
+    a60 u64 = a59 ^ (a59 >> 12)
+    a61 u64 = a60 * 2654435761 + 61
+    a62 u64 = a61 + (a61 << 8)
+    a63 u64 = a62 ^ (a62 >> 15)
+    a64 u64 = a63 * 2654435761 + 64
+    a65 u64 = a64 + (a64 << 11)
+    a66 u64 = a65 ^ (a65 >> 18)
+    a67 u64 = a66 * 2654435761 + 67
+    a68 u64 = a67 + (a67 << 3)
+    a69 u64 = a68 ^ (a68 >> 4)
+    a70 u64 = a69 * 2654435761 + 70
+    return a70 ^ x
+}
+
+fn churn(seed u64) u64 {
+    acc u64 = seed
+    for i usize = 0; i < 300; i += 1 {
+        acc = heavy(acc) + zext[u64](dst[i])
+        acc = heavy(acc ^ 5) + zext[u64](dst[i + 1])
+    }
+    return acc
+}
+
+fn main() i32 {
+    if fill(1024) != 0 { return 3 }
+    printed i32 = printf(c"blend %lu\n", blend(1024))
+    if printed <= 0 { return 1 }
+    printed2 i32 = printf(c"churn %lu\n", churn(300) ^ heavy(9))
+    if printed2 <= 0 { return 4 }
+    return 0
+}
+FAS
+
+FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100,default+unroll=2400=0.01,default+unroll=2400+inline=1000=0.005,default+unroll=2400+inline=1000+interleave=4=0.01,default+unroll=2400+inline=1000+max-bandwidth=0.0025,default+unroll=2400+inline=1000+interleave=4+max-bandwidth=0.005 tune options-stages fix4.fas -o options-stages.fasprof
+[ "$status" -eq 0 ] || { cat options-stages.err >&2; fail "options-stages run exited $status"; }
+[ "$(sed -n '5p;8p' options-stages.fasprof)" = "$(printf 'choice default\noptions unroll=2400 inline=1000 max-bandwidth')" ] || fail "options-stages profile: $(head -n 8 options-stages.fasprof)"
+grep -q -x -F 'fas perf: options: default+unroll=2400+O3+inline=1000 builds the same binary as default+unroll=2400+inline=1000; not measured' options-stages.err || fail "options-stages: no stage 3 O3 line: $(cat options-stages.err)"
+grep -q -x -F 'fas perf: options: default+unroll=2400+O3+inline=1000+max-bandwidth builds the same binary as default+unroll=2400+inline=1000+max-bandwidth; not measured' options-stages.err || fail "options-stages: no stage 4 O3 line: $(cat options-stages.err)"
+[ "$(grep -c -E '^fas perf: kept options ' options-stages.err)" -eq 3 ] || fail "options-stages: expected three kept option stages: $(cat options-stages.err)"
+grep -E -q '^fas perf: kept options unroll=2400 \([0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' options-stages.err || fail "options-stages: no first option line: $(cat options-stages.err)"
+grep -E -q '^fas perf: kept options unroll=2400 inline=1000 \([0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' options-stages.err || fail "options-stages: no second option line: $(cat options-stages.err)"
+grep -E -q '^fas perf: kept options unroll=2400 inline=1000 max-bandwidth \([0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' options-stages.err || fail "options-stages: no third option line: $(cat options-stages.err)"
+grep -E -q '^fas perf: kept no more options \(best interleave=4 [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%\) \(measured on one input\)$' options-stages.err || fail "options-stages: no last option line: $(cat options-stages.err)"
+grep -E -q '^fas perf: kept the profile \(default [0-9]+\.[0-9]{3}×, band [0-9]+\.[0-9]%(, loops aligned to (32|64))?(, functions aligned to 64)?, options unroll=2400 inline=1000 max-bandwidth\) \(measured on one input\)$' options-stages.err || fail "options-stages: no kept line: $(cat options-stages.err)"
+no_tune_temps
+
+FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100,default+unroll=2400=2,default+unroll=4800=2,default+O3=2,default+inline=1000=2,default+interleave=4=2,default+max-bandwidth=2 tune options-none fix4.fas -o options-none.fasprof
+[ "$status" -eq 0 ] || { cat options-none.err >&2; fail "options-none run exited $status"; }
+[ "$(sed -n '5p;8p' options-none.fasprof)" = "$(printf 'choice default\noptions')" ] || fail "options-none profile: $(head -n 8 options-none.fasprof)"
+[ "$(grep -c -E '^fas perf: kept no options \(best [^)]*\)' options-none.err)" -eq 1 ] || fail "options-none: no single first stage line: $(cat options-none.err)"
+[ "$(grep -c -E '^fas perf: kept (no )?(more )?options ' options-none.err)" -eq 1 ] || fail "options-none: an option stage ran after nothing was kept: $(cat options-none.err)"
+grep -E -q '^(select|confirm) default\+(unroll|O3|inline|interleave|max-bandwidth)' options-none.log || fail "options-none: no option candidate was measured"
+no_tune_temps
+
+FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100,default+inline=1000=0.01,default+unroll=2400=2,default+unroll=4800=2,default+O3=2,default+interleave=4=2,default+max-bandwidth=2,default+unroll=2400+inline=1000=0.02,default+unroll=4800+inline=1000=0.02,default+O3+inline=1000=0.02,default+inline=1000+interleave=4=0.02,default+inline=1000+max-bandwidth=0.02 tune options-inline fix4.fas -o options-inline.fasprof
+[ "$status" -eq 0 ] || { cat options-inline.err >&2; fail "options-inline run exited $status"; }
+[ "$(sed -n '5p;8p' options-inline.fasprof)" = "$(printf 'choice default\noptions inline=1000')" ] || fail "options-inline profile: $(head -n 8 options-inline.fasprof)"
+[ "$(grep -c -E '^fas perf: kept options inline=1000 \(' options-inline.err)" -eq 1 ] || fail "options-inline: no first option line: $(cat options-inline.err)"
+[ "$(grep -c -E '^fas perf: kept no more options \(best [^)]*\)' options-inline.err)" -eq 1 ] || fail "options-inline: no stopping line: $(cat options-inline.err)"
+[ "$(grep -c -E '^fas perf: kept (no )?(more )?options ' options-inline.err)" -eq 2 ] || fail "options-inline: an option stage ran after the stop: $(cat options-inline.err)"
+no_tune_temps
+
+FAS_TUNE_TEST_SCALE=pgo=100,native=100,native-pgo=100,default+unroll=2400=0.01,default+unroll=2400+inline=1000=0.005,default+unroll=2400+inline=1000@with=1 tune options-held-stop fix4.fas -o options-held-stop.fasprof -- first --check-with -- second
+[ "$status" -eq 0 ] || { cat options-held-stop.err >&2; fail "options-held-stop run exited $status"; }
+[ "$(sed -n '5p;8p' options-held-stop.fasprof)" = "$(printf 'choice default\noptions unroll=2400')" ] || fail "options-held-stop profile: $(head -n 8 options-held-stop.fasprof)"
+[ "$(grep -c -E '^fas perf: kept options ' options-held-stop.err)" -eq 1 ] || fail "options-held-stop: expected one kept option stage: $(cat options-held-stop.err)"
+[ "$(grep -c -E '^fas perf: kept no more options \(best ' options-held-stop.err)" -eq 1 ] || fail "options-held-stop: no stopping line: $(cat options-held-stop.err)"
+grep -q -F 'fas perf: kept options unroll=2400 inline=1000 ' options-held-stop.err && fail "options-held-stop: the second-input rejection was kept: $(cat options-held-stop.err)"
 no_tune_temps
 
 FAS_TUNE_TEST_SCALE=pgo=0.01 tune held args.fas -o held.fasprof -- first --check-with -- second

@@ -531,14 +531,18 @@ let announce ~input ~cpu ~trained ~candidates ~placements ~layout_placements ~se
     + if second then (fresh * placements) + confirmation else 0
   in
   let stage1 = List.length Driver.tune_option_names in
+  let kinds = List.length Driver.tune_option_kinds in
+  let later = List.init (kinds - 1) (fun i -> kinds - 1 - i) in
   let options =
     option_stage ~fresh:stage1 ~measured:(stage1 + 1)
-    + option_stage ~fresh:1 ~measured:2
+    + List.fold_left
+        (fun total c -> total + option_stage ~fresh:c ~measured:(c + 1))
+        0 later
   in
   let layout_runs = layout_placements * rounds in
   let runs = trained + 2 + selection + confirmation + held + options + layout_runs in
   let builds = candidates * List.length layouts in
-  let option_builds = (stage1 + 1) * List.length layouts in
+  let option_builds = (stage1 + List.fold_left ( + ) 0 later) * List.length layouts in
   let others = List.filter (( <> ) cpu) (siblings cpu) in
   Printf.eprintf "fas perf: tuning %s for this machine\n" input;
   Printf.eprintf
@@ -551,7 +555,7 @@ let announce ~input ~cpu ~trained ~candidates ~placements ~layout_placements ~se
       "  second input: 2 reference, %d checks (%d builds x %d placements), %d \
        confirmation (2 x %d x %d)\n"
       (candidates * placements) candidates placements confirmation placements rounds;
-  Printf.eprintf "  options: up to %d more runs (both option stages, up to %d builds)\n"
+  Printf.eprintf "  options: up to %d more runs (all option stages, up to %d builds)\n"
     options option_builds;
   Printf.eprintf
     "  layout: %d runs (%d placements x %d), %d builds with align-functions 64\n"
@@ -877,6 +881,9 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
   in
   let derive options =
     let b = get base in
+    let options =
+      List.filter (fun name -> List.mem name options) Driver.tune_option_names
+    in
     add
       ~name:(String.concat "+" (b.name :: options))
       ~choice:b.choice ~counts:b.counts ~options
@@ -904,40 +911,55 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
   let option_round head kept =
     match kept with [] -> None | _ -> stage (head :: kept) kept
   in
-  let unroll_only index =
-    match (get index).options with [ name ] -> Driver.is_unroll_name name | _ -> false
-  in
-  let best_unroll (o : outcome) kept =
-    let baseline = o.select base in
-    List.fold_left
-      (fun best index ->
-        if not (unroll_only index) then best
-        else
-          let geomean =
-            (Tune_decide.compare ~tests:(Array.length placements) ~rounds ~baseline
-               ~candidate:(o.select index))
-              .geomean
-          in
-          match best with
-          | Some (_, best_geomean) when best_geomean >= geomean -> best
-          | _ -> Some (index, geomean))
-      None kept
-    |> Option.map fst
-  in
   let fresh = List.map (fun option -> derive [ option ]) Driver.tune_option_names in
   let kept1 = distinct_builds base fresh in
   let option_stage1 = option_round base kept1 in
-  let option_stage2 =
-    Option.bind (winner option_stage1) (fun (o : outcome) ->
-        match (get o.challenger).options with
-        | [ name ] when Driver.is_unroll_name name ->
-            option_round o.challenger
-              (distinct_builds o.challenger [ derive [ name; "O3" ] ])
-        | _ ->
-            Option.bind (best_unroll o kept1) (fun unroll ->
-                let name = List.hd (get unroll).options in
-                option_round o.challenger
-                  (distinct_builds o.challenger [ derive [ name; "O3" ] ])))
+  let kind_name (first : outcome) (kind, names) =
+    match names with
+    | [ name ] -> Some name
+    | _ ->
+        let baseline = first.select base in
+        List.fold_left
+          (fun best index ->
+            match (get index).options with
+            | [ name ] when Driver.option_kind name = Some kind -> (
+                let geomean =
+                  (Tune_decide.compare ~tests:(Array.length placements) ~rounds
+                     ~baseline ~candidate:(first.select index))
+                    .geomean
+                in
+                match best with
+                | Some (_, best_geomean) when best_geomean >= geomean -> best
+                | _ -> Some (name, geomean))
+            | _ -> best)
+          None kept1
+        |> Option.map fst
+  in
+  let next_names set first =
+    List.filter_map
+      (fun (kind, names) ->
+        if List.exists (fun name -> Driver.option_kind name = Some kind) set then None
+        else kind_name first (kind, names))
+      Driver.tune_option_kinds
+  in
+  let rec option_stages first (previous : outcome) =
+    if not (kept_by_selection previous) then []
+    else
+      let set = (get previous.challenger).options in
+      let candidates =
+        List.map (fun name -> derive (set @ [ name ])) (next_names set first)
+      in
+      match
+        option_round previous.challenger
+          (distinct_builds previous.challenger candidates)
+      with
+      | None -> []
+      | Some o -> o :: option_stages first o
+  in
+  let option_runs =
+    match option_stage1 with
+    | None -> []
+    | Some first -> first :: option_stages first first
   in
   if !wall_metric then
     prerr_endline "fas perf: cycle counters are not available; measured wall time";
@@ -985,17 +1007,14 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
         suffix
   in
   Option.iter table choice;
-  Option.iter
-    (fun o ->
+  List.iteri
+    (fun i (o : outcome) ->
       table o;
-      option_line ~more:false o)
-    option_stage1;
-  Option.iter
-    (fun o ->
-      table o;
-      option_line ~more:true o)
-    option_stage2;
-  let kept_stages = List.filter_map winner [ choice; option_stage1; option_stage2 ] in
+      option_line ~more:(i > 0) o)
+    option_runs;
+  let kept_stages =
+    List.filter_map winner (choice :: List.map Option.some option_runs)
+  in
   let final = match List.rev kept_stages with last :: _ -> Some last | [] -> None in
   let ratio =
     List.fold_left (fun acc (o : outcome) -> acc *. o.comparison.geomean) 1. kept_stages
