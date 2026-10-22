@@ -71,7 +71,9 @@ type choice = Default | Pgo | Native | Native_pgo
 
 val choice_name : choice -> string
 val align_loops_name : int option -> string
+val tune_option_kinds : (string * string list) list
 val tune_option_names : string list
+val option_kind : string -> string option
 val is_unroll_name : string -> bool
 val llc_host_cpu : unit -> string
 val tune_header : unit -> string list

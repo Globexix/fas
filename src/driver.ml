@@ -1001,24 +1001,51 @@ let render_ir ?(redirect = Fun.id) ?(sanitize_address = false) ?target ~debug_in
 let unroll_values = [ 600; 1200; 2400; 4800 ]
 let unroll_name value = "unroll=" ^ string_of_int value
 
+let tune_option_kinds =
+  [
+    ("unroll", List.map unroll_name unroll_values);
+    ("O3", [ "O3" ]);
+    ("inline", [ "inline=1000" ]);
+    ("interleave", [ "interleave=4" ]);
+    ("max-bandwidth", [ "max-bandwidth" ]);
+  ]
+
+let tune_option_names = List.concat_map snd tune_option_kinds
+
+let option_kind name =
+  List.find_map
+    (fun (kind, names) -> if List.mem name names then Some kind else None)
+    tune_option_kinds
+
+let is_unroll_name name = option_kind name = Some "unroll"
+
+let option_value name =
+  match String.index_opt name '=' with
+  | Some index -> String.sub name (index + 1) (String.length name - index - 1)
+  | None -> ""
+
+let tune_opt_flag name =
+  match option_kind name with
+  | Some "unroll" -> [ "-unroll-threshold=" ^ option_value name ]
+  | Some "inline" -> [ "-inline-threshold=" ^ option_value name ]
+  | Some "interleave" -> [ "-force-vector-interleave=" ^ option_value name ]
+  | Some "max-bandwidth" -> [ "-vectorizer-maximize-bandwidth" ]
+  | Some _ | None -> []
+
+let tune_opt_flags config =
+  if optimization_level config.Cli.optimization > 0 then
+    List.concat_map
+      (fun name ->
+        if List.mem name config.Cli.tune_options then tune_opt_flag name else [])
+      tune_option_names
+  else []
+
 let tune_enabled config name =
   optimization_level config.Cli.optimization > 0
   && List.mem name config.Cli.tune_options
 
 let effective_level config =
   if tune_enabled config "O3" then 3 else config.Cli.optimization
-
-let unroll_threshold config =
-  if optimization_level config.Cli.optimization > 0 then
-    List.find_opt
-      (fun value -> List.mem (unroll_name value) config.Cli.tune_options)
-      unroll_values
-  else None
-
-let unroll_option config =
-  match unroll_threshold config with
-  | Some value -> [ "-unroll-threshold=" ^ string_of_int value ]
-  | None -> []
 
 let opt_pass config =
   let configured =
@@ -1061,7 +1088,6 @@ type profile_header = {
 }
 
 let profile_format = "fas profile 3"
-let tune_option_names = List.map unroll_name unroll_values @ [ "O3" ]
 let profile_error message = Error [ Diag.error Span.synthetic message ]
 
 let choice_name = function
@@ -1149,7 +1175,10 @@ let or_list = function
       let reversed = List.rev names in
       String.concat ", " (List.rev (List.tl reversed)) ^ " or " ^ List.hd reversed
 
-let is_unroll_name name = String.starts_with ~prefix:"unroll=" name
+let kind_repeat seen name =
+  Option.bind (option_kind name) (fun kind ->
+      if List.exists (fun other -> option_kind other = Some kind) seen then Some kind
+      else None)
 
 let profile_options path line =
   let expected =
@@ -1176,9 +1205,12 @@ let profile_options path line =
         | name :: _ when List.mem name seen ->
             profile_error
               (Printf.sprintf "profile `%s` repeats the option `%s`" path name)
-        | name :: _ when is_unroll_name name && List.exists is_unroll_name seen ->
-            profile_error (Printf.sprintf "profile `%s` has two unroll values" path)
-        | name :: rest -> check (name :: seen) rest
+        | name :: rest -> (
+            match kind_repeat seen name with
+            | Some kind ->
+                profile_error
+                  (Printf.sprintf "profile `%s` has two %s values" path kind)
+            | None -> check (name :: seen) rest)
       in
       check [] names
 
@@ -1430,11 +1462,16 @@ let report_kept config pgo paths opt llc cc =
       match pgo with Some (Use p) -> p.temp_paths | Some Instrument | None -> []
     in
     prerr_endline ("fas: kept intermediates: " ^ String.concat ", " (paths @ temps));
+    let tune_flags =
+      match tune_opt_flags config with
+      | [] -> ""
+      | flags -> "; opt flags " ^ String.concat " " flags
+    in
     prerr_endline
       (Printf.sprintf
-         "fas: tools FAS_OPT=%s FAS_LLC=%s FAS_CC=%s FAS_PROFDATA=%s; opt passes=%s; \
+         "fas: tools FAS_OPT=%s FAS_LLC=%s FAS_CC=%s FAS_PROFDATA=%s; opt passes=%s%s; \
           verify before and after opt; llc %s"
-         opt llc cc (profdata ()) (pass_report config)
+         opt llc cc (profdata ()) (pass_report config) tune_flags
          (llc_opt (effective_level config))))
 
 let with_debug_c_inputs ~enabled ~pgo_flags config cc f =
@@ -1531,7 +1568,7 @@ let optimize_module ?remarks ~pgo config opt ll_path opt_path =
     run_tool opt
       (Array.of_list
          ([ opt; "-passes=" ^ opt_pass config ]
-         @ unroll_option config @ target_cpu_option config @ remark_option remarks
+         @ tune_opt_flags config @ target_cpu_option config @ remark_option remarks
          @ address_scope_option @ pgo_opt_flags config pgo
          @ [ ll_path; "-S"; "-o"; opt_path ]))
   in

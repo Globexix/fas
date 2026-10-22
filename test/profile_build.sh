@@ -434,6 +434,32 @@ grep -q -F -e 'default<O0>' opt.log || fail "-O0 with options O3 did not run opt
 grep -q -F -e 'default<O3>' opt.log && fail "-O0 with options O3 ran the O3 pipeline"
 grep -q -F -e 'unroll-threshold' opt.log && fail "-O0 with options unroll passed the unroll threshold"
 
+profile3 options4.fasprof "$HOST_CPU" 'choice default' 'align-loops def' 'align-functions def' 'options unroll=1200 inline=1000 interleave=4 max-bandwidth' "$MEASURED"
+profile3 options4-reversed.fasprof "$HOST_CPU" 'choice default' 'align-loops def' 'align-functions def' 'options max-bandwidth interleave=4 inline=1000 unroll=1200' "$MEASURED"
+profile3 inline-only.fasprof "$HOST_CPU" 'choice default' 'align-loops def' 'align-functions def' 'options inline=1000' "$MEASURED"
+four_flags='-unroll-threshold=1200 -inline-threshold=1000 -force-vector-interleave=4 -vectorizer-maximize-bandwidth'
+
+: >opt.log
+FAS_OPT="$WORK/opt-log.sh" "$OCAML_FAS" -c --profile options4.fasprof main.fas -o opt-options4.o
+grep -q -F -e "$four_flags" opt.log || fail "four options did not reach opt in table order: $(cat opt.log)"
+fas_build options4.bin --profile options4.fasprof main.fas prof_link.c
+run_program options4.bin 250
+fas_build options4.o -c --profile options4.fasprof main.fas
+: >opt.log
+FAS_OPT="$WORK/opt-log.sh" "$OCAML_FAS" -c --profile options4-reversed.fasprof main.fas -o opt-options4-reversed.o
+grep -q -F -e "$four_flags" opt.log || fail "reversed options did not reach opt in table order: $(cat opt.log)"
+fas_build options4-reversed.o -c --profile options4-reversed.fasprof main.fas
+cmp options4.o options4-reversed.o || fail "the listing order of the options changed the object"
+
+: >opt.log
+FAS_OPT="$WORK/opt-log.sh" "$OCAML_FAS" -c --profile inline-only.fasprof main.fas -o opt-inline-only.o
+grep -q -F -e '-inline-threshold=1000' opt.log || fail "options inline did not reach opt: $(cat opt.log)"
+grep -q -F -e '-force-vector-interleave' opt.log && fail "options inline passed an interleave count"
+: >opt.log
+FAS_OPT="$WORK/opt-log.sh" "$OCAML_FAS" -c -O0 --profile inline-only.fasprof main.fas -o opt-inline-o0.o
+grep -q -F -e 'default<O0>' opt.log || fail "-O0 with options inline did not run opt at O0: $(cat opt.log)"
+grep -q -F -e '-inline-threshold' opt.log && fail "-O0 with options inline passed the inline threshold"
+
 "$OCAML_FAS" --profile main.fasprof --keep main.fas prof_link.c -o keep.bin >keep.bin.out 2>keep.bin.err || fail "--keep profile build failed: $(cat keep.bin.err)"
 kept=$(grep '^fas: kept intermediates:' keep.bin.err) || fail "--keep printed no intermediates line"
 case "$kept" in
@@ -448,5 +474,11 @@ grep -q -F -e "FAS_PROFDATA=$PROFDATA;" keep.bin.err || fail "--keep does not re
 for kept_temp in "$TMPDIR"/fas-profile-*.proftext "$TMPDIR"/fas-profile-*.profdata; do
   [ -f "$kept_temp" ] || fail "--keep did not keep $kept_temp"
 done
+
+: >opt.log
+FAS_OPT="$WORK/opt-log.sh" "$OCAML_FAS" --keep --profile options4.fasprof main.fas prof_link.c -o options4-keep.bin >options4-keep.out 2>options4-keep.err || fail "--keep build with four options failed: $(cat options4-keep.err)"
+grep -q -F -e 'fas: kept intermediates:' options4-keep.err || fail "--keep printed no intermediates line for the four options"
+grep -q -F -e "$four_flags" opt.log || fail "--keep four options did not reach opt in table order: $(cat opt.log)"
+grep -q -F -e "opt flags $four_flags" options4-keep.err || fail "--keep report did not list the four opt flags in table order: $(cat options4-keep.err)"
 
 echo "profile_build: passed"

@@ -3844,7 +3844,7 @@ let () =
          counts\n";
       profile_rejection "profile-no-options" profile_file
         "line 8 must be `options [unroll=600] [unroll=1200] [unroll=2400] \
-         [unroll=4800] [O3]`";
+         [unroll=4800] [O3] [inline=1000] [interleave=4] [max-bandwidth]`";
       write profile_file
         "fas profile 3\n\
          fas 0.5.2\n\
@@ -3858,7 +3858,7 @@ let () =
          counts\n";
       profile_rejection "profile-unknown-option" profile_file
         "has an unknown option `fast`; expected unroll=600, unroll=1200, unroll=2400, \
-         unroll=4800 or O3";
+         unroll=4800, O3, inline=1000, interleave=4 or max-bandwidth";
       write profile_file
         "fas profile 3\n\
          fas 0.5.2\n\
@@ -3872,6 +3872,19 @@ let () =
          counts\n";
       profile_rejection "profile-repeated-option" profile_file
         "repeats the option `unroll=1200`";
+      write profile_file
+        "fas profile 3\n\
+         fas 0.5.2\n\
+         llvm x\n\
+         cpu x\n\
+         choice pgo\n\
+         align-loops def\n\
+         align-functions def\n\
+         options inline=1000 inline=1000\n\
+         measured 1\n\
+         counts\n";
+      profile_rejection "profile-repeated-inline" profile_file
+        "repeats the option `inline=1000`";
       write profile_file
         "fas profile 3\n\
          fas 0.5.2\n\
@@ -3897,7 +3910,7 @@ let () =
          counts\n";
       profile_rejection "profile-bare-unroll" profile_file
         "has an unknown option `unroll`; expected unroll=600, unroll=1200, \
-         unroll=2400, unroll=4800 or O3";
+         unroll=2400, unroll=4800, O3, inline=1000, interleave=4 or max-bandwidth";
       write profile_file
         "fas profile 3\n\
          fas 0.5.2\n\
@@ -3911,7 +3924,7 @@ let () =
          counts\n";
       profile_rejection "profile-unknown-unroll-value" profile_file
         "has an unknown option `unroll=3`; expected unroll=600, unroll=1200, \
-         unroll=2400, unroll=4800 or O3";
+         unroll=2400, unroll=4800, O3, inline=1000, interleave=4 or max-bandwidth";
       write profile_file
         "fas profile 3\n\
          fas 0.5.2\n\
