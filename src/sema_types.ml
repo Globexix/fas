@@ -955,6 +955,27 @@ let integer_literal_value = function
         (Result.to_option (Sema_numeric.parse_integer raw))
   | _ -> None
 
+let integer_literal_error span ty ~negative ~text ~magnitude =
+  match ty with
+  | Hir.Float _ ->
+      Diag.error
+        ~help:(Printf.sprintf "write `%s.0`" text)
+        span "integer literals are not floating point literals"
+  | Hir.Bool ->
+      Diag.error span "integer literal is not a `bool`; write `true` or `false`"
+  | _ ->
+      let help =
+        if negative && Sema_numeric.is_unsigned ty && magnitude = 1L then
+          Some
+            (Printf.sprintf
+               "an unsigned type has no negative values; write 0x%LX for all ones"
+               (Sema_numeric.literal_limit ~negative:false ty))
+        else None
+      in
+      Diag.error ?help span
+        (Printf.sprintf "integer literal is out of range for %s: `%s`"
+           (diagnostic_ty_name ty) text)
+
 let integer_literal_vector_argument_error name expression expected =
   match (integer_literal_value expression, expected) with
   | Some (negative, magnitude), Hir.Vec (_, (Hir.Int _ as element))
@@ -967,6 +988,11 @@ let integer_literal_vector_argument_error name expression expected =
            (Ast.expr_span expression)
            (Printf.sprintf "argument 2 of `%s` is an integer literal, expected `%s`"
               name (diagnostic_ty_name expected)))
+  | Some (true, magnitude), Hir.Vec (_, (Hir.Int _ as element))
+    when Sema_numeric.is_unsigned element && magnitude <> 0L ->
+      Some
+        (integer_literal_error (Ast.expr_span expression) element ~negative:true
+           ~text:(Ast.expr_name expression) ~magnitude)
   | _ -> None
 
 let integer_maximum ty =

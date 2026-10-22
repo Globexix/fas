@@ -218,13 +218,12 @@ let literal_limit ~negative = function
 let fits_literal ty value =
   match ty with
   | Hir.Int _ -> Int64.unsigned_compare value (literal_limit ~negative:false ty) <= 0
-  | Hir.Bool -> value = 0L || value = 1L
   | _ -> false
 
 let fits_negative_literal ty value =
   match ty with
+  | Hir.Int _ when is_unsigned ty -> value = 0L
   | Hir.Int _ -> Int64.unsigned_compare value (literal_limit ~negative:true ty) <= 0
-  | Hir.Bool -> value = 0L || value = 1L
   | _ -> false
 
 let sign_extend_bits ty value =

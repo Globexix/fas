@@ -6191,7 +6191,7 @@ let () =
        }\n\
        fn byte[N const u8]() i32 { return zext[i32](N) }\n\
        fn main() i32 {\n\
-      \ return choose[true]() + choose[false]() + choose[1]() + choose[Enabled]() \
+      \ return choose[true]() + choose[false]() + choose[Enabled]() \
        +choose[trunc[bool](3)]() + byte[zext[u8](true)]()\n\
        }\n"
   in
@@ -6211,7 +6211,7 @@ let () =
      fn choose[Flag const bool]() i32 { if Flag { return 1 } else { return 0 } }\n\
      fn main() i32 { return choose[One]() }\n";
   semantic_error "const-param-bool-literal-range"
-    "integer literal is out of range for bool"
+    "integer literal is not a `bool`; write `true` or `false`"
     "fn choose[Flag const bool]() i32 { if Flag { return 1 } else { return 0 } }\n\
      fn main() i32 { return choose[2]() }\n";
   semantic_error "const-param-integer-bool-value"
@@ -8259,7 +8259,7 @@ let () =
          (source
             "struct Tagged[Flag const bool] { value u8 }\n\
              fn test() usize {\n\
-            \ return sizeof[Tagged[true]] + sizeof[Tagged[false]] +sizeof[Tagged[1]] + \
+            \ return sizeof[Tagged[true]] + sizeof[Tagged[false]] + \
              sizeof[Tagged[trunc[bool](3)]]\n\
              }\n"))
     |> Sema.check |> expect_ok
@@ -20194,7 +20194,7 @@ let () =
      }\n";
   all_errors_pin "const-loop-independent-error-once"
     "fn f() void {\n  for const i u32 in 0..4 {\n    x u32 = 1 + true\n  }\n}\n"
-    [ (3, "operator `+` needs integer or integer vector operands, got `bool`") ];
+    [ (3, "integer literal is not a `bool`; write `true` or `false`") ];
   semantic_pin "const-loop-shadows-local"
     "fn f() void {\n  i u32 = 0\n  for const i u32 in 0..2 { }\n}\n" 3 3 3
     "`for const` index `i` shadows a local of the same name" None;
@@ -20246,6 +20246,60 @@ let () =
   | Ok _ -> failwith "const-loop-node-budget: expected rejection");
   semantic_message "const-loop-index-scope" "unknown name `i`"
     "fn f() u8 {\n  for const i u8 in 0..2 { }\n  return i\n}\n"
+
+let () =
+  let literal_render name source expected =
+    incr checks_run;
+    let rendered = semantic_render source in
+    if rendered <> expected then failwith (name ^ ": " ^ rendered)
+  in
+  let unsigned_help digits =
+    "an unsigned type has no negative values; write " ^ digits ^ " for all ones"
+  in
+  let not_bool = "integer literal is not a `bool`; write `true` or `false`" in
+  literal_render "literal-unsigned-negative-one-u32"
+    "fn f() u32 { x u32 = -1\n return x }\n"
+    (expected_diagnostic "fn f() u32 { x u32 = -1" 22 1
+       "integer literal is out of range for u32: `-1`" (unsigned_help "0xFFFFFFFF"));
+  literal_render "literal-unsigned-negative-255-u8"
+    "fn f() u8 { x u8 = -255\n return x }\n"
+    (expected_diagnostic_without_help "fn f() u8 { x u8 = -255" 20 1
+       "integer literal is out of range for u8: `-255`");
+  literal_render "literal-const-unsigned-negative-one-u64"
+    "const X u64 = -1\nfn f() u64 { return 0 }\n"
+    (expected_diagnostic "const X u64 = -1" 15 1
+       "integer literal is out of range for u64: `-1`"
+       (unsigned_help "0xFFFFFFFFFFFFFFFF"));
+  let generic_call =
+    "fn f[T](v T) T { return v }\n\
+     fn g() u32 { return f[u32](-1) }\n\
+     fn main() i32 { return 0 }\n"
+  in
+  literal_render "literal-generic-argument-unsigned-negative-one" generic_call
+    (expected_diagnostic "fn g() u32 { return f[u32](-1) }"
+       (String.index "fn g() u32 { return f[u32](-1) }" '-' + 1)
+       ~line_number:2 1 "integer literal is out of range for u32: `-1`"
+       (unsigned_help "0xFFFFFFFF"));
+  literal_render "literal-vector-lane-unsigned-negative-one"
+    "fn f() vec[4,u32] { v vec[4,u32] = {-1, 0, 0, 0}\n return v }\n"
+    (expected_diagnostic "fn f() vec[4,u32] { v vec[4,u32] = {-1, 0, 0, 0}" 37 1
+       "integer literal is out of range for u32: `-1`" (unsigned_help "0xFFFFFFFF"));
+  literal_render "literal-bool-one" "fn f() bool { b bool = 1\n return b }\n"
+    (expected_diagnostic_without_help "fn f() bool { b bool = 1" 24 1 not_bool);
+  literal_render "literal-bool-zero" "fn f() bool { b bool = 0\n return b }\n"
+    (expected_diagnostic_without_help "fn f() bool { b bool = 0" 24 1 not_bool);
+  literal_render "literal-bool-vector-lane"
+    "fn f() vec[4,bool] { v vec[4,bool] = {1, 0, 0, 0}\n return v }\n"
+    (expected_diagnostic_without_help
+       "fn f() vec[4,bool] { v vec[4,bool] = {1, 0, 0, 0}" 39 1 not_bool);
+  literal_render "literal-const-bool-one" "const B bool = 1\nfn f() i32 { return 0 }\n"
+    (expected_diagnostic_without_help "const B bool = 1" 16 1 not_bool);
+  semantic_accept "literal-unsigned-negative-zero"
+    "fn f() u32 { x u32 = -0\n return x }\n";
+  semantic_accept "literal-signed-negative-min" "fn f() i8 { x i8 = -128\n return x }\n";
+  semantic_accept "literal-signed-negative-one" "fn f() i32 { x i32 = -1\n return x }\n";
+  semantic_accept "literal-bitcast-negative-one"
+    "fn f() u32 { return bitcast[u32](-1) }\n"
 
 let replay_unmatched_bound = 30
 

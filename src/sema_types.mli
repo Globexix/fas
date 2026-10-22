@@ -120,6 +120,9 @@ val constant_array_element_type_message : Hir.ty -> Hir.ty -> string
 val cast_error :
   ?expression:Ast.expr -> Ast.cast_kind -> Hir.ty -> Hir.ty -> Span.t -> Diag.t
 
+val integer_literal_error :
+  Span.t -> Hir.ty -> negative:bool -> text:string -> magnitude:int64 -> Diag.t
+
 val integer_literal_vector_argument_error :
   string -> Ast.expr -> Hir.ty -> Diag.t option
 

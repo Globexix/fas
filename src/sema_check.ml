@@ -1992,15 +1992,12 @@ and check_expr_inner ?destination (c : context) expected expression =
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
-      if match ty with Hir.Float _ -> true | _ -> false then
-        error
-          ~help:(Printf.sprintf "write `%s.0`" raw)
-          s "integer literals are not floating point literals"
-      else if not (fits_literal ty v) then
-        error s
-          (Printf.sprintf "integer literal is out of range for %s: `%s`" (ty_name ty)
-             raw)
-      else Ok (Hir.EInt (mask_value ty v, ty, s))
+      if fits_literal ty v then Ok (Hir.EInt (mask_value ty v, ty, s))
+      else
+        Error
+          [
+            Sema_types.integer_literal_error s ty ~negative:false ~text:raw ~magnitude:v;
+          ]
   | Ast.Float_lit (raw, s) -> (
       let ty = Option.value ~default:(Hir.Float Hir.F64) expected in
       match ty with
@@ -2083,14 +2080,12 @@ and check_expr_inner ?destination (c : context) expected expression =
       in
       if fits_negative_literal t v || allowed then
         Ok (Hir.EInt (mask_value t (Int64.neg v), t, s))
-      else if match t with Hir.Float _ -> true | _ -> false then
-        error
-          ~help:(Printf.sprintf "write `-%s.0`" raw)
-          s "integer literals are not floating point literals"
       else
-        error s
-          (Printf.sprintf "integer literal is out of range for %s: `-%s`" (ty_name t)
-             raw)
+        Error
+          [
+            Sema_types.integer_literal_error s t ~negative:true ~text:("-" ^ raw)
+              ~magnitude:v;
+          ]
   | Ast.Unary (op, e, s) -> (
       let* te =
         check_expr ~allow_widen:false c
@@ -5765,8 +5760,7 @@ and check_stmt (c : context) = function
                           ]
                       | _ -> [ diagnostic ])
                   | [ diagnostic ]
-                    when String.starts_with
-                           ~prefix:"integer literal is out of range for "
+                    when String.starts_with ~prefix:"integer literal is "
                            diagnostic.Diag.message
                          || String.starts_with ~prefix:"`" diagnostic.Diag.message ->
                       [ diagnostic ]

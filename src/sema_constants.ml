@@ -642,18 +642,12 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
   | Ast.Int_lit (raw, s) ->
       let* v = parse_integer raw |> Result.map_error (fun m -> [ Diag.error s m ]) in
       let ty = Option.value ~default:(Hir.Int Hir.I32) expected in
-      if match ty with Hir.Float _ -> true | _ -> false then
+      if fits_literal ty v then Ok (ty, mask_value ty v)
+      else
         Error
           [
-            Diag.error
-              ~help:(Printf.sprintf "write `%s.0`" raw)
-              s "integer literals are not floating point literals";
+            Sema_types.integer_literal_error s ty ~negative:false ~text:raw ~magnitude:v;
           ]
-      else if not (fits_literal ty v) then
-        error s
-          (Printf.sprintf "integer literal is out of range for %s: `%s`" (ty_name ty)
-             raw)
-      else Ok (ty, mask_value ty v)
   | Ast.Float_lit (raw, s) -> (
       let ty = Option.value ~default:(Hir.Float Hir.F64) expected in
       match ty with
@@ -713,17 +707,12 @@ and const_expr_inner ?(structs = []) ?(named_types = []) ?(generic_structs = [])
         | _ -> false
       in
       if fits_negative_literal t v || allowed then Ok (t, mask_value t (Int64.neg v))
-      else if match t with Hir.Float _ -> true | _ -> false then
+      else
         Error
           [
-            Diag.error
-              ~help:(Printf.sprintf "write `-%s.0`" raw)
-              s "integer literals are not floating point literals";
+            Sema_types.integer_literal_error s t ~negative:true ~text:("-" ^ raw)
+              ~magnitude:v;
           ]
-      else
-        error s
-          (Printf.sprintf "integer literal is out of range for %s: `-%s`" (ty_name t)
-             raw)
   | Ast.Unary (Ast.Neg, e, s) ->
       let* t, v =
         const_expr ~structs ~named_types ~generic_structs ~arrays ~array_lengths
