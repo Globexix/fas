@@ -1902,19 +1902,22 @@ let compile_c_units ~pgo config cc units adapters standard_headers declaration_h
               @ (if Option.is_some unit.assembly then
                    [ "-iquote"; Filename.dirname unit.source ]
                  else [])
+              @ (if config.Cli.emit = Cli.Header && Option.is_none unit.assembly then
+                   [ "-fsyntax-only"; unit.unit_path ]
+                 else if Option.is_some unit.assembly then
+                   [
+                     "-x";
+                     Option.get unit.assembly;
+                     "-c";
+                     unit.unit_path;
+                     "-o";
+                     object_path;
+                   ]
+                 else [ "-c"; unit.unit_path; "-o"; object_path ])
               @
-              if config.Cli.emit = Cli.Header && Option.is_none unit.assembly then
-                [ "-fsyntax-only"; unit.unit_path ]
-              else if Option.is_some unit.assembly then
-                [
-                  "-x";
-                  Option.get unit.assembly;
-                  "-c";
-                  unit.unit_path;
-                  "-o";
-                  object_path;
-                ]
-              else [ "-c"; unit.unit_path; "-o"; object_path ])
+              if Option.is_none unit.assembly then
+                [ "-iquote"; Filename.dirname unit.source ]
+              else [])
           in
           if config.Cli.keep then
             prerr_endline ("fas: CC command: " ^ String.concat " " (Array.to_list argv));
