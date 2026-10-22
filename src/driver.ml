@@ -1229,64 +1229,78 @@ let profile_measured path number line =
       profile_line_error path number
         "measured RATIO band BAND rounds R placements K metric M"
 
+let profile_lines text =
+  String.split_on_char '\n' text
+  |> List.map (fun line ->
+      let length = String.length line in
+      if length > 0 && line.[length - 1] = '\r' then String.sub line 0 (length - 1)
+      else line)
+
+let normalize_header line =
+  String.map (fun c -> if c = '\t' then ' ' else c) line
+  |> String.split_on_char ' '
+  |> List.filter (fun word -> word <> "")
+  |> String.concat " "
+
+let profile_cpu_line path line =
+  match Option.bind line (header_value "cpu ") with
+  | Some cpu -> Ok cpu
+  | None -> profile_line_error path 4 "cpu NAME"
+
 let profile_header path text =
+  let lines = profile_lines text in
+  let header number = Option.map normalize_header (List.nth_opt lines (number - 1)) in
   let no_counts () =
     profile_error (Printf.sprintf "profile `%s` has no `counts` section" path)
   in
-  match String.split_on_char '\n' text with
-  | "fas profile 1" :: _ :: _ :: cpu :: "counts" :: lines ->
+  let counts_section ?(positional = true) number =
+    match header number with
+    | Some "counts" ->
+        Ok (String.concat "\n" (List.filteri (fun index _ -> index >= number) lines))
+    | (Some _ | None) when positional -> profile_line_error path number "counts"
+    | Some _ | None -> no_counts ()
+  in
+  match header 1 with
+  | Some "fas profile 1" when header 5 = Some "counts" ->
+      let* counts = counts_section ~positional:false 5 in
       Ok
         {
           choice = Pgo;
           align_loops = None;
           align_functions = None;
           options = [];
-          cpu = profile_cpu cpu;
-          counts = String.concat "\n" lines;
+          cpu = profile_cpu (Option.value (header 4) ~default:"");
+          counts;
         }
-  | "fas profile 1" :: _ -> no_counts ()
-  | "fas profile 2" :: _ :: _ :: cpu :: choice :: align :: measured :: rest -> (
-      let* choice = profile_choice path (Some choice) in
-      let* align_loops = profile_align_loops path (Some align) in
-      let* () = profile_measured path 7 (Some measured) in
-      match rest with
-      | "counts" :: lines ->
-          Ok
-            {
-              choice;
-              align_loops;
-              align_functions = None;
-              options = [];
-              cpu = profile_cpu cpu;
-              counts = String.concat "\n" lines;
-            }
-      | _ -> no_counts ())
-  | "fas profile 3" :: _ :: _ :: cpu :: rest -> (
-      let nth number = List.nth_opt rest (number - 5) in
-      let* choice = profile_choice path (nth 5) in
-      let* align_loops = profile_align_loops path (nth 6) in
-      let* align_functions = profile_align_functions path (nth 7) in
-      let* options = profile_options path (nth 8) in
-      let* () = profile_measured path 9 (nth 9) in
-      match rest with
-      | _ :: _ :: _ :: _ :: _ :: "counts" :: lines ->
-          Ok
-            {
-              choice;
-              align_loops;
-              align_functions;
-              options;
-              cpu = profile_cpu cpu;
-              counts = String.concat "\n" lines;
-            }
-      | _ -> no_counts ())
-  | ("fas profile 2" | "fas profile 3") :: _ -> no_counts ()
+  | Some "fas profile 1" -> no_counts ()
+  | Some "fas profile 2" ->
+      let* cpu = profile_cpu_line path (header 4) in
+      let* choice = profile_choice path (header 5) in
+      let* align_loops = profile_align_loops path (header 6) in
+      let* () = profile_measured path 7 (header 7) in
+      let* counts = counts_section 8 in
+      Ok { choice; align_loops; align_functions = None; options = []; cpu; counts }
+  | Some "fas profile 3" ->
+      let* cpu = profile_cpu_line path (header 4) in
+      let* choice = profile_choice path (header 5) in
+      let* align_loops = profile_align_loops path (header 6) in
+      let* align_functions = profile_align_functions path (header 7) in
+      let* options = profile_options path (header 8) in
+      let* () = profile_measured path 9 (header 9) in
+      let* counts = counts_section 10 in
+      Ok { choice; align_loops; align_functions; options; cpu; counts }
   | _ ->
       profile_error
         (Printf.sprintf
            "`%s` is not a fas profile (expected `fas profile 1`, `fas profile 2` or \
             `fas profile 3` on line 1)"
            path)
+
+let without_prefix prefix line = Option.value (header_value prefix line) ~default:line
+
+let missing_profdata tool_path =
+  profile_error
+    (Printf.sprintf "profile merge needs llvm-profdata (FAS_PROFDATA is `%s`)" tool_path)
 
 let profile_io f =
   try f ()
@@ -1303,11 +1317,13 @@ let merge_profile path counts temps =
   match Process.run [| tool_path; "merge"; "-o"; indexed_path; text_path |] with
   | Ok _ -> Ok indexed_path
   | Error failure when failure.Process.status = Unix.WEXITED 127 ->
-      Error [ tool_error ("profile merge with " ^ tool_path) failure ]
+      missing_profdata tool_path
   | Error failure ->
       let reason =
         match first_non_empty_line failure.Process.stderr with
-        | Some line -> line
+        | Some line ->
+            line |> without_prefix "warning: " |> without_prefix "error: "
+            |> without_prefix (text_path ^ ": ")
         | None -> status_name failure.Process.status
       in
       profile_error (Printf.sprintf "profile `%s` has invalid counts: %s" path reason)
@@ -1382,6 +1398,8 @@ let merge_profraw ~scratch ~profraw =
   let tool_path = profdata () in
   let argv = Array.of_list ([ tool_path; "merge"; "--text"; "-o"; merged ] @ profraw) in
   match Process.run argv with
+  | Error failure when failure.Process.status = Unix.WEXITED 127 ->
+      missing_profdata tool_path
   | Error failure -> Error [ tool_error ("profile merge with " ^ tool_path) failure ]
   | Ok _ -> (
       match read_file merged with
@@ -1411,6 +1429,26 @@ let with_profile config f =
           let* header = profile_header path text in
           let native = header.choice = Native || header.choice = Native_pgo in
           let mtune = header.choice = Mtune || header.choice = Mtune_pgo in
+          let pgo_choice =
+            header.choice = Pgo || header.choice = Native_pgo
+            || header.choice = Mtune_pgo
+          in
+          let* () =
+            if native && config.Cli.target_explicit && config.Cli.target = Cli.Portable
+            then
+              profile_error
+                (Printf.sprintf
+                   "profile `%s` has the native choice `%s`; it cannot build with \
+                    `--target=portable`"
+                   path (choice_name header.choice))
+            else Ok ()
+          in
+          let* () =
+            if pgo_choice && String.trim header.counts = "" then
+              profile_error
+                (Printf.sprintf "profile `%s` has no counts for a pgo choice" path)
+            else Ok ()
+          in
           let* () =
             if native && header.cpu <> llc_host_cpu () then
               profile_error

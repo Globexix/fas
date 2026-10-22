@@ -197,7 +197,7 @@ expect_invalid_counts() {
   [ "$status" -eq 1 ] || fail "$name: exit status $status, expected 1"
   [ "$(wc -l <"$name.err")" -eq 1 ] || fail "$name: stderr is not a single line: $(cat "$name.err")"
   case "$(cat "$name.err")" in
-    'error: profile `bad.fasprof` has invalid counts: warning: '*': truncated profile data') ;;
+    'error: profile `bad.fasprof` has invalid counts: truncated profile data') ;;
     *) fail "$name: unexpected stderr: $(cat "$name.err")" ;;
   esac
   [ ! -e "$name.bin" ] || fail "$name: an output file was written"
@@ -335,6 +335,11 @@ printf 'fas profile 2\nfas 0.5.2\nllvm x\ncpu y\nchoice pgo\nalign-loops def\nme
 cmp with-profile.ll pgo2.ll || fail "a format 2 pgo profile differs from the format 1 profile"
 fas_build pgo2-O2.bin --profile pgo2.fasprof main.fas prof_link.c
 cmp profile-O2.bin pgo2-O2.bin || fail "a format 2 pgo executable differs from the format 1 executable"
+sed 's/$/\r/' pgo2.fasprof >crlf2.fasprof
+"$OCAML_FAS" --profile crlf2.fasprof --emit-llvm=optimized main.fas >crlf2.ll
+cmp pgo2.ll crlf2.ll || fail "a CRLF format 2 pgo profile differs from the LF profile"
+fas_build crlf2-O2.bin --profile crlf2.fasprof main.fas prof_link.c
+cmp pgo2-O2.bin crlf2-O2.bin || fail "a CRLF format 2 pgo executable differs from the LF executable"
 
 "$OCAML_FAS" --profile default2.fasprof --emit-llvm=optimized main.fas >default2.ll
 cmp without-profile.ll default2.ll || fail "choice default changed the optimized IR"
@@ -432,7 +437,24 @@ expect_error bad-align 'error: profile `badalign.fasprof` has an unknown align-l
 expect_error no-choice 'error: profile `nochoice.fasprof` line 5 must be `choice default|pgo|native|native-pgo|mtune|mtune-pgo`' --profile nochoice.fasprof main.fas prof_link.c
 expect_error no-align 'error: profile `noalign.fasprof` line 6 must be `align-loops def|32|64`' --profile noalign.fasprof main.fas prof_link.c
 expect_error no-measured 'error: profile `nomeasured.fasprof` line 7 must be `measured RATIO band BAND rounds R placements K metric M`' --profile nomeasured.fasprof main.fas prof_link.c
-expect_error no-counts2 'error: profile `nocounts2.fasprof` has no `counts` section' --profile nocounts2.fasprof main.fas prof_link.c
+expect_error no-counts2 'error: profile `nocounts2.fasprof` line 8 must be `counts`' --profile nocounts2.fasprof main.fas prof_link.c
+{
+  echo 'fas profile 2'
+  echo "fas $FAS_VERSION"
+  echo "llvm $OPT_LINE"
+  echo "cpu $HOST_CPU"
+  echo 'choice pgo'
+  echo 'align-loops def'
+  echo "$MEASURED"
+  echo counts
+  echo '   '
+} >blank-counts.fasprof
+expect_error blank-counts-O2 'error: profile `blank-counts.fasprof` has no counts for a pgo choice' --profile blank-counts.fasprof main.fas prof_link.c
+expect_error blank-counts-O0 'error: profile `blank-counts.fasprof` has no counts for a pgo choice' -O0 --profile blank-counts.fasprof main.fas prof_link.c
+expect_error native-pgo-portable 'error: profile `nativepgo2.fasprof` has the native choice `native-pgo`; it cannot build with `--target=portable`' --target=portable --profile nativepgo2.fasprof main.fas prof_link.c
+expect_error native-portable 'error: profile `native2.fasprof` has the native choice `native`; it cannot build with `--target=portable`' --target=portable --profile native2.fasprof main.fas prof_link.c
+fas_build pgo2-portable.bin --target=portable --profile pgo2.fasprof main.fas prof_link.c
+run_program pgo2-portable.bin 250
 
 profile3() {
   {

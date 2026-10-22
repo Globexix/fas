@@ -3773,9 +3773,11 @@ let () =
           (fun () -> output_string channel text)
       in
       write profile_source "fn main() i32 { return 0 }\n";
-      let profile_rejection name path fragment =
+      let profile_rejection ?(options = []) name path fragment =
         incr checks_run;
-        match Driver.run (cli_run [ "--profile"; path; profile_source ]) with
+        match
+          Driver.run (cli_run (options @ [ "--profile"; path; profile_source ]))
+        with
         | Error diagnostics ->
             let rendered = Diag.render_all ~source:None diagnostics in
             if not (contains rendered fragment) then
@@ -3939,7 +3941,103 @@ let () =
          options\n\
          counts\n";
       profile_rejection "profile-no-measured-3" profile_file
-        "line 9 must be `measured RATIO band BAND rounds R placements K metric M`");
+        "line 9 must be `measured RATIO band BAND rounds R placements K metric M`";
+      write profile_file "fas profile 1\nfas 0.5.2\nllvm x\ncpu x\ncounts\n";
+      profile_rejection "profile-empty-counts" profile_file
+        "has no counts for a pgo choice";
+      write profile_file
+        "fas profile 2\n\
+         fas 0.5.2\n\
+         llvm x\n\
+         cpu x\n\
+         choice pgo\n\
+         align-loops def\n\
+         measured 1\n\
+         counts\n\n\
+        \   \n";
+      profile_rejection "profile-blank-counts" profile_file
+        "has no counts for a pgo choice";
+      write profile_file
+        "fas profile 2\n\
+         fas 0.5.2\n\
+         llvm x\n\
+         host x\n\
+         choice pgo\n\
+         align-loops def\n\
+         measured 1\n\
+         counts\n";
+      profile_rejection "profile-cpu-line" profile_file "line 4 must be `cpu NAME`";
+      write profile_file
+        "fas profile 2\n\
+         fas 0.5.2\n\
+         llvm x\n\
+         cpu x\n\
+         choice pgo\n\
+         align-loops def\n\
+         measured 1\n\
+         bogus\n";
+      profile_rejection "profile-counts-line" profile_file "line 8 must be `counts`";
+      write profile_file
+        "fas profile 3\n\
+         fas 0.6\n\
+         llvm x\n\
+         cpu x\n\
+         choice pgo\n\
+         align-loops def\n\
+         align-functions def\n\
+         options\n\
+         measured 1\n";
+      profile_rejection "profile-counts-line-missing" profile_file
+        "line 10 must be `counts`";
+      write profile_file
+        "fas profile 2\r\n\
+         fas 0.5.2\r\n\
+         llvm x\r\n\
+         cpu x\r\n\
+         choice fast\r\n\
+         align-loops def\r\n\
+         measured 1\r\n\
+         counts\r\n";
+      profile_rejection "profile-crlf-header" profile_file
+        "has an unknown choice `fast`; expected default, pgo, native, native-pgo, \
+         mtune or mtune-pgo";
+      write profile_file
+        "fas profile 2\n\
+         fas 0.5.2\n\
+         llvm x\n\
+         cpu x\n\
+         choice pgo\n\
+         align-loops\t128\n\
+         measured 1\n\
+         counts\n";
+      profile_rejection "profile-tab-header" profile_file
+        "has an unknown align-loops value `128`; expected def, 32 or 64";
+      write profile_file
+        "fas profile 2\n\
+         fas 0.5.2\n\
+         llvm x\n\
+         cpu x\n\
+         choice native-pgo\n\
+         align-loops def\n\
+         measured 1\n\
+         counts\n";
+      profile_rejection ~options:[ "--target=portable" ] "profile-native-portable"
+        profile_file
+        "has the native choice `native-pgo`; it cannot build with `--target=portable`";
+      write profile_file
+        "fas profile 2\n\
+         fas 0.5.2\n\
+         llvm x\n\
+         cpu x\n\
+         choice native\n\
+         align-loops def\n\
+         measured 1\n\
+         counts\n";
+      profile_rejection "profile-native-host-cpu" profile_file
+        "was tuned for the CPU `x`";
+      profile_rejection ~options:[ "--target=portable" ] "profile-native-portable-plain"
+        profile_file
+        "has the native choice `native`; it cannot build with `--target=portable`");
   cli_error "sanitize-empty-list" "--sanitize requires a non-empty list"
     [ "--sanitize="; "profile.fas" ];
   cli_error "sanitize-unknown-name" "unknown sanitizer `memory`"

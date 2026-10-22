@@ -321,6 +321,10 @@ tune_expect leave 1 'error: the program wrote no profile (it must return from `m
   tune_expect cc 1 'error: `fas perf --tune` needs Clang as the C compiler; FAS_CC is `'"$WORK"'/fake-gcc`' tune.fas -o cc.fasprof
 )
 
+mkdir tune-out-dir
+tune_expect output-dir 1 'fas perf: cannot write `tune-out-dir` (is a directory)' tune.fas -o tune-out-dir
+tune_expect output-missing-dir 1 'fas perf: cannot write `missing/out.fasprof` (No such file or directory)' tune.fas -o missing/out.fasprof
+
 mkdir defaults
 cp tune.fas prof_link.c defaults/
 status=0

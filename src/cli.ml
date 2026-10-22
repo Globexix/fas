@@ -18,6 +18,7 @@ type t = {
   target_cpu : string option;
   tune_cpu : string option;
   target : target;
+  target_explicit : bool;
   target_features : string option;
   profile : string option;
   all_errors : bool;
@@ -141,6 +142,7 @@ let parse_invocation ~subcommand argv =
   let sanitizers = ref None in
   let diagnostics = ref Text in
   let target = ref Portable in
+  let target_explicit = ref false in
   let profile = ref None in
   let all_errors = ref false in
   let profile_conflict emit =
@@ -206,6 +208,7 @@ let parse_invocation ~subcommand argv =
                 target_cpu = None;
                 tune_cpu = None;
                 target = !target;
+                target_explicit = !target_explicit;
                 target_features = None;
                 profile = !profile;
                 all_errors = !all_errors;
@@ -286,6 +289,7 @@ let parse_invocation ~subcommand argv =
           let value = String.sub flag 9 (String.length flag - 9) in
           let select selected =
             target := selected;
+            target_explicit := true;
             loop (i + 1) input output emit keep optimization optimization_explicit debug
               no_inline_function
           in

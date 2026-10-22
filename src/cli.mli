@@ -18,6 +18,7 @@ type t = {
   target_cpu : string option;
   tune_cpu : string option;
   target : target;
+  target_explicit : bool;
   target_features : string option;
   profile : string option;
   all_errors : bool;

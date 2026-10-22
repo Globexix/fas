@@ -158,6 +158,7 @@ let config_for state key : Cli.t =
     Cli.input = key;
     output = key;
     output_explicit = false;
+    target_explicit = false;
     emit = Cli.Ir;
     keep = false;
     optimization = 2;

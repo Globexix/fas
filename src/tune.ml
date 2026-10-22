@@ -323,6 +323,7 @@ let build ~report (config : Cli.t) ?profile ?(instrument = false)
             Cli.input;
             output;
             output_explicit = true;
+            target_explicit = false;
             profile;
             target;
             emit = Cli.Executable;
@@ -1227,63 +1228,85 @@ let tune ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~may_isolat
     (Driver.count_profile_functions chosen.counts);
   0
 
+let last_reason message =
+  match List.rev (String.split_on_char ':' message) with
+  | last :: _ -> String.trim last
+  | [] -> message
+
+let output_problem output =
+  if Sys.file_exists output && Sys.is_directory output then Some "is a directory"
+  else
+    match
+      Filename.temp_file ~temp_dir:(Filename.dirname output) "fas-perf-" ".probe"
+    with
+    | exception Sys_error message -> Some (last_reason message)
+    | probe ->
+        (try Sys.remove probe with Sys_error _ -> ());
+        None
+
 let run ~report (config : Cli.t) ~output ~no_arena ~yes ~check_with ~argv0 args =
   match Driver.check_clang () with
   | Error diagnostics ->
       report diagnostics;
       1
   | Ok () -> (
-      match Sys.getenv_opt "FAS_TUNE_TEST_TOOLS" with
-      | Some dir -> (
-          match Tune_tools.build ~cc:(Driver.tool "FAS_CC" "clang-22") dir with
-          | Ok _ -> 0
-          | Error message ->
-              prerr_endline ("fas: " ^ message);
-              1)
+      match output_problem output with
+      | Some reason ->
+          prerr_endline
+            (Printf.sprintf "fas perf: cannot write `%s` (%s)" output reason);
+          1
       | None -> (
-          match Filename.temp_dir "fas-tune-" "" with
-          | exception Sys_error message ->
-              prerr_endline ("fas: " ^ message);
-              1
-          | dir ->
-              let previous =
-                List.map
-                  (fun (signal, code) ->
-                    ( signal,
-                      Sys.signal signal
-                        (Sys.Signal_handle (fun _ -> raise (Interrupted code))) ))
-                  signals
-              in
-              let status =
-                try
-                  let may_isolate =
-                    if Sys.file_exists (state_path ()) then
-                      restore_stale ~prompts:(interactive () && not yes)
-                    else true
+          match Sys.getenv_opt "FAS_TUNE_TEST_TOOLS" with
+          | Some dir -> (
+              match Tune_tools.build ~cc:(Driver.tool "FAS_CC" "clang-22") dir with
+              | Ok _ -> 0
+              | Error message ->
+                  prerr_endline ("fas: " ^ message);
+                  1)
+          | None -> (
+              match Filename.temp_dir "fas-tune-" "" with
+              | exception Sys_error message ->
+                  prerr_endline ("fas: " ^ message);
+                  1
+              | dir ->
+                  let previous =
+                    List.map
+                      (fun (signal, code) ->
+                        ( signal,
+                          Sys.signal signal
+                            (Sys.Signal_handle (fun _ -> raise (Interrupted code))) ))
+                      signals
                   in
-                  tune ~report config ~output ~no_arena ~yes ~check_with ~may_isolate
-                    ~dir ~argv0 args
-                with
-                | Stop status -> status
-                | Interrupted code | Fun.Finally_raised (Interrupted code) ->
-                    List.iter
-                      (fun (signal, _) -> Sys.set_signal signal Sys.Signal_ignore)
-                      signals;
-                    Option.iter
-                      (fun pid ->
-                        try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ())
-                      !child;
-                    Option.iter (fun pid -> ignore (wait_for pid)) !child;
-                    child := None;
-                    prerr_endline "fas perf: interrupted; no profile written";
-                    code
-              in
-              List.iter
-                (fun (signal, _) -> Sys.set_signal signal Sys.Signal_ignore)
-                signals;
-              release ();
-              List.iter
-                (fun (signal, behavior) -> Sys.set_signal signal behavior)
-                previous;
-              if not (config.keep || status = 2) then remove_tree dir;
-              if status = 2 then 1 else status))
+                  let status =
+                    try
+                      let may_isolate =
+                        if Sys.file_exists (state_path ()) then
+                          restore_stale ~prompts:(interactive () && not yes)
+                        else true
+                      in
+                      tune ~report config ~output ~no_arena ~yes ~check_with
+                        ~may_isolate ~dir ~argv0 args
+                    with
+                    | Stop status -> status
+                    | Interrupted code | Fun.Finally_raised (Interrupted code) ->
+                        List.iter
+                          (fun (signal, _) -> Sys.set_signal signal Sys.Signal_ignore)
+                          signals;
+                        Option.iter
+                          (fun pid ->
+                            try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ())
+                          !child;
+                        Option.iter (fun pid -> ignore (wait_for pid)) !child;
+                        child := None;
+                        prerr_endline "fas perf: interrupted; no profile written";
+                        code
+                  in
+                  List.iter
+                    (fun (signal, _) -> Sys.set_signal signal Sys.Signal_ignore)
+                    signals;
+                  release ();
+                  List.iter
+                    (fun (signal, behavior) -> Sys.set_signal signal behavior)
+                    previous;
+                  if not (config.keep || status = 2) then remove_tree dir;
+                  if status = 2 then 1 else status)))
