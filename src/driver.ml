@@ -551,7 +551,7 @@ let tools () =
   (tool "FAS_OPT" "opt-22", tool "FAS_LLC" "llc-22", tool "FAS_CC" "clang-22")
 
 let profdata () = tool "FAS_PROFDATA" "llvm-profdata-22"
-let version = "0.5.2"
+let version = "0.6.0"
 
 let find_executable name =
   let is_executable path =
