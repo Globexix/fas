@@ -509,13 +509,14 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
     | Ast.Target_field (base, _, _) ->
         validate_expression_names value_names type_names base
   and validate_statement_names value_names type_names scope_names = function
-    | Ast.Let { name; ty; init; span; _ } ->
+    | Ast.Let { name; ty; ty_span; init; span } ->
         if String_set.mem name scope_names then
           error span (Printf.sprintf "duplicate local `%s`" name)
         else
           let* () =
-            Diag.local_type_error ~span name
+            Diag.local_type_error ~span ~ty_span name
               (validate_type_names value_names type_names span ty)
+            |> Sema_types.declaration_type_error ~declaration:"locals" ~variable:name ty
           in
           let* () = validate_binding_name span name in
           let* () =
@@ -2816,8 +2817,9 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
       match statement with
       | Ast.Let { name; ty; ty_span; init; span } ->
           let* ty =
-            Diag.local_type_error ~span name
+            Diag.local_type_error ~span ~ty_span name
               (resolve_ty ~values ~defer_const_structs substitutions depth ty_span ty)
+            |> Sema_types.declaration_type_error ~declaration:"locals" ~variable:name ty
           in
           let* init =
             match init with
@@ -3259,7 +3261,11 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
         let* fields =
           Result_list.map
             (fun (field : Ast.field) ->
-              let* ty = resolve_ty ~values:eval_consts [] 0 field.span field.ty in
+              let* ty =
+                resolve_ty ~values:eval_consts [] 0 field.span field.ty
+                |> Sema_types.declaration_type_error ~declaration:"fields"
+                     ~variable:field.name field.ty
+              in
               Ok ({ field with ty } : Ast.field))
             fields
         in
@@ -3291,6 +3297,8 @@ let monomorphize_types ~check_expr ~check_stmt ~check_target ~target_ty
             (fun (parameter : Ast.param) ->
               let* ty =
                 resolve_ty ~defer_const_structs [] 0 parameter.span parameter.ty
+                |> Sema_types.declaration_type_error ~declaration:"parameters"
+                     ~variable:parameter.name parameter.ty
               in
               Ok ({ parameter with ty } : Ast.param))
             params

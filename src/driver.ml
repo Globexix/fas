@@ -2607,6 +2607,19 @@ let run_unprotected ?header_output ?remarks ?llc_remarks ?llvm_text ?c_debug
               emit_tools ?remarks ?llc_remarks ?llvm_text ?c_debug ~pgo config program
                 ir c_objects [] redirect
           | Cli.Executable ->
+              let* () =
+                if
+                  config.Cli.link_inputs = [] && c_objects = [] && link_pkgs = []
+                  && not
+                       (List.exists (fun (f : Ir.func) -> f.name = "main") ir.Ir.funcs)
+                then
+                  Error
+                    [
+                      Diag.error Span.synthetic
+                        (Printf.sprintf "`%s` has no `fn main`" config.Cli.input);
+                    ]
+                else Ok ()
+              in
               let* link_flags =
                 pkg_link_flags ~keep:config.Cli.keep ~cache:link_cache link_pkgs
               in

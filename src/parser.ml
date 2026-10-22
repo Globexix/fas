@@ -292,11 +292,7 @@ module P = struct
     if stop.Span.end_offset < start.Span.start_offset then start
     else { start with Span.end_offset = stop.Span.end_offset }
 
-  let c_type_word = function
-    | "char" | "int" | "short" | "long" | "unsigned" | "signed" | "float" | "double"
-    | "void" ->
-        true
-    | _ -> false
+  let c_type_word name = name = "void" || Names.c_type_word name
 
   let type_word name =
     c_type_word name || List.mem name Names.scalar_type_names || name = "addr"
@@ -310,7 +306,9 @@ module P = struct
         let count =
           match (peek_n p 3).kind with Token.Int count -> count | _ -> "N"
         in
-        let fas_element = if element = "int" then "i32" else element in
+        let fas_element =
+          Option.value ~default:element (Names.c_type_equivalent element)
+        in
         let primary = if c_type_word element then span p else (peek_n p 1).span in
         Some
           (error primary
@@ -318,6 +316,33 @@ module P = struct
                 "C array declaration `%s %s[%s]` is not Fas syntax; write `%s \
                  arr[%s,%s]`"
                 element name count name count fas_element))
+    | _ -> None
+
+  let c_declaration_syntax p =
+    match ((peek p).kind, (peek_n p 1).kind, (peek_n p 2).kind) with
+    | Token.Ident word, Token.Star, Token.Ident _ when c_type_word word ->
+        let first = span p and star = (peek_n p 1).span in
+        let primary =
+          Span.make ~file:first.Span.file ~start_offset:first.Span.start_offset
+            ~end_offset:star.Span.end_offset ~line:first.Span.line
+            ~column:first.Span.column
+        in
+        let message =
+          match word with
+          | "char" | "void" ->
+              Printf.sprintf "C type `%s*` is not a Fas type; use `addr`" word
+          | _ ->
+              Printf.sprintf
+                "C type `%s*` is not a Fas type; use `addr`, or `handle[T]` when `T` \
+                 is an `opaque` type"
+                word
+        in
+        Some (error primary message)
+    | Token.Ident word, Token.Lparen, Token.Star when c_type_word word ->
+        Some
+          (error (span p)
+             "C function pointer declarations are not Fas syntax; carry a function \
+              address in an `addr` and call it with `call_addr[R](p, args...)`")
     | _ -> None
 
   let within_nesting p s message parse =
@@ -432,11 +457,9 @@ module P = struct
     | Token.Ident "char" when (peek_n p 1).kind = Token.Star ->
         let first = (peek p).span and last = (peek_n p 1).span in
         let primary =
-          if (peek_n p 2).kind = Token.Rparen then (peek_n p 2).span
-          else
-            Span.make ~file:first.Span.file ~start_offset:first.Span.start_offset
-              ~end_offset:last.Span.end_offset ~line:first.Span.line
-              ~column:first.Span.column
+          Span.make ~file:first.Span.file ~start_offset:first.Span.start_offset
+            ~end_offset:last.Span.end_offset ~line:first.Span.line
+            ~column:first.Span.column
         in
         error primary "C type `char*` is not a Fas type; use `addr`"
     | Token.Ident s ->
@@ -1194,8 +1217,11 @@ module P = struct
     | Token.Ident _ -> (
         match c_array_declaration p with
         | Some result -> result
-        | None when starts_type p -> declaration p
-        | None -> assignment_or_expr p)
+        | None -> (
+            match c_declaration_syntax p with
+            | Some result -> result
+            | None when starts_type p -> declaration p
+            | None -> assignment_or_expr p))
     | Token.Kw_return ->
         let s = span p in
         ignore (bump p);
@@ -1301,6 +1327,14 @@ module P = struct
     let* name = ident p in
     let ty_span = span p in
     let* ty = ty p in
+    let* () =
+      match (peek p).Token.kind with
+      | Token.Ident _ when List.mem name [ "let"; "auto"; "mut" ] -> (
+          match Diag.local_declaration_message name with
+          | Some message -> Error [ Diag.error s message ]
+          | None -> Ok ())
+      | _ -> Ok ()
+    in
     let* init =
       if eat p Token.Assign then
         match (peek p).Token.kind with

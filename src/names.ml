@@ -66,6 +66,48 @@ let parser_type_name name =
   || List.mem name reserved_float_type_names
   || List.mem name [ "ptr"; "addr"; "handle"; "arr"; "vec" ]
 
+let c_type_words =
+  [ "char"; "int"; "short"; "long"; "unsigned"; "signed"; "float"; "double" ]
+
+let c_fixed_width_types =
+  [
+    ("size_t", "usize");
+    ("ssize_t", "isize");
+    ("ptrdiff_t", "isize");
+    ("intptr_t", "isize");
+    ("uintptr_t", "usize");
+    ("int8_t", "i8");
+    ("int16_t", "i16");
+    ("int32_t", "i32");
+    ("int64_t", "i64");
+    ("uint8_t", "u8");
+    ("uint16_t", "u16");
+    ("uint32_t", "u32");
+    ("uint64_t", "u64");
+  ]
+
+let c_type_word name =
+  List.mem name c_type_words || List.mem_assoc name c_fixed_width_types
+
+let c_fixed_width_equivalent name = List.assoc_opt name c_fixed_width_types
+
+let c_word_equivalents =
+  [
+    ("char", "i8");
+    ("int", "i32");
+    ("short", "i16");
+    ("long", "i64");
+    ("unsigned", "u32");
+    ("signed", "i32");
+    ("float", "f32");
+    ("double", "f64");
+  ]
+
+let c_type_equivalent name =
+  match c_fixed_width_equivalent name with
+  | Some equivalent -> Some equivalent
+  | None -> List.assoc_opt name c_word_equivalents
+
 let type_constructor = function
   | "addr" -> Some Address
   | "handle" -> Some Handle

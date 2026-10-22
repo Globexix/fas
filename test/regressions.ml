@@ -17677,6 +17677,57 @@ let () =
     \ return }"
 
 let () =
+  semantic_pin "c-size_t-parameter" "fn f(p size_t) usize { return 0 }\n" 1 8 6
+    "`size_t` is not a Fas type; parameters are declared as `name Type`, e.g. `p usize`"
+    None;
+  semantic_pin "c-int-parameter" "fn f(p int) i32 { return 0 }\n" 1 8 3
+    "`int` is not a Fas type; parameters are declared as `name Type`, e.g. `p i32`" None;
+  semantic_pin "c-char-parameter" "fn f(p char) i32 { return 0 }\n" 1 8 4
+    "`char` is not a Fas type; parameters are declared as `name Type`, e.g. `p i8`" None;
+  semantic_pin "c-double-parameter" "fn f(p double) i32 { return 0 }\n" 1 8 6
+    "`double` is not a Fas type; parameters are declared as `name Type`, e.g. `p f64`"
+    None;
+  semantic_pin "c-size_t-array-local" "fn f() usize { xs size_t[4]\nreturn 0 }\n" 1 19 6
+    "`size_t` is not a Fas type; locals are declared as `name Type`, e.g. `xs \
+     arr[4,usize]`"
+    None;
+  semantic_pin "c-char-array-local-generic"
+    "fn f[N const usize]() usize { xs char[N]\n\
+     return 0 }\n\
+     fn g() usize { return f[4]() }\n"
+    1 34 4
+    "`char` is not a Fas type; locals are declared as `name Type`, e.g. `xs arr[N,i8]`"
+    None;
+  semantic_pin "user-generic-array-local" "fn f() usize { xs Foo[4]\nreturn 0 }\n" 1 19
+    3 "unknown generic struct `Foo`" None;
+  semantic_pin "c-size_t-array-parameter" "fn f(p size_t[4]) usize { return 0 }\n" 1 8 6
+    "`size_t` is not a Fas type; parameters are declared as `name Type`, e.g. `p \
+     arr[4,usize]`"
+    None;
+  semantic_pin "c-size_t-local-type-caret" "fn f() usize { p size_t = 0\nreturn 0 }\n" 1
+    18 6
+    "`size_t` is not a Fas type; locals are declared as `name Type = value`, e.g. `p \
+     usize`"
+    None;
+  semantic_pin "c-uint8_t-field" "struct S { p uint8_t }\n" 1 14 7
+    "`uint8_t` is not a Fas type; fields are declared as `name Type`, e.g. `p u8`" None;
+  semantic_pin "c-int-field" "struct S { p int }\n" 1 14 3
+    "`int` is not a Fas type; fields are declared as `name Type`, e.g. `p i32`" None;
+  semantic_pin "c-size_t-array-field" "struct S { p size_t[4] }\n" 1 14 6
+    "`size_t` is not a Fas type; fields are declared as `name Type`, e.g. `p \
+     arr[4,usize]`"
+    None;
+  semantic_pin "c-size_t-field" "struct S { p size_t }\n" 1 14 6
+    "`size_t` is not a Fas type; fields are declared as `name Type`, e.g. `p usize`"
+    None;
+  semantic_accept "user-struct-size_t-field"
+    "struct size_t { x i32 }\nstruct S { p size_t }\nfn main() i32 { return 0 }\n";
+  semantic_pin "user-struct-size_t-parameter"
+    "struct size_t { x i32 }\nfn f(p size_t) i32 { return p.x }\n" 2 8 6
+    "aggregate parameter `p` of type `size_t` cannot be passed by value; declare `p` \
+     as `addr`; callers pass its address with `&`"
+    None;
+
   let pin body token expected generic =
     let header =
       if generic then "fn f[N const usize]() void { " else "fn f() void { "
@@ -17714,13 +17765,61 @@ let () =
             generic)
         [ "let"; "auto"; "mut" ];
       List.iter
-        (fun word ->
+        (fun (word, equivalent) ->
           pin (word ^ " x = 5") word
             ("`" ^ word
-           ^ "` is not a Fas type; locals are declared as `name Type = value`, e.g. `x \
-              i32`")
+           ^ "` is not a Fas type; locals are declared as `name Type = value`, e.g. `x "
+           ^ equivalent ^ "`")
             generic)
-        [ "int"; "char"; "short"; "long"; "unsigned"; "signed"; "float"; "double" ];
+        [
+          ("int", "i32");
+          ("char", "i8");
+          ("short", "i16");
+          ("long", "i64");
+          ("unsigned", "u32");
+          ("signed", "i32");
+          ("float", "f32");
+          ("double", "f64");
+        ];
+      List.iter
+        (fun (word, equivalent) ->
+          pin (word ^ " x = 5") word
+            ("`" ^ word
+           ^ "` is not a Fas type; locals are declared as `name Type = value`, e.g. `x "
+           ^ equivalent ^ "`")
+            generic)
+        [
+          ("size_t", "usize");
+          ("ssize_t", "isize");
+          ("ptrdiff_t", "isize");
+          ("intptr_t", "isize");
+          ("uintptr_t", "usize");
+          ("int8_t", "i8");
+          ("int16_t", "i16");
+          ("int32_t", "i32");
+          ("int64_t", "i64");
+          ("uint8_t", "u8");
+          ("uint16_t", "u16");
+          ("uint32_t", "u32");
+          ("uint64_t", "u64");
+        ];
+      pin "let x i32 = 5" "let"
+        "locals are declared as `name Type = value`; `let` is not a Fas keyword" generic;
+      pin "auto x i32 = 5" "auto"
+        "locals are declared as `name Type = value`; `auto` is not a Fas keyword"
+        generic;
+      pin "mut x i32 = 5" "mut"
+        "locals are declared as `name Type = value`; `mut` is not a Fas keyword" generic;
+      pin "char *s = 0" "char *" "C type `char*` is not a Fas type; use `addr`" generic;
+      pin "int *p = 0" "int *"
+        "C type `int*` is not a Fas type; use `addr`, or `handle[T]` when `T` is an \
+         `opaque` type"
+        generic;
+      pin "void *v = 0" "void *" "C type `void*` is not a Fas type; use `addr`" generic;
+      pin "int (*fp)(int) = 0" "int"
+        "C function pointer declarations are not Fas syntax; carry a function address \
+         in an `addr` and call it with `call_addr[R](p, args...)`"
+        generic;
       pin "u32 x = 5" "u32" "locals are declared as `name Type = value`; write `x u32`"
         generic;
       pin "var x i32 = 5" "var"
@@ -17744,6 +17843,12 @@ let () =
         ("fn f[T](value T) T { " ^ word ^ " T = value\n return " ^ word
        ^ " }\n fn g() i32 { return f[i32](5) }"))
     [ "let"; "auto"; "mut" ];
+  List.iter
+    (fun equivalent ->
+      semantic_accept
+        ("fixed-width-local-twin-" ^ equivalent)
+        ("fn f() " ^ equivalent ^ " { n " ^ equivalent ^ " = 0\n return n }"))
+    [ "usize"; "isize"; "i8"; "i16"; "i32"; "i64"; "u8"; "u16"; "u32"; "u64" ];
   semantic_accept "separated-plus-unary-keeps-syntax"
     "fn f(x i32) i32 { return x + -1 }";
   pin "for var x i32 = 0; x < 4; x += 1 {}" "var"
@@ -18530,6 +18635,9 @@ let () =
   let c_array = "fn f() void { int items[4]\n return }\n" in
   pin "c-array-declaration" c_array 1 "fn f() void { " 3
     "C array declaration `int items[4]` is not Fas syntax; write `items arr[4,i32]`";
+  let char_array = "fn f() void { char buf[16]\n return }\n" in
+  pin "c-char-array-declaration" char_array 1 "fn f() void { " 4
+    "C array declaration `char buf[16]` is not Fas syntax; write `buf arr[16,i8]`";
   let missing_element = "fn f() void { items arr[3] }\n" in
   pin "array-missing-element-type" missing_element 1 "fn f() void { items arr[3" 1
     "array type `arr` needs an element type after its length";
@@ -18566,11 +18674,11 @@ let () =
      \"C\"` and `var`";
   let char_pointer = "fn accept(data char*) void { return }\n" in
   syntax_pin "c-char-pointer-type-caret" char_pointer 1
-    (String.length "fn accept(data char*" + 1)
-    1 "C type `char*` is not a Fas type; use `addr`";
+    (String.length "fn accept(data " + 1)
+    5 "C type `char*` is not a Fas type; use `addr`";
   pin "vector-addr-element-caret" "fn f(v vec[2,addr]) usize { return 0 }\n" 1
     "fn f(v vec[2," 4 "vector element type must be `bool` or an integer type";
-  pin "c-char-pointer-type" char_pointer 1 "fn accept(data char*" 1
+  pin "c-char-pointer-type" char_pointer 1 "fn accept(data " 5
     "C type `char*` is not a Fas type; use `addr`";
   let typed_pointer = "typed pointers are not Fas types; use `addr`" in
   pin "typed-pointer-param-u32-star" "fn accept(p u32 *) u32 { return 0 }\n" 1
@@ -18689,6 +18797,14 @@ let () =
   let integer_cast = "fn reinterpret(value i32) u32 { return (u32)value }\n" in
   pin "c-integer-cast" integer_cast 1 "fn reinterpret(value i32) u32 { return " 1
     "C cast `(u32)` is not Fas syntax; use `zext`, `sext`, `trunc` or `bitcast`";
+  pin "c-fixed-width-cast-int8"
+    "fn reinterpret(value i32) i8 { return (int8_t)value }\n" 1
+    "fn reinterpret(value i32) i8 { return " 1
+    "C cast `(int8_t)` is not Fas syntax; use `zext`, `sext`, `trunc` or `bitcast`";
+  pin "c-fixed-width-cast-size"
+    "fn reinterpret(value i32) usize { return (size_t)value }\n" 1
+    "fn reinterpret(value i32) usize { return " 1
+    "C cast `(size_t)` is not Fas syntax; use `zext`, `sext`, `trunc` or `bitcast`";
   let dereference = "fn fetch(address addr) u8 { return *address }\n" in
   semantic_pin "c-star-dereference" dereference 1
     (String.index dereference '*' + 1)

@@ -244,21 +244,7 @@ let append_instantiation_trace specializations trace diagnostics =
   List.map
     (fun (diagnostic : Diag.t) ->
       let local_declaration_syntax =
-        List.exists
-          (fun name -> Diag.local_declaration_message name = Some diagnostic.message)
-          [
-            "let";
-            "auto";
-            "mut";
-            "int";
-            "char";
-            "short";
-            "long";
-            "unsigned";
-            "signed";
-            "float";
-            "double";
-          ]
+        Diag.is_local_declaration_message diagnostic.message
       in
       {
         diagnostic with

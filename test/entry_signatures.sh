@@ -30,4 +30,13 @@ done
   -o "$COMPONENT_TMP/no-entry.o"
 [ -s "$COMPONENT_TMP/no-entry.o" ]
 
-echo 'entry_signatures: both documented entry signatures at O0/O2; no-main object: ok'
+if "$OCAML_FAS" "$ROOT/test/entry_no_entry.fas" -o "$COMPONENT_TMP/no-main" \
+  2>"$COMPONENT_TMP/no-main.err"; then
+  echo 'entry_signatures: executable without fn main was accepted' >&2
+  exit 1
+fi
+grep -Fx "error: \`$ROOT/test/entry_no_entry.fas\` has no \`fn main\`" \
+  "$COMPONENT_TMP/no-main.err" >/dev/null
+[ ! -e "$COMPONENT_TMP/no-main" ]
+
+echo 'entry_signatures: both documented entry signatures at O0/O2; no-main object: ok; no-main executable: rejected'

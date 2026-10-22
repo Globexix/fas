@@ -469,6 +469,44 @@ let source_ty_diag named_types span ty =
           in
           [ Diag.error primary message ])
 
+let declared_c_type_name message =
+  let quoted prefix =
+    if String.starts_with ~prefix message && String.ends_with ~suffix:"`" message then
+      Some
+        (String.sub message (String.length prefix)
+           (String.length message - String.length prefix - 1))
+    else None
+  in
+  match quoted "unknown type `" with
+  | Some name -> Some name
+  | None -> quoted "unknown generic struct `"
+
+let rec declared_c_type_span name = function
+  | Ast.Named_type (other, span) when other = name -> Some (span, None)
+  | Ast.Applied_type (other, span, arguments, _) when other = name ->
+      let length =
+        match arguments with
+        | Ast.Const_arg (Ast.Int_lit (text, _)) :: _ -> text
+        | _ -> "N"
+      in
+      Some (span, Some length)
+  | Ast.Handle ty | Ast.Array (_, ty) | Ast.Vec (_, ty) -> declared_c_type_span name ty
+  | _ -> None
+
+let declaration_type_error ~declaration ~variable ty result =
+  let remap (diagnostic : Diag.t) =
+    match declared_c_type_name diagnostic.message with
+    | None -> diagnostic
+    | Some name -> (
+        match declared_c_type_span name ty with
+        | None -> diagnostic
+        | Some (primary, length) -> (
+            match Diag.declaration_type_message ~declaration ~variable ?length name with
+            | None -> diagnostic
+            | Some message -> { diagnostic with primary; message }))
+  in
+  Result.map_error (List.map remap) result
+
 let lookup name table = List.find_opt (fun (entry, _, _) -> entry = name) table
 
 let aggregate_length_value kind span ty value =
